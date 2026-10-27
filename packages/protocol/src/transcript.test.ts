@@ -29,7 +29,11 @@ const reviewEntry = (summary: string): EntryRecord => {
     kind: USER_ENTRY_KIND,
     data: { display: summary, skills: [], review: data },
     model: [
-      { role: "user", content: [{ type: "text", text: reviewMessage(summary, markdown) }], timestamp: 9 },
+      {
+        role: "user",
+        content: [{ type: "text", text: reviewMessage(summary, markdown) }],
+        timestamp: 9,
+      },
     ],
   } as unknown as EntryRecord;
 };
@@ -44,7 +48,7 @@ describe("a Review in the transcript", () => {
     ]);
   });
 
-  it("shows \"Review: n Annotations\" when it has no summary", () => {
+  it('shows "Review: n Annotations" when it has no summary', () => {
     expect(projectEntry(reviewEntry(""))?.parts).toEqual([
       { type: "text", text: "Review: 1 Annotation" },
     ]);

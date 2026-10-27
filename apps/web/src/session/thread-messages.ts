@@ -199,9 +199,7 @@ export const shownPages = (custom: MessageCustom | undefined): readonly Attached
 const decodeReview = Schema.decodeUnknownOption(Schema.Array(ShownReviewAnnotation));
 
 /** The Annotations of a Review a user message's metadata keeps; none for a message that is not one. */
-export const shownReview = (
-  custom: MessageCustom | undefined,
-): readonly ShownReviewAnnotation[] =>
+export const shownReview = (custom: MessageCustom | undefined): readonly ShownReviewAnnotation[] =>
   Option.getOrElse(decodeReview(custom?.["review"]), () => []);
 
 /** A turn followed by a user message cannot change, so its message is made once and handed out again. */

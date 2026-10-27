@@ -469,7 +469,9 @@ export type SessionHostService = {
    * The directory the active branch, or the conversation `conversationId` names, works in: where the paths its tools
    * are given resolve. Undefined for a Session without an environment.
    */
-  readonly directory: (conversationId?: ConversationId) => Effect.Effect<string | undefined, SessionError>;
+  readonly directory: (
+    conversationId?: ConversationId,
+  ) => Effect.Effect<string | undefined, SessionError>;
   /**
    * A page of the History of the active branch, or of the conversation `conversationId` names, before entry
    * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
@@ -1256,26 +1258,49 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
 
-    const kept = {
-      display: data?.display ?? typedBeside(input),
-      skills: [...(data?.skills ?? [])],
-      pages: Arr.map(pages, (page) => clampPage(page)),
-    };
-
     return {
       ...draft,
       content: [...parts.slice(0, at), block, ...parts.slice(at)],
-      entry: {
-        kind: USER_ENTRY_KIND,
-        // A Review's Annotations stay beside the pages.
-        data: data?.review === undefined ? kept : { ...kept, review: reviewJson(data.review) },
-      },
+      // A Review's Annotations stay beside the pages.
+      entry: ownerEntry({
+        display: data?.display ?? typedBeside(input),
+        skills: data?.skills ?? [],
+        pages: Arr.map(pages, (page) => clampPage(page)),
+        review: data?.review,
+      }),
     };
   };
 
   /** A Review's data as the entry stores it. */
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a Review's data is strings, numbers, and arrays and objects of them, as its Schema says: JSON, only typed read-only.
   const reviewJson = (data: ReviewData): JsonValue => data as unknown as JsonValue;
+
+  /** What a `cloudpid.user` entry stores (`UserEntryData`), as JSON. */
+  type OwnerEntryData = {
+    display: string;
+    skills: Array<UserEntryData["skills"][number]>;
+    pages?: Array<AttachedPage>;
+    review?: JsonValue;
+  };
+
+  /**
+   * The `cloudpid.user` entry of an owner's message: what they typed, the Skills expanded into it, and the pages it
+   * attached and the Review it sends, when it does.
+   */
+  const ownerEntry = (kept: {
+    readonly display: string;
+    readonly skills: UserEntryData["skills"];
+    readonly pages?: ReadonlyArray<AttachedPage> | undefined;
+    readonly review?: ReviewData | undefined;
+  }) => {
+    const data: OwnerEntryData = { display: kept.display, skills: [...kept.skills] };
+
+    if (kept.pages !== undefined) data.pages = [...kept.pages];
+
+    if (kept.review !== undefined) data.review = reviewJson(kept.review);
+
+    return { kind: USER_ENTRY_KIND, data };
+  };
 
   /**
    * `input` with its typed text replaced by `content`; a text block is made for it, first, when the owner typed none (the
@@ -1315,10 +1340,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             type: "input",
             content: withReviewText(input, reviewMessage(content, review.markdown)),
             ...rest,
-            entry: {
-              kind: USER_ENTRY_KIND,
-              data: { display: typedBeside(input), skills: [...skills], review: reviewJson(review.data) },
-            },
+            entry: ownerEntry({ display: typedBeside(input), skills, review: review.data }),
           };
 
     const plain = reviewed(typedBeside(input), []);
@@ -1380,10 +1402,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         return {
           ...plain,
           content: withText(input, expanded.content),
-          entry: {
-            kind: USER_ENTRY_KIND,
-            data: { display: expanded.data.display, skills: [...expanded.data.skills] },
-          },
+          entry: ownerEntry(expanded.data),
         };
       }),
     );

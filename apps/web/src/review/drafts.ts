@@ -48,8 +48,34 @@ export const draftsTo = (
   conversationId: number | undefined,
 ): readonly Annotation[] => annotations.filter((draft) => draft.conversationId === conversationId);
 
+/** A diff's drafts, and where they show in it. */
+export interface DiffDrafts {
+  readonly drafts: readonly Annotation[];
+  readonly lineAnnotations: DiffLineAnnotation<AnnotationSlot>[];
+}
+
+/**
+ * The drafts of one diff of a view (`diff`: the Pane's file ID, or a card's one diff) on `anchor`, and where they show,
+ * with the editor of a new draft when the view's editor (`open`) is open in that diff. Undefined `anchor`: none.
+ */
+export const diffDrafts = (
+  annotations: readonly Annotation[],
+  anchor: DiffAnchor | undefined,
+  open: { readonly diff: string | null; readonly picked: PickedLines | null },
+  diff: string,
+): DiffDrafts => {
+  const drafts = anchor === undefined ? [] : draftsOn(annotations, anchor);
+
+  return {
+    drafts,
+    lineAnnotations: lineAnnotationsOf(drafts, open.diff === diff ? open.picked : null),
+  };
+};
+
 /** What a line annotation of a diff holds: a draft, by its ID, or the editor of a new one. */
-export type AnnotationSlot = { readonly kind: "draft"; readonly id: string } | { readonly kind: "new" };
+export type AnnotationSlot =
+  | { readonly kind: "draft"; readonly id: string }
+  | { readonly kind: "new" };
 
 /**
  * Where `drafts` show in their diff: each under its last line, on its side, then the editor of a new draft under the
@@ -95,7 +121,8 @@ export const newDraft = (
     text,
   };
 
-  if (anchor.oldPath !== undefined && anchor.oldPath !== anchor.path) draft.oldPath = anchor.oldPath;
+  if (anchor.oldPath !== undefined && anchor.oldPath !== anchor.path)
+    draft.oldPath = anchor.oldPath;
 
   if (anchor.conversationId !== undefined) {
     // SAFETY: a subagent's conversation the Session named.

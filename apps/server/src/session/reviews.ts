@@ -21,7 +21,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 import type * as Types from "effect/Types";
-import { AnnotationStore, type AnnotationStoreService } from "./annotations.ts";
+import {
+  type AnnotationStorage,
+  AnnotationStore,
+  type AnnotationStoreService,
+} from "./annotations.ts";
 import { SessionChanges } from "./changes.ts";
 import { attempt, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
@@ -35,8 +39,11 @@ export const DRAFTS_CHANGED = "Your drafts changed: check them and send again";
 /** The Reviews not yet placed, by submission: kept until each settles, so a withdrawn one's drafts come back. */
 const PENDING_KEY = "cloudpid:reviews-pending";
 
-/** The drafts a pending Review sent, as they were sent. */
+/** The IDs of the drafts a pending Review sent. */
 const sentKey = (submissionId: number) => `cloudpid:review:${submissionId}`;
+
+/** One draft a pending Review sent, as it was sent: one key a draft, as the drafts themselves are kept. */
+const sentDraftKey = (submissionId: number, id: string) => `cloudpid:review:${submissionId}:${id}`;
 
 /** The submissions recent Reviews became, by `requestId`, so a Review sent again finds the first. */
 const REQUESTS_KEY = "cloudpid:review-requests";
@@ -46,13 +53,6 @@ const KEPT_REQUESTS = 50;
 
 /** How many files a check reads at once. */
 const CHECK_READS = 4;
-
-/** The object's synchronous key-value storage, as the Reviews use it. */
-export type ReviewStorage = {
-  get<T>(key: string): T | undefined;
-  put<T>(key: string, value: T): void;
-  delete(key: string): boolean;
-};
 
 /** A Review as `submit` sends it: the summary, and the IDs of the drafts it sends. */
 export type ReviewPrompt = Omit<Prompt, "review"> & { readonly annotations: ReadonlyArray<string> };
@@ -86,7 +86,7 @@ const addressedToLive =
 
 /** The Session's Reviews over its storage; build it once per instance. */
 export const sessionReviewsLayer = (
-  storage: ReviewStorage,
+  storage: AnnotationStorage,
 ): Layer.Layer<SessionReviews, never, SessionHost | SessionChanges | AnnotationStore | Harness> =>
   Layer.effect(
     SessionReviews,
@@ -103,7 +103,8 @@ export const sessionReviewsLayer = (
       const sending = Semaphore.withPermit(Semaphore.makeUnsafe(1));
 
       const pending = (): number[] => storage.get<number[]>(PENDING_KEY) ?? [];
-      const requests = (): Record<string, number> => storage.get<Record<string, number>>(REQUESTS_KEY) ?? {};
+      const requests = (): Record<string, number> =>
+        storage.get<Record<string, number>>(REQUESTS_KEY) ?? {};
 
       /** What a check finds of `drafts` (those on the Changes) against `repos`: each one it changes, before and after. */
       const findings = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) => {
@@ -131,14 +132,21 @@ export const sessionReviewsLayer = (
 
             if (listed.kind === "gone") {
               return Effect.succeed(
-                onFile.map((before) => ({ before, after: checked(before, { kind: "gone" }, null) })),
+                onFile.map((before) => ({
+                  before,
+                  after: checked(before, { kind: "gone" }, null),
+                })),
               );
             }
 
             const query =
               listed.entry.oldPath === undefined
                 ? { repo: listed.repo.repo, path: listed.entry.path }
-                : { repo: listed.repo.repo, path: listed.entry.path, oldPath: listed.entry.oldPath };
+                : {
+                    repo: listed.repo.repo,
+                    path: listed.entry.path,
+                    oldPath: listed.entry.oldPath,
+                  };
 
             return changes.file(query).pipe(
               Effect.map((file) =>
@@ -147,11 +155,22 @@ export const sessionReviewsLayer = (
 
                   return lines === undefined
                     ? []
-                    : [{ before, after: checked(before, checkQuote(before, lines), listed.repo.head.commit) }];
+                    : [
+                        {
+                          before,
+                          after: checked(
+                            before,
+                            checkQuote(before, lines),
+                            listed.repo.head.commit,
+                          ),
+                        },
+                      ];
                 }),
               ),
               Effect.catch((error) =>
-                Effect.logWarning("Reading a file to check its drafts failed", error).pipe(Effect.as([])),
+                Effect.logWarning("Reading a file to check its drafts failed", error).pipe(
+                  Effect.as([]),
+                ),
               ),
             );
           },
@@ -159,12 +178,20 @@ export const sessionReviewsLayer = (
         ).pipe(Effect.map((found) => found.flat()));
       };
 
-      const check = (repos: ReadonlyArray<RepoChanges>) =>
-        store.list.pipe(
-          Effect.flatMap((drafts) => findings(drafts, repos)),
-          Effect.flatMap((found) => store.checked(found)),
+      /** Check `drafts` against `repos` and put what was found in place, under the one permit; answer what was found. */
+      const checkAndKeep = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) =>
+        findings(drafts, repos).pipe(
+          Effect.tap((found) => store.checked(found)),
           checking,
         );
+
+      const check = (repos: ReadonlyArray<RepoChanges>) =>
+        store.list.pipe(Effect.flatMap((drafts) => checkAndKeep(drafts, repos)));
+
+      /** Which drafts go to a conversation that still exists, as the Subagents document says now. */
+      const live = attempt("subagents", () => harness.harness.snapshot(SubagentsDoc, context)).pipe(
+        Effect.map((state) => addressedToLive(state?.conversations ?? {})),
+      );
 
       // After each listing of the Changes, in the background: the clients see the drafts move or marked.
       const stop = changes.observe((list) => {
@@ -187,12 +214,25 @@ export const sessionReviewsLayer = (
           Effect.flatMap((record) => {
             if (record?.status === "queued") return Effect.void;
 
-            const sent = storage.get<Annotation[]>(sentKey(submissionId)) ?? [];
+            const ids = storage.get<string[]>(sentKey(submissionId)) ?? [];
+
+            const sent = ids.flatMap((id) => {
+              const draft = storage.get<Annotation>(sentDraftKey(submissionId, id));
+
+              return draft === undefined ? [] : [draft];
+            });
+
             const withdrawn = record?.status === "unanswered" && record.entry === undefined;
 
-            return (withdrawn ? store.restore(sent) : Effect.void).pipe(
+            // Only those that still go somewhere: a subagent deleted while its Review waited takes its drafts with it.
+            const restored = withdrawn
+              ? live.pipe(Effect.flatMap((keep) => store.restore(sent.filter(keep))))
+              : Effect.void;
+
+            return restored.pipe(
               Effect.andThen(
                 Effect.sync(() => {
+                  for (const id of ids) storage.delete(sentDraftKey(submissionId, id));
                   storage.delete(sentKey(submissionId));
                   storage.put(
                     PENDING_KEY,
@@ -238,25 +278,33 @@ export const sessionReviewsLayer = (
           const targetOf = (id: number | undefined) =>
             id === undefined || id === active ? undefined : id;
 
-          if (drafts.some((draft) => targetOf(draft.conversationId) !== targetOf(rest.conversationId))) {
+          if (
+            drafts.some((draft) => targetOf(draft.conversationId) !== targetOf(rest.conversationId))
+          ) {
             return yield* refused(DRAFTS_CHANGED);
           }
 
           // The last check, against the files as they are now.
           const onChanges = drafts.some((draft) => draft.source.kind === "changes");
           const listed = onChanges ? yield* changes.fresh : undefined;
-          const found = yield* findings(drafts, listed?.repos ?? []).pipe(checking);
-
-          yield* store.checked(found);
+          const found = yield* checkAndKeep(drafts, listed?.repos ?? []);
 
           const final = drafts.map(
             (draft) => found.find(({ before }) => before.id === draft.id)?.after ?? draft,
           );
 
+          // A send that fails after the message is placed leaves the drafts: sent again with its `requestId`, as the
+          // composer does, the host finds the first submission rather than placing a second.
           const submissionId = yield* host.submit({ ...rest, review: renderReview(final) });
 
+          // What follows is written at once, with no wait between: the drafts it sent (one key each, as the drafts are),
+          // the Review pending until it settles, and its `requestId`.
           yield* Effect.sync(() => {
-            storage.put(sentKey(submissionId), final);
+            for (const draft of final) storage.put(sentDraftKey(submissionId, draft.id), draft);
+            storage.put(
+              sentKey(submissionId),
+              final.map((draft) => draft.id),
+            );
             storage.put(PENDING_KEY, [...pending(), submissionId]);
 
             if (rest.requestId !== undefined) {
@@ -268,15 +316,18 @@ export const sessionReviewsLayer = (
             }
           });
 
-          yield* store.remove(ids);
+          // Deleted as taken: one saved again while the Review was sent keeps its new text.
+          yield* store.removeSent(drafts);
           yield* followUp(submissionId);
 
           return submissionId;
         }).pipe(sending);
 
-      const prune = attempt("subagents", () => harness.harness.snapshot(SubagentsDoc, context)).pipe(
-        Effect.flatMap((state) => store.prune(addressedToLive(state?.conversations ?? {}))),
-        Effect.catchCause((cause) => Effect.logWarning("Dropping a deleted subagent's drafts failed", cause)),
+      const prune = live.pipe(
+        Effect.flatMap((keep) => store.prune(keep)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Dropping a deleted subagent's drafts failed", cause),
+        ),
       );
 
       // Reviews an eviction left pending: settled once they settle.
@@ -295,7 +346,10 @@ export const sessionReviewsLayer = (
 
           // A conversation not yet given a Workspace works at its root, as a Session does at first.
           const cwd = (yield* host.directory(source.conversationId)) ?? WORKSPACE_ROOT;
-          const resolved: Types.Mutable<AnnotationDraft> = { ...draft, path: resolvePath(cwd, draft.path) };
+          const resolved: Types.Mutable<AnnotationDraft> = {
+            ...draft,
+            path: resolvePath(cwd, draft.path),
+          };
 
           if (draft.oldPath !== undefined) resolved.oldPath = resolvePath(cwd, draft.oldPath);
 
@@ -325,7 +379,16 @@ export const annotationsPruningTools = (
                 try {
                   return await wrapped.execute(args, api, context);
                 } finally {
-                  const state = await api.snapshot(SubagentsDoc, context).catch(() => undefined);
+                  const state = await Effect.runPromise(
+                    attempt("subagents", () => api.snapshot(SubagentsDoc, context)).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning(
+                          "Reading the subagents to drop a deleted one's drafts failed",
+                          cause,
+                        ).pipe(Effect.as(undefined)),
+                      ),
+                    ),
+                  );
 
                   if (state !== undefined) {
                     await Effect.runPromise(store.prune(addressedToLive(state.conversations)));

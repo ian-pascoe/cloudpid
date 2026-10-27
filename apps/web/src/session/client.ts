@@ -194,7 +194,9 @@ export interface SessionClient {
    * once the Session has it, and every client then has the new list in `annotations`. Fails as `catalog` does, and with
    * the Session's refusal past 100 drafts.
    */
-  readonly saveAnnotation: (annotation: AnnotationDraft) => Effect.Effect<void, SessionCommandError>;
+  readonly saveAnnotation: (
+    annotation: AnnotationDraft,
+  ) => Effect.Effect<void, SessionCommandError>;
   /** Delete draft Annotation `annotationId`; one that is gone is not an error. Fails as `catalog` does. */
   readonly deleteAnnotation: (annotationId: string) => Effect.Effect<void, SessionCommandError>;
   /**

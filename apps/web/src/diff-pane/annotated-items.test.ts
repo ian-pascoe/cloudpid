@@ -22,7 +22,11 @@ describe("annotatedItems", () => {
     const a = item("a", 3);
     const made = annotatedItems([a], () => [draft("d1", 4)], new Map());
 
-    expect(made.get("a")?.item).toMatchObject({ id: "a", annotations: [draft("d1", 4)], version: 4 });
+    expect(made.get("a")?.item).toMatchObject({
+      id: "a",
+      annotations: [draft("d1", 4)],
+      version: 4,
+    });
   });
 
   it("keeps the same object while the item and its annotations' places are the same", () => {

@@ -564,7 +564,11 @@ describe("a Session connection", () => {
 
         const sent = latest().commands().at(-1);
 
-        expect(sent).toEqual({ type: "annotation_save", id: expect.any(String), annotation: draft });
+        expect(sent).toEqual({
+          type: "annotation_save",
+          id: expect.any(String),
+          annotation: draft,
+        });
         yield* latest().say({ type: "result", id: sent?.id, result: null });
         expect(Exit.isSuccess(yield* Fiber.await(save))).toBe(true);
 
@@ -574,29 +578,35 @@ describe("a Session connection", () => {
 
         const deleted = latest().commands().at(-1);
 
-        expect(deleted).toEqual({ type: "annotation_delete", id: expect.any(String), annotationId: "d1" });
+        expect(deleted).toEqual({
+          type: "annotation_delete",
+          id: expect.any(String),
+          annotationId: "d1",
+        });
         yield* latest().say({ type: "error", id: deleted?.id, message: "Not live" });
         expect(Exit.isFailure(yield* Fiber.await(remove))).toBe(true);
       }),
     );
 
-    it.effect("sends a Review's drafts with its summary, and shows it as a Review in the lane", () =>
-      Effect.gen(function* () {
-        const { client, latest, state } = yield* setup();
+    it.effect(
+      "sends a Review's drafts with its summary, and shows it as a Review in the lane",
+      () =>
+        Effect.gen(function* () {
+          const { client, latest, state } = yield* setup();
 
-        yield* watching(latest());
-        yield* client.submit(
-          { input: "", display: "Review: 1 Annotation", annotations: ["d1"] },
-          "followUp",
-        );
+          yield* watching(latest());
+          yield* client.submit(
+            { input: "", display: "Review: 1 Annotation", annotations: ["d1"] },
+            "followUp",
+          );
 
-        expect(state().sending.map((entry) => entry.text)).toEqual(["Review: 1 Annotation"]);
-        expect(latest().commands().at(-1)).toMatchObject({
-          type: "submit",
-          input: "",
-          annotations: ["d1"],
-        });
-      }),
+          expect(state().sending.map((entry) => entry.text)).toEqual(["Review: 1 Annotation"]);
+          expect(latest().commands().at(-1)).toMatchObject({
+            type: "submit",
+            input: "",
+            annotations: ["d1"],
+          });
+        }),
     );
   });
 

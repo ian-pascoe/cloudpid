@@ -25,6 +25,15 @@ type Peeked = Pick<Annotation, "side" | "start" | "end" | "more"> & {
   readonly ofCall: boolean;
 };
 
+/** Quoted lines as they were when drawn, and how many more the quote leaves out: mono on Tinted Wash, scrolling. */
+export const QuotedLines = ({ lines, more }: { lines: readonly string[]; more: number }) =>
+  lines.length === 0 ? null : (
+    <pre className="my-1.5 max-h-48 overflow-auto rounded-md border bg-muted px-3 py-2 font-mono text-xs whitespace-pre">
+      {lines.join("\n")}
+      {more > 0 && `\n… ${more} more ${more === 1 ? "line" : "lines"}`}
+    </pre>
+  );
+
 /** The quoted code and the owner's text, as a chip opens on them. */
 const Peek = ({ peeked }: { peeked: Peeked }) => {
   const status = statusLabel(peeked);
@@ -37,12 +46,7 @@ const Peek = ({ peeked }: { peeked: Peeked }) => {
         {peeked.ofCall && ", as of that call"}
         {status !== undefined && <span className="font-medium text-foreground"> · {status}</span>}
       </p>
-      {peeked.quote.length > 0 && (
-        <pre className="max-h-48 overflow-auto rounded-md border bg-muted px-3 py-2 font-mono text-xs whitespace-pre">
-          {peeked.quote.join("\n")}
-          {peeked.more > 0 && `\n… ${peeked.more} more ${peeked.more === 1 ? "line" : "lines"}`}
-        </pre>
-      )}
+      <QuotedLines lines={peeked.quote} more={peeked.more} />
       <p className="break-words whitespace-pre-wrap">{peeked.text}</p>
     </div>
   );
@@ -97,8 +101,9 @@ export const DraftChips = ({
   drafts.length === 0 ? null : (
     <div className="px-3 pt-2.5">
       <p className="text-xs text-muted-foreground">
-        Sends as a Review with {drafts.length === 1 ? "1 Annotation" : `${drafts.length} Annotations`}
-        ; what you type is its summary
+        Sends as a Review with{" "}
+        {drafts.length === 1 ? "1 Annotation" : `${drafts.length} Annotations`}; what you type is
+        its summary
       </p>
       <ul aria-label="Annotations to send" className="mt-1.5 flex flex-wrap gap-1.5">
         {drafts.map((draft) => {
@@ -127,7 +132,10 @@ export const DraftChips = ({
 
 /** A sent Review's Annotations, as chips under its summary: each opens on the code it quoted and the owner's text. */
 export const ReviewChips = ({ annotations }: { annotations: readonly ShownReviewAnnotation[] }) => (
-  <ul aria-label="Annotations" className="mt-2 flex flex-wrap justify-end gap-1.5 whitespace-normal">
+  <ul
+    aria-label="Annotations"
+    className="mt-2 flex flex-wrap justify-end gap-1.5 whitespace-normal"
+  >
     {annotations.map((annotation, index) => (
       <li key={index} className="min-w-0">
         <Chip

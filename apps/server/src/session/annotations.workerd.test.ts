@@ -6,7 +6,9 @@ import {
   type AnnotationDraft,
   type ClientMessage,
   HEARTBEAT,
+  MAX_ANNOTATION_TEXT,
   MAX_ANNOTATIONS,
+  MAX_QUOTE_BYTES,
   ServerMessageJson,
   type ServerMessage,
   UPLOADS_ROOT,
@@ -44,7 +46,9 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    throw new Error(`Never received the expected messages: ${JSON.stringify(received.slice(from))}`);
+    throw new Error(
+      `Never received the expected messages: ${JSON.stringify(received.slice(from))}`,
+    );
   };
 
   /** The drafts as the Session last said them, once it has said them `count` times. */
@@ -182,7 +186,11 @@ describe("draft Annotations", () => {
       id: "relative",
       annotation: onCall({ path: "./src/../src/b.ts" }),
     });
-    expect(await client.answer("relative")).toEqual({ type: "result", id: "relative", result: null });
+    expect(await client.answer("relative")).toEqual({
+      type: "result",
+      id: "relative",
+      result: null,
+    });
 
     const [saved] = await client.nth(2);
 
@@ -213,10 +221,45 @@ describe("draft Annotations", () => {
     });
     await client.answer("edit");
 
-    const [edited] = await runInDurableObject(stub, (instance: TestSession) => instance.annotations());
+    const [edited] = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.annotations(),
+    );
 
     expect(edited?.quote).toHaveLength(50);
     expect(edited?.more).toBe(30);
+  });
+
+  it("take 4,000 characters of text at most, and keep 8 KiB of quote, counting the lines past it", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+
+    await client.nth(1);
+    client.send({
+      type: "annotation_save",
+      id: "long",
+      annotation: onCall({ text: "y".repeat(MAX_ANNOTATION_TEXT + 1) }),
+    });
+    expect(await client.answer("long")).toMatchObject({ type: "error", id: "long" });
+
+    // 1,024 bytes a line with its newline: eight of the ten fit 8 KiB.
+    client.send({
+      type: "annotation_save",
+      id: "limits",
+      annotation: onCall({
+        text: "y".repeat(MAX_ANNOTATION_TEXT),
+        quote: Array.from({ length: 10 }, () => "x".repeat(1_023)),
+      }),
+    });
+    expect(await client.answer("limits")).toEqual({ type: "result", id: "limits", result: null });
+
+    const [saved] = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.annotations(),
+    );
+
+    expect(saved?.text).toHaveLength(MAX_ANNOTATION_TEXT);
+    expect(saved?.quote).toHaveLength(8);
+    expect(saved?.more).toBe(2);
+    expect(MAX_QUOTE_BYTES).toBe(8 * 1_024);
   });
 
   it("on the Changes move with their lines, are marked when the lines change, and when their file leaves", async () => {
@@ -239,12 +282,17 @@ describe("draft Annotations", () => {
     client.send({ type: "refresh_changes", id: "refresh" });
     await client.answer("refresh");
 
-    const moved = (await client.until((messages) =>
-      messages.some(
-        (message) =>
-          message.type === "annotations" && message.annotations.some((draft) => draft.start === 4),
-      ),
-    )).filter((message): message is Annotations => message.type === "annotations").at(-1);
+    const moved = (
+      await client.until((messages) =>
+        messages.some(
+          (message) =>
+            message.type === "annotations" &&
+            message.annotations.some((draft) => draft.start === 4),
+        ),
+      )
+    )
+      .filter((message): message is Annotations => message.type === "annotations")
+      .at(-1);
 
     expect(moved?.annotations.find((draft) => draft.id === "on-changes")).toMatchObject({
       start: 4,
@@ -266,7 +314,9 @@ describe("draft Annotations", () => {
       ),
     );
 
-    const drafts = await runInDurableObject(stub, (instance: TestSession) => instance.annotations());
+    const drafts = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.annotations(),
+    );
 
     expect(drafts.find((draft) => draft.id === "on-changes")).toMatchObject({
       status: "outdated",
@@ -279,7 +329,15 @@ describe("draft Annotations", () => {
     await runInDurableObject(stub, (instance: TestSession) =>
       instance.setChanges({
         running: {
-          repos: [{ repo: "app", head: { commit: HEAD, branch: "main" }, files: [], more: 0, stale: false }],
+          repos: [
+            {
+              repo: "app",
+              head: { commit: HEAD, branch: "main" },
+              files: [],
+              more: 0,
+              stale: false,
+            },
+          ],
         },
       }),
     );
@@ -299,7 +357,11 @@ describe("draft Annotations", () => {
     const client = await connect(stub);
 
     // SAFETY: a subagent's conversation ID the Subagents document does not list.
-    client.send({ type: "annotation_save", id: "save", annotation: onCall({ conversationId: 99 as never }) });
+    client.send({
+      type: "annotation_save",
+      id: "save",
+      annotation: onCall({ conversationId: 99 as never }),
+    });
     await client.answer("save");
     client.send({ type: "annotation_save", id: "root", annotation: onChanges() });
     await client.answer("root");
@@ -355,7 +417,9 @@ describe("a Review", () => {
       result: { submissionId: expect.any(Number) },
     });
     await client.until((messages) =>
-      messages.some((message) => message.type === "annotations" && message.annotations.length === 0),
+      messages.some(
+        (message) => message.type === "annotations" && message.annotations.length === 0,
+      ),
     );
 
     for (let attempt = 0; attempt < 300; attempt++) {
@@ -363,12 +427,16 @@ describe("a Review", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const entries = await runInDurableObject(stub, (instance: TestSession) => instance.rootEntries());
+    const entries = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.rootEntries(),
+    );
     const sent = entries.find((entry) => entry.kind === "cloudpid.user");
 
     expect(sent?.text).toMatch(/^Two things\.\n\n/u);
     expect(sent?.text).toContain("### Uncommitted Changes in `app`");
-    expect(sent?.text).toContain("### Your `edit` call on `/workspace/app/src/b.ts`: lines as of that call");
+    expect(sent?.text).toContain(
+      "### Your `edit` call on `/workspace/app/src/b.ts`: lines as of that call",
+    );
     expect(sent?.text).toContain("Why two constants?");
     expect(sent?.data).toMatchObject({
       display: "Two things.",
@@ -411,12 +479,50 @@ describe("a Review", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const entries = await runInDurableObject(stub, (instance: TestSession) => instance.rootEntries());
+    const entries = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.rootEntries(),
+    );
     const sent = entries.find((entry) => entry.kind === "cloudpid.user");
 
     expect(sent?.text).toMatch(/^## Review: 1 Annotation\n/u);
     expect(sent?.text).toContain(paths);
     expect(sent?.data).toMatchObject({ display: "" });
+  });
+
+  it("keeps a draft saved again while it was being sent, with its new text", async () => {
+    const stub = fresh();
+
+    // The last check waits on a listing of the Changes, which takes a while.
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.setChanges({ ...changes(FILE), delayMs: 300 });
+      instance.script(["Looked."]);
+    });
+
+    const client = await connect(stub);
+
+    client.send({ type: "annotation_save", id: "a", annotation: onChanges() });
+    client.send({ type: "annotation_save", id: "b", annotation: onCall() });
+    await client.answer("b");
+    client.send({ type: "submit", id: "send", input: "", annotations: ["on-changes", "on-call"] });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    client.send({
+      type: "annotation_save",
+      id: "edit",
+      annotation: onChanges({ text: "Typed while it was sent." }),
+    });
+    await client.answer("edit");
+    expect(await client.answer("send")).toMatchObject({ type: "result" });
+
+    // The edit was saved while the Review was being sent, before the Session answered it.
+    const answered = (id: string) =>
+      client.received.findIndex((message) => "id" in message && message.id === id);
+
+    expect(answered("edit")).toBeLessThan(answered("send"));
+
+    // Sent with the text it was taken with; the new text stays to send again.
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.annotations()),
+    ).toEqual([expect.objectContaining({ id: "on-changes", text: "Typed while it was sent." })]);
   });
 
   it("is refused when a draft it names is gone or goes elsewhere, and keeps the drafts", async () => {
@@ -426,13 +532,28 @@ describe("a Review", () => {
     client.send({ type: "annotation_save", id: "a", annotation: onCall() });
     await client.answer("a");
     client.send({ type: "submit", id: "gone", input: "", annotations: ["on-call", "deleted"] });
-    expect(await client.answer("gone")).toEqual({ type: "error", id: "gone", message: DRAFTS_CHANGED });
+    expect(await client.answer("gone")).toEqual({
+      type: "error",
+      id: "gone",
+      message: DRAFTS_CHANGED,
+    });
 
     // SAFETY: a subagent's conversation ID; the draft goes to the active branch.
-    client.send({ type: "submit", id: "elsewhere", conversationId: 99 as never, input: "", annotations: ["on-call"] });
-    expect(await client.answer("elsewhere")).toMatchObject({ type: "error" });
+    client.send({
+      type: "submit",
+      id: "elsewhere",
+      conversationId: 99 as never,
+      input: "",
+      annotations: ["on-call"],
+    });
+    expect(await client.answer("elsewhere")).toMatchObject({
+      type: "error",
+      message: DRAFTS_CHANGED,
+    });
     expect(
-      (await runInDurableObject(stub, (instance: TestSession) => instance.annotations())).map((draft) => draft.id),
+      (await runInDurableObject(stub, (instance: TestSession) => instance.annotations())).map(
+        (draft) => draft.id,
+      ),
     ).toEqual(["on-call"]);
   });
 
@@ -457,7 +578,9 @@ describe("a Review", () => {
       annotations: ["on-call"],
     });
     await client.answer("review");
-    expect(await runInDurableObject(stub, (instance: TestSession) => instance.annotations())).toEqual([]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.annotations()),
+    ).toEqual([]);
 
     client.send({ type: "abort", id: "abort" });
     await client.answer("abort");

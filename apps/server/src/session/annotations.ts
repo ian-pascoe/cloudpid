@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
 import { SessionError } from "./errors.ts";
 
-/** The object's synchronous key-value storage, as the drafts use it. */
+/** The object's synchronous key-value storage, as the drafts and the Reviews use it. */
 export type AnnotationStorage = {
   get<T>(key: string): T | undefined;
   put<T>(key: string, value: T): void;
@@ -40,7 +40,9 @@ export type AnnotationStoreService = {
   /** Delete draft `id`; one that is gone is not an error. */
   readonly delete: (id: string) => Effect.Effect<void>;
   /** Drafts `ids`, in that order; undefined when one of them is gone. */
-  readonly take: (ids: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<Annotation> | undefined>;
+  readonly take: (
+    ids: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<Annotation> | undefined>;
   /**
    * Put `checked` in place of the drafts they were made from, those not saved meanwhile (a later save wins over a check
    * that read the draft before it); told to the clients only when something changed.
@@ -48,8 +50,11 @@ export type AnnotationStoreService = {
   readonly checked: (
     checked: ReadonlyArray<{ readonly before: Annotation; readonly after: Annotation }>,
   ) => Effect.Effect<void>;
-  /** Delete drafts `ids`: a Review took them. */
-  readonly remove: (ids: ReadonlyArray<string>) => Effect.Effect<void>;
+  /**
+   * Delete the drafts a Review sent, `sent` as it took them: one saved again since (while the Review was being sent)
+   * stays, so its new text is not lost.
+   */
+  readonly removeSent: (sent: ReadonlyArray<Annotation>) => Effect.Effect<void>;
   /** Put `drafts` back as they were (a withdrawn Review's), past the limit if need be; one already there stays. */
   readonly restore: (drafts: ReadonlyArray<Annotation>) => Effect.Effect<void>;
   /** Delete the drafts `keep` refuses. */
@@ -163,8 +168,7 @@ export const makeAnnotationStore = ({
         yield* Effect.sync(() => write(saved));
         yield* told;
       }),
-    delete: (id) =>
-      Effect.suspend(() => (drop(new Set([id])) ? told : Effect.void)),
+    delete: (id) => Effect.suspend(() => (drop(new Set([id])) ? told : Effect.void)),
     take: (wanted) =>
       Effect.sync(() => {
         const drafts = wanted.map((id) => storage.get<Annotation>(draftKey(id)));
@@ -188,7 +192,16 @@ export const makeAnnotationStore = ({
 
         return changed ? told : Effect.void;
       }),
-    remove: (gone) => Effect.suspend(() => (drop(new Set(gone)) ? told : Effect.void)),
+    removeSent: (sent) =>
+      Effect.suspend(() => {
+        const unchanged = sent.flatMap((draft) =>
+          storage.get<Annotation>(draftKey(draft.id))?.updatedAt === draft.updatedAt
+            ? [draft.id]
+            : [],
+        );
+
+        return drop(new Set(unchanged)) ? told : Effect.void;
+      }),
     restore: (drafts) =>
       Effect.suspend(() => {
         const fresh = drafts.filter((draft) => storage.get(draftKey(draft.id)) === undefined);

@@ -55,50 +55,52 @@ export const ShownReviewAnnotation = Schema.Struct({
 export type ShownReviewAnnotation = typeof ShownReviewAnnotation.Type;
 
 /** The fence language of the files the agent reads most, by extension. */
-const LANGUAGES = new Map<string, string>(Record.toEntries({
-  ts: "ts",
-  tsx: "tsx",
-  mts: "ts",
-  cts: "ts",
-  js: "js",
-  jsx: "jsx",
-  mjs: "js",
-  cjs: "js",
-  json: "json",
-  jsonc: "jsonc",
-  md: "md",
-  mdx: "mdx",
-  css: "css",
-  scss: "scss",
-  html: "html",
-  vue: "vue",
-  svelte: "svelte",
-  py: "python",
-  rb: "ruby",
-  rs: "rust",
-  go: "go",
-  java: "java",
-  kt: "kotlin",
-  swift: "swift",
-  c: "c",
-  h: "c",
-  cc: "cpp",
-  cpp: "cpp",
-  hpp: "cpp",
-  cs: "csharp",
-  php: "php",
-  sh: "sh",
-  bash: "bash",
-  zsh: "zsh",
-  sql: "sql",
-  yml: "yaml",
-  yaml: "yaml",
-  toml: "toml",
-  xml: "xml",
-  graphql: "graphql",
-  proto: "proto",
-  tf: "hcl",
-}));
+const LANGUAGES = new Map<string, string>(
+  Record.toEntries({
+    ts: "ts",
+    tsx: "tsx",
+    mts: "ts",
+    cts: "ts",
+    js: "js",
+    jsx: "jsx",
+    mjs: "js",
+    cjs: "js",
+    json: "json",
+    jsonc: "jsonc",
+    md: "md",
+    mdx: "mdx",
+    css: "css",
+    scss: "scss",
+    html: "html",
+    vue: "vue",
+    svelte: "svelte",
+    py: "python",
+    rb: "ruby",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    kt: "kotlin",
+    swift: "swift",
+    c: "c",
+    h: "c",
+    cc: "cpp",
+    cpp: "cpp",
+    hpp: "cpp",
+    cs: "csharp",
+    php: "php",
+    sh: "sh",
+    bash: "bash",
+    zsh: "zsh",
+    sql: "sql",
+    yml: "yaml",
+    yaml: "yaml",
+    toml: "toml",
+    xml: "xml",
+    graphql: "graphql",
+    proto: "proto",
+    tf: "hcl",
+  }),
+);
 
 /** The language a fence of `path`'s lines is named by; empty when none is known. */
 export const languageOf = (path: string): string => {
@@ -129,22 +131,54 @@ const groupKey = (annotation: Annotation): string =>
     ? `changes:${annotation.source.repo}`
     : `call:${annotation.source.conversationId}:${annotation.source.callId}:${annotation.source.nested ?? ""}`;
 
-/** The heading of a source's group. */
-const groupHeading = (annotation: Annotation): string =>
-  annotation.source.kind === "changes"
-    ? `Uncommitted Changes in \`${annotation.source.repo}\``
-    : `Your \`${annotation.source.tool}\` call on \`${annotationPath(annotation)}\`: lines as of that call`;
-
-/** A fence longer than any run of backticks in `lines`. */
-const fenceFor = (lines: readonly string[]): string => {
+/** The longest run of backticks in `lines`. */
+const longestBackticks = (lines: readonly string[]): number => {
   let longest = 0;
 
   for (const line of lines) {
     for (const run of line.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
   }
 
-  return "`".repeat(Math.max(3, longest + 1));
+  return longest;
 };
+
+/**
+ * `text` as inline code: between runs of backticks longer than any in it, and padded with a space where it starts or
+ * ends with one, so a path or repo name holding backticks stays one span.
+ */
+export const inlineCode = (text: string): string => {
+  const delimiter = "`".repeat(longestBackticks([text]) + 1);
+  const padded = text.startsWith("`") || text.endsWith("`") ? ` ${text} ` : text;
+
+  return `${delimiter}${padded}${delimiter}`;
+};
+
+/** The heading of a source's group. */
+const groupHeading = (annotation: Annotation): string =>
+  annotation.source.kind === "changes"
+    ? `Uncommitted Changes in ${inlineCode(annotation.source.repo)}`
+    : `Your ${inlineCode(annotation.source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
+
+/** A fence longer than any run of backticks in `lines`. */
+const fenceFor = (lines: readonly string[]): string =>
+  "`".repeat(Math.max(3, longestBackticks(lines) + 1));
+
+/**
+ * The owner's text as a blockquote: a fence it opens and never closes ends with the quote, so it cannot swallow the
+ * Annotations after it. `unquote` gives the text back.
+ */
+const quoteText = (text: string): string =>
+  text
+    .split("\n")
+    .map((line) => (line === "" ? ">" : `> ${line}`))
+    .join("\n");
+
+/** The owner's text from its blockquote (`quoteText`). */
+const unquote = (quoted: string): string =>
+  quoted
+    .split("\n")
+    .map((line) => (line === ">" ? "" : line.slice(2)))
+    .join("\n");
 
 /** What follows a quote that leaves something out. */
 const leftOut = (annotation: Annotation): string | undefined => {
@@ -169,9 +203,12 @@ const statusText = (annotation: Annotation): string | undefined => {
 
 const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/** Removed lines before added ones. */
+const sideOrder = (annotation: Annotation): number => (annotation.side === "old" ? 0 : 1);
+
 /**
  * The groups of a Review: the Changes first, by repo, then the Call diffs, in the order of their first draft; within
- * each, its Annotations by file, then line (removed lines first where both sides start at one).
+ * each, its Annotations by file, then line, then side (removed lines first where both sides start at one), then end.
  */
 const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
   const groups = new Map<string, Annotation[]>();
@@ -190,7 +227,7 @@ const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
         (a, b) =>
           compareText(a.path, b.path) ||
           a.start - b.start ||
-          compareText(a.side, b.side) ||
+          sideOrder(a) - sideOrder(b) ||
           a.end - b.end,
       ),
     )
@@ -244,9 +281,13 @@ export const renderReview = (annotations: readonly Annotation[]): RenderedReview
 
       const fence = fenceFor(annotation.quote);
 
-      markdown += `\n\n**Annotation ${number}**: \`${annotationPath(annotation)}\`, ${rangeText(annotation)}`;
+      markdown += `\n\n**Annotation ${number}**: ${inlineCode(annotationPath(annotation))}, ${rangeText(annotation)}`;
 
-      if (annotation.oldPath !== undefined) markdown += ` (renamed from \`${annotation.oldPath}\`)`;
+      if (annotation.oldPath !== undefined) {
+        const oldPath = annotationPath({ source: annotation.source, path: annotation.oldPath });
+
+        markdown += ` (renamed from ${inlineCode(oldPath)})`;
+      }
 
       markdown += `\n\n${fence}${languageOf(annotation.path)}\n`;
 
@@ -264,7 +305,7 @@ export const renderReview = (annotations: readonly Annotation[]): RenderedReview
 
       markdown += "\n\n";
 
-      const text = add(annotation.text);
+      const text = add(quoteText(annotation.text));
 
       const item: Types.Mutable<ReviewAnnotation> = {
         source: annotation.source,
@@ -311,6 +352,6 @@ export const shownReview = (
     ...rest,
     file: annotationPath(rest),
     quote: slice(quote)?.split("\n") ?? [],
-    text: slice(said) ?? "",
+    text: unquote(slice(said) ?? ""),
   }));
 };

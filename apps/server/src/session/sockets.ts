@@ -531,11 +531,14 @@ export const sessionSocketsLayer = (
               ),
             );
 
-            const prompt = refs === undefined || refs.length === 0 ? typed : { ...typed, attachPages };
+            const prompt =
+              refs === undefined || refs.length === 0 ? typed : { ...typed, attachPages };
 
             // With drafts, it is a Review: its summary is what was typed.
             return (
-              ids === undefined ? host.submit(prompt) : reviews.submit({ ...prompt, annotations: ids })
+              ids === undefined
+                ? host.submit(prompt)
+                : reviews.submit({ ...prompt, annotations: ids })
             ).pipe(Effect.map((submissionId) => ({ submissionId })));
           }
 

@@ -27,11 +27,7 @@ import { ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { DIFF_THEME } from "../diff-theme.ts";
 import { cn } from "../lib/utils.ts";
-import {
-  AnnotationSlotView,
-  DRAFTING_OPTIONS,
-  useOpenEditor,
-} from "../review/annotations-ui.tsx";
+import { AnnotationSlotView, DRAFTING_OPTIONS, useOpenEditor } from "../review/annotations-ui.tsx";
 import type { AnnotationSlot } from "../review/drafts.ts";
 import { AnnotationEditor } from "../review/editor.ts";
 import { annotationsAtom, changesAtom } from "../session/atoms.ts";

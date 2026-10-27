@@ -108,10 +108,14 @@ describe("sideLines", () => {
 
 describe("checked", () => {
   it("moves a draft and takes the HEAD now, or marks it and keeps its place", () => {
-    expect(checked(draft({ status: "outdated" }), { kind: "moved", start: 9, end: 10 }, "new-head")).toEqual(
+    expect(
+      checked(draft({ status: "outdated" }), { kind: "moved", start: 9, end: 10 }, "new-head"),
+    ).toEqual(
       draft({ source: { kind: "changes", repo: "app", head: "new-head" }, start: 9, end: 10 }),
     );
-    expect(checked(draft(), { kind: "outdated" }, "new-head")).toEqual(draft({ status: "outdated" }));
+    expect(checked(draft(), { kind: "outdated" }, "new-head")).toEqual(
+      draft({ status: "outdated" }),
+    );
     expect(checked(draft(), { kind: "gone" }, "new-head")).toEqual(draft({ status: "gone" }));
   });
 });

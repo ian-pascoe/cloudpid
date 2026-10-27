@@ -20,23 +20,21 @@ import { annotationsAtom, deleteAnnotationAtom, saveAnnotationAtom } from "../se
 import {
   type AnnotationSlot,
   type DiffAnchor,
-  draftsOn,
+  diffDrafts,
   editedDraft,
-  lineAnnotationsOf,
   newDraft,
   statusLabel,
 } from "./drafts.ts";
 import { AnnotationEditor, CLOSED } from "./editor.ts";
+import { QuotedLines } from "./review-chips.tsx";
 import { pickLines } from "./selection.ts";
 
 /** The drafts of a diff view's file, and where they show. */
 export const useDiffDrafts = (sessionId: string, anchor: DiffAnchor | undefined, diff: string) => {
   const annotations = useAtomValue(annotationsAtom(sessionId));
   const editor = useAtomValue(AnnotationEditor.use());
-  const drafts = anchor === undefined ? [] : draftsOn(annotations, anchor);
-  const picked = editor.diff === diff ? editor.picked : null;
 
-  return { drafts, lineAnnotations: lineAnnotationsOf(drafts, picked) };
+  return diffDrafts(annotations, anchor, editor, diff);
 };
 
 /** Open the editor on the lines `range` picks in `fileDiff`: a new draft, under them. */
@@ -143,7 +141,7 @@ const focusNextFrame = (node: HTMLTextAreaElement | null) => {
 const Frame = ({ children, outdated }: { children: ReactNode; outdated?: boolean }) => (
   <div
     className={cn(
-      "mx-2 my-1.5 max-w-2xl rounded-lg border bg-card px-3 py-2 font-sans text-sm whitespace-normal text-foreground",
+      "mx-2 my-1.5 max-w-2xl rounded-lg border bg-background px-3 py-2 font-sans text-sm whitespace-normal text-foreground",
       outdated === true && "border-dashed",
     )}
   >
@@ -182,9 +180,7 @@ const NewDraft = ({ sessionId, anchor }: { sessionId: string; anchor: DiffAnchor
 
   return (
     <Frame>
-      <p className="mb-1.5 text-xs text-muted-foreground">
-        New Annotation on {rangeText(picked)}
-      </p>
+      <p className="mb-1.5 text-xs text-muted-foreground">New Annotation on {rangeText(picked)}</p>
       <EditorBox
         label={`Annotation on ${rangeText(picked)}`}
         onSave={(text) => {
@@ -227,13 +223,15 @@ const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: Annotation 
   return (
     <Frame outdated={status !== undefined}>
       {header}
+      {/* Marked: its lines read otherwise now, so the card keeps the ones it was written on. */}
+      {status !== undefined && <QuotedLines lines={draft.quote} more={draft.more} />}
       <p className="break-words whitespace-pre-wrap">{draft.text}</p>
       <div className="mt-1.5 flex gap-1">
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-xs text-muted-foreground"
+          className="px-2 text-xs text-muted-foreground"
           onClick={() => {
             setEditor({ ...CLOSED, editing: draft.id, text: draft.text });
           }}
@@ -244,7 +242,7 @@ const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: Annotation 
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-xs text-muted-foreground"
+          className="px-2 text-xs text-muted-foreground"
           onClick={() => {
             void remove(draft.id);
           }}

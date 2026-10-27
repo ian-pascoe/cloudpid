@@ -117,7 +117,11 @@ import {
   sessionSocketsLayer,
   type SessionSocketsService,
 } from "./sockets.ts";
-import { AnnotationStore, annotationStoreLayer, type AnnotationStoreService } from "./annotations.ts";
+import {
+  AnnotationStore,
+  annotationStoreLayer,
+  type AnnotationStoreService,
+} from "./annotations.ts";
 import { SessionReviews, sessionReviewsLayer, type SessionReviewsService } from "./reviews.ts";
 import {
   type ChangesSource,
@@ -517,7 +521,13 @@ export class TestSession extends DurableObject {
   #annotations!: AnnotationStoreService;
   #reviews!: SessionReviewsService;
   #runtime!: ManagedRuntime.ManagedRuntime<
-    SessionHost | SessionSockets | SessionChanges | Harness | Secrets | AnnotationStore | SessionReviews,
+    | SessionHost
+    | SessionSockets
+    | SessionChanges
+    | Harness
+    | Secrets
+    | AnnotationStore
+    | SessionReviews,
     unknown
   >;
   /** Resolves when this instance's model request starts and hangs. */
@@ -665,9 +675,13 @@ export class TestSession extends DurableObject {
             annotationStoreLayer({
               storage: ctx.storage.kv,
               announce: (drafts) =>
-                Effect.forEach(ctx.getWebSockets(), (socket) => send(socket, annotationsMessage(drafts)), {
-                  discard: true,
-                }),
+                Effect.forEach(
+                  ctx.getWebSockets(),
+                  (socket) => send(socket, annotationsMessage(drafts)),
+                  {
+                    discard: true,
+                  },
+                ),
             }),
           ),
           Layer.provideMerge(

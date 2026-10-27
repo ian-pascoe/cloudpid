@@ -172,9 +172,7 @@ export const cutQuote = (lines: readonly string[], more = 0, clipped = false): Q
 };
 
 /** The absolute path of an Annotation's file: a Call diff's as recorded, a changed file's in its repo's clone. */
-export const annotationPath = (
-  annotation: Pick<AnnotationDraft, "source" | "path">,
-): string =>
+export const annotationPath = (annotation: Pick<AnnotationDraft, "source" | "path">): string =>
   annotation.source.kind === "changes"
     ? `${WORKSPACE_ROOT}/${annotation.source.repo}/${annotation.path}`
     : annotation.path;

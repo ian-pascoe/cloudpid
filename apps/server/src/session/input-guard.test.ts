@@ -18,22 +18,19 @@ const image = (mimeType: string, characters = 8) => ({
 describe("inputProblem", () => {
   it("lets through a Review at the limits: its entry keeps each quote and text once", () => {
     // Each draft at its limits: a 50-line quote of 8 KB, and 4,000 characters of text.
-    const drafts = Array.from(
-      { length: MAX_ANNOTATIONS },
-      (_, index): Annotation => ({
-        id: `a${index}`,
-        source: { kind: "changes", repo: "app", head: "a".repeat(40) },
-        path: `src/file-${index}.ts`,
-        side: "new",
-        start: 1,
-        end: 60,
-        quote: Array.from({ length: 50 }, () => "x".repeat(159)),
-        more: 10,
-        text: "y".repeat(MAX_ANNOTATION_TEXT),
-        createdAt: index,
-        updatedAt: index,
-      }),
-    );
+    const drafts = Array.from({ length: MAX_ANNOTATIONS }, (_, index): Annotation => ({
+      id: `a${index}`,
+      source: { kind: "changes", repo: "app", head: "a".repeat(40) },
+      path: `src/file-${index}.ts`,
+      side: "new",
+      start: 1,
+      end: 60,
+      quote: Array.from({ length: 50 }, () => "x".repeat(159)),
+      more: 10,
+      text: "y".repeat(MAX_ANNOTATION_TEXT),
+      createdAt: index,
+      updatedAt: index,
+    }));
 
     const { markdown, data } = renderReview(drafts);
     const summary = "z".repeat(1_000);

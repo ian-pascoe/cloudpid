@@ -123,7 +123,7 @@ describe("renderReview", () => {
         "three",
         "```",
         "",
-        "Keep these.",
+        "> Keep these.",
         "",
         "**Annotation 2**: `/workspace/app/src/a.ts`, lines 12–13",
         "",
@@ -132,7 +132,7 @@ describe("renderReview", () => {
         "const b = 2;",
         "```",
         "",
-        "Name these better.",
+        "> Name these better.",
         "",
         "**Annotation 3**: `/workspace/app/src/b.py`, line 4",
         "",
@@ -140,7 +140,7 @@ describe("renderReview", () => {
         "x = 1",
         "```",
         "",
-        "Why?",
+        "> Why?",
         "",
         "### Your `edit` call on `/workspace/app/README.md`: lines as of that call",
         "",
@@ -150,7 +150,7 @@ describe("renderReview", () => {
         "Hello.",
         "```",
         "",
-        "Say more here.",
+        "> Say more here.",
       ].join("\n"),
     );
   });
@@ -161,8 +161,44 @@ describe("renderReview", () => {
       onChanges({ id: "a2", path: "src/c.ts", status: "gone" }),
     ]);
 
-    expect(markdown).toContain("```\n\nThese lines have changed since.\n\nName these better.");
-    expect(markdown).toContain("```\n\nThese lines are no longer in the diff.\n\nName these better.");
+    expect(markdown).toContain("```\n\nThese lines have changed since.\n\n> Name these better.");
+    expect(markdown).toContain(
+      "```\n\nThese lines are no longer in the diff.\n\n> Name these better.",
+    );
+  });
+
+  it("puts removed lines first where both sides start at one line", () => {
+    const { markdown } = renderReview([
+      onChanges({ id: "added", text: "Added." }),
+      onChanges({ id: "removed", side: "old", text: "Removed." }),
+    ]);
+
+    expect(markdown.indexOf("removed lines 12–13")).toBeLessThan(markdown.indexOf(", lines 12–13"));
+    expect(markdown.indexOf("> Removed.")).toBeLessThan(markdown.indexOf("> Added."));
+  });
+
+  it("keeps a path or repo with backticks one code span, and the owner's open fence inside its quote", () => {
+    const { markdown, data } = renderReview([
+      onChanges({
+        source: { kind: "changes", repo: "we`ird", head: null },
+        path: "`a`.ts",
+        text: "Try:\n```ts\nconst x = 1;\n\nno closing fence",
+      }),
+      onChanges({ id: "a2", start: 40, end: 40, text: "Next." }),
+      onCall({
+        source: { kind: "call", conversationId: conversation, callId: "c", tool: "e`dit" },
+        path: "`x`",
+      }),
+    ]);
+
+    expect(markdown).toContain("### Uncommitted Changes in ``we`ird``");
+    // After repo `app`'s group.
+    expect(markdown).toContain("**Annotation 2**: ``/workspace/we`ird/`a`.ts``");
+    expect(markdown).toContain("### Your ``e`dit`` call on `` `x` ``");
+    expect(markdown).toContain("> Try:\n> ```ts\n> const x = 1;\n>\n> no closing fence\n\n");
+    expect(shownReview(markdown, data)[1]?.text).toBe(
+      "Try:\n```ts\nconst x = 1;\n\nno closing fence",
+    );
   });
 
   it("says how many lines a cut quote leaves out, and fences a quote holding backticks with more of them", () => {
@@ -172,7 +208,7 @@ describe("renderReview", () => {
     ]);
 
     expect(markdown).toContain(
-      "lines 1–70\n\n````ts\n```\ncode\n````\n… 68 more lines\n\nName these better.",
+      "lines 1–70\n\n````ts\n```\ncode\n````\n… 68 more lines\n\n> Name these better.",
     );
     expect(markdown).toContain("line 80\n\n```ts\nxxxxxxxxxx\n```\n… the line goes on\n\n");
   });
@@ -181,7 +217,7 @@ describe("renderReview", () => {
     const { markdown } = renderReview([onChanges({ oldPath: "src/old.ts" })]);
 
     expect(markdown).toMatch(/^## Review: 1 Annotation\n/);
-    expect(markdown).toContain("lines 12–13 (renamed from `src/old.ts`)");
+    expect(markdown).toContain("lines 12–13 (renamed from `/workspace/app/src/old.ts`)");
   });
 
   it("never calls an Annotation a note", () => {
@@ -197,10 +233,7 @@ describe("renderReview", () => {
 
 describe("shownReview", () => {
   it("reads each quote and text back from the model message, after the summary", () => {
-    const { markdown, data } = renderReview([
-      onChanges(),
-      onCall({ quote: [""], text: "" }),
-    ]);
+    const { markdown, data } = renderReview([onChanges(), onCall({ quote: [""], text: "" })]);
 
     const shown = shownReview(reviewMessage("Please look.", markdown), data);
 

@@ -11,11 +11,16 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { draftsOn, lineAnnotationsOf } from "../review/drafts.ts";
+import { diffDrafts } from "../review/drafts.ts";
 import { editorAtom, type EditorState } from "../review/editor.ts";
 import { appRuntime } from "../runtime.ts";
 import { annotationsAtom, changesAtom, sessionClientAtom } from "../session/atoms.ts";
-import { type Annotated, type AnnotatedItem, annotatedItems, paneAnchor } from "./annotated-items.ts";
+import {
+  type Annotated,
+  type AnnotatedItem,
+  annotatedItems,
+  paneAnchor,
+} from "./annotated-items.ts";
 import { itemsOf, type Items } from "./items.ts";
 import { fileLoader, type Loads, type WantedFile } from "./loader.ts";
 import { filesNear, type PlacedFile, type View } from "./loading.ts";
@@ -178,10 +183,7 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
 
         if (file === undefined) return [];
 
-        return lineAnnotationsOf(
-          draftsOn(drafts, paneAnchor(file, repos)),
-          open.diff === id ? open.picked : null,
-        );
+        return diffDrafts(drafts, paneAnchor(file, repos), open, id).lineAnnotations;
       },
       Option.getOrElse(get.self<Annotated>(), (): Annotated => new Map()),
     );
