@@ -23,6 +23,9 @@ export const MAX_QUOTE_BYTES = 8 * 1024;
 /** The longest ID a client may give an Annotation (it makes them, so the card shows at once). */
 export const MAX_ANNOTATION_ID = 64;
 
+/** The longest pull request title an Annotation's source keeps (GitHub's own limit is 256). */
+export const MAX_PULL_TITLE = 512;
+
 /** The longest path an Annotation names. */
 export const MAX_ANNOTATION_PATH = 4_096;
 
@@ -74,8 +77,29 @@ export const BranchSource = Schema.Struct({
 
 export type BranchSource = typeof BranchSource.Type;
 
+/**
+ * An Annotation on a pull request's Comparison: the repo, the pull request's number and title (as of the Comparison it
+ * was written against), and the merge-base and head SHAs. A refresh to a new head moves the drafts that still hold to the
+ * new pair, as it does on This branch.
+ */
+export const PullSource = Schema.Struct({
+  kind: Schema.Literal("pull"),
+  repo: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  title: Schema.String.check(Schema.isMaxLength(MAX_PULL_TITLE)),
+  mergeBase: Schema.String.check(Schema.isMaxLength(64)),
+  head: Schema.String.check(Schema.isMaxLength(64)),
+});
+
+export type PullSource = typeof PullSource.Type;
+
 /** Where an Annotation was drawn. */
-export const AnnotationSource = Schema.Union([CallDiffSource, ChangesSource, BranchSource]);
+export const AnnotationSource = Schema.Union([
+  CallDiffSource,
+  ChangesSource,
+  BranchSource,
+  PullSource,
+]);
 
 export type AnnotationSource = typeof AnnotationSource.Type;
 
@@ -224,8 +248,8 @@ export const rangeLabel = (annotation: Pick<AnnotationDraft, "start" | "end">): 
     : `${annotation.start}–${annotation.end}`;
 
 /**
- * Whether two sources are the same diff: the same call (and nested call), the same repo's Changes, or the same repo's
- * This branch (whatever pair of commits it was written against).
+ * Whether two sources are the same diff: the same call (and nested call), the same repo's Changes, the same repo's
+ * This branch, or the same pull request (whatever pair of commits it was written against).
  */
 export const sameSource = (a: AnnotationSource, b: AnnotationSource): boolean => {
   switch (a.kind) {
@@ -240,5 +264,7 @@ export const sameSource = (a: AnnotationSource, b: AnnotationSource): boolean =>
       return b.kind === "changes" && a.repo === b.repo;
     case "branch":
       return b.kind === "branch" && a.repo === b.repo;
+    case "pull":
+      return b.kind === "pull" && a.repo === b.repo && a.number === b.number;
   }
 };

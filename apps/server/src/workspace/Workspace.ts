@@ -578,6 +578,7 @@ export class Workspace extends ContainerHost {
       },
       fetch: (url, init) => this.githubFetch(url, init),
       token: () => env.CLOUDPID_GITHUB_TOKEN,
+      now: () => this.clock(),
       redact,
       warn: (message) => console.warn(message),
     });
@@ -593,7 +594,12 @@ export class Workspace extends ContainerHost {
     return this.#runOnContainer(script, {});
   }
 
-  /** GitHub's REST API (the base of a branch's pull request). A test Worker replaces it. */
+  /** The time in ms, which the pull request list's 60 s are counted by. A test Worker replaces it. */
+  protected clock(): number {
+    return Date.now();
+  }
+
+  /** GitHub's REST API (the base of a branch's pull request, and the pull requests). A test Worker replaces it. */
   protected githubFetch(url: string, init: RequestInit): Promise<Response> {
     return fetch(url, init);
   }
@@ -1097,13 +1103,14 @@ export class Workspace extends ContainerHost {
 
   /**
    * The picker's repos (docs/spec.md → Diffs and review → Comparisons): the repos `directory` covers, the Session's own
-   * first, each with its HEAD. It never starts the Container.
+   * first, each with its HEAD, and with `pulls` its open pull requests (GitHub's REST API, kept for 60 s). It never starts
+   * the Container.
    */
-  async comparisonSources(directory: string): Promise<ComparisonSources> {
+  async comparisonSources(directory: string, pulls = false): Promise<ComparisonSources> {
     this.#spare.noteUse();
     await this.#ready();
 
-    return this.#comparison.sources(directory);
+    return this.#comparison.sources(directory, pulls);
   }
 
   /**

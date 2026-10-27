@@ -235,13 +235,19 @@ export const sessionReviewsLayer = (
        * and are marked when it does not; a file the Comparison no longer lists marks them gone.
        */
       const againstComparison = (comparison: Comparison, onRepo: ReadonlyArray<Annotation>) => {
-        // A list marked `behind` is the last one made, for a head the repo has left: it says nothing of the new one.
-        if (comparison.behind !== undefined) return Effect.succeed([]);
+        // A list marked `behind` is the last one made, for a head the repo has left: it says nothing of the new one. Nor
+        // does one of a pull request that is closed or merged: it is the last result kept, marked.
+        if (
+          comparison.behind !== undefined ||
+          (comparison.pull !== undefined && comparison.pull.state !== "open")
+        ) {
+          return Effect.succeed([]);
+        }
 
         return checkFiles(
           onRepo,
           (draft) =>
-            draft.source.kind === "branch" &&
+            (draft.source.kind === "branch" || draft.source.kind === "pull") &&
             (draft.source.mergeBase !== comparison.mergeBase ||
               draft.source.head !== comparison.head)
               ? draft.path
@@ -347,14 +353,21 @@ export const sessionReviewsLayer = (
           checking,
         );
 
-      /** A Comparison was made for a client: check the drafts on its repo's branch against it. */
+      /**
+       * A Comparison was made for a client: check the drafts on its repo's branch against it, or on its pull request (the
+       * same repo and number).
+       */
       const compared = (comparison: Comparison) =>
         store.list.pipe(
           Effect.flatMap((drafts) =>
             againstComparison(
               comparison,
-              drafts.filter(
-                (draft) => draft.source.kind === "branch" && draft.source.repo === comparison.repo,
+              drafts.filter(({ source }) =>
+                comparison.pull === undefined
+                  ? source.kind === "branch" && source.repo === comparison.repo
+                  : source.kind === "pull" &&
+                    source.repo === comparison.repo &&
+                    source.number === comparison.pull.number,
               ),
             ),
           ),

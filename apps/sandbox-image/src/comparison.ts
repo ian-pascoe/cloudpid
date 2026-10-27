@@ -33,7 +33,23 @@ export type ComparisonInput = {
   readonly base?: string | undefined;
   /** Fetch the base again even when it was fetched before (the owner's Refresh). */
   readonly fetch: boolean;
+  /**
+   * Compare pull request `number` instead of the branch checked out: its head is fetched from the remote's
+   * `refs/pull/<number>/head` into `refs/cloudpid/pr/<number>` (with the base, which the Workspace DO must give, from the
+   * pull request), and fetched again when the ref is missing or is not `head`, the commit the pull request is at now.
+   */
+  readonly pull?: { readonly number: number; readonly head?: string | undefined } | undefined;
+  /**
+   * Pull requests no longer open: their `refs/cloudpid/pr/<number>` refs are deleted first (`git update-ref -d`; never
+   * `gc`, and nothing else is touched).
+   */
+  readonly drop?: ReadonlyArray<number> | undefined;
 };
+
+/** The hidden refs a fetched pull request's head lands in, `refs/cloudpid/pr/<number>`. */
+export const PULL_REF_PREFIX = "refs/cloudpid/pr/";
+
+const isPullNumber = (value: number): boolean => Number.isSafeInteger(value) && value >= 1;
 
 /**
  * The bash script that makes a Comparison of the branch checked out in `input.repo`:
@@ -43,7 +59,9 @@ export type ComparisonInput = {
  *   else, without a usable remote, the first of `main`, `master`, `trunk`, `develop` that exists here;
  * - with a remote, `git fetch --refmap= --no-write-fetch-head --no-auto-maintenance --no-tags --no-recurse-submodules
  *   --no-prune -- <remote> '+refs/heads/<base>:refs/cloudpid/base/<base>'` when `input.fetch` or the ref is missing (a second try on `cannot
- *   lock ref`); without one, the local branch is the base. The empty `--refmap` is what keeps git from also updating
+ *   lock ref`); without one, the local branch is the base. For a pull request (`input.pull`) the same fetch also takes
+ *   `'+refs/pull/<n>/head:refs/cloudpid/pr/<n>'`, the head is that ref's commit, and a repo with no remote has no pull
+ *   requests; The empty `--refmap` is what keeps git from also updating
  *   `refs/remotes/<remote>/<base>` (the opportunistic update of a remote-tracking branch that a configured remote's
  *   `fetch` refspec matches);
  * - `git merge-base`, the commits beyond it, and `git --no-optional-locks diff -M --no-ext-diff --no-textconv --no-color
@@ -52,13 +70,37 @@ export type ComparisonInput = {
  * It prints `field` lines (one value each, base64) and `ok`, or an `error` line (a kind, then git's message, base64)
  * after the `base` field when the base was chosen.
  */
-export const comparisonScript = (
+export const comparisonScript = (input: ComparisonInput, root: string = WORKSPACE_ROOT): string => {
+  const pull = input.pull?.number ?? 0;
+  const drop = input.drop ?? [];
+  const want = input.pull?.head ?? "";
+
+  if (input.pull !== undefined && !isPullNumber(pull)) {
+    throw new Error(`Not a pull request number: ${pull}`);
+  }
+
+  if (!drop.every(isPullNumber)) throw new Error("Not pull request numbers to drop");
+
+  if (want !== "" && !/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(want)) {
+    throw new Error(`Not a commit id: ${want}`);
+  }
+
+  return script(input, root, pull, want, drop);
+};
+
+const script = (
   input: ComparisonInput,
-  root: string = WORKSPACE_ROOT,
+  root: string,
+  pull: number,
+  want: string,
+  drop: ReadonlyArray<number>,
 ): string => `set -u -o pipefail
 dir=${shellQuote(`${root}/${input.repo}`)}
 base=${shellQuote(input.base ?? "")}
 fetch=${input.fetch ? 1 : 0}
+pull=${pull}
+want=${shellQuote(want)}
+drop=${shellQuote(drop.join(" "))}
 limit=${COMPARISON_LIST_LIMIT}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -70,7 +112,11 @@ fail() { printf 'error\\t%s\\t%s\\n' "$1" "$(printf '%s' "$2" | b64)"; exit 0; }
 tail_err() { tail -c 2000 "$err"; }
 cd "$dir" 2>/dev/null || fail failed "The repo is not on the Container"
 export GIT_TERMINAL_PROMPT=0
-head=$(git rev-parse --verify --quiet 'HEAD^{commit}') || fail failed "The repo has no commits yet"
+for n in $drop; do git update-ref -d "${PULL_REF_PREFIX}$n" 2>/dev/null || true; done
+head=
+if [ "$pull" = 0 ]; then
+  head=$(git rev-parse --verify --quiet 'HEAD^{commit}') || fail failed "The repo has no commits yet"
+fi
 branch=$(git symbolic-ref --quiet --short HEAD || true)
 remotes=$(git remote)
 remote=
@@ -92,6 +138,7 @@ if [ -z "$base" ] && [ -n "$remote" ]; then
     base=$(git ls-remote --symref -- "$remote" HEAD 2>>"$err" | sed -n 's|^ref: refs/heads/\\(.*\\)\\tHEAD$|\\1|p' | head -n 1)
   fi
 fi
+if [ -z "$base" ] && [ "$pull" != 0 ]; then fail failed "The pull request's base branch is unknown"; fi
 if [ -z "$base" ]; then
   for candidate in main master trunk develop; do
     if git show-ref --verify --quiet "refs/heads/$candidate"; then base=$candidate; break; fi
@@ -107,10 +154,19 @@ case "$base" in
 esac
 git check-ref-format "refs/heads/$base" || fail failed "Unsupported base branch name: $base"
 fetched=0
+if [ "$pull" != 0 ]; then branch=; fi
+pullref="${PULL_REF_PREFIX}$pull"
 if [ -n "$remote" ]; then
   baseref="${BASE_REF_PREFIX}$base"
-  if [ "$fetch" = 1 ] || ! git rev-parse --verify --quiet "$baseref^{commit}" >/dev/null; then
+  need=$fetch
+  git rev-parse --verify --quiet "$baseref^{commit}" >/dev/null || need=1
+  if [ "$pull" != 0 ]; then
+    have=$(git rev-parse --verify --quiet "$pullref^{commit}" || true)
+    if [ -z "$have" ] || { [ -n "$want" ] && [ "$have" != "$want" ]; }; then need=1; fi
+  fi
+  if [ "$need" = 1 ]; then
     fetch_base=(git fetch --refmap= --no-write-fetch-head --no-auto-maintenance --no-tags --no-recurse-submodules --no-prune -- "$remote" "+refs/heads/$base:$baseref")
+    if [ "$pull" != 0 ]; then fetch_base+=("+refs/pull/$pull/head:$pullref"); fi
     got=0
     if "\${fetch_base[@]}" 2>"$err"; then
       got=1
@@ -119,17 +175,22 @@ if [ -n "$remote" ]; then
       if "\${fetch_base[@]}" 2>"$err"; then got=1; fi
     fi
     if [ "$got" = 0 ]; then
+      if [ "$pull" != 0 ] && grep -q "couldn't find remote ref refs/pull/" "$err"; then fail failed "Pull request #$pull is not on $remote"; fi
       if grep -q "couldn't find remote ref" "$err"; then fail no_base "The base branch $base is not on $remote"; fi
       fail failed "$(tail_err)"
     fi
     fetched=1
   fi
 else
+  if [ "$pull" != 0 ]; then fail no_remote "Pull requests need a remote: this repo has none"; fi
   baseref="refs/heads/$base"
   if ! git rev-parse --verify --quiet "$baseref^{commit}" >/dev/null; then
     if [ -n "$asked" ]; then fail no_base "The base branch $base is not in this repo"; fi
     fail no_remote "This repo has no remote, and no $base branch to compare with"
   fi
+fi
+if [ "$pull" != 0 ]; then
+  head=$(git rev-parse --verify --quiet "$pullref^{commit}") || fail failed "Pull request #$pull has no head here"
 fi
 : >"$err"
 mb=$(git merge-base "$baseref" "$head" 2>"$err")
@@ -357,6 +418,26 @@ export const parseComparison = (stdout: string): ParsedComparison => {
 
 /** The blob ids a script may be asked for: 40 or 64 hex digits. */
 const BLOB_ID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+/**
+ * The bash script that deletes the hidden refs `refs/cloudpid/pr/<number>` of `numbers` in the repo `repo` (pull requests
+ * no longer open) with `git update-ref -d`, and nothing else: no fetch, no `gc`, the objects stay.
+ */
+export const dropPullRefsScript = (
+  repo: string,
+  numbers: ReadonlyArray<number>,
+  root: string = WORKSPACE_ROOT,
+): string => {
+  if (!numbers.every(isPullNumber)) throw new Error("Not pull request numbers to drop");
+
+  return `set -u
+dir=${shellQuote(`${root}/${repo}`)}
+drop=${shellQuote(numbers.join(" "))}
+cd "$dir" 2>/dev/null || exit 0
+for n in $drop; do git update-ref -d "${PULL_REF_PREFIX}$n" 2>/dev/null || true; done
+exit 0
+`;
+};
 
 /**
  * The bash script that reads the blobs `ids` of the repo `repo` with `git cat-file`: per id a `blob` line with its size

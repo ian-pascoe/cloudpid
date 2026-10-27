@@ -9,7 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { Annotation, AnnotationDraft, MAX_ANNOTATION_ID, MAX_ANNOTATIONS } from "./annotations.ts";
 import { WorkspaceChanges } from "./changes.ts";
-import { ComparisonSourceKind } from "./comparison.ts";
+import { ComparisonSourceKind, MAX_VIEWED, ViewedFile } from "./comparison.ts";
 import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
@@ -179,6 +179,20 @@ export const AnnotationDelete = Schema.Struct({
 });
 
 /**
+ * Tick (`blob`: the file's head blob id as the Comparison lists it) or untick (`blob: null`) the Viewed box of file `path`
+ * of pull request `pull` in `repo` (`docs/spec.md` → Diffs and review → Comparisons). The last set wins. Refused past
+ * `MAX_VIEWED` boxes. Answered with `null`; every client is sent the list (`viewed`).
+ */
+export const ViewedSet = Schema.Struct({
+  type: Schema.Literal("viewed_set"),
+  id: CommandId,
+  repo: ViewedFile.fields.repo,
+  pull: ViewedFile.fields.pull,
+  path: ViewedFile.fields.path,
+  blob: Schema.NullOr(ViewedFile.fields.blob),
+});
+
+/**
  * Stream a compact summary of the Session's task graph on this socket (`task_graph`): its subagents and the background
  * work live now. The first message follows at once, and the watch outlives hibernation like a conversation's. Answered
  * with `null`.
@@ -266,6 +280,11 @@ export const ChangeFileRequest = Schema.Struct({
 export const ComparisonSourcesRequest = Schema.Struct({
   type: Schema.Literal("comparison_sources"),
   id: CommandId,
+  /**
+   * Also list each repo's open pull requests (the picker opening). The Workspace asks GitHub's REST API with its token,
+   * once per 60 s per repo, and never starts the Container.
+   */
+  pulls: Schema.optionalKey(Schema.Boolean),
 });
 
 /**
@@ -282,6 +301,8 @@ export const CompareRequest = Schema.Struct({
   id: CommandId,
   repo: Schema.String,
   source: ComparisonSourceKind,
+  /** The pull request's number, for `source: "pull"`. A pull request's head moving is only ever shown as `behind`. */
+  pull: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   startContainer: Schema.optionalKey(Schema.Boolean),
   fetch: Schema.optionalKey(Schema.Boolean),
 });
@@ -531,6 +552,7 @@ export const ClientMessage = Schema.Union([
   ApprovalAnswer,
   AnnotationSave,
   AnnotationDelete,
+  ViewedSet,
   WatchTaskGraph,
   UnwatchTaskGraph,
   WatchUsage,
@@ -701,6 +723,16 @@ export const ApprovalRequests = Schema.Struct({
 export const AnnotationsMessage = Schema.Struct({
   type: Schema.Literal("annotations"),
   annotations: Schema.Array(Annotation),
+});
+
+/**
+ * The Session's Viewed boxes (pull request Comparisons only): the files the owner ticked, each with the head blob it was
+ * ticked at. Sent after `hello` on every connect (an empty list too) and to every client whenever they change, as the
+ * drafts are: a tick, an untick, or a refresh of a pull request that changed a file's blob. A Fork or Clone has none.
+ */
+export const ViewedMessage = Schema.Struct({
+  type: Schema.Literal("viewed"),
+  viewed: Schema.Array(ViewedFile).check(Schema.isMaxLength(MAX_VIEWED)),
 });
 
 /**
@@ -1226,6 +1258,7 @@ export const ServerMessage = Schema.Union([
   SecretRequests,
   ApprovalRequests,
   AnnotationsMessage,
+  ViewedMessage,
   BrowserHandoffRequests,
   OwnerTabsMessage,
   OwnerTabDriversMessage,

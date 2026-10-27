@@ -25,6 +25,18 @@ describe("the Diff pane's own state", () => {
     );
   });
 
+  it("forgets what the owner did to one file, and leaves the others", () => {
+    const both = reducePaneUi(
+      reducePaneUi(INITIAL_PANE_UI, { type: "fold", id: "a", folded: false }),
+      { type: "fold", id: "b", folded: true },
+    );
+
+    expect(reducePaneUi(both, { type: "forget", id: "a" }).overrides).toEqual(
+      new Map([["b", true]]),
+    );
+    expect(both.overrides.has("a")).toBe(true);
+  });
+
   it("the Pane's own file list shows a file as a place asked for", () => {
     expect(
       reducePaneUi(INITIAL_PANE_UI, { type: "show", target: { file: "web/b.ts", at: 3 } }),

@@ -135,6 +135,8 @@ const groupKey = (annotation: Annotation): string => {
       return `changes:${source.repo}`;
     case "branch":
       return `branch:${source.repo}`;
+    case "pull":
+      return `pull:${source.repo}:${source.number}`;
     case "call":
       return `call:${source.conversationId}:${source.callId}:${source.nested ?? ""}`;
   }
@@ -171,6 +173,8 @@ const groupHeading = (annotation: Annotation): string => {
       return `Uncommitted Changes in ${inlineCode(source.repo)}`;
     case "branch":
       return `${source.branch === null ? `Detached at ${inlineCode(shortSha(source.head))}` : `Branch ${inlineCode(source.branch)}`} against ${inlineCode(source.base)} at ${inlineCode(shortSha(source.mergeBase))}`;
+    case "pull":
+      return `Pull request #${source.number} '${source.title.replace(/\s+/g, " ").trim()}' at ${inlineCode(shortSha(source.head))}`;
     case "call":
       return `Your ${inlineCode(source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
   }
@@ -223,21 +227,23 @@ const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 
 /** Removed lines before added ones. */
 const sideOrder = (annotation: Annotation): number => (annotation.side === "old" ? 0 : 1);
 
-/** Where a source's group sits in a Review: the Changes, then the branches, then the Call diffs. */
+/** Where a source's group sits in a Review: the Changes, the branches, the pull requests, then the Call diffs. */
 const sourceRank = (annotation: Annotation): number => {
   switch (annotation.source.kind) {
     case "changes":
       return 0;
     case "branch":
       return 1;
-    case "call":
+    case "pull":
       return 2;
+    case "call":
+      return 3;
   }
 };
 
 /**
- * The groups of a Review: the Changes first, by repo, then the branches, by repo, then the Call diffs, in the order of
- * their first draft; within each, its Annotations by file, then line, then side (removed lines first where both sides
+ * The groups of a Review: the Changes first, by repo, then the branches, by repo, then the pull requests, by repo and
+ * number, then the Call diffs, in the order of their first draft; within each, its Annotations by file, then line, then side (removed lines first where both sides
  * start at one), then end.
  */
 const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
@@ -267,6 +273,10 @@ const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
       if (x === undefined || y === undefined) return 0;
 
       if (sourceRank(x) !== sourceRank(y)) return sourceRank(x) - sourceRank(y);
+
+      if (x.source.kind === "pull" && y.source.kind === "pull") {
+        return compareText(x.source.repo, y.source.repo) || x.source.number - y.source.number;
+      }
 
       return (x.source.kind === "changes" && y.source.kind === "changes") ||
         (x.source.kind === "branch" && y.source.kind === "branch")

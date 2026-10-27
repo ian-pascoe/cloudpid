@@ -13,11 +13,13 @@ import type { RepoChanges } from "@cloudpid/protocol";
 import { useAtom, useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { ChevronRight, CircleAlert, RefreshCw, WrapText } from "lucide-react";
+import { useRef } from "react";
 import { useShownChanges } from "../chat/conversation.ts";
 import { Button } from "../components/ui/button.tsx";
 import { lazyChunk } from "../lazy-chunk.ts";
 import { LazyView } from "../lazy-view.tsx";
 import { cn } from "../lib/utils.ts";
+import { failureOf } from "../registry.ts";
 import { changesAtom } from "../session/atoms.ts";
 import type { ChangesState } from "../session/state.ts";
 import { useWidth } from "../use-width.ts";
@@ -30,6 +32,8 @@ import {
   commitsLabel,
   comparisonHeading,
   errorText,
+  hasPulls,
+  type PaneSource,
   sourceOfValue,
   sourceOptions,
   sourceValue,
@@ -101,49 +105,113 @@ const WrapToggle = () => {
   );
 };
 
-/** The picker: the Changes, and This branch of each repo; picking This branch compares it, starting the Container if needed. */
+/**
+ * The picker: the Changes, This branch of each repo and its open pull requests; picking one compares it, starting the
+ * Container if needed. Opening it lists the pull requests again. A filter box beside it narrows the pull requests (the
+ * checked-out branch's and the one on show stay): Enter picks the first, Down moves to the list, Escape clears it.
+ */
 const SourcePicker = ({ pane }: { pane: PaneAtoms }) => {
   const [source, setSource] = useAtom(pane.source);
   const sources = useAtomValue(pane.sources);
   const compare = useAtomSet(pane.compare);
-  const groups = sourceOptions(AsyncResult.getOrElse(sources, () => null));
+  const opened = useAtomSet(pane.pickerOpened);
+  const [filter, setFilter] = useAtom(pane.pullFilter);
+  const select = useRef<HTMLSelectElement>(null);
+  const known = AsyncResult.getOrElse(sources, () => null);
   const value = sourceValue(source);
+  const groups = sourceOptions(known, { text: filter, keep: value });
 
-  // The shown source stays in the list while the repos are being listed.
+  // The owner's own pick: a stopped Container may be started for it.
+  const pick = (next: PaneSource) => {
+    setSource(next);
+
+    if (next.kind === "branch") compare({ repo: next.repo, manual: true, fetch: false });
+
+    if (next.kind === "pull") {
+      compare({ repo: next.repo, pull: next.number, manual: true, fetch: false });
+    }
+  };
+
+  // The shown source stays in the list while the repos are being listed, or when its pull request left the list.
   const listed = groups.some(({ options }) => options.some((option) => option.value === value))
     ? groups
-    : [...groups, { label: null, options: [{ value, label: "This branch" }] }];
+    : [
+        ...groups,
+        {
+          label: null,
+          options: [
+            {
+              value,
+              label: source.kind === "pull" ? `#${source.number}` : "This branch",
+            },
+          ],
+        },
+      ];
 
   return (
-    <select
-      aria-label="Source"
-      value={value}
-      onChange={(event) => {
-        const next = sourceOfValue(event.target.value);
+    <>
+      <select
+        ref={select}
+        aria-label="Source"
+        value={value}
+        onFocus={() => {
+          opened();
+        }}
+        onMouseDown={() => {
+          opened();
+        }}
+        onChange={(event) => {
+          pick(sourceOfValue(event.target.value));
+        }}
+        className="h-8 max-w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm"
+      >
+        {listed.map(({ label, options }) => {
+          const items = options.map((option) => (
+            <option key={option.value} value={option.value} disabled={option.disabled}>
+              {option.label}
+            </option>
+          ));
 
-        setSource(next);
+          return label === null ? (
+            items
+          ) : (
+            <optgroup key={label} label={label}>
+              {items}
+            </optgroup>
+          );
+        })}
+      </select>
+      {hasPulls(known) && (
+        <input
+          type="search"
+          aria-label="Filter pull requests"
+          placeholder="Filter pull requests"
+          value={filter}
+          onChange={(event) => {
+            setFilter(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
 
-        // The owner's own pick: a stopped Container may be started for it.
-        if (next.kind === "branch") compare({ repo: next.repo, manual: true, fetch: false });
-      }}
-      className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-    >
-      {listed.map(({ label, options }) => {
-        const items = options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ));
+              const first = groups
+                .flatMap(({ options }) => options)
+                .find((option) => option.value.startsWith("pull:") && option.disabled !== true);
 
-        return label === null ? (
-          items
-        ) : (
-          <optgroup key={label} label={label}>
-            {items}
-          </optgroup>
-        );
-      })}
-    </select>
+              // The first of the pull requests the text leaves, the checked-out branch's before the others.
+              if (first !== undefined) pick(sourceOfValue(first.value));
+            } else if (event.key === "ArrowDown") {
+              event.preventDefault();
+              select.current?.focus();
+            } else if (event.key === "Escape" && filter !== "") {
+              event.preventDefault();
+              setFilter("");
+            }
+          }}
+          className="h-8 w-44 min-w-0 rounded-md border border-input bg-background px-2 text-sm placeholder:text-muted-foreground"
+        />
+      )}
+    </>
   );
 };
 
@@ -156,17 +224,29 @@ const BranchSummary = ({ pane }: { pane: PaneAtoms }) => {
 
   if (comparison === undefined) return null;
 
-  // This branch is the commits only: the repo's uncommitted files are the Changes'.
+  // This branch is the commits only: the repo's uncommitted files are the Changes'. A pull request's are not its own.
   const repoChanges = changes?.repos.find(({ repo }) => repo === comparison.repo);
   const uncommitted = (repoChanges?.files.length ?? 0) + (repoChanges?.more ?? 0);
+  const pull = comparison.pull;
 
   return (
     <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
       <span className="font-mono" title={`Merge-base ${comparison.mergeBase}`}>
         {comparisonHeading(comparison)}
       </span>
+      {pull !== undefined && (
+        <span>
+          by {pull.author}
+          {pull.draft ? ", draft" : ""}
+        </span>
+      )}
+      {pull !== undefined && pull.state !== "open" && (
+        <span role="status" className="font-medium text-foreground">
+          {pull.state === "merged" ? "Merged" : "Closed"}: this is its last result
+        </span>
+      )}
       <span>{commitsLabel(comparison.commits)}</span>
-      {uncommitted > 0 && (
+      {pull === undefined && uncommitted > 0 && (
         <span>
           {uncommitted} uncommitted {uncommitted === 1 ? "file" : "files"}:{" "}
           <button
@@ -187,7 +267,12 @@ const BranchSummary = ({ pane }: { pane: PaneAtoms }) => {
           <button
             type="button"
             onClick={() => {
-              compare({ repo: comparison.repo, manual: true, fetch: false });
+              compare({
+                repo: comparison.repo,
+                pull: pull?.number,
+                manual: true,
+                fetch: false,
+              });
             }}
             className="touch-target rounded px-1 py-0.5 font-medium text-foreground underline hover:bg-accent"
           >
@@ -208,7 +293,10 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
   const [compared, compare] = useAtom(pane.compare);
   const files = useAtomValue(pane.files);
   const act = useAtomSet(pane.ui);
-  const onBranch = source.kind === "branch";
+  const onBranch = source.kind !== "changes";
+  const viewed = useAtomValue(pane.viewed);
+  const { comparison } = useAtomValue(pane.list);
+  const reviewable = files.filter((file) => file.entry.blob !== undefined).length;
   const refreshing = onBranch ? compared.waiting : refreshed.waiting;
   const starting = onBranch ? view.kind === "starting" : changes?.startingContainer === true;
   const stale = !onBranch && totals.stale;
@@ -223,7 +311,9 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
         disabled={refreshing}
         onClick={() => {
           if (source.kind === "branch") compare({ repo: source.repo, manual: true, fetch: true });
-          else refresh();
+          else if (source.kind === "pull") {
+            compare({ repo: source.repo, pull: source.number, manual: true, fetch: true });
+          } else refresh();
         }}
         title={
           onBranch
@@ -253,6 +343,11 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
             <span className="font-medium">{filesLabel(totals.files)}</span>
             <DiffTally counts={totals} approximate={totals.approximate} />
           </>
+        )}
+        {comparison?.pull !== undefined && reviewable > 0 && (
+          <span className="text-muted-foreground">
+            {viewed.size} of {reviewable} viewed
+          </span>
         )}
         {files.length > 0 && (
           <button
@@ -360,11 +455,13 @@ const Empty = ({ changes }: { changes: ChangesState | null }) => {
 const RetryButton = ({
   pane,
   repo,
+  pull,
   fetch,
   label,
 }: {
   pane: PaneAtoms;
   repo: string;
+  pull: number | undefined;
   fetch: boolean;
   label: string;
 }) => {
@@ -376,7 +473,7 @@ const RetryButton = ({
       variant="outline"
       size="sm"
       onClick={() => {
-        compare({ repo, manual: true, fetch });
+        compare({ repo, pull, manual: true, fetch });
       }}
       className="touch-target mt-3 h-8 px-3 text-sm"
     >
@@ -385,15 +482,17 @@ const RetryButton = ({
   );
 };
 
-/** What the Pane says in place of This branch's files: being made, why there is none, or that there is nothing in it. */
+/** What the Pane says in place of a Comparison's files: being made, why there is none, or that there is nothing in it. */
 const BranchEmpty = ({ pane }: { pane: PaneAtoms }) => {
   const view = useAtomValue(pane.branchView);
+  const source = useAtomValue(pane.source);
   const { comparison } = useAtomValue(pane.list);
+  const what = source.kind === "pull" ? "this pull request" : "this branch";
 
   switch (view.kind) {
     case "idle":
     case "loading":
-      return <p className="px-4 py-6 text-sm text-muted-foreground">Comparing this branch…</p>;
+      return <p className="px-4 py-6 text-sm text-muted-foreground">Comparing {what}…</p>;
     case "starting":
       return <p className="px-4 py-6 text-sm text-muted-foreground">Starting the Container…</p>;
     case "error":
@@ -404,27 +503,31 @@ const BranchEmpty = ({ pane }: { pane: PaneAtoms }) => {
             <RetryButton
               pane={pane}
               repo={view.repo}
+              pull={view.pull}
               fetch={false}
               label="Start the Container and compare"
             />
           ) : (
-            <RetryButton pane={pane} repo={view.repo} fetch label="Retry" />
+            <RetryButton pane={pane} repo={view.repo} pull={view.pull} fetch label="Retry" />
           )}
         </div>
       );
     case "failed":
       return (
         <div role="alert" className="px-4 py-6 text-sm text-destructive">
-          <p>This branch could not be compared: {view.message}</p>
-          <RetryButton pane={pane} repo={view.repo} fetch={false} label="Retry" />
+          <p>
+            {source.kind === "pull" ? "This pull request" : "This branch"} could not be compared:{" "}
+            {view.message}
+          </p>
+          <RetryButton pane={pane} repo={view.repo} pull={view.pull} fetch={false} label="Retry" />
         </div>
       );
     case "ready":
       return (
         <p className="px-4 py-6 text-sm text-muted-foreground">
           {comparison?.commits === 0
-            ? "Nothing to compare: this branch has no commits beyond its base."
-            : "The commits on this branch change no files."}
+            ? `Nothing to compare: ${what} has no commits beyond its base.`
+            : `The commits on ${what} change no files.`}
         </p>
       );
   }
@@ -442,12 +545,18 @@ const PaneBody = () => {
 
   useAtomMount(pane.opened);
   useAtomMount(pane.following);
+  useAtomMount(pane.returned);
 
   const wide = (width ?? 0) >= RAIL_MIN_WIDTH;
 
+  const tickResult = useAtomValue(pane.setViewed);
+  const ticked = failureOf(tickResult);
+
   const failures =
-    source.kind === "branch"
-      ? []
+    source.kind !== "changes"
+      ? ticked === null
+        ? []
+        : [`Could not tick the Viewed box: ${ticked}`]
       : [
           ...(changes?.ended === true && changes.listing > 0 ? [ENDED] : []),
           ...(changes?.failure === null || changes?.failure === undefined ? [] : [changes.failure]),
@@ -469,7 +578,7 @@ const PaneBody = () => {
         </div>
       )}
       {files.length === 0 ? (
-        source.kind === "branch" ? (
+        source.kind !== "changes" ? (
           <BranchEmpty pane={pane} />
         ) : (
           <Empty changes={changes} />

@@ -1871,7 +1871,7 @@ describe("the Changes on a Session connection", () => {
 
         yield* watching(latest());
 
-        const sources = yield* asking(client.comparisonSources);
+        const sources = yield* asking(client.comparisonSources());
         const plain = yield* asking(client.compare({ repo: "web" }));
 
         const manual = yield* asking(
@@ -1925,6 +1925,72 @@ describe("the Changes on a Session connection", () => {
         expect(yield* Fiber.join(plain)).toEqual(refused);
         expect(yield* Fiber.join(manual)).toEqual(refused);
         expect(yield* Fiber.join(file)).toEqual(sides);
+      }),
+  );
+
+  it.effect(
+    "asks for the picker's pull requests only when told, a pull request's Comparison by its number, and ticks Viewed boxes",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        yield* watching(latest());
+
+        const withPulls = yield* asking(client.comparisonSources({ pulls: true }));
+        const pull = yield* asking(client.compare({ repo: "web", pull: 7, startContainer: true }));
+
+        const tick = yield* asking(
+          client.setViewed({ repo: "web", pull: 7, path: "src/b.ts", blob: "abc" }),
+        );
+
+        const untick = yield* asking(
+          client.setViewed({ repo: "web", pull: 7, path: "src/b.ts", blob: null }),
+        );
+
+        const commands = latest().commands();
+        const sourcesAsk = commands.find((command) => command.type === "comparison_sources");
+        const pullAsk = commands.find((command) => command.type === "compare");
+        const [tickAsk, untickAsk] = commands.filter((command) => command.type === "viewed_set");
+
+        expect(sourcesAsk).toEqual({ type: "comparison_sources", id: sourcesAsk?.id, pulls: true });
+        expect(pullAsk).toEqual({
+          type: "compare",
+          id: pullAsk?.id,
+          repo: "web",
+          source: "pull",
+          pull: 7,
+          startContainer: true,
+          fetch: false,
+        });
+        expect(tickAsk).toEqual({
+          type: "viewed_set",
+          id: tickAsk?.id,
+          repo: "web",
+          pull: 7,
+          path: "src/b.ts",
+          blob: "abc",
+        });
+        expect(untickAsk).toMatchObject({ blob: null });
+
+        const boxes = [{ repo: "web", pull: 7, path: "src/b.ts", blob: "abc" }];
+
+        expect(state().viewed).toEqual([]);
+        yield* latest().say({ type: "viewed", viewed: boxes });
+        expect(state().viewed).toEqual(boxes);
+
+        yield* latest().say({ type: "result", id: sourcesAsk?.id, result: { repos: [] } });
+        yield* latest().say({
+          type: "result",
+          id: pullAsk?.id,
+          result: { status: "error", error: { kind: "pull_closed", message: "closed" } },
+        });
+        yield* latest().say({ type: "result", id: tickAsk?.id, result: null });
+        yield* latest().say({ type: "result", id: untickAsk?.id, result: null });
+
+        expect(yield* Fiber.join(withPulls)).toEqual({ repos: [] });
+        expect(yield* Fiber.join(pull)).toMatchObject({ status: "error" });
+        yield* Fiber.join(tick);
+        yield* Fiber.join(untick);
       }),
   );
 });

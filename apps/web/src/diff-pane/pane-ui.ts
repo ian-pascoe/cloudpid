@@ -20,6 +20,8 @@ export const INITIAL_PANE_UI: PaneUi = { overrides: new Map(), anchor: null };
 export type PaneUiAction =
   | { readonly type: "fold"; readonly id: string; readonly folded: boolean }
   | { readonly type: "collapse-all"; readonly ids: readonly string[] }
+  /** Let go of what the owner did to a file: it is folded or open as the rules say again (a Viewed file is folded). */
+  | { readonly type: "forget"; readonly id: string }
   /** The Pane's own file list: show a file, as a place asked for from elsewhere is. */
   | { readonly type: "show"; readonly target: DiffTarget }
   /** The owner scrolled: the place the Pane was asked to show is let go. */
@@ -35,6 +37,14 @@ export const reducePaneUi = (ui: PaneUi, action: PaneUiAction): PaneUi => {
   switch (action.type) {
     case "fold":
       return { ...ui, overrides: new Map(ui.overrides).set(action.id, action.folded) };
+    case "forget": {
+      const overrides = new Map(ui.overrides);
+
+      overrides.delete(action.id);
+
+      return { ...ui, overrides };
+    }
+
     case "collapse-all":
       return { ...ui, overrides: new Map(action.ids.map((id) => [id, true])) };
     case "show":

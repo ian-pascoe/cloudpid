@@ -121,8 +121,12 @@ A Workspace's uncommitted work in each of its Repos against their HEAD, shared b
 _Avoid_: Diff (for the whole set), working copy, pending edits
 
 **Comparison**:
-A branch's or pull request's commits against the point where it left its base branch (the merge-base). _This branch_ is the Comparison of a Repo's local HEAD, unpushed commits included, against the base branch of its open pull request, else the remote's default branch; it holds the commits only, never the Changes. A Comparison is fixed by its merge-base and head commits.
+A branch's or pull request's commits against the point where it left its base branch (the merge-base). _This branch_ is the Comparison of a Repo's local HEAD, unpushed commits included, against the base branch of its open pull request, else the remote's default branch; it holds the commits only, never the Changes. A Comparison is fixed by its merge-base and head commits. A _pull request Comparison_ is one of a Repo's open pull requests on GitHub, against the pull request's own base branch; its head moves only when the owner refreshes it, and once the pull request is closed or merged the Comparison keeps its last result, marked.
 _Avoid_: Branch diff, PR diff (for the thing itself)
+
+**Viewed box**:
+The checkbox on a file of a pull request Comparison with which the owner marks it as read. It is kept in the Session, the same on every device, and remembers the file's content at the time it was ticked: when a push changes the file it is unticked, so only what is new needs another look. A Fork or Clone starts with none.
+_Avoid_: Reviewed, seen, read mark
 
 **Run diff**:
 The change one Run made to the files in its Workspace's Repos, from its start to its end, whoever wrote them.
@@ -133,7 +137,7 @@ The change one file-writing tool call made to one file, as recorded when it ran.
 _Avoid_: Per-call diff, edit diff
 
 **Annotation**:
-What the owner writes on a range of lines on one side of a diff (a Call diff, the Changes, or a Comparison), with those lines quoted as they were. It is a draft, kept in its Session and the same on every device, until it is sent in a Review. A draft on the Changes or a Comparison whose lines have changed since is outdated; one whose lines only moved goes with them (on a Comparison, to the new head).
+What the owner writes on a range of lines on one side of a diff (a Call diff, the Changes, or a Comparison), with those lines quoted as they were. It is a draft, kept in its Session and the same on every device, until it is sent in a Review. A draft on the Changes or a Comparison (This branch's or a pull request's) whose lines have changed since is outdated; one whose lines only moved goes with them (on a Comparison, to the new head).
 _Avoid_: Comment, remark, note (that is an agent's Note)
 
 **Review**:

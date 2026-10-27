@@ -83,7 +83,12 @@ const sameFinding = (a: Annotation, b: Annotation) =>
     (a.source.head === b.source.head &&
       a.source.mergeBase === b.source.mergeBase &&
       a.source.base === b.source.base &&
-      a.source.branch === b.source.branch));
+      a.source.branch === b.source.branch)) &&
+  (a.source.kind !== "pull" ||
+    b.source.kind !== "pull" ||
+    (a.source.head === b.source.head &&
+      a.source.mergeBase === b.source.mergeBase &&
+      a.source.title === b.source.title));
 
 /** Whether two drafts cover the same lines of the same file. */
 const sameRange = (a: Annotation, b: AnnotationDraft) =>

@@ -17,6 +17,7 @@ import {
   type TaskGraphSummary,
   type TodoTask,
   type UserInput,
+  type ViewedFile,
 } from "@cloudpid/protocol";
 
 /**
@@ -135,6 +136,8 @@ export interface SessionState {
   readonly approvalRequests: readonly ApprovalRequest[];
   /** The Session's draft Annotations, oldest first, as of the last `annotations` message; every client has the same. */
   readonly annotations: readonly Annotation[];
+  /** The Session's Viewed boxes on pull request files, as of the last `viewed` message; every client has the same. */
+  readonly viewed: readonly ViewedFile[];
   /**
    * Browser Handoffs waiting for the owner; a Live View Pane mints its own links for one (`liveView`). Null until this
    * socket has listed them: a Pane closes for a handoff missing from a list it was sent, not from one not sent yet.
@@ -185,6 +188,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   secretLifetimeMinutes: 15,
   approvalRequests: [],
   annotations: [],
+  viewed: [],
   browserHandoffRequests: null,
   ownerTabs: null,
   ownerTabDrivers: [],

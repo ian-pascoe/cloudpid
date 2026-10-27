@@ -8,6 +8,9 @@ import {
   type Comparison,
   type ComparisonError,
   type ComparisonSources,
+  MAX_PULL_TITLE,
+  type PullRequest,
+  type PullSource,
   type RepoChanges,
   shortSha,
 } from "@cloudpid/protocol";
@@ -18,17 +21,21 @@ import {
  */
 export type PaneSource =
   | { readonly kind: "changes"; readonly repo?: string }
-  | { readonly kind: "branch"; readonly repo: string };
+  | { readonly kind: "branch"; readonly repo: string }
+  | { readonly kind: "pull"; readonly repo: string; readonly number: number };
 
 export const CHANGES_SOURCE: PaneSource = { kind: "changes" };
 
 /** The value of the picker's option for `source`. */
-export const sourceValue = (source: PaneSource): string =>
-  source.kind === "changes"
+export const sourceValue = (source: PaneSource): string => {
+  if (source.kind === "pull") return `pull:${source.repo}#${source.number}`;
+
+  return source.kind === "changes"
     ? source.repo === undefined
       ? "changes"
       : `changes:${source.repo}`
     : `branch:${source.repo}`;
+};
 
 /** The source a picker value names: anything it does not know is the Changes of every repo. */
 export const sourceOfValue = (value: string): PaneSource => {
@@ -40,6 +47,15 @@ export const sourceOfValue = (value: string): PaneSource => {
 
   if (kind === "branch") return { kind: "branch", repo };
 
+  if (kind === "pull") {
+    const hash = repo.lastIndexOf("#");
+    const number = Number(repo.slice(hash + 1));
+
+    return hash > 0 && Number.isInteger(number) && number >= 1
+      ? { kind: "pull", repo: repo.slice(0, hash), number }
+      : CHANGES_SOURCE;
+  }
+
   return kind === "changes" ? { kind: "changes", repo } : CHANGES_SOURCE;
 };
 
@@ -47,7 +63,100 @@ export const sourceOfValue = (value: string): PaneSource => {
 export interface SourceOption {
   readonly value: string;
   readonly label: string;
+  /** A line that says something (why there are no pull requests), not a source to pick. */
+  readonly disabled?: boolean;
 }
+
+/** "#7 Fix the thing · dev · draft · +12 −3": one pull request as the picker names it. */
+export const pullLabel = (pull: PullRequest): string => {
+  const counts =
+    pull.additions === null || pull.deletions === null
+      ? ""
+      : ` · +${pull.additions} −${pull.deletions}`;
+
+  return `#${pull.number} ${pull.title} · ${pull.author}${pull.draft ? " · draft" : ""}${counts}${pull.thisBranch === true ? " · this branch" : ""}`;
+};
+
+/** What the picker's filter box asks: the text typed, and the value of the source on show (always listed). */
+export interface PullFilter {
+  readonly text: string;
+  readonly keep: string;
+}
+
+const NO_FILTER: PullFilter = { text: "", keep: "" };
+
+/** Whether `pull` answers the text typed: its number (`#7` too), title, author or head branch, in any case. */
+export const matchesPull = (pull: PullRequest, text: string): boolean => {
+  const words = text
+    .trim()
+    .toLowerCase()
+    .split(/\s+/u)
+    .filter((word) => word !== "");
+
+  const haystack =
+    `#${pull.number} ${pull.title} ${pull.author} ${pull.headRef}${pull.draft ? " draft" : ""}`.toLowerCase();
+
+  return words.every((word) => haystack.includes(word));
+};
+
+/**
+ * A repo's pull requests as picker options: the one of the checked-out branch first ("this branch"), then the list's own
+ * order (most recently updated first); or one line saying why there are none. A repo whose remote is not GitHub's, or
+ * whose pull requests were not asked for, lists nothing.
+ */
+export const pullOptions = (
+  repo: string,
+  pulls: NonNullable<ComparisonSources["repos"][number]["pulls"]> | undefined,
+  filter: PullFilter = NO_FILTER,
+): SourceOption[] => {
+  if (pulls === undefined) return [];
+
+  if (pulls.status === "error") {
+    return pulls.kind === "no_github"
+      ? []
+      : [
+          {
+            value: `pulls-error:${repo}`,
+            label: `Pull requests: ${pulls.message}`,
+            disabled: true,
+          },
+        ];
+  }
+
+  // The checked-out branch's pull request stays first whatever is typed, and so does the one on show.
+  const shown = (pull: PullRequest) =>
+    sourceValue({ kind: "pull", repo, number: pull.number }) === filter.keep;
+
+  const listed = pulls.pulls.filter(
+    (pull) => pull.thisBranch === true || shown(pull) || matchesPull(pull, filter.text),
+  );
+
+  const options = [
+    ...listed.filter((pull) => pull.thisBranch === true),
+    ...listed.filter((pull) => pull.thisBranch !== true),
+  ].map((pull) => ({
+    value: sourceValue({ kind: "pull", repo, number: pull.number }),
+    label: pullLabel(pull),
+  }));
+
+  if (pulls.pulls.length === 0) {
+    return [{ value: `pulls-none:${repo}`, label: "No open pull requests", disabled: true }];
+  }
+
+  // Something typed that nothing answers (the pinned and shown ones are listed all the same): say so.
+  if (!pulls.pulls.some((pull) => matchesPull(pull, filter.text))) {
+    return [
+      ...options,
+      { value: `pulls-none:${repo}`, label: "No pull requests match", disabled: true },
+    ];
+  }
+
+  return options;
+};
+
+/** Whether any repo has a pull request to filter. */
+export const hasPulls = (sources: ComparisonSources | null): boolean =>
+  sources?.repos.some(({ pulls }) => pulls?.status === "ok" && pulls.pulls.length > 0) === true;
 
 /** The options of one repo, or of the whole Workspace (`label` null) when the picker has one repo. */
 export interface SourceGroup {
@@ -60,10 +169,17 @@ export interface SourceGroup {
  * its This branch under the branch's name (`feat`, `detached at abc1234`), for a repo that has a commit. With one repo
  * the options stand alone; with several, the Changes of every repo come first, and each repo has a group.
  */
-export const sourceOptions = (sources: ComparisonSources | null): readonly SourceGroup[] => {
+export const sourceOptions = (
+  sources: ComparisonSources | null,
+  filter: PullFilter = NO_FILTER,
+): readonly SourceGroup[] => {
   const repos = sources?.repos ?? [];
 
-  const own = (repo: string, head: (typeof repos)[number]["head"]): SourceOption[] => [
+  const own = (
+    repo: string,
+    head: (typeof repos)[number]["head"],
+    pulls: (typeof repos)[number]["pulls"],
+  ): SourceOption[] => [
     ...(repos.length > 1 ? [{ value: `changes:${repo}`, label: "Changes" }] : []),
     ...(head.commit === null
       ? []
@@ -73,6 +189,7 @@ export const sourceOptions = (sources: ComparisonSources | null): readonly Sourc
             label: `This branch (${head.branch ?? `detached at ${shortSha(head.commit)}`})`,
           },
         ]),
+    ...pullOptions(repo, pulls, filter),
   ];
 
   if (repos.length <= 1) {
@@ -81,7 +198,7 @@ export const sourceOptions = (sources: ComparisonSources | null): readonly Sourc
         label: null,
         options: [
           { value: "changes", label: "Changes" },
-          ...repos.flatMap(({ repo, head }) => own(repo, head)),
+          ...repos.flatMap(({ repo, head, pulls }) => own(repo, head, pulls)),
         ],
       },
     ];
@@ -89,7 +206,7 @@ export const sourceOptions = (sources: ComparisonSources | null): readonly Sourc
 
   return [
     { label: null, options: [{ value: "changes", label: "Changes (every repo)" }] },
-    ...repos.map(({ repo, head }) => ({ label: repo, options: own(repo, head) })),
+    ...repos.map(({ repo, head, pulls }) => ({ label: repo, options: own(repo, head, pulls) })),
   ];
 };
 
@@ -114,6 +231,19 @@ export const branchSourceOf = (comparison: Comparison): BranchSource => ({
   head: comparison.head,
 });
 
+/** The source a draft on a pull request's Comparison is written against. */
+export const pullSourceOf = (comparison: Comparison): PullSource | undefined =>
+  comparison.pull === undefined
+    ? undefined
+    : {
+        kind: "pull",
+        repo: comparison.repo,
+        number: comparison.pull.number,
+        title: comparison.pull.title.slice(0, MAX_PULL_TITLE),
+        mergeBase: comparison.mergeBase,
+        head: comparison.head,
+      };
+
 /** "1 commit", "3 commits". */
 export const commitsLabel = (commits: number): string =>
   `${commits} commit${commits === 1 ? "" : "s"}`;
@@ -123,7 +253,9 @@ export const commitsLabel = (commits: number): string =>
  * detached HEAD has no branch to name.
  */
 export const comparisonHeading = (comparison: Comparison): string =>
-  `${comparison.branch === null ? `Detached at ${shortSha(comparison.head)}` : comparison.branch} against ${comparison.base} at ${shortSha(comparison.mergeBase)}`;
+  comparison.pull !== undefined
+    ? `#${comparison.pull.number} ${comparison.pull.title}: ${comparison.branch ?? shortSha(comparison.head)} against ${comparison.base} at ${shortSha(comparison.mergeBase)}`
+    : `${comparison.branch === null ? `Detached at ${shortSha(comparison.head)}` : comparison.branch} against ${comparison.base} at ${shortSha(comparison.mergeBase)}`;
 
 /** What the Pane says in place of the list when there is none: one sentence for each error state. */
 export const errorText = (error: ComparisonError): string => {
@@ -144,6 +276,14 @@ export const errorText = (error: ComparisonError): string => {
       return "Shallow clone: base unknown. This clone does not reach the base branch, so the point the branch left it at cannot be found.";
     case "too_big":
       return "This branch changes more files than a list can carry.";
+    case "no_github":
+      return "Pull requests need a GitHub remote.";
+    case "github_refused":
+      return "GitHub refused the token, so this pull request cannot be read.";
+    case "pull_closed":
+      return "This pull request is closed, and there is no earlier result of it to show.";
+    case "pull_merged":
+      return "This pull request is merged, and there is no earlier result of it to show.";
     case "failed":
       return error.message === ""
         ? "The comparison failed."

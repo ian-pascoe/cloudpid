@@ -48,12 +48,16 @@ const FileHeader = ({
   file,
   contents,
   folded,
+  viewed,
   onToggle,
+  onViewed,
 }: {
   file: PaneFile;
   contents: FileContents | undefined;
   folded: boolean;
+  viewed: boolean;
   onToggle: (id: string) => void;
+  onViewed: (file: PaneFile, viewed: boolean) => void;
 }) => {
   const { entry, names } = file;
   const label = folded ? `Open ${names.name}` : `Fold ${names.name}`;
@@ -97,6 +101,21 @@ const FileHeader = ({
       {/* Binary and "Too large to show" say so with the counts. */}
       <HeaderNote file={file} contents={contents} folded={folded} />
       <EntryTally entry={entry} />
+      {/* A pull request's file carries a Viewed box; the Session keeps it until the file's blob changes. */}
+      {file.branch?.kind === "pull" && entry.blob !== undefined && (
+        <label className="touch-target flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={viewed}
+            aria-label={`Viewed ${names.name}`}
+            onChange={(event) => {
+              onViewed(file, event.target.checked);
+            }}
+            className="size-4 accent-foreground"
+          />
+          Viewed
+        </label>
+      )}
     </div>
   );
 };
@@ -174,6 +193,8 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
   const view = useAtomValue(ViewScope.use());
   const files = useAtomValue(pane.files);
   const folded = useAtomValue(pane.folded);
+  const viewed = useAtomValue(pane.viewed);
+  const setViewed = useAtomSet(pane.setViewed);
   const { anchor } = useAtomValue(pane.ui);
   const act = useAtomSet(pane.ui);
   const layout = useAtomValue(diffLayoutAtom);
@@ -231,6 +252,24 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
     [act, folded],
   );
 
+  // Ticking a box folds the file (it goes back to the rules, which fold a Viewed file); unticking opens it.
+  const markViewed = useCallback(
+    (file: PaneFile, ticked: boolean) => {
+      const { branch, entry } = file;
+
+      if (branch?.kind !== "pull" || entry.blob === undefined) return;
+
+      setViewed({
+        repo: file.repo,
+        pull: branch.number,
+        path: entry.path,
+        blob: ticked ? entry.blob : null,
+      });
+      act(ticked ? { type: "forget", id: file.id } : { type: "fold", id: file.id, folded: false });
+    },
+    [setViewed, act],
+  );
+
   const options = useMemo(
     (): CodeViewReactOptions<AnnotationSlot, undefined> => ({
       theme: DIFF_THEME,
@@ -285,11 +324,13 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
           file={file}
           contents={loads.loaded.get(item.id)?.contents}
           folded={folded.has(item.id)}
+          viewed={viewed.has(item.id)}
           onToggle={toggle}
+          onViewed={markViewed}
         />
       );
     },
-    [byId, loads, folded, toggle],
+    [byId, loads, folded, viewed, toggle, markViewed],
   );
 
   // The narrow Pane's file list, or nothing: the host stays, empty, when there is none.

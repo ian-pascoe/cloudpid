@@ -74,8 +74,15 @@ import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
-import { annotationsMessage, send, SessionSockets, sessionSocketsLayer } from "./sockets.ts";
+import {
+  annotationsMessage,
+  send,
+  SessionSockets,
+  sessionSocketsLayer,
+  viewedMessage,
+} from "./sockets.ts";
 import { AnnotationStore, annotationStoreLayer } from "./annotations.ts";
+import { viewedStoreLayer } from "./viewed.ts";
 import { changesRefreshingTools, SessionChanges, sessionChangesLayer } from "./changes.ts";
 import { sessionComparisonsLayer } from "./comparisons.ts";
 import { annotationsPruningTools, SessionReviews, sessionReviewsLayer } from "./reviews.ts";
@@ -409,6 +416,17 @@ export const SessionLive = Session.make(
             ),
         });
 
+        // The owner's Viewed boxes on pull requests: kept here, and sent to every client whenever they change.
+        const sessionViewed = viewedStoreLayer({
+          storage: kv,
+          announce: (viewed) =>
+            Effect.forEach(
+              state.raw.getWebSockets(),
+              (socket) => send(socket, viewedMessage(viewed)),
+              { discard: true },
+            ),
+        });
+
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.
         const sandbox = remoteSandbox(
           // SAFETY: the Server Worker binds the sandbox DO namespace as `CODEMODE_SANDBOX` (`worker.ts`), a raw namespace.
@@ -523,12 +541,12 @@ export const SessionLive = Session.make(
         // Container only for a request that says so (the owner's pick or Refresh).
         const sessionComparisons = sessionComparisonsLayer({
           // @effect-diagnostics-next-line asyncFunction:off
-          sources: async () => {
+          sources: async (pulls) => {
             const { workspace: id, object, directory } = await placement();
 
             if (id === null) return null;
 
-            return workspaces.getByName(object).comparisonSources(directory);
+            return workspaces.getByName(object).comparisonSources(directory, pulls);
           },
           // @effect-diagnostics-next-line asyncFunction:off
           compare: async (query) => {
@@ -687,6 +705,7 @@ export const SessionLive = Session.make(
             Layer.provideMerge(sessionChanges),
             Layer.provideMerge(sessionComparisons),
             Layer.provideMerge(sessionAnnotations),
+            Layer.provideMerge(sessionViewed),
             Layer.provideMerge(sessionApprovals),
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),

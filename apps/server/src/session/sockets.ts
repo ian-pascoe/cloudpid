@@ -15,6 +15,7 @@ import {
   type HistoryPage,
   type Navigated,
   type SessionTree,
+  type ViewedFile,
   HEARTBEAT,
   type LiveViewLinks,
   type OwnerTabLinks,
@@ -60,6 +61,7 @@ import { SessionComparisons } from "./comparisons.ts";
 import { SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
+import { ViewedStore } from "./viewed.ts";
 
 /**
  * The parts of a Durable Object's `ctx` the sockets use. Narrow on purpose, as `SessionStorage` is, so the module and
@@ -198,6 +200,12 @@ export const annotationsMessage = (drafts: ReadonlyArray<Annotation>): ServerMes
   annotations: drafts,
 });
 
+/** The `viewed` message for `viewed`, which every client is sent whenever the boxes change. */
+export const viewedMessage = (viewed: ReadonlyArray<ViewedFile>): ServerMessage => ({
+  type: "viewed",
+  viewed,
+});
+
 /** The agent change a `configure` asks for: a field it leaves out is left out, as is. */
 const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): AgentChange => {
   const change: Types.Mutable<AgentChange> = {};
@@ -333,6 +341,7 @@ export const sessionSocketsLayer = (
   | OwnerTabDrivers
   | Approvals
   | AnnotationStore
+  | ViewedStore
   | SessionReviews
 > =>
   Layer.effect(
@@ -342,6 +351,7 @@ export const sessionSocketsLayer = (
       const changes = yield* SessionChanges;
       const comparisons = yield* SessionComparisons;
       const annotations = yield* AnnotationStore;
+      const viewed = yield* ViewedStore;
       const reviews = yield* SessionReviews;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
@@ -717,22 +727,41 @@ export const sessionSocketsLayer = (
           }
 
           case "comparison_sources":
-            return comparisons.sources;
-          case "compare":
+            return comparisons.sources(message.pulls === true);
+          case "compare": {
+            if (message.source === "pull" && message.pull === undefined) {
+              return Effect.fail(
+                SessionError.make({
+                  operation: "compare",
+                  message: "A pull request Comparison names its pull request",
+                }),
+              );
+            }
+
             return comparisons
               .compare({
                 repo: message.repo,
+                pull: message.source === "pull" ? message.pull : undefined,
                 startContainer: message.startContainer === true,
                 fetch: message.fetch === true,
               })
               .pipe(
-                // The drafts on this branch are checked against the pair the client now sees, in the background.
+                // The drafts on this branch or pull request are checked against the pair the client now sees, and a pull
+                // request's Viewed boxes against its files' blobs, in the background.
                 Effect.tap((result) =>
                   result.status === "ok"
-                    ? Effect.forkIn(reviews.compared(result.comparison), scope)
+                    ? Effect.forkIn(
+                        Effect.all([
+                          reviews.compared(result.comparison),
+                          viewed.reset(result.comparison),
+                        ]),
+                        scope,
+                      )
                     : Effect.void,
                 ),
               );
+          }
+
           case "comparison_file": {
             const { type: _type, id: _id, ...query } = message;
 
@@ -754,6 +783,10 @@ export const sessionSocketsLayer = (
             return reviews.save(message.annotation).pipe(Effect.as(null));
           case "annotation_delete":
             return annotations.delete(message.annotationId).pipe(Effect.as(null));
+          case "viewed_set":
+            return viewed
+              .set({ repo: message.repo, pull: message.pull, path: message.path }, message.blob)
+              .pipe(Effect.as(null));
         }
       };
 
@@ -874,6 +907,9 @@ export const sessionSocketsLayer = (
 
         // The draft Annotations, an empty list too, so a client that reconnects drops the drafts deleted meanwhile.
         yield* send(server, annotationsMessage(yield* annotations.list));
+
+        // The Viewed boxes, an empty list too, for the same reason.
+        yield* send(server, viewedMessage(yield* viewed.list));
 
         return client;
       });

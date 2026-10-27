@@ -91,6 +91,9 @@ export const approvalRequestsAtom = slice((state) => state.approvalRequests);
 /** The Session's draft Annotations, oldest first. */
 export const annotationsAtom = slice((state) => state.annotations);
 
+/** The Session's Viewed boxes on pull request files. */
+export const viewedAtom = slice((state) => state.viewed);
+
 /** The active Session branch's conversation, which the root view shows; null until the Session says. */
 export const activeBranchAtom = slice((state) => state.activeBranch);
 

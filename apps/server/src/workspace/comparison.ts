@@ -9,10 +9,11 @@
 //   stop starts nothing;
 // - a file's contents are read here with isomorphic-git's `readBlob` on the blob ids the list named, and the Container's
 //   `git cat-file` is the fallback under Changes' guards (a pack over 16 MB, an object the DO does not have).
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off globalFetch:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off globalFetch:off globalDate:off
 import {
   type ChangeFile,
   type ChangeSide,
+  type ComparedPull,
   type Comparison,
   type ComparisonError,
   type ComparisonSources,
@@ -21,12 +22,14 @@ import {
   MAX_CHANGE_SIDE_BYTES,
   MAX_CHANGED_FILES,
   OBJECT_ID,
+  type PullList,
   WORKSPACE_ROOT,
 } from "@cloudpid/protocol";
 import {
   blobsScript,
   comparisonScript,
   type ContainerComparison,
+  dropPullRefsScript,
   parseBlobs,
   parseComparison,
 } from "@cloudpid/sandbox-image/comparison";
@@ -51,9 +54,18 @@ import {
   withFlags,
 } from "./changes.ts";
 import { MAX_PACK_BYTES, packfileBytes } from "./git.ts";
+import { type GithubPull, GithubPulls, type GitHubRepo } from "./github-pulls.ts";
+
+export type { GitHubRepo };
 
 /** How many Comparisons of a repo are kept, by (merge-base, head); the oldest are dropped. */
 export const KEPT_COMPARISONS = 5;
+
+/** How many pull request Comparisons of a repo are kept, by (merge-base, head). */
+export const KEPT_PULL_COMPARISONS = 10;
+
+/** What the picker and a pull request's Comparison say of a repo whose remote is not on GitHub. */
+export const NO_GITHUB_MESSAGE = "Pull requests need a GitHub remote";
 
 /** The largest list kept (JSON bytes): a bigger one is made again when asked for, as the storage's values are limited. */
 const MAX_KEPT_BYTES = 1_500_000;
@@ -66,6 +78,13 @@ const MAX_ERROR_CHARS = 2_000;
 
 /** Where Comparisons are kept, under `<key>:<repo>` and `<key>:<repo>:<merge-base>:<head>`. */
 export const COMPARISON_KEY = "cloudpid:comparison";
+
+/**
+ * Where pull request Comparisons are kept: `<key>:<repo>:<merge-base>:<head>` is the list, `<key>-last:<repo>:<number>` the
+ * pull request's last, `<key>-keys:<repo>` their index, and `<key>-fetched:<repo>` the numbers of the pull requests whose
+ * `refs/cloudpid/pr/<number>` the Container has been asked to fetch (so the ones no longer open are deleted).
+ */
+export const PULL_COMPARISON_KEY = "cloudpid:comparison-pull";
 
 /** A file's blobs, as the list named them: their ids and sizes, null where there is no such side. */
 type Blobs = {
@@ -89,6 +108,12 @@ export type LastComparison = {
   readonly base: string;
 };
 
+/** The Comparison a pull request last made: its list is under (merge-base, head). */
+export type LastPullComparison = {
+  readonly mergeBase: string;
+  readonly head: string;
+};
+
 export type ComparisonOptions = {
   readonly files: () => ChangesFiles;
   /** Whether the Container runs now. */
@@ -105,10 +130,12 @@ export type ComparisonOptions = {
     readonly put: <A>(key: string, value: A) => Promise<void>;
     readonly delete: (key: string) => Promise<void>;
   };
-  /** GitHub's REST API (the base of the branch's open pull request). */
+  /** GitHub's REST API (the base of the branch's open pull request, and the pull requests). */
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
   /** The GitHub token (`CLOUDPID_GITHUB_TOKEN`); absent, the API is asked without one. */
   readonly token: () => string | undefined;
+  /** The time in ms (the 60 s a pull request list is kept are counted by it); `Date.now` by default. */
+  readonly now?: () => number;
   /** `text` with the GitHub token and the Environment's kept Secrets taken out. */
   readonly redact: (text: string) => string;
   readonly warn: (message: string) => void;
@@ -116,6 +143,8 @@ export type ComparisonOptions = {
 
 export type CompareRequest = {
   readonly repo: string;
+  /** Compare this open pull request of the repo instead of its branch. */
+  readonly pull?: number | undefined;
   /** Whether the Container may be started (the owner's pick or Refresh). */
   readonly startContainer: boolean;
   /** Fetch the base again (the owner's Refresh). */
@@ -129,9 +158,6 @@ export type ComparisonFileRequest = {
   readonly path: string;
   readonly oldPath?: string;
 };
-
-/** A repo on GitHub, from a remote's URL. */
-export type GitHubRepo = { readonly owner: string; readonly name: string };
 
 const GITHUB_URL =
   /^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?|git@)github\.com[:/]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/i;
@@ -181,11 +207,18 @@ const problem = (
 
 export class WorkspaceComparisonModule {
   readonly #options: ComparisonOptions;
+  readonly #github: GithubPulls;
   /** The calls running per repo, so two for one repo run one after the other (and the second finds the first's list). */
   readonly #queues = new Map<string, Promise<unknown>>();
 
   constructor(options: ComparisonOptions) {
     this.#options = options;
+    this.#github = new GithubPulls({
+      fetch: options.fetch,
+      token: options.token,
+      now: options.now ?? (() => Date.now()),
+      warn: options.warn,
+    });
   }
 
   #files(): ChangesFiles {
@@ -210,21 +243,81 @@ export class WorkspaceComparisonModule {
     return run;
   }
 
-  /** What the picker lists: the repos `directory` covers, the Session's own first, each with its HEAD. */
-  async sources(directory: string): Promise<ComparisonSources> {
+  /**
+   * What the picker lists: the repos `directory` covers, the Session's own first, each with its HEAD, and with `pulls` its
+   * open pull requests (from GitHub, or the list kept for 60 s; never the Container).
+   */
+  async sources(directory: string, pulls = false): Promise<ComparisonSources> {
     const files = this.#files();
     const fs = readOnly(files);
     const covered = await coveredRepos(files, directory);
 
     // The Session's own repo comes first by construction: a directory inside a repo covers that repo alone, and the
     // Workspace's root every repo, in order of name.
-    const repos: Array<ComparisonSources["repos"][number]> = [];
+    const repos = await Promise.all(
+      covered.map(async (repo) => {
+        const head = await readHead(fs, `${WORKSPACE_ROOT}/${repo}`);
 
-    for (const repo of covered) {
-      repos.push({ repo, head: await readHead(fs, `${WORKSPACE_ROOT}/${repo}`) });
-    }
+        return pulls
+          ? { repo, head, pulls: await this.#pullList(fs, repo, head.branch) }
+          : { repo, head };
+      }),
+    );
 
     return { repos };
+  }
+
+  /** A repo's open pull requests; the refs of the ones no longer open are deleted when the Container runs. */
+  async #pullList(fs: Fs, repo: string, branch: string | null): Promise<PullList> {
+    const github = await this.#githubRepo(fs, `${WORKSPACE_ROOT}/${repo}`, branch);
+
+    if (github === undefined) {
+      return { status: "error", kind: "no_github", message: NO_GITHUB_MESSAGE };
+    }
+
+    const list = await this.#github.list(github, branch);
+
+    if (list.status === "ok") await this.#serial(repo, () => this.#dropClosed(repo, github));
+
+    return list;
+  }
+
+  /**
+   * Delete the `refs/cloudpid/pr/<n>` refs of pull requests this Workspace fetched and the last list no longer holds
+   * (closed or merged), with `git update-ref -d` and never `gc`. Only while the Container runs: nothing here starts it, and
+   * the next picker opening, or the next pull request Comparison, tries again.
+   */
+  async #dropClosed(repo: string, github: GitHubRepo): Promise<void> {
+    const open = this.#github.lastOpen(github);
+    const key = `${PULL_COMPARISON_KEY}-fetched:${repo}`;
+
+    try {
+      const fetched = (await this.#options.store.get<number[]>(key)) ?? [];
+      const gone = open === undefined ? [] : fetched.filter((number) => !open.has(number));
+
+      if (gone.length === 0 || !this.#options.running()) return;
+
+      await this.#options.run(dropPullRefsScript(repo, gone));
+      await this.#options.store.put(
+        key,
+        fetched.filter((number) => !gone.includes(number)),
+      );
+    } catch (cause) {
+      this.#options.warn(
+        `comparison: deleting ${repo}'s closed pull request refs failed: ${errorText(cause)}`,
+      );
+    }
+  }
+
+  /** The GitHub repo the remote of `branch` (else `origin`, else the only remote) names, if it is on GitHub. */
+  async #githubRepo(fs: Fs, dir: string, branch: string | null): Promise<GitHubRepo | undefined> {
+    try {
+      const url = await this.#remoteUrl(fs, dir, branch);
+
+      return url === undefined ? undefined : githubRepoOf(url);
+    } catch {
+      return undefined;
+    }
   }
 
   /** The Comparison of `repo`'s branch, or why there is none. */
@@ -240,6 +333,14 @@ export class WorkspaceComparisonModule {
     await files.stat(`${dir}/.git`).catch(() => {
       throw new Error(`${repo} is not a repo of the Workspace`);
     });
+
+    const { pull } = request;
+
+    if (pull !== undefined) {
+      if (!Number.isSafeInteger(pull) || pull < 1) throw new Error("No such pull request");
+
+      return this.#serial(repo, () => this.#comparePull(request, pull, files, fs, dir));
+    }
 
     return this.#serial(repo, () => this.#compare(request, files, fs, dir));
   }
@@ -301,30 +402,142 @@ export class WorkspaceComparisonModule {
     const input =
       base === undefined ? { repo, fetch: request.fetch } : { repo, base, fetch: request.fetch };
 
-    let parsed: ReturnType<typeof parseComparison>;
-
-    try {
-      const ran = await this.#options.run(comparisonScript(input));
-
-      parsed =
-        ran.stdout.trim() === "" && ran.exitCode !== 0
-          ? {
-              ok: false,
-              kind: "failed",
-              message: ran.stderr.trim() || `The command exited ${ran.exitCode}`,
-            }
-          : parseComparison(ran.stdout);
-    } catch (cause) {
-      this.#options.warn(`comparison: the Container's command failed: ${errorText(cause)}`);
-
-      return problem("failed", `The Container could not compare: ${errorText(cause)}`, redact);
-    }
+    const parsed = await this.#runScript(comparisonScript(input));
 
     if (!parsed.ok) return problem(parsed.kind, parsed.message, redact, parsed.base);
 
     const made = await this.#made(files, dir, repo, parsed.comparison);
 
     await this.#keep(repo, made, parsed.comparison);
+
+    return { status: "ok", comparison: made.comparison };
+  }
+
+  /** Run a Comparison's command on the Container (starting it if need be) and read what it printed. */
+  async #runScript(script: string): Promise<ReturnType<typeof parseComparison>> {
+    try {
+      const ran = await this.#options.run(script);
+
+      return ran.stdout.trim() === "" && ran.exitCode !== 0
+        ? {
+            ok: false,
+            kind: "failed",
+            message: ran.stderr.trim() || `The command exited ${ran.exitCode}`,
+          }
+        : parseComparison(ran.stdout);
+    } catch (cause) {
+      this.#options.warn(`comparison: the Container's command failed: ${errorText(cause)}`);
+
+      return {
+        ok: false,
+        kind: "failed",
+        message: `The Container could not compare: ${errorText(cause)}`,
+      };
+    }
+  }
+
+  /**
+   * Pull request `number` of `repo`: GitHub says its state and head (REST, never the Container); the Container fetches
+   * its head into `refs/cloudpid/pr/<number>` and lists the files, as for This branch. A head that moved since the list
+   * kept is only ever shown as `behind` ("New commits: Refresh") unless the owner's own action (`startContainer`) asks to
+   * compare it: nothing here follows a pull request by itself.
+   */
+  async #comparePull(
+    request: CompareRequest,
+    number: number,
+    files: ChangesFiles,
+    fs: Fs,
+    dir: string,
+  ): Promise<CompareResult> {
+    const { repo } = request;
+    const { redact } = this.#options;
+    const head = await readHead(fs, dir);
+    const github = await this.#githubRepo(fs, dir, head.branch);
+
+    if (github === undefined) return problem("no_github", NO_GITHUB_MESSAGE, redact);
+
+    const asked = await this.#github.get(github, number);
+
+    if (asked.status === "error") {
+      return problem(asked.kind === "refused" ? "github_refused" : "failed", asked.message, redact);
+    }
+
+    const pull = asked.value;
+    const info = pullInfo(pull);
+    const kept = await this.#keptPull(repo, number);
+
+    // Closed or merged: the last result stays readable, marked.
+    if (pull.state !== "open") {
+      if (kept !== undefined) {
+        return { status: "ok", comparison: { ...kept.comparison, pull: info } };
+      }
+
+      return problem(
+        pull.state === "merged" ? "pull_merged" : "pull_closed",
+        `This pull request is ${pull.state}`,
+        redact,
+        pull.base,
+      );
+    }
+
+    if (kept !== undefined && kept.comparison.head === pull.head && !request.fetch) {
+      return { status: "ok", comparison: { ...kept.comparison, pull: info } };
+    }
+
+    const behind = (): CompareResult | undefined =>
+      kept === undefined || request.fetch
+        ? undefined
+        : { status: "ok", comparison: { ...kept.comparison, pull: info, behind: pull.head } };
+
+    // The head moved: the banner, until the owner's own action (a pick or Refresh) asks for the new one.
+    if (!request.startContainer) {
+      const banner = behind();
+
+      if (banner !== undefined) return banner;
+
+      if (!this.#options.running()) {
+        return problem(
+          "needs_container",
+          "Comparing needs the Container, which is stopped",
+          redact,
+          pull.base,
+        );
+      }
+    }
+
+    if (!isSafeBase(pull.base)) {
+      return problem("failed", `The pull request's base ${pull.base} is not a usable name`, redact);
+    }
+
+    const open = this.#github.lastOpen(github);
+
+    const fetched =
+      (await this.#options.store.get<number[]>(`${PULL_COMPARISON_KEY}-fetched:${repo}`)) ?? [];
+
+    const drop =
+      open === undefined ? [] : fetched.filter((each) => each !== number && !open.has(each));
+
+    const parsed = await this.#runScript(
+      comparisonScript({
+        repo,
+        base: pull.base,
+        fetch: request.fetch,
+        pull: { number, head: pull.head },
+        drop,
+      }),
+    );
+
+    if (!parsed.ok) return problem(parsed.kind, parsed.message, redact, parsed.base);
+
+    const made = await this.#made(files, dir, repo, parsed.comparison, {
+      info,
+      headRef: pull.headRef,
+    });
+
+    await this.#keepPull(repo, number, made, [
+      ...fetched.filter((each) => !drop.includes(each)),
+      number,
+    ]);
 
     return { status: "ok", comparison: made.comparison };
   }
@@ -361,9 +574,14 @@ export class WorkspaceComparisonModule {
   }
 
   /** The URL of the branch's tracked remote, else `origin`, else the only remote. */
-  async #remoteUrl(fs: Fs, dir: string, branch: string): Promise<string | undefined> {
+  async #remoteUrl(fs: Fs, dir: string, branch: string | null): Promise<string | undefined> {
     const remotes = await git.listRemotes({ fs, dir });
-    const tracked = await git.getConfig({ fs, dir, path: `branch.${branch}.remote` });
+
+    const tracked =
+      branch === null
+        ? undefined
+        : await git.getConfig({ fs, dir, path: `branch.${branch}.remote` });
+
     const named = (name: string | undefined) => remotes.find((remote) => remote.remote === name);
 
     const chosen =
@@ -419,6 +637,7 @@ export class WorkspaceComparisonModule {
     dir: string,
     repo: string,
     made: ContainerComparison,
+    pull?: { readonly info: ComparedPull; readonly headRef: string },
   ): Promise<KeptComparison> {
     const attributes = readAttributes(
       await files.readFile(`${dir}/.gitattributes`, "utf8").then(toText, () => undefined),
@@ -426,8 +645,8 @@ export class WorkspaceComparisonModule {
 
     const listed = made.files.slice(0, MAX_CHANGED_FILES);
 
-    const entries = listed.map((file) =>
-      withFlags(
+    const entries = listed.map((file) => {
+      const entry = withFlags(
         entryOf({
           path: file.path,
           oldPath: file.oldPath,
@@ -441,20 +660,27 @@ export class WorkspaceComparisonModule {
             (file.newBytes ?? 0) > MAX_CHANGE_SIDE_BYTES,
         }),
         attributes,
-      ),
-    );
+      );
+
+      // A pull request's file carries its head blob (a deleted file's, its merge-base blob): what a Viewed box records.
+      const blob = file.newId ?? file.oldId;
+
+      return pull === undefined || blob === null ? entry : { ...entry, blob };
+    });
+
+    const comparison = {
+      repo,
+      base: made.base,
+      branch: pull === undefined ? made.branch : pull.headRef,
+      mergeBase: made.mergeBase,
+      head: made.head,
+      commits: made.commits,
+      files: entries,
+      more: made.files.length - listed.length,
+    };
 
     return {
-      comparison: {
-        repo,
-        base: made.base,
-        branch: made.branch,
-        mergeBase: made.mergeBase,
-        head: made.head,
-        commits: made.commits,
-        files: entries,
-        more: made.files.length - listed.length,
-      },
+      comparison: pull === undefined ? comparison : { ...comparison, pull: pull.info },
       blobs: listed.map((file) => [
         file.path,
         {
@@ -503,10 +729,79 @@ export class WorkspaceComparisonModule {
     }
   }
 
+  /** Pull request `number`'s last Comparison, kept by (merge-base, head). */
+  async #keptPull(repo: string, number: number): Promise<KeptComparison | undefined> {
+    const { store } = this.#options;
+
+    const last = await store
+      .get<LastPullComparison>(`${PULL_COMPARISON_KEY}-last:${repo}:${number}`)
+      .catch(() => undefined);
+
+    if (last === undefined) return undefined;
+
+    const kept = await store
+      .get<KeptComparison>(`${PULL_COMPARISON_KEY}:${repo}:${last.mergeBase}:${last.head}`)
+      .catch(() => undefined);
+
+    return kept?.comparison.pull?.number === number ? kept : undefined;
+  }
+
+  /**
+   * Keep pull request `number`'s `made` by its (merge-base, head), make it the pull request's last, and drop the oldest
+   * past `KEPT_PULL_COMPARISONS`. `fetched` is every pull request of the repo whose ref the Container has fetched.
+   */
+  async #keepPull(
+    repo: string,
+    number: number,
+    made: KeptComparison,
+    fetched: readonly number[],
+  ): Promise<void> {
+    const { store } = this.#options;
+    const { mergeBase, head } = made.comparison;
+    const key = `${PULL_COMPARISON_KEY}:${repo}:${mergeBase}:${head}`;
+    const keys = `${PULL_COMPARISON_KEY}-keys:${repo}`;
+
+    try {
+      await store.put(`${PULL_COMPARISON_KEY}-fetched:${repo}`, fetched);
+
+      // A list too big to store is made again when asked for, as This branch's is.
+      if (JSON.stringify(made).length > MAX_KEPT_BYTES) return;
+
+      await store.put(key, made);
+
+      const before = ((await store.get<string[]>(keys)) ?? []).filter((each) => each !== key);
+      const after = [...before, key];
+
+      for (const old of after.slice(0, Math.max(after.length - KEPT_PULL_COMPARISONS, 0))) {
+        await store.delete(old);
+      }
+
+      await store.put(keys, after.slice(-KEPT_PULL_COMPARISONS));
+
+      const last: LastPullComparison = { mergeBase, head };
+
+      await store.put(`${PULL_COMPARISON_KEY}-last:${repo}:${number}`, last);
+    } catch (cause) {
+      this.#options.warn(
+        `comparison: keeping ${repo}'s pull request list failed: ${errorText(cause)}`,
+      );
+    }
+  }
+
+  /** A kept list by (merge-base, head): This branch's, else a pull request's. */
   async #kept(repo: string, mergeBase: string, head: string): Promise<KeptComparison | undefined> {
-    return this.#options.store
+    const { store } = this.#options;
+
+    const branch = await store
       .get<KeptComparison>(`${COMPARISON_KEY}:${repo}:${mergeBase}:${head}`)
       .catch(() => undefined);
+
+    return (
+      branch ??
+      (await store
+        .get<KeptComparison>(`${PULL_COMPARISON_KEY}:${repo}:${mergeBase}:${head}`)
+        .catch(() => undefined))
+    );
   }
 
   /** One file's two sides of a Comparison. It never starts the Container. */
@@ -643,6 +938,15 @@ export class WorkspaceComparisonModule {
     return sides;
   }
 }
+
+/** The pull request a Comparison names, as GitHub has it now. */
+const pullInfo = (pull: GithubPull): ComparedPull => ({
+  number: pull.number,
+  title: pull.title,
+  author: pull.author,
+  draft: pull.draft,
+  state: pull.state,
+});
 
 /** Whether isomorphic-git's not-found error is about the file at a commit, rather than the commit itself. */
 const fileIsMissing = (cause: unknown): boolean =>
