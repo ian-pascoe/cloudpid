@@ -147,7 +147,7 @@ _Avoid_: Feedback, comment batch, code review (for the message)
 ## Environments, Repos and Workspaces
 
 **Environment**:
-What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Container settings, Setup and Start Scripts). Every Workspace is made from one. Variables and Secrets can also be kept for every Environment; an Environment's own of the same name wins.
+What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Skills, Container settings, Setup and Start Scripts). Every Workspace is made from one. Variables, Secrets and Skills can also be kept for every Environment; an Environment's own of the same name wins.
 _Avoid_: Project, template, Machine, sandbox
 
 **Repo**:
@@ -241,8 +241,12 @@ A tool left out of the model's tool list until `tool_search` loads it, though sc
 _Avoid_: Hidden tool, optional tool
 
 **Skill**:
-A directory with a `SKILL.md` (name, description, instructions) and supporting files that the agent reads by path when a task matches its description. Bundled Skills ship with cloudpid and are mounted read-only at `/workspace/.agents/skills`; a repo may add its own in `.agents/skills`.
-_Avoid_: Plugin, command
+A directory with a `SKILL.md` (name, description, instructions) and supporting files that the agent reads by path when a task matches its description. A Repo may commit its own; an Environment may have its own, and Skills can be kept for every Environment. Of two Skills with the same name, the nearer wins: the Repo's, then the Environment's own, then the one for every Environment. cloudpid ships none.
+_Avoid_: Plugin, command, global Skill (say: for every Environment), Bundled Skill (there are none)
+
+**Skill source**:
+Where a Skill was installed from: a GitHub repo, the Skill's path in it, and the commit it was fetched at. cloudpid keeps the Skill's files as they were fetched until it is updated, which fetches them again from its Skill source; a Skill the agent wrote has none.
+_Avoid_: Upstream (alone), origin, registry
 
 **Toolchain**:
 A program an Environment or Repo declares in its mise configuration, which the Container finds among the image's preinstalled versions or installs on demand.
@@ -295,7 +299,7 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no to an Agent change that waits for it: a change to a Limit, or one no revert can undo (deleting an Environment or a kept Secret).
+The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Skills kept for every Environment, or one no revert can undo (deleting an Environment or a kept Secret).
 _Avoid_: Confirmation, permission, consent
 
 ## Credentials and the browser
