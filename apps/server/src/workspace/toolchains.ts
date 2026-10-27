@@ -20,10 +20,12 @@
 //   out of what a command prints (a Secret as its reference). The variables, the Environment's scripts and its
 //   Toolchains (the root `mise.toml` the bootstrap writes) are read once per Container start, at its bootstrap.
 //
-// The GitHub token is minted from the GitHub App when a command starts (the bootstrap's at its start, for it and its
-// scripts), so each gets one with at least `TOKEN_MIN_LIFETIME_MS` left (ADR-0025). It reaches the Container only in a
-// process's environment: no file holds it, and nothing here logs it. A command that cannot have one runs without it,
-// its stderr saying why first.
+// The GitHub tokens are minted from the GitHub App when a command starts (the bootstrap's at its start, for it and its
+// scripts), one for each account the app is installed on, so each command gets them with at least
+// `TOKEN_MIN_LIFETIME_MS` left (ADR-0025): git picks the one for the repo's owner, and `GH_TOKEN` is the one for the
+// account that owns the repos of the command's working directory, else the app's own account's. They reach the
+// Container only in a process's environment: no file holds one, and nothing here logs one. A command that cannot have
+// them runs without, its stderr saying why first.
 //
 // The app's private key never reaches this module, only the tokens.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalTimers:off preferEffectArray:off
@@ -94,8 +96,13 @@ const KILLED_STATUS = 143;
 export type ToolchainOptions = {
   /** The Container's backend, which the Workspace would otherwise use as it is. */
   readonly backend: WorkspaceBackend;
-  /** Where the GitHub token for git and gh comes from; without it commands run without one. */
-  readonly github?: Pick<GitHubTokens, "token" | "live"> | undefined;
+  /** Where the GitHub tokens for git and gh come from; without it commands run without one. */
+  readonly github?: Pick<GitHubTokens, "tokens" | "live"> | undefined;
+  /**
+   * The GitHub account that owns the repos a working directory covers, when they have one: whose token a command run
+   * there gets as `GH_TOKEN`. Without it, or without an answer, the app's own account's.
+   */
+  readonly repoAccount?: ((directory: string) => Promise<string | undefined>) | undefined;
   /**
    * The Workspace's Container settings as they are now, read at the start of each bootstrap: their variables reach the
    * bootstrap, the scripts and every command of that Container start, their Setup and Start Scripts run in it, and
@@ -189,22 +196,37 @@ export class ToolchainBackend implements WorkspaceBackend {
   }
 
   /**
-   * The GitHub token's variables for a command about to start, or none and why (for its stderr) when it cannot have
-   * one. Never throws.
+   * The GitHub tokens' variables for a command about to start in `directory`, and the note for its stderr when it has
+   * no `GH_TOKEN`, or no token for an account the app is installed on. Never throws.
    */
-  async #githubEnv(): Promise<{ readonly env: CommandEnv; readonly problem?: string }> {
+  async #githubEnv(
+    directory: string,
+  ): Promise<{ readonly env: CommandEnv; readonly note?: string }> {
     const github = this.#options.github;
 
     if (github === undefined) return { env: {} };
 
-    try {
-      return { env: githubTokenEnv(await github.token()) };
-    } catch (cause) {
-      return {
-        env: {},
-        problem: this.#redact(String(cause instanceof Error ? cause.message : cause)),
-      };
-    }
+    const [all, repoAccount] = await Promise.all([
+      github.tokens(),
+      this.#options.repoAccount?.(directory).catch(() => undefined),
+    ]);
+
+    const chosen =
+      (repoAccount === undefined ? undefined : all.byAccount[repoAccount.toLowerCase()]) ??
+      (all.appAccount === undefined ? undefined : all.byAccount[all.appAccount]);
+
+    const problems =
+      chosen === undefined && all.problems.length === 0
+        ? [`the GitHub App is not installed on ${all.appAccount ?? "its own account"}`]
+        : all.problems;
+
+    const env = githubTokenEnv(chosen, all.byAccount);
+
+    if (problems.length === 0) return { env };
+
+    const why = this.#redact(problems.join("; "));
+
+    return { env, note: chosen === undefined ? noTokenNote(why) : someTokensNote(why) };
   }
 
   /** What to take out of output: the GitHub tokens (as `***`) and each kept Secret (as its reference). */
@@ -259,12 +281,9 @@ export class ToolchainBackend implements WorkspaceBackend {
           if (killed.delete(id)) return stoppedBeforeStart(id);
         }
 
-        const github = await this.#githubEnv();
+        const github = await this.#githubEnv(input.cwd ?? WORKSPACE_ROOT);
 
-        const notes = [
-          bootstrapNote ?? this.#scriptsNote(handle.runtimeId),
-          github.problem === undefined ? undefined : noTokenNote(github.problem),
-        ];
+        const notes = [bootstrapNote ?? this.#scriptsNote(handle.runtimeId), github.note];
 
         const source = `${notes
           .flatMap((note) => (note === undefined ? [] : [`printf '%s\\n' ${quote(note)} >&2\n`]))
@@ -390,11 +409,9 @@ export class ToolchainBackend implements WorkspaceBackend {
 
     try {
       const environment = await this.#environment();
-      const github = await this.#githubEnv();
+      const github = await this.#githubEnv(WORKSPACE_ROOT);
 
-      if (github.problem !== undefined) {
-        warn(`The bootstrap and its scripts run without a GitHub token: ${github.problem}`);
-      }
+      if (github.note !== undefined) warn(`The bootstrap and its scripts: ${github.note}`);
 
       this.#env = { ...environment.variables, ...this.#toolchainEnv };
       this.#bootstrapEnv = { ...this.#env, ...github.env };
@@ -719,6 +736,10 @@ const NO_BOOTSTRAP_SETTINGS: BootstrapSettings = {
 /** What a command that has no GitHub token is told first, on its stderr. */
 const noTokenNote = (problem: string): string =>
   `cloudpid: this command has no GitHub token (${problem}), so git and gh reach GitHub without one. A later command asks for one again.`;
+
+/** What a command that has a GitHub token, but not one for every account the GitHub App is installed on, is told first. */
+const someTokensNote = (problem: string): string =>
+  `cloudpid: this command has no GitHub token for some accounts (${problem}), so git reaches their repos without one. A later command asks for them again.`;
 
 /** Why a bootstrap or a script failed: in a few words, and what it printed (without the token). */
 type Failure = { readonly reason: string; readonly output: string };

@@ -1,7 +1,7 @@
 // The draft's Start from menu (`docs/spec.md` → Session list → New session): the branches of each of an Environment's
-// Repos, asked of GitHub by the main Worker with a read-only token of the GitHub App (ADR-0025) through the client the
-// Diff pane's picker uses (`GithubPulls`), which keeps each repo's list for 60 s per isolate. No Workspace or Container
-// is woken.
+// Repos, asked of GitHub by the main Worker with a read-only token of the GitHub App for the installation on the repo's
+// owner (ADR-0025) through the client the Diff pane's picker uses (`GithubPulls`), which keeps each repo's list for 60 s
+// per isolate. No Workspace or Container is woken.
 // @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off
 import type { EnvironmentRepo, RepoBranches } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";

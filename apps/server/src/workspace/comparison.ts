@@ -254,6 +254,30 @@ export class WorkspaceComparisonModule {
     return { repos };
   }
 
+  /**
+   * The GitHub account (lower case) that owns the repos `directory` covers (`coveredRepos`), by their remotes, when they
+   * all have the same one: whose GitHub token a command run there gets as `GH_TOKEN`. Never throws.
+   */
+  async githubAccountOf(directory: string): Promise<string | undefined> {
+    try {
+      const files = this.#files();
+      const fs = readOnly(files);
+      const covered = await coveredRepos(files, directory);
+
+      const repos = await Promise.all(
+        covered.map((repo) => this.#githubRepo(fs, `${WORKSPACE_ROOT}/${repo}`, null)),
+      );
+
+      const owners = new Set(
+        repos.flatMap((github) => (github === undefined ? [] : [github.owner.toLowerCase()])),
+      );
+
+      return owners.size === 1 ? [...owners][0] : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** A repo's open pull requests; the refs of the ones no longer open are deleted when the Container runs. */
   async #pullList(fs: Fs, repo: string, branch: string | null): Promise<PullList> {
     const github = await this.#githubRepo(fs, `${WORKSPACE_ROOT}/${repo}`, branch);

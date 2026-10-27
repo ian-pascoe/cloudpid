@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off nodeBuiltinImport:off globalDate:off preferEffectArray:off -- WebCrypto and `fetch` are Promise APIs; node:crypto makes the test keys.
+// @effect-diagnostics asyncFunction:off nodeBuiltinImport:off globalDate:off preferEffectArray:off preferEffectRecord:off -- WebCrypto and `fetch` are Promise APIs; node:crypto makes the test keys.
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { GitHubApp, githubAppKeyProblem, type MintedToken } from "./app.ts";
@@ -63,7 +63,10 @@ type Seen = {
   readonly body: string;
 };
 
-/** GitHub's API for one app: its installations, and an installation token per mint, each living an hour from `now`. */
+/**
+ * GitHub's API for one app, owned by `ian-pascoe`: its installations, and a token per mint, each living an hour from
+ * `now`.
+ */
 const fakeGitHub = (options: {
   readonly now: () => number;
   readonly installations?: ReadonlyArray<{ readonly id: number; readonly login: string }>;
@@ -82,7 +85,11 @@ const fakeGitHub = (options: {
       body: await new Response(init.body).text(),
     });
 
-    if (method === "GET" && url === "https://api.github.com/app/installations") {
+    if (method === "GET" && url === "https://api.github.com/app") {
+      return Response.json({ owner: { login: "ian-pascoe" } });
+    }
+
+    if (method === "GET" && url === "https://api.github.com/app/installations?per_page=100") {
       const installations = options.installations ?? [{ id: 42, login: "ian-pascoe" }];
 
       return Response.json(installations.map(({ id, login }) => ({ id, account: { login } })));
@@ -109,7 +116,7 @@ const fakeGitHub = (options: {
 };
 
 describe("GitHubApp", () => {
-  it("mints a token for its one installation with a JWT its PKCS#1 key signs", async () => {
+  it("mints a token for the installation on its own account with a JWT its PKCS#1 key signs", async () => {
     const now = Date.UTC(2026, 0, 1, 12);
     const github = fakeGitHub({ now: () => now });
 
@@ -123,7 +130,8 @@ describe("GitHubApp", () => {
     expect(await app.token()).toBe("ghs_token1");
 
     expect(github.seen.map(({ method, url }) => `${method} ${url}`)).toEqual([
-      "GET https://api.github.com/app/installations",
+      "GET https://api.github.com/app",
+      "GET https://api.github.com/app/installations?per_page=100",
       "POST https://api.github.com/app/installations/42/access_tokens",
     ]);
 
@@ -155,43 +163,68 @@ describe("GitHubApp", () => {
     expect(await app.token()).toBe("ghs_token2");
     expect(app.live()).toEqual(["ghs_token1", "ghs_token2"]);
 
-    // The installation is looked up once.
-    expect(github.seen.filter(({ method }) => method === "GET")).toHaveLength(1);
+    // The installations are listed again once the list is five minutes old.
+    expect(github.seen.filter(({ url }) => url.includes("/app/installations?"))).toHaveLength(2);
 
     now += 45 * MINUTE;
     expect(app.live()).toEqual(["ghs_token2"]);
   });
 
-  it("says how to install it when it has no installation, and which accounts when it has several", async () => {
+  it("mints a token for each account it is installed on, named in any case, and says which it is not installed on", async () => {
+    let now = Date.UTC(2026, 0, 1, 12);
+
+    const installations = [
+      { id: 42, login: "ian-pascoe" },
+      { id: 43, login: "SpiritLedSoftware" },
+    ];
+
+    const github = fakeGitHub({ now: () => now, installations });
+
+    const app = new GitHubApp({
+      appId: "1",
+      privateKey: KEYS.privateKey,
+      fetch: github.fetch,
+      now: () => now,
+    });
+
+    const all = await app.tokens();
+
+    expect(all.appAccount).toBe("ian-pascoe");
+    expect(all.problems).toEqual([]);
+    expect(Object.keys(all.byAccount).sort()).toEqual(["ian-pascoe", "spiritledsoftware"]);
+    expect(await app.token("spiritLEDsoftware")).toBe(all.byAccount.spiritledsoftware);
+    expect(await app.token()).toBe(all.byAccount["ian-pascoe"]);
+    expect(new Set(app.live())).toEqual(new Set(Object.values(all.byAccount)));
+
+    await expect(app.token("someone-else")).rejects.toThrow(
+      "The GitHub App is not installed on someone-else: install it there, on all repositories",
+    );
+
+    // An account it is installed on later is found once the list is five minutes old.
+    installations.push({ id: 44, login: "someone-else" });
+    now += 5 * MINUTE;
+
+    expect(Object.keys((await app.tokens()).byAccount).sort()).toEqual([
+      "ian-pascoe",
+      "someone-else",
+      "spiritledsoftware",
+    ]);
+  });
+
+  it("says how to install it when it is not installed on its own account", async () => {
     const now = Date.UTC(2026, 0, 1, 12);
 
-    const none = new GitHubApp({
+    const app = new GitHubApp({
       appId: "1",
       privateKey: KEYS.privateKey,
       fetch: fakeGitHub({ now: () => now, installations: [] }).fetch,
       now: () => now,
     });
 
-    await expect(none.token()).rejects.toThrow(
-      "The GitHub App is not installed: install it on the account whose repos the agent works on",
+    await expect(app.token()).rejects.toThrow(
+      "The GitHub App is not installed on ian-pascoe: install it there, on all repositories",
     );
-
-    const several = new GitHubApp({
-      appId: "1",
-      privateKey: KEYS.privateKey,
-      fetch: fakeGitHub({
-        now: () => now,
-        installations: [
-          { id: 1, login: "ian-pascoe" },
-          { id: 2, login: "spirit-led-software" },
-        ],
-      }).fetch,
-      now: () => now,
-    });
-
-    await expect(several.token()).rejects.toThrow(
-      "The GitHub App is installed on 2 accounts (ian-pascoe, spirit-led-software); cloudpid uses exactly one",
-    );
+    expect(await app.tokens()).toEqual({ byAccount: {}, appAccount: "ian-pascoe", problems: [] });
   });
 
   it("says why GitHub refused it, and asks again only after a wait that doubles with each failure", async () => {
@@ -349,11 +382,14 @@ describe("GitHubApp", () => {
       appId: "1",
       privateKey: KEYS.privateKey,
       fetch: (url, init) => {
-        if (url === "https://api.github.com/app/installations") {
-          return Promise.resolve(Response.json([{ id: installation, account: { login: "ian" } }]));
+        if (url === "https://api.github.com/app/installations?per_page=100") {
+          return Promise.resolve(
+            Response.json([{ id: installation, account: { login: "ian-pascoe" } }]),
+          );
         }
 
-        return url.endsWith(`/installations/${installation}/access_tokens`)
+        return url === "https://api.github.com/app" ||
+          url.endsWith(`/installations/${installation}/access_tokens`)
           ? github.fetch(url, init)
           : Promise.resolve(Response.json({ message: "Not Found" }, { status: 404 }));
       },
@@ -362,10 +398,13 @@ describe("GitHubApp", () => {
 
     expect(await app.token()).toBe("ghs_token1");
 
-    // The mint is refused, so the last token, which has not expired, is handed out meanwhile.
+    // Its token refused and the installation gone, the mint under the id it knows is refused too.
     installation = 43;
-    now += 16 * MINUTE;
-    expect(await app.token()).toBe("ghs_token1");
+    now += 1 * MINUTE;
+    app.invalidate("ghs_token1");
+    await expect(app.token()).rejects.toThrow(
+      "GitHub refused the GitHub App's request (404: Not Found)",
+    );
 
     now += 1 * MINUTE;
     expect(await app.token()).toBe("ghs_token2");

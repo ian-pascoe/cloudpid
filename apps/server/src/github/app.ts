@@ -1,6 +1,6 @@
 // cloudpid's GitHub App (ADR-0025, GLOSSARY.md → GitHub App): GitHub tokens minted on demand from the app's private
-// key for its one installation. A Worker or a Workspace DO holds one `GitHubApp`, which keeps the installation it
-// found and the token it minted last.
+// key, one per installation (an account the app is installed on). A Worker or a Workspace DO holds one `GitHubApp`,
+// which keeps the installations it found and the tokens it minted.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
 
 import * as Option from "effect/Option";
@@ -26,8 +26,25 @@ const RETRY_AFTER_MS = 60_000;
 /** The longest wait between attempts. */
 const MAX_RETRY_AFTER_MS = 15 * 60_000;
 
-/** A minted token and when it expires (ms). */
-export type MintedToken = { readonly token: string; readonly expiresAt: number };
+/** How long the list of the app's installations is kept: an account the app is installed on later is found after it. */
+const INSTALLATIONS_TTL_MS = 5 * 60_000;
+
+/** A minted token, the account (lower case) of the installation it is for, and when it expires (ms). */
+export type MintedToken = {
+  readonly account: string;
+  readonly token: string;
+  readonly expiresAt: number;
+};
+
+/** A token for each of the app's installations, for a command that may reach any of them. */
+export type InstallationTokens = {
+  /** Each installation's token, by its account's login in lower case. */
+  readonly byAccount: Readonly<Record<string, string>>;
+  /** The account that owns the app, in lower case: whose token a command outside any repo gets. */
+  readonly appAccount: string | undefined;
+  /** Why an installation, or the app's own account, has no token: a sentence each. */
+  readonly problems: ReadonlyArray<string>;
+};
 
 /** `cause` as a sentence. */
 const messageOf = (cause: unknown): string =>
@@ -35,8 +52,13 @@ const messageOf = (cause: unknown): string =>
 
 /** Where GitHub tokens come from, for what hands them out and takes them out of output. */
 export type GitHubTokens = {
-  /** A token with at least `TOKEN_MIN_LIFETIME_MS` left. Throws, saying why, when none can be had. */
-  readonly token: () => Promise<string>;
+  /**
+   * A token for the installation on `account` (by default the account that owns the app) with at least
+   * `TOKEN_MIN_LIFETIME_MS` left. Throws, saying why, when none can be had.
+   */
+  readonly token: (account?: string) => Promise<string>;
+  /** A token for every installation, and why any could not be had. Never throws. */
+  readonly tokens: () => Promise<InstallationTokens>;
   /** Every token handed out that has not expired. */
   readonly live: () => ReadonlyArray<string>;
   /** Tell it GitHub refused `token` (a 401), so the next `token()` does not hand it out again. */
@@ -169,18 +191,18 @@ export const githubAppKeyForms = (pem: string): ReadonlyArray<string> => {
 /** How long one request to GitHub may take. */
 const REQUEST_TIMEOUT_MS = 15_000;
 
-const Installations = Schema.Array(
-  Schema.Struct({
-    id: Schema.Int,
-    account: Schema.NullOr(Schema.Struct({ login: Schema.String })),
-  }),
-);
+const Account = Schema.NullOr(Schema.Struct({ login: Schema.String }));
+
+const Installations = Schema.Array(Schema.Struct({ id: Schema.Int, account: Account }));
+
+const AppAnswer = Schema.Struct({ owner: Account });
 
 const MintAnswer = Schema.Struct({ token: Schema.String, expires_at: Schema.String });
 
 const ErrorAnswer = Schema.Struct({ message: Schema.String });
 
 const decodeInstallations = Schema.decodeUnknownOption(Installations);
+const decodeAppAnswer = Schema.decodeUnknownOption(AppAnswer);
 const decodeMintAnswer = Schema.decodeUnknownOption(MintAnswer);
 const decodeErrorAnswer = Schema.decodeUnknownOption(ErrorAnswer);
 
@@ -200,22 +222,28 @@ const refusal = (status: number, said: string): Error => {
   );
 };
 
+/** A failure told again without asking GitHub until `until`, and how many there were in a row. */
+type Failure = { readonly error: Error; readonly until: number; readonly count: number };
+
 /**
- * The app's GitHub tokens for one Worker or Workspace DO: it finds the app's one installation, mints a token when the
- * last one has less than `TOKEN_MIN_LIFETIME_MS` left, and lists the ones that have not expired.
+ * The app's GitHub tokens for one Worker or Workspace DO: it finds the app's installations, mints a token for one when
+ * its last has less than `TOKEN_MIN_LIFETIME_MS` left, and lists the ones that have not expired.
  */
 export class GitHubApp implements GitHubTokens {
   readonly #options: GitHubAppOptions;
   #key: Promise<CryptoKey> | undefined;
-  #installation: number | undefined;
+  /** The app's installations by account (lower case), and when they were listed. */
+  #installations: { readonly at: number; readonly ids: ReadonlyMap<string, number> } | undefined;
+  /** The account that owns the app, in lower case. */
+  #appAccount: string | undefined;
   /** Every token minted, oldest first, until it expires. */
   #minted: MintedToken[];
-  /** A token GitHub refused (`invalidate`), which is not handed out again. */
-  #refused: string | undefined;
-  /** The mint under way, which every caller meanwhile waits for. */
-  #minting: Promise<MintedToken> | undefined;
-  /** The last mint's failure, told again without asking GitHub until `until`, and how many in a row there were. */
-  #failed: { readonly error: Error; readonly until: number; readonly count: number } | undefined;
+  /** The tokens GitHub refused (`invalidate`), which are not handed out again. */
+  readonly #refused = new Set<string>();
+  /** The asks under way (a mint, the list, the app), by what they are for: every caller meanwhile waits for one. */
+  readonly #asking = new Map<string, Promise<unknown>>();
+  /** The last failure of each ask, told again without asking GitHub until it is due. */
+  readonly #failed = new Map<string, Failure>();
 
   constructor(options: GitHubAppOptions) {
     this.#options = options;
@@ -223,19 +251,21 @@ export class GitHubApp implements GitHubTokens {
   }
 
   /**
-   * A GitHub token for the app's installation with at least `TOKEN_MIN_LIFETIME_MS` left: the last one minted, or a
-   * new one. When no new one can be minted, the last one while it has not expired; else throws, saying why.
+   * A token for the installation on `account` (by default the account that owns the app) with at least
+   * `TOKEN_MIN_LIFETIME_MS` left: the last one minted, or a new one. When no new one can be minted, the last one while
+   * it has not expired; else throws, saying why.
    */
-  async token(): Promise<string> {
-    const latest = this.#minted.at(-1);
-    const usable = latest !== undefined && latest.token !== this.#refused ? latest : undefined;
+  async token(account?: string): Promise<string> {
+    const name = account === undefined ? await this.#ownAccount() : account.toLowerCase();
+    const latest = this.#minted.findLast((minted) => minted.account === name);
+    const usable = latest !== undefined && !this.#refused.has(latest.token) ? latest : undefined;
 
     if (usable !== undefined && usable.expiresAt - this.#options.now() >= TOKEN_MIN_LIFETIME_MS) {
       return usable.token;
     }
 
     try {
-      return await this.#fresh();
+      return (await this.#once(`token:${name}`, () => this.#mint(name))).token;
     } catch (cause) {
       if (usable !== undefined && usable.expiresAt > this.#options.now()) return usable.token;
 
@@ -243,42 +273,53 @@ export class GitHubApp implements GitHubTokens {
     }
   }
 
-  /** A newly minted token, unless the last mint failed too recently to ask GitHub again. */
-  async #fresh(): Promise<string> {
-    const failed = this.#failed;
+  /** A token for every installation (each as `token` gives it), and why any could not be had. Never throws. */
+  async tokens(): Promise<InstallationTokens> {
+    const problems: string[] = [];
 
-    if (failed !== undefined && this.#options.now() < failed.until) throw failed.error;
+    const appAccount = await this.#ownAccount().catch((cause: unknown) => {
+      problems.push(messageOf(cause));
 
-    this.#minting ??= this.#mint()
-      .then(
-        (minted) => {
-          this.#failed = undefined;
+      return undefined;
+    });
 
-          return minted;
-        },
-        (cause: unknown) => {
-          const error = cause instanceof Error ? cause : new Error(String(cause));
-          const count = (this.#failed?.count ?? 0) + 1;
-          const wait = Math.min(RETRY_AFTER_MS * 2 ** (count - 1), MAX_RETRY_AFTER_MS);
+    const listed = await this.#installationIds().catch((cause: unknown) => {
+      problems.push(messageOf(cause));
 
-          this.#failed = { error, until: this.#options.now() + wait, count };
+      return undefined;
+    });
 
-          throw error;
-        },
-      )
-      .finally(() => {
-        this.#minting = undefined;
-      });
+    // Without the list, the accounts it had tokens for still get theirs.
+    const accounts =
+      listed === undefined ? new Set(this.#minted.map(({ account }) => account)) : listed.keys();
 
-    return (await this.#minting).token;
+    const byAccount: Record<string, string> = {};
+
+    await Promise.all(
+      Array.from(accounts, async (account) => {
+        try {
+          byAccount[account] = await this.token(account);
+        } catch (cause) {
+          problems.push(`${account}: ${messageOf(cause)}`);
+        }
+      }),
+    );
+
+    return { byAccount, appAccount, problems };
   }
 
   /**
-   * Tell it GitHub refused `token` (a 401): the next `token()` mints another, unless one was minted since. It is still
-   * listed by `live()` until it expires.
+   * Tell it GitHub refused `token` (a 401): the next `token()` for its account mints another, unless one was minted
+   * since. It is still listed by `live()` until it expires.
    */
   invalidate(token: string): void {
-    if (this.#minted.at(-1)?.token === token) this.#refused = token;
+    const refused = this.#minted.find((minted) => minted.token === token);
+
+    if (refused === undefined) return;
+
+    if (this.#minted.findLast(({ account }) => account === refused.account)?.token === token) {
+      this.#refused.add(token);
+    }
   }
 
   /** The tokens minted that have not expired, oldest first: what output and snapshots must not hold. */
@@ -294,8 +335,52 @@ export class GitHubApp implements GitHubTokens {
     return live.map(({ token }) => token);
   }
 
-  async #mint(): Promise<MintedToken> {
-    const installation = await this.#installationId();
+  /**
+   * `attempt`, once for all callers at a time under `key`; after it fails, its failure is told again without trying
+   * until a wait that doubles with each failure in a row is over.
+   */
+  async #once<T>(key: string, attempt: () => Promise<T>): Promise<T> {
+    const failed = this.#failed.get(key);
+
+    if (failed !== undefined && this.#options.now() < failed.until) throw failed.error;
+
+    const running =
+      this.#asking.get(key) ??
+      attempt()
+        .then(
+          (value) => {
+            this.#failed.delete(key);
+
+            return value;
+          },
+          (cause: unknown) => {
+            const error = cause instanceof Error ? cause : new Error(String(cause));
+            const count = (this.#failed.get(key)?.count ?? 0) + 1;
+            const wait = Math.min(RETRY_AFTER_MS * 2 ** (count - 1), MAX_RETRY_AFTER_MS);
+
+            this.#failed.set(key, { error, until: this.#options.now() + wait, count });
+
+            throw error;
+          },
+        )
+        .finally(() => {
+          this.#asking.delete(key);
+        });
+
+    this.#asking.set(key, running);
+
+    // SAFETY: what runs under `key` is only ever `attempt` of the same type: each key names one kind of ask.
+    return (await running) as T;
+  }
+
+  async #mint(account: string): Promise<MintedToken> {
+    const installation = (await this.#installationIds()).get(account);
+
+    if (installation === undefined) {
+      throw new Error(
+        `The GitHub App is not installed on ${account}: install it there, on all repositories`,
+      );
+    }
 
     const answer = await this.#ask(`${API}/app/installations/${installation}/access_tokens`, {
       method: "POST",
@@ -306,8 +391,8 @@ export class GitHubApp implements GitHubTokens {
     });
 
     if (!answer.ok) {
-      // Uninstalled, or installed again under another id: found again at the next attempt.
-      if (answer.status === 404) this.#installation = undefined;
+      // Uninstalled, or installed again under another id: the list is asked for again at the next attempt.
+      if (answer.status === 404) this.#installations = undefined;
 
       throw refusal(answer.status, answer.message);
     }
@@ -319,49 +404,71 @@ export class GitHubApp implements GitHubTokens {
       throw new Error("GitHub's answer to the GitHub App was not a token");
     }
 
-    const minted = { token: decoded.value.token, expiresAt };
-
+    const minted = { account, token: decoded.value.token, expiresAt };
     const now = this.#options.now();
 
-    this.#minted = [...this.#minted.filter(({ expiresAt }) => expiresAt > now), minted];
+    this.#minted = [...this.#minted.filter((kept) => kept.expiresAt > now), minted];
     this.#options.kept?.save(this.#minted);
 
     return minted;
   }
 
-  async #installationId(): Promise<number> {
-    if (this.#installation !== undefined) return this.#installation;
+  /**
+   * The app's installations by account, listed again once `INSTALLATIONS_TTL_MS` old; the last list while a new one
+   * cannot be had. Its first page only: a hundred accounts.
+   */
+  async #installationIds(): Promise<ReadonlyMap<string, number>> {
+    const held = this.#installations;
 
-    const answer = await this.#ask(`${API}/app/installations`, { method: "GET" });
+    if (held !== undefined && this.#options.now() - held.at < INSTALLATIONS_TTL_MS) return held.ids;
 
-    if (!answer.ok) throw refusal(answer.status, answer.message);
+    try {
+      return await this.#once("installations", async () => {
+        const answer = await this.#ask(`${API}/app/installations?per_page=100`, { method: "GET" });
 
-    const decoded = decodeInstallations(answer.value);
+        if (!answer.ok) throw refusal(answer.status, answer.message);
 
-    if (Option.isNone(decoded)) {
-      throw new Error("GitHub's answer to the GitHub App was not a list of installations");
+        const decoded = decodeInstallations(answer.value);
+
+        if (Option.isNone(decoded)) {
+          throw new Error("GitHub's answer to the GitHub App was not a list of installations");
+        }
+
+        const ids = new Map<string, number>();
+
+        for (const { id, account } of decoded.value) {
+          if (account !== null) ids.set(account.login.toLowerCase(), id);
+        }
+
+        this.#installations = { at: this.#options.now(), ids };
+
+        return ids;
+      });
+    } catch (cause) {
+      if (held !== undefined) return held.ids;
+
+      throw cause;
     }
+  }
 
-    const installations = decoded.value;
-    const [only, ...others] = installations;
+  /** The account that owns the app, in lower case, asked once. */
+  async #ownAccount(): Promise<string> {
+    if (this.#appAccount !== undefined) return this.#appAccount;
 
-    if (only === undefined) {
-      throw new Error(
-        "The GitHub App is not installed: install it on the account whose repos the agent works on",
-      );
-    }
+    return this.#once("app", async () => {
+      const answer = await this.#ask(`${API}/app`, { method: "GET" });
 
-    if (others.length > 0) {
-      const accounts = installations.map(({ account }) => account?.login ?? "?").join(", ");
+      if (!answer.ok) throw refusal(answer.status, answer.message);
 
-      throw new Error(
-        `The GitHub App is installed on ${installations.length} accounts (${accounts}); cloudpid uses exactly one: uninstall it from the others`,
-      );
-    }
+      const login = Option.getOrUndefined(decodeAppAnswer(answer.value))?.owner?.login;
 
-    this.#installation = only.id;
+      if (login === undefined)
+        throw new Error("GitHub's answer to the GitHub App did not name its owner");
 
-    return only.id;
+      this.#appAccount = login.toLowerCase();
+
+      return this.#appAccount;
+    });
   }
 
   /** `url` asked as the app, with a JWT. Throws when GitHub cannot be reached or its answer is not JSON. */

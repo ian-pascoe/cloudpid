@@ -192,6 +192,19 @@ describe("a command's environment", () => {
     expect(env.GITHUB_TOKEN).toBe("ghs_secret");
   });
 
+  it("carries each account's token as login=token words, for git to pick from by the repo's owner", () => {
+    expect(
+      githubTokenEnv("ghs_a", { spiritledsoftware: "ghs_b", "Ian-Pascoe": "ghs_a", empty: "" }),
+    ).toEqual({
+      GH_TOKEN: "ghs_a",
+      GITHUB_TOKEN: "ghs_a",
+      CLOUDPID_GITHUB_TOKENS: "ian-pascoe=ghs_a spiritledsoftware=ghs_b",
+    });
+    expect(githubTokenEnv(undefined, { org: "ghs_b" })).toEqual({
+      CLOUDPID_GITHUB_TOKENS: "org=ghs_b",
+    });
+  });
+
   it("carries no token variable when there is none, so a blank one cannot shadow a user's", () => {
     expect(githubTokenEnv("")).toEqual({});
     expect(githubTokenEnv(undefined)).toEqual({});
@@ -215,7 +228,7 @@ describe("a command's environment", () => {
 
   it("sets only names an Environment's variable may not have, so none overrides it", () => {
     // @cloudpid/config cannot import this package, so its list of reserved names is a copy.
-    for (const name of Object.keys({ ...toolchainEnv(), ...githubTokenEnv("x") })) {
+    for (const name of Object.keys({ ...toolchainEnv(), ...githubTokenEnv("x", { a: "y" }) })) {
       expect(variableNameProblem(name), name).toContain("reserved");
     }
   });
@@ -812,6 +825,35 @@ describe("git after the bootstrap", () => {
 
     expect(filled.stdout).toContain("username=x-access-token");
     expect(filled.stdout).toContain("password=ghp_secret");
+  });
+
+  it("answers with the token of the repo's owner, whatever its case, and with GITHUB_TOKEN for an owner it has none of", () => {
+    const { run, home } = sandbox();
+
+    run(identity);
+
+    const env = {
+      GITHUB_TOKEN: "ghs_default",
+      CLOUDPID_GITHUB_TOKENS: "ian-pascoe=ghs_ian spiritledsoftware=ghs_org",
+    };
+
+    const fill = (path: string) =>
+      git(home, ["credential", "fill"], env, `protocol=https\nhost=github.com\npath=${path}\n\n`)
+        .stdout;
+
+    expect(fill("SpiritLedSoftware/site.git")).toContain("password=ghs_org");
+    expect(fill("ian-pascoe/cloudpid.git")).toContain("password=ghs_ian");
+    expect(fill("someone/else.git")).toContain("password=ghs_default");
+  });
+
+  it("asks git for the repo's path, so the owner is known", () => {
+    const { run, home } = sandbox();
+
+    run(identity);
+
+    expect(
+      git(home, ["config", "--global", "credential.https://github.com.useHttpPath"]).stdout.trim(),
+    ).toBe("true");
   });
 
   it("gives no other host the token", () => {

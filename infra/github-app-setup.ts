@@ -10,9 +10,11 @@
  * 2. It writes CLOUDPID_GITHUB_APP_ID and CLOUDPID_GITHUB_APP_PRIVATE_KEY into the GitHub environments `production` and
  *    `preview` of the repo (`gh secret set`) and into ~/.config/cloudpid/dev.env, at once, so the key is kept before
  *    anything else can fail. No other copy is kept: a lost key is replaced from the app's settings.
- * 3. It sends you to install the app (choose All repositories), then mints a token to check the installation.
+ * 3. It sends you to install the app (choose All repositories) on your account and on each organization whose repos
+ *    the agent works on, then mints a token for each installation to check them.
  *
- * The app is registered under your own account. It is private, so it can only be installed there.
+ * The app is registered under your own account and is public, so it can be installed on your organizations too (an
+ * installation by anyone else gives cloudpid their repos, nothing of yours).
  */
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalFetch:off asyncFunction:off globalTimers:off globalDate:off newPromise:off processEnv:off preferEffectArray:off preferEffectRecord:off -- a local script, not a Worker.
 import { spawn } from "node:child_process";
@@ -204,7 +206,7 @@ const install = async (app: Registered) => {
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
 
   console.log(
-    `\nInstall it on ${app.owner?.login ?? "your account"}, choosing All repositories (it opens by itself, or open this):`,
+    `\nInstall it on ${app.owner?.login ?? "your account"} and on each organization whose repos the agent works on, choosing All repositories each time (it opens by itself, or open this):`,
   );
   openInBrowser(`https://github.com/apps/${app.slug}/installations/new`);
 
@@ -212,14 +214,19 @@ const install = async (app: Registered) => {
     for (;;) {
       await prompt.question("Press Enter once it is installed. ");
 
-      try {
-        await github.token();
-        console.log("The app is installed: a GitHub token was minted from it.");
+      const installed = await github.tokens();
+
+      for (const problem of installed.problems) console.log(problem);
+
+      const accounts = Object.keys(installed.byAccount);
+
+      if (installed.appAccount !== undefined && accounts.includes(installed.appAccount)) {
+        console.log(`Installed on ${accounts.join(", ")}: a GitHub token was minted for each.`);
 
         return;
-      } catch (cause) {
-        console.log(cause instanceof Error ? cause.message : String(cause));
       }
+
+      console.log(`It is not installed on ${app.owner?.login ?? "your account"} yet.`);
     }
   } finally {
     prompt.close();

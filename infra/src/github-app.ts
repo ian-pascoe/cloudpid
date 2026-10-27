@@ -15,7 +15,7 @@ export const GITHUB_APP_PERMISSIONS = {
 } as const;
 
 /**
- * The manifest GitHub registers the app from: private (so it can only be installed on the account that owns it), with
+ * The manifest GitHub registers the app from: public (so it can be installed on the owner's organizations too), with
  * `GITHUB_APP_PERMISSIONS`, no webhook until the triggers need one, and back to the setup once registered.
  */
 export const githubAppManifest = (options: {
@@ -26,7 +26,7 @@ export const githubAppManifest = (options: {
   name: options.name,
   url: options.homepage,
   redirect_url: options.redirect,
-  public: false,
+  public: true,
   default_permissions: GITHUB_APP_PERMISSIONS,
   default_events: [],
 });

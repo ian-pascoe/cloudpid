@@ -480,6 +480,8 @@ export class Workspace extends ContainerHost {
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       github,
+      // A command's `GH_TOKEN` is the token of the account that owns the repos of its working directory.
+      repoAccount: (directory) => this.#comparison.githubAccountOf(directory),
       // Taken out of output as the token is, each as its Secret Reference.
       secrets: {
         read: async () => {

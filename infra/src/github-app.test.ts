@@ -25,7 +25,7 @@ const KEY =
   "-----BEGIN RSA PRIVATE KEY-----\nMIIEow'IBAAKCAQEA\nzz$HOME`x`\n-----END RSA PRIVATE KEY-----\n";
 
 describe("the manifest the setup registers the GitHub App from", () => {
-  it("is a private app named as asked, with the permissions ADR-0025 lists, no webhook, and the setup's redirect", () => {
+  it("is a public app named as asked, with the permissions ADR-0025 lists, no webhook, and the setup's redirect", () => {
     expect(
       githubAppManifest({
         name: "cloudpid",
@@ -36,7 +36,7 @@ describe("the manifest the setup registers the GitHub App from", () => {
       name: "cloudpid",
       url: "https://pi.ianpascoe.dev",
       redirect_url: "http://127.0.0.1:4567/done",
-      public: false,
+      public: true,
       default_permissions: {
         contents: "write",
         pull_requests: "write",

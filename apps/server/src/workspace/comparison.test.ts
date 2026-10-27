@@ -528,6 +528,30 @@ describe("the Comparison module's picker", () => {
   });
 });
 
+describe("the GitHub account of a working directory", () => {
+  it("is the owner of the repos it covers when they have one, in lower case, and none otherwise", async () => {
+    const space = workspace();
+
+    onGitHub(space);
+    space.sh("git init -q -b main lib", space.root);
+
+    const { comparison } = module(space);
+
+    // `lib` has no remote: the root covers one owner.
+    expect(await comparison.githubAccountOf("/workspace")).toBe("acme");
+    expect(await comparison.githubAccountOf("/workspace/app/src")).toBe("acme");
+    expect(await comparison.githubAccountOf("/workspace/lib")).toBeUndefined();
+
+    space.sh(
+      "git remote add origin https://github.com/Spirit-Org/lib.git",
+      join(space.root, "lib"),
+    );
+
+    expect(await comparison.githubAccountOf("/workspace/lib")).toBe("spirit-org");
+    expect(await comparison.githubAccountOf("/workspace")).toBeUndefined();
+  });
+});
+
 describe("the Comparison module's contents", () => {
   /** `app` on `feat` with an edit, a rename and a new file; the Comparison made and the Container stopped. */
   const made = async () => {

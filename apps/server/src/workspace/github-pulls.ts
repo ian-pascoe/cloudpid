@@ -237,8 +237,8 @@ export type GithubOptions = {
   /** GitHub's API; a test Worker replaces it. */
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
   /**
-   * Where the GitHub token comes from (the GitHub App), told of one GitHub refused; absent, GitHub is asked without one
-   * (public repos only, REST alone).
+   * Where the GitHub tokens come from (the GitHub App, a token for the installation on the repo's owner), told of one
+   * GitHub refused; absent, GitHub is asked without one (public repos only, REST alone).
    */
   readonly github: Pick<GitHubTokens, "token" | "invalidate"> | undefined;
   /** The time in ms: the 60 s the list is kept, and how long a failure is, are counted by it. */
@@ -289,10 +289,14 @@ export class GithubPulls {
   }
 
   /**
-   * `url` asked with a GitHub token: when GitHub refuses it with a 401, the token is invalidated and the request made
-   * once more with a new one.
+   * `url`, about `repo`, asked with a GitHub token for its owner: when GitHub refuses it with a 401, the token is
+   * invalidated and the request made once more with a new one.
    */
-  async #request(url: string, request: Request): Promise<GithubResult<unknown> | Failure> {
+  async #request(
+    repo: GitHubRepo,
+    url: string,
+    request: Request,
+  ): Promise<GithubResult<unknown> | Failure> {
     const github = this.#options.github;
 
     if (github === undefined) return this.#askOnce(url, request, undefined);
@@ -301,7 +305,7 @@ export class GithubPulls {
       let token: string;
 
       try {
-        token = await github.token();
+        token = await github.token(repo.owner);
       } catch (cause) {
         return {
           kind: "failed",
@@ -383,8 +387,16 @@ export class GithubPulls {
     }
   }
 
-  /** A request, unless the rate limit holds it or the same one failed a moment ago; failures are remembered. */
-  async #send(key: string, url: string, request: Request = {}): Promise<GithubResult<unknown>> {
+  /**
+   * A request about `repo`, unless the rate limit holds it or the same one failed a moment ago; failures are
+   * remembered.
+   */
+  async #send(
+    repo: GitHubRepo,
+    key: string,
+    url: string,
+    request: Request = {},
+  ): Promise<GithubResult<unknown>> {
     const now = this.#options.now();
 
     if (now < this.#limitedUntil) {
@@ -401,7 +413,7 @@ export class GithubPulls {
       };
     }
 
-    const answer = await this.#request(url, request);
+    const answer = await this.#request(repo, url, request);
 
     if ("status" in answer) {
       this.#failures.delete(key);
@@ -429,7 +441,7 @@ export class GithubPulls {
   /** One pull request of `repo`: its state, head and base (and counts, which a list has anyway). */
   async get(repo: GitHubRepo, number: number): Promise<GithubResult<GithubPull>> {
     const path = `/repos/${repo.owner}/${repo.name}/pulls/${number}`;
-    const answer = await this.#send(path, `https://api.github.com${path}`);
+    const answer = await this.#send(repo, path, `https://api.github.com${path}`);
 
     if (answer.status === "error") return answer;
 
@@ -474,7 +486,7 @@ export class GithubPulls {
     });
 
     const path = `/repos/${repo.owner}/${repo.name}/pulls?${query.toString()}`;
-    const answer = await this.#send(path, `https://api.github.com${path}`);
+    const answer = await this.#send(repo, path, `https://api.github.com${path}`);
 
     if (answer.status === "error") return answer;
 
@@ -493,6 +505,7 @@ export class GithubPulls {
 
   async #fetchList(repo: GitHubRepo): Promise<GithubResult<readonly GithubPull[]>> {
     const answer = await this.#send(
+      repo,
       `graphql:${fullName(repo).toLowerCase()}`,
       "https://api.github.com/graphql",
       {
@@ -590,6 +603,7 @@ export class GithubPulls {
 
     for (let page = 0; page < BRANCH_PAGES; page += 1) {
       const answer = await this.#send(
+        repo,
         `graphql:branches:${key}:${after ?? ""}`,
         "https://api.github.com/graphql",
         {

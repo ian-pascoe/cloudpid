@@ -265,9 +265,14 @@ describe("the open pull requests of a repo", () => {
   it("asks once more with a new token when GitHub refuses one with a 401, and says it refused the second", async () => {
     const minted = ["ghs_old"];
     const invalidated: string[] = [];
+    const accounts: Array<string | undefined> = [];
 
     const github = {
-      token: async () => minted.at(-1) ?? "",
+      token: async (account?: string) => {
+        accounts.push(account);
+
+        return minted.at(-1) ?? "";
+      },
       invalidate: (token: string) => {
         invalidated.push(token);
         minted.push(`ghs_new${minted.length}`);
@@ -290,6 +295,8 @@ describe("the open pull requests of a repo", () => {
       "Bearer ghs_new1",
     ]);
     expect(invalidated).toEqual(["ghs_old"]);
+    // Each a token for the installation on the repo's owner.
+    expect(accounts).toEqual(["ian-pascoe", "ian-pascoe"]);
 
     const refusing = client({ [GRAPHQL]: () => json(BAD_CREDENTIALS, 401) }, github);
 

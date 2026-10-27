@@ -205,11 +205,11 @@ What stops the largest process in a Container that is nearly out of memory, so t
 _Avoid_: OOM killer (the kernel's, which acts too late to save the Container)
 
 **GitHub App**:
-cloudpid's own identity on GitHub, installed on the owner's account, which the agent's pushes, pull requests and comments come from.
+cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from.
 _Avoid_: Bot account, PAT
 
 **GitHub token**:
-A short-lived token minted from the GitHub App for the agent's commands and cloudpid's own calls to GitHub.
+A short-lived token minted from the GitHub App, for one account it is installed on, for the agent's commands and cloudpid's own calls to GitHub.
 _Avoid_: PAT, installation token (outside the code)
 
 **Terminal**:
