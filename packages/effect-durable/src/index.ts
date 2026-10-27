@@ -7,7 +7,7 @@ export { callDurable, Harness, HarnessError, type HarnessService, openHarness } 
 
 export { effectHook, type EffectHooks } from "./hook.ts";
 
-export { effectSection } from "./section.ts";
+export { effectSection, frozenSection } from "./section.ts";
 
 export { effectTask, type EffectTaskDefinition, type TaskFailure } from "./task.ts";
 

@@ -16,7 +16,7 @@
 // A `beforeRequest` hook makes it what the request holds (the section, and the results that carry `details.agentsMd`),
 // so after a Handoff or a compaction took a result out, the instructions it showed are added again at the next touch.
 // A call of a script (`codemode`) leaves no result in the context, so it adds nothing.
-import { callDurable, effectHook, effectSection, Harness } from "@cloudpid/effect-durable";
+import { callDurable, effectHook, frozenSection, Harness } from "@cloudpid/effect-durable";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
@@ -208,24 +208,15 @@ const Shown = Effect.gen(function* () {
 
 /** The section: the instructions of the conversation's `cwd`, read once per context and then shown as they were. */
 const Section = (root: string) =>
-  effectSection(
-    SECTION_KEY,
-    (input) => {
-      const shown = input.shown[SECTION_KEY];
+  // A file the agent changes is shown again with its tool's result.
+  frozenSection(SECTION_KEY, (input) => {
+    const { env } = input;
 
-      // Shown already: the same text again, whatever the files say now, so the system prompt never changes. A file
-      // the agent changes is shown again with its tool's result.
-      if (shown !== undefined) return Effect.succeed(shown);
+    if (env === undefined) return Effect.undefined;
 
-      const { env } = input;
-
-      if (env === undefined) return Effect.undefined;
-
-      // As the `skills` section's discovery: the section's Effect is not handed the request's Chord context.
-      return Effect.map(instructionsOf(env, env.cwd, root, BACKGROUND_CONTEXT), formatSection);
-    },
-    { tag: false },
-  );
+    // As the `skills` section's discovery: the section's Effect is not handed the request's Chord context.
+    return Effect.map(instructionsOf(env, env.cwd, root, BACKGROUND_CONTEXT), formatSection);
+  });
 
 /** A file to add to a result: new to the context, or shown with other text (`updated`). */
 type Added = { readonly file: InstructionFile; readonly hash: string; readonly updated: boolean };

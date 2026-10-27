@@ -1,7 +1,16 @@
 // pi-durable's Harness and the faux provider are Promise-based, so these tests are too.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { Harness as ServiceHarness, openHarness } from "@cloudpid/effect-durable";
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type AssistantMessage,
+  type Message,
+  type ToolCall,
+} from "@earendil-works/pi-ai";
 import { createRegistry, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import {
   err,
@@ -11,9 +20,11 @@ import {
   type FileListEntry,
 } from "@earendil-works/pi-durable/env";
 import { Type } from "@earendil-works/pi-ai";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
+import { ContextManagement } from "./context.ts";
 import {
   BUNDLED_SKILLS_DIRECTORY,
   discoverSkills,
@@ -389,10 +400,11 @@ describe("the skills section", () => {
     expect(reads.length).toBeLessThanOrEqual(100);
   });
 
-  it("is absent when no skill is found", async () => {
+  it("adds nothing to the prompt when no skill is found", async () => {
+    // The section is there but empty: it records that the context read the Skills and found none.
     expect(
       await skillsSection("/workspace/repo", { "/workspace/repo/README.md": "# repo\n" }),
-    ).toBeUndefined();
+    ).toBe("");
   });
 
   it("takes the skills of an environment that discovers its own, without a read or a listing", async () => {
@@ -468,5 +480,205 @@ describe("discoverSkills with a directory's skills already known", () => {
     );
 
     expect(found.map((skill) => skill.description)).toEqual(["Repo's own."]);
+  });
+});
+
+describe("the skills section over a conversation's Context Windows", () => {
+  const SKILLS = "/workspace/repo/.agents/skills";
+
+  /** What a step is given: the files to change before it answers, and `call` to answer with a tool call. */
+  type Turn = {
+    readonly files: Record<string, string>;
+    readonly call: (name: string, args: ToolCall["arguments"]) => AssistantMessage;
+  };
+
+  type Options = {
+    /** The environment's own discovery, in place of a walk of `files`; it may fail. */
+    readonly own?: () => Promise<ReadonlyArray<Skill>>;
+    /** The conversation has no environment. */
+    readonly noEnv?: boolean;
+  };
+
+  /**
+   * Run a conversation over `files` whose model gets `steps` in order, then "Done.", with a request after each.
+   * Returns the `skills` section each request carried, in order (undefined where it carried none).
+   */
+  const sectionsOfEachRequest = async (
+    files: Record<string, string>,
+    steps: ReadonlyArray<(turn: Turn) => AssistantMessage>,
+    options: Options = {},
+  ) => {
+    const faux = fauxProvider({ models: [{ id: "faux-1", contextWindow: 1_000_000 }] });
+    const models = createModels();
+    const sections: Array<string | undefined> = [];
+    let calls = 0;
+
+    const turn: Turn = {
+      files,
+      call: (name, args) =>
+        fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${name}-${calls++}` })], {
+          stopReason: "toolUse",
+        }),
+    };
+
+    models.setProvider(faux.provider);
+    faux.setResponses(
+      Array.from({ length: 20 }, () => (request: { readonly messages: readonly Message[] }) => {
+        let section: string | undefined;
+
+        for (const message of request.messages) {
+          if (message.role === "system" && message.sections !== undefined) {
+            if ("skills" in message.sections) section = message.sections["skills"] ?? undefined;
+          }
+        }
+
+        const step = steps[sections.length];
+
+        sections.push(section);
+
+        return step === undefined ? fauxAssistantMessage("Done.") : step(turn);
+      }),
+    );
+
+    const service = await Effect.runPromise(
+      openHarness(new MemoryStorage(), {
+        models,
+        env: () => {
+          if (options.noEnv === true) return undefined;
+
+          const env = envOf("/workspace/repo", files);
+
+          return options.own === undefined ? env : withOwn(env, options.own);
+        },
+      }),
+    );
+
+    const extensions = await Effect.runPromise(
+      Effect.all([Skills, ContextManagement]).pipe(
+        Effect.provide(Context.make(ServiceHarness, service)),
+      ),
+    );
+
+    for (const extension of [{ name: "tools", tools: [noop] }, ...extensions]) {
+      await Effect.runPromise(service.install(extension));
+    }
+
+    const conversation = await service.harness.root(BACKGROUND_CONTEXT, {
+      agent: { model: { provider: "faux", modelId: "faux-1" } },
+    });
+
+    await (
+      await conversation.submit({ type: "input", content: "Go" }, BACKGROUND_CONTEXT)
+    ).wait(BACKGROUND_CONTEXT);
+    await service.harness.waitForIdle(BACKGROUND_CONTEXT);
+
+    return sections;
+  };
+
+  it("shows the Skills as they were at the first request for as long as the context lasts", async () => {
+    const sections = await sectionsOfEachRequest(
+      { [`${SKILLS}/deploy/SKILL.md`]: skillFile("deploy", "Ship it.") },
+      [
+        ({ files, call }) => {
+          files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+          return call("read", {});
+        },
+        ({ files, call }) => {
+          files[`${SKILLS}/deploy/SKILL.md`] = skillFile("deploy", "Changed description.");
+
+          return call("read", {});
+        },
+      ],
+    );
+
+    // The system prompt is the head of every request: a Skill saved meanwhile may not rewrite it.
+    expect(sections).toHaveLength(3);
+    expect(sections[0]).toContain("<name>deploy</name>");
+    expect(sections[0]).not.toContain("<name>lint</name>");
+    expect(sections).toEqual(sections.map(() => sections[0]));
+  });
+
+  it("lists the Skills as they are then after a Handoff", async () => {
+    const sections = await sectionsOfEachRequest(
+      { [`${SKILLS}/deploy/SKILL.md`]: skillFile("deploy", "Ship it.") },
+      [
+        ({ files, call }) => {
+          files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+          return call("read", {});
+        },
+        ({ call }) => call("context_rollover", { handoff: "Keep going." }),
+      ],
+    );
+
+    expect(sections[0]).not.toContain("<name>lint</name>");
+    expect(sections[1]).toBe(sections[0]);
+    expect(sections.at(-1)).toContain("<name>deploy</name>");
+    expect(sections.at(-1)).toContain("<name>lint</name>");
+  });
+
+  it("stays without a list when the first read found no Skills, though one is added later", async () => {
+    const sections = await sectionsOfEachRequest({}, [
+      ({ files, call }) => {
+        files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+        return call("read", {});
+      },
+      ({ call }) => call("read", {}),
+    ]);
+
+    expect(sections).toHaveLength(3);
+    // Nothing of the system prompt changed after the first request: no section was added meanwhile.
+    expect(sections).toEqual(sections.map(() => sections[0]));
+    expect(sections.join("")).not.toContain("<name>lint</name>");
+  });
+
+  it("lists the Skills of a later Context Window though the first one had none", async () => {
+    const sections = await sectionsOfEachRequest({}, [
+      ({ files, call }) => {
+        files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+        return call("context_rollover", { handoff: "Keep going." });
+      },
+    ]);
+
+    // The first context froze "nothing to list", and kept it until the Handoff.
+    expect(sections[0]).toBe("");
+    expect(sections.at(-1)).toContain("<name>lint</name>");
+  });
+
+  it("freezes nothing when the first read fails, so the next request reads again", async () => {
+    const lint: Skill = {
+      name: "lint",
+      description: "Lint it.",
+      filePath: `${SKILLS}/lint/SKILL.md`,
+      disableModelInvocation: false,
+    };
+
+    let reads = 0;
+
+    const sections = await sectionsOfEachRequest(
+      {},
+      [({ call }) => call("read", {}), ({ call }) => call("read", {})],
+      {
+        own: () =>
+          reads++ === 0 ? Promise.reject(new Error("unreachable")) : Promise.resolve([lint]),
+      },
+    );
+
+    expect(sections[0]).toBeUndefined();
+    expect(sections[1]).toContain("<name>lint</name>");
+    // Read now, the list is frozen as any other.
+    expect(sections[2]).toBe(sections[1]);
+    expect(reads).toBe(2);
+  });
+
+  it("freezes nothing without an environment", async () => {
+    const sections = await sectionsOfEachRequest({}, [({ call }) => call("read", {})], {
+      noEnv: true,
+    });
+
+    expect(sections).toEqual([undefined, undefined]);
   });
 });
