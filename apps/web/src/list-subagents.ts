@@ -5,7 +5,7 @@
 // and kept expanded per device by the owner; it also expands while the page shown is the Session's, until the owner
 // collapses it there, and always while one of its Subagent pages is shown, so the row of the page is in view.
 
-import type { SessionAgent, SessionRecord } from "@cloudpid/protocol";
+import type { SessionAgent } from "@cloudpid/protocol";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
 import { agentIdAtom, sessionIdAtom } from "./router.ts";
@@ -75,10 +75,6 @@ export const MAX_INDENT = 2;
 
 /** How many steps a row at `depth` is indented below its Session: one per level, up to `MAX_INDENT`. */
 export const indentOf = (depth: number): number => Math.min(Math.max(depth, 0), MAX_INDENT);
-
-/** How many subagents of `session` are working. */
-export const workingCount = (session: SessionRecord): number =>
-  (session.agents ?? []).filter((agent) => agent.status === "working").length;
 
 /** How many Sessions' expanded trees this device keeps: the last expanded. */
 export const MAX_EXPANDED = 200;
