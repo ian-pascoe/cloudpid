@@ -10,6 +10,8 @@ const SESSION_SOCKET_PATH = new RegExp(`^/sessions/(${SESSION_ID})/socket$`);
 
 const ATTACHMENT_PATH = new RegExp(`^/sessions/(${SESSION_ID})/attachments/([^/]+)$`);
 
+const ASSETS_PREFIX = "/assets/";
+
 const pathOf = (request: HttpServerRequest.HttpServerRequest) =>
   new URL(request.url, "http://localhost").pathname;
 
@@ -21,6 +23,14 @@ export const sessionSocketId = (
   request: HttpServerRequest.HttpServerRequest,
 ): string | undefined =>
   request.method === "GET" ? SESSION_SOCKET_PATH.exec(pathOf(request))?.[1] : undefined;
+
+/**
+ * Whether `request` asks for a file under `/assets/`, where the web build puts its hashed chunks and stylesheets. The
+ * asset layer answers one that exists without waking the Worker, so a request that reaches the Worker is for a file
+ * the current build does not have (a tab from before a deploy asks for its own build's chunks).
+ */
+export const isAssetPath = (request: HttpServerRequest.HttpServerRequest): boolean =>
+  pathOf(request).startsWith(ASSETS_PREFIX);
 
 /** Whether `request` is a call of `RegistryRpcs`: a `POST` to `RPC_PATH`, with the trailing slash Effect's client adds. */
 export const isRegistryRpc = (request: HttpServerRequest.HttpServerRequest): boolean =>

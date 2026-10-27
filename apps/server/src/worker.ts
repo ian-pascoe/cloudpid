@@ -25,7 +25,8 @@ import {
   spareUpkeep,
 } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
-import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { missingAsset } from "./missing-asset.ts";
+import { attachmentRoute, isAssetPath, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { serveAttachment } from "./serve-attachment.ts";
 import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
@@ -47,7 +48,8 @@ import { Workspaces } from "./workspace/resource.ts";
 /**
  * The web app (`apps/web`), built at deploy time and served as static assets by this Worker: a request that matches a
  * file is answered by the asset layer without waking the Worker, a navigation to an unknown path (`/sessions/:id`)
- * gets `index.html`, and every other request (the Session socket, `/rpc`) reaches the Worker. The Worker's bundle
+ * gets `index.html`, and every other request (the Session socket, `/rpc`) reaches the Worker, a missing `/assets/…`
+ * file among them (a 404 there, `missingAsset`). The Worker's bundle
  * folds the build step away, so only the deploy runs it.
  */
 const webAssets = Effect.gen(function* () {
@@ -202,6 +204,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const sessionId = sessionSocketId(request);
+
+        // Only a file the build lacks gets here: the asset layer answers the ones it has, and a navigation gets the app.
+        if (isAssetPath(request)) return missingAsset;
 
         if (sessionId !== undefined) return yield* connectSession(sessions, registries, sessionId);
 

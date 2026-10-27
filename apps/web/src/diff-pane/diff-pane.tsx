@@ -10,9 +10,10 @@
 import type { RepoChanges } from "@cloudpid/protocol";
 import { useAtom, useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ChevronRight, CircleAlert, RefreshCw, WrapText } from "lucide-react";
-import { lazy, Suspense } from "react";
 import { useShownSessionId } from "../chat/conversation.ts";
 import { Button } from "../components/ui/button.tsx";
+import { lazyChunk } from "../lazy-chunk.ts";
+import { LazyView } from "../lazy-view.tsx";
 import { cn } from "../lib/utils.ts";
 import { changesAtom } from "../session/atoms.ts";
 import type { ChangesState } from "../session/state.ts";
@@ -25,7 +26,7 @@ import { diffLayoutAtom, diffWrapAtom, type DiffLayout } from "./prefs.ts";
 import { changesTotalsAtom } from "./watch.ts";
 
 // The library, its highlighter and the workers are a chunk of their own, fetched when the Pane first opens.
-const ChangesView = lazy(() => import("./changes-view.tsx"));
+const ChangesView = lazyChunk(() => import("./changes-view.tsx"));
 
 /** From this Pane width, in px, the file list is a rail beside the diff; narrower, it folds above it. */
 export const RAIL_MIN_WIDTH = 900;
@@ -280,7 +281,7 @@ const PaneBody = () => {
               {list}
             </nav>
           )}
-          <Suspense
+          <LazyView
             fallback={<p className="px-4 py-6 text-sm text-muted-foreground">Loading the diff…</p>}
           >
             <ChangesView
@@ -303,7 +304,7 @@ const PaneBody = () => {
                 )
               }
             />
-          </Suspense>
+          </LazyView>
         </div>
       )}
     </div>
