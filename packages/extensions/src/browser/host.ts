@@ -14,6 +14,7 @@ import type {
   LiveViewLinks,
   OwnerTabLinks,
   OwnerTabListing,
+  OwnerTabPageRead,
 } from "./contract.ts";
 
 export {
@@ -38,6 +39,7 @@ export {
   type OwnerTabLinks,
   type OwnerTabListing,
   SHOWN_OWNER_TAB,
+  type OwnerTabPageRead,
 } from "./contract.ts";
 
 /** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
@@ -90,6 +92,13 @@ export type BrowserHostService = {
   readonly showOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
   /** Close Owner tab `id` and the windows it opened; the list after it. A tab already gone is not an error. */
   readonly closeOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
+  /**
+   * Read the Owner tabs `ids` for a message they are attached to: URL, title and selected text. Fails (its message holds
+   * `OWNER_TAB_GONE`) when one is not still there.
+   */
+  readonly readOwnerTabPages: (
+    ids: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<OwnerTabPageRead>, BrowserError>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   readonly waitHandoff: (
     requestId: string,

@@ -9,6 +9,7 @@ import {
   type OwnerTabListing,
   type ClientMessage,
   type RepoChanges,
+  type PageRef,
   type SecretRequest,
   type SessionUsage,
   type SessionView,
@@ -102,6 +103,8 @@ export interface AbortTarget {
 export interface OutgoingMessage {
   readonly input: UserInput;
   readonly display: string;
+  /** The Owner tabs attached to it (`Submit.pages`); the Session reads them as the message is sent. */
+  readonly pages?: readonly PageRef[];
 }
 
 export interface SessionState {

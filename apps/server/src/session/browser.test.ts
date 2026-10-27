@@ -26,6 +26,7 @@ describe("the Session's browser host", () => {
           openOwnerTab: () => Promise.reject(new Error("not here")),
           showOwnerTab: () => Promise.reject(new Error("not here")),
           closeOwnerTab: () => Promise.reject(new Error("not here")),
+          readOwnerTabPages: () => Promise.reject(new Error("not here")),
           waitHandoff: () => Promise.reject(new Error("not here")),
           endHandoff: () => Promise.reject(new Error("not here")),
         }),
@@ -59,6 +60,7 @@ describe("the Session's browser host", () => {
           openOwnerTab: () => Promise.reject(new Error("overloaded")),
           showOwnerTab: () => Promise.reject(new Error("overloaded")),
           closeOwnerTab: () => Promise.reject(new Error("overloaded")),
+          readOwnerTabPages: () => Promise.reject(new Error("overloaded")),
           waitHandoff: () => Promise.reject(new Error("overloaded")),
           endHandoff: () => Promise.reject(new Error("overloaded")),
         }),
@@ -98,6 +100,7 @@ describe("the Session's browser host", () => {
           openOwnerTab: () => Promise.reject(new Error("not here")),
           showOwnerTab: () => Promise.reject(new Error("not here")),
           closeOwnerTab: () => Promise.reject(new Error("not here")),
+          readOwnerTabPages: () => Promise.reject(new Error("not here")),
           waitHandoff: (requestId, maxMs) => {
             calls.push({ name, wait: [requestId, maxMs] });
 
@@ -149,6 +152,7 @@ describe("the Session's browser host", () => {
           openOwnerTab: () => Promise.reject(new Error("the Owner tab is gone")),
           showOwnerTab: () => Promise.reject(new Error("the Owner tab is gone")),
           closeOwnerTab: () => Promise.reject(new Error("the Owner tab is gone")),
+          readOwnerTabPages: () => Promise.reject(new Error("not here")),
           waitHandoff: () => Promise.resolve({ state: "waiting" }),
           endHandoff: () => Promise.resolve({ windowOrigins: [] }),
         }),
@@ -195,6 +199,7 @@ describe("the Session's browser host", () => {
           openOwnerTab: () => Promise.reject(new Error("not here")),
           showOwnerTab: () => Promise.reject(new Error("not here")),
           closeOwnerTab: () => Promise.reject(new Error("not here")),
+          readOwnerTabPages: () => Promise.reject(new Error("not here")),
           waitHandoff: () => Promise.reject(new Error("not here")),
           endHandoff: () => Promise.reject(new Error("not here")),
         }),
@@ -212,7 +217,7 @@ describe("the Session's browser host", () => {
     ]);
   });
 
-  it("lists, opens, shows and closes the Owner tabs in the object named for the Session", async () => {
+  it("lists, opens, shows, closes and reads the Owner tabs in the object named for the Session", async () => {
     const calls: unknown[] = [];
     const listing = { tabs: [{ id: "a", title: "Docs" }], shown: "a" };
 
@@ -245,6 +250,13 @@ describe("the Session's browser host", () => {
 
             return Promise.resolve({ tabs: [] });
           },
+          readOwnerTabPages: (ids) => {
+            calls.push({ name, call: "read", ids });
+
+            return Promise.resolve([
+              { ownerTabId: "a", url: "https://docs.example/", title: "Docs" },
+            ]);
+          },
           waitHandoff: () => Promise.reject(new Error("not here")),
           endHandoff: () => Promise.reject(new Error("not here")),
         }),
@@ -258,11 +270,15 @@ describe("the Session's browser host", () => {
       "showOwnerTab: Error: the Owner tab is gone",
     );
     expect(await Effect.runPromise(host.closeOwnerTab("a"))).toEqual({ tabs: [] });
+    expect(await Effect.runPromise(host.readOwnerTabPages(["a"]))).toEqual([
+      { ownerTabId: "a", url: "https://docs.example/", title: "Docs" },
+    ]);
     expect(calls).toEqual([
       { name: "session-1", call: "list" },
       { name: "session-1", call: "open" },
       { name: "session-1", call: "show", id: "b" },
       { name: "session-1", call: "close", id: "a" },
+      { name: "session-1", call: "read", ids: ["a"] },
     ]);
   });
 });

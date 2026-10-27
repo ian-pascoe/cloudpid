@@ -14,6 +14,7 @@ import { appRuntime } from "../runtime.ts";
 import { ownerTabsAtom, sessionClientAtom } from "../session/atoms.ts";
 import type { SessionClient } from "../session/client.ts";
 import { INITIAL_OWNER_TAB_PAGE, openBrowserPaneView, type OwnerTabPage } from "./browser-pane.ts";
+import { keepScreen, latestScreenAtom } from "./owner-tab-screen.ts";
 
 /** Which Browser Pane: its Session's, and whether that Session is archived (its Pane opens nothing). */
 export interface BrowserPaneKey {
@@ -58,6 +59,17 @@ export const browserPaneViewAtom = Atom.family(({ sessionId, archived }: Browser
           opens: !archived,
           windowOpened: windowOpenedIn(client),
         }),
+      ),
+      // The composer attaches the Pane's latest screen with the shown Owner tab, for as long as the Pane is open.
+      Effect.tap((view) =>
+        Effect.acquireRelease(
+          Effect.sync(() =>
+            keepScreen(view.frames, (frame) => {
+              get.set(latestScreenAtom(sessionId), frame);
+            }),
+          ),
+          (stop) => Effect.sync(stop),
+        ),
       ),
     ),
   ),

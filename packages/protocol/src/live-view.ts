@@ -13,6 +13,23 @@ export const LIVE_VIEW_HANDOFF_OVER = "the handoff is over";
  */
 export const OWNER_TAB_GONE = "the Owner tab is gone";
 
+/**
+ * The longest URL, title and selected text of a page the owner attaches to a message, in code points (`attached-pages.ts`).
+ * Here, import-free, because the browser host's Worker may import only this module.
+ */
+export const MAX_PAGE_URL = 2048;
+
+export const MAX_PAGE_TITLE = 300;
+
+export const MAX_PAGE_SELECTION = 4000;
+
+/**
+ * The most of a page's selected text the host reads, in UTF-16 units: a guard on what crosses from the page, larger than
+ * `MAX_PAGE_SELECTION` so that the Session redacts Secrets from the text before `clampPage` (the one place it is cut)
+ * keeps the first `MAX_PAGE_SELECTION` code points of it.
+ */
+export const MAX_PAGE_SELECTION_READ = 16_000;
+
 /** The key of the Live View Pane of the Browser Handoff `requestId` names: `live-view:<requestId>`, as it is. */
 export const liveViewPaneKey = (requestId: string): string => `live-view:${requestId}`;
 

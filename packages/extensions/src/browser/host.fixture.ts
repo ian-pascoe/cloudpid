@@ -86,6 +86,7 @@ export const fakeHandoffHost = (
     openOwnerTab: Effect.succeed({ tabs: [{ id: "owner-1", title: "" }], shown: "owner-1" }),
     showOwnerTab: () => Effect.succeed({ tabs: [{ id: "owner-1", title: "" }], shown: "owner-1" }),
     closeOwnerTab: () => Effect.succeed({ tabs: [] }),
+    readOwnerTabPages: () => Effect.succeed([]),
     waitHandoff: (requestId, maxMs) =>
       Effect.suspend((): Effect.Effect<HandoffStatus, BrowserError> => {
         calls.waits.push({ requestId, maxMs });

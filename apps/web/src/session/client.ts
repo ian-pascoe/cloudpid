@@ -23,6 +23,7 @@ import {
   LiveViewLinks,
   OwnerTabLinks,
   OwnerTabListing,
+  type PageRef,
   reduceEvents,
   withEarlier,
   SESSION_DELETED_CLOSE_CODE,
@@ -314,6 +315,8 @@ interface PendingSubmit {
   readonly commandId: string;
   readonly requestId: string;
   readonly input: UserInput;
+  /** The Owner tabs attached to it. */
+  readonly pages: readonly PageRef[] | undefined;
   /** What its lane shows: the typed text, with any Attachment's name. */
   readonly text: string;
   readonly whenBusy: WhenBusy;
@@ -690,6 +693,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       if (submit.conversationId !== undefined) {
         message.conversationId = conversation(submit.conversationId);
       }
+
+      if (submit.pages !== undefined && submit.pages.length > 0) message.pages = [...submit.pages];
 
       submit.sent = true;
       send(message);
@@ -1106,14 +1111,15 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     // @effect-diagnostics-next-line cryptoRandomUUID:off
     requestId: string = crypto.randomUUID(),
   ): void => {
-    const { input, display } = Predicate.isString(message)
-      ? { input: message, display: message }
+    const { input, display, pages } = Predicate.isString(message)
+      ? { input: message, display: message, pages: undefined }
       : message;
 
     pending.push({
       commandId: nextCommandId(),
       requestId,
       input,
+      pages,
       text: display,
       whenBusy,
       conversationId: isRoot(conversationId) ? undefined : conversationId,

@@ -4,7 +4,12 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- plain functions over native arrays; assistant-ui's messages carry a Date.
 
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/protocol";
+import {
+  AttachedPage,
+  type SessionView,
+  type TranscriptMessage,
+  type TranscriptPart,
+} from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -184,6 +189,12 @@ type MessageCustom = NonNullable<NonNullable<ThreadMessageLike["metadata"]>["cus
 export const shownSkills = (custom: MessageCustom | undefined): readonly ShownSkill[] =>
   Option.getOrElse(decodeSkills(custom?.["skills"]), () => []);
 
+const decodePages = Schema.decodeUnknownOption(Schema.Array(AttachedPage));
+
+/** The pages attached to a user message, as its metadata keeps them; none when it has none. */
+export const shownPages = (custom: MessageCustom | undefined): readonly AttachedPage[] =>
+  Option.getOrElse(decodePages(custom?.["pages"]), () => []);
+
 /** A turn followed by a user message cannot change, so its message is made once and handed out again. */
 const finishedTurn = new WeakMap<
   TranscriptMessage,
@@ -208,11 +219,19 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
       createdAt: dateOf(message.timestamp),
     };
 
-    // The Skills the Session expanded into it show under the typed text, each as the block the model got.
-    if (message.skills !== undefined && message.skills.length > 0) {
-      const skills: ShownSkill[] = message.skills.map(({ name, text }) => ({ name, text }));
+    // The Skills the Session expanded into it show under the typed text, each as the block the model got, and the pages
+    // attached to it as chips.
+    const skills: ShownSkill[] = (message.skills ?? []).map(({ name, text }) => ({ name, text }));
+    const pages = message.pages ?? [];
 
-      made = { ...made, metadata: { custom: { skills } } };
+    if (skills.length > 0 || pages.length > 0) {
+      const custom: MessageCustom = {};
+
+      if (skills.length > 0) custom["skills"] = skills;
+
+      if (pages.length > 0) custom["pages"] = pages.map((page) => ({ ...page }));
+
+      made = { ...made, metadata: { custom } };
     }
 
     userMessage.set(message, made);

@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 // The Session's side of the Browser Pane (`docs/spec.md` → Browser → Browser Pane, ADR-0013): the links to the Owner tab
 // the Pane shows, which the browser host mints for the one client that asked (`owner_tab_view`), and the Owner tabs of its
 // tab strip (`tabs`, `open`, `show`, `close`). Like a Browser Handoff's Live View links (`./handoff.ts`), no link is kept
@@ -15,6 +15,8 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as Types from "effect/Types";
+import { MAX_ATTACHED_PAGES, type AttachedPage, type PageRef } from "@cloudpid/protocol";
 import { OWNER_TAB_GONE } from "@cloudpid/protocol/live-view";
 import type { OwnerTabLinks, OwnerTabListing } from "./contract.ts";
 import { BrowserError, type BrowserHostService } from "./host.ts";
@@ -50,6 +52,14 @@ export type BrowserPaneService = {
   readonly show: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
   /** Close Owner tab `id` and the windows it opened. */
   readonly close: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
+  /**
+   * Read the pages `refs` attach to a message: each Owner tab's URL, title and selected text as the browser has them now,
+   * with whether the message carries its screen. Fails with `ATTACHED_PAGE_GONE` when one is not still there, and when
+   * there are more than `MAX_ATTACHED_PAGES`. A read is no use of the browser: it starts and opens nothing.
+   */
+  readonly attach: (
+    refs: ReadonlyArray<PageRef>,
+  ) => Effect.Effect<ReadonlyArray<AttachedPage>, BrowserError>;
 };
 
 /** What `open` fails with in an archived Session. */
@@ -58,6 +68,10 @@ export const ARCHIVED_OPENS_NO_OWNER_TAB = "An archived session opens no Owner t
 /** The host's "the Owner tab is gone" in its own words, without the call it came through. */
 const withGoneInItsOwnWords = (error: BrowserError): BrowserError =>
   error.message.includes(OWNER_TAB_GONE) ? BrowserError.make({ message: OWNER_TAB_GONE }) : error;
+
+/** What a send fails with when a page it attaches is gone: the owner removes its chip and sends again. */
+export const ATTACHED_PAGE_GONE =
+  "A page you attached is gone (its Owner tab was closed, or the browser was): remove it and send again.";
 
 /** The Session's Browser Pane links. */
 export class BrowserPane extends Context.Service<BrowserPane, BrowserPaneService>()(
@@ -103,6 +117,39 @@ export const makeBrowserPane = (
   }),
   show: (id) => host.showOwnerTab(id).pipe(Effect.mapError(withGoneInItsOwnWords)),
   close: (id) => host.closeOwnerTab(id),
+  attach: (refs) =>
+    Effect.gen(function* () {
+      if (refs.length === 0) return [];
+
+      if (refs.length > MAX_ATTACHED_PAGES) {
+        return yield* BrowserError.make({
+          message: `A message attaches at most ${MAX_ATTACHED_PAGES} pages.`,
+        });
+      }
+
+      const read = yield* host
+        .readOwnerTabPages(refs.map((ref) => ref.ownerTabId))
+        .pipe(
+          Effect.mapError((error) =>
+            error.message.includes(OWNER_TAB_GONE)
+              ? BrowserError.make({ message: ATTACHED_PAGE_GONE })
+              : error,
+          ),
+        );
+
+      // In the order the owner attached them, each with whether its screen travels with the message.
+      return refs.flatMap((ref): AttachedPage[] => {
+        const page = read.find((candidate) => candidate.ownerTabId === ref.ownerTabId);
+
+        if (page === undefined) return [];
+
+        const attached: Types.Mutable<AttachedPage> = { ...page };
+
+        if (ref.screen === true) attached.screen = true;
+
+        return [attached];
+      });
+    }),
 });
 
 /** The Session's `BrowserPane` over its host; needs the Session's `BrowserSession`. */

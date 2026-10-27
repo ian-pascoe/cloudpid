@@ -13,10 +13,15 @@ import { sessionStatusAtom } from "../session/atoms.ts";
 import { settle } from "../session/client.testing.ts";
 import {
   addAttachmentsAtom,
+  addPageAtom,
   attachmentsAtom,
+  type PageToAttach,
   removeAttachmentAtom,
+  removePageAtom,
+  screenNote,
   sendAttachedAtom,
   sentAttachments,
+  sentPages,
   waitingFor,
 } from "./attachments-state.ts";
 import { chatRegistry, fakeImages, fakeUploads, live, sent } from "./chat.testing.ts";
@@ -41,6 +46,8 @@ const setup = Effect.gen(function* () {
     chat.registry.mount(addAttachmentsAtom(ROOT)),
     chat.registry.mount(removeAttachmentAtom(ROOT)),
     chat.registry.mount(sendAttachedAtom(ROOT)),
+    chat.registry.mount(addPageAtom(ROOT)),
+    chat.registry.mount(removePageAtom(ROOT)),
   ];
 
   const leave = Effect.sync(() => {
@@ -62,11 +69,21 @@ const setup = Effect.gen(function* () {
       chat.registry.set(removeAttachmentAtom(ROOT), item?.id ?? "");
     }).pipe(Effect.andThen(settle));
 
+  const attachPage = (page: PageToAttach) =>
+    Effect.sync(() => {
+      chat.registry.set(addPageAtom(ROOT), page);
+    }).pipe(Effect.andThen(settle));
+
+  const detachPage = (ownerTabId: string) =>
+    Effect.sync(() => {
+      chat.registry.set(removePageAtom(ROOT), ownerTabId);
+    }).pipe(Effect.andThen(settle));
+
   const state = () => chat.registry.get(attachmentsAtom(ROOT));
 
   const summary = () => state().items.map((item) => `${item.name} ${item.status}`);
 
-  return { ...chat, uploads, images, leave, add, remove, state, summary };
+  return { ...chat, uploads, images, leave, add, remove, attachPage, detachPage, state, summary };
 });
 
 beforeEach(() => {
@@ -270,6 +287,194 @@ describe("a composer's Attachments", () => {
       expect(uploads.started[1]?.interrupted).toBe(true);
       expect(uploads.removed).toEqual([]);
       expect(images.released).toEqual(["cat.jpg"]);
+    }),
+  );
+});
+
+const SHOWN: PageToAttach = {
+  ownerTabId: "tab-1",
+  title: "Guide",
+  shown: true,
+};
+
+const OTHER: PageToAttach = {
+  ownerTabId: "tab-2",
+  title: "Other",
+  shown: false,
+};
+
+/** The Pane's frame as a picture: a JPEG of `size` bytes. */
+const screen = (size = 1000) => file("screen.jpg", size, "image/jpeg");
+
+describe("a composer's attached pages", () => {
+  it.effect(
+    "carry the shown page's screen through the image budget, and the page that is not shown only its tab",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest, attachPage, state } = yield* setup;
+
+        yield* attachPage({ ...SHOWN, screen: screen() });
+        yield* attachPage(OTHER);
+
+        expect(state().pages.map((chip) => chip.ownerTabId)).toEqual(["tab-1", "tab-2"]);
+        // The screen is a picture to fit, never an upload.
+        expect(state().items.map((item) => [item.name, item.screenOf, item.status])).toEqual([
+          ["screen", "tab-1", "uploaded"],
+        ]);
+        expect(state().fits.get(state().items[0]?.id ?? "")).toMatchObject({ kind: "inline" });
+        expect(waitingFor(state())).toBeNull();
+        expect(sentAttachments(state())).toEqual([]);
+
+        expect(sentPages(state())).toEqual([
+          {
+            ref: { ownerTabId: "tab-1", screen: true },
+            title: "Guide",
+            screen: { mimeType: "image/jpeg", data: "A".repeat(850) },
+          },
+          { ref: { ownerTabId: "tab-2" }, title: "Other", screen: undefined },
+        ]);
+
+        registry.set(
+          sendAttachedAtom(ROOT),
+          callOf({ typed: "what is this?", whenBusy: "followUp" }),
+        );
+        yield* settle;
+
+        const [submit] = sent(latest(), "submit");
+
+        // The pages go as references the Session reads; only the screen is in the input, after the typed text.
+        expect(submit).toMatchObject({
+          input: [
+            { type: "text", text: "what is this?" },
+            { type: "image", mimeType: "image/jpeg", data: "A".repeat(850) },
+          ],
+          pages: [{ ownerTabId: "tab-1", screen: true }, { ownerTabId: "tab-2" }],
+        });
+      }),
+  );
+
+  it.effect(
+    "share the image budget with attached pictures: the largest goes as a file to make room",
+    () =>
+      Effect.gen(function* () {
+        const { uploads, add, attachPage, state } = yield* setup;
+
+        // Together they are over what one message may hold, even at the lowest quality: the largest goes as a file.
+        yield* add(file("big.jpg", 5_000_000, "image/jpeg"));
+        yield* uploads.started[0]!.finish();
+        yield* attachPage({ ...SHOWN, screen: screen(3_000_000) });
+
+        const [big, shownScreen] = state().items;
+
+        expect(state().fits.get(big?.id ?? "")).toMatchObject({ kind: "file" });
+        expect(state().fits.get(shownScreen?.id ?? "")).toMatchObject({ kind: "inline" });
+        expect(sentPages(state())[0]?.ref).toEqual({ ownerTabId: "tab-1", screen: true });
+      }),
+  );
+
+  it.effect("say when a screen is left out, still sending the page", () =>
+    Effect.gen(function* () {
+      const { attachPage, state } = yield* setup;
+
+      yield* attachPage({ ...SHOWN, screen: screen(9_000_000) });
+
+      const chip = state().pages[0];
+
+      expect(chip && screenNote(state(), chip)).toMatch(/no room/);
+      expect(sentPages(state())).toEqual([
+        { ref: { ownerTabId: "tab-1" }, title: "Guide", screen: undefined },
+      ]);
+    }),
+  );
+
+  it.effect("attach a page once, and take it off with its screen", () =>
+    Effect.gen(function* () {
+      const { images, attachPage, detachPage, state } = yield* setup;
+
+      yield* attachPage({ ...SHOWN, screen: screen() });
+      yield* attachPage({ ...SHOWN, screen: screen() });
+      yield* attachPage(OTHER);
+
+      expect(state().pages).toHaveLength(2);
+      expect(state().items).toHaveLength(1);
+
+      yield* detachPage("tab-1");
+
+      expect(state().pages.map((chip) => chip.ownerTabId)).toEqual(["tab-2"]);
+      expect(state().items).toEqual([]);
+      expect(images.released).toEqual(["screen.jpg"]);
+      expect(sentPages(state())).toHaveLength(1);
+    }),
+  );
+
+  it.effect("make a message alone, and come back with the text when the Session refuses it", () =>
+    Effect.gen(function* () {
+      const { registry, latest, attachPage, state } = yield* setup;
+
+      yield* attachPage({ ...SHOWN, screen: screen() });
+
+      registry.set(sendAttachedAtom(ROOT), callOf({ typed: "", whenBusy: "followUp" }));
+      yield* settle;
+
+      const [submit] = sent(latest(), "submit");
+
+      expect(submit).toMatchObject({
+        input: [{ type: "image", mimeType: "image/jpeg" }],
+        pages: [{ ownerTabId: "tab-1", screen: true }],
+      });
+      // Off the composer while the Session answers.
+      expect(state().pages).toEqual([]);
+
+      yield* latest().say({
+        type: "error",
+        id: submit?.id,
+        message: "A page you attached is gone",
+      });
+
+      expect(
+        exitFailure(AsyncResult.toExit(yield* settled(registry, sendAttachedAtom(ROOT)))),
+      ).toBe("A page you attached is gone");
+      expect(state().pages.map((chip) => chip.ownerTabId)).toEqual(["tab-1"]);
+      expect(state().items.map((item) => item.screenOf)).toEqual(["tab-1"]);
+    }),
+  );
+
+  it.effect("keep one screen for a page attached again while its message was refused", () =>
+    Effect.gen(function* () {
+      const { registry, latest, attachPage, state } = yield* setup;
+      const revoked = vi.spyOn(URL, "revokeObjectURL");
+
+      yield* attachPage({ ...SHOWN, screen: screen() });
+
+      registry.set(sendAttachedAtom(ROOT), callOf({ typed: "", whenBusy: "followUp" }));
+      yield* settle;
+
+      const [submit] = sent(latest(), "submit");
+      expect(state().pages).toEqual([]);
+
+      // The owner attaches the same page again, with a newer screen, while the Session answers.
+      yield* attachPage({ ...SHOWN, screen: screen(2000) });
+
+      const newer = state().items[0];
+
+      expect(newer?.screenOf).toBe("tab-1");
+      revoked.mockClear();
+
+      yield* latest().say({
+        type: "error",
+        id: submit?.id,
+        message: "A page you attached is gone",
+      });
+      yield* settled(registry, sendAttachedAtom(ROOT));
+
+      // One chip and one screen, the refused message's; the newer screen is let go.
+      expect(state().pages.map((chip) => chip.ownerTabId)).toEqual(["tab-1"]);
+      expect(state().items).toHaveLength(1);
+      expect(state().items[0]).not.toBe(newer);
+      expect(state().pages[0]?.screenId).toBe(state().items[0]?.id);
+      expect(revoked).toHaveBeenCalledWith(newer?.preview);
+
+      revoked.mockRestore();
     }),
   );
 });

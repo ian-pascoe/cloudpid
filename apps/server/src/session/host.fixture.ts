@@ -23,7 +23,9 @@ import {
   type OwnerTabDrivers,
   type OwnerTabLinks,
   type OwnerTabListing,
+  type OwnerTabPageRead,
 } from "@cloudpid/extensions/browser";
+import { readingOwnerTabPages } from "@cloudpid/extensions/browser/pages.testing";
 import {
   type AgentChangeLog,
   DeployCredentials,
@@ -320,6 +322,14 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
 
       return ownerTabListing(kv);
     }),
+  readOwnerTabPages: readingOwnerTabPages({
+    open: () => kv.get<OwnerTabPageRead[]>("owner-tab-pages") ?? [],
+    reading: (ids) => {
+      kv.put("owner-tab-reads", [...(kv.get<string[][]>("owner-tab-reads") ?? []), [...ids]]);
+    },
+    // A page called "slow" takes a moment to read, for the tests of arrival order.
+    delayMs: (ids) => (ids.includes("slow") ? 150 : 0),
+  }),
   endHandoff: (requestId) =>
     Effect.sync(() => {
       kv.put("handoff-ended", [...(kv.get<string[]>("handoff-ended") ?? []), requestId]);
@@ -1142,6 +1152,11 @@ export class TestSession extends DurableObject {
     return this.ctx.storage.kv.get<string[][]>("request-tools") ?? [];
   }
 
+  /** The content of the owner's messages in each request the model received, oldest request first. */
+  requestUserMessages(): readonly (readonly unknown[])[] {
+    return this.ctx.storage.kv.get<unknown[][]>("request-user-messages") ?? [];
+  }
+
   /** The model and thinking level of each request the model received, oldest first. */
   requests(): readonly TestRequest[] {
     return this.ctx.storage.kv.get<TestRequest[]>("requests") ?? [];
@@ -1187,6 +1202,16 @@ export class TestSession extends DurableObject {
   /** Whether each `ownerTabView` the test browser host was sent asked to open, oldest first. */
   ownerTabViews(): readonly boolean[] {
     return this.ctx.storage.kv.get<boolean[]>("owner-tab-views") ?? [];
+  }
+
+  /** The Owner tabs the test browser host has open, the first one shown, as the composer lists and reads them. */
+  setOwnerTabPages(pages: readonly OwnerTabPageRead[]): void {
+    this.ctx.storage.kv.put("owner-tab-pages", pages);
+  }
+
+  /** The Owner tabs the test browser host was asked to read for a message, one list per message, oldest first. */
+  ownerTabReads(): readonly (readonly string[])[] {
+    return this.ctx.storage.kv.get<string[][]>("owner-tab-reads") ?? [];
   }
 
   /** The Owner tab's browser is gone: closed or replaced. */
@@ -1467,6 +1492,12 @@ export class TestSession extends DurableObject {
       kv.put("request-tools", [
         ...(kv.get<string[][]>("request-tools") ?? []),
         getCurrentTools(request.messages).map((tool) => tool.name),
+      ]);
+
+      // The owner's messages as this request carried them: what the model is told, part by part.
+      kv.put("request-user-messages", [
+        ...(kv.get<unknown[][]>("request-user-messages") ?? []),
+        request.messages.flatMap((message) => (message.role === "user" ? [message.content] : [])),
       ]);
 
       kv.put("requests", [

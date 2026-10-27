@@ -3,12 +3,12 @@
 // with the one shown, each ask mints 60-second links named by their target for the tab and its windows, and a tab whose
 // browser is gone is said to be gone rather than replaced unasked.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
-import { OWNER_TAB_GONE } from "@cloudpid/extensions/browser/contract";
+import { MAX_PAGE_SELECTION_READ, OWNER_TAB_GONE } from "@cloudpid/extensions/browser/contract";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { BrowserGoneError } from "./cdp.ts";
 import { fakeTransport, linkTo, page, records, TOKEN } from "./cdp.testing.ts";
-import { OwnerTabs, ownerTabScope } from "./owner-tabs.ts";
+import { OwnerTabs, ownerTabScope, SELECTION } from "./owner-tabs.ts";
 import type { TabState } from "./tab.ts";
 
 type Tab = { readonly browserSessionId: string; readonly targetId: string };
@@ -983,5 +983,168 @@ describe("the Owner tabs' addresses and titles, kept and reopened", () => {
     expect(opened).toHaveLength(1);
     expect(forgotten).toEqual([ownerTabScope("a")]);
     expect(ownerTabs.list().tabs.map((tab) => tab.id)).toEqual(["id-1"]);
+  });
+});
+
+/** Two Owner tabs the owner has open (`one` shown) in `browser-1`, and a third that was closed. */
+const withTwoTabs = (transports: ReturnType<typeof fakeTransport>[]) => {
+  const store = records();
+
+  const tabs = new Map<string, Tab>([
+    [ownerTabScope("one"), { browserSessionId: "browser-1", targetId: "page-one" }],
+    [ownerTabScope("two"), { browserSessionId: "browser-1", targetId: "page-two" }],
+  ]);
+
+  store.put("owner-tabs", { tabs: [{ id: "one" }, { id: "two" }, { id: "closed" }], shown: "one" });
+
+  return { ...ownerTabsOver(transports, store, tabs), store };
+};
+
+const twoPages = () =>
+  fakeTransport({
+    "Target.getTargets": {
+      targetInfos: [
+        page("page-one", { title: "First", url: "https://example.com/one" }),
+        page("page-two", { title: "Second", url: "https://example.com/two" }),
+        page("conversation-tab", { title: "The agent's" }),
+      ],
+    },
+    "Runtime.evaluate": (_params, sessionId) => ({
+      result: { type: "string", value: sessionId === "cdp-page-one" ? "A paragraph." : "" },
+    }),
+  });
+
+describe("reading the Owner tabs a message attaches", () => {
+  it("reads the URL and title of the tabs asked for and the selected text of the one shown, not starting or opening anything", async () => {
+    const cdp = twoPages();
+    const { ownerTabs, opened } = withTwoTabs([cdp]);
+
+    expect(await ownerTabs.read(["one", "two"])).toEqual([
+      {
+        ownerTabId: "one",
+        url: "https://example.com/one",
+        title: "First",
+        selection: "A paragraph.",
+      },
+      { ownerTabId: "two", url: "https://example.com/two", title: "Second" },
+    ]);
+
+    expect(opened).toEqual([]);
+
+    // Only the page shown is attached to for its selection, and let go.
+    expect(cdp.sent.filter((command) => command.method === "Target.attachToTarget")).toEqual([
+      { method: "Target.attachToTarget", params: { targetId: "page-one", flatten: true } },
+    ]);
+    expect(cdp.sent.filter((command) => command.method === "Target.detachFromTarget")).toHaveLength(
+      1,
+    );
+    expect(cdp.state.closed).toBe(true);
+  });
+
+  it("reads no selection of a tab that is not shown, whatever it holds", async () => {
+    const cdp = twoPages();
+    const { ownerTabs } = withTwoTabs([cdp]);
+
+    const [, two] = await ownerTabs.read(["one", "two"]);
+
+    expect(two).toEqual({ ownerTabId: "two", url: "https://example.com/two", title: "Second" });
+    expect(
+      cdp.sent
+        .filter((command) => command.method === "Runtime.evaluate")
+        .map(({ params }) => params),
+    ).toHaveLength(1);
+  });
+
+  it("still gives a tab's URL and title when its selection cannot be read", async () => {
+    const stuck = fakeTransport({
+      "Target.getTargets": { targetInfos: [page("page-one", { title: "First" })] },
+      "Runtime.evaluate": () => {
+        throw new Error("Execution context was destroyed");
+      },
+    });
+
+    const [read] = await withTwoTabs([stuck]).ownerTabs.read(["one"]);
+
+    expect(read).toEqual({
+      ownerTabId: "one",
+      url: "https://example.com/page-one",
+      title: "First",
+    });
+  });
+
+  it("says the Owner tab is gone when one asked for is not there, reading none", async () => {
+    const { ownerTabs, connected, tabs } = withTwoTabs([twoPages()]);
+
+    await gone(ownerTabs.read(["one", "closed"]));
+    expect(connected).toEqual([]);
+
+    await gone(ownerTabs.read(["nope"]));
+
+    // A scope that is no Owner tab of the owner's (not in the list) is not read, though the browser has a tab for it.
+    tabs.set(ownerTabScope("stray"), { browserSessionId: "browser-1", targetId: "page-stray" });
+    await gone(ownerTabs.read(["stray"]));
+    expect(connected).toEqual([]);
+  });
+});
+
+describe("the script that reads a page's selected text", () => {
+  /** The part of a DOM element the script looks at. */
+  type Element = {
+    readonly value?: string;
+    readonly selectionStart?: number;
+    readonly selectionEnd?: number;
+    readonly type?: string;
+    readonly autocomplete?: string;
+    readonly tagName?: string;
+    readonly nodeType?: number;
+  };
+
+  /** `SELECTION` run in a page whose active element is `active`, whose document selection is `selected` (inside `anchor`). */
+  const inPage = (
+    active: Element | null,
+    selected = "",
+    anchor: Element | null = null,
+    security = "none",
+  ): string => {
+    const window = {
+      getSelection: () => ({
+        anchorNode: anchor,
+        toString: () => selected,
+      }),
+      getComputedStyle: () => ({ getPropertyValue: () => security }),
+    };
+
+    // oxlint-disable-next-line no-implied-eval -- the script is a constant of this file, run against a stub page.
+    const run = new Function("document", "window", `return ${SELECTION};`);
+
+    return String(run({ activeElement: active }, window));
+  };
+
+  const field = (value: string, extra: Element = {}) =>
+    ({ value, selectionStart: 2, selectionEnd: 6, type: "text", ...extra }) satisfies Element;
+
+  it("reads what is selected in the field being typed in, else the document's selection", () => {
+    expect(inPage(field("0123456789"))).toBe("2345");
+    expect(inPage({ tagName: "BODY" }, "A paragraph.")).toBe("A paragraph.");
+    expect(inPage(field("0123", { selectionEnd: 2 }), "Text outside")).toBe("Text outside");
+  });
+
+  it("reads nothing from a password field, or one that is masked in another way", () => {
+    expect(inPage(field("hunter2hunter2", { type: "password" }), "hunter2")).toBe("");
+    expect(inPage(field("123456", { autocomplete: "one-time-code" }))).toBe("");
+    expect(inPage(field("4111111111111111", { autocomplete: "cc-number" }))).toBe("");
+    expect(inPage(field("secretsecret", { autocomplete: "new-password" }))).toBe("");
+    // Text shown as dots by the page's style.
+    expect(inPage(field("secretsecret"), "", null, "disc")).toBe("");
+    expect(inPage({ tagName: "BODY" }, "secret", { nodeType: 1 }, "disc")).toBe("");
+  });
+
+  it("reads at most the bound, without splitting a surrogate pair", () => {
+    const long = "x".repeat(MAX_PAGE_SELECTION_READ - 1);
+
+    expect(inPage({ tagName: "BODY" }, `${long}😀😀`)).toBe(long);
+    expect(String(inPage({ tagName: "BODY" }, "y".repeat(50_000))).length).toBe(
+      MAX_PAGE_SELECTION_READ,
+    );
   });
 });

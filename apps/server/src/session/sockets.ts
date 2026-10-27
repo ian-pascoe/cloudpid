@@ -505,9 +505,22 @@ export const sessionSocketsLayer = (
               .switchBranch(message.conversationId)
               .pipe(Effect.andThen(announceBranch(message.conversationId)), Effect.as(null));
           case "submit": {
-            const { type: _type, id: _id, ...prompt } = message;
+            const { type: _type, id: _id, pages: refs, ...prompt } = message;
 
-            return host.submit(prompt).pipe(Effect.map((submissionId) => ({ submissionId })));
+            // The pages are read from the browser as the message is admitted (in arrival order, and not again for a
+            // resent request), redacted of held Secrets before they are stored, escaped or sent to any client; one that
+            // is gone fails the command, so the owner removes its chip, rather than going without it.
+            const attachPages = secrets.refresh.pipe(
+              Effect.andThen(browserPane.attach(refs ?? [])),
+              Effect.map((pages) => secrets.redact(pages)),
+              Effect.mapError((error) =>
+                SessionError.make({ operation: "submit", message: error.message }),
+              ),
+            );
+
+            return host
+              .submit(refs === undefined || refs.length === 0 ? prompt : { ...prompt, attachPages })
+              .pipe(Effect.map((submissionId) => ({ submissionId })));
           }
 
           case "abort": {
