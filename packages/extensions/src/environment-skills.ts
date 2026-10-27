@@ -500,7 +500,8 @@ const RemoveAsked = Schema.Struct({ savedAt: Schema.NullOr(Schema.Finite) });
  * `environment_skill_save` and `environment_skill_remove`: each runs alone. A change to an Environment's own Skills is
  * made at once; one to the Skills kept for every Environment (`id: "*"`) waits for the owner's Approval, like a Limit
  * (`withApproval`), and is replayed after an eviction to wait for the same request. So both are `replay: "safe"`: a
- * rerun of a change to an Environment's own Skills finds it made (the same files record nothing again). Built here, not
+ * rerun of a save to an Environment's own Skills finds it made (the same files record nothing again), and a rerun of its
+ * removal that finds the Skill gone says so, as a removal of one not kept does. Built here, not
  * at the module's top: `environment.ts` imports this file, so its exports are not there yet then.
  */
 export const skillTools = ({
@@ -653,7 +654,13 @@ export const skillTools = ({
 
             const asked = Schema.decodeUnknownOption(SaveAsked)(answer.expected);
 
-            if (Option.isNone(asked) || asked.value.digest !== digest) {
+            if (Option.isNone(asked)) {
+              return yield* EnvironmentsError.make({
+                message: `The user approved, but the request holds no record of the Skill they were shown: nothing was saved. Ask again.`,
+              });
+            }
+
+            if (asked.value.digest !== digest) {
               return yield* EnvironmentsError.make({
                 message: `The user approved, but the folder ${path} no longer holds the Skill they were shown (its files changed since): nothing was saved. Ask again with the folder as it is now if the Skill is still needed.`,
               });
@@ -753,10 +760,16 @@ export const skillTools = ({
 
             const asked = Schema.decodeUnknownOption(RemoveAsked)(answer.expected);
 
+            if (Option.isNone(asked)) {
+              return yield* EnvironmentsError.make({
+                message: `The user approved, but the request holds no record of the Skill they were shown: nothing was removed. Ask again.`,
+              });
+            }
+
             const removed = yield* environments.removeSkill({
               environment: EVERY_ENVIRONMENT_ID,
               name,
-              expected: Option.getOrUndefined(asked),
+              expected: asked.value,
               author: { conversation: api.conversationId, tool, reason, approved: true },
             });
 

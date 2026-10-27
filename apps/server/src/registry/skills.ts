@@ -551,6 +551,17 @@ const setProblem = (
 
   const kept = withSkill(every, skill);
 
+  // An Environment with none of its own Skills (a new one, or one that removes its override) serves these alone.
+  const alone = sizeProblem(
+    skills,
+    bundle,
+    "The Skill set of an Environment keeping none of its own Skills",
+    [kept],
+    contents,
+  );
+
+  if (alone !== undefined) return alone;
+
   for (const { id, name } of store.listEnvironments()) {
     const problem = sizeProblem(
       skills,

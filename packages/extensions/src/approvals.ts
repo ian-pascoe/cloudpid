@@ -330,4 +330,4 @@ export const approvedAlready = (what: string) =>
 
 /** What a tool's description says of the Approval it waits for. */
 export const APPROVAL =
-  "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the user changes the same setting meanwhile, the approval does not apply and you are told to ask again.";
+  "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the target changes meanwhile (a setting, or the Skill of the name), the approval does not apply and you are told to ask again.";

@@ -47,12 +47,16 @@ export const EnvironmentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z
 export const SecretScope = Schema.NullOr(EnvironmentId);
 
 /**
- * The scope of the Agent changes of the Secrets and variables kept for every Environment (`docs/spec.md` → Agent
- * changes), where an Environment's are kept under its id. No Environment id can be it.
+ * The scope of the Agent changes of the Secrets, variables and Skills kept for every Environment (`docs/spec.md` →
+ * Agent changes), where an Environment's are kept under its id, and the scope the Skills kept for every Environment
+ * themselves are kept under (ADR-0026). No Environment id can be it.
  */
 export const EVERY_ENVIRONMENT_SCOPE = "*";
 
-/** Whose Agent changes `listAgentChanges` lists and `revertAgentChange` reverts: an Environment's, or those of every Environment. */
+/**
+ * Whose Agent changes `listAgentChanges` lists and `revertAgentChange` reverts, and whose Skills `listEnvironmentSkills`,
+ * `removeEnvironmentSkill` and `skillChangeFiles` answer: an Environment's, or those of every Environment.
+ */
 export const AgentChangeScope = Schema.Union([
   EnvironmentId,
   Schema.Literal(EVERY_ENVIRONMENT_SCOPE),
@@ -371,7 +375,7 @@ export const SETTINGS_SCOPE = "settings";
 export const AgentChange = Schema.Struct({
   /** Its number, which grows with each change in the Registry. */
   id: Schema.Finite,
-  /** The Environment's id, or `EVERY_ENVIRONMENT_SCOPE` for a Secret or variable kept for every Environment. */
+  /** The Environment's id, or `EVERY_ENVIRONMENT_SCOPE` for a Secret, variable or Skill kept for every Environment. */
   scope: Schema.String,
   at: Schema.Finite,
   /** Who made it: the agent, or the owner reverting an Agent change. */

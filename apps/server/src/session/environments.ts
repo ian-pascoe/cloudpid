@@ -225,7 +225,14 @@ export const sessionEnvironments = ({
     Effect.gen(function* () {
       if (environment !== EVERY_ENVIRONMENT_ID) return yield* handSkillsIfOwn(environment);
 
-      const own = yield* where.pipe(Effect.catchCause(() => Effect.succeed(null)));
+      const own = yield* where.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            "The Session's Workspace could not be found to hand it the Skill set; it takes it at its next readying",
+            cause,
+          ).pipe(Effect.as(null)),
+        ),
+      );
 
       return own === null || Arr.some(hidden, ({ id }) => id === own.environment)
         ? false

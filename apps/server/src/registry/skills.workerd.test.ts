@@ -711,6 +711,28 @@ describe("Skills kept for every Environment", () => {
     expect(saved[1]).toEqual([]);
   });
 
+  it("are refused when the set of an Environment keeping none of its own would pass 8 MB, though every Environment hides the Skill", async () => {
+    const saved = await inRegistry(async ({ store, save, skills }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+
+      for (let index = 0; index < 8; index += 1) {
+        await save(`big-${index}`, big(`big-${index}`), 1_000, EVERY);
+      }
+
+      // Both Environments keep a small Skill of the name, so neither's set would hold the large one.
+      await save("big-8", { "SKILL.md": skillMd("big-8") }, 1_000, "0000abcd");
+      await save("big-8", { "SKILL.md": skillMd("big-8") }, 1_000);
+
+      return [await save("big-8", big("big-8"), 2_000, EVERY), skills.list(EVERY).length];
+    });
+
+    expect(saved[0]).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("keeping none of its own Skills would be"),
+    });
+    expect(saved[1]).toBe(8);
+  });
+
   it("count in an Environment's own set, which a save of its own Skill is refused past 100 and 8 MB for", async () => {
     const saved = await inRegistry(async ({ save }) => {
       // The bundle's 2 and 97 for every Environment make 99.
