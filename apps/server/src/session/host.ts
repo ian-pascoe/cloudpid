@@ -42,10 +42,14 @@ import {
   type AttachedPage,
   clampPage,
   pageBlock,
+  type ReviewData,
+  reviewMessage,
   UPLOADS_ROOT,
   USER_ENTRY_KIND,
+  type UserEntryData,
   userEntryData,
 } from "@cloudpid/protocol";
+import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, Usage } from "@earendil-works/pi-ai";
 import { limitEventImages, SNAPSHOT_IMAGES } from "@cloudpid/extensions/browser";
@@ -295,6 +299,11 @@ export type Prompt = {
   readonly attachPages?: Effect.Effect<ReadonlyArray<AttachedPage>, SessionError>;
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
+  /**
+   * A Review's Markdown and what its entry keeps (`reviews.ts`): the input is its summary, and the model gets the
+   * Markdown after it.
+   */
+  readonly review?: { readonly markdown: string; readonly data: ReviewData };
 };
 
 /** One of the Session's Slash commands, as the owner typed it. */
@@ -1213,7 +1222,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         );
 
   /**
-   * What the owner typed, when `input` has pages attached: its first text part, unless that is the Attachments' paths
+   * What the owner typed, when `input` has pages attached or is a Review's summary: its first text part, unless that is the Attachments' paths
    * (they are a part of their own and come after the typed text, which is left out when empty).
    */
   const typedBeside = (input: UserInput): string => {
@@ -1242,19 +1251,35 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
 
+    const kept = {
+      display: data?.display ?? typedBeside(input),
+      skills: [...(data?.skills ?? [])],
+      pages: Arr.map(pages, (page) => clampPage(page)),
+    };
+
     return {
       ...draft,
       content: [...parts.slice(0, at), block, ...parts.slice(at)],
       entry: {
         kind: USER_ENTRY_KIND,
-        data: {
-          display: data?.display ?? typedBeside(input),
-          skills: [...(data?.skills ?? [])],
-          pages: Arr.map(pages, (page) => clampPage(page)),
-        },
+        // A Review's Annotations stay beside the pages.
+        data: data?.review === undefined ? kept : { ...kept, review: reviewJson(data.review) },
       },
     };
   };
+
+  /** A Review's data as the entry stores it. */
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a Review's data is strings, numbers, and arrays and objects of them, as its Schema says: JSON, only typed read-only.
+  const reviewJson = (data: ReviewData): JsonValue => data as unknown as JsonValue;
+
+  /**
+   * `input` with its typed text replaced by `content`; a text block is made for it, first, when the owner typed none (the
+   * Attachments' paths, a part of their own, are kept).
+   */
+  const withReviewText = (input: UserInput, content: string): UserInput =>
+    Predicate.isString(input) || typedBeside(input) !== ""
+      ? withText(input, content)
+      : [{ type: "text" as const, text: content }, ...input];
 
   /** `input` with its typed text replaced by `content`. */
   const withText = (input: UserInput, content: string): UserInput => {
@@ -1274,9 +1299,24 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * goes as typed.
    */
   const expandedDraft = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> => {
-    const { conversationId, input, attachPages: _attachPages, ...rest } = prompt;
+    const { conversationId, input, review, attachPages: _attachPages, ...rest } = prompt;
     const typed = typedText(input);
-    const plain: InputSubmissionDraft = { type: "input", content: input, ...rest };
+
+    // A Review is the owner's message too: the summary as typed (or expanded), then its Markdown; its entry keeps both.
+    const reviewed = (content: string, skills: UserEntryData["skills"]): InputSubmissionDraft =>
+      review === undefined
+        ? { type: "input", content: input, ...rest }
+        : {
+            type: "input",
+            content: withReviewText(input, reviewMessage(content, review.markdown)),
+            ...rest,
+            entry: {
+              kind: USER_ENTRY_KIND,
+              data: { display: typedBeside(input), skills: [...skills], review: reviewJson(review.data) },
+            },
+          };
+
+    const plain = reviewed(typedBeside(input), []);
 
     if (typed === undefined || !mayExpand(typed)) return Effect.succeed(plain);
 
@@ -1327,18 +1367,20 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     // A conversation that is neither the root nor a subagent fails here, as the submit would.
     return addressed(conversationId).pipe(
       Effect.flatMap(expansion),
-      Effect.map((expanded): InputSubmissionDraft =>
-        expanded === undefined
-          ? plain
-          : {
-              ...plain,
-              content: withText(input, expanded.content),
-              entry: {
-                kind: USER_ENTRY_KIND,
-                data: { display: expanded.data.display, skills: [...expanded.data.skills] },
-              },
-            },
-      ),
+      Effect.map((expanded): InputSubmissionDraft => {
+        if (expanded === undefined) return plain;
+
+        if (review !== undefined) return reviewed(expanded.content, expanded.data.skills);
+
+        return {
+          ...plain,
+          content: withText(input, expanded.content),
+          entry: {
+            kind: USER_ENTRY_KIND,
+            data: { display: expanded.data.display, skills: [...expanded.data.skills] },
+          },
+        };
+      }),
     );
   };
 

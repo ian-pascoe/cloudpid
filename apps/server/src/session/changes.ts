@@ -51,6 +51,8 @@ export class ChangesBroadcast {
   readonly #source: ChangesSource;
   readonly #options: ChangesBroadcastOptions;
   readonly #listeners = new Set<(update: ChangesUpdate) => void>();
+  /** Told each list as it is made, without watching: they neither start listings nor count as watchers. */
+  readonly #observers = new Set<(list: ChangesMessage) => void>();
   #latest: ChangesMessage | undefined;
   #running: Promise<void> | undefined;
   /** A refresh asked for while one runs: one more after it, manual if any of those asks was. */
@@ -76,6 +78,20 @@ export class ChangesBroadcast {
     return () => {
       this.#listeners.delete(listener);
     };
+  }
+
+  /** Tell `observer` each list made from now; the result stops it. */
+  observe(observer: (list: ChangesMessage) => void): () => void {
+    this.#observers.add(observer);
+
+    return () => {
+      this.#observers.delete(observer);
+    };
+  }
+
+  /** The last list made, if any. */
+  get latest(): ChangesMessage | undefined {
+    return this.#latest;
   }
 
   /** List the Changes again for every watcher; resolves once the list, and any asked for meanwhile, is sent. */
@@ -130,8 +146,16 @@ export class ChangesBroadcast {
     try {
       const listed = await this.#source.list(manual);
 
-      this.#latest = { type: "changes", repos: listed?.repos ?? [], startingContainer: false };
-      this.#send({ kind: "changes", message: this.#latest });
+      const latest: ChangesMessage = {
+        type: "changes",
+        repos: listed?.repos ?? [],
+        startingContainer: false,
+      };
+
+      this.#latest = latest;
+      this.#send({ kind: "changes", message: latest });
+
+      for (const observer of this.#observers) observer(latest);
     } catch (cause) {
       this.#options.warn("Listing the Changes failed", cause);
 
@@ -160,6 +184,10 @@ export type SessionChangesService = {
   readonly written: () => void;
   /** One changed file's two sides; it never starts the Container. */
   readonly file: (query: ChangeFileRequest) => Effect.Effect<ChangeFile, SessionError>;
+  /** List the Changes now, never starting the Container, and answer the list; the last one when the listing failed. */
+  readonly fresh: Effect.Effect<ChangesMessage | undefined>;
+  /** Tell `observer` each list as it is made; it starts no listing, and is not a watcher. The result stops it. */
+  readonly observe: (observer: (list: ChangesMessage) => void) => () => void;
 };
 
 /** The Session's Changes, which every client that watches them shares. */
@@ -205,6 +233,10 @@ export const sessionChangesLayer = (
         refresh: (manual) => Effect.promise(() => broadcast.refresh(manual)),
         watched: () => broadcast.watched,
         written: () => broadcast.soon(),
+        fresh: Effect.promise(() => broadcast.refresh(false)).pipe(
+          Effect.map(() => broadcast.latest),
+        ),
+        observe: (observer) => broadcast.observe(observer),
         file: (query) =>
           Effect.tryPromise({
             try: () => broadcast.file(query),

@@ -23,7 +23,7 @@ const annotation: Annotation = {
 const reviewEntry = (summary: string): EntryRecord => {
   const { markdown, data } = renderReview([annotation]);
 
-  // SAFETY: the fields a transcript entry has that the projection reads.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: the fields of an entry the projection reads.
   return {
     id: 7,
     kind: USER_ENTRY_KIND,

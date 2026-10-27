@@ -3,6 +3,7 @@
 // watches live in memory and each socket's attachment names the conversations it watches, so an instance woken from
 // hibernation restarts them, each with a fresh snapshot, on sockets that never closed.
 import {
+  type Annotation,
   type Catalog,
   type ChangeFile,
   type CommandOutcome,
@@ -51,9 +52,11 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
+import { AnnotationStore } from "./annotations.ts";
 import { SessionChanges } from "./changes.ts";
 import { SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
+import { SessionReviews } from "./reviews.ts";
 
 /**
  * The parts of a Durable Object's `ctx` the sockets use. Narrow on purpose, as `SessionStorage` is, so the module and
@@ -185,6 +188,12 @@ export const approvalRequests = (requests: ReadonlyArray<ApprovalAsk>): ServerMe
   })),
 });
 
+/** The `annotations` message for `drafts`, which every client is sent whenever they change. */
+export const annotationsMessage = (drafts: ReadonlyArray<Annotation>): ServerMessage => ({
+  type: "annotations",
+  annotations: drafts,
+});
+
 /** The agent change a `configure` asks for: a field it leaves out is left out, as is. */
 const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): AgentChange => {
   const change: Types.Mutable<AgentChange> = {};
@@ -267,12 +276,16 @@ export const sessionSocketsLayer = (
   | BrowserPane
   | OwnerTabDrivers
   | Approvals
+  | AnnotationStore
+  | SessionReviews
 > =>
   Layer.effect(
     SessionSockets,
     Effect.gen(function* () {
       const host = yield* SessionHost;
       const changes = yield* SessionChanges;
+      const annotations = yield* AnnotationStore;
+      const reviews = yield* SessionReviews;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
       const browserPane = yield* BrowserPane;
@@ -505,7 +518,7 @@ export const sessionSocketsLayer = (
               .switchBranch(message.conversationId)
               .pipe(Effect.andThen(announceBranch(message.conversationId)), Effect.as(null));
           case "submit": {
-            const { type: _type, id: _id, pages: refs, ...prompt } = message;
+            const { type: _type, id: _id, pages: refs, annotations: ids, ...typed } = message;
 
             // The pages are read from the browser as the message is admitted (in arrival order, and not again for a
             // resent request), redacted of held Secrets before they are stored, escaped or sent to any client; one that
@@ -518,9 +531,12 @@ export const sessionSocketsLayer = (
               ),
             );
 
-            return host
-              .submit(refs === undefined || refs.length === 0 ? prompt : { ...prompt, attachPages })
-              .pipe(Effect.map((submissionId) => ({ submissionId })));
+            const prompt = refs === undefined || refs.length === 0 ? typed : { ...typed, attachPages };
+
+            // With drafts, it is a Review: its summary is what was typed.
+            return (
+              ids === undefined ? host.submit(prompt) : reviews.submit({ ...prompt, annotations: ids })
+            ).pipe(Effect.map((submissionId) => ({ submissionId })));
           }
 
           case "abort": {
@@ -623,6 +639,10 @@ export const sessionSocketsLayer = (
                 reason: message.reason,
               })
               .pipe(Effect.as(null));
+          case "annotation_save":
+            return annotations.save(message.annotation).pipe(Effect.as(null));
+          case "annotation_delete":
+            return annotations.delete(message.annotationId).pipe(Effect.as(null));
         }
       };
 
@@ -740,6 +760,9 @@ export const sessionSocketsLayer = (
 
         // Approval requests wait with no deadline; sent when none waits too, so a client clears the cards it held.
         yield* send(server, approvalRequests(yield* approvals.pending));
+
+        // The draft Annotations, an empty list too, so a client that reconnects drops the drafts deleted meanwhile.
+        yield* send(server, annotationsMessage(yield* annotations.list));
 
         return client;
       });

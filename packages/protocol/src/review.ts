@@ -3,8 +3,9 @@
 // where each Annotation's quote and text sit in that Markdown, so the transcript's Review card shows them without the
 // entry holding them twice (at the limits, twice would not fit one stored message).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions building and reading text.
-import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import {
   type Annotation,
   annotationPath,
@@ -51,7 +52,7 @@ export type ShownReviewAnnotation = Omit<ReviewAnnotation, "quote" | "text"> & {
 };
 
 /** The fence language of the files the agent reads most, by extension. */
-const LANGUAGES: Readonly<Record<string, string>> = {
+const LANGUAGES = new Map<string, string>(Record.toEntries({
   ts: "ts",
   tsx: "tsx",
   mts: "ts",
@@ -94,7 +95,7 @@ const LANGUAGES: Readonly<Record<string, string>> = {
   graphql: "graphql",
   proto: "proto",
   tf: "hcl",
-};
+}));
 
 /** The language a fence of `path`'s lines is named by; empty when none is known. */
 export const languageOf = (path: string): string => {
@@ -106,7 +107,7 @@ export const languageOf = (path: string): string => {
 
   const dot = name.lastIndexOf(".");
 
-  return dot <= 0 ? "" : (LANGUAGES[name.slice(dot + 1).toLowerCase()] ?? "");
+  return dot <= 0 ? "" : (LANGUAGES.get(name.slice(dot + 1).toLowerCase()) ?? "");
 };
 
 /** "lines 12–18", "line 12", or "removed lines 10–12" on the old side. */
@@ -213,9 +214,9 @@ export const reviewTitle = (count: number): string =>
  * refer to "Annotation 2". Each names its absolute path and range, quotes its lines in a fence named by the file's
  * language, and gives the owner's text; one whose lines have changed since says so.
  */
-export const renderReview = (
-  annotations: readonly Annotation[],
-): { readonly markdown: string; readonly data: ReviewData } => {
+export type RenderedReview = { readonly markdown: string; readonly data: ReviewData };
+
+export const renderReview = (annotations: readonly Annotation[]): RenderedReview => {
   let markdown = `## ${reviewTitle(annotations.length)}`;
   const sent: ReviewAnnotation[] = [];
   let number = 0;
@@ -262,19 +263,24 @@ export const renderReview = (
 
       const text = add(annotation.text);
 
-      sent.push({
+      const item: Types.Mutable<ReviewAnnotation> = {
         source: annotation.source,
         path: annotation.path,
-        ...(annotation.oldPath === undefined ? {} : { oldPath: annotation.oldPath }),
         side: annotation.side,
         start: annotation.start,
         end: annotation.end,
         more: annotation.more,
-        ...(annotation.clipped === true ? { clipped: true } : {}),
-        ...(annotation.status === undefined ? {} : { status: annotation.status }),
         quote,
         text,
-      });
+      };
+
+      if (annotation.oldPath !== undefined) item.oldPath = annotation.oldPath;
+
+      if (annotation.clipped === true) item.clipped = true;
+
+      if (annotation.status !== undefined) item.status = annotation.status;
+
+      sent.push(item);
     }
   }
 
@@ -284,12 +290,6 @@ export const renderReview = (
 /** The model message's text for a Review: the summary the owner typed (expanded), then the Review's Markdown. */
 export const reviewMessage = (summary: string, markdown: string): string =>
   summary.trim() === "" ? markdown : `${summary}\n\n${markdown}`;
-
-const decodeReview = Schema.decodeUnknownOption(ReviewData);
-
-/** A Review entry's data, if it is one. */
-export const reviewDataOf = (data: unknown): ReviewData | undefined =>
-  Option.getOrUndefined(decodeReview(data));
 
 /**
  * The Annotations of a sent Review as its card shows them, read from `text` (the model message's first text, which the
