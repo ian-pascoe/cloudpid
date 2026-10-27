@@ -46,6 +46,7 @@ export type DevServerState = {
     readonly port: number;
     readonly method: string;
     readonly url: string;
+    readonly host: string | null;
     readonly origin: string | null;
     readonly cookie: string | null;
     readonly upgrade: string | null;
@@ -451,6 +452,7 @@ export class TestWorkspace extends Workspace {
         port,
         method: request.method,
         url: request.url,
+        host: request.headers.get("host"),
         origin: request.headers.get("origin"),
         cookie: request.headers.get("cookie"),
         upgrade: request.headers.get("upgrade"),

@@ -103,12 +103,12 @@ const openSocket = async (stub: Awaited<ReturnType<typeof workspace>>) => {
 };
 
 describe("a Container preview", () => {
-  it("answers from the Container's port, passing the page's Origin and cookies through, and counts as a use of the Container", async () => {
+  it("answers from the Container's port, passing the page's Origin and cookies through but not its Host (Vite's allowedHosts), and counts as a use of the Container", async () => {
     const stub = await workspace();
 
     const response = await stub.preview(
       new Request(`${PAGE}/src/main.js?t=1`, {
-        headers: { origin: PAGE, cookie: "app=1" },
+        headers: { host: "5173.cloudpid.internal", origin: PAGE, cookie: "app=1" },
       }),
       5173,
     );
@@ -120,6 +120,7 @@ describe("a Container preview", () => {
         port: 5173,
         method: "GET",
         url: "http://localhost:5173/src/main.js?t=1",
+        host: "localhost:5173",
         origin: PAGE,
         cookie: "app=1",
         upgrade: null,
@@ -199,6 +200,7 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
     expect(id).toMatch(/^[0-9a-f]{64}$/);
     expect((await stub.devServerState()).requests.at(-1)).toMatchObject({
       url: "http://localhost:5173/hmr?token=t",
+      host: "localhost:5173",
       origin: PAGE,
       upgrade: "websocket",
       protocols: "vite-hmr",

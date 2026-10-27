@@ -37,8 +37,14 @@ export type ContainerPreviewDeps = {
   readonly warn: (message: string) => void;
 };
 
-/** Headers a request picks up on its way here that are not the page's. */
-const DROPPED_HEADERS = ["x-forwarded-proto", "x-real-ip", "x-forwarded-for"];
+/**
+ * Headers not passed on: the ones a request picks up on its way here, which are not the page's, and `Host`, which is the
+ * dev server's own (`localhost:<port>`), as a dev server refuses a host it does not know (Vite's `allowedHosts`).
+ */
+const DROPPED_HEADERS = ["host", "x-forwarded-proto", "x-real-ip", "x-forwarded-for"];
+
+/** The `Host` a dev server on `port` knows: its own, as on a laptop. */
+const devServerHost = (port: number) => `localhost:${port}`;
 
 const escapeHtml = (text: string) =>
   text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -138,9 +144,9 @@ export class ContainerPreview {
     await noted.catch((cause: unknown) => this.#deps.warn(`idle stop: ${String(cause)}`));
   }
 
-  /** `request` as the dev server gets it: the page's own headers, `Origin` among them, from `localhost`. */
+  /** `request` as the dev server gets it: the page's own headers, `Origin` among them, to `localhost`. */
   async #forward(request: Request, url: URL, port: number): Promise<Response> {
-    const headers = new Headers();
+    const headers = new Headers({ host: devServerHost(port) });
 
     for (const [name, value] of request.headers) {
       if (!name.startsWith("cf-") && !DROPPED_HEADERS.includes(name)) headers.append(name, value);
@@ -247,7 +253,11 @@ export class ContainerPreview {
     const path = url.searchParams.get("path") ?? "/";
     const protocols = url.searchParams.get("protocols") ?? "";
     // The upgrade the browser would have sent: from the page's origin, with its cookies.
-    const headers = new Headers({ upgrade: "websocket", origin: url.origin });
+    const headers = new Headers({
+      host: devServerHost(port),
+      upgrade: "websocket",
+      origin: url.origin,
+    });
     const cookie = request.headers.get("cookie");
 
     if (protocols !== "") headers.set("sec-websocket-protocol", protocols);
