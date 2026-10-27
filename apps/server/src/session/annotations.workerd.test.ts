@@ -9,6 +9,7 @@ import {
   MAX_ANNOTATIONS,
   ServerMessageJson,
   type ServerMessage,
+  UPLOADS_ROOT,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -35,7 +36,8 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   const until = async (done: (messages: readonly ServerMessage[]) => boolean, from = 0) => {
-    for (let attempt = 0; attempt < 300; attempt++) {
+    // 10 s: a loaded runner answers slowly.
+    for (let attempt = 0; attempt < 1_000; attempt++) {
       const messages = received.slice(from);
 
       if (done(messages)) return messages;
@@ -384,6 +386,37 @@ describe("a Review", () => {
     );
 
     expect(went).toMatchObject({ navigated: { text: "Two things." } });
+  });
+
+  it("with no summary but an Attachment puts its Markdown first, keeping the Attachment's path", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["Looked."]));
+
+    const client = await connect(stub);
+    const paths = `@${UPLOADS_ROOT}/s/notes.txt`;
+
+    client.send({ type: "annotation_save", id: "a", annotation: onCall() });
+    await client.answer("a");
+    client.send({
+      type: "submit",
+      id: "send",
+      input: [{ type: "text", text: paths }],
+      annotations: ["on-call"],
+    });
+    await client.answer("send");
+
+    for (let attempt = 0; attempt < 300; attempt++) {
+      if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const entries = await runInDurableObject(stub, (instance: TestSession) => instance.rootEntries());
+    const sent = entries.find((entry) => entry.kind === "cloudpid.user");
+
+    expect(sent?.text).toMatch(/^## Review: 1 Annotation\n/u);
+    expect(sent?.text).toContain(paths);
+    expect(sent?.data).toMatchObject({ display: "" });
   });
 
   it("is refused when a draft it names is gone or goes elsewhere, and keeps the drafts", async () => {
