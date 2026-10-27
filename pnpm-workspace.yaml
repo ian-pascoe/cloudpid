@@ -13,7 +13,10 @@ allowBuilds:
   sharp: true
   workerd: true
 
+minimumReleaseAgeExclude:
+  - '@pierre/diffs@1.6.2'
+  - '@pierre/highlights@0.3.0'
+
 patchedDependencies:
   '@cloudflare/vitest-plugin@1.4.6': patches/@cloudflare__vitest-plugin@1.4.6.patch
-  '@pierre/diffs@1.6.1': patches/@pierre__diffs@1.6.1.patch
   alchemy@2.0.0-beta.83: patches/alchemy@2.0.0-beta.83.patch
