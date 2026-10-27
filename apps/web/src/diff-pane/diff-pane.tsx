@@ -215,10 +215,17 @@ const FileList = ({ pane, repos }: { pane: PaneAtoms; repos: readonly RepoChange
   );
 };
 
+/** Why a subagent's Changes are listed no more. */
+const ENDED = "The subagent is gone: its Changes are no longer listed.";
+
 /** What the Pane says when it has no files to show: still listing, none, or that they could not be listed. */
 const Empty = ({ changes }: { changes: ChangesState | null }) => {
   const listed = changes !== null && changes.listing > 0;
   const unlisted = changes?.repos.some((repo) => repo.error !== undefined) === true;
+
+  if (!listed && changes?.ended === true) {
+    return <p className="px-4 py-6 text-sm text-muted-foreground">{ENDED}</p>;
+  }
 
   if (!listed && changes?.failure !== null && changes?.failure !== undefined) {
     return (
@@ -252,6 +259,7 @@ const PaneBody = () => {
   const wide = (width ?? 0) >= RAIL_MIN_WIDTH;
 
   const failures = [
+    ...(changes?.ended === true && changes.listing > 0 ? [ENDED] : []),
     ...(changes?.failure === null || changes?.failure === undefined ? [] : [changes.failure]),
     ...repos.flatMap((repo) =>
       repo.error === undefined ? [] : [`Could not list ${repo.repo}: ${repo.error}`],

@@ -431,8 +431,13 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   let graphWanted = false;
   let usageWanted = false;
   let changesWanted = false;
-  /** The subagent conversations whose Workspace's Changes are watched (`watchConversationChanges`). */
+  /**
+   * The subagent conversations whose Workspace's Changes are watched (`watchConversationChanges`), less those whose
+   * watch ended for good: each new socket watches these again.
+   */
   const changesWatches = new Set<number>();
+  /** The `watch_changes` commands of those not answered yet, by command ID, so a refusal ends that watch alone. */
+  const changesCommands = new Map<string, number>();
   let root: ConversationId | null = null;
   let watchId: string | null = null;
   let watched = false;
@@ -808,13 +813,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         if (changesWanted) send({ type: "watch_changes", id: nextCommandId() });
 
-        for (const conversationId of changesWatches) {
-          send({
-            type: "watch_changes",
-            id: nextCommandId(),
-            conversationId: conversation(conversationId),
-          });
-        }
+        for (const conversationId of changesWatches) sendChangesWatch(conversationId);
 
         return;
       }
@@ -963,6 +962,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           return;
         }
 
+        if (changesCommands.delete(message.id)) return;
+
         const watching = threadWatchOf(message.id);
 
         if (watching !== undefined) {
@@ -992,8 +993,13 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         }
 
         const failed = message.id === undefined ? undefined : threadWatchOf(message.id);
+        const changesRefused = message.id === undefined ? undefined : changesCommands.get(message.id);
 
-        if (message.id === watchId) {
+        if (message.id !== undefined && changesRefused !== undefined) {
+          // The Session has no such conversation (a subagent deleted): that watch ends, and the Session goes on.
+          changesCommands.delete(message.id);
+          changesEnded(changesRefused);
+        } else if (message.id === watchId) {
           // The watch was refused: start over on a new socket, after the backoff, rather than asking again at once.
           lost(from, message.message);
         } else if (failed !== undefined) {
@@ -1009,11 +1015,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           if (submit?.conversationId === undefined) update({ failure: message.message });
           else update({}, submit.conversationId, { failure: message.message });
         } else if (message.changes === true) {
-          // A listing failed; the list before it stands, and the watch goes on. `conversationId` names the Changes watch
-          // then (a Subagent page's), not a conversation's watch.
+          // `conversationId` names the Changes watch then (a Subagent page's), not a conversation's watch.
           const { conversationId } = message;
 
           if (conversationId !== undefined && !changesWatches.has(conversationId)) return;
+
+          if (message.ended === true) {
+            // The watch ended for good (its subagent deleted): not watched again, and the Session goes on.
+            if (conversationId !== undefined) changesEnded(conversationId);
+
+            return;
+          }
+
+          // A listing failed; the list before it stands, and the watch goes on.
 
           const before = changesOf(conversationId);
 
@@ -1071,26 +1085,47 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     });
   };
 
+  /** Ask the Session for subagent conversation `conversationId`'s Changes on this socket. */
+  const sendChangesWatch = (conversationId: number): void => {
+    const id = nextCommandId();
+
+    changesCommands.set(id, conversationId);
+    send({ type: "watch_changes", id, conversationId: conversation(conversationId) });
+  };
+
   const addChangesWatch = (conversationId: number): void => {
     changesWatches.add(conversationId);
 
-    if (root !== null) {
+    if (root !== null) sendChangesWatch(conversationId);
+  };
+
+  /**
+   * The Session ended subagent conversation `conversationId`'s Changes watch, or refused it: its conversation is no
+   * agent's any more. It is not watched again, and its Changes say so until whatever watches them lets go.
+   */
+  const changesEnded = (conversationId: number): void => {
+    if (!changesWatches.delete(conversationId)) return;
+
+    const before = changesOf(conversationId);
+
+    setChanges(conversationId, {
+      repos: before?.repos ?? [],
+      startingContainer: false,
+      listing: before?.listing ?? 0,
+      failure: null,
+      ended: true,
+    });
+  };
+
+  const releaseChangesWatch = (conversationId: number): void => {
+    // One that ended is no longer watched, and only its Changes are left to drop.
+    if (changesWatches.delete(conversationId)) {
       send({
-        type: "watch_changes",
+        type: "unwatch_changes",
         id: nextCommandId(),
         conversationId: conversation(conversationId),
       });
     }
-  };
-
-  const releaseChangesWatch = (conversationId: number): void => {
-    if (!changesWatches.delete(conversationId)) return;
-
-    send({
-      type: "unwatch_changes",
-      id: nextCommandId(),
-      conversationId: conversation(conversationId),
-    });
 
     const { [String(conversationId)]: _dropped, ...others } = current.conversationChanges;
 

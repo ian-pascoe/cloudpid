@@ -89,6 +89,11 @@ export interface ChangesState {
   readonly listing: number;
   /** Why the last listing failed, until the next list; the list shown is the one before. */
   readonly failure: string | null;
+  /**
+   * The watch ended, for good: its conversation is no agent's any more (a subagent deleted). The list shown is the last
+   * one, and no other comes.
+   */
+  readonly ended?: true;
 }
 
 /** What an abort reaches: the root by default; see the `abort` command. */

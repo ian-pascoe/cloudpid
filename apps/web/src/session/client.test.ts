@@ -1675,6 +1675,68 @@ describe("the Changes on a Session connection", () => {
       }),
   );
 
+  it.effect(
+    "of a subagent's conversation end, without a Session failure, when the Session ends or refuses the watch, and are not watched again",
+    () =>
+      Effect.gen(function* () {
+        const { client, sockets, latest, state } = yield* setup();
+
+        const page = yield* Scope.make();
+
+        yield* client.watchConversationChanges(3).pipe(Scope.provide(page));
+        yield* client.watchConversationChanges(4).pipe(Scope.provide(page));
+        yield* watching(latest());
+
+        const commands = latest()
+          .commands()
+          .filter((command) => command.type === "watch_changes");
+
+        yield* latest().say({
+          type: "changes",
+          conversationId: 3,
+          repos: [repo],
+          startingContainer: false,
+        });
+        yield* latest().say({ type: "result", id: commands[0]?.id, result: null });
+
+        // The watch of 3 ends (its subagent deleted); that of 4 is refused (deleted before it was asked for).
+        yield* latest().say({
+          type: "error",
+          changes: true,
+          ended: true,
+          conversationId: 3,
+          message: "Changes watch of conversation 3 ended",
+        });
+        yield* latest().say({
+          type: "error",
+          id: commands[1]?.id,
+          message: "Conversation 4 is not the root or a subagent of this Session",
+        });
+
+        expect(state().failure).toBeNull();
+        expect(state().conversationChanges).toEqual({
+          "3": { repos: [repo], startingContainer: false, listing: 1, failure: null, ended: true },
+          "4": { repos: [], startingContainer: false, listing: 0, failure: null, ended: true },
+        });
+
+        // A new socket does not ask for them again.
+        yield* latest().drop();
+        yield* advance(1_000);
+        yield* sockets[1]!.open();
+        yield* sockets[1]!.say({ type: "hello", root: 1 });
+        expect(
+          sockets[1]!.commands().filter((command) => command.type === "watch_changes"),
+        ).toEqual([]);
+
+        // Letting go drops them, with nothing to unwatch.
+        yield* Scope.close(page, Exit.void).pipe(Effect.andThen(settle));
+        expect(state().conversationChanges).toEqual({});
+        expect(
+          sockets[1]!.commands().filter((command) => command.type === "unwatch_changes"),
+        ).toEqual([]);
+      }),
+  );
+
   it.effect("of a subagent's conversation are refreshed and read there", () =>
     Effect.gen(function* () {
       const { client, latest } = yield* setup();
