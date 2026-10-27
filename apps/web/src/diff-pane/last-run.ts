@@ -2,7 +2,14 @@
 // the Run and of the repos that have no copy, and where in the transcript "Show changes" sits. Pure.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over values, called from React.
 
-import type { LastRun, LastRunRepo, RunNotCaptured, TranscriptMessage } from "@cloudpid/protocol";
+import type {
+  LastRun,
+  LastRunRepo,
+  RunDiff,
+  RunNotCaptured,
+  TranscriptMessage,
+} from "@cloudpid/protocol";
+import { type ChangesTotals, changesTotals } from "./changes.ts";
 
 /** Why a repo has no Run diff, as the Pane says it. */
 export const notCapturedText = (reason: RunNotCaptured): string => {
@@ -63,6 +70,14 @@ export const runAnswerId = (
 
   return answer;
 };
+
+/**
+ * What "Show changes" sums up for Run `run`: the totals of its Run diff, as the Session details sum up the Changes. Null
+ * when the answer is of another Run (a newer one took its place) or there is none, or when the diff is live: only an
+ * ended Run has the link, and its diff never changes.
+ */
+export const runTotals = (run: string, diff: RunDiff | null): ChangesTotals | null =>
+  diff === null || diff.run !== run || diff.live ? null : changesTotals(diff.repos);
 
 /** A time of day as the Pane shows it: the hour and minute, in the browser's locale. */
 export const clockText = (at: number): string =>

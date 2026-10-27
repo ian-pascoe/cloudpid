@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over values.
-import type { ConversationId, LastRun, TranscriptMessage } from "@cloudpid/protocol";
+import type { ConversationId, LastRun, RunDiff, TranscriptMessage } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { RUN_SOURCE, runSourceOf, sourceOfValue, sourceOptions, sourceValue } from "./branch.ts";
 import {
@@ -7,6 +7,7 @@ import {
   runAnswerId,
   runLabel,
   runStateText,
+  runTotals,
   uncapturedRepos,
 } from "./last-run.ts";
 import { paneFilesOf } from "./pane-files.ts";
@@ -202,5 +203,55 @@ describe("Show changes", () => {
     expect(runAnswerId(ran({ endedAt: null, until: null }), transcript)).toBeUndefined();
     expect(runAnswerId(ran({ until: 6, empty: true }), transcript)).toBeUndefined();
     expect(runAnswerId(null, transcript)).toBeUndefined();
+  });
+});
+
+describe("what Show changes sums up", () => {
+  const repo = (name: string, files: RunDiff["repos"][number]["files"], more = 0) => ({
+    repo: name,
+    head: { commit: START, branch: "main" },
+    files,
+    more,
+    stale: false,
+  });
+
+  const ended = (repos: RunDiff["repos"]): RunDiff => ({ run: "run1abc", live: false, repos });
+
+  it("is the files and lines of every repo the Run changed, those past the cap counted too", () => {
+    const diff = ended([
+      repo("app", [
+        { path: "a.ts", status: "modified", additions: 13, deletions: 0 },
+        { path: "b.ts", status: "added", additions: 2, deletions: 1 },
+      ]),
+      repo("api", [{ path: "c.ts", status: "deleted", additions: 0, deletions: 4 }], 3),
+    ]);
+
+    expect(runTotals("run1abc", diff)).toEqual({
+      files: 6,
+      additions: 15,
+      deletions: 5,
+      approximate: false,
+      stale: false,
+    });
+  });
+
+  it("says ≈ when a file's counts are whole-file numbers", () => {
+    const diff = ended([
+      repo("app", [
+        { path: "a.ts", status: "modified", additions: 40, deletions: 38, approximate: true },
+      ]),
+    ]);
+
+    expect(runTotals("run1abc", diff)).toMatchObject({ files: 1, approximate: true });
+  });
+
+  it("is nothing for another Run's diff, a live one, or none", () => {
+    const diff = ended([
+      repo("app", [{ path: "a.ts", status: "modified", additions: 1, deletions: 0 }]),
+    ]);
+
+    expect(runTotals("run2def", diff)).toBeNull();
+    expect(runTotals("run1abc", { ...diff, live: true })).toBeNull();
+    expect(runTotals("run1abc", null)).toBeNull();
   });
 });
