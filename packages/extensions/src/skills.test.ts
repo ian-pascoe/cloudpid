@@ -1,7 +1,16 @@
 // pi-durable's Harness and the faux provider are Promise-based, so these tests are too.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { Harness as ServiceHarness, openHarness } from "@cloudpid/effect-durable";
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type AssistantMessage,
+  type Message,
+  type ToolCall,
+} from "@earendil-works/pi-ai";
 import { createRegistry, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import {
   err,
@@ -11,9 +20,11 @@ import {
   type FileListEntry,
 } from "@earendil-works/pi-durable/env";
 import { Type } from "@earendil-works/pi-ai";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
+import { ContextManagement } from "./context.ts";
 import {
   BUNDLED_SKILLS_DIRECTORY,
   discoverSkills,
@@ -468,5 +479,113 @@ describe("discoverSkills with a directory's skills already known", () => {
     );
 
     expect(found.map((skill) => skill.description)).toEqual(["Repo's own."]);
+  });
+});
+
+describe("the skills section over a conversation's Context Windows", () => {
+  /**
+   * A conversation over `files` whose model gets `steps` in order, each given the files to change before it answers.
+   * Returns the `skills` section (the system prompt's) each request carried, in order.
+   */
+  const run = async (
+    files: Record<string, string>,
+    steps: ReadonlyArray<(files: Record<string, string>) => AssistantMessage>,
+  ) => {
+    const faux = fauxProvider({ models: [{ id: "faux-1", contextWindow: 1_000_000 }] });
+    const models = createModels();
+    const sections: Array<string | undefined> = [];
+
+    models.setProvider(faux.provider);
+    faux.setResponses(
+      Array.from({ length: 20 }, () => (request: { readonly messages: readonly Message[] }) => {
+        let section: string | undefined;
+
+        for (const message of request.messages) {
+          if (message.role === "system" && message.sections !== undefined) {
+            if ("skills" in message.sections) section = message.sections["skills"] ?? undefined;
+          }
+        }
+
+        const step = steps[sections.length];
+
+        sections.push(section);
+
+        return step === undefined ? fauxAssistantMessage("Done.") : step(files);
+      }),
+    );
+
+    const service = await Effect.runPromise(
+      openHarness(new MemoryStorage(), {
+        models,
+        env: () => envOf("/workspace/repo", files),
+      }),
+    );
+
+    const extensions = await Effect.runPromise(
+      Effect.all([Skills, ContextManagement]).pipe(
+        Effect.provide(Context.make(ServiceHarness, service)),
+      ),
+    );
+
+    for (const extension of [{ name: "tools", tools: [noop] }, ...extensions]) {
+      await Effect.runPromise(service.install(extension));
+    }
+
+    const conversation = await service.harness.root(BACKGROUND_CONTEXT, {
+      agent: { model: { provider: "faux", modelId: "faux-1" } },
+    });
+
+    await (
+      await conversation.submit({ type: "input", content: "Go" }, BACKGROUND_CONTEXT)
+    ).wait(BACKGROUND_CONTEXT);
+    await service.harness.waitForIdle(BACKGROUND_CONTEXT);
+
+    return sections;
+  };
+
+  let calls = 0;
+
+  const call = (name: string, args: ToolCall["arguments"]) =>
+    fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${name}-${calls++}` })], {
+      stopReason: "toolUse",
+    });
+
+  const SKILLS = "/workspace/repo/.agents/skills";
+
+  it("shows the Skills as they were at the first request for as long as the context lasts", async () => {
+    const sections = await run({ [`${SKILLS}/deploy/SKILL.md`]: skillFile("deploy", "Ship it.") }, [
+      (files) => {
+        files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+        return call("read", {});
+      },
+      (files) => {
+        files[`${SKILLS}/deploy/SKILL.md`] = skillFile("deploy", "Changed description.");
+
+        return call("read", {});
+      },
+    ]);
+
+    // The system prompt is the head of every request: a Skill saved meanwhile may not rewrite it.
+    expect(sections).toHaveLength(3);
+    expect(sections[0]).toContain("<name>deploy</name>");
+    expect(sections[0]).not.toContain("<name>lint</name>");
+    expect(sections).toEqual(sections.map(() => sections[0]));
+  });
+
+  it("lists the Skills as they are then after a Handoff", async () => {
+    const sections = await run({ [`${SKILLS}/deploy/SKILL.md`]: skillFile("deploy", "Ship it.") }, [
+      (files) => {
+        files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+        return call("read", {});
+      },
+      () => call("context_rollover", { handoff: "Keep going." }),
+    ]);
+
+    expect(sections[0]).not.toContain("<name>lint</name>");
+    expect(sections[1]).toBe(sections[0]);
+    expect(sections.at(-1)).toContain("<name>deploy</name>");
+    expect(sections.at(-1)).toContain("<name>lint</name>");
   });
 });

@@ -103,10 +103,32 @@ const skillsOf = (
     ? attempt("Cannot discover skills", () => env.discoverSkills(BACKGROUND_CONTEXT))
     : discoverSkills(env);
 
-const Section = effectSection("skills", (input) =>
-  input.env === undefined
-    ? Effect.undefined
-    : Effect.map(skillsOf(input.env), (skills) => formatSkills(skills, readToolOf(input))),
+/** The section's key; also the tag that wraps its text. */
+export const SECTION_KEY = "skills";
+
+/**
+ * The section: the Skills found when the context first shows it, then shown as they were (`PromptInput.shown`, as the
+ * `project_context` section is). A Skill can change during a Session (a Skill saved or installed), and pi-durable sends
+ * a changed section as a patch, which a provider without mid-conversation system messages folds into the system prompt,
+ * the head of the cache prefix. A Handoff starts a context without it, so the next request lists the Skills again.
+ * Skill expansion at submit does not read this list: it asks the Workspace for its Skills when a message is admitted.
+ */
+const Section = effectSection(
+  SECTION_KEY,
+  (input) => {
+    const shown = input.shown[SECTION_KEY];
+
+    if (shown !== undefined) return Effect.succeed(shown);
+
+    return input.env === undefined
+      ? Effect.undefined
+      : Effect.map(skillsOf(input.env), (skills) => {
+          const text = formatSkills(skills, readToolOf(input));
+
+          return text === undefined ? undefined : `<${SECTION_KEY}>\n${text}\n</${SECTION_KEY}>`;
+        });
+  },
+  { tag: false },
 );
 
 /** The `skills` extension: the `skills` section, and no tools (the agent reads skills with its `read` tool). */
