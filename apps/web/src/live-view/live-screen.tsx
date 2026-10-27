@@ -11,15 +11,7 @@ import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { AlertTriangle, Keyboard, Loader2, Monitor, RotateCw } from "lucide-react";
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useContext, useEffect, useId, useRef, type ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { isTouchScreen } from "../lib/device.ts";
 import { cn } from "../lib/utils.ts";
@@ -31,8 +23,8 @@ import {
 } from "./atoms.ts";
 import { LiveViewScreen, type ScreenPage } from "./screen.ts";
 
-/** The screen as what a Pane draws over it reads it (`LiveScreen`'s `overlay`); null until it is wired. */
-export const ScreenPageContext = createContext<ScreenPage | null>(null);
+/** The screen as what a Pane draws over it reads it (`LiveScreen`'s `overlay`), for one screen; null until it is wired. */
+export const ShownScreenPage = ScopedAtom.make(() => Atom.make<ScreenPage | null>(null));
 
 /** The edit menu's items, in the order iOS shows them. */
 const MENU_ITEMS = ["Copy", "Cut", "Paste", "Select All"] as const;
@@ -206,7 +198,7 @@ const Screen = ({
   const pasteField = useRef<HTMLTextAreaElement>(null);
   const keyboardButton = useRef<HTMLButtonElement>(null);
   const screen = useRef<LiveViewScreen | null>(null);
-  const [page, setPage] = useState<ScreenPage | null>(null);
+  const pageAtom = ShownScreenPage.use();
   const touch = isTouchScreen();
 
   useEffect(() => {
@@ -256,14 +248,14 @@ const Screen = ({
     );
 
     screen.current = made;
-    setPage(made.page);
+    registry.set(pageAtom, made.page);
 
     return () => {
       made.dispose();
       screen.current = null;
-      setPage(null);
+      registry.set(pageAtom, null);
     };
-  }, [live, registry, desktopAtom, touch]);
+  }, [live, registry, desktopAtom, pageAtom, touch]);
 
   const local =
     "absolute z-20 rounded-md border-2 border-ring bg-background text-base text-foreground";
@@ -290,7 +282,7 @@ const Screen = ({
         >
           <canvas ref={canvas} className="mx-auto block touch-none select-none" />
         </div>
-        <ScreenPageContext value={page}>{overlay}</ScreenPageContext>
+        {overlay}
         {/* What the phone's keyboard types into: invisible, and 16 px so iOS does not zoom on focus. */}
         <textarea
           ref={textarea}
@@ -355,7 +347,7 @@ const Screen = ({
  * The screen of the Live View `view` holds: its window strip and buttons above the page. Render it in a flex column
  * that gives it the height (it fills what its Pane's own chrome leaves), and read `liveViewStateAtom(view)` for when the
  * Live View ends. `label` names the page for assistive technology (the agent's browser, by default). `overlay` is drawn
- * over the screen, in its wrapper's coordinates, reading it through `ScreenPageContext` (the Browser Pane's pins and
+ * over the screen, in its wrapper's coordinates, reading it through `ShownScreenPage` (the Browser Pane's pins and
  * Annotate mode).
  */
 export const LiveScreen = ({
@@ -368,6 +360,8 @@ export const LiveScreen = ({
   overlay?: ReactNode;
 }) => (
   <DesktopLayout.Provider>
-    <Screen view={view} label={label} overlay={overlay} />
+    <ShownScreenPage.Provider>
+      <Screen view={view} label={label} overlay={overlay} />
+    </ShownScreenPage.Provider>
   </DesktopLayout.Provider>
 );

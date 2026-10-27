@@ -8,6 +8,7 @@ import {
   type Annotation,
   clampPageSource,
   isPageAnnotation,
+  isSamePage,
   MAX_ANNOTATION_SELECTOR,
   type PageAnnotation,
   type PageAnnotationDraft,
@@ -181,18 +182,19 @@ export const areaBetween = (a: Point, b: Point): PageRect => ({
   height: Math.abs(b.y - a.y),
 });
 
-/** The page drafts on the page at `url`, whichever Owner tab they were drawn in: the same address, fragment aside. */
+/**
+ * The page drafts on the page at `url`, whichever Owner tab they were drawn in: the same address, fragment aside, as the
+ * Session kept it (`isSamePage`: cut at its bound, or redacted of a held Secret).
+ */
 export const draftsOnPage = (
   annotations: readonly Annotation[],
   url: string | undefined,
 ): readonly PageAnnotation[] => {
   if (url === undefined) return [];
 
-  const page = withoutFragment(url);
-
   return annotations.filter(
     (annotation): annotation is PageAnnotation =>
-      isPageAnnotation(annotation) && annotation.source.url === page,
+      isPageAnnotation(annotation) && isSamePage(annotation.source.url, url),
   );
 };
 
@@ -344,6 +346,33 @@ export const pageDraft = (
   return draft;
 };
 
-/** What a page draft is on, as the Pane names it: its element's tag, as `<button>`, or an area. */
-export const pinLabel = (source: PageSource): string =>
-  source.element === undefined ? "An area" : `<${source.element.tag}>`;
+/** Whether two answers of where the drafts' elements are say the same: the same selectors, at the same rects. */
+export const sameLocated = (
+  a: ReadonlyMap<string, PageRect | null>,
+  b: ReadonlyMap<string, PageRect | null>,
+): boolean => {
+  if (a.size !== b.size) return false;
+
+  for (const [selector, rect] of a) {
+    const other = b.get(selector);
+
+    if (other === undefined) return false;
+
+    if (rect === null || other === null) {
+      if (rect !== other) return false;
+
+      continue;
+    }
+
+    if (
+      rect.x !== other.x ||
+      rect.y !== other.y ||
+      rect.width !== other.width ||
+      rect.height !== other.height
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+};

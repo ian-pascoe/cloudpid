@@ -13,7 +13,9 @@ import * as Atom from "effect/reactivity/Atom";
 import { appRuntime } from "../runtime.ts";
 import { ownerTabsAtom, sessionClientAtom } from "../session/atoms.ts";
 import type { SessionClient } from "../session/client.ts";
+import { liveViewStateAtom } from "./atoms.ts";
 import { INITIAL_OWNER_TAB_PAGE, openBrowserPaneView, type OwnerTabPage } from "./browser-pane.ts";
+import type { LiveView } from "./connection.ts";
 import { keepScreen, latestScreenAtom } from "./owner-tab-screen.ts";
 
 /** Which Browser Pane: its Session's, and whether that Session is archived (its Pane opens nothing). */
@@ -117,6 +119,48 @@ export const ownerTabsReopenedAtom = Atom.family((key: BrowserPaneKey) =>
 export const dismissReplacedAtom = Atom.family((key: BrowserPaneKey) =>
   appRuntime.fn((_: void, get) =>
     get.result(browserPaneViewAtom(key)).pipe(Effect.flatMap((view) => view.dismiss)),
+  ),
+);
+
+/** Whether a window of the Owner tab (a pop-up) is shown in the Pane instead of its page. */
+export const ownerTabWindowShownAtom = Atom.family((key: BrowserPaneKey) =>
+  Atom.make((get): boolean => {
+    const { strip } = get(liveViewStateAtom(browserPaneViewAtom(key)));
+
+    return strip !== null && strip.shown !== strip.tab;
+  }),
+);
+
+/** The Live View Annotate mode was turned on in, by Pane; null while it is off. */
+const annotateOnAtom = Atom.family((_key: BrowserPaneKey) =>
+  Atom.make<LiveView | null>(null).pipe(Atom.keepAlive),
+);
+
+/**
+ * Whether the Browser Pane is in Annotate mode (`page-annotations-layer.tsx`): turned on by its toggle, for the Live View
+ * it was turned on in while it lasts (a new one, after the Owner tab was gone, starts with the page's input), and not
+ * while a window of the tab is shown. Write it to turn the mode on or off.
+ */
+export const annotateModeAtom = Atom.family((key: BrowserPaneKey) =>
+  Atom.writable(
+    (get): boolean => {
+      const view = browserPaneViewAtom(key);
+      const live = AsyncResult.getOrElse(get(view), () => null);
+      const on = get(annotateOnAtom(key));
+
+      return (
+        on !== null &&
+        on === live &&
+        get(liveViewStateAtom(view)).status !== "ended" &&
+        !get(ownerTabWindowShownAtom(key))
+      );
+    },
+    (ctx, on: boolean) => {
+      ctx.set(
+        annotateOnAtom(key),
+        on ? AsyncResult.getOrElse(ctx.get(browserPaneViewAtom(key)), () => null) : null,
+      );
+    },
   ),
 );
 

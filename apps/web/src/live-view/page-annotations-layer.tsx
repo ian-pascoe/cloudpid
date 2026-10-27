@@ -1,42 +1,44 @@
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off globalTimers:off asyncFunction:off -- the pins over native arrays; hooks, not combinators; the page's answers come as the screen's promises (`ScreenPage`), and the pins are found again on timers a React effect owns.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off asyncFunction:off -- the pins over native arrays; hooks, not combinators; the page's answers come as the screen's promises (`ScreenPage`).
 
 // Annotations on the page in the Browser Pane (#243; `docs/spec.md` → Browser → Annotate mode), drawn over its screen
 // (`LiveScreen`'s `overlay`) and never into the page: the agent's screenshots never show them.
 //
 // - Pins: the drafts on the page shown (its URL, fragment aside, from whichever Owner tab drew them), each numbered at
-//   its element, which the Pane finds again by its selector as the page scrolls, resizes or changes (once a second, and
-//   after each scroll), or at its area. A draft whose element the page no longer has is listed as not found on the page.
-//   A pin opens on the draft: its crop, text, Edit and Delete.
-// - Annotate mode (the toolbar's toggle): the screen takes no input; the pointer's element is outlined (hover, on a
-//   desktop: `DOM.getNodeForLocation` over the Pane's own connection), a click (a tap on a phone) picks it, and a drag
-//   picks an area. Long press and text selection are off while it is on; the wheel still scrolls the page. Leaving it
-//   gives the screen its input back.
-// - The editor of a pick or a draft, at the foot of the screen, with what it is on and its crop.
+//   its element, which the Pane finds again by its selector as the page scrolls, resizes or changes (`page-pins.ts`), or
+//   at its area. A draft whose element the page no longer has is listed as not found on the page. A pin opens on the
+//   draft: its crop, text, Edit and Delete.
+// - Annotate mode (the toolbar's toggle, `annotateModeAtom`): the screen takes no input; the pointer's element is
+//   outlined (hover, on a desktop: `DOM.getNodeForLocation` over the Pane's own connection), a click (a tap on a phone)
+//   picks it, and a drag picks an area. Long press and text selection are off while it is on; the wheel still scrolls
+//   the page. Leaving it gives the screen its input back.
+// - The editor of a pick or a draft, at the foot of the screen, with what it is on and its crop: the diffs' editor
+//   (`AnnotationEditor`, `EditorBox`), one per Pane. The screen takes no input while it is open.
 
-import {
-  type AnnotationDraft,
-  MAX_ANNOTATION_TEXT,
-  type PageAnnotation,
-  type PageCrop,
-  type PageRect,
-} from "@cloudpid/protocol";
-import { useAtomValue } from "@effect/atom-react";
-import * as Cause from "effect/Cause";
-import * as Exit from "effect/Exit";
+import { type PageAnnotation, type PageRect, pageQuote } from "@cloudpid/protocol";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Option from "effect/Option";
+import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
 import { Trash2 } from "lucide-react";
-import { type ReactNode, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { useCall } from "../calls.ts";
 import { Button } from "../components/ui/button.tsx";
 import { hidePopover, Popover } from "../components/ui/popover.tsx";
 import { cn } from "../lib/utils.ts";
-import { messageOf } from "../registry.ts";
-import { editedDraft } from "../review/drafts.ts";
-import { CropImage, QuotedLines } from "../review/review-chips.tsx";
-import { annotationsAtom, deleteAnnotationAtom, saveAnnotationAtom } from "../session/atoms.ts";
+import { EditorBox, useSave } from "../review/annotations-ui.tsx";
+import { editedDraft, pageTarget } from "../review/drafts.ts";
+import { AnnotationEditor, CLOSED, type PagePick } from "../review/editor.ts";
+import { PageDetails } from "../review/review-chips.tsx";
+import { annotationsAtom, deleteAnnotationAtom } from "../session/atoms.ts";
+import {
+  annotateModeAtom,
+  type BrowserPaneKey,
+  ownerTabPageAtom,
+  ownerTabWindowShownAtom,
+} from "./browser-pane-atoms.ts";
 import type { Point } from "./cdp.ts";
-import { ScreenPageContext } from "./live-screen.tsx";
+import { ShownScreenPage } from "./live-screen.tsx";
 import {
   areaBetween,
   BoxModel,
@@ -45,29 +47,34 @@ import {
   DESCRIBE_FUNCTION,
   draftsOnPage,
   isDrag,
-  Located,
-  locatedBySelector,
-  locateScript,
   NodeForLocation,
   type Picked,
   pickedElement,
   pageDraft,
-  pinLabel,
   placePins,
   quadRect,
   ResolvedNode,
   selectorsOf,
 } from "./page-annotations.ts";
+import { locatedAtom, repaintsAtom } from "./page-pins.ts";
 import type { ScreenPage } from "./screen.ts";
-
-/** How often the drafts' elements are found again while the page holds still, and how soon after it scrolls, in ms. */
-const LOCATE_EVERY_MS = 1_000;
-const LOCATE_AFTER_MOVE_MS = 120;
 
 /** How often, at most, the element under a hovering mouse is asked for, in ms. */
 const HOVER_EVERY_MS = 80;
 
 const Ignored = Schema.Unknown;
+
+/** What Annotate mode's layer shows: the element under a hovering mouse, the area being dragged out, and a note. */
+interface PointerState {
+  readonly hover: PageRect | null;
+  readonly drag: PageRect | null;
+  readonly note: string | null;
+}
+
+/** Annotate mode's pointer state, for one layer: it starts afresh each time the layer does. */
+const AnnotatePointer = ScopedAtom.make(() =>
+  Atom.make<PointerState>({ hover: null, drag: null, note: null }),
+);
 
 /** The page's scroll and viewport as the last frame shows them. */
 const frameState = (page: ScreenPage): Pick<Picked, "scroll" | "viewport"> => {
@@ -77,98 +84,6 @@ const frameState = (page: ScreenPage): Pick<Picked, "scroll" | "viewport"> => {
     scroll: { x: meta?.scrollOffsetX ?? 0, y: meta?.scrollOffsetY ?? 0 },
     viewport: { width: meta?.deviceWidth ?? 0, height: meta?.deviceHeight ?? 0 },
   };
-};
-
-/** Draw again on each frame (or resize) of the screen, once per animation frame at most. */
-const useRepaint = (page: ScreenPage): void => {
-  const [, setTick] = useState(0);
-
-  useEffect(() => {
-    let frame: number | null = null;
-
-    const stop = page.painted(() => {
-      if (frame !== null) return;
-
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        setTick((tick) => tick + 1);
-      });
-    });
-
-    return () => {
-      stop();
-
-      if (frame !== null) cancelAnimationFrame(frame);
-    };
-  }, [page]);
-};
-
-/**
- * Where the elements of `drafts` are on the page at `url` now, by selector: read at once, once a second, and soon after
- * each scroll or resize. Undefined until the page answered for this URL.
- */
-const useLocated = (
-  page: ScreenPage,
-  drafts: readonly PageAnnotation[],
-  url: string,
-): ReadonlyMap<string, PageRect | null> | undefined => {
-  const selectors = useMemo(() => selectorsOf(drafts), [drafts]);
-  const key = selectors.join("\n");
-
-  const [located, setLocated] = useState<{
-    readonly key: string;
-    readonly url: string;
-    readonly rects: ReadonlyMap<string, PageRect | null>;
-  } | null>(null);
-
-  useEffect(() => {
-    // Only areas, or no drafts: nothing to find.
-    if (key === "") {
-      setLocated({ key, url, rects: new Map() });
-
-      return;
-    }
-
-    const wanted = key.split("\n");
-    let reading = false;
-    let stopped = false;
-    let soon: ReturnType<typeof setTimeout> | null = null;
-
-    const read = () => {
-      if (reading || stopped) return;
-
-      reading = true;
-      void page.evaluate(locateScript(wanted), Located).then((answer) => {
-        reading = false;
-
-        if (stopped || answer === undefined) return;
-
-        const rects = locatedBySelector(wanted, answer, url);
-
-        if (rects !== undefined) setLocated({ key, url, rects });
-      });
-    };
-
-    read();
-
-    const every = setInterval(read, LOCATE_EVERY_MS);
-
-    const stopMoved = page.moved(() => {
-      if (soon !== null) clearTimeout(soon);
-
-      soon = setTimeout(read, LOCATE_AFTER_MOVE_MS);
-    });
-
-    return () => {
-      stopped = true;
-      clearInterval(every);
-      stopMoved();
-
-      if (soon !== null) clearTimeout(soon);
-    };
-  }, [page, key, url]);
-
-  return located !== null && located.key === key && located.url === url ? located.rects : undefined;
 };
 
 /** A rect of the viewport, placed over the screen. */
@@ -195,31 +110,17 @@ const Outline = ({
   );
 };
 
-/** What the editor is open on: a new pick, or a draft. */
-type Editing =
-  | {
-      readonly kind: "new";
-      readonly picked: Picked;
-      readonly crop: PageCrop | undefined;
-      readonly url: string;
-      readonly ownerTabId: string;
-    }
-  | { readonly kind: "draft"; readonly draft: PageAnnotation };
+/** A rect of the viewport, placed over the screen again each time it is drawn (the Pane resized, the page zoomed). */
+const PlacedOutline = (props: Parameters<typeof Outline>[0]) => {
+  useAtomValue(repaintsAtom(props.page));
 
-/** What a draft's card shows: what it is on, its crop, the page's text and the owner's. */
-const DraftDetails = ({ draft }: { draft: PageAnnotation }) => (
-  <>
-    <p className="text-xs text-muted-foreground">
-      {pinLabel(draft.source)}
-      {draft.source.element !== undefined && (
-        <span className="ml-1 font-mono break-all">{draft.source.element.selector}</span>
-      )}
-    </p>
-    {draft.crop !== undefined && <CropImage crop={draft.crop} className="max-h-32" />}
-    <QuotedLines lines={draft.quote} more={draft.more} />
-    <p className="break-words whitespace-pre-wrap">{draft.text}</p>
-  </>
-);
+  return <Outline {...props} />;
+};
+
+/** What the editor is open on: a new pick, or a draft. */
+type Open =
+  | { readonly kind: "new"; readonly pick: PagePick }
+  | { readonly kind: "draft"; readonly draft: PageAnnotation };
 
 /** A pin's card: the draft, Edit and Delete. */
 const PinCard = ({
@@ -232,7 +133,7 @@ const PinCard = ({
   onDelete: () => void;
 }) => (
   <div className="flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2 p-2 text-sm">
-    <DraftDetails draft={draft} />
+    <PageDetails {...draft} className="max-h-32" />
     <div className="flex gap-1">
       <Button
         type="button"
@@ -262,113 +163,55 @@ const PinCard = ({
   </div>
 );
 
-/** The editor at the foot of the screen: what it is on, its crop, the owner's text, Save and Cancel. */
-const Editor = ({
-  sessionId,
-  editing,
-  onClose,
-}: {
-  sessionId: string;
-  editing: Editing;
-  onClose: () => void;
-}) => {
-  const save = useCall(saveAnnotationAtom(sessionId));
-  const [text, setText] = useState(editing.kind === "draft" ? editing.draft.text : "");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const errorId = useId();
-  const blank = text.trim() === "";
+/** What a new pick is on, as a draft's source names it. */
+const pickSource = ({ picked, url }: PagePick) =>
+  picked.element === undefined ? { url } : { url, element: picked.element };
 
-  const on =
-    editing.kind === "draft"
-      ? pinLabel(editing.draft.source)
-      : editing.picked.element === undefined
-        ? "An area"
-        : `<${editing.picked.element.tag}>`;
+/** The editor at the foot of the screen: what it is on, its crop and the page's text, the owner's text, Save and Cancel. */
+const PageEditor = ({ sessionId, open }: { sessionId: string; open: Open }) => {
+  const save = useSave(sessionId);
+  const source = open.kind === "draft" ? open.draft.source : pickSource(open.pick);
+  const target = pageTarget(source);
 
-  const crop = editing.kind === "draft" ? editing.draft.crop : editing.crop;
-
-  const submit = () => {
-    if (blank || saving) return;
-
-    const draft: AnnotationDraft =
-      editing.kind === "draft"
-        ? editedDraft(editing.draft, text.trim())
-        : pageDraft(
-            // @effect-diagnostics-next-line cryptoRandomUUID:off -- the browser makes a draft's ID, so its pin shows at once.
-            crypto.randomUUID(),
-            editing.picked,
-            { url: editing.url, ownerTabId: editing.ownerTabId },
-            editing.crop,
-            text.trim(),
-          );
-
-    setSaving(true);
-    setError(null);
-    void save(draft).then((exit) => {
-      if (Exit.isSuccess(exit)) {
-        onClose();
-
-        return;
-      }
-
-      if (Cause.hasInterruptsOnly(exit.cause)) return;
-
-      setSaving(false);
-      setError(messageOf(exit.cause));
-    });
-  };
+  const shown =
+    open.kind === "draft"
+      ? open.draft
+      : { crop: open.pick.crop, ...pageQuote(open.pick.picked.text, open.pick.picked.more) };
 
   return (
     <div
       role="dialog"
-      aria-label={`Annotation on ${on}`}
+      aria-label={`Annotation on ${target}`}
       className="absolute inset-x-3 bottom-3 z-30 flex max-h-[70%] flex-col gap-2 overflow-auto rounded-lg border bg-background p-3 text-sm shadow-sm"
     >
-      <p className="text-xs text-muted-foreground">
-        {editing.kind === "draft" ? "Your Annotation on " : "New Annotation on "}
-        <span className="font-mono text-foreground">{on}</span>
-        {editing.kind === "new" && editing.picked.element === undefined && " of the page"}
+      <p className="text-xs font-medium">
+        {open.kind === "draft" ? "Your Annotation" : "New Annotation"}
       </p>
-      {crop !== undefined && <CropImage crop={crop} className="max-h-24" />}
-      <textarea
-        aria-label={`Annotation on ${on}`}
-        aria-describedby={error === null ? undefined : errorId}
-        // oxlint-disable-next-line jsx-a11y/no-autofocus -- the owner just picked what to write about.
-        autoFocus
-        rows={3}
-        maxLength={MAX_ANNOTATION_TEXT}
-        value={text}
-        placeholder="What should the agent know about this?"
-        onChange={(event) => {
-          setText(event.currentTarget.value);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            onClose();
-          }
-
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            submit();
-          }
-        }}
-        className="block min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-base focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:text-sm"
+      <PageDetails
+        source={source}
+        crop={shown.crop}
+        quote={shown.quote}
+        more={shown.more}
+        className="max-h-24"
       />
-      {error !== null && (
-        <p id={errorId} role="alert" className="text-xs text-destructive">
-          {error}
-        </p>
-      )}
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-          Cancel
-        </Button>
-        <Button type="button" size="sm" disabled={blank || saving} onClick={submit}>
-          {saving ? "Saving…" : "Save draft"}
-        </Button>
-      </div>
+      <EditorBox
+        label={`${open.kind === "draft" ? "Edit the Annotation" : "Annotation"} on ${target}`}
+        placeholder="What should the agent know about this?"
+        onSave={(text) => {
+          save(
+            open.kind === "draft"
+              ? editedDraft(open.draft, text)
+              : pageDraft(
+                  // @effect-diagnostics-next-line cryptoRandomUUID:off -- the browser makes a draft's ID, so its pin shows at once.
+                  crypto.randomUUID(),
+                  open.pick.picked,
+                  open.pick,
+                  open.pick.crop,
+                  text,
+                ),
+          );
+        }}
+      />
     </div>
   );
 };
@@ -379,16 +222,13 @@ const valueOf = <A,>(schema: Schema.Decoder<A>, called: typeof CalledFunction.Ty
     ? undefined
     : Option.getOrUndefined(Schema.decodeUnknownOption(schema)(called.result.value));
 
-/** The element under `point` of the viewport, and its box: `DOM.getNodeForLocation`, then `DOM.getBoxModel`. */
+/**
+ * The element under `point` of the viewport, and its box: `DOM.getNodeForLocation`, then `DOM.getBoxModel` (the page's DOM
+ * agent is enabled as Annotate mode starts).
+ */
 const elementAt = async (page: ScreenPage, point: Point) => {
   const at = { x: Math.round(point.x), y: Math.round(point.y), ignorePointerEventsNone: true };
-
-  const node =
-    (await page.call("DOM.getNodeForLocation", at, NodeForLocation)) ??
-    // The page's DOM agent may want enabling first (a new connection, after a reconnect).
-    (await page
-      .call("DOM.enable", {}, Ignored)
-      .then(() => page.call("DOM.getNodeForLocation", at, NodeForLocation)));
+  const node = await page.call("DOM.getNodeForLocation", at, NodeForLocation);
 
   if (node === undefined) return undefined;
 
@@ -425,23 +265,24 @@ const AnnotateLayer = ({
   page,
   url,
   ownerTabId,
-  onPick,
 }: {
   page: ScreenPage;
   url: string;
   ownerTabId: string;
-  onPick: (editing: Editing) => void;
 }) => {
   const layer = useRef<HTMLDivElement>(null);
-  const [hover, setHover] = useState<PageRect | null>(null);
-  const [drag, setDrag] = useState<PageRect | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const [{ hover, drag, note }, setPointer] = useAtom(AnnotatePointer.use());
+  const setEditor = useAtomSet(AnnotationEditor.use());
 
   const press = useRef<{ readonly client: Point; readonly page: Point; dragging: boolean } | null>(
     null,
   );
 
   const hovered = useRef({ at: 0, asked: 0 });
+
+  const set = (change: Partial<PointerState>) => {
+    setPointer((before) => ({ ...before, ...change }));
+  };
 
   // The wheel scrolls the page; a touch makes no callout or selection. Native listeners: React's are passive.
   useEffect(() => {
@@ -467,20 +308,17 @@ const AnnotateLayer = ({
     element.addEventListener("wheel", wheel, { passive: false });
     element.addEventListener("touchstart", touch, { passive: false });
 
+    // The page scrolled: the outline no longer fits it.
+    const stopMoved = page.moved(() => {
+      setPointer((before) => ({ ...before, hover: null }));
+    });
+
     return () => {
       element.removeEventListener("wheel", wheel);
       element.removeEventListener("touchstart", touch);
+      stopMoved();
     };
-  }, [page]);
-
-  // The page scrolled: the outline no longer fits it.
-  useEffect(
-    () =>
-      page.moved(() => {
-        setHover(null);
-      }),
-    [page],
-  );
+  }, [page, setPointer]);
 
   const hoverAt = (point: Point) => {
     const now = performance.now();
@@ -491,8 +329,12 @@ const AnnotateLayer = ({
 
     hovered.current = { at: now, asked };
     void elementAt(page, point).then((found) => {
-      if (hovered.current.asked === asked) setHover(found?.box ?? null);
+      if (hovered.current.asked === asked) set({ hover: found?.box ?? null });
     });
+  };
+
+  const pick = (picked: Picked, crop: PagePick["crop"]) => {
+    setEditor({ ...CLOSED, page: { picked, crop, url, ownerTabId } });
   };
 
   const pickElement = async (point: Point) => {
@@ -500,7 +342,7 @@ const AnnotateLayer = ({
     const found = await elementAt(page, point);
 
     if (found === undefined) {
-      setNote("Nothing there to annotate. Drag out an area instead.");
+      set({ note: "Nothing there to annotate. Drag out an area instead." });
 
       return;
     }
@@ -512,17 +354,7 @@ const AnnotateLayer = ({
         ? { box: found.box, text: [], more: 0, ...state }
         : pickedElement(described, found.box, state);
 
-    onPick({ kind: "new", picked, crop: page.crop(found.box), url, ownerTabId });
-  };
-
-  const pickArea = (area: PageRect) => {
-    onPick({
-      kind: "new",
-      picked: { box: area, text: [], more: 0, ...frameState(page) },
-      crop: page.crop(area),
-      url,
-      ownerTabId,
-    });
+    pick(picked, page.crop(found.box));
   };
 
   return (
@@ -539,7 +371,7 @@ const AnnotateLayer = ({
 
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
-        setNote(null);
+        set({ note: null });
         press.current = {
           client: { x: event.clientX, y: event.clientY },
           page: page.toPage(event.clientX, event.clientY),
@@ -558,23 +390,25 @@ const AnnotateLayer = ({
 
         if (!pressed.dragging && isDrag(pressed.client, { x: event.clientX, y: event.clientY })) {
           pressed.dragging = true;
-          setHover(null);
+          set({ hover: null });
         }
 
-        if (pressed.dragging) setDrag(areaBetween(pressed.page, at));
+        if (pressed.dragging) set({ drag: areaBetween(pressed.page, at) });
       }}
       onPointerUp={(event) => {
         const pressed = press.current;
 
         press.current = null;
-        setDrag(null);
+        set({ drag: null });
 
         if (pressed === null) return;
 
         if (pressed.dragging) {
           const area = areaBetween(pressed.page, page.toPage(event.clientX, event.clientY));
 
-          if (area.width >= 1 && area.height >= 1) pickArea(area);
+          if (area.width >= 1 && area.height >= 1) {
+            pick({ box: area, text: [], more: 0, ...frameState(page) }, page.crop(area));
+          }
 
           return;
         }
@@ -583,10 +417,10 @@ const AnnotateLayer = ({
       }}
       onPointerCancel={() => {
         press.current = null;
-        setDrag(null);
+        set({ drag: null });
       }}
       onPointerLeave={(event) => {
-        if (event.pointerType === "mouse" && press.current === null) setHover(null);
+        if (event.pointerType === "mouse" && press.current === null) set({ hover: null });
       }}
     >
       {hover !== null && drag === null && (
@@ -630,7 +464,7 @@ const Missing = ({
         <li key={draft.id} className="flex items-start gap-1">
           <span className="font-medium">{number}.</span>
           <span className="min-w-0 flex-1 break-words">
-            <span className="font-mono">{pinLabel(draft.source)}</span> {draft.text}
+            <span className="font-mono">{pageTarget(draft.source)}</span> {draft.text}
           </span>
           <button
             type="button"
@@ -649,6 +483,79 @@ const Missing = ({
   </details>
 );
 
+/**
+ * The pins of `drafts`, the drafts on the page at `url`: placed again each time the screen is drawn, at their elements
+ * as the page last said (found again only while the Pane is `inView`).
+ */
+const Pins = ({
+  page,
+  sessionId,
+  url,
+  drafts,
+  inView,
+}: {
+  page: ScreenPage;
+  sessionId: string;
+  url: string;
+  drafts: readonly PageAnnotation[];
+  inView: boolean;
+}) => {
+  const located = useAtomValue(locatedAtom({ page, selectors: selectorsOf(drafts), url, inView }));
+  const remove = useCall(deleteAnnotationAtom(sessionId));
+  const setEditor = useAtomSet(AnnotationEditor.use());
+
+  useAtomValue(repaintsAtom(page));
+
+  const meta = page.metadata();
+  const scroll = { x: meta?.scrollOffsetX ?? 0, y: meta?.scrollOffsetY ?? 0 };
+  const { pinned, missing } = placePins(drafts, located, scroll);
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
+      {pinned.map(({ draft, number, rect }) => (
+        <Outline
+          key={draft.id}
+          page={page}
+          rect={rect}
+          className="border border-dashed border-primary/70"
+        >
+          <span className="pointer-events-auto absolute -top-3 -left-3">
+            <Popover
+              label={`Annotation ${number}`}
+              title={draft.text}
+              className="flex size-6 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground shadow-sm focus-visible:outline-2 focus-visible:outline-ring"
+              trigger={
+                <>
+                  <span aria-hidden>{number}</span>
+                  <span className="sr-only">Annotation {number}</span>
+                </>
+              }
+            >
+              <PinCard
+                draft={draft}
+                onEdit={() => {
+                  setEditor({ ...CLOSED, editing: draft.id, text: draft.text });
+                }}
+                onDelete={() => {
+                  void remove(draft.id);
+                }}
+              />
+            </Popover>
+          </span>
+        </Outline>
+      ))}
+      {missing.length > 0 && (
+        <Missing
+          missing={missing}
+          onDelete={(id) => {
+            void remove(id);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
 /** The pins of the drafts on the page at `url`, Annotate mode while `annotating`, and the editor. */
 const Layer = ({
   page,
@@ -656,97 +563,62 @@ const Layer = ({
   url,
   ownerTabId,
   annotating,
+  inView,
 }: {
   page: ScreenPage;
   sessionId: string;
   url: string;
   ownerTabId: string;
   annotating: boolean;
+  inView: boolean;
 }) => {
   const annotations = useAtomValue(annotationsAtom(sessionId));
   const drafts = useMemo(() => draftsOnPage(annotations, url), [annotations, url]);
-  const located = useLocated(page, drafts, url);
-  const remove = useCall(deleteAnnotationAtom(sessionId));
-  const [editing, setEditing] = useState<Editing | null>(null);
+  const editor = useAtomValue(AnnotationEditor.use());
 
-  useRepaint(page);
+  // The page's DOM agent answers what is under the pointer: enabled once as Annotate mode starts in a tab.
+  useEffect(() => {
+    if (annotating) void page.call("DOM.enable", {}, Ignored);
+  }, [page, annotating, ownerTabId]);
 
   // A pick made on another page, or a draft deleted elsewhere, is not edited any longer.
-  const open =
-    editing === null ||
-    (editing.kind === "new" && editing.url !== url) ||
-    (editing.kind === "draft" && !drafts.some((draft) => draft.id === editing.draft.id))
-      ? null
-      : editing;
+  const editing = drafts.find((draft) => draft.id === editor.editing);
 
-  const meta = page.metadata();
-  const scroll = { x: meta?.scrollOffsetX ?? 0, y: meta?.scrollOffsetY ?? 0 };
-  const { pinned, missing } = placePins(drafts, located, scroll);
+  const open: Open | null =
+    editor.page !== null && editor.page.url === url
+      ? { kind: "new", pick: editor.page }
+      : editing === undefined
+        ? null
+        : { kind: "draft", draft: editing };
 
   return (
     <>
-      <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
-        {pinned.map(({ draft, number, rect }) => (
-          <Outline
-            key={draft.id}
-            page={page}
-            rect={rect}
-            className="border border-dashed border-primary/70"
-          >
-            <span className="pointer-events-auto absolute -top-3 -left-3">
-              <Popover
-                label={`Annotation ${number}`}
-                title={draft.text}
-                className="flex size-6 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground shadow-sm focus-visible:outline-2 focus-visible:outline-ring"
-                trigger={
-                  <>
-                    <span aria-hidden>{number}</span>
-                    <span className="sr-only">Annotation {number}</span>
-                  </>
-                }
-              >
-                <PinCard
-                  draft={draft}
-                  onEdit={() => {
-                    setEditing({ kind: "draft", draft });
-                  }}
-                  onDelete={() => {
-                    void remove(draft.id);
-                  }}
-                />
-              </Popover>
-            </span>
-          </Outline>
-        ))}
-        {missing.length > 0 && (
-          <Missing
-            missing={missing}
-            onDelete={(id) => {
-              void remove(id);
-            }}
-          />
-        )}
-      </div>
+      {drafts.length > 0 && (
+        <Pins page={page} sessionId={sessionId} url={url} drafts={drafts} inView={inView} />
+      )}
       {annotating && open === null && (
-        <AnnotateLayer page={page} url={url} ownerTabId={ownerTabId} onPick={setEditing} />
+        <AnnotatePointer.Provider>
+          <AnnotateLayer page={page} url={url} ownerTabId={ownerTabId} />
+        </AnnotatePointer.Provider>
       )}
       {open !== null && (
         <>
+          {/* The page takes no input while the editor is open: what it is on stays where it was picked. */}
+          <div
+            aria-hidden
+            className="absolute inset-0 z-20 touch-none"
+            onPointerDown={(event) => {
+              event.preventDefault();
+            }}
+          />
           {open.kind === "new" && (
-            <Outline
+            <PlacedOutline
               page={page}
-              rect={open.picked.box}
+              rect={open.pick.picked.box}
               className="pointer-events-none z-20 border-2 border-primary bg-primary/10"
             />
           )}
-          <Editor
-            key={open.kind === "draft" ? open.draft.id : "new"}
-            sessionId={sessionId}
-            editing={open}
-            onClose={() => {
-              setEditing(null);
-            }}
-          />
+          <PageEditor sessionId={sessionId} open={open} />
         </>
       )}
     </>
@@ -754,31 +626,48 @@ const Layer = ({
 };
 
 /**
- * The Browser Pane's Annotations over its screen: the pins of the drafts on the page at `url` (the Owner tab
- * `ownerTabId` shows), and Annotate mode while `annotating`. Render it as `LiveScreen`'s `overlay`.
+ * The Browser Pane's Annotations over its screen (render it as `LiveScreen`'s `overlay`): the pins of the drafts on the
+ * page the Owner tab `ownerTabId` shows (none while a window of the tab is shown instead), and Annotate mode
+ * (`annotateModeAtom`). The drafts' elements are found again only while the Pane is `inView`.
  */
 export const PageAnnotationsOverlay = ({
-  sessionId,
-  url,
+  pane,
   ownerTabId,
-  annotating,
+  inView,
 }: {
-  sessionId: string;
-  url: string | undefined;
+  pane: BrowserPaneKey;
   ownerTabId: string | undefined;
-  annotating: boolean;
-}) => {
-  const page = useContext(ScreenPageContext);
+  inView: boolean;
+}) => (
+  <AnnotationEditor.Provider>
+    <Overlay pane={pane} ownerTabId={ownerTabId} inView={inView} />
+  </AnnotationEditor.Provider>
+);
 
-  if (page === null || url === undefined || ownerTabId === undefined) return null;
+const Overlay = ({
+  pane,
+  ownerTabId,
+  inView,
+}: {
+  pane: BrowserPaneKey;
+  ownerTabId: string | undefined;
+  inView: boolean;
+}) => {
+  const page = useAtomValue(ShownScreenPage.use());
+  const url = useAtomValue(ownerTabPageAtom(pane), (shown) => shown.url ?? undefined);
+  const windowShown = useAtomValue(ownerTabWindowShownAtom(pane));
+  const annotating = useAtomValue(annotateModeAtom(pane));
+
+  if (page === null || url === undefined || ownerTabId === undefined || windowShown) return null;
 
   return (
     <Layer
       page={page}
-      sessionId={sessionId}
+      sessionId={pane.sessionId}
       url={url}
       ownerTabId={ownerTabId}
       annotating={annotating}
+      inView={inView}
     />
   );
 };

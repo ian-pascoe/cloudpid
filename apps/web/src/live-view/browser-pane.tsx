@@ -18,7 +18,7 @@
 // the idle window passes. When the browser was closed or replaced, the Pane finds its Owner tab gone: in view, it asks to
 // open at once, which reopens every Owner tab at its address (no history, scroll, form state or logins) and says so.
 
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { OwnerTabDriver } from "@cloudpid/protocol";
@@ -45,6 +45,7 @@ import { ownerTabDriversAtom } from "../session/atoms.ts";
 import { addressOf } from "./address.ts";
 import { liveViewStateAtom } from "./atoms.ts";
 import {
+  annotateModeAtom,
   browserPaneInViewAtom,
   browserPaneKey,
   type BrowserPaneKey,
@@ -57,6 +58,7 @@ import {
   ownerTabPageAtom,
   ownerTabReplacedAtom,
   ownerTabsReopenedAtom,
+  ownerTabWindowShownAtom,
 } from "./browser-pane-atoms.ts";
 import { keepFocus, LiveScreen } from "./live-screen.tsx";
 import { OwnerTabStrip } from "./owner-tab-strip.tsx";
@@ -64,22 +66,20 @@ import { PageAnnotationsOverlay } from "./page-annotations-layer.tsx";
 import { useDrivingNote } from "./use-driving-note.ts";
 
 /**
- * Back, forward, reload and the URL bar, over the Owner tab, and the Annotate mode toggle (`annotating`, `onAnnotate`).
- * `focusWhenLive` says the owner asked for a new Owner tab: the field takes the focus once the tab is shown, and the flag
- * is cleared.
+ * Back, forward, reload and the URL bar, over the Owner tab, and the Annotate mode toggle (`annotateModeAtom`), off while
+ * a window of the tab is shown. `focusWhenLive` says the owner asked for a new Owner tab: the field takes the focus once
+ * the tab is shown, and the flag is cleared.
  */
 const UrlBar = ({
   pane,
   focusWhenLive,
-  annotating,
-  onAnnotate,
 }: {
   pane: BrowserPaneKey;
   focusWhenLive: RefObject<boolean>;
-  annotating: boolean;
-  onAnnotate: (on: boolean) => void;
 }) => {
   const page = useAtomValue(ownerTabPageAtom(pane));
+  const [annotating, annotate] = useAtom(annotateModeAtom(pane));
+  const windowShown = useAtomValue(ownerTabWindowShownAtom(pane));
 
   const live = useAtomValue(
     liveViewStateAtom(browserPaneViewAtom(pane)),
@@ -219,9 +219,9 @@ const UrlBar = ({
               ? "Leave Annotate mode: the page takes your input again"
               : "Annotate: click or tap an element of the page, or drag out an area"
           }
-          disabled={!live || pane.archived}
+          disabled={!live || pane.archived || windowShown}
           onClick={() => {
-            onAnnotate(!annotating);
+            annotate(!annotating);
           }}
         >
           <MapPin aria-hidden />
@@ -435,17 +435,6 @@ const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
   const ended = useAtomValue(liveViewStateAtom(view), (state) => state.status === "ended");
   const focusWhenLive = useRef(false);
   const inView = useInView(pane.sessionId);
-  const [annotateOn, setAnnotating] = useState(false);
-  // Annotate mode ends with the Owner tab: a new one starts with the page's input.
-  const annotating = annotateOn && !ended;
-
-  // The tab's page, for its Annotations: none while one of its windows is shown instead.
-  const url = useAtomValue(ownerTabPageAtom(pane), (page) => page.url ?? undefined);
-
-  const windowShown = useAtomValue(
-    liveViewStateAtom(view),
-    (state) => state.strip !== null && state.strip.shown !== state.strip.tab,
-  );
 
   useReopenWhenInView(pane, ended, inView);
 
@@ -457,10 +446,6 @@ const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
     follow(shown);
   }, [shown, follow]);
 
-  useEffect(() => {
-    if (ended) setAnnotating(false);
-  }, [ended]);
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <OwnerTabStrip
@@ -469,12 +454,7 @@ const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
           focusWhenLive.current = true;
         }}
       />
-      <UrlBar
-        pane={pane}
-        focusWhenLive={focusWhenLive}
-        annotating={annotating}
-        onAnnotate={setAnnotating}
-      />
+      <UrlBar pane={pane} focusWhenLive={focusWhenLive} />
       {ended ? (
         <Gone pane={pane} />
       ) : (
@@ -484,14 +464,7 @@ const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
           <LiveScreen
             view={view}
             label="Owner tab"
-            overlay={
-              <PageAnnotationsOverlay
-                sessionId={pane.sessionId}
-                url={windowShown ? undefined : url}
-                ownerTabId={shown}
-                annotating={annotating && !windowShown}
-              />
-            }
+            overlay={<PageAnnotationsOverlay pane={pane} ownerTabId={shown} inView={inView} />}
           />
         </>
       )}

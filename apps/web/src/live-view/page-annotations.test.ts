@@ -1,7 +1,9 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 import {
   type Annotation,
+  clampPageSource,
   MAX_ANNOTATION_SELECTOR,
+  MAX_PAGE_URL,
   MAX_QUOTE_LINES,
   type PageAnnotation,
 } from "@cloudpid/protocol";
@@ -16,6 +18,7 @@ import {
   pickedElement,
   placePins,
   quadRect,
+  sameLocated,
   selectorsOf,
 } from "./page-annotations.ts";
 
@@ -75,6 +78,25 @@ describe("drafts on a page", () => {
     expect(draftsOnPage([onPage()], undefined)).toEqual([]);
   });
 
+  it("include those whose URL the Session cut at its bound, or redacted a held Secret from", () => {
+    const long = `https://app.test/?q=${"a".repeat(MAX_PAGE_URL)}`;
+    const reference = `${"{".repeat(2)}secret:API_TOKEN${"}".repeat(2)}`;
+
+    const cut = onPage({
+      id: "cut",
+      source: clampPageSource({ ...onPage().source, url: long }),
+    });
+
+    const redacted = onPage({
+      id: "redacted",
+      source: { ...onPage().source, url: `https://app.test/cb?token=${reference}` },
+    });
+
+    expect(cut.source.url).not.toBe(long);
+    expect(draftsOnPage([cut, redacted], `${long}#top`)).toEqual([cut]);
+    expect(draftsOnPage([cut, redacted], "https://app.test/cb?token=s3cr3t")).toEqual([redacted]);
+  });
+
   it("ask the page for each element's selector once", () => {
     expect(selectorsOf([onPage(), onPage({ id: "p2" }), area()])).toEqual(["#login > button"]);
     expect(locateScript(['a[href="x"]'])).toContain(JSON.stringify(['a[href="x"]']));
@@ -124,6 +146,16 @@ describe("pins", () => {
       new Map([["#a", { x: 1, y: 2, width: 3, height: 4 }]]),
     );
     expect(locatedBySelector(["#a"], answer, "https://app.test/other")).toBeUndefined();
+  });
+
+  it("have moved only when an element's rect, or whether it is found, changed", () => {
+    const rect = { x: 5, y: 6, width: 7, height: 8 };
+
+    expect(sameLocated(located(rect), located({ ...rect }))).toBe(true);
+    expect(sameLocated(located(null), located(null))).toBe(true);
+    expect(sameLocated(located(rect), located({ ...rect, y: 7 }))).toBe(false);
+    expect(sameLocated(located(rect), located(null))).toBe(false);
+    expect(sameLocated(located(rect), new Map([["#other", rect]]))).toBe(false);
   });
 });
 

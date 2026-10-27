@@ -322,6 +322,14 @@ export type Prompt = {
     readonly markdown: string;
     readonly data: ReviewData;
     readonly crops?: ReadonlyArray<ReviewCrop>;
+    /**
+     * The Markdown and data again with only the crops of `sent` (by number) marked as going: the Session renders it
+     * again once it has fitted them, so no block says it has a crop the message left out.
+     */
+    readonly withCropsSent?: (sent: ReadonlySet<number>) => {
+      readonly markdown: string;
+      readonly data: ReviewData;
+    };
   };
 };
 
@@ -1522,21 +1530,31 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         ),
       ),
-      Effect.map((draft) => withCrops(draft, prompt.review?.crops ?? [])),
+      Effect.flatMap((draft) => {
+        const { review } = prompt;
+
+        if (review?.crops === undefined || review.crops.length === 0) return Effect.succeed(draft);
+
+        return queuedBytes(prompt.conversationId).pipe(
+          Effect.map((queued) => withCrops(draft, review, queued)),
+        );
+      }),
     );
 
   /**
-   * `draft` (a Review's, with its pages) with the crops of its page Annotations it has room for (`fitCrops`) as its last
-   * parts, each after the line that names its Annotation, and its entry's `review` naming them, for the transcript to
-   * show them on the Review's chips rather than in the message.
+   * `draft` (a Review's, with its pages) with the crops of its page Annotations it has room for (`fitCrops`, beside the
+   * `queued` bytes of the messages waiting in the inbox) as its last parts, each after the line that names its
+   * Annotation, its Review rendered again with only those marked, and its entry's `review` naming them, for the
+   * transcript to show them on the Review's chips rather than in the message.
    */
   const withCrops = (
     draft: InputSubmissionDraft,
-    crops: ReadonlyArray<ReviewCrop>,
+    review: NonNullable<Prompt["review"]>,
+    queued: number,
   ): InputSubmissionDraft => {
     const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
 
-    if (crops.length === 0 || data?.review === undefined) return draft;
+    if (data?.review === undefined) return draft;
 
     const parts = Predicate.isString(draft.content)
       ? [{ type: "text" as const, text: draft.content }]
@@ -1546,22 +1564,53 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       part.type === "image" ? sum + part.data.length : sum,
     );
 
-    const fitted = fitCrops(crops, {
-      bytes: storedBytes({ content: draft.content, entry: draft.entry }),
+    // Measured with every crop marked: the Review rendered with fewer is no longer.
+    const fitted = fitCrops(review.crops ?? [], {
+      bytes: storedBytes({ content: draft.content, entry: draft.entry }) + queued,
       images,
     });
 
-    if (fitted.length === 0) return draft;
+    const sent = new Set(Arr.map(fitted, ({ number }) => number));
+    const again = review.withCropsSent?.(sent);
+    const at = Option.getOrUndefined(Arr.findFirstIndex(parts, (part) => part.type === "text"));
+    const first = at === undefined ? undefined : parts[at];
+
+    // The Review's Markdown ends the message's first text: it is rendered again, its data with it.
+    const rendered =
+      again !== undefined && first?.type === "text" && first.text.endsWith(review.markdown)
+        ? again
+        : undefined;
+
+    if (rendered !== undefined && at !== undefined && first?.type === "text") {
+      const before = first.text.slice(0, first.text.length - review.markdown.length);
+
+      parts[at] = { type: "text", text: `${before}${rendered.markdown}` };
+    }
+
+    if (fitted.length === 0 && rendered === undefined) return draft;
+
+    const reviewData = rendered?.data ?? data.review;
 
     return {
       ...draft,
       content: [...parts, ...Arr.flatMap(fitted, cropParts)],
       entry: ownerEntry({
         ...data,
-        review: { ...data.review, crops: Arr.map(fitted, ({ number }) => number) },
+        review: fitted.length === 0 ? reviewData : { ...reviewData, crops: [...sent] },
       }),
     };
   };
+
+  /** The bytes of the messages waiting in the conversation's inbox, as `input-guard.ts` measures them. */
+  const queuedBytes = (conversationId: ConversationId | undefined) =>
+    addressed(conversationId).pipe(
+      Effect.flatMap((conversation) =>
+        attempt("snapshot", () => harness.harness.snapshot(InboxDoc, conversation.id, context)),
+      ),
+      Effect.map((inbox) =>
+        inbox === undefined || inbox.items.length === 0 ? 0 : storedBytes(inbox),
+      ),
+    );
 
   /**
    * The pages `prompt` attaches, read now. Not read for a `requestId` the conversation has already admitted: that
@@ -1604,12 +1653,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
       if (alone !== undefined) return Effect.fail(refused(alone));
 
-      return addressed(conversationId).pipe(
-        Effect.flatMap((conversation) =>
-          attempt("snapshot", () => harness.harness.snapshot(InboxDoc, conversation.id, context)),
-        ),
-        Effect.flatMap((inbox) => {
-          const queued = inbox === undefined || inbox.items.length === 0 ? 0 : storedBytes(inbox);
+      return queuedBytes(conversationId).pipe(
+        Effect.flatMap((queued) => {
           const problem = inputProblem(draft, queued);
 
           return problem === undefined ? Effect.void : Effect.fail(refused(problem));

@@ -3,9 +3,10 @@
 // The crop a page Annotation carries (#243; `docs/spec.md` → Browser → Annotate mode): the spot picked, cut from the
 // Pane's last frame of the page (never a new screenshot of the tab, which the agent's browser would take), with a margin,
 // as a JPEG of at most `MAX_ANNOTATION_CROP` base64 characters. That bound is what lets 100 drafts' crops fit one
-// message: smaller first, then coarser, until it fits; a spot that fits at no size has no crop.
+// message: coarser first, then smaller, until it fits; a spot that fits at no size has no crop.
 
 import { MAX_ANNOTATION_CROP, type PageCrop, type PageRect } from "@cloudpid/protocol";
+import { fitLongEdge } from "../chat/image-budget.ts";
 import type { FrameMeta } from "./viewport.ts";
 
 /** The margin kept around the spot, in the page's CSS px. */
@@ -57,16 +58,8 @@ export const cropRegion = (
 
   const sw = right - left;
   const sh = bottom - top;
-  const fit = Math.min(1, MAX_EDGE / Math.max(sw, sh));
 
-  return {
-    sx: left,
-    sy: top,
-    sw,
-    sh,
-    width: Math.max(1, Math.round(sw * fit)),
-    height: Math.max(1, Math.round(sh * fit)),
-  };
+  return { sx: left, sy: top, sw, sh, ...fitLongEdge(sw, sh, MAX_EDGE) };
 };
 
 /**

@@ -164,9 +164,12 @@ export const pageAddress = (url: string): string => {
   return pathname === "/" ? host : `${host}${pathname}`;
 };
 
-/** What a page Annotation is on: its element's tag, as `<button>`, or an area. */
-export const pageTarget = (source: PageSource): string =>
-  source.element === undefined ? "Area" : `<${source.element.tag}>`;
+/**
+ * What a page Annotation is on, as everything that shows one names it (its chip, its pin, its editor): its element's tag,
+ * as `<button>`, or an area.
+ */
+export const pageTarget = (source: Pick<PageSource, "element">): string =>
+  source.element === undefined ? "An area" : `<${source.element.tag}>`;
 
 /**
  * What a chip names a draft by: on a diff, its file's name and range, as `a.ts:12–18`; on a page, what it is on and the

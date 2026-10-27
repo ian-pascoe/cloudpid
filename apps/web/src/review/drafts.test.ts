@@ -148,7 +148,7 @@ describe("drafts", () => {
     const { element: _element, ...area } = onPage().source;
 
     expect(chipLabel(onPage({ source: { ...area, url: "https://app.test/" } }))).toBe(
-      "Area · app.test",
+      "An area · app.test",
     );
     expect(reviewLaneText("", 2)).toBe("Review: 2 Annotations");
     expect(reviewLaneText("Look", 1)).toBe("Look · Review: 1 Annotation");

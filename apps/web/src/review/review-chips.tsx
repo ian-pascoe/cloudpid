@@ -17,7 +17,7 @@ import {
 import { Globe, MessageSquareText, X } from "lucide-react";
 import { Popover } from "../components/ui/popover.tsx";
 import { cn } from "../lib/utils.ts";
-import { chipLabel, statusLabel } from "./drafts.ts";
+import { chipLabel, pageTarget, statusLabel } from "./drafts.ts";
 
 /** What a chip on a diff opens on: the file and lines, the quoted code as it was, and the owner's text. */
 type DiffPeeked = Pick<DiffAnnotation, "side" | "start" | "end" | "more"> & {
@@ -52,7 +52,13 @@ export const QuotedLines = ({ lines, more }: { lines: readonly string[]; more: n
   );
 
 /** A page Annotation's crop: what it was on, as the Browser Pane showed it. */
-export const CropImage = ({ crop, className }: { crop: PageCrop; className?: string }) => (
+export const CropImage = ({
+  crop,
+  className,
+}: {
+  crop: PageCrop;
+  className?: string | undefined;
+}) => (
   <img
     src={`data:${crop.mimeType};base64,${crop.data}`}
     alt="What the Annotation is on, as the Browser Pane showed it"
@@ -60,30 +66,48 @@ export const CropImage = ({ crop, className }: { crop: PageCrop; className?: str
   />
 );
 
-/** Where a page Annotation is: its element's tag and selector, or an area, and the page. */
-export const PagePlace = ({ source }: { source: PageSource }) => (
+/** Where a page Annotation is: what it is on (`pageTarget`, its selector on hover) and the page. */
+export const PagePlace = ({ source }: { source: Pick<PageSource, "element" | "url"> }) => (
   <p className="text-xs text-muted-foreground">
-    {source.element === undefined ? (
-      "An area of "
-    ) : (
-      <>
-        <span className="font-mono break-all text-foreground" title={source.element.selector}>
-          &lt;{source.element.tag}&gt;
-        </span>{" "}
-        on{" "}
-      </>
-    )}
-    <span className="font-mono break-all text-foreground">{source.url}</span>
+    <span className="font-mono break-all text-foreground" title={source.element?.selector}>
+      {pageTarget(source)}
+    </span>{" "}
+    on <span className="font-mono break-all text-foreground">{source.url}</span>
   </p>
+);
+
+/**
+ * A page Annotation as its chip and its pin open on it: where it is, its crop, the page's text there, and the owner's
+ * text (none while it is being written).
+ */
+export const PageDetails = ({
+  source,
+  crop,
+  quote,
+  more,
+  text,
+  className,
+}: {
+  source: Pick<PageSource, "element" | "url">;
+  crop?: PageCrop | undefined;
+  quote: readonly string[];
+  more: number;
+  text?: string | undefined;
+  /** The crop's classes: its height where the room is short. */
+  className?: string;
+}) => (
+  <>
+    <PagePlace source={source} />
+    {crop !== undefined && <CropImage crop={crop} className={className} />}
+    <QuotedLines lines={quote} more={more} />
+    {text !== undefined && <p className="break-words whitespace-pre-wrap">{text}</p>}
+  </>
 );
 
 /** The crop, the page's text and the owner's, as a chip on a page opens on them. */
 const PagePeek = ({ peeked }: { peeked: PagePeeked }) => (
   <div className="flex w-[min(32rem,calc(100vw-2rem))] flex-col gap-2 p-2 text-sm">
-    <PagePlace source={peeked.source} />
-    {peeked.crop !== undefined && <CropImage crop={peeked.crop} />}
-    <QuotedLines lines={peeked.quote} more={peeked.more} />
-    <p className="break-words whitespace-pre-wrap">{peeked.text}</p>
+    <PageDetails {...peeked} />
   </div>
 );
 

@@ -17,8 +17,12 @@ import type {
   RepoChanges,
 } from "@cloudpid/protocol";
 import {
+  clampPageSource,
+  cleanPageLines,
+  cleanPageSource,
   isDiffAnnotation,
   isPageAnnotation,
+  pageQuote,
   renderReview,
   resolvePath,
   WORKSPACE_ROOT,
@@ -131,13 +135,22 @@ const addressedToLive =
     draft.conversationId === undefined || conversations[String(draft.conversationId)] !== undefined;
 
 /**
- * `draft` with what its page supplied (the URL, the element's selector and tag, its visible text) redacted by `redact`;
- * its crop is pixels, which cannot be, and the owner's text is the owner's.
+ * `draft` with what its page supplied (the URL, the element's selector and tag, its visible text) cleaned, then redacted
+ * by `redact`, then cut to its bounds again: a Secret split by a character the cleaning drops is whole when redacted, and
+ * what stands for one does not take the text past its bounds. Its crop is pixels, which cannot be redacted, and the
+ * owner's text is the owner's.
  */
 export const redactedPage = <A extends PageAnnotationDraft>(
   draft: A,
   redact: <B>(value: B) => B,
-): A => ({ ...draft, source: redact(draft.source), quote: redact(draft.quote) });
+): A => {
+  const cut = pageQuote(redact(cleanPageLines(draft.quote)), draft.more, draft.clipped === true);
+  const source = clampPageSource(redact(cleanPageSource(draft.source)));
+  const redacted = { ...draft, source, quote: cut.quote, more: cut.more };
+
+  // A clipped quote whose clipped line the cut left out stays marked: it counts lines left out, which the Review says.
+  return cut.clipped === true ? { ...redacted, clipped: true } : redacted;
+};
 
 /** The Session's Reviews over its storage; build it once per instance. */
 export const sessionReviewsLayer = (
@@ -611,7 +624,7 @@ export const sessionReviewsLayer = (
 
           // The last check, against the files as they are now (and This branch's Comparison, as the Workspace has it).
           const onChanges = drafts.some(
-            (draft) => draft.source.kind !== "call" && draft.source.kind !== "page",
+            (draft) => isDiffAnnotation(draft) && draft.source.kind !== "call",
           );
 
           const listed = onChanges ? yield* changes.fresh : undefined;
@@ -628,7 +641,10 @@ export const sessionReviewsLayer = (
 
           // A send that fails after the message is placed leaves the drafts: sent again with its `requestId`, as the
           // composer does, the host finds the first submission rather than placing a second.
-          const submissionId = yield* host.submit({ ...rest, review: renderReview(final) });
+          const submissionId = yield* host.submit({
+            ...rest,
+            review: { ...renderReview(final), withCropsSent: (sent) => renderReview(final, sent) },
+          });
 
           // What follows is written at once, with no wait between: the drafts it sent (one key each, as the drafts are),
           // the Review pending until it settles, and its `requestId`.

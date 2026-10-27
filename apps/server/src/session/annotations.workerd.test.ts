@@ -15,6 +15,7 @@ import {
   MAX_ANNOTATION_CROP,
   MAX_QUOTE_BYTES,
   MAX_REVIEW_CROPS,
+  MAX_STORED_INPUT_BYTES,
   type PageAnnotationDraft,
   cropLabel,
   projectEntries,
@@ -565,6 +566,8 @@ describe("draft Annotations", () => {
   it("on a page keep their crop and what the page supplied cleaned, cut and redacted of held Secrets, synced to every client", async () => {
     const stub = fresh();
     const secret = "s3cr3t-token-42";
+    // The Secret split by characters the cleaning drops: whole again once cleaned, so redacted after it.
+    const split = (by: string) => `${secret.slice(0, 6)}${by}${secret.slice(6)}`;
 
     await runInDurableObject(stub, (instance: TestSession) => instance.hold({ API_TOKEN: secret }));
 
@@ -578,11 +581,11 @@ describe("draft Annotations", () => {
       annotation: onPage({
         source: {
           ...onPage().source,
-          url: `https://app.test/cb?token=${secret}#section-2`,
-          element: { selector: `#key-${secret}`, tag: "code" },
+          url: `https://app.test/cb?token=${split("\u200F")}#section-2`,
+          element: { selector: `#key-${split("\u0007")}`, tag: "code" },
         },
         // A bidirectional override, and a line of quotes past 8 KiB once escaped.
-        quote: [`Your key: ${secret}`, "a\u202Eb", '"'.repeat(2_000)],
+        quote: [`Your key: ${split("\u202E\u0000")}`, "a\u202Eb", '"'.repeat(2_000)],
       }),
     });
     expect(await owner.answer("page")).toEqual({ type: "result", id: "page", result: null });
@@ -829,9 +832,62 @@ describe("a Review", () => {
       instance.rootEntries(),
     );
 
-    expect(entries.find((entry) => entry.kind === "cloudpid.user")?.data).toMatchObject({
+    const sent = entries.find((entry) => entry.kind === "cloudpid.user");
+
+    expect(sent?.data).toMatchObject({
       review: { crops: Array.from({ length: MAX_REVIEW_CROPS }, (_, index) => index + 1) },
     });
+    // Only the blocks whose crop went say they have one.
+    expect(sent?.text.match(/ crop="yes"/gu)).toHaveLength(MAX_REVIEW_CROPS);
+  });
+
+  it("fits its crops beside the messages already waiting for the run, rather than being refused", async () => {
+    const stub = fresh();
+    const crop = { mimeType: "image/jpeg" as const, data: "A".repeat(MAX_ANNOTATION_CROP) };
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["gate:first", "queued", "reviewed"]);
+
+      for (const id of ["p1", "p2", "p3"]) await instance.saveAnnotation(onPage({ id, crop }));
+    });
+
+    const client = await connect(stub);
+
+    client.send({ type: "submit", id: "a", input: "start", requestId: "a" });
+    await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
+
+    // A message waiting that leaves room for the Review and one crop, not three.
+    client.send({
+      type: "submit",
+      id: "b",
+      input: "q".repeat(MAX_STORED_INPUT_BYTES - 20_000),
+      requestId: "b",
+      whenBusy: "followUp",
+    });
+    expect(await client.answer("b")).toMatchObject({ type: "result" });
+    client.send({
+      type: "submit",
+      id: "review",
+      input: "",
+      requestId: "review",
+      whenBusy: "followUp",
+      annotations: ["p1", "p2", "p3"],
+    });
+    expect(await client.answer("review")).toMatchObject({ type: "result" });
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.open());
+    await settled(stub);
+
+    const entries = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.rootEntries(),
+    );
+
+    const review = entries.find(
+      (entry) => entry.kind === "cloudpid.user" && entry.text.includes("## Review"),
+    );
+
+    expect(review?.data).toMatchObject({ review: { crops: [1] } });
+    expect(review?.text.match(/ crop="yes"/gu)).toHaveLength(1);
   });
 
   it("with no summary but an Attachment puts its Markdown first, keeping the Attachment's path", async () => {

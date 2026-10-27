@@ -6,10 +6,17 @@
 // the viewport it was drawn in, found again by the Pane alone).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over an Annotation's fields.
 import * as Schema from "effect/Schema";
-import { boundedText, escapePageText, MAX_PAGE_ID, oneLine } from "./attached-pages.ts";
+import {
+  boundedText,
+  cleanLine,
+  cleanText,
+  escapePageText,
+  MAX_PAGE_ID,
+  oneLine,
+} from "./attached-pages.ts";
 import { MAX_COMPARISON_BRANCH } from "./comparison.ts";
 import { ConversationId } from "./conversation-id.ts";
-import { MAX_PAGE_URL } from "./live-view.ts";
+import { MAX_PAGE_URL, withoutFragment } from "./live-view.ts";
 import { WORKSPACE_ROOT } from "./repo.ts";
 
 /** The most drafts a Session keeps. */
@@ -466,6 +473,30 @@ const pageLine = (text: string, max: number): string => {
   return escapedBytes(line) <= max ? line : clipLine(line, max, escapedBytes);
 };
 
+// Kept apart so no source file spells a whole Secret Reference, which the agent's own Secrets would refuse to write.
+const REFERENCE = new RegExp(`${"\\{".repeat(2)}secret:[A-Z_][A-Z0-9_]*${"\\}".repeat(2)}`, "gu");
+
+/** `text` as a regular expression that matches it alone. */
+const literally = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
+
+/**
+ * Whether a page draft's `stored` URL is of the page at `url`: the same address, fragment aside, as the Session kept it
+ * (`clampPageSource`): cleaned, a held Secret in it standing for any text, and cut at its bound (where only what is
+ * kept is compared).
+ */
+export const isSamePage = (stored: string, url: string): boolean => {
+  const live = cleanLine(withoutFragment(url));
+
+  if (stored === live) return true;
+
+  // Cut by code points (it ends with an ellipsis), or by its bytes as the Review writes it (a character's at most six).
+  const cut = stored.endsWith("…") || escapedBytes(stored) > MAX_PAGE_URL - 6;
+  const kept = stored.endsWith("…") ? stored.slice(0, -1) : stored;
+  const pattern = kept.split(REFERENCE).map(literally).join("[\\s\\S]+?");
+
+  return new RegExp(`^${pattern}${cut ? "" : "$"}`, "u").test(live);
+};
+
 /**
  * `source` with what the page supplied (its URL, the element's selector and tag) on one line, without control or
  * bidirectional characters, and cut to its bounds, escaped as the Review writes them; the URL without its fragment.
@@ -485,17 +516,26 @@ export const clampPageSource = (source: PageSource): PageSource => {
       };
 };
 
+/**
+ * `source` cleaned as `clampPageSource` cleans it (the URL without its fragment), uncut: what the Session redacts
+ * Secrets from, so that a Secret split by a character the cleaning drops or folds is whole when it is redacted.
+ */
+export const cleanPageSource = (source: PageSource): PageSource => {
+  const { element, ...rest } = source;
+  const cleaned = { ...rest, url: cleanLine(withoutFragment(source.url)) };
+
+  return element === undefined
+    ? cleaned
+    : {
+        ...cleaned,
+        element: { selector: cleanLine(element.selector), tag: cleanLine(element.tag) },
+      };
+};
+
+/** A page's visible text without control or bidirectional characters, uncut. */
+export const cleanPageLines = (lines: readonly string[]): string[] =>
+  lines.map((line) => cleanText(line));
+
 /** A page's visible text as the lines of a quote: without control or bidirectional characters, cut by `cutPageQuote`. */
 export const pageQuote = (lines: readonly string[], more = 0, clipped = false): Quote =>
-  cutPageQuote(
-    lines.map((line) => boundedText(line, Number.POSITIVE_INFINITY)),
-    more,
-    clipped,
-  );
-
-/** `url` without its fragment, as page Annotations and the host's Owner tabs record an address. */
-export const withoutFragment = (url: string): string => {
-  const hash = url.indexOf("#");
-
-  return hash === -1 ? url : url.slice(0, hash);
-};
+  cutPageQuote(cleanPageLines(lines), more, clipped);

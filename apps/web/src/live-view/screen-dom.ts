@@ -8,7 +8,15 @@ import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import { MODIFIER, type CdpCommand } from "./cdp.ts";
 import type { LiveView } from "./connection.ts";
+import type { CdpParams } from "./cdp-socket.ts";
 import type { TypingTextarea } from "./keyboard.ts";
+
+/** What `answer` gives, or undefined when it fails. */
+const orUndefined = <A>(answer: Promise<A>): Promise<A | undefined> =>
+  answer.then(
+    (value) => value,
+    () => undefined,
+  );
 
 /** The elements the screen drives, rendered by the Pane. */
 export interface ScreenElements {
@@ -79,6 +87,12 @@ export class Listeners {
 export interface Tab {
   /** Evaluate `expression` in the page shown: undefined when it failed, or the Live View closed first. */
   readonly evaluate: <A>(expression: string, schema: Schema.Decoder<A>) => Promise<A | undefined>;
+  /** Call `method` on the page shown, its answer read by `schema`: undefined when it failed, or the Live View closed first. */
+  readonly call: <A>(
+    method: string,
+    params: CdpParams,
+    schema: Schema.Decoder<A>,
+  ) => Promise<A | undefined>;
   /** Send the owner's input to the page shown. */
   readonly send: (commands: readonly CdpCommand[]) => void;
   /** Run one of the Live View's effects, its outcome dropped: it ends with the Live View. */
@@ -87,11 +101,8 @@ export interface Tab {
 
 /** The tab of `view`: its effects run in the Live View's scope (`LiveView.run`), so the Pane's closing ends them. */
 export const tabOf = (view: LiveView): Tab => ({
-  evaluate: (expression, schema) =>
-    view.run(view.evaluate(expression, schema)).then(
-      (value) => value,
-      () => undefined,
-    ),
+  evaluate: (expression, schema) => orUndefined(view.run(view.evaluate(expression, schema))),
+  call: (method, params, schema) => orUndefined(view.run(view.call(method, params, schema))),
   send: (commands) => {
     if (commands.length > 0) view.input(commands);
   },

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   boundedText,
+  clampPage,
+  cleanPage,
   MAX_PAGE_ID,
   isPageBlock,
   PAGE_BLOCK_CLOSE,
@@ -118,5 +120,28 @@ describe("the block of attached pages", () => {
   it("does not take the owner's text for a block unless it is shaped like one", () => {
     expect(isPageBlock("What is on this page?")).toBe(false);
     expect(isPageBlock(`${PAGE_BLOCK_OPEN} hello`)).toBe(false);
+  });
+});
+
+describe("cleanPage", () => {
+  it("cleans as clampPage does without cutting, so what is redacted is what is kept", () => {
+    const page = {
+      ownerTabId: "tab\u0007-1",
+      url: `https://x.test/${"u".repeat(MAX_PAGE_SELECTION)}`,
+      title: "A\n\ttitle\u202E",
+      selection: "keep\nlines\u0000",
+      screen: true,
+    };
+
+    const cleaned = cleanPage(page);
+
+    expect(cleaned).toEqual({
+      ownerTabId: "tab-1",
+      url: page.url,
+      title: "A title",
+      selection: "keep\nlines",
+      screen: true,
+    });
+    expect(clampPage(cleaned)).toEqual(clampPage(page));
   });
 });

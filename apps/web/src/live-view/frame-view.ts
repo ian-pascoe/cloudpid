@@ -4,7 +4,7 @@
 // fitted inside the Pane in both dimensions (another device's viewport may win, and its frames be taller or wider than
 // this Pane), times the Desktop layout's local zoom; and points and rects between the screen and the tab.
 
-import type { PageCrop, PageRect as ViewportRect } from "@cloudpid/protocol";
+import type { PageCrop, PageRect } from "@cloudpid/protocol";
 import type { Point } from "./cdp.ts";
 import type { Frame, FrameMetadata } from "./connection.ts";
 import { cropFrame } from "./crop.ts";
@@ -16,8 +16,8 @@ export interface Size {
   readonly height: number;
 }
 
-/** A rect in the tab's viewport. */
-export interface PageRect {
+/** A rect in the tab's viewport, or over the screen. */
+export interface ScreenRect {
   readonly x: number;
   readonly y: number;
   readonly w: number;
@@ -101,7 +101,7 @@ export class FrameView {
   }
 
   /** A crop of `rect` of the tab's viewport from the last frame drawn, for a page Annotation; undefined without one. */
-  crop(rect: ViewportRect): PageCrop | undefined {
+  crop(rect: PageRect): PageCrop | undefined {
     return this.meta === undefined ? undefined : cropFrame(this.image, this.frameMeta(), rect);
   }
 
@@ -117,7 +117,7 @@ export class FrameView {
   }
 
   /** A rect in the tab's viewport, in the screen wrapper's coordinates (where the overlays are placed). */
-  overlayRect(rect: PageRect): PageRect {
+  overlayRect(rect: ScreenRect): ScreenRect {
     const canvas = this.canvas.getBoundingClientRect();
     const wrapper = this.wrapperRect();
     const frame = { left: canvas.left, top: canvas.top, width: canvas.width };

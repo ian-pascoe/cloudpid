@@ -52,13 +52,18 @@ export const useOpenEditor = () => {
   );
 };
 
-/** The text box of an editor, with Save and Cancel; Escape cancels, Mod+Enter saves. */
-const EditorBox = ({
+/**
+ * The text box of the editor this renders in (`AnnotationEditor`), with Save and Cancel; Escape cancels, Mod+Enter saves.
+ * The diffs' and the Browser Pane's.
+ */
+export const EditorBox = ({
   label,
+  placeholder = "What should the agent know about these lines?",
   onSave,
 }: {
-  /** What the box is for, read by a screen reader: the lines it is on. */
+  /** What the box is for, read by a screen reader: what it is on. */
   label: string;
+  placeholder?: string;
   onSave: (text: string) => void;
 }) => {
   const [editor, setEditor] = useAtom(AnnotationEditor.use());
@@ -78,7 +83,7 @@ const EditorBox = ({
         rows={3}
         maxLength={MAX_ANNOTATION_TEXT}
         value={editor.text}
-        placeholder="What should the agent know about these lines?"
+        placeholder={placeholder}
         onChange={(event) => {
           const text = event.currentTarget.value;
 
@@ -150,7 +155,7 @@ const Frame = ({ children, outdated }: { children: ReactNode; outdated?: boolean
 );
 
 /** Save `draft` through the Session; the editor closes once it has it, and says why it did not. */
-const useSave = (sessionId: string) => {
+export const useSave = (sessionId: string) => {
   const [, setEditor] = useAtom(AnnotationEditor.use());
   const save = useCall(saveAnnotationAtom(sessionId));
 

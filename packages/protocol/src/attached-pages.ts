@@ -56,6 +56,31 @@ export const boundedText = (text: string, max: number): string => {
 /** `text` on one line. */
 export const oneLine = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
+/** `text` cleaned as `boundedText` cleans it, uncut. */
+export const cleanText = (text: string): string => boundedText(text, Number.POSITIVE_INFINITY);
+
+/** `text` cleaned and on one line, uncut. */
+export const cleanLine = (text: string): string => oneLine(cleanText(text));
+
+/**
+ * `page` cleaned as `clampPage` cleans it (its title and URL on one line), uncut: what the Session redacts Secrets from,
+ * so that a Secret split by a character the cleaning drops or folds is whole when it is redacted, and `clampPage` cuts
+ * what is left.
+ */
+export const cleanPage = (page: AttachedPage): AttachedPage => {
+  const cleaned: Types.Mutable<AttachedPage> = {
+    ownerTabId: cleanLine(page.ownerTabId),
+    url: cleanLine(page.url),
+    title: cleanLine(page.title),
+  };
+
+  if (page.selection !== undefined) cleaned.selection = cleanText(page.selection);
+
+  if (page.screen !== undefined) cleaned.screen = page.screen;
+
+  return cleaned;
+};
+
 /** `page` with every field cut to its bound, the title and URL on one line, and an empty selection left out. */
 export const clampPage = (page: AttachedPage): AttachedPage => {
   const selection = boundedText(page.selection ?? "", MAX_PAGE_SELECTION);

@@ -36,10 +36,14 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
-import type { PageCrop } from "./annotations.ts";
+import * as Schema from "effect/Schema";
+import { type PageCrop, PageCropType } from "./annotations.ts";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
 import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
 import { skillBlocksIn, type UserEntryData, userEntryData } from "./user-entry.ts";
+
+/** Whether an image's type is one a crop may have. */
+const isCropType = Schema.is(PageCropType);
 
 /**
  * The display model of a transcript. The Session returns pi's own entries; the UI folds them into these messages, in
@@ -197,9 +201,7 @@ const withoutCrops = (parts: readonly TranscriptPart[], data: UserEntryData) => 
 
     const { mimeType } = part;
 
-    return mimeType === "image/jpeg" || mimeType === "image/png" || mimeType === "image/webp"
-      ? [{ mimeType, data: part.data }]
-      : [];
+    return isCropType(mimeType) ? [{ mimeType, data: part.data }] : [];
   });
 
   return { parts: parts.slice(0, at), crops };

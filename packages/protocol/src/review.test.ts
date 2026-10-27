@@ -517,6 +517,20 @@ describe("renderReview", () => {
     expect(crops).toEqual([{ number: 2, crop: { mimeType: "image/jpeg", data: "AAAA" } }]);
   });
 
+  it("marks `crop` only on the blocks whose crop the message carries, when told which", () => {
+    const crop = { mimeType: "image/jpeg" as const, data: "AAAA" };
+    const drafts = [onPage({ crop }), onArea({ crop }), onPage({ id: "p3", crop })];
+
+    expect(renderReview(drafts).markdown.match(/ crop="yes"/g)).toHaveLength(3);
+
+    const { markdown, crops } = renderReview(drafts, new Set([2]));
+
+    expect(markdown.match(/ crop="yes"/g)).toHaveLength(1);
+    expect(markdown).toMatch(/\*\*Annotation 2\*\*: [^\n]+\n\n<page_annotation [^>]* crop="yes">/u);
+    // The crops are listed all the same: the Session picks from them.
+    expect(crops.map(({ number }) => number)).toEqual([1, 2, 3]);
+  });
+
   it("keeps a page from closing its block or opening another", () => {
     const { markdown } = renderReview([
       onPage({

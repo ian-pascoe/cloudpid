@@ -15,10 +15,8 @@
 // `viewport.ts`); every effect runs in the Live View's scope (`LiveView.run`), and every timer in one `TimerGroup`, so
 // none outlives the Pane.
 
-import type { PageCrop, PageRect as ViewportRect } from "@cloudpid/protocol";
-import type * as Schema from "effect/Schema";
+import type { PageCrop, PageRect } from "@cloudpid/protocol";
 import type { Point } from "./cdp.ts";
-import type { CdpParams } from "./cdp-socket.ts";
 import type { FrameMetadata, LiveView } from "./connection.ts";
 import { EditMenuController } from "./edit-menu-controller.ts";
 import {
@@ -31,7 +29,7 @@ import {
   type Field,
   type FieldMap,
 } from "./field-map.ts";
-import { FrameView, type PageRect } from "./frame-view.ts";
+import { FrameView, type ScreenRect } from "./frame-view.ts";
 import type { Gesture } from "./input.ts";
 import { Keyboard } from "./keyboard.ts";
 import { KeysController } from "./keys-controller.ts";
@@ -64,25 +62,21 @@ export interface ScreenPage {
   /** Where a point on the screen is in the tab's viewport. */
   readonly toPage: (clientX: number, clientY: number) => Point;
   /** A rect of the tab's viewport, in the screen wrapper's coordinates. */
-  readonly overlayRect: (rect: ViewportRect) => PageRect;
+  readonly overlayRect: (rect: PageRect) => ScreenRect;
   /** What the last frame said of the tab. */
   readonly metadata: () => FrameMetadata | undefined;
   /** A crop of `rect` of the viewport from the last frame drawn. */
-  readonly crop: (rect: ViewportRect) => PageCrop | undefined;
+  readonly crop: (rect: PageRect) => PageCrop | undefined;
   /** Hear the tab scroll or resize; returns how to stop. */
   readonly moved: (listener: () => void) => () => void;
   /** Hear the frame drawn again or sized anew; returns how to stop. */
   readonly painted: (listener: () => void) => () => void;
   /** Send the wheel to the tab, as over the frame. */
   readonly wheel: (event: WheelEvent) => void;
-  /** Call `method` on the tab shown: undefined when it failed, or the Live View closed first. */
-  readonly call: <A>(
-    method: string,
-    params: CdpParams,
-    schema: Schema.Decoder<A>,
-  ) => Promise<A | undefined>;
-  /** Evaluate `expression` in the tab shown: undefined when it failed, or the Live View closed first. */
-  readonly evaluate: <A>(expression: string, schema: Schema.Decoder<A>) => Promise<A | undefined>;
+  /** Call a method on the tab shown, over the Live View's own connection. */
+  readonly call: Tab["call"];
+  /** Evaluate an expression in the tab shown. */
+  readonly evaluate: Tab["evaluate"];
 }
 
 /** A value the screen reads and follows: an atom, through the Pane's registry. */
@@ -233,12 +227,8 @@ export class LiveViewScreen {
       wheel: (event) => {
         this.pointer.wheel(event);
       },
-      call: (method, params, schema) =>
-        view.run(view.call(method, params, schema)).then(
-          (value) => value,
-          () => undefined,
-        ),
-      evaluate: (expression, schema) => this.tab.evaluate(expression, schema),
+      call: this.tab.call,
+      evaluate: this.tab.evaluate,
     };
     listeners.add(() => {
       this.movedListeners.clear();
