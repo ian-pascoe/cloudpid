@@ -235,10 +235,7 @@ export const sessionReviewsLayer = (
       };
 
       /** What a check finds of `drafts` (those on the Changes) against `repos`: each one it changes, before and after. */
-      const findings = (
-        drafts: ReadonlyArray<DiffAnnotation>,
-        repos: ReadonlyArray<RepoChanges>,
-      ) =>
+      const findings = (drafts: ReadonlyArray<DiffAnnotation>, repos: ReadonlyArray<RepoChanges>) =>
         checkFiles(
           drafts,
           (draft) =>
@@ -267,10 +264,7 @@ export const sessionReviewsLayer = (
        * against another pair of commits, each read once in the new pair's file. They move to the pair when their quote holds,
        * and are marked when it does not; a file the Comparison no longer lists marks them gone.
        */
-      const againstComparison = (
-        comparison: Comparison,
-        onRepo: ReadonlyArray<DiffAnnotation>,
-      ) => {
+      const againstComparison = (comparison: Comparison, onRepo: ReadonlyArray<DiffAnnotation>) => {
         // A list marked `behind` is the last one made, for a head the repo has left: it says nothing of the new one. Nor
         // does one of a pull request that is closed or merged: it is the last result kept, marked.
         if (
@@ -459,10 +453,7 @@ export const sessionReviewsLayer = (
        * Check `drafts` (those on a diff) against `repos` and put what was found in place, under the one permit; answer
        * what was found.
        */
-      const checkAndKeep = (
-        all: ReadonlyArray<Annotation>,
-        repos: ReadonlyArray<RepoChanges>,
-      ) => {
+      const checkAndKeep = (all: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) => {
         const drafts = all.filter(isDiffAnnotation);
 
         return Effect.all([
@@ -485,13 +476,15 @@ export const sessionReviewsLayer = (
           Effect.flatMap((drafts) =>
             againstComparison(
               comparison,
-              drafts.filter(isDiffAnnotation).filter(({ source }) =>
-                comparison.pull === undefined
-                  ? source.kind === "branch" && source.repo === comparison.repo
-                  : source.kind === "pull" &&
-                    source.repo === comparison.repo &&
-                    source.number === comparison.pull.number,
-              ),
+              drafts
+                .filter(isDiffAnnotation)
+                .filter(({ source }) =>
+                  comparison.pull === undefined
+                    ? source.kind === "branch" && source.repo === comparison.repo
+                    : source.kind === "pull" &&
+                      source.repo === comparison.repo &&
+                      source.number === comparison.pull.number,
+                ),
             ),
           ),
           Effect.tap((found) => store.checked(found)),
@@ -620,6 +613,7 @@ export const sessionReviewsLayer = (
           const onChanges = drafts.some(
             (draft) => draft.source.kind !== "call" && draft.source.kind !== "page",
           );
+
           const listed = onChanges ? yield* changes.fresh : undefined;
           const found = yield* checkAndKeep(drafts, listed?.repos ?? []);
 

@@ -6,7 +6,7 @@
 // One editor per diff view (a card's Call diff, the Diff pane's scroll), kept in its `AnnotationEditor` scope (`editor.ts`).
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- the drafts are native arrays; hooks, not combinators.
 
-import { type Annotation, MAX_ANNOTATION_TEXT, rangeText } from "@cloudpid/protocol";
+import { type DiffAnnotation, MAX_ANNOTATION_TEXT, rangeText } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
@@ -193,7 +193,7 @@ const NewDraft = ({ sessionId, anchor }: { sessionId: string; anchor: DiffAnchor
 };
 
 /** A saved draft under its lines: its mark, its text, Edit and Delete; or the editor of it, while edited. */
-const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: Annotation }) => {
+const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: DiffAnnotation }) => {
   const [editor, setEditor] = useAtom(AnnotationEditor.use());
   const save = useSave(sessionId);
   const remove = useCall(deleteAnnotationAtom(sessionId));
@@ -263,7 +263,7 @@ export const AnnotationSlotView = ({
 }: {
   sessionId: string;
   anchor: DiffAnchor;
-  drafts: readonly Annotation[];
+  drafts: readonly DiffAnnotation[];
   annotation: DiffLineAnnotation<AnnotationSlot>;
 }) => {
   const slot = annotation.metadata;

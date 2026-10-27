@@ -165,9 +165,7 @@ export const languageOf = (path: string): string => {
 };
 
 /** "lines 12–18", "line 12", or "removed lines 10–12" on the old side. */
-export const rangeText = (
-  annotation: Pick<DiffAnnotation, "side" | "start" | "end">,
-): string => {
+export const rangeText = (annotation: Pick<DiffAnnotation, "side" | "start" | "end">): string => {
   const lines =
     annotation.start === annotation.end
       ? `line ${annotation.start}`
@@ -227,6 +225,7 @@ const headOf = (group: readonly Annotation[]): Annotation | undefined => {
   const current = group.filter(
     (annotation) => isPageAnnotation(annotation) || annotation.status === undefined,
   );
+
   const pool = current.length > 0 ? current : group;
 
   return pool.reduce<Annotation | undefined>(
@@ -388,10 +387,7 @@ const inGroup = (a: Annotation, b: Annotation): number => {
   }
 
   return (
-    compareText(a.path, b.path) ||
-    a.start - b.start ||
-    sideOrder(a) - sideOrder(b) ||
-    a.end - b.end
+    compareText(a.path, b.path) || a.start - b.start || sideOrder(a) - sideOrder(b) || a.end - b.end
   );
 };
 

@@ -5,13 +5,19 @@
 import {
   type Annotation,
   type AnnotationDraft,
-  type AnnotationSource,
   type AnnotationStatus,
   type ConversationId,
+  type DiffAnnotation,
+  type DiffAnnotationDraft,
+  type DiffSource,
   fileName,
+  isDiffAnnotation,
+  isPageAnnotation,
+  type PageSource,
   rangeLabel,
   reviewTitle,
   sameSource,
+  type ShownReviewAnnotation,
 } from "@cloudpid/protocol";
 import type { DiffLineAnnotation } from "@pierre/diffs";
 import type * as Types from "effect/Types";
@@ -22,7 +28,7 @@ import { librarySide, type PickedLines } from "./selection.ts";
  * drafts go to (a subagent's, for its own calls; the active branch's when absent).
  */
 export interface DiffAnchor {
-  readonly source: AnnotationSource;
+  readonly source: DiffSource;
   readonly path: string;
   readonly oldPath?: string | undefined;
   readonly conversationId?: number | undefined;
@@ -35,12 +41,14 @@ export interface DiffAnchor {
 export const draftsOn = (
   annotations: readonly Annotation[],
   anchor: Pick<DiffAnchor, "source" | "path">,
-): readonly Annotation[] =>
-  annotations.filter(
-    (draft) =>
-      sameSource(draft.source, anchor.source) &&
-      (anchor.source.kind === "call" || draft.path === anchor.path),
-  );
+): readonly DiffAnnotation[] =>
+  annotations
+    .filter(isDiffAnnotation)
+    .filter(
+      (draft) =>
+        sameSource(draft.source, anchor.source) &&
+        (anchor.source.kind === "call" || draft.path === anchor.path),
+    );
 
 /** The drafts the composer of `conversationId` sends (the active branch's when undefined), oldest first. */
 export const draftsTo = (
@@ -50,7 +58,7 @@ export const draftsTo = (
 
 /** A diff's drafts, and where they show in it. */
 export interface DiffDrafts {
-  readonly drafts: readonly Annotation[];
+  readonly drafts: readonly DiffAnnotation[];
   readonly lineAnnotations: DiffLineAnnotation<AnnotationSlot>[];
 }
 
@@ -82,7 +90,7 @@ export type AnnotationSlot =
  * lines it was opened on.
  */
 export const lineAnnotationsOf = (
-  drafts: readonly Annotation[],
+  drafts: readonly DiffAnnotation[],
   editing: PickedLines | null,
 ): DiffLineAnnotation<AnnotationSlot>[] => {
   const shown: DiffLineAnnotation<AnnotationSlot>[] = drafts.map((draft) => ({
@@ -108,8 +116,8 @@ export const newDraft = (
   anchor: DiffAnchor,
   picked: PickedLines,
   text: string,
-): AnnotationDraft => {
-  const draft: Types.Mutable<AnnotationDraft> = {
+): DiffAnnotationDraft => {
+  const draft: Types.Mutable<DiffAnnotationDraft> = {
     id,
     source: anchor.source,
     path: anchor.path,
@@ -136,14 +144,38 @@ export const newDraft = (
 
 /** `draft` as saved again with new `text`: the Session keeps everything else it had. */
 export const editedDraft = (draft: Annotation, text: string): AnnotationDraft => {
+  if (isPageAnnotation(draft)) {
+    const { createdAt: _created, updatedAt: _updated, ...rest } = draft;
+
+    return { ...rest, text };
+  }
+
   const { createdAt: _created, updatedAt: _updated, status: _status, ...rest } = draft;
 
   return { ...rest, text };
 };
 
-/** What a chip names a draft by: its file's name and range, as `a.ts:12–18`. */
-export const chipLabel = (draft: Pick<Annotation, "path" | "start" | "end">): string =>
-  `${fileName(draft.path)}:${rangeLabel(draft)}`;
+/** A page's address as a chip names it: its host and path, without the scheme or query. */
+export const pageAddress = (url: string): string => {
+  if (!URL.canParse(url)) return url;
+
+  const { host, pathname } = new URL(url);
+
+  return pathname === "/" ? host : `${host}${pathname}`;
+};
+
+/** What a page Annotation is on: its element's tag, as `<button>`, or an area. */
+export const pageTarget = (source: PageSource): string =>
+  source.element === undefined ? "Area" : `<${source.element.tag}>`;
+
+/**
+ * What a chip names a draft by: on a diff, its file's name and range, as `a.ts:12–18`; on a page, what it is on and the
+ * page, as `<button> · app.test/login`.
+ */
+export const chipLabel = (annotation: Annotation | ShownReviewAnnotation): string =>
+  isPageAnnotation(annotation)
+    ? `${pageTarget(annotation.source)} · ${pageAddress(annotation.source.url)}`
+    : `${fileName(annotation.path)}:${rangeLabel(annotation)}`;
 
 /** What a draft's mark says: its lines changed since, or its file left the Changes. */
 export const statusLabel = (draft: {

@@ -34,7 +34,8 @@ const decode = Schema.decodeUnknownEffect(ServerMessageJson);
 type Annotations = Extract<ServerMessage, { type: "annotations" }>;
 
 /** The drafts on a diff of `drafts`. */
-const diffs = (drafts: ReadonlyArray<Annotation> | undefined) => (drafts ?? []).filter(isDiffAnnotation);
+const diffs = (drafts: ReadonlyArray<Annotation> | undefined) =>
+  (drafts ?? []).filter(isDiffAnnotation);
 
 /** A client of a Session's socket that keeps every message the Session sent it. */
 const connect = async (stub: DurableObjectStub<TestSession>) => {

@@ -1,3 +1,4 @@
+// @effect-diagnostics preferEffectArray:off -- tests over native arrays of drafts and crops.
 import {
   type Annotation,
   INLINE_IMAGE_BUDGET,

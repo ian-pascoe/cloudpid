@@ -184,13 +184,11 @@ const withoutPageBlock = (parts: readonly TranscriptPart[]): TranscriptPart[] =>
  * `parts` without the crops of a Review's page Annotations (`ReviewData.crops`: a label and an image each, the last parts
  * of the message), and the crops, in order, for the Review's chips.
  */
-const withoutCrops = (
-  parts: readonly TranscriptPart[],
-  data: UserEntryData,
-): { readonly parts: readonly TranscriptPart[]; readonly crops: readonly PageCrop[] } => {
+const withoutCrops = (parts: readonly TranscriptPart[], data: UserEntryData) => {
   const count = data.review?.crops?.length ?? 0;
+  const none: readonly PageCrop[] = [];
 
-  if (count === 0 || parts.length < count * 2) return { parts, crops: [] };
+  if (count === 0 || parts.length < count * 2) return { parts, crops: none };
 
   const at = parts.length - count * 2;
 

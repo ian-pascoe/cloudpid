@@ -1,4 +1,4 @@
-import type { Annotation, ConversationId } from "@cloudpid/protocol";
+import type { ConversationId, DiffAnnotation, PageAnnotation } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   chipLabel,
@@ -16,7 +16,26 @@ const root = 1 as ConversationId;
 // SAFETY: as `root`.
 const subagent = 7 as ConversationId;
 
-const draft = (overrides: Partial<Annotation> = {}): Annotation => ({
+const onPage = (overrides: Partial<PageAnnotation> = {}): PageAnnotation => ({
+  id: "p1",
+  source: {
+    kind: "page",
+    url: "https://app.test/login?next=1",
+    ownerTabId: "tab-1",
+    element: { selector: "#login > button", tag: "button" },
+    box: { x: 0, y: 0, width: 10, height: 10 },
+    scroll: { x: 0, y: 0 },
+    viewport: { width: 100, height: 100 },
+  },
+  quote: ["Sign in"],
+  more: 0,
+  text: "Bigger.",
+  createdAt: 1,
+  updatedAt: 1,
+  ...overrides,
+});
+
+const draft = (overrides: Partial<DiffAnnotation> = {}): DiffAnnotation => ({
   id: "d1",
   source: { kind: "call", conversationId: root, callId: "c1", tool: "edit" },
   path: "/workspace/app/src/a.ts",
@@ -47,7 +66,7 @@ describe("drafts", () => {
     });
 
     const otherFile = draft({ ...onChanges, id: "d3", path: "src/b.ts" });
-    const all = [onCall, otherCall, otherFile, onChanges];
+    const all = [onCall, otherCall, otherFile, onChanges, onPage()];
 
     // A call's diff is of one file, whose path the Session made absolute: the card may name it relative.
     expect(draftsOn(all, { source: onCall.source, path: "src/a.ts" })).toEqual([onCall]);
@@ -61,7 +80,7 @@ describe("drafts", () => {
     const toRoot = draft();
     const toSubagent = draft({ id: "d2", conversationId: subagent });
 
-    expect(draftsTo([toRoot, toSubagent], undefined)).toEqual([toRoot]);
+    expect(draftsTo([toRoot, toSubagent, onPage()], undefined)).toEqual([toRoot, onPage()]);
     expect(draftsTo([toRoot, toSubagent], 7)).toEqual([toSubagent]);
   });
 
@@ -115,11 +134,22 @@ describe("drafts", () => {
       updatedAt: undefined,
       text: "Better.",
     });
+
+    const { createdAt: _created, updatedAt: _updated, ...page } = onPage();
+
+    expect(editedDraft(onPage(), "Smaller.")).toStrictEqual({ ...page, text: "Smaller." });
   });
 
   it("are named by file and range, and a Review's lane by its summary and count", () => {
     expect(chipLabel(draft())).toBe("a.ts:3–5");
     expect(chipLabel(draft({ end: 3 }))).toBe("a.ts:3");
+    expect(chipLabel(onPage())).toBe("<button> · app.test/login");
+
+    const { element: _element, ...area } = onPage().source;
+
+    expect(chipLabel(onPage({ source: { ...area, url: "https://app.test/" } }))).toBe(
+      "Area · app.test",
+    );
     expect(reviewLaneText("", 2)).toBe("Review: 2 Annotations");
     expect(reviewLaneText("Look", 1)).toBe("Look · Review: 1 Annotation");
   });
