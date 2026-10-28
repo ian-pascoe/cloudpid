@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over native arrays, not combinators.
 
-// The Environments page's and the Session list's pure parts: the list grouped by Environment, the checks of what the
+// The Settings page's Environment parts and the Session list's pure parts: the list grouped by Environment, the checks of what the
 // owner types (names, Repos, branches, Container settings, Secrets) by the server's own rules, and the lines the page
 // shows of a Build and a Secret.
 
@@ -163,11 +163,11 @@ export const repoNameProblem = (text: string): string | null => {
 const sizeLine = (type: InstanceType, byDefault: InstanceType): string =>
   `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === byDefault ? " (default)" : ""}`;
 
-/** An instance type's line in the Edit dialog's size list: its name and what it offers, the default marked as such. */
+/** An instance type's line in the Container section's size list: its name and what it offers, the default marked as such. */
 export const instanceLabel = (type: InstanceType): string =>
   sizeLine(type, DEFAULT_CONTAINER_SETTINGS.instance);
 
-/** An instance type's line in the Edit dialog's size limit list, the default limit marked as such. */
+/** An instance type's line in the Limits section's size limit list, the default limit marked as such. */
 export const sizeLimitLabel = (type: InstanceType): string =>
   sizeLine(type, DEFAULT_CONTAINER_SETTINGS.maxInstance);
 
@@ -183,7 +183,7 @@ export const idleMinutesProblem = (text: string): string | null => {
     : `Use a whole number of minutes from 1 to ${MAX_IDLE_MINUTES}`;
 };
 
-/** The extra Container-only paths typed in the Edit dialog: one per line, blank lines left out. */
+/** The extra Container-only paths typed in the Container section: one per line, blank lines left out. */
 export const ignorePatternsFrom = (text: string): readonly string[] =>
   text
     .split("\n")
@@ -208,7 +208,7 @@ export const ignoreProblem = (text: string): string | null => {
   return null;
 };
 
-/** An Environment's variables as the Edit dialog shows them: a `NAME=value` line each. */
+/** An Environment's variables as the Variables section shows them: a `NAME=value` line each. */
 export const variablesText = (variables: Readonly<Record<string, string>>): string =>
   Record.toEntries(variables)
     .map(([name, value]) => `${name}=${value}`)
@@ -237,7 +237,7 @@ export const inheritedVariables = (
 };
 
 /**
- * The variables typed in the Edit dialog, or why they cannot be saved: a `NAME=value` line each, the value everything
+ * The variables typed in the Variables section, or why they cannot be saved: a `NAME=value` line each, the value everything
  * after the first `=` as typed, blank lines and lines starting with `#` left out. The server's rules
  * (`variableNameProblem`), with the first line that breaks them. With the variables kept Global,
  * `inherited`, the 50 counts them too, the ones of the same name once.

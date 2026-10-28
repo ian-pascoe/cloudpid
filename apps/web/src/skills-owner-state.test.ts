@@ -82,19 +82,23 @@ describe("an owner's repos", () => {
 
 describe("Open a repo", () => {
   it("opens the repo page of the owner for the repo's name, or for owner/repo as GitHub shows it", () => {
-    expect(openRepoPath("mattpocock", "skills")).toEqual({
+    expect(openRepoPath("*", "mattpocock", "skills")).toEqual({
       ok: true,
-      path: "/skills/mattpocock/skills",
+      path: "/settings/all/skills/mattpocock/skills",
     });
-    expect(openRepoPath("mattpocock", "  skills ")).toEqual({
+    expect(openRepoPath("*", "mattpocock", "  skills ")).toEqual({
       ok: true,
-      path: "/skills/mattpocock/skills",
+      path: "/settings/all/skills/mattpocock/skills",
     });
-    expect(openRepoPath("mattpocock", "MattPocock/Skills")).toEqual({
+    expect(openRepoPath("*", "mattpocock", "MattPocock/Skills")).toEqual({
       ok: true,
-      path: "/skills/mattpocock/Skills",
+      path: "/settings/all/skills/mattpocock/Skills",
     });
-    expect(openRepoPath("o", "r.js")).toEqual({ ok: true, path: "/skills/o/r.js" });
+    expect(openRepoPath("*", "o", "r.js")).toEqual({
+      ok: true,
+      path: "/settings/all/skills/o/r.js",
+    });
+    expect(openRepoPath("work", "o", "r")).toEqual({ ok: true, path: "/settings/work/skills/o/r" });
   });
 
   it("refuses an empty name, another owner's repo, . and .., and anything GitHub cannot name a repo", () => {
@@ -115,11 +119,14 @@ describe("Open a repo", () => {
       "a%2Fb",
       "x".repeat(101),
     ]) {
-      const opened = openRepoPath("o", typed);
+      const opened = openRepoPath("*", "o", typed);
 
       expect(opened.ok, typed).toBe(false);
     }
 
-    expect(openRepoPath("o", "")).toEqual({ ok: false, message: "Type the name of a repo of o." });
+    expect(openRepoPath("*", "o", "")).toEqual({
+      ok: false,
+      message: "Type the name of a repo of o.",
+    });
   });
 });

@@ -116,11 +116,13 @@ describe("the repo page", () => {
 
         const hrefs = links(markup).map(({ href }) => href);
 
-        expect(hrefs).toContain("/skills/mattpocock");
+        expect(hrefs).toContain("/settings/all/skills/mattpocock");
         // A row's name is the route of the Skill's page; its folder is on GitHub at the commit that was listed.
         // Always with its folder, so a Skill whose name in the path is not unique still opens the one that was listed.
-        expect(hrefs).toContain("/skills/mattpocock/skills/tdd?path=skills%2Fengineering%2Ftdd");
-        expect(hrefs).toContain("/skills/mattpocock/skills/root?path=");
+        expect(hrefs).toContain(
+          "/settings/all/skills/mattpocock/skills/tdd?path=skills%2Fengineering%2Ftdd",
+        );
+        expect(hrefs).toContain("/settings/all/skills/mattpocock/skills/root?path=");
         expect(hrefs).toContain(
           `https://github.com/mattpocock/skills/tree/${COMMIT}/skills/engineering/tdd`,
         );
@@ -160,7 +162,7 @@ describe("the repo page", () => {
       expect(asked).toEqual([{ owner: "mattpocock", repo: "skills", ref: "feature/x" }]);
       expect(text(markup)).toContain("feature/x");
       expect(links(markup).map(({ href }) => href)).toContain(
-        "/skills/mattpocock/skills/tdd?ref=feature%2Fx&path=skills%2Fengineering%2Ftdd",
+        "/settings/all/skills/mattpocock/skills/tdd?ref=feature%2Fx&path=skills%2Fengineering%2Ftdd",
       );
     }),
   );
@@ -194,7 +196,7 @@ describe("the repo page", () => {
 
       expect(text(markup)).toContain("has no branch, tag or commit “nope”");
       expect(links(markup)).toContainEqual({
-        href: "/skills/mattpocock/skills",
+        href: "/settings/all/skills/mattpocock/skills",
         text: "Show its default branch",
       });
     }),

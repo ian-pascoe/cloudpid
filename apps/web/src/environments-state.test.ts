@@ -21,6 +21,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { describe, expect, it } from "@effect/vitest";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
@@ -47,13 +48,10 @@ import {
   buildsAtom,
   environmentBuildAtom,
   environmentDialogAtom,
-  environmentDraftAtom,
   environmentNamesAtom,
   environmentSettingsAtom,
   globalSettingsAtom,
   globalVariablesAtom,
-  globalVariablesDraftAtom,
-  saveGlobalVariablesAtom,
   environmentListAtom,
   environmentsAtom,
   newEnvironmentNameAtom,
@@ -62,7 +60,6 @@ import {
   removeWorkspaceAtom,
   removeWorkspaceTypedAtom,
   restartContainerAtom,
-  saveEnvironmentAtom,
   startSessionAtom,
   describeWorkspaceWork,
   subagentWorkspacesBelow,
@@ -72,8 +69,16 @@ import {
   workspacesAtom,
 } from "./environments-state.ts";
 import { EMPTY_SECRET_DRAFT, GLOBAL } from "./environments.ts";
+import {
+  type ContainerFields,
+  containerSectionForm,
+  environmentNameForm,
+  environmentVariablesForm,
+  globalVariablesForm,
+  setupForm,
+} from "./settings/forms.ts";
 
-describe("Subagent Workspaces on the Environments page", () => {
+describe("Subagent Workspaces in the Workspaces section", () => {
   it("says what a Workspace has not pushed, per Repo", () => {
     expect(
       describeWorkspaceWork([
@@ -257,8 +262,7 @@ describe("the Environment list", () => {
       yield* settled(registry, createEnvironmentAtom);
       expect(ids(yield* settled(registry, environmentsAtom))).toEqual(["work", "default"]);
 
-      registry.set(saveEnvironmentAtom("work"), { name: "Work", settings: undefined });
-      yield* settled(registry, saveEnvironmentAtom("work"));
+      yield* renaming(registry, "Work");
       expect(AsyncResult.getOrThrow(yield* settled(registry, environmentsAtom))[0]?.name).toBe(
         "Work",
       );
@@ -297,9 +301,7 @@ describe("the Environment list", () => {
     Effect.gen(function* () {
       const registry = holding([environment("default"), environment("work")], []);
 
-      registry.set(saveEnvironmentAtom("work"), { name: "default", settings: undefined });
-
-      expect(failureOf(yield* settled(registry, saveEnvironmentAtom("work")))).toBe(
+      expect(failureOf(yield* renaming(registry, "default"))).toBe(
         "An environment is already named default.",
       );
     }),
@@ -552,12 +554,6 @@ const stateOf = (settings: ContainerSettings): ContainerSettingsState => ({
   overrides: { variables: settings.variables },
 });
 
-/** An edit of the settings as the Edit dialog sends it: what it was opened with, and what it holds now. */
-const editing = (
-  edited: ContainerSettings,
-  loaded: ContainerSettings = DEFAULT_CONTAINER_SETTINGS,
-) => ({ loaded, edited });
-
 /** A Registry holding the settings of Environment `work`; the first `failures` loads fail, and an idle time of 9999 is refused. */
 const configured = (failures = 0) => {
   let held = DEFAULT_CONTAINER_SETTINGS;
@@ -616,36 +612,18 @@ describe("the settings of an Environment", () => {
     }),
   );
 
-  it.effect("saves what changed in the settings, answers with the new state, and loads again", () =>
+  it.effect("saves only the fields a section changed, as a patch, and loads again", () =>
     Effect.gen(function* () {
       const { registry, saved } = configured();
 
-      registry.mount(environmentSettingsAtom("work"));
-      yield* settled(registry, environmentSettingsAtom("work"));
-      registry.set(saveEnvironmentAtom("work"), {
-        name: undefined,
-        settings: editing({
-          ...DEFAULT_CONTAINER_SETTINGS,
-          instance: "basic",
-          ignore: ["/data"],
-          variables: { NODE_ENV: "test" },
-          startScript: "make up\n",
-        }),
+      yield* savingContainer(registry, {
+        instance: "basic",
+        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
+        ignore: "/data",
+        spareWorkspace: DEFAULT_CONTAINER_SETTINGS.spareWorkspace,
       });
 
-      const answer = yield* settled(registry, saveEnvironmentAtom("work"));
-
-      expect(AsyncResult.getOrThrow(answer)?.settings.instance).toBe("basic");
-      expect(saved).toEqual([
-        {
-          set: {
-            instance: "basic",
-            ignore: ["/data"],
-            variables: { NODE_ENV: "test" },
-            startScript: "make up\n",
-          },
-        },
-      ]);
+      expect(saved).toEqual([{ set: { instance: "basic", ignore: ["/data"] } }]);
       expect(
         AsyncResult.getOrThrow(yield* settled(registry, environmentSettingsAtom("work"))).settings
           .instance,
@@ -657,18 +635,42 @@ describe("the settings of an Environment", () => {
     Effect.gen(function* () {
       const { registry, saved } = configured();
 
-      registry.set(saveEnvironmentAtom("work"), {
-        name: undefined,
-        settings: editing({ ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 9999 }),
+      const answer = yield* savingContainer(registry, {
+        instance: "basic",
+        idle: "9999",
+        ignore: "",
+        spareWorkspace: true,
       });
 
-      expect(failureOf(yield* settled(registry, saveEnvironmentAtom("work")))).toBe(
-        "idleMinutes: at most 1440",
-      );
+      expect(failureOf(answer)).toBe("idleMinutes: at most 1440");
       expect(saved).toEqual([]);
     }),
   );
 });
+
+/** Save `name` as the draft of the name of Environment `work`, once the Environments have loaded. */
+const renaming = (registry: AtomRegistry.AtomRegistry, name: string) =>
+  Effect.gen(function* () {
+    registry.mount(environmentNameForm.fields("work"));
+    yield* settled(registry, environmentNameForm.loaded("work"));
+    registry.set(environmentNameForm.draft("work"), { name });
+    registry.mount(environmentNameForm.save("work"));
+    registry.set(environmentNameForm.save("work"), undefined);
+
+    return yield* settled(registry, environmentNameForm.save("work"));
+  });
+
+/** Save `fields` as the draft of the Container section of Environment `work`, once its settings have loaded. */
+const savingContainer = (registry: AtomRegistry.AtomRegistry, fields: ContainerFields) =>
+  Effect.gen(function* () {
+    registry.mount(containerSectionForm.fields("work"));
+    yield* settled(registry, containerSectionForm.loaded("work"));
+    registry.set(containerSectionForm.draft("work"), fields);
+    registry.mount(containerSectionForm.save("work"));
+    registry.set(containerSectionForm.save("work"), undefined);
+
+    return yield* settled(registry, containerSectionForm.save("work"));
+  });
 
 /** A Registry for the page's dialogs: Environment `work`, which refuses a rename to `bad`, and `stuck`, which refuses deletes. */
 const paging = (
@@ -704,79 +706,83 @@ const paging = (
       }),
   });
 
-  return { registry, saved, renamed };
+  /** Change the held settings as an agent would, out of the page's sight. */
+  const change = (fields: Partial<ContainerSettings>) => {
+    held = { ...held, ...fields };
+  };
+
+  return { registry, saved, renamed, change };
 };
 
-describe("the dialogs of an Environment's card", () => {
+describe("the dialogs of an Environment", () => {
   it("keeps one Environment's open dialog apart from another's", () => {
     const { registry } = paging();
 
     registry.mount(environmentDialogAtom("work"));
     registry.mount(environmentDialogAtom("other"));
-    registry.set(environmentDialogAtom("work"), "edit");
+    registry.set(environmentDialogAtom("work"), "delete");
 
-    expect(registry.get(environmentDialogAtom("work"))).toBe("edit");
+    expect(registry.get(environmentDialogAtom("work"))).toBe("delete");
     expect(registry.get(environmentDialogAtom("other"))).toBeNull();
     registry.dispose();
   });
 
-  it.effect("closes the Edit dialog once the edit is saved", () =>
-    Effect.gen(function* () {
-      const { registry, saved, renamed } = paging();
-
-      registry.mount(environmentDialogAtom("work"));
-      registry.set(environmentDialogAtom("work"), "edit");
-      registry.set(saveEnvironmentAtom("work"), {
-        name: "Renamed",
-        settings: editing({ ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 }),
-      });
-      yield* settled(registry, saveEnvironmentAtom("work"));
-
-      expect(renamed).toEqual(["Renamed"]);
-      expect(saved).toEqual([{ set: { instance: "basic", idleMinutes: 30 } }]);
-      expect(registry.get(environmentDialogAtom("work"))).toBeNull();
-    }),
-  );
-
-  it.effect("saves only the field changed, and a removed own variable as a reset", () =>
+  it.effect("saves the Spare Workspace turned off as the one field set", () =>
     Effect.gen(function* () {
       const { registry, saved } = paging();
 
-      registry.mount(saveEnvironmentAtom("work"));
+      yield* savingContainer(registry, {
+        instance: DEFAULT_CONTAINER_SETTINGS.instance,
+        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
+        ignore: "",
+        spareWorkspace: false,
+      });
 
-      // The Environment has two own variables; the owner turns the Spare Workspace off and drops one of them.
-      const loaded = {
+      expect(saved).toEqual([{ set: { spareWorkspace: false } }]);
+    }),
+  );
+
+  it.effect("sends nothing for a draft put back as it began, and drops it", () =>
+    Effect.gen(function* () {
+      const { registry, saved, change } = paging();
+
+      registry.mount(containerSectionForm.fields("work"));
+      yield* settled(registry, containerSectionForm.loaded("work"));
+
+      const began = registry.get(containerSectionForm.fields("work"))!;
+
+      registry.set(containerSectionForm.draft("work"), { ...began, idle: "30" });
+      registry.set(containerSectionForm.draft("work"), began);
+      // An agent turns the Spare Workspace off meanwhile: the draft now differs from what is saved.
+      change({ spareWorkspace: false });
+      registry.refresh(environmentSettingsAtom("work"));
+      yield* settled(registry, containerSectionForm.loaded("work"));
+      registry.mount(containerSectionForm.save("work"));
+      registry.set(containerSectionForm.save("work"), undefined);
+      yield* settled(registry, containerSectionForm.save("work"));
+
+      expect(saved).toEqual([]);
+      expect(registry.get(containerSectionForm.draft("work"))).toBeUndefined();
+      expect(registry.get(containerSectionForm.fields("work"))?.spareWorkspace).toBe(false);
+    }),
+  );
+
+  it.effect("saves an own variable taken out as a reset, and leaves the others alone", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = paging(undefined, {
         ...DEFAULT_CONTAINER_SETTINGS,
         variables: { KEEP: "1", DROP: "2" },
-      };
-
-      registry.set(saveEnvironmentAtom("work"), {
-        name: undefined,
-        settings: editing({ ...loaded, spareWorkspace: false, variables: { KEEP: "1" } }, loaded),
-      });
-      yield* settled(registry, saveEnvironmentAtom("work"));
-
-      // Inherited fields such as the size and idle time are not in the payload.
-      expect(saved).toEqual([{ set: { spareWorkspace: false }, reset: ["variables.DROP"] }]);
-    }),
-  );
-
-  it.effect("keeps the Edit dialog open, saving nothing more, when the rename is refused", () =>
-    Effect.gen(function* () {
-      const { registry, saved } = paging();
-
-      registry.mount(environmentDialogAtom("work"));
-      registry.set(environmentDialogAtom("work"), "edit");
-      registry.set(saveEnvironmentAtom("work"), {
-        name: "bad",
-        settings: editing({ ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 }),
       });
 
-      expect(settledFailureOf(yield* settled(registry, saveEnvironmentAtom("work")))).toBe(
-        "That name is taken.",
-      );
-      expect(saved).toEqual([]);
-      expect(registry.get(environmentDialogAtom("work"))).toBe("edit");
+      registry.mount(environmentVariablesForm.fields("work"));
+      yield* settled(registry, environmentVariablesForm.loaded("work"));
+      registry.set(environmentVariablesForm.draft("work"), { variables: "KEEP=1" });
+      registry.mount(environmentVariablesForm.save("work"));
+      registry.set(environmentVariablesForm.save("work"), undefined);
+      yield* settled(registry, environmentVariablesForm.save("work"));
+
+      // The variable kept is not in the payload, nor is any other field.
+      expect(saved).toEqual([{ reset: ["variables.DROP"] }]);
     }),
   );
 
@@ -808,20 +814,20 @@ describe("the dialogs of an Environment's card", () => {
     }),
   );
 
-  it.effect("keeps one Environment's save apart from another's, and forgets it when reset", () =>
+  it.effect("keeps one Environment's delete apart from another's, and forgets it when reset", () =>
     Effect.gen(function* () {
       const { registry } = paging();
 
-      registry.mount(saveEnvironmentAtom("work"));
-      registry.mount(saveEnvironmentAtom("other"));
-      registry.set(saveEnvironmentAtom("work"), { name: "bad", settings: undefined });
-      yield* settled(registry, saveEnvironmentAtom("work"));
+      registry.mount(deleteEnvironmentAtom("stuck"));
+      registry.mount(deleteEnvironmentAtom("other"));
+      registry.set(deleteEnvironmentAtom("stuck"), undefined);
+      yield* settled(registry, deleteEnvironmentAtom("stuck"));
 
-      expect(AsyncResult.isInitial(registry.get(saveEnvironmentAtom("other")))).toBe(true);
+      expect(AsyncResult.isInitial(registry.get(deleteEnvironmentAtom("other")))).toBe(true);
 
-      registry.set(saveEnvironmentAtom("work"), Atom.Reset);
+      registry.set(deleteEnvironmentAtom("stuck"), Atom.Reset);
 
-      expect(AsyncResult.isInitial(registry.get(saveEnvironmentAtom("work")))).toBe(true);
+      expect(AsyncResult.isInitial(registry.get(deleteEnvironmentAtom("stuck")))).toBe(true);
     }),
   );
 
@@ -840,76 +846,30 @@ describe("the dialogs of an Environment's card", () => {
   );
 });
 
-describe("the Edit dialog's draft", () => {
-  /** Mount the atoms the dialog reads, and wait for the list of Environments, so the draft starts with a name. */
-  const opened = (registry: ReturnType<typeof paging>["registry"]) =>
-    Effect.gen(function* () {
-      registry.mount(environmentNamesAtom);
-      registry.mount(environmentSettingsAtom("work"));
-      yield* settled(registry, environmentsAtom);
-      registry.mount(environmentDraftAtom("work"));
-    });
-
-  it.effect("starts with the Environment's name, and fills in the settings when they answer", () =>
+describe("the drafts of an Environment's Container settings sections", () => {
+  it.effect("show nothing until the settings answer, then what they hold", () =>
     Effect.gen(function* () {
       const gate = Deferred.makeUnsafe<void>();
       const { registry } = paging(gate);
 
-      yield* opened(registry);
+      registry.mount(containerSectionForm.fields("work"));
 
-      // The dialog is open and the settings have not answered.
-      expect(registry.get(environmentDraftAtom("work"))).toEqual({
-        name: "Work",
-        instance: undefined,
-        maxInstance: undefined,
-        idle: undefined,
-        ignore: undefined,
-        variables: undefined,
-        setupScript: undefined,
-        startScript: undefined,
-        toolchains: undefined,
-        spareWorkspace: undefined,
-      });
+      expect(registry.get(containerSectionForm.fields("work"))).toBeNull();
 
       yield* Deferred.succeed(gate, undefined);
-      yield* settled(registry, environmentSettingsAtom("work"));
+      yield* settled(registry, containerSectionForm.loaded("work"));
 
-      expect(registry.get(environmentDraftAtom("work"))).toEqual({
-        name: "Work",
+      expect(registry.get(containerSectionForm.fields("work"))).toEqual({
         instance: DEFAULT_CONTAINER_SETTINGS.instance,
-        maxInstance: DEFAULT_CONTAINER_SETTINGS.maxInstance,
         idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "",
-        variables: "",
-        setupScript: "",
-        startScript: "",
-        toolchains: "",
         spareWorkspace: true,
       });
     }),
   );
 
   it.effect(
-    "keeps the idle field empty once the owner clears it, when the settings are loaded again",
-    () =>
-      Effect.gen(function* () {
-        const { registry } = paging();
-
-        yield* opened(registry);
-        yield* settled(registry, environmentSettingsAtom("work"));
-        registry.set(environmentDraftAtom("work"), {
-          ...registry.get(environmentDraftAtom("work")),
-          idle: "",
-        });
-        registry.refresh(environmentSettingsAtom("work"));
-        yield* settled(registry, environmentSettingsAtom("work"));
-
-        expect(registry.get(environmentDraftAtom("work")).idle).toBe("");
-      }),
-  );
-
-  it.effect(
-    "shows the saved variables as NAME=value lines, and the scripts and Toolchains as they are",
+    "show the saved variables as NAME=value lines, and the scripts and Toolchains as they are",
     () =>
       Effect.gen(function* () {
         const { registry } = paging(undefined, {
@@ -920,11 +880,14 @@ describe("the Edit dialog's draft", () => {
           toolchains: '[tools]\nnode = "22.20.0"\n',
         });
 
-        yield* opened(registry);
-        yield* settled(registry, environmentSettingsAtom("work"));
+        registry.mount(environmentVariablesForm.fields("work"));
+        registry.mount(setupForm.fields("work"));
+        yield* settled(registry, setupForm.loaded("work"));
 
-        expect(registry.get(environmentDraftAtom("work"))).toMatchObject({
+        expect(registry.get(environmentVariablesForm.fields("work"))).toEqual({
           variables: "NODE_ENV=test\nQUERY=a=b",
+        });
+        expect(registry.get(setupForm.fields("work"))).toEqual({
           setupScript: "pnpm install\n",
           startScript: "docker start db\n",
           toolchains: '[tools]\nnode = "22.20.0"\n',
@@ -932,10 +895,9 @@ describe("the Edit dialog's draft", () => {
       }),
   );
 
-  it.effect("shows only the Environment's own variables, not the ones it gets from Global", () =>
+  it.effect("show only the Environment's own variables, not the ones it gets from Global", () =>
     Effect.gen(function* () {
       const registry = registryWith({
-        listEnvironments: () => Effect.succeed([environment("work", "Work")]),
         getEnvironmentSettings: () =>
           Effect.succeed({
             settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: { OWN: "1", FROM_GLOBAL: "2" } },
@@ -944,83 +906,67 @@ describe("the Edit dialog's draft", () => {
           }),
       });
 
-      yield* opened(registry);
-      yield* settled(registry, environmentSettingsAtom("work"));
+      registry.mount(environmentVariablesForm.fields("work"));
+      yield* settled(registry, environmentVariablesForm.loaded("work"));
 
-      expect(registry.get(environmentDraftAtom("work"))).toMatchObject({ variables: "OWN=1" });
+      expect(registry.get(environmentVariablesForm.fields("work"))).toEqual({
+        variables: "OWN=1",
+      });
+      expect(registry.get(environmentVariablesForm.dirty("work"))).toBe(false);
     }),
   );
 
-  it.effect("keeps what was typed when the settings answer after it", () =>
-    Effect.gen(function* () {
-      const gate = Deferred.makeUnsafe<void>();
-      const { registry } = paging(gate);
+  it.effect(
+    "keep, on a save, what an agent changed meanwhile in a field the owner left alone",
+    () =>
+      Effect.gen(function* () {
+        const { registry, saved, change } = paging(undefined, {
+          ...DEFAULT_CONTAINER_SETTINGS,
+          variables: { A: "1" },
+        });
 
-      yield* opened(registry);
+        registry.mount(containerSectionForm.fields("work"));
+        registry.mount(environmentVariablesForm.fields("work"));
+        yield* settled(registry, environmentVariablesForm.loaded("work"));
+        registry.set(containerSectionForm.draft("work"), {
+          ...registry.get(containerSectionForm.fields("work"))!,
+          idle: "30",
+        });
+        registry.set(environmentVariablesForm.draft("work"), { variables: "A=1\nB=2" });
+        // An agent sets the size and adds a variable after the drafts began.
+        change({ instance: "standard-2", variables: { A: "1", AGENT: "3" } });
 
-      const other = INSTANCE_TYPES.find((type) => type !== DEFAULT_CONTAINER_SETTINGS.instance)!;
+        registry.mount(containerSectionForm.save("work"));
+        registry.set(containerSectionForm.save("work"), undefined);
+        yield* settled(registry, containerSectionForm.save("work"));
+        registry.mount(environmentVariablesForm.save("work"));
+        registry.set(environmentVariablesForm.save("work"), undefined);
+        yield* settled(registry, environmentVariablesForm.save("work"));
 
-      registry.set(environmentDraftAtom("work"), {
-        name: "Renamed",
-        instance: other,
-        maxInstance: "standard-4",
-        idle: undefined,
-        ignore: "/data",
-        variables: "A=1",
-        setupScript: undefined,
-        startScript: "typed\n",
-        toolchains: undefined,
-        spareWorkspace: false,
-      });
-      yield* Deferred.succeed(gate, undefined);
-      yield* settled(registry, environmentSettingsAtom("work"));
-
-      expect(registry.get(environmentDraftAtom("work"))).toEqual({
-        name: "Renamed",
-        instance: other,
-        maxInstance: "standard-4",
-        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
-        ignore: "/data",
-        variables: "A=1",
-        setupScript: "",
-        startScript: "typed\n",
-        toolchains: "",
-        spareWorkspace: false,
-      });
-    }),
+        expect(saved).toEqual([{ set: { idleMinutes: 30 } }, { set: { variables: { B: "2" } } }]);
+      }),
   );
 
-  it.effect("keeps what was picked when the settings are loaded again", () =>
+  it.effect("keep what was typed when the settings are loaded again", () =>
     Effect.gen(function* () {
       const { registry } = paging();
+      const other = INSTANCE_TYPES.find((type) => type !== DEFAULT_CONTAINER_SETTINGS.instance)!;
 
-      yield* opened(registry);
-      yield* settled(registry, environmentSettingsAtom("work"));
-      registry.set(environmentDraftAtom("work"), {
-        name: "Work",
-        instance: "lite",
-        maxInstance: "basic",
-        idle: "20",
-        ignore: "",
-        variables: "",
-        setupScript: "",
-        startScript: "",
-        toolchains: "",
+      registry.mount(containerSectionForm.fields("work"));
+      yield* settled(registry, containerSectionForm.loaded("work"));
+      registry.set(containerSectionForm.draft("work"), {
+        instance: other,
+        idle: "",
+        ignore: "/data",
         spareWorkspace: false,
       });
       registry.refresh(environmentSettingsAtom("work"));
-      yield* settled(registry, environmentSettingsAtom("work"));
+      yield* settled(registry, containerSectionForm.loaded("work"));
 
-      expect(registry.get(environmentDraftAtom("work"))).toEqual({
-        name: "Work",
-        instance: "lite",
-        maxInstance: "basic",
-        idle: "20",
-        ignore: "",
-        variables: "",
-        setupScript: "",
-        startScript: "",
-        toolchains: "",
+      expect(registry.get(containerSectionForm.fields("work"))).toEqual({
+        instance: other,
+        idle: "",
+        ignore: "/data",
         spareWorkspace: false,
       });
     }),
@@ -1532,20 +1478,33 @@ describe("the variables kept Global", () => {
     return { registry, saved, builds: () => builds };
   };
 
+  /** Save `typed` as Global's Variables section's draft. */
+  const saving = (registry: ReturnType<typeof keeping>["registry"], typed: string) =>
+    Effect.gen(function* () {
+      registry.mount(globalVariablesForm.fields(GLOBAL));
+      yield* settled(registry, globalVariablesForm.loaded(GLOBAL));
+      registry.set(globalVariablesForm.draft(GLOBAL), { variables: typed });
+      registry.mount(globalVariablesForm.save(GLOBAL));
+      registry.set(globalVariablesForm.save(GLOBAL), undefined);
+
+      return yield* settled(registry, globalVariablesForm.save(GLOBAL));
+    });
+
   it.effect("load as the Registry has them, and what is typed stays apart from them", () =>
     Effect.gen(function* () {
       const { registry } = keeping();
 
       registry.mount(globalSettingsAtom);
+      registry.mount(globalVariablesForm.fields(GLOBAL));
 
       yield* settled(registry, globalSettingsAtom);
       expect(registry.get(globalVariablesAtom)).toEqual({ API_URL: "https://api.test" });
-      expect(registry.get(globalVariablesDraftAtom)).toBeUndefined();
+      expect(registry.get(globalVariablesForm.draft(GLOBAL))).toBeUndefined();
 
-      registry.set(globalVariablesDraftAtom, "A=1");
+      registry.set(globalVariablesForm.draft(GLOBAL), { variables: "A=1" });
       registry.refresh(globalSettingsAtom);
       yield* settled(registry, globalSettingsAtom);
-      expect(registry.get(globalVariablesDraftAtom)).toBe("A=1");
+      expect(registry.get(globalVariablesForm.fields(GLOBAL))).toEqual({ variables: "A=1" });
       registry.dispose();
     }),
   );
@@ -1560,17 +1519,15 @@ describe("the variables kept Global", () => {
         registry.mount(buildsAtom);
         yield* settled(registry, globalSettingsAtom);
         yield* settled(registry, buildsAtom);
-        registry.set(globalVariablesDraftAtom, "NODE_ENV=test");
-        registry.mount(saveGlobalVariablesAtom);
-        registry.set(saveGlobalVariablesAtom, { NODE_ENV: "test" });
-        yield* settled(registry, saveGlobalVariablesAtom);
+        yield* saving(registry, "NODE_ENV=test");
         yield* settled(registry, globalSettingsAtom);
+        yield* settled(registry, buildsAtom);
 
         expect(saved).toEqual([
           { set: { variables: { NODE_ENV: "test" } }, reset: ["variables.API_URL"] },
         ]);
         expect(registry.get(globalVariablesAtom)).toEqual({ NODE_ENV: "test" });
-        expect(registry.get(globalVariablesDraftAtom)).toBeUndefined();
+        expect(registry.get(globalVariablesForm.draft(GLOBAL))).toBeUndefined();
         expect(builds()).toBe(2);
         registry.dispose();
       }),
@@ -1580,14 +1537,8 @@ describe("the variables kept Global", () => {
     Effect.gen(function* () {
       const { registry, saved } = keeping();
 
-      registry.mount(globalSettingsAtom);
-      yield* settled(registry, globalSettingsAtom);
-      registry.mount(saveGlobalVariablesAtom);
-      registry.set(saveGlobalVariablesAtom, { API_URL: "https://new.test", ADDED: "1" });
-      yield* settled(registry, saveGlobalVariablesAtom);
-      yield* settled(registry, globalSettingsAtom);
-      registry.set(saveGlobalVariablesAtom, { ADDED: "1" });
-      yield* settled(registry, saveGlobalVariablesAtom);
+      yield* saving(registry, "API_URL=https://new.test\nADDED=1");
+      yield* saving(registry, "ADDED=1");
 
       expect(saved).toEqual([
         { set: { variables: { API_URL: "https://new.test", ADDED: "1" } } },
@@ -1601,10 +1552,7 @@ describe("the variables kept Global", () => {
     Effect.gen(function* () {
       const { registry, saved } = keeping();
 
-      registry.mount(saveGlobalVariablesAtom);
-      registry.set(saveGlobalVariablesAtom, { TOO_MANY: "1" });
-
-      expect(settledFailureOf(yield* settled(registry, saveGlobalVariablesAtom))).toBe(
+      expect(settledFailureOf(yield* saving(registry, "TOO_MANY=1"))).toBe(
         "variables: with the 50 variables it would have 51",
       );
       expect(saved).toEqual([]);

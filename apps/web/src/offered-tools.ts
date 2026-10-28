@@ -2,7 +2,7 @@
 
 import { TOOL_PATTERN } from "@cloudpid/config";
 
-/** The offered tools as the settings page's text box shows them: one name or pattern per line. */
+/** The offered tools as the Tools section's text box shows them: one name or pattern per line. */
 export const offeredToText = (offered: ReadonlyArray<string>): string => offered.join("\n");
 
 /** The offered tools a text box holds: one name or pattern per line, blank lines and spaces dropped, repeats once. */

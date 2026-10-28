@@ -1,14 +1,13 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of sections, Skills and files are native arrays.
 
-// The Skills page's Installed tab (ADR-0026, docs/architecture/workspace.md → Installing from GitHub): the Skills kept
-// at Global and each Environment's own, or only one scope's (`?environment=`), each with its marks, Update,
-// Remove, the form that adds Skills from GitHub or a skills.sh search, a viewer of the files of a Skill with no Skill
-// source, and the Skills' Agent changes with their file diffs and Revert. Everything here is the owner's own change, so
-// it waits for no Approval.
+// The Installed tab of the Skills section of the Settings page (ADR-0026, docs/architecture/workspace.md → Installing from
+// GitHub; docs/architecture/client-and-protocol.md → Settings page): the Skills the Scope the page shows keeps, Global's or
+// an Environment's own, each with its marks, Update, Remove, the form that adds Skills from GitHub or a skills.sh search,
+// a viewer of the files of a Skill with no Skill source, and a link to the Agent changes section, where the Skills' Agent
+// changes are with their file diffs and Revert. Everything here is the owner's own change, so it waits for no Approval.
 
 import {
   type EnvironmentSkill,
-  type SessionRecord,
   type SkillFile,
   type SkillInstall,
   type SkillSource,
@@ -19,17 +18,15 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { Download, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { type FormEvent, type ReactNode, useState } from "react";
-import { AgentChangesSection, isSkillChange } from "./agent-change-list.tsx";
+import { type FormEvent, useState } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
 import { InAppLink } from "./in-app-link.tsx";
 import { relativeTime } from "./format.ts";
 import { failureOf, settledFailureOf } from "./registry.ts";
-import { skillsParamsAtom, skillsPath } from "./router.ts";
-import { sessionListAtom } from "./sessions.ts";
-import { environmentListAtom, environmentsErrorAtom } from "./environments-state.ts";
+import { settingsPath } from "./router.ts";
+import { useScopeName, useSettingsScope } from "./settings/scope.tsx";
 import { GLOBAL } from "./environments.ts";
 import {
   environmentSkillsAtom,
@@ -47,7 +44,6 @@ import {
 } from "./skills-state.ts";
 import {
   inheritedSkills,
-  installedScopes,
   installOutcomeLines,
   skillPageOfSource,
   updateOutcomeLines,
@@ -80,7 +76,7 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
     <form onSubmit={submit} className="flex flex-col gap-4">
       {id === GLOBAL ? (
         <p className="text-sm">
-          Each environment's workspaces stop serving it at their next readying, except those of an
+          Each Environment's workspaces stop serving it at their next readying, except those of an
           environment that keeps its own skill of the same name. Sessions already running keep it in
           their skills list until their next context window.
         </p>
@@ -141,7 +137,7 @@ const UpdateSkillDialog = ({ id, skill }: { id: string; skill: EnvironmentSkill 
     <form onSubmit={submit} className="flex flex-col gap-4">
       <p className="text-sm">
         {id === GLOBAL
-          ? "Each environment's workspaces serve the new files at their next readying, except those of an environment that keeps its own skill of the same name."
+          ? "Each Environment's workspaces serve the new files at their next readying, except those of an environment that keeps its own skill of the same name."
           : "Its workspaces serve the new files at their next readying."}{" "}
         Sessions already running keep the old description in their skills list until their next
         context window.
@@ -475,7 +471,8 @@ const SkillFilesViewer = ({ id, name }: { id: string; name: string }) => {
  * was installed from); plain text for a Skill source whose repo is not one of GitHub's.
  */
 const SourceLink = ({ skill, source }: { skill: EnvironmentSkill; source: SkillSource }) => {
-  const href = skillPageOfSource(skill.name, source);
+  const scope = useSettingsScope();
+  const href = skillPageOfSource(scope, skill.name, source);
 
   return href === null ? (
     <span className="truncate font-mono text-xs text-muted-foreground">
@@ -703,110 +700,35 @@ export const SkillsSection = ({ id }: { id: string }) => {
   );
 };
 
-const SKILL_CHANGES_EMPTY = "The agent has changed no skill here.";
-
 /**
- * The section of one scope's Skills (an Environment's own, or `GLOBAL`'s): its title, what it says of them
- * (`children`), the list with its forms, and the Skills' Agent changes.
- */
-const ScopeSection = ({
-  id,
-  title,
-  sessions,
-  children,
-}: {
-  id: string;
-  title: string;
-  /** The Sessions whose Agent changes the section may link: the Environment's, or every one for `GLOBAL`. */
-  sessions: readonly SessionRecord[];
-  children?: ReactNode;
-}) => (
-  <section aria-label={title} className="flex flex-col gap-4 rounded-lg border p-4">
-    <h2 className="truncate text-sm font-semibold">{title}</h2>
-    {children}
-    <SkillsSection id={id} />
-    <AgentChangesSection
-      id={id}
-      sessions={sessions}
-      only={isSkillChange}
-      empty={SKILL_CHANGES_EMPTY}
-    />
-  </section>
-);
-
-/** What the Installed tab says of its filter: whose Skills it shows, or why it cannot say. */
-const filterText = (
-  filter: string,
-  named: string | undefined,
-  loading: boolean,
-  failed: boolean,
-): string => {
-  if (named !== undefined) return `Showing the skills of ${named} only.`;
-
-  if (failed) return "The environments could not load.";
-
-  return loading ? "Loading…" : `No environment has the id ${filter}.`;
-};
-
-/**
- * The Installed tab: the Skills kept Global, then each Environment's own, or only the scope
- * `?environment=` names (an Environment's id, or `*`), with a link back to all of them.
+ * The Installed tab: the Skills the Scope the page shows keeps (Global's, or the Environment's own with the ones it also
+ * gets from Global), their forms, and the way to what the agent changed in them.
  */
 export const InstalledTab = () => {
-  const environments = useAtomValue(environmentListAtom);
-  const listError = useAtomValue(environmentsErrorAtom);
-  const sessions = useAtomValue(sessionListAtom) ?? [];
-  const { environment: filter } = useAtomValue(skillsParamsAtom);
-  const scopes = installedScopes(environments ?? [], filter);
-
-  // What the filter names, said above the sections; undefined while the Environment list loads, or lacks it.
-  const named =
-    filter === GLOBAL
-      ? "Global"
-      : environments?.find((environment) => environment.id === filter)?.name;
+  const scope = useSettingsScope();
+  const name = useScopeName(scope);
 
   return (
-    <div className="flex flex-col gap-4">
-      {filter !== undefined && (
-        <p className="text-sm text-muted-foreground">
-          {filterText(filter, named, environments === null, listError !== null)}{" "}
-          <InAppLink
-            href={skillsPath({ tab: "installed" })}
-            className="underline underline-offset-2 hover:text-foreground"
-          >
-            Show all environments
-          </InAppLink>
+    <section aria-label={name} className="flex flex-col gap-4 rounded-lg border p-4">
+      {scope === GLOBAL ? (
+        <p className="text-xs text-muted-foreground">
+          A skill kept here is served read-only in each Environment's workspaces at their next
+          readying. It steers every future session, so the agent's save, install or removal of one
+          waits for your Approval in its session. An Environment's own skill of the same name wins
+          in that Environment. Adding or removing one here is your own change: it waits for nothing.
         </p>
-      )}
-      <DialogProblem problem={listError} />
-      {/* The Skills kept Global need no Environment list; an Environment's section waits for it. */}
-      {scopes.includes(GLOBAL) && (
-        <ScopeSection id={GLOBAL} title="Global" sessions={sessions}>
-          <p className="text-xs text-muted-foreground">
-            A skill kept here is served read-only in each environment's workspaces at their next
-            readying. It steers every future session, so the agent's save, install or removal of one
-            waits for your Approval in its session. An environment's own skill of the same name wins
-            in that environment. Adding or removing one here is your own change: it waits for
-            nothing.
-          </p>
-        </ScopeSection>
-      )}
-      {environments === null ? (
-        filter === undefined && listError === null ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : null
-      ) : (
-        environments
-          .filter((environment) => scopes.includes(environment.id))
-          .map((environment) => (
-            <ScopeSection
-              key={environment.id}
-              id={environment.id}
-              title={environment.name}
-              sessions={sessions.filter((session) => session.environment === environment.id)}
-            />
-          ))
-      )}
-    </div>
+      ) : null}
+      <SkillsSection id={scope} />
+      <p className="text-xs text-muted-foreground">
+        What the agent changed in these skills, with Revert, is in{" "}
+        <InAppLink
+          href={settingsPath(scope, "agent-changes")}
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          Agent changes
+        </InAppLink>
+        .
+      </p>
+    </section>
   );
 };

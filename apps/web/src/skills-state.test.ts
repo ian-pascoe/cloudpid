@@ -4,7 +4,6 @@ import {
   type AgentChange,
   type DirectorySkill,
   EnvironmentError,
-  type EnvironmentRecord,
   SkillDirectoryError,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
@@ -36,29 +35,23 @@ import {
   updateSkillAtom,
 } from "./skills-state.ts";
 
-const ENVIRONMENTS: ReadonlyArray<EnvironmentRecord> = [
-  { id: "default", name: "Default", repos: [], createdAt: 1 },
-  { id: "work", name: "Work", repos: [], createdAt: 1 },
-];
-
-describe("the Skills page's tab", () => {
+describe("the Skills section's tab", () => {
   it("is the one the query names, without asking the Registry", () => {
     // No handler: asking for the Skills would fail the test.
     const registry = registryWith({});
 
     registry.set(searchAtom, "?tab=hot");
-    expect(registry.get(skillsTabAtom)).toBe("hot");
+    expect(registry.get(skillsTabAtom("*"))).toBe("hot");
 
     registry.set(searchAtom, "?tab=installed&environment=work");
-    expect(registry.get(skillsTabAtom)).toBe("installed");
+    expect(registry.get(skillsTabAtom("*"))).toBe("installed");
   });
 
-  it.effect("is Installed by default when any Skill is installed, in any scope", () =>
+  it.effect("is Installed by default when the Scope keeps a Skill, asking only that Scope", () =>
     Effect.gen(function* () {
       const asked: string[] = [];
 
       const registry = registryWith({
-        listEnvironments: () => Effect.succeed(ENVIRONMENTS),
         listEnvironmentSkills: ({ environment }) =>
           Effect.sync(() => {
             asked.push(environment);
@@ -69,36 +62,38 @@ describe("the Skills page's tab", () => {
           }),
       });
 
-      registry.mount(skillsTabAtom);
+      registry.mount(skillsTabAtom("work"));
+      registry.mount(skillsTabAtom("*"));
 
-      yield* settled(registry, anySkillInstalledAtom);
+      yield* settled(registry, anySkillInstalledAtom("work"));
+      yield* settled(registry, anySkillInstalledAtom("*"));
 
-      expect(registry.get(skillsTabAtom)).toBe("installed");
-      expect(asked.toSorted()).toEqual(["*", "default", "work"]);
+      expect(registry.get(skillsTabAtom("work"))).toBe("installed");
+      expect(registry.get(skillsTabAtom("*"))).toBe("all-time");
+      expect(asked.toSorted()).toEqual(["*", "work"]);
       registry.dispose();
     }),
   );
 
   it("has no tab while it is being asked, so that the page does not flash the wrong one", () => {
-    const registry = registryWith({ listEnvironments: () => Effect.never });
+    const registry = registryWith({ listEnvironmentSkills: () => Effect.never });
 
-    registry.mount(skillsTabAtom);
+    registry.mount(skillsTabAtom("*"));
 
-    expect(registry.get(skillsTabAtom)).toBeNull();
+    expect(registry.get(skillsTabAtom("*"))).toBeNull();
     registry.dispose();
   });
 
   it.effect("is All time by default when no Skill is installed", () =>
     Effect.gen(function* () {
       const registry = registryWith({
-        listEnvironments: () => Effect.succeed(ENVIRONMENTS),
         listEnvironmentSkills: () => Effect.succeed([]),
       });
 
-      registry.mount(skillsTabAtom);
-      yield* settled(registry, anySkillInstalledAtom);
+      registry.mount(skillsTabAtom("*"));
+      yield* settled(registry, anySkillInstalledAtom("*"));
 
-      expect(registry.get(skillsTabAtom)).toBe("all-time");
+      expect(registry.get(skillsTabAtom("*"))).toBe("all-time");
       registry.dispose();
     }),
   );
@@ -106,13 +101,13 @@ describe("the Skills page's tab", () => {
   it.effect("is Installed by default when the Registry cannot say, where the page says why", () =>
     Effect.gen(function* () {
       const registry = registryWith({
-        listEnvironments: () => Effect.die("the Registry is down"),
+        listEnvironmentSkills: () => Effect.die("the Registry is down"),
       });
 
-      registry.mount(skillsTabAtom);
-      yield* settled(registry, anySkillInstalledAtom);
+      registry.mount(skillsTabAtom("*"));
+      yield* settled(registry, anySkillInstalledAtom("*"));
 
-      expect(registry.get(skillsTabAtom)).toBe("installed");
+      expect(registry.get(skillsTabAtom("*"))).toBe("installed");
       registry.dispose();
     }),
   );
@@ -122,7 +117,6 @@ describe("the Skills page's tab", () => {
       let kept = false;
 
       const registry = registryWith({
-        listEnvironments: () => Effect.succeed(ENVIRONMENTS),
         listEnvironmentSkills: () =>
           Effect.sync(() =>
             kept ? [{ name: "grill-me", description: "Interview.", savedAt: 1 }] : [],
@@ -141,9 +135,9 @@ describe("the Skills page's tab", () => {
           }),
       });
 
-      registry.mount(skillsTabAtom);
-      yield* settled(registry, anySkillInstalledAtom);
-      expect(registry.get(skillsTabAtom)).toBe("all-time");
+      registry.mount(skillsTabAtom("*"));
+      yield* settled(registry, anySkillInstalledAtom("*"));
+      expect(registry.get(skillsTabAtom("*"))).toBe("all-time");
 
       registry.mount(installToTargetAtom);
       registry.set(installToTargetAtom, {
@@ -154,7 +148,7 @@ describe("the Skills page's tab", () => {
       yield* settled(registry, installToTargetAtom);
 
       expect(kept).toBe(true);
-      expect(registry.get(skillsTabAtom)).toBe("all-time");
+      expect(registry.get(skillsTabAtom("*"))).toBe("all-time");
       registry.dispose();
     }),
   );

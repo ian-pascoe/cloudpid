@@ -1,4 +1,4 @@
-/** The spend limit as the settings page's text box shows it: US dollars, or nothing for no limit. */
+/** The spend limit as the Limits section's text box shows it: US dollars, or nothing for no limit. */
 export const spendLimitToText = (limit: number | null): string =>
   limit === null ? "" : String(limit);
 

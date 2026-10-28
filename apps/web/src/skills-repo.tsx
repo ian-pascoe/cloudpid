@@ -1,9 +1,9 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of rows are native arrays.
 
-// The repo page (`/skills/:owner/:repo`, with `?ref=`; ADR-0026, docs/architecture/client-and-protocol.md → Skills page):
+// The repo page (`/settings/:scope/skills/:owner/:repo`, with `?ref=`; ADR-0026, docs/architecture/client-and-protocol.md → Settings page):
 // every Skill GitHub has in the repo at the ref, read by the main Worker as the GitHub App (so a private repo the app can
 // read is listed, and a repo skills.sh does not know is too), each with its description, its installs when skills.sh has
-// them and where it is installed here, a checkbox, and Install selected, which opens the target picker at the ref. A row
+// them and where it is installed here, a checkbox, and Install selected, which opens the install confirm at the ref. A row
 // links to the Skill's page (`skills-skill.tsx`). A repo that is not there, that the app cannot read, that has no such ref or no Skills
 // says so plainly.
 
@@ -20,11 +20,12 @@ import {
   skillPagePath,
   skillRepoParamsAtom,
   skillRepoPath,
-  SKILLS_PATH,
+  skillsPath,
 } from "./router.ts";
+import { SkillDirectoryFrame } from "./settings/skills.tsx";
+import { useSettingsScope } from "./settings/scope.tsx";
 import { Credit } from "./skills-directory.tsx";
-import { useInstallPicker } from "./skills-install-dialog.tsx";
-import { SkillsFrame } from "./skills-page.tsx";
+import { useInstallConfirm } from "./skills-install-dialog.tsx";
 import {
   checkedSkillsAtom,
   checkedSkillsOf,
@@ -76,54 +77,60 @@ const RepoSkillRow = ({
   commit: string;
   checked: boolean;
   onCheck: (checked: boolean) => void;
-}) => (
-  <li className="flex items-start gap-3 py-3">
-    <input
-      type="checkbox"
-      className="mt-1 size-4 shrink-0"
-      checked={checked}
-      aria-label={`Select ${skill.name}`}
-      onChange={(event) => {
-        onCheck(event.target.checked);
-      }}
-    />
-    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-      <InAppLink
-        href={skillPagePath(repo.owner, repo.repo, skill.skillId, {
-          ref: repo.ref,
-          path: skill.path,
-        })}
-        className="truncate font-mono text-sm font-medium hover:underline"
-      >
-        {skill.name}
-      </InAppLink>
-      <p className="line-clamp-2 text-sm break-words text-muted-foreground">{skill.description}</p>
-      <a
-        href={githubFolder(repo, commit, skill.path)}
-        target="_blank"
-        rel="noreferrer noopener"
-        aria-label={`${skill.name}'s folder on GitHub`}
-        className="flex w-fit max-w-full items-center gap-1 truncate font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
-      >
-        <span className="truncate">{skill.path === "" ? "(repo root)" : skill.path}</span>
-        <ExternalLink className="size-3 shrink-0" />
-      </a>
-      <Badges skill={skill} />
-    </div>
-    {skill.installs !== undefined && (
-      <span
-        className="w-14 shrink-0 pt-0.5 text-right text-sm text-muted-foreground tabular-nums"
-        title={`${skill.installs.toLocaleString("en-US")} installs`}
-      >
-        {compactCount(skill.installs)}
-      </span>
-    )}
-  </li>
-);
+}) => {
+  const scope = useSettingsScope();
+
+  return (
+    <li className="flex items-start gap-3 py-3">
+      <input
+        type="checkbox"
+        className="mt-1 size-4 shrink-0"
+        checked={checked}
+        aria-label={`Select ${skill.name}`}
+        onChange={(event) => {
+          onCheck(event.target.checked);
+        }}
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <InAppLink
+          href={skillPagePath(scope, repo.owner, repo.repo, skill.skillId, {
+            ref: repo.ref,
+            path: skill.path,
+          })}
+          className="truncate font-mono text-sm font-medium hover:underline"
+        >
+          {skill.name}
+        </InAppLink>
+        <p className="line-clamp-2 text-sm break-words text-muted-foreground">
+          {skill.description}
+        </p>
+        <a
+          href={githubFolder(repo, commit, skill.path)}
+          target="_blank"
+          rel="noreferrer noopener"
+          aria-label={`${skill.name}'s folder on GitHub`}
+          className="flex w-fit max-w-full items-center gap-1 truncate font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
+        >
+          <span className="truncate">{skill.path === "" ? "(repo root)" : skill.path}</span>
+          <ExternalLink className="size-3 shrink-0" />
+        </a>
+        <Badges skill={skill} />
+      </div>
+      {skill.installs !== undefined && (
+        <span
+          className="w-14 shrink-0 pt-0.5 text-right text-sm text-muted-foreground tabular-nums"
+          title={`${skill.installs.toLocaleString("en-US")} installs`}
+        >
+          {compactCount(skill.installs)}
+        </span>
+      )}
+    </li>
+  );
+};
 
 /** The Skills of the repo, with Install selected over the ones checked. */
 const RepoSkills = ({ listing, repo }: { listing: SkillRepoListing; repo: SkillRepoKey }) => {
-  const pick = useInstallPicker();
+  const install = useInstallConfirm();
   const [checkedPaths, setChecked] = useAtom(checkedSkillsAtom(repo));
   // Only the Skills the listing has now count, whatever an earlier listing of the repo had checked.
   const checked = checkedSkillsOf(listing, checkedPaths);
@@ -154,7 +161,7 @@ const RepoSkills = ({ listing, repo }: { listing: SkillRepoListing; repo: SkillR
           className="ml-auto"
           disabled={toInstall === null}
           onClick={() => {
-            if (toInstall !== null) pick(toInstall);
+            if (toInstall !== null) install(toInstall);
           }}
         >
           <Download />
@@ -227,6 +234,7 @@ const RepoProblem = ({
   repo: SkillRepoKey;
   retry: () => void;
 }) => {
+  const scope = useSettingsScope();
   const where = `${repo.owner}/${repo.repo}`;
 
   switch (failure.kind) {
@@ -249,7 +257,7 @@ const RepoProblem = ({
           <p className="text-muted-foreground">
             The repo can be read.{" "}
             <InAppLink
-              href={skillRepoPath(repo.owner, repo.repo)}
+              href={skillRepoPath(scope, repo.owner, repo.repo)}
               className="underline underline-offset-2 hover:text-foreground"
             >
               Show its default branch
@@ -320,18 +328,22 @@ const RepoBody = ({ repo }: { repo: SkillRepoKey }) => {
  * repo holds.
  */
 export const SkillRepoPage = ({ owner, repo }: { owner: string; repo: string }) => {
+  const scope = useSettingsScope();
   const { ref } = useAtomValue(skillRepoParamsAtom);
   const key = skillRepoKey(owner, repo, ref);
 
   return (
-    <SkillsFrame title={`${owner}/${repo}`}>
+    <SkillDirectoryFrame title={`${owner}/${repo}`}>
       <div className="-mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
-          <InAppLink href={SKILLS_PATH} className="hover:text-foreground hover:underline">
+          <InAppLink href={skillsPath(scope)} className="hover:text-foreground hover:underline">
             Skills
           </InAppLink>
           <span aria-hidden>/</span>
-          <InAppLink href={skillOwnerPath(owner)} className="hover:text-foreground hover:underline">
+          <InAppLink
+            href={skillOwnerPath(scope, owner)}
+            className="hover:text-foreground hover:underline"
+          >
             {owner}
           </InAppLink>
           <span aria-hidden>/</span>
@@ -353,6 +365,6 @@ export const SkillRepoPage = ({ owner, repo }: { owner: string; repo: string }) 
         </a>
       </div>
       <RepoBody key={`${owner}/${repo}@${ref ?? ""}`} repo={key} />
-    </SkillsFrame>
+    </SkillDirectoryFrame>
   );
 };

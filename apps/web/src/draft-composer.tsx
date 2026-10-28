@@ -84,7 +84,8 @@ import { relativeTime } from "./format.ts";
 import { isTouchScreen } from "./lib/device.ts";
 import { cn } from "./lib/utils.ts";
 import { failureOf, settledFailureOf } from "./registry.ts";
-import { ENVIRONMENTS_PATH, navigate } from "./router.ts";
+import { GLOBAL } from "./environments.ts";
+import { navigate, settingsPath } from "./router.ts";
 
 /** Whether files are being dragged over the draft. */
 const draftDragAtom = Atom.make(false);
@@ -159,7 +160,7 @@ const EnvironmentPicker = ({
     <MenuSeparator />
     <MenuItem
       onSelect={() => {
-        navigate(ENVIRONMENTS_PATH);
+        navigate(settingsPath(GLOBAL, "environments"));
       }}
       className="text-muted-foreground"
     >

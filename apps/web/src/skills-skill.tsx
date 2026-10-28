@@ -1,10 +1,10 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of files and copies are native arrays.
 
-// A Skill's page (`/skills/:owner/:repo/:skill`, with `?ref=` and, for one of several Skills of a name, `?path=`; ADR-0026,
-// docs/architecture/client-and-protocol.md → Skills page): the Skill as GitHub has it at the ref's head, read by the main
+// A Skill's page (`/settings/:scope/skills/:owner/:repo/:skill`, with `?ref=` and, for one of several Skills of a name, `?path=`; ADR-0026,
+// docs/architecture/client-and-protocol.md → Settings page): the Skill as GitHub has it at the ref's head, read by the main
 // Worker as the GitHub App (so a private repo the app can read works): its SKILL.md rendered and the files an install
-// would take, the commit it was read at, its installs when skills.sh knows them, an Install button that opens the target
-// picker, and where it is installed here with the marks, Update and Remove of the Installed tab (`skills-installed.tsx`).
+// would take, the commit it was read at, its installs when skills.sh knows them, an Install button that opens the install
+// confirm, and where it is installed here with the marks, Update and Remove of the Installed tab (`skills-installed.tsx`).
 // A repo that is not there, that the app cannot read, that has no such ref or Skill, that has too many skills to find one
 // by its name, or a name that means several Skills, says so plainly.
 
@@ -25,12 +25,13 @@ import {
   skillPagePath,
   skillRepoParamsAtom,
   skillRepoPath,
-  SKILLS_PATH,
+  skillsPath,
 } from "./router.ts";
+import { SkillDirectoryFrame } from "./settings/skills.tsx";
+import { useSettingsScope } from "./settings/scope.tsx";
 import { Credit } from "./skills-directory.tsx";
-import { useInstallPicker } from "./skills-install-dialog.tsx";
+import { useInstallConfirm } from "./skills-install-dialog.tsx";
 import { SkillDialogs, SkillMarks, SkillRowActions } from "./skills-installed.tsx";
-import { SkillsFrame } from "./skills-page.tsx";
 import { skillRepoFailureOf, type SkillRepoFailure } from "./skills-repo-state.ts";
 import {
   installedCopiesAtom,
@@ -55,6 +56,7 @@ const SkillProblem = ({
   page: SkillViewKey;
   retry: () => void;
 }) => {
+  const scope = useSettingsScope();
   const where = `${page.owner}/${page.repo}`;
 
   switch (failure.kind) {
@@ -77,7 +79,7 @@ const SkillProblem = ({
           <p className="text-muted-foreground">
             The repo can be read.{" "}
             <InAppLink
-              href={skillPagePath(page.owner, page.repo, page.skill, { path: page.path })}
+              href={skillPagePath(scope, page.owner, page.repo, page.skill, { path: page.path })}
               className="underline underline-offset-2 hover:text-foreground"
             >
               Show the Skill on its default branch
@@ -96,7 +98,7 @@ const SkillProblem = ({
             {/* Asked for by name, the title says it all; a folder asked for has its own reason. */}
             {page.path !== undefined && <>{failure.message} </>}
             <InAppLink
-              href={skillRepoPath(page.owner, page.repo, page.ref)}
+              href={skillRepoPath(scope, page.owner, page.repo, page.ref)}
               className="underline underline-offset-2 hover:text-foreground"
             >
               See the skills in {where}
@@ -114,7 +116,7 @@ const SkillProblem = ({
           <p className="text-muted-foreground">
             {failure.message}{" "}
             <InAppLink
-              href={skillRepoPath(page.owner, page.repo, page.ref)}
+              href={skillRepoPath(scope, page.owner, page.repo, page.ref)}
               className="underline underline-offset-2 hover:text-foreground"
             >
               Pick it from the skills in {where}
@@ -150,34 +152,38 @@ const Candidates = ({
 }: {
   page: SkillViewKey;
   candidates: ReadonlyArray<{ name: string; description: string; path: string }>;
-}) => (
-  <div className="flex flex-col gap-3" role="status">
-    <p className="text-sm">
-      {candidates.length} skills in {page.owner}/{page.repo} are called “{page.skill}”. Which one?
-    </p>
-    <ul aria-label="Skills the name could mean" className="flex flex-col divide-y">
-      {candidates.map((candidate) => (
-        <li key={candidate.path} className="flex flex-col gap-0.5 py-3">
-          <InAppLink
-            href={skillPagePath(page.owner, page.repo, candidate.name, {
-              ref: page.ref,
-              path: candidate.path,
-            })}
-            className="w-fit font-mono text-sm font-medium hover:underline"
-          >
-            {candidate.name}
-          </InAppLink>
-          <p className="line-clamp-2 text-sm break-words text-muted-foreground">
-            {candidate.description}
-          </p>
-          <span className="font-mono text-xs break-all text-muted-foreground">
-            {candidate.path === "" ? "(repo root)" : candidate.path}
-          </span>
-        </li>
-      ))}
-    </ul>
-  </div>
-);
+}) => {
+  const scope = useSettingsScope();
+
+  return (
+    <div className="flex flex-col gap-3" role="status">
+      <p className="text-sm">
+        {candidates.length} skills in {page.owner}/{page.repo} are called “{page.skill}”. Which one?
+      </p>
+      <ul aria-label="Skills the name could mean" className="flex flex-col divide-y">
+        {candidates.map((candidate) => (
+          <li key={candidate.path} className="flex flex-col gap-0.5 py-3">
+            <InAppLink
+              href={skillPagePath(scope, page.owner, page.repo, candidate.name, {
+                ref: page.ref,
+                path: candidate.path,
+              })}
+              className="w-fit font-mono text-sm font-medium hover:underline"
+            >
+              {candidate.name}
+            </InAppLink>
+            <p className="line-clamp-2 text-sm break-words text-muted-foreground">
+              {candidate.description}
+            </p>
+            <span className="font-mono text-xs break-all text-muted-foreground">
+              {candidate.path === "" ? "(repo root)" : candidate.path}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
 
 /** Where the Skill is installed: each scope that keeps a copy, with its marks, Update and Remove as on the Installed tab. */
 const InstalledHere = ({ skill }: { skill: SkillView }) => {
@@ -270,7 +276,7 @@ const Files = ({ skill }: { skill: SkillView }) => (
 
 /** What the Skill is: its description, installs, badges, the commit read, Install, where it is installed, SKILL.md and its files. */
 const SkillDetails = ({ skill, page }: { skill: SkillView; page: SkillViewKey }) => {
-  const pick = useInstallPicker();
+  const install = useInstallConfirm();
   const badges = directoryBadges(skill.installed);
   const body = skillMdBody(skill.skillMd);
   const folder = skill.path === "" ? "" : `${skill.path}/`;
@@ -287,7 +293,7 @@ const SkillDetails = ({ skill, page }: { skill: SkillView; page: SkillViewKey })
             type="button"
             className="shrink-0"
             onClick={() => {
-              pick(skillToInstall(skill, page.ref));
+              install(skillToInstall(skill, page.ref));
             }}
           >
             <Download />
@@ -394,23 +400,27 @@ export const SkillPage = ({
   repo: string;
   skill: string;
 }) => {
+  const scope = useSettingsScope();
   const { ref, path } = useAtomValue(skillRepoParamsAtom);
   const page = skillViewKey(owner, repo, skill, path, ref);
 
   return (
-    <SkillsFrame title={skill}>
+    <SkillDirectoryFrame title={skill}>
       <div className="-mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
         <nav aria-label="Breadcrumb" className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <InAppLink href={SKILLS_PATH} className="hover:text-foreground hover:underline">
+          <InAppLink href={skillsPath(scope)} className="hover:text-foreground hover:underline">
             Skills
           </InAppLink>
           <span aria-hidden>/</span>
-          <InAppLink href={skillOwnerPath(owner)} className="hover:text-foreground hover:underline">
+          <InAppLink
+            href={skillOwnerPath(scope, owner)}
+            className="hover:text-foreground hover:underline"
+          >
             {owner}
           </InAppLink>
           <span aria-hidden>/</span>
           <InAppLink
-            href={skillRepoPath(owner, repo, ref)}
+            href={skillRepoPath(scope, owner, repo, ref)}
             className="hover:text-foreground hover:underline"
           >
             {repo}
@@ -425,6 +435,6 @@ export const SkillPage = ({
         )}
       </div>
       <SkillBody key={`${owner}/${repo}/${skill}@${ref ?? ""}#${path ?? ""}`} page={page} />
-    </SkillsFrame>
+    </SkillDirectoryFrame>
   );
 };

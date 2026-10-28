@@ -31,9 +31,9 @@ export const keepNote = (keep: SecretKeep, lifetimeMinutes: number): string => {
     case "session":
       return `Held encrypted for ${lifetimeMinutes} minutes, then forgotten.`;
     case "environment":
-      return "Saved encrypted for this Environment, as on the Environments page: it does not expire, and a Build can use it where marked.";
+      return "Saved encrypted for this Environment, as in its Secrets settings: it does not expire, and a Build can use it where marked.";
     case "all":
-      return "Saved encrypted at Global, as on the Environments page: it does not expire, and an Environment's own Secret of the name wins.";
+      return "Saved encrypted at Global, as in Global's Secrets settings: it does not expire, and an Environment's own Secret of the name wins.";
   }
 };
 

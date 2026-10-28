@@ -9,19 +9,17 @@ import {
   replaceSearch,
   searchAtom,
   sessionIdAtom,
-  isSettingsPath,
-  isEnvironmentsPath,
   isDraftPath,
+  legacyRedirect,
   SETTINGS_PATH,
   sessionIdOf,
   sessionPath,
-  ENVIRONMENTS_PATH,
   DRAFT_PATH,
   withPaneParams,
   agentIdOf,
   pageOf,
+  settingsPath,
   subagentPath,
-  SKILLS_PATH,
   skillOwnerPath,
   skillPagePath,
   skillRepoParamsAtom,
@@ -31,6 +29,9 @@ import {
   skillsParamsOf,
   skillsPath,
 } from "./router.ts";
+
+/** Global's Scope, as the Registry names it. */
+const GLOBAL = "*";
 
 describe("Session paths", () => {
   it("round-trip a Session ID", () => {
@@ -86,106 +87,109 @@ describe("Subagent page paths", () => {
   });
 });
 
-describe("the settings path", () => {
-  it("shows the settings, and no Session", () => {
-    expect(isSettingsPath(SETTINGS_PATH)).toBe(true);
-    expect(isSettingsPath("/settings/")).toBe(true);
-    expect(isSettingsPath("/settings/x")).toBe(false);
-    expect(isSettingsPath("/sessions/settings")).toBe(false);
-    expect(sessionIdOf(SETTINGS_PATH)).toBeUndefined();
-  });
-});
+describe("the Settings page's paths", () => {
+  it("show the list of Global's sections at /settings, and no Session", () => {
+    const index = { kind: "settings", scope: GLOBAL, view: { kind: "index" } };
 
-describe("the Environments path", () => {
-  it("shows the Environments, and no Session or settings", () => {
-    expect(isEnvironmentsPath(ENVIRONMENTS_PATH)).toBe(true);
-    expect(isEnvironmentsPath("/environments/")).toBe(true);
-    expect(isEnvironmentsPath("/environments/x")).toBe(false);
-    expect(isEnvironmentsPath("/sessions/environments")).toBe(false);
-    expect(sessionIdOf(ENVIRONMENTS_PATH)).toBeUndefined();
-    expect(isSettingsPath(ENVIRONMENTS_PATH)).toBe(false);
+    expect(pageOf(SETTINGS_PATH)).toEqual(index);
+    expect(pageOf("/settings/")).toEqual(index);
+    expect(pageOf("/settings/all")).toEqual(index);
+    expect(sessionIdOf(SETTINGS_PATH)).toBeUndefined();
+    expect(pageOf("/sessions/settings")).toEqual({ kind: "session", sessionId: "settings" });
+  });
+
+  it("name the Scope, `all` for Global or an Environment's id, then the section", () => {
+    expect(pageOf("/settings/all/models")).toEqual({
+      kind: "settings",
+      scope: GLOBAL,
+      view: { kind: "section", section: "models" },
+    });
+    expect(pageOf("/settings/1a2b3c4d/container/")).toEqual({
+      kind: "settings",
+      scope: "1a2b3c4d",
+      view: { kind: "section", section: "container" },
+    });
+    expect(pageOf("/settings/default")).toEqual({
+      kind: "settings",
+      scope: "default",
+      view: { kind: "index" },
+    });
+  });
+
+  it("are written with `all` for Global, and round-trip", () => {
+    expect(settingsPath(GLOBAL)).toBe("/settings/all");
+    expect(settingsPath(GLOBAL, "general")).toBe("/settings/all/general");
+    expect(settingsPath("1a2b3c4d", "environments")).toBe("/settings/1a2b3c4d/environments");
+    expect(pageOf(settingsPath("a b", "limits"))).toEqual({
+      kind: "settings",
+      scope: "a b",
+      view: { kind: "section", section: "limits" },
+    });
+  });
+
+  it("show the Skill directory below a Scope's Skills: an owner, a repo, then one Skill", () => {
+    expect(pageOf("/settings/all/skills/mattpocock")).toEqual({
+      kind: "settings",
+      scope: GLOBAL,
+      view: { kind: "skillOwner", owner: "mattpocock" },
+    });
+    expect(pageOf("/settings/work/skills/mattpocock/skills")).toEqual({
+      kind: "settings",
+      scope: "work",
+      view: { kind: "skillRepo", owner: "mattpocock", repo: "skills" },
+    });
+    expect(pageOf("/settings/all/skills/mattpocock/skills/grill-me/")).toEqual({
+      kind: "settings",
+      scope: GLOBAL,
+      view: { kind: "skill", owner: "mattpocock", repo: "skills", skill: "grill-me" },
+    });
+    expect(pageOf("/settings/all/skills/a/b/c/d")).toEqual({ kind: "empty" });
+    // Only the Skills section has pages below it.
+    expect(pageOf("/settings/all/models/x")).toEqual({ kind: "empty" });
+  });
+
+  it("take an owner named like a tab as an owner", () => {
+    for (const owner of ["installed", "all-time", "trending", "hot"]) {
+      expect(skillOwnerPath(GLOBAL, owner)).toBe(`/settings/all/skills/${owner}`);
+      expect(pageOf(skillOwnerPath(GLOBAL, owner))).toEqual({
+        kind: "settings",
+        scope: GLOBAL,
+        view: { kind: "skillOwner", owner },
+      });
+    }
+  });
+
+  it("round-trip an owner, a repo and a Skill, encoded, at the Scope named", () => {
+    expect(skillOwnerPath("work", "o w")).toBe("/settings/work/skills/o%20w");
+    expect(skillRepoPath(GLOBAL, "o", "r.js")).toBe("/settings/all/skills/o/r.js");
+    expect(pageOf(skillRepoPath(GLOBAL, "o", "a/b"))).toEqual({
+      kind: "settings",
+      scope: GLOBAL,
+      view: { kind: "skillRepo", owner: "o", repo: "a/b" },
+    });
+    expect(pageOf(skillPagePath("work", "o", "r", "a b"))).toEqual({
+      kind: "settings",
+      scope: "work",
+      view: { kind: "skill", owner: "o", repo: "r", skill: "a b" },
+    });
+  });
+
+  it("keep a path that cannot be decoded from showing anything", () => {
+    expect(pageOf("/settings/%E0%A4%A")).toEqual({ kind: "empty" });
+    expect(pageOf("/settings/all/%E0%A4%A")).toEqual({ kind: "empty" });
+    expect(pageOf("/settings/all/skills/%E0%A4%A")).toEqual({ kind: "empty" });
+    expect(pageOf("/settings/all/skills/o/r/%E0%A4%A")).toEqual({ kind: "empty" });
   });
 });
 
 describe("the draft path", () => {
-  it("shows the draft, and no Session, settings or Environments", () => {
+  it("shows the draft, and no Session or settings", () => {
     expect(isDraftPath(DRAFT_PATH)).toBe(true);
     expect(isDraftPath("/new/")).toBe(true);
     expect(isDraftPath("/new/x")).toBe(false);
     expect(isDraftPath("/sessions/new")).toBe(false);
     expect(sessionIdOf(DRAFT_PATH)).toBeUndefined();
-    expect(isSettingsPath(DRAFT_PATH)).toBe(false);
-    expect(isEnvironmentsPath(DRAFT_PATH)).toBe(false);
-  });
-});
-
-describe("the Skills paths", () => {
-  it("show the Skills page at /skills, and no Session, settings or Environments", () => {
-    expect(pageOf(SKILLS_PATH)).toEqual({ kind: "skills" });
-    expect(pageOf("/skills/")).toEqual({ kind: "skills" });
-    expect(sessionIdOf(SKILLS_PATH)).toBeUndefined();
-    expect(isSettingsPath(SKILLS_PATH)).toBe(false);
-    expect(isEnvironmentsPath(SKILLS_PATH)).toBe(false);
-    expect(pageOf("/sessions/skills")).toEqual({ kind: "session", sessionId: "skills" });
-  });
-
-  it("take the first segment after /skills as an owner, even one named like a tab", () => {
-    expect(pageOf("/skills/mattpocock")).toEqual({ kind: "skillOwner", owner: "mattpocock" });
-    expect(pageOf("/skills/installed")).toEqual({ kind: "skillOwner", owner: "installed" });
-    expect(pageOf("/skills/all-time/")).toEqual({ kind: "skillOwner", owner: "all-time" });
-    expect(pageOf("/skills/hot/trending")).toEqual({
-      kind: "skillRepo",
-      owner: "hot",
-      repo: "trending",
-    });
-  });
-
-  it("show an owner's repo, then one Skill of it", () => {
-    expect(pageOf("/skills/mattpocock/skills")).toEqual({
-      kind: "skillRepo",
-      owner: "mattpocock",
-      repo: "skills",
-    });
-    expect(pageOf("/skills/mattpocock/skills/grill-me")).toEqual({
-      kind: "skill",
-      owner: "mattpocock",
-      repo: "skills",
-      skill: "grill-me",
-    });
-    expect(pageOf("/skills/a/b/c/d")).toEqual({ kind: "empty" });
-  });
-
-  it("round-trip an owner, a repo and a Skill, encoded", () => {
-    expect(skillOwnerPath("o w")).toBe("/skills/o%20w");
-    expect(pageOf(skillOwnerPath("o w"))).toEqual({ kind: "skillOwner", owner: "o w" });
-    expect(skillRepoPath("o", "r.js")).toBe("/skills/o/r.js");
-    expect(pageOf(skillRepoPath("o", "a/b"))).toEqual({
-      kind: "skillRepo",
-      owner: "o",
-      repo: "a/b",
-    });
-    expect(skillPagePath("o", "r", "s")).toBe("/skills/o/r/s");
-    expect(pageOf(skillPagePath("o", "r", "a b"))).toEqual({
-      kind: "skill",
-      owner: "o",
-      repo: "r",
-      skill: "a b",
-    });
-  });
-
-  it("show an owner named like a tab as an owner's page, from the path an owner's link writes", () => {
-    for (const owner of ["installed", "all-time", "trending", "hot"]) {
-      expect(skillOwnerPath(owner)).toBe(`/skills/${owner}`);
-      expect(pageOf(skillOwnerPath(owner))).toEqual({ kind: "skillOwner", owner });
-    }
-
-    expect(pageOf("/skills/mattpocock/")).toEqual({ kind: "skillOwner", owner: "mattpocock" });
-  });
-
-  it("keep a path that cannot be decoded from showing anything", () => {
-    expect(pageOf("/skills/%E0%A4%A")).toEqual({ kind: "empty" });
-    expect(pageOf("/skills/o/%E0%A4%A")).toEqual({ kind: "empty" });
-    expect(pageOf("/skills/o/r/%E0%A4%A")).toEqual({ kind: "empty" });
+    expect(pageOf(DRAFT_PATH)).toEqual({ kind: "draft" });
   });
 });
 
@@ -198,26 +202,27 @@ describe("a repo's and a Skill's query", () => {
   });
 
   it("is written on the repo's and the Skill's path with the ref encoded, and nothing for none", () => {
-    expect(skillRepoPath("o", "r")).toBe("/skills/o/r");
-    expect(skillRepoPath("o", "r", "")).toBe("/skills/o/r");
-    expect(skillRepoPath("o", "r", "feature/x y")).toBe("/skills/o/r?ref=feature%2Fx%20y");
-    expect(skillPagePath("o", "r", "s", { ref: "v1" })).toBe("/skills/o/r/s?ref=v1");
+    expect(skillRepoPath(GLOBAL, "o", "r")).toBe("/settings/all/skills/o/r");
+    expect(skillRepoPath(GLOBAL, "o", "r", "")).toBe("/settings/all/skills/o/r");
+    expect(skillRepoPath(GLOBAL, "o", "r", "feature/x y")).toBe(
+      "/settings/all/skills/o/r?ref=feature%2Fx%20y",
+    );
+    expect(skillPagePath(GLOBAL, "o", "r", "s", { ref: "v1" })).toBe(
+      "/settings/all/skills/o/r/s?ref=v1",
+    );
 
-    // The query is not part of the path, so the page is the same page.
-    expect(pageOf("/skills/o/r")).toEqual({ kind: "skillRepo", owner: "o", repo: "r" });
-
-    const written = new URL(skillRepoPath("o", "r", "feature/x&y"), "https://x.test");
+    const written = new URL(skillRepoPath(GLOBAL, "o", "r", "feature/x&y"), "https://x.test");
 
     expect(skillRepoParamsOf(written.search)).toEqual({ ref: "feature/x&y", path: undefined });
   });
 
   it("names the folder of a Skill's page in ?path=, which the root's empty folder is one of", () => {
-    expect(skillPagePath("o", "r", "tdd")).toBe("/skills/o/r/tdd");
-    expect(skillPagePath("o", "r", "tdd", { path: "skills/codex/tdd" })).toBe(
-      "/skills/o/r/tdd?path=skills%2Fcodex%2Ftdd",
+    expect(skillPagePath(GLOBAL, "o", "r", "tdd")).toBe("/settings/all/skills/o/r/tdd");
+    expect(skillPagePath(GLOBAL, "o", "r", "tdd", { path: "skills/codex/tdd" })).toBe(
+      "/settings/all/skills/o/r/tdd?path=skills%2Fcodex%2Ftdd",
     );
-    expect(skillPagePath("o", "r", "only-one", { ref: "v1", path: "" })).toBe(
-      "/skills/o/r/only-one?ref=v1&path=",
+    expect(skillPagePath(GLOBAL, "o", "r", "only-one", { ref: "v1", path: "" })).toBe(
+      "/settings/all/skills/o/r/only-one?ref=v1&path=",
     );
     expect(skillRepoParamsOf("?ref=v1&path=skills%2Fcodex%2Ftdd")).toEqual({
       ref: "v1",
@@ -228,7 +233,7 @@ describe("a repo's and a Skill's query", () => {
     expect(skillRepoParamsOf("?ref=v1").path).toBeUndefined();
 
     const written = new URL(
-      skillPagePath("o", "r", "x", { ref: "a/b", path: "c d/e" }),
+      skillPagePath(GLOBAL, "o", "r", "x", { ref: "a/b", path: "c d/e" }),
       "https://x.test",
     );
 
@@ -236,88 +241,120 @@ describe("a repo's and a Skill's query", () => {
   });
 
   it("follows the location", () => {
-    stubWindow("/skills/o/r");
+    stubWindow("/settings/all/skills/o/r");
 
     const registry = AtomRegistry.make();
 
     registry.mount(skillRepoParamsAtom);
     expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: undefined, path: undefined });
 
-    navigate(skillRepoPath("o", "r", "v2"));
+    navigate(skillRepoPath(GLOBAL, "o", "r", "v2"));
     expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: "v2", path: undefined });
   });
 });
 
-describe("the Skills page's query", () => {
-  it("names the tab, the search and the Environment the Installed tab shows", () => {
-    expect(skillsParamsOf("")).toEqual({ tab: undefined, query: "", environment: undefined });
-    expect(skillsParamsOf("?tab=installed&environment=work")).toEqual({
-      tab: "installed",
-      query: "",
-      environment: "work",
-    });
-    expect(skillsParamsOf("?tab=hot&q=grill%20me")).toEqual({
-      tab: "hot",
-      query: "grill me",
-      environment: undefined,
-    });
+describe("the Skills section's query", () => {
+  it("names the tab and the search", () => {
+    expect(skillsParamsOf("")).toEqual({ tab: undefined, query: "" });
+    expect(skillsParamsOf("?tab=installed")).toEqual({ tab: "installed", query: "" });
+    expect(skillsParamsOf("?tab=hot&q=grill%20me")).toEqual({ tab: "hot", query: "grill me" });
     expect(skillsParamsOf("?tab=all-time").tab).toBe("all-time");
     expect(skillsParamsOf("?tab=trending").tab).toBe("trending");
   });
 
-  it("takes * as Global, and names no tab or Environment it cannot be", () => {
-    expect(skillsParamsOf("?environment=*").environment).toBe("*");
-    expect(skillsParamsOf("?environment=%2A").environment).toBe("*");
-    expect(skillsParamsOf("?environment=").environment).toBeUndefined();
+  it("names no tab it cannot be", () => {
     expect(skillsParamsOf("?tab=popular").tab).toBeUndefined();
     expect(skillsParamsOf("?tab=Installed").tab).toBeUndefined();
   });
 
-  it("is written in the order tab, q, environment, leaving out what is not named", () => {
-    expect(skillsPath()).toBe(SKILLS_PATH);
-    expect(skillsPath({ tab: "installed", environment: "work" })).toBe(
-      "/skills?tab=installed&environment=work",
+  it("is written on the Scope's Skills section in the order tab, q, leaving out what is not named", () => {
+    expect(skillsPath(GLOBAL)).toBe("/settings/all/skills");
+    expect(skillsPath("work", { tab: "installed" })).toBe("/settings/work/skills?tab=installed");
+    expect(skillsPath(GLOBAL, { query: "grill me", tab: "hot" })).toBe(
+      "/settings/all/skills?tab=hot&q=grill+me",
     );
-    expect(skillsPath({ tab: "installed", environment: "*" })).toBe(
-      "/skills?tab=installed&environment=*",
-    );
-    expect(skillsPath({ environment: "*", query: "grill me", tab: "hot" })).toBe(
-      "/skills?tab=hot&q=grill+me&environment=*",
-    );
-    expect(skillsPath({ query: "" })).toBe(SKILLS_PATH);
+    expect(skillsPath(GLOBAL, { query: "" })).toBe("/settings/all/skills");
   });
 
   it("round-trips what it writes", () => {
-    const params = { tab: "trending", query: "a&b=c", environment: "*" } as const;
+    const params = { tab: "trending", query: "a&b=c" } as const;
 
-    expect(skillsParamsOf(new URL(skillsPath(params), "https://x.test").search)).toEqual(params);
+    expect(skillsParamsOf(new URL(skillsPath(GLOBAL, params), "https://x.test").search)).toEqual(
+      params,
+    );
   });
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+describe("the old pages' addresses", () => {
+  it("lead to the Environments section", () => {
+    expect(legacyRedirect("/environments", "")).toBe("/settings/all/environments");
+    expect(legacyRedirect("/environments/", "")).toBe("/settings/all/environments");
+  });
 
-describe("the Skills page's location", () => {
-  it("follows a link to a tab filtered to an Environment, and back", () => {
-    const browser = stubWindow("/environments");
+  it("lead to the Skills section of the Scope `?environment=` named, keeping the tab and the search", () => {
+    expect(legacyRedirect("/skills", "")).toBe("/settings/all/skills");
+    expect(legacyRedirect("/skills/", "?tab=hot&q=grill+me")).toBe(
+      "/settings/all/skills?tab=hot&q=grill+me",
+    );
+    expect(legacyRedirect("/skills", "?tab=installed&environment=1a2b3c4d")).toBe(
+      "/settings/1a2b3c4d/skills?tab=installed",
+    );
+    expect(legacyRedirect("/skills", "?tab=installed&environment=*")).toBe(
+      "/settings/all/skills?tab=installed",
+    );
+    expect(legacyRedirect("/skills", "?environment=%2A")).toBe("/settings/all/skills");
+  });
+
+  it("lead the Skill directory's pages to Global's, with their query", () => {
+    expect(legacyRedirect("/skills/mattpocock", "")).toBe("/settings/all/skills/mattpocock");
+    expect(legacyRedirect("/skills/o/r", "?ref=v1")).toBe("/settings/all/skills/o/r?ref=v1");
+    expect(legacyRedirect("/skills/o/r/tdd", "?ref=v1&path=skills%2Ftdd")).toBe(
+      "/settings/all/skills/o/r/tdd?ref=v1&path=skills%2Ftdd",
+    );
+    expect(legacyRedirect("/skills/o%20w/r", "")).toBe("/settings/all/skills/o%20w/r");
+  });
+
+  it("leave every other address alone", () => {
+    expect(legacyRedirect("/", "")).toBeUndefined();
+    expect(legacyRedirect("/settings", "")).toBeUndefined();
+    expect(legacyRedirect("/settings/all/skills", "?tab=hot")).toBeUndefined();
+    expect(legacyRedirect("/sessions/skills", "")).toBeUndefined();
+    expect(legacyRedirect("/skills/a/b/c/d", "")).toBeUndefined();
+    expect(legacyRedirect("/environments/x", "")).toBeUndefined();
+  });
+
+  it("are replaced in the history as the page opens, and when one is navigated to", () => {
+    const browser = stubWindow("/skills?tab=installed&environment=work");
     const registry = AtomRegistry.make();
 
     registry.mount(pageAtom);
     registry.mount(skillsParamsAtom);
 
-    navigate(skillsPath({ tab: "installed", environment: "work" }));
-    expect(registry.get(pageAtom)).toEqual({ kind: "skills" });
-    expect(registry.get(skillsParamsAtom)).toEqual({
-      tab: "installed",
-      query: "",
-      environment: "work",
+    expect(registry.get(pageAtom)).toEqual({
+      kind: "settings",
+      scope: "work",
+      view: { kind: "section", section: "skills" },
+    });
+    expect(registry.get(skillsParamsAtom)).toEqual({ tab: "installed", query: "" });
+
+    navigate("/environments");
+    expect(registry.get(pageAtom)).toEqual({
+      kind: "settings",
+      scope: GLOBAL,
+      view: { kind: "section", section: "environments" },
+    });
+    expect(browser.history()).toEqual({
+      entries: ["/settings/work/skills?tab=installed", "/settings/all/environments"],
+      at: 1,
     });
 
     browser.back();
-    expect(registry.get(pageAtom)).toEqual({ kind: "environments" });
-    expect(registry.get(skillsParamsAtom).environment).toBeUndefined();
+    expect(registry.get(skillsParamsAtom).tab).toBe("installed");
   });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("the page's path", () => {
@@ -331,22 +368,22 @@ describe("the page's path", () => {
     navigate(sessionPath("a"));
     expect(registry.get(sessionIdAtom)).toBe("a");
 
-    registry.set(pathAtom, SETTINGS_PATH);
-    expect(registry.get(pageAtom)).toEqual({ kind: "settings" });
+    registry.set(pathAtom, settingsPath(GLOBAL, "models"));
+    expect(registry.get(pageAtom)).toEqual({
+      kind: "settings",
+      scope: GLOBAL,
+      view: { kind: "section", section: "models" },
+    });
 
     browser.back();
     expect(registry.get(pageAtom)).toEqual({ kind: "session", sessionId: "a" });
 
     browser.forward();
-    expect(registry.get(pageAtom)).toEqual({ kind: "settings" });
-
-    registry.set(pathAtom, ENVIRONMENTS_PATH);
-    expect(registry.get(pageAtom)).toEqual({ kind: "environments" });
+    expect(registry.get(pageAtom)).toMatchObject({ kind: "settings" });
 
     registry.set(pathAtom, DRAFT_PATH);
     expect(registry.get(pageAtom)).toEqual({ kind: "draft" });
 
-    browser.back();
     browser.back();
     browser.back();
     browser.back();

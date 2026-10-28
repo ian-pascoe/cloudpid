@@ -1,40 +1,39 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of options and lines are native arrays.
 
-// The install target picker (ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the dialog every place
-// that offers Install opens, a row of a Skill directory list, a repo's selected Skills, a Skill's page. It asks where to
-// install, Global (the default) or one Environment, and installs only the Skills the page named, through the
-// owner's install: no Approval, and no Agent change. A page opens it by setting `skillsToInstallAtom` (with the `ref` its
-// `?ref=` names, if any). `SkillsFrame` (skills-page.tsx) mounts it, so every page that renders through the frame, which
-// all of `/skills` and the pages below it do, has it; a page that does not must mount it itself.
+// The install confirm (ADR-0026, docs/architecture/client-and-protocol.md → Settings page): the dialog every place that
+// offers Install opens, a row of a Skill directory list, a repo's selected Skills, a Skill's page. There is no target to
+// pick: it installs into the Scope the Settings page shows (`SettingsScope`), Global or one Environment, and its button
+// says which ("Install for Global", "Install for Work"). It installs only the Skills the page named, through the owner's
+// install: no Approval, and no Agent change. A page opens it by setting `skillsToInstallAtom` (with the `ref` its `?ref=`
+// names, if any). `SkillsSettingsSection` and `SkillDirectoryFrame` (settings/skills.tsx) mount it, so every page of the
+// Skills section has it; a page that does not must mount it itself.
 
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomSet } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { type FormEvent, useState } from "react";
+import type { FormEvent } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
-import { NativeSelect } from "./components/ui/native-select.tsx";
-import { environmentListAtom } from "./environments-state.ts";
-import { GLOBAL } from "./environments.ts";
 import { settledFailureOf } from "./registry.ts";
+import { useScopeName, useSettingsScope } from "./settings/scope.tsx";
 import { installToTargetAtom, skillsToInstallAtom, type SkillsToInstall } from "./skills-state.ts";
 import { installOutcomeLines } from "./skills.ts";
 
-/** What the picker is for, in a title: the one Skill's ID, or how many Skills. */
+/** What the confirm is for, in a title: the one Skill's ID, or how many Skills. */
 const titleOf = ({ skills }: SkillsToInstall): string =>
   skills.length === 1 ? `Install ${skills[0]}` : `Install ${skills.length} skills`;
 
-/** The picker's form: the target, with Global chosen first, and the install's outcome once it ran. */
-const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close: () => void }) => {
-  const environments = useAtomValue(environmentListAtom);
+/** The confirm's form: what is installed from where, and the install's outcome once it ran. */
+const InstallForm = ({ pending, close }: { pending: SkillsToInstall; close: () => void }) => {
+  const target = useSettingsScope();
+  const scopeName = useScopeName(target);
   const [installed, install] = useAtom(installToTargetAtom);
-  const [target, setTarget] = useState(GLOBAL);
   const answer = installed.pipe(AsyncResult.value, Option.getOrNull);
   const busy = installed.waiting;
 
-  // An answer that kept a Skill, or found it kept already, ends the picking; one where every Skill was refused leaves it
-  // open to try another target.
+  // An answer that kept a Skill, or found it kept already, ends the confirm; one where every Skill was refused leaves it
+  // open to try again.
   const done =
     answer !== null &&
     answer.status === "installed" &&
@@ -50,23 +49,6 @@ const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
-      <label className="flex flex-col gap-1.5 text-sm">
-        <span className="font-medium">Install for</span>
-        <NativeSelect
-          value={target}
-          disabled={busy || done}
-          onChange={(event) => {
-            setTarget(event.target.value);
-          }}
-        >
-          <option value={GLOBAL}>Global</option>
-          {(environments ?? []).map((environment) => (
-            <option key={environment.id} value={environment.id}>
-              {environment.name}
-            </option>
-          ))}
-        </NativeSelect>
-      </label>
       <p className="text-xs text-muted-foreground">
         From <span className="font-mono">{pending.source}</span>, pinned to the latest commit of{" "}
         {pending.ref === undefined ? (
@@ -100,7 +82,7 @@ const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close
         </Button>
         {!done && (
           <Button type="submit" disabled={busy}>
-            {busy ? "Installing…" : "Install"}
+            {busy ? "Installing…" : `Install for ${scopeName}`}
           </Button>
         )}
       </DialogActions>
@@ -109,7 +91,7 @@ const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close
 };
 
 /**
- * The install target picker, open while `skillsToInstallAtom` names Skills. A page that offers Install mounts it once;
+ * The install confirm, open while `skillsToInstallAtom` names Skills. A page that offers Install mounts it once;
  * closing it forgets the last install's answer.
  */
 export const InstallSkillsDialog = () => {
@@ -128,11 +110,11 @@ export const InstallSkillsDialog = () => {
       dismissible={!installed.waiting}
       title={pending === null ? "Install" : titleOf(pending)}
     >
-      {pending !== null && <InstallTargetForm pending={pending} close={close} />}
+      {pending !== null && <InstallForm pending={pending} close={close} />}
     </Dialog>
   );
 };
 
-/** What a page's Install button does: open the picker for `skills` of `source`. */
-export const useInstallPicker = (): ((skills: SkillsToInstall) => void) =>
+/** What a page's Install button does: open the confirm for `skills` of `source`. */
+export const useInstallConfirm = (): ((skills: SkillsToInstall) => void) =>
   useAtomSet(skillsToInstallAtom);

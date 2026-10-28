@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 
-import { type EnvironmentRecord, type SkillSource, skillSourceText } from "@cloudpid/protocol";
+import { type SkillSource, skillSourceText } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   changeText,
@@ -9,10 +9,8 @@ import {
   githubFileUrl,
   githubSource,
   inheritedSkills,
-  installedScopes,
   installSource,
   installOutcomeLines,
-  skillCountText,
   skillMdBody,
   skillPageOfSource,
   updateOutcomeLines,
@@ -89,47 +87,6 @@ describe("a Skill's source and the outcome of an install", () => {
   });
 });
 
-describe("the line an Environment's card shows of its Skills", () => {
-  const skill = (name: string) => ({ name, description: `What ${name} does.`, savedAt: 1 });
-
-  it("counts the Skills its Workspaces serve: its own, and those it gets from Global", () => {
-    expect(skillCountText([], [])).toBe("No skills");
-    expect(skillCountText([skill("a")], [])).toBe("1 skill");
-    expect(skillCountText([skill("a"), skill("b")], [skill("b")])).toBe("2 skills");
-    expect(skillCountText([skill("a")], [skill("b"), skill("c")])).toBe("3 skills, 2 from Global");
-    expect(skillCountText([], [skill("b")])).toBe("1 skill, 1 from Global");
-  });
-
-  it("counts those kept Global on their own card", () => {
-    expect(skillCountText([skill("a"), skill("b")])).toBe("2 skills");
-    expect(skillCountText([])).toBe("No skills");
-  });
-});
-
-describe("the sections the Installed tab shows", () => {
-  const environment = (id: string): EnvironmentRecord => ({
-    id,
-    name: id,
-    repos: [],
-    createdAt: 1,
-  });
-
-  const known = [environment("default"), environment("work")];
-
-  it("are each Environment's, then each Environment's, without a filter", () => {
-    expect(installedScopes(known, undefined)).toEqual(["*", "default", "work"]);
-  });
-
-  it("are the one Environment named, or those kept Global for *", () => {
-    expect(installedScopes(known, "work")).toEqual(["work"]);
-    expect(installedScopes(known, "*")).toEqual(["*"]);
-  });
-
-  it("are none for an Environment that is not listed", () => {
-    expect(installedScopes(known, "gone")).toEqual([]);
-  });
-});
-
 describe("githubSource", () => {
   it("splits an owner/repo, and is null for a source that is not one", () => {
     expect(githubSource("mattpocock/skills")).toEqual({ owner: "mattpocock", repo: "skills" });
@@ -185,16 +142,20 @@ describe("a Skill's page link from an installed copy", () => {
   });
 
   it("is the Skill's page naming its folder, and the ref it was installed from when it named one", () => {
-    expect(skillPageOfSource("tdd", source())).toBe("/skills/o/skills/tdd?path=skills%2Ftdd");
-    expect(skillPageOfSource("TDD", source({ ref: "feature/x" }))).toBe(
-      "/skills/o/skills/TDD?ref=feature%2Fx&path=skills%2Ftdd",
+    expect(skillPageOfSource("*", "tdd", source())).toBe(
+      "/settings/all/skills/o/skills/tdd?path=skills%2Ftdd",
+    );
+    expect(skillPageOfSource("work", "TDD", source({ ref: "feature/x" }))).toBe(
+      "/settings/work/skills/o/skills/TDD?ref=feature%2Fx&path=skills%2Ftdd",
     );
     // A Skill at the repo's root has an empty folder, which is a folder.
-    expect(skillPageOfSource("root", source({ path: "" }))).toBe("/skills/o/skills/root?path=");
+    expect(skillPageOfSource("*", "root", source({ path: "" }))).toBe(
+      "/settings/all/skills/o/skills/root?path=",
+    );
   });
 
   it("is none when the Skill source's repo is not one of GitHub's", () => {
-    expect(skillPageOfSource("tdd", source({ repo: "skills.example.com" }))).toBeNull();
+    expect(skillPageOfSource("*", "tdd", source({ repo: "skills.example.com" }))).toBeNull();
   });
 });
 

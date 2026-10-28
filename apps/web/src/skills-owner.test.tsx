@@ -10,6 +10,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { renderToStaticMarkup } from "react-dom/server";
 import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
+import { SettingsScope } from "./settings/scope.tsx";
 import { SkillOwnerPage } from "./skills-owner.tsx";
 import { skillOwnerAtom } from "./skills-owner-state.ts";
 
@@ -23,7 +24,7 @@ const LISTING: SkillOwnerListing = {
 };
 
 /** The owner page of `mattpocock`, once its list (as `listOwnerRepos` answers) has loaded. */
-const render = (listOwnerRepos: RegistryHandlers["listOwnerRepos"]) =>
+const render = (listOwnerRepos: RegistryHandlers["listOwnerRepos"], scope = "*") =>
   Effect.gen(function* () {
     const registry = registryWith({ listOwnerRepos, listEnvironments: () => Effect.succeed([]) });
 
@@ -32,7 +33,9 @@ const render = (listOwnerRepos: RegistryHandlers["listOwnerRepos"]) =>
 
     const markup = renderToStaticMarkup(
       <RegistryContext.Provider value={registry}>
-        <SkillOwnerPage owner="mattpocock" />
+        <SettingsScope.Provider value={scope}>
+          <SkillOwnerPage owner="mattpocock" />
+        </SettingsScope.Provider>
       </RegistryContext.Provider>,
     );
 
@@ -54,6 +57,17 @@ const text = (markup: string) =>
     .replaceAll("&#x27;", "'");
 
 describe("the owner page", () => {
+  it.effect("links within the Skills section of an Environment's Scope", () =>
+    Effect.gen(function* () {
+      const markup = yield* render(() => Effect.succeed(LISTING), "work");
+      const hrefs = links(markup).map(({ href }) => href);
+
+      expect(hrefs).toContain("/settings/work/skills/mattpocock/skills");
+      expect(hrefs).toContain("/settings/work/skills");
+      expect(hrefs.filter((href) => href?.startsWith("/settings/all"))).toEqual([]);
+    }),
+  );
+
   it.effect("lists the owner's repos with Skills and installs, each opening its repo page", () =>
     Effect.gen(function* () {
       const markup = yield* render(() => Effect.succeed(LISTING));
@@ -70,10 +84,10 @@ describe("the owner page", () => {
 
       const hrefs = links(markup).map(({ href }) => href);
 
-      expect(hrefs).toContain("/skills/mattpocock/skills");
-      expect(hrefs).toContain("/skills/mattpocock/sandcastle");
-      // Back to the Skills page; the owner on GitHub.
-      expect(hrefs).toContain("/skills");
+      expect(hrefs).toContain("/settings/all/skills/mattpocock/skills");
+      expect(hrefs).toContain("/settings/all/skills/mattpocock/sandcastle");
+      // Back to the Skills section; the owner on GitHub.
+      expect(hrefs).toContain("/settings/all/skills");
       expect(hrefs).toContain("https://github.com/mattpocock");
       expect(body).toContain("Data from skills.sh");
       expect(body).not.toContain("not in the Skill directory");

@@ -1,16 +1,14 @@
-// The Skills page's state (ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the tab it shows, the Skills
+// The Skills section's state (ADR-0026, docs/architecture/client-and-protocol.md → Settings page): the tab it shows, the Skills
 // each Environment keeps and those kept Global, what the owner does to them on the Installed tab
 // (install from GitHub or a skills.sh search, update, remove), the files of a Skill's Agent change and of a Skill with no
 // Skill source, and the state of the tab's forms and dialogs. Each family is keyed by scope: an Environment's id, or
 // `GLOBAL` for the Skills kept Global. The Skill directory's lists and search, and the install
-// target picker the rows (and, later, a repo's and a Skill's page) open, are here too.
+// confirm the rows (and, later, a repo's and a Skill's page) open, are here too.
 
 import type { SkillDirectoryView } from "@cloudpid/protocol";
-import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { GLOBAL } from "./environments.ts";
 import { changing, RegistryClient } from "./registry.ts";
 import { skillsParamsAtom, type SkillsTab } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
@@ -18,41 +16,38 @@ import { visibleTickAtom } from "./sessions.ts";
 import { installSource } from "./skills.ts";
 
 /**
- * Whether any Environment, or Global, keeps a Skill: asked once while the Skills page is open, never again,
- * so that an install made from the page does not change which tab is the default under the owner. A failure is an answer
- * too: the Installed tab is where the page says what went wrong.
+ * Whether Scope `scope` (`GLOBAL` or an Environment's id) keeps a Skill: asked once while the Skills section is open,
+ * never again, so that an install made from the page does not change which tab is the default under the owner. A
+ * failure is an answer too: the Installed tab is where the page says what went wrong.
  */
-export const anySkillInstalledAtom = appRuntime.atom(
-  RegistryClient.use((registry) =>
-    Effect.gen(function* () {
-      const environments = yield* registry("listEnvironments", undefined);
-
-      const kept = yield* Effect.forEach(
-        [GLOBAL, ...Arr.map(environments, ({ id }) => id)],
-        (environment) => registry("listEnvironmentSkills", { environment }),
-        { concurrency: "unbounded" },
-      );
-
-      return Arr.some(kept, (skills) => skills.length > 0);
-    }),
+export const anySkillInstalledAtom = Atom.family((scope: string) =>
+  appRuntime.atom(
+    RegistryClient.use((registry) =>
+      registry("listEnvironmentSkills", { environment: scope }).pipe(
+        Effect.map((skills) => skills.length > 0),
+      ),
+    ),
   ),
 );
 
 /**
- * The tab the Skills page shows: the one `?tab=` names, else Installed when any Skill is installed and All time when
- * none is. Null while that is being asked (nothing is current yet), so that the page does not flash the wrong tab.
+ * The tab the Skills section shows at Scope `scope`: the one `?tab=` names, else Installed when the Scope keeps a Skill
+ * and All time when it keeps none. Null while that is being asked (nothing is current yet), so that the page does not
+ * flash the wrong tab.
  */
-export const skillsTabAtom = Atom.readable((get): SkillsTab | null => {
-  const named = get(skillsParamsAtom).tab;
+export const skillsTabAtom = Atom.family((scope: string) =>
+  Atom.readable((get): SkillsTab | null => {
+    const named = get(skillsParamsAtom).tab;
 
-  if (named !== undefined) return named;
+    if (named !== undefined) return named;
 
-  const any = get(anySkillInstalledAtom);
+    const any = get(anySkillInstalledAtom(scope));
 
-  if (AsyncResult.isSuccess(any)) return any.value ? "installed" : "all-time";
+    if (AsyncResult.isSuccess(any)) return any.value ? "installed" : "all-time";
 
-  return AsyncResult.isFailure(any) ? "installed" : null;
-});
+    return AsyncResult.isFailure(any) ? "installed" : null;
+  }),
+);
 
 /**
  * The Skills Environment `id` keeps (ADR-0026), by name, asked again every few seconds while the page is visible: a
@@ -254,12 +249,12 @@ export interface SkillsToInstall {
 }
 
 /**
- * What the install target picker (`InstallSkillsDialog`) is open for, or null when it is closed. A page that offers
+ * What the install confirm (`InstallSkillsDialog`) is open for, or null when it is closed. A page that offers
  * Install sets it: a row of a list, a repo's selected Skills, a Skill's page.
  */
 export const skillsToInstallAtom = Atom.make<SkillsToInstall | null>(null);
 
-/** An install the target picker makes: `skills` of `source`, into Environment `target` or, for `GLOBAL`, Global. */
+/** An install the confirm makes: `skills` of `source`, into Environment `target` or, for `GLOBAL`, Global. */
 export interface SkillInstallToTarget extends SkillsToInstall {
   readonly target: string;
 }

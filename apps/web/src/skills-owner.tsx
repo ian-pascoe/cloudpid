@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of rows are native arrays.
 
-// The owner page (`/skills/:owner`; ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the repos the Skill
+// The owner page (`/settings/:scope/skills/:owner`; ADR-0026, docs/architecture/client-and-protocol.md → Settings page): the repos the Skill
 // directory (skills.sh) lists Skills of for a GitHub user or organization, each with its Skills and installs and opening
 // its repo page, where GitHub gives the full list. The Registry builds the list from skills.sh's search, which is fuzzy and
 // answers at most 200 results, so the page says the list may be incomplete. "Open a repo" opens any repo of the owner, for
@@ -18,9 +18,10 @@ import { Input } from "./components/ui/input.tsx";
 import { compactCount } from "./format.ts";
 import { InAppLink } from "./in-app-link.tsx";
 import { failureOf } from "./registry.ts";
-import { navigate, skillRepoPath, SKILLS_PATH } from "./router.ts";
+import { navigate, skillRepoPath, skillsPath } from "./router.ts";
+import { SkillDirectoryFrame } from "./settings/skills.tsx";
+import { useSettingsScope } from "./settings/scope.tsx";
 import { Credit, DirectoryError } from "./skills-directory.tsx";
-import { SkillsFrame } from "./skills-page.tsx";
 import { openRepoPath, skillOwnerAtom } from "./skills-owner-state.ts";
 
 /**
@@ -28,6 +29,7 @@ import { openRepoPath, skillOwnerAtom } from "./skills-owner-state.ts";
  * repo is for its page to say.
  */
 const OpenRepo = ({ owner }: { owner: string }) => {
+  const scope = useSettingsScope();
   const [typed, setTyped] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -37,7 +39,7 @@ const OpenRepo = ({ owner }: { owner: string }) => {
       onSubmit={(event) => {
         event.preventDefault();
 
-        const opened = openRepoPath(owner, typed);
+        const opened = openRepoPath(scope, owner, typed);
 
         if (opened.ok) navigate(opened.path);
         else setProblem(opened.message);
@@ -81,27 +83,31 @@ const OpenRepo = ({ owner }: { owner: string }) => {
 };
 
 /** One repo of the owner: its name linking to its repo page, how many Skills the directory found in it, and their installs. */
-const OwnerRepoRow = ({ owner, repo }: { owner: string; repo: OwnerRepo }) => (
-  <li className="flex items-center gap-3 py-2.5">
-    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-      <InAppLink
-        href={skillRepoPath(owner, repo.repo)}
-        className="truncate font-mono text-sm font-medium hover:underline"
+const OwnerRepoRow = ({ owner, repo }: { owner: string; repo: OwnerRepo }) => {
+  const scope = useSettingsScope();
+
+  return (
+    <li className="flex items-center gap-3 py-2.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <InAppLink
+          href={skillRepoPath(scope, owner, repo.repo)}
+          className="truncate font-mono text-sm font-medium hover:underline"
+        >
+          {repo.repo}
+        </InAppLink>
+        <span className="text-xs text-muted-foreground">
+          {repo.skills === 1 ? "1 skill" : `${repo.skills} skills`}
+        </span>
+      </div>
+      <span
+        className="w-14 shrink-0 text-right text-sm text-muted-foreground tabular-nums"
+        title={`${repo.installs.toLocaleString("en-US")} installs`}
       >
-        {repo.repo}
-      </InAppLink>
-      <span className="text-xs text-muted-foreground">
-        {repo.skills === 1 ? "1 skill" : `${repo.skills} skills`}
+        {compactCount(repo.installs)}
       </span>
-    </div>
-    <span
-      className="w-14 shrink-0 text-right text-sm text-muted-foreground tabular-nums"
-      title={`${repo.installs.toLocaleString("en-US")} installs`}
-    >
-      {compactCount(repo.installs)}
-    </span>
-  </li>
-);
+    </li>
+  );
+};
 
 /** What the owner's repos are built from, said honestly: a fuzzy search of at most 200 results. */
 const SearchLimit = ({ listing }: { listing: SkillOwnerListing }) => (
@@ -157,30 +163,34 @@ const OwnerBody = ({ owner }: { owner: string }) => {
 };
 
 /**
- * The owner page: the breadcrumb back to the Skills page, a link to the owner on GitHub, "Open a repo", and the repos the
+ * The owner page: the breadcrumb back to the Skills section, a link to the owner on GitHub, "Open a repo", and the repos the
  * Skill directory lists of the owner.
  */
-export const SkillOwnerPage = ({ owner }: { owner: string }) => (
-  <SkillsFrame title={owner}>
-    <div className="-mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
-        <InAppLink href={SKILLS_PATH} className="hover:text-foreground hover:underline">
-          Skills
-        </InAppLink>
-        <span aria-hidden>/</span>
-        <span className="text-foreground">{owner}</span>
-      </nav>
-      <a
-        href={`https://github.com/${encodeURIComponent(owner)}`}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="ml-auto flex items-center gap-1 text-xs hover:text-foreground hover:underline"
-      >
-        On GitHub
-        <ExternalLink className="size-3" />
-      </a>
-    </div>
-    <OpenRepo key={`open:${owner}`} owner={owner} />
-    <OwnerBody key={`repos:${owner}`} owner={owner} />
-  </SkillsFrame>
-);
+export const SkillOwnerPage = ({ owner }: { owner: string }) => {
+  const scope = useSettingsScope();
+
+  return (
+    <SkillDirectoryFrame title={owner}>
+      <div className="-mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+        <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
+          <InAppLink href={skillsPath(scope)} className="hover:text-foreground hover:underline">
+            Skills
+          </InAppLink>
+          <span aria-hidden>/</span>
+          <span className="text-foreground">{owner}</span>
+        </nav>
+        <a
+          href={`https://github.com/${encodeURIComponent(owner)}`}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="ml-auto flex items-center gap-1 text-xs hover:text-foreground hover:underline"
+        >
+          On GitHub
+          <ExternalLink className="size-3" />
+        </a>
+      </div>
+      <OpenRepo key={`open:${owner}`} owner={owner} />
+      <OwnerBody key={`repos:${owner}`} owner={owner} />
+    </SkillDirectoryFrame>
+  );
+};

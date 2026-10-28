@@ -1,32 +1,22 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of changes and files are native arrays.
 
-// The Agent changes of an Environment, or of Global (`docs/architecture/agent-changes.md`), as the Environments
-// page lists those of its settings and the Skills page those of its Skills: each with its values before and after (a
-// Skill's as its files' diffs), who made it and why, a revert while it is the agent's, and a dismissal. The Settings page
-// lists its own changes with the same row.
+// One Agent change (`docs/architecture/agent-changes.md`), as the Settings page's Agent changes section lists it: its
+// values before and after (a Skill's as its files' diffs), who made it and why, a revert while it is the agent's, and a
+// dismissal.
 
 import { type AgentChange, fieldSkill, type SessionRecord } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Check, Undo2 } from "lucide-react";
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { ChangeDiff } from "./change-diff.tsx";
 import { Button } from "./components/ui/button.tsx";
-import { DialogProblem } from "./components/ui/dialog.tsx";
 import { cn } from "./lib/utils.ts";
 import { changeDiff, skillFileDiffs } from "./line-diff.ts";
 import { SessionLink } from "./sidebar.tsx";
-import { failureOf, settledFailureOf } from "./registry.ts";
-import {
-  agentChangesAtom,
-  dismissAgentChangeAtom,
-  revertAgentChangeAtom,
-} from "./environments-state.ts";
+import { failureOf } from "./registry.ts";
 import { changeByline, changeFieldText, changeValueText, revertible } from "./environments.ts";
 import { skillChangeFilesAtom, skillChangeKey } from "./skills-state.ts";
-
-/** Whether an Agent change is a Skill's: the Skills page lists it, and the Environments page does not. */
-export const isSkillChange = (change: AgentChange): boolean => fieldSkill(change.field) !== null;
 
 /**
  * The files an Agent change of a Skill added, removed or changed, each as the lines that changed. The texts are asked
@@ -158,66 +148,5 @@ export const AgentChangeRow = ({
         <ChangeDiff rows={diff} />
       )}
     </li>
-  );
-};
-
-/**
- * Environment `id`'s Agent changes that `only` keeps, newest first (`docs/architecture/agent-changes.md`), each with the Session that made it,
- * a revert and a dismissal. A revert the Registry refuses (its field has changed since) says why.
- */
-export const AgentChangesSection = ({
-  id,
-  sessions,
-  only,
-  empty,
-}: {
-  id: string;
-  /** Every Session made in the Environment, archived ones included. */
-  sessions: readonly SessionRecord[];
-  /** The changes the section lists: the Environments page lists those of its settings, the Skills page its Skills'. */
-  only: (change: AgentChange) => boolean;
-  /** What the section says while it lists none. */
-  empty: string;
-}) => {
-  const loaded = useAtomValue(agentChangesAtom(id));
-  const [reverted, revert] = useAtom(revertAgentChangeAtom(id));
-  const [dismissed, dismiss] = useAtom(dismissAgentChangeAtom(id));
-  const loadError = failureOf(loaded);
-
-  const changes = loaded.pipe(
-    AsyncResult.value,
-    Option.map((all) => all.filter(only)),
-    Option.getOrNull,
-  );
-
-  return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-xs font-medium text-muted-foreground">Agent changes</h3>
-      {changes === null ? (
-        <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
-      ) : changes.length === 0 ? (
-        <p className="text-xs text-muted-foreground">{empty}</p>
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {changes.map((change) => (
-            <AgentChangeRow
-              key={change.id}
-              change={change}
-              session={sessions.find((session) => session.id === change.session)}
-              reverting={reverted.waiting}
-              onRevert={() => {
-                revert(change.id);
-              }}
-              dismissing={dismissed.waiting}
-              onDismiss={() => {
-                dismiss(change.id);
-              }}
-            />
-          ))}
-        </ul>
-      )}
-      <DialogProblem problem={settledFailureOf(reverted)} />
-      <DialogProblem problem={settledFailureOf(dismissed)} />
-    </div>
   );
 };
