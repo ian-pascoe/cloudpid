@@ -217,6 +217,11 @@ export class ContainerSnapshots {
     return (await this.#deps.load())?.covered;
   }
 
+  /** The id of the kept snapshot, if there is one. */
+  async kept(): Promise<string | undefined> {
+    return (await this.#deps.load())?.id;
+  }
+
   /** A Container started from the kept snapshot, which begins its lifetime again. */
   async restored(): Promise<void> {
     const record = await this.#deps.load();

@@ -10,6 +10,10 @@
 // longer) since the last owner or agent activity in the Workspace (`noteActivity`: a command started, a Session's message or
 // live Run, a file write) is snapshotted and stopped as at the idle stop, its holds dropped (a held stop). A command
 // handle never released, or a Container preview left open, can then keep it no longer.
+//
+// What may change the Container's disk is told of (`wrote`): a hold that may write (a command, by default) as it
+// begins, and `noteWrite` for the rest (a bootstrap that installed something, a Setup or Start Script). The launch
+// record keeps it, and an idle stop of a Container in which nothing did takes no snapshot (`launch.ts`).
 
 // @effect-diagnostics asyncFunction:off globalDate:off
 
@@ -35,6 +39,16 @@ export type HeldStop = {
 /** How long `stop`'s Container went without activity before it was stopped, in whole minutes. */
 export const heldStopMinutes = (stop: HeldStop): number =>
   Math.round((stop.at - stop.lastActivity) / 60_000);
+
+/** What holds the Container. */
+export type HoldOptions = {
+  /**
+   * Whether what holds it may change the Container's disk: a command, a script (the default). Not a Container preview's
+   * socket, a bootstrap's own hold (it tells of what it changed with `noteWrite`), the agent's resize (it snapshots
+   * itself), nor the Workspace DO's reads.
+   */
+  readonly writes?: boolean | undefined;
+};
 
 /** A hold on the Container: it is in use, however quiet, until `end`. */
 export type ContainerHold = {
@@ -64,6 +78,11 @@ export type IdleStopDeps = {
   readonly stop: () => Promise<void>;
   /** Told of a held stop once the Container is stopped: the Workspace logs it and keeps it for its Sessions. */
   readonly held?: ((stop: HeldStop) => Promise<void>) | undefined;
+  /**
+   * Told of something that may change the Container's disk (a command or a Container-only file write as its hold
+   * begins, a script): the launch record keeps it, so the idle stop snapshots (`ContainerLaunch.noteWrite`).
+   */
+  readonly wrote?: (() => Promise<void>) | undefined;
   /** Told of every use of the Container (`ContainerUsageLedger.seen`). */
   readonly used?: (() => void) | undefined;
   /** Told when commands begin to run on the Container and when the last one ends (`ContainerUsageLedger.busy`). */
@@ -81,6 +100,8 @@ export class IdleStop {
   #armedAt = 0;
   /** The holds on the Container that have begun and not ended. In memory: an evicted object has none running. */
   readonly #holds = new Set<object>();
+  /** Those of `#holds` that may change the Container's disk. */
+  readonly #writing = new Set<object>();
 
   constructor(deps: IdleStopDeps) {
     this.#deps = deps;
@@ -126,21 +147,46 @@ export class IdleStop {
     }
   }
 
-  /** A command (or a Container preview's socket, a bootstrap) began on the Container: it is in use until it ends. */
-  hold(): ContainerHold {
+  /**
+   * Something that may change the Container's disk ran without a hold of its own that writes (a bootstrap that
+   * installed something, a Setup or Start Script): the idle stop snapshots the Container.
+   */
+  async noteWrite(): Promise<void> {
+    await this.#deps.wrote?.();
+  }
+
+  /**
+   * Whether a hold that may change the Container's disk is on it now: a Container a command launches is changed from its
+   * start, though the command's `noteWrite` came before the launch was recorded.
+   */
+  writing(): boolean {
+    return this.#writing.size > 0;
+  }
+
+  /**
+   * A command (or a Container preview's socket, a bootstrap) began on the Container: it is in use until it ends. One
+   * that may write (`options.writes`, the default) is told of as it begins.
+   */
+  hold(options: HoldOptions = {}): ContainerHold {
     const token = {};
+    const writes = options.writes !== false;
 
     this.#holds.add(token);
+
+    if (writes) this.#writing.add(token);
 
     if (this.#holds.size === 1) this.#deps.busy?.(true);
 
     let ended = false;
 
     return {
-      begun: this.touch(),
+      begun: writes
+        ? Promise.all([this.touch(), this.noteWrite()]).then(() => undefined)
+        : this.touch(),
       end: () => {
         if (!ended) {
           ended = true;
+          this.#writing.delete(token);
 
           if (this.#holds.delete(token) && this.#holds.size === 0) this.#deps.busy?.(false);
         }
@@ -273,6 +319,7 @@ export class IdleStop {
     const holds = this.#holds.size;
 
     this.#holds.clear();
+    this.#writing.clear();
 
     if (holds > 0) this.#deps.busy?.(false);
 

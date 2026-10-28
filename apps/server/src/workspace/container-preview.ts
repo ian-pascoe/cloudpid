@@ -349,8 +349,9 @@ export class ContainerPreview {
 
     const id = this.#deps.newId();
     const activity = this.#deps.activity();
-    // Begun before anything can end the socket, so its end always comes after it.
-    const hold = activity.hold();
+    // Begun before anything can end the socket, so its end always comes after it. A page's socket changes nothing on the
+    // disk of itself: the dev server it reaches was started by a command or a Start Script, which did.
+    const hold = activity.hold({ writes: false });
     const begun = this.#use(hold.begun);
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();

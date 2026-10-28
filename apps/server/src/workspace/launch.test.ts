@@ -72,6 +72,10 @@ type Fake = {
   build: EnvironmentBuild | undefined;
   /** The Build snapshots this Workspace will not try again. */
   failedBuilds: string[];
+  /** Whether something that may change the disk holds the Container (`IdleStop.writing`). */
+  writing: boolean;
+  /** Makes `load` reject. */
+  failLoad: boolean;
 };
 
 const DAY = 24 * 60 * 60_000;
@@ -107,6 +111,8 @@ const open = (
     now: 9_000,
     build: undefined,
     failedBuilds: [],
+    writing: false,
+    failLoad: false,
   };
 
   const api: IWorkspaceContainerAPI = {
@@ -166,6 +172,8 @@ const open = (
           return state.takeOutcome;
         },
         coverage: async () => state.takeCovers,
+        // The Workspace keeps the snapshot a launch would restore, until it is forgotten.
+        kept: async () => state.restorable?.id,
         capture: async (reason, image) => {
           state.takes.push(reason);
           state.takeImages.push(image);
@@ -191,11 +199,16 @@ const open = (
           state.failedBuilds.push(id);
         },
       },
-      load: async () => state.record,
+      load: async () => {
+        if (state.failLoad) throw new Error("storage unavailable");
+
+        return state.record;
+      },
       save: async (record) => {
         state.record = record;
       },
       running: () => state.running,
+      writing: () => state.writing,
       now: () => state.now,
       warn: (message) => state.warnings.push(message),
       info: (message) => state.infos.push(message),
@@ -377,6 +390,8 @@ describe("a launch", () => {
 
       state.running = true;
       state.takeCovers = OWN;
+      // A command ran, so the idle stop snapshots.
+      await launch.noteWrite();
       await launch.snapshot("idle");
 
       expect(state.takeScanned).toEqual([COVERED]);
@@ -924,6 +939,7 @@ describe("a start the platform rejects for the snapshot", () => {
           restorable: async () => undefined,
           restored: async () => undefined,
           coverage: async () => undefined,
+          kept: async () => undefined,
           forget: async () => undefined,
           take: async () => "taken",
           capture: async () => ({ outcome: "skipped", reason: "not used" }),
@@ -931,6 +947,7 @@ describe("a start the platform rejects for the snapshot", () => {
         load: async () => undefined,
         save: async () => undefined,
         running: () => false,
+        writing: () => false,
         now: () => 1,
         warn: () => undefined,
         info: () => undefined,
@@ -1063,5 +1080,147 @@ describe("afterInstall", () => {
     await make().afterInstall(true);
 
     expect(state.takes).toEqual(["install"]);
+  });
+});
+
+describe("the idle stop's snapshot", () => {
+  /** A Container restored from the Workspace's own snapshot `snap-1`, running. */
+  const restored = async () => {
+    const opened = open();
+
+    opened.state.restorable = { id: "snap-1", image: "img-1" };
+    await opened.container.start(SPEC);
+    opened.state.running = true;
+
+    return opened;
+  };
+
+  it("is skipped, and logged, for a Container restored from the Workspace's snapshot in which nothing ran", async () => {
+    const { state, launch } = await restored();
+
+    expect(state.record?.diskUnchanged).toBe(true);
+    expect(await launch.snapshot("idle")).toBe("skipped");
+    expect(state.takes).toEqual([]);
+    expect(state.infos.join("\n")).toContain(
+      "nothing that may change the disk ran in the Container since its restore from snapshot snap-1: no snapshot taken",
+    );
+  });
+
+  it("is taken once something that may change the disk ran", async () => {
+    const { state, launch } = await restored();
+
+    await launch.noteWrite();
+
+    expect(state.record?.diskUnchanged).toBeUndefined();
+    expect(await launch.snapshot("idle")).toBe("taken");
+    expect(state.takes).toEqual(["idle"]);
+  });
+
+  it("keeps what ran across an eviction: the launch record holds it", async () => {
+    const { state, launch, make } = await restored();
+
+    await launch.noteWrite();
+
+    expect(await make().snapshot("idle")).toBe("taken");
+    expect(state.takes).toEqual(["idle"]);
+  });
+
+  it("is taken when the mark of a write could not reach storage", async () => {
+    const { state, make } = await restored();
+    // An evicted object, whose storage fails the mark's read of the launch record.
+    const evicted = make();
+
+    state.failLoad = true;
+    await expect(evicted.noteWrite()).rejects.toThrow("storage unavailable");
+    state.failLoad = false;
+
+    expect(state.record?.diskUnchanged).toBe(true);
+    expect(await evicted.snapshot("idle")).toBe("taken");
+  });
+
+  it("is skipped after an eviction when nothing ran", async () => {
+    const { state, make } = await restored();
+
+    expect(await make().snapshot("idle")).toBe("skipped");
+    expect(state.takes).toEqual([]);
+  });
+
+  it("is taken for a Container a command launched, which told of its write before the launch was recorded", async () => {
+    const { state, container, launch } = open();
+
+    state.restorable = { id: "snap-1", image: "img-1" };
+    state.writing = true;
+    await container.start(SPEC);
+    state.writing = false;
+
+    expect(state.record?.diskUnchanged).toBeUndefined();
+    expect(await launch.snapshot("idle")).toBe("taken");
+  });
+
+  it("is taken while something that may change the disk holds the Container (a held stop)", async () => {
+    const { state, launch } = await restored();
+
+    state.writing = true;
+
+    expect(await launch.snapshot("idle")).toBe("taken");
+  });
+
+  it("is taken at the first idle stop of a Container started from the image, though nothing ran", async () => {
+    const { state, container, launch } = open();
+
+    await container.start(SPEC);
+    state.running = true;
+
+    expect(state.record?.diskUnchanged).toBeUndefined();
+    expect(await launch.snapshot("idle")).toBe("taken");
+  });
+
+  it("is taken at the first idle stop of a Container started from the Environment's Build, though nothing ran", async () => {
+    const { state, container, launch } = open();
+
+    state.build = build();
+    await container.start(specFor(BUILT_IN));
+    state.running = true;
+
+    expect(state.record?.restoredFrom).toBe("build-1");
+    expect(state.record?.diskUnchanged).toBeUndefined();
+    expect(await launch.snapshot("idle")).toBe("taken");
+  });
+
+  it("is taken after computer's restart from the image of a Container that was restoring", async () => {
+    const { state, container, launch } = open();
+
+    state.restorable = { id: "snap-1", image: "img-1" };
+    await container.start(SPEC);
+    await container.restart(SPEC);
+    state.running = true;
+
+    expect(state.record?.diskUnchanged).toBeUndefined();
+    expect(await launch.snapshot("idle")).toBe("taken");
+  });
+
+  it("is taken when the Workspace no longer keeps the snapshot the Container was restored from", async () => {
+    const { state, launch } = await restored();
+
+    state.restorable = undefined;
+
+    expect(await launch.snapshot("idle")).toBe("taken");
+  });
+
+  it("is taken by a resize, whatever ran", async () => {
+    const { state, launch } = await restored();
+
+    expect(await launch.snapshot("resize")).toBe("taken");
+    expect(state.takes).toEqual(["resize"]);
+  });
+
+  it("is kept unchanged by a reconnect to the running Container", async () => {
+    const { state, container, launch } = await restored();
+
+    state.outcome = "adopted";
+    await container.start(specFor([]));
+
+    expect(state.record?.diskUnchanged).toBe(true);
+    expect(await launch.snapshot("idle")).toBe("skipped");
   });
 });

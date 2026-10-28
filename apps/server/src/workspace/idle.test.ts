@@ -24,6 +24,8 @@ type FakeState = {
   running: boolean;
   /** The held stops reported. */
   held: HeldStop[];
+  /** How many times something that may change the disk was told on (`wrote`). */
+  writes: number;
 };
 
 /** A fake Durable Object: a clock, one alarm, one stored time, and a count of Container stops. */
@@ -42,6 +44,7 @@ const open = (initialIdleMs = 15 * MINUTE) => {
     activity: undefined,
     running: true,
     held: [],
+    writes: 0,
   };
 
   const make = () =>
@@ -75,6 +78,9 @@ const open = (initialIdleMs = 15 * MINUTE) => {
       },
       held: async (stop) => {
         state.held.push(stop);
+      },
+      wrote: async () => {
+        state.writes++;
       },
     });
 
@@ -655,6 +661,83 @@ describe("IdleStop's hold cap", () => {
     await idle.touch();
 
     expect(await idle.stopsBy()).toBe(lastActivity + CONTAINER_HOLD_CAP_MS);
+  });
+});
+
+describe("IdleStop's record of what may change the disk", () => {
+  it("tells of a command as its hold begins, and knows it may write until it ends", async () => {
+    const { state, make } = open();
+    const idle = make();
+
+    expect(idle.writing()).toBe(false);
+
+    const hold = idle.hold();
+
+    await hold.begun;
+
+    expect(state.writes).toBe(1);
+    expect(idle.writing()).toBe(true);
+
+    await hold.end();
+
+    expect(idle.writing()).toBe(false);
+    expect(state.writes).toBe(1);
+  });
+
+  it("tells of nothing for a hold that does not write, which still keeps the Container", async () => {
+    const { state, make, fire } = open();
+    const idle = make();
+    const hold = idle.hold({ writes: false });
+
+    await hold.begun;
+
+    expect(state.writes).toBe(0);
+    expect(idle.writing()).toBe(false);
+
+    state.now += 20 * MINUTE;
+    await fire(idle);
+
+    expect(state.stops).toBe(0);
+
+    await hold.end();
+  });
+
+  it("knows a write holds while another hold that does not write ends", async () => {
+    const { make } = open();
+    const idle = make();
+    const command = idle.hold();
+    const socket = idle.hold({ writes: false });
+
+    await Promise.all([command.begun, socket.begun]);
+    await socket.end();
+
+    expect(idle.writing()).toBe(true);
+
+    await command.end();
+
+    expect(idle.writing()).toBe(false);
+  });
+
+  it("passes on what the bootstrap and the scripts tell of", async () => {
+    const { state, make } = open();
+
+    await make().noteWrite();
+
+    expect(state.writes).toBe(1);
+  });
+
+  it("drops the writing holds with the others at a held stop", async () => {
+    const { state, make, fire } = open();
+    const idle = make();
+
+    await idle.noteActivity();
+    await idle.hold().begun;
+
+    state.now += CONTAINER_HOLD_CAP_MS;
+    await fire(idle);
+
+    expect(state.held).toHaveLength(1);
+    expect(idle.writing()).toBe(false);
   });
 });
 

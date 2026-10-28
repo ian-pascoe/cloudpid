@@ -260,6 +260,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
         restorable: async () => ({ id: "snap-1", image: undefined }),
         restored: async () => undefined,
         coverage: async () => undefined,
+        kept: async () => "snap-1",
         forget: async () => {
           forgotten++;
         },
@@ -272,6 +273,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
         record = saved;
       },
       running: () => false,
+      writing: () => false,
       now: () => Date.now(),
       warn: () => undefined,
       info: () => undefined,
@@ -352,6 +354,7 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
           restorable: async () => snapshot,
           restored: async () => undefined,
           coverage: async () => undefined,
+          kept: async () => snapshot?.id,
           forget: async () => undefined,
           take: async (reason) => {
             taken.push(reason);
@@ -365,6 +368,7 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
         load: () => storage.get<LaunchRecord>("test:launch"),
         save: (record) => storage.put("test:launch", record),
         running: () => running,
+        writing: () => idle.writing(),
         now: () => now,
         warn: () => undefined,
         info: () => undefined,
@@ -386,7 +390,7 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
         info: () => undefined,
       });
 
-      const idle = new IdleStop({
+      const idle: IdleStop = new IdleStop({
         idleMs: () => launch.idleMs(),
         now: () => now,
         load: () => storage.get<number>("test:last-use"),
@@ -396,6 +400,7 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
           await launch.snapshot("idle");
         },
         stop: () => resizes.stopIdle(),
+        wrote: () => launch.noteWrite(),
       });
 
       const container = launch.wrap(platform);
@@ -427,10 +432,14 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
       expect(await resizes.resize("cpu-2")).toEqual({ outcome: "unchanged", size: "cpu-2" });
       expect(running).toBe(true);
 
-      // `container_restart` stops it without a snapshot: the next launch keeps the size.
+      // `container_restart` stops it without a snapshot: the next launch keeps the size. A command runs on it.
       running = false;
       await container.start(SPEC);
-      await idle.touch();
+
+      const command = idle.hold();
+
+      await command.begun;
+      await command.end();
       expect(starts[2]?.instance).toEqual(custom2);
 
       // The idle stop snapshots and stops it, and forgets the size: the next launch is on the Environment's again.
@@ -443,6 +452,151 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
       await container.start(SPEC);
       expect(starts[3]).toMatchObject({ instance: custom1, containerSnapshot: { id: "snap-2" } });
     });
+  });
+});
+
+describe("the idle stop's snapshot, over ContainerLaunch and IdleStop in a Durable Object's storage", () => {
+  type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
+
+  const SPEC: Spec = { env: {}, enableInternet: true, name: "WorkspaceContainer" };
+
+  /** A fake platform and Container, kept outside the object so they outlive its eviction. */
+  type PlatformFake = {
+    running: boolean;
+    now: number;
+    /** The reason of each snapshot taken. */
+    readonly taken: string[];
+    stops: number;
+    readonly infos: string[];
+  };
+
+  const platformFake = (): PlatformFake => ({
+    running: false,
+    now: 1_000_000,
+    taken: [],
+    stops: 0,
+    infos: [],
+  });
+
+  /** The object's launch and idle stop over its storage, as a Workspace DO builds them after each start. */
+  const objects = (storage: DurableObjectStorage, fake: PlatformFake) => {
+    const platform: IWorkspaceContainerAPI = {
+      start: async () => {
+        fake.running = true;
+
+        return { runtimeId: "r", clientSecret: "s", outcome: "launched" };
+      },
+      restart: async () => {
+        throw new Error("not used");
+      },
+      status: async () => ({ running: fake.running, exit: null }),
+      exitInfo: async () => null,
+      interceptOutboundHttp: async () => undefined,
+      interceptAllOutboundHttp: async () => undefined,
+      setInactivityTimeout: async () => undefined,
+      fetchPort: async () => {
+        throw new Error("not used");
+      },
+      port: () => {
+        throw new Error("not used");
+      },
+    };
+
+    const launch: ContainerLaunch = new ContainerLaunch({
+      settings: async () => DEFAULT_CONTAINER_SETTINGS,
+      resized: async () => undefined,
+      ignore: () => undefined,
+      snapshots: {
+        // The Workspace keeps snapshot snap-1, which a launch restores.
+        restorable: async () => ({ id: "snap-1", image: "img-1" }),
+        restored: async () => undefined,
+        coverage: async () => undefined,
+        kept: async () => "snap-1",
+        forget: async () => undefined,
+        take: async (reason) => {
+          fake.taken.push(reason);
+
+          return "taken";
+        },
+        capture: async () => ({ outcome: "skipped", reason: "not used" }),
+      },
+      image: () => "img-1",
+      load: () => storage.get<LaunchRecord>("test:launch"),
+      save: (record) => storage.put("test:launch", record),
+      running: () => fake.running,
+      writing: () => idle.writing(),
+      now: () => fake.now,
+      warn: () => undefined,
+      info: (message) => fake.infos.push(message),
+    });
+
+    const idle: IdleStop = new IdleStop({
+      idleMs: () => launch.idleMs(),
+      now: () => fake.now,
+      load: () => storage.get<number>("test:last-use"),
+      save: (at) => storage.put("test:last-use", at),
+      setAlarm: async () => undefined,
+      snapshot: async () => {
+        await launch.snapshot("idle");
+      },
+      stop: async () => {
+        fake.running = false;
+        fake.stops++;
+      },
+      wrote: () => launch.noteWrite(),
+    });
+
+    return { launch, idle, container: launch.wrap(platform) };
+  };
+
+  /** Restore the Container from the Workspace's snapshot and run `use` on it, evict the object, then run its idle alarm. */
+  const restoreUseEvictAndIdle = async (
+    name: string,
+    use: (idle: IdleStop) => Promise<void>,
+  ): Promise<PlatformFake> => {
+    const workspace = env.WORKSPACES.getByName(name);
+    const fake = platformFake();
+
+    await runInDurableObject(workspace, async (_instance, state) => {
+      const { container, idle } = objects(state.storage, fake);
+
+      await container.start(SPEC);
+      await use(idle);
+    });
+
+    await evictDurableObject(workspace);
+
+    await runInDurableObject(workspace, async (_instance, state) => {
+      fake.now += 3 * 60_000;
+      await objects(state.storage, fake).idle.alarm();
+    });
+
+    return fake;
+  };
+
+  it("snapshots, after an eviction, a restored Container in which a command ran", async () => {
+    const fake = await restoreUseEvictAndIdle("idle-snapshot-written", async (idle) => {
+      const command = idle.hold();
+
+      await command.begun;
+      await command.end();
+    });
+
+    expect(fake.taken).toEqual(["idle"]);
+    expect(fake.stops).toBe(1);
+  });
+
+  it("stops, after an eviction, a restored Container that was only read, without a snapshot, and says so", async () => {
+    const fake = await restoreUseEvictAndIdle("idle-snapshot-read", async (idle) => {
+      const read = idle.hold({ writes: false });
+
+      await read.begun;
+      await read.end();
+    });
+
+    expect(fake.taken).toEqual([]);
+    expect(fake.stops).toBe(1);
+    expect(fake.infos.join("\n")).toContain("no snapshot taken, that one stays current");
   });
 });
 

@@ -14,6 +14,7 @@ import {
   START_TIMED_OUT_MESSAGE,
 } from "@cloudpid/sandbox-image/toolchains";
 import { describe, expect, it } from "vitest";
+import type { HoldOptions } from "./idle.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 
 type Shell = BackendHandle["rpc"]["shell"];
@@ -1169,6 +1170,7 @@ describe("the Setup Scripts", () => {
             },
           };
         },
+        noteWrite: async () => undefined,
       },
     });
 
@@ -1588,5 +1590,66 @@ describe("the Start Scripts", () => {
       "could not tell which repos' Start Script",
     );
     expect(commands(container.execs)[0]?.source).toMatch(/\na$/);
+  });
+});
+
+describe("what the bootstrap tells the idle stop may have changed the disk", () => {
+  /** What a bootstrap on `container` held the Container with, and how many times it told of a write. */
+  const toldAfter = async (container: ReturnType<typeof fakeContainer>) => {
+    const holds: Array<HoldOptions | undefined> = [];
+    let writes = 0;
+
+    const { toolchains } = open(container, {
+      activity: {
+        hold: (options) => {
+          holds.push(options);
+
+          return { begun: Promise.resolve(), end: async () => undefined };
+        },
+        noteWrite: async () => {
+          writes++;
+        },
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    return { holds, writes };
+  };
+
+  it("is nothing for a bootstrap that installed nothing and ran no script: its own hold is not a write", async () => {
+    expect(await toldAfter(fakeContainer())).toEqual({ holds: [{ writes: false }], writes: 0 });
+  });
+
+  it("is told when the install changed something", async () => {
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? { stdout: [`${BOOTSTRAP_CHANGED}\n`] } : {},
+    );
+
+    expect((await toldAfter(container)).writes).toBeGreaterThan(0);
+  });
+
+  it("is told when the install failed, which may have changed something partway", async () => {
+    const container = fakeContainer((input) => (isBootstrap(input) ? { code: 1 } : {}));
+
+    expect((await toldAfter(container)).writes).toBeGreaterThan(0);
+  });
+
+  it("is told when a Setup Script ran, whether or not it succeeded", async () => {
+    const container = fakeContainer((input) => {
+      if (isSetupList(input)) return { stdout: ["/workspace/a\n"] };
+
+      return isSetupRun(input) ? { code: 1 } : {};
+    });
+
+    expect((await toldAfter(container)).writes).toBeGreaterThan(0);
+  });
+
+  it("is told when a Start Script ran", async () => {
+    const container = fakeContainer((input) =>
+      isStartList(input) ? { stdout: ["/workspace/a\n"] } : {},
+    );
+
+    expect((await toldAfter(container)).writes).toBeGreaterThan(0);
   });
 });

@@ -189,7 +189,7 @@ The agent restarting its Workspace's Container at another size, up to its Enviro
 _Avoid_: Scaling, upgrade
 
 **Held stop**:
-The Workspace stopping its Container, as an idle stop does (snapshot, then stop), because it was kept running an hour (or its idle time, when longer: the hold cap) after the last owner or agent activity in the Workspace, by a command handle never released or an open Container preview. Its Sessions show it as a notice.
+The Workspace stopping its Container, as an idle stop does (snapshot, unless nothing that may change its disk ran since its restore, then stop), because it was kept running an hour (or its idle time, when longer: the hold cap) after the last owner or agent activity in the Workspace, by a command handle never released or an open Container preview. Its Sessions show it as a notice.
 _Avoid_: Timeout, watchdog
 
 **Backend**:
@@ -277,7 +277,7 @@ A path whose files only the Workspace's Container has, on its disk and in its Sn
 _Avoid_: Ignored path (computer's term), excluded path
 
 **Snapshot**:
-A saved copy of a Container's disk, restored when a Container starts so what was installed comes back without downloading: a Workspace's, taken when its Container stops for being idle, and an Environment's Build.
+A saved copy of a Container's disk, restored when a Container starts so what was installed comes back without downloading: a Workspace's, taken when its Container stops for being idle (unless nothing that may change its disk ran since its restore), and an Environment's Build.
 _Avoid_: Backup, checkpoint, image (for the saved disk)
 
 **Registry**:
