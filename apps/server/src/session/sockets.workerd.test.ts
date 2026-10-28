@@ -1133,13 +1133,12 @@ describe("a Changes watch", () => {
       result: null,
     });
 
-    const lists = changeLists(
-      await client.until(
-        (messages) =>
-          Arr.some(changeLists(messages), (list) => list.conversationId === root) &&
-          Arr.some(changeLists(messages), (list) => list.conversationId === undefined),
-      ),
-    );
+    // The Session's list and the conversation's, in either order, beside any other list of the Session's.
+    const listsBoth = (messages: readonly ServerMessage[]) =>
+      Arr.some(changeLists(messages), (list) => list.conversationId === root) &&
+      Arr.some(changeLists(messages), (list) => list.conversationId === undefined);
+
+    const lists = changeLists(await client.until(listsBoth));
 
     expect(lists).toEqual(expect.arrayContaining([sent, { ...sent, conversationId: root }]));
     // The root works in the Session's Workspace: its watch shares the Session's listing, which never runs more than
@@ -1172,9 +1171,10 @@ describe("a Changes watch", () => {
 
     client.send({ type: "unwatch", id: "wake", conversationId: root });
     await client.answer("wake");
-    expect(
-      changeLists(await client.until((messages) => changeLists(messages).length >= 2, before)),
-    ).toEqual(expect.arrayContaining([sent, { ...sent, conversationId: root }]));
+    // A list of the Session's from before the eviction may land first: wait for both, not for any two.
+    expect(changeLists(await client.until(listsBoth, before))).toEqual(
+      expect.arrayContaining([sent, { ...sent, conversationId: root }]),
+    );
 
     client.send({ type: "unwatch_changes", id: "unwatch", conversationId: root });
     await client.answer("unwatch");
