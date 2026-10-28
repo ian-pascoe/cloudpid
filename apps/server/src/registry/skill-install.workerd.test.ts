@@ -517,7 +517,7 @@ describe("installing Skills from GitHub", () => {
     expect(results.find((result) => result.name === "Bad_Name")?.message).toContain("lowercase");
   });
 
-  it("keeps the Skills for every Environment as the owner approved, recording them under * and saying whose own Skill hides one", async () => {
+  it("keeps the Skills for every Environment recorded under *, as approved when the install says so, and names the Environments whose own Skill hides one", async () => {
     const [installed, listed, changes, set] = await inRegistry(
       async ({ install, skills, changes, context }) => {
         const own = { "SKILL.md": skillMd("tdd", "Mine.") };
