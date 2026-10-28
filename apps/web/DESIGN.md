@@ -1,5 +1,5 @@
 ---
-name: Pi on Cloudflare
+name: cloudpid
 description: The owner's always-on coding agent, read and steered like a lab notebook.
 colors:
   primary: "oklch(0.32 0.06 255)"
@@ -128,7 +128,7 @@ components:
     padding: "8px 16px"
 ---
 
-# Design System: Pi on Cloudflare
+# Design System: cloudpid
 
 ## Overview
 

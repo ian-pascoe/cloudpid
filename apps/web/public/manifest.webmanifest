@@ -1,6 +1,6 @@
 {
-  "name": "Pi on Cloudflare",
-  "short_name": "Pi",
+  "name": "cloudpid",
+  "short_name": "cloudpid",
   "description": "A personal coding agent on Cloudflare",
   "start_url": "/",
   "scope": "/",
