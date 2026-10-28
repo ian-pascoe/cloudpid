@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- in-memory fakes of the Registry over native arrays.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- in-memory fakes of the Registry over native arrays.
 
 // The Skills page and the Environments page's Skills line, rendered with `react-dom/server` over the fake Registry: the
 // queries a page reads are settled first, so the markup shows what they answered.
