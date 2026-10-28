@@ -10,9 +10,11 @@ import {
   type EnvironmentSkill,
   type SkillInstall,
   type SkillInstalledIn,
+  type SkillSource,
   type SkillUpdate,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import { skillPagePath } from "./router.ts";
 
 /** The names of the Skills kept for every Environment that an Environment gets, and of its own that override one. */
 export type InheritedSkills = {
@@ -149,3 +151,43 @@ export const installSource = (source: string, ref?: string): string =>
   ref === undefined || ref === ""
     ? source.trim()
     : `https://github.com/${source.trim()}/tree/${encodeURIComponent(ref)}`;
+
+/**
+ * The page of the Skill an installed copy came from: `/skills/:owner/:repo/:skill` at the ref it was installed from, naming
+ * the Skill's folder (so two Skills of a repo that share a name are not mixed up). Null when the Skill source's repo is
+ * not an `owner/repo` of GitHub's.
+ */
+export const skillPageOfSource = (name: string, source: SkillSource): string | null => {
+  const github = githubSource(source.repo);
+
+  return github === null
+    ? null
+    : skillPagePath(github.owner, github.repo, name, source.ref ?? undefined, source.path);
+};
+
+/**
+ * The copies among `skills` (one scope's) that came from the Skill in folder `path` of `repo` (GitHub's names ignore
+ * case): matched by Skill source, as the Registry's badges are, never by name alone.
+ */
+export const copiesOfSkill = (
+  skills: readonly EnvironmentSkill[],
+  repo: string,
+  path: string,
+): readonly EnvironmentSkill[] =>
+  skills.filter(
+    ({ source }) =>
+      source !== undefined &&
+      source.repo.toLowerCase() === repo.toLowerCase() &&
+      source.path === path,
+  );
+
+/** A SKILL.md without its frontmatter (the leading `---` block), which the page shows as the Skill's name and description. */
+export const skillMdBody = (text: string): string => {
+  const frontmatter = /^\uFEFF?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/.exec(text);
+
+  return frontmatter === null ? text : text.slice(frontmatter[0].length).replace(/^(?:\r?\n)+/, "");
+};
+
+/** A file of a repo on GitHub, at `commit`: `path` is the file's in the repo. */
+export const githubFileUrl = (repo: string, commit: string, path: string): string =>
+  `https://github.com/${repo}/blob/${commit}/${path.split("/").map(encodeURIComponent).join("/")}`;

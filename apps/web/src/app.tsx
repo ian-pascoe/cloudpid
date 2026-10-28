@@ -21,6 +21,7 @@ import { EnvironmentsPage } from "./environments-page.tsx";
 import { SkillDirectoryPage, SkillsPage } from "./skills-page.tsx";
 import { SkillOwnerPage } from "./skills-owner.tsx";
 import { SkillRepoPage } from "./skills-repo.tsx";
+import { SkillPage } from "./skills-skill.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
 
 /**
@@ -172,7 +173,7 @@ export const App = () => {
             skillOwner: ({ owner }) => <SkillOwnerPage owner={owner} />,
             skillRepo: ({ owner, repo }) => <SkillRepoPage owner={owner} repo={repo} />,
             skill: ({ owner, repo, skill }) => (
-              <SkillDirectoryPage path={`${owner}/${repo}/${skill}`} />
+              <SkillPage owner={owner} repo={repo} skill={skill} />
             ),
             draft: () => <DraftComposer />,
             // On a wide screen the start page is the draft; a narrow one shows the list alone (`listOnly`).

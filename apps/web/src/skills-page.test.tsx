@@ -549,14 +549,14 @@ describe("the Installed tab", () => {
   );
 
   it.effect(
-    "links a Skill with a Skill source to GitHub, and opens the kept files of one with none",
+    "links a Skill with a Skill source to its page, and opens the kept files of one with none",
     () =>
       Effect.gen(function* () {
         const work = section(yield* renderSkills("?environment=work"), "Work") ?? "";
 
-        expect(work).toContain(
-          `href="https://github.com/mattpocock/skills/tree/${COMMIT}/skills/tdd"`,
-        );
+        // The Skill's page, naming its folder and the ref it was installed from, and no longer GitHub at the commit.
+        expect(work).toContain('href="/skills/mattpocock/skills/tdd?path=skills%2Ftdd"');
+        expect(work).not.toContain("github.com/mattpocock/skills/tree");
         expect(work).toContain('aria-label="View the files of notes"');
         expect(work).not.toContain('aria-label="View the files of tdd"');
         expect(work).not.toContain('aria-label="Update notes"');

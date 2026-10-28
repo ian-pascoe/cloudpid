@@ -11,8 +11,8 @@ import {
   type SessionRecord,
   type SkillFile,
   type SkillInstall,
+  type SkillSource,
   skillSourceText,
-  skillSourceUrl,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -49,6 +49,7 @@ import {
   inheritedSkills,
   installedScopes,
   installOutcomeLines,
+  skillPageOfSource,
   updateOutcomeLines,
 } from "./skills.ts";
 
@@ -470,6 +471,135 @@ const SkillFilesViewer = ({ id, name }: { id: string; name: string }) => {
 };
 
 /**
+ * Where an installed Skill came from, as a link to the Skill's page (its SKILL.md and files, read from GitHub at the ref it
+ * was installed from); plain text for a Skill source whose repo is not one of GitHub's.
+ */
+const SourceLink = ({ skill, source }: { skill: EnvironmentSkill; source: SkillSource }) => {
+  const href = skillPageOfSource(skill.name, source);
+
+  return href === null ? (
+    <span className="truncate font-mono text-xs text-muted-foreground">
+      {skillSourceText(source)}
+    </span>
+  ) : (
+    <InAppLink
+      href={href}
+      className="truncate font-mono text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+      title="Open this skill's page: its SKILL.md and files"
+    >
+      {skillSourceText(source)}
+    </InAppLink>
+  );
+};
+
+/** The marks of a Skill: edited by the agent since it was installed, and behind its ref at its Skill source. */
+export const SkillMarks = ({ skill }: { skill: EnvironmentSkill }) =>
+  skill.modified === true || skill.updateAvailable === true ? (
+    <span className="flex flex-wrap gap-1 text-xs">
+      {skill.modified === true && (
+        <span
+          className="rounded border border-amber-500/60 px-1 text-amber-600 dark:text-amber-400"
+          title="The agent edited this skill after it was installed. An update replaces the edits."
+        >
+          modified
+        </span>
+      )}
+      {skill.updateAvailable === true && (
+        <span
+          className="rounded border border-sky-500/60 px-1 text-sky-600 dark:text-sky-400"
+          title="Its folder changed at its Skill source, on the ref it was installed from."
+        >
+          update available
+        </span>
+      )}
+    </span>
+  ) : null;
+
+/**
+ * Update (a Skill with a Skill source only) and Remove of Skill `skill` of scope `id`: each opens its confirm, which
+ * `SkillDialogs` of the same scope shows.
+ */
+export const SkillRowActions = ({ id, skill }: { id: string; skill: EnvironmentSkill }) => {
+  const setRemoving = useAtomSet(skillDialogAtom(id));
+  const forgetRemove = useAtomSet(removeSkillAtom(id));
+  const setUpdating = useAtomSet(skillUpdateDialogAtom(id));
+  const forgetUpdate = useAtomSet(updateSkillAtom(id));
+
+  return (
+    <>
+      {skill.source !== undefined && (
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-8 shrink-0"
+          aria-label={`Update ${skill.name}`}
+          title={`Update ${skill.name}`}
+          onClick={() => {
+            forgetUpdate(Atom.Reset);
+            setUpdating(skill.name);
+          }}
+        >
+          <RefreshCw />
+        </Button>
+      )}
+      <Button
+        size="icon"
+        variant="ghost"
+        className="size-8 shrink-0"
+        aria-label={`Remove ${skill.name}`}
+        title={`Remove ${skill.name}`}
+        onClick={() => {
+          forgetRemove(Atom.Reset);
+          setRemoving(skill.name);
+        }}
+      >
+        <Trash2 />
+      </Button>
+    </>
+  );
+};
+
+/** The confirms Remove and Update of scope `id` open, for the Skills it keeps (`skills`, null while they load). */
+export const SkillDialogs = ({
+  id,
+  skills,
+}: {
+  id: string;
+  skills: ReadonlyArray<EnvironmentSkill> | null;
+}) => {
+  const [removing, setRemoving] = useAtom(skillDialogAtom(id));
+  const removed = useAtomValue(removeSkillAtom(id));
+  const [updating, setUpdating] = useAtom(skillUpdateDialogAtom(id));
+  const updated = useAtomValue(updateSkillAtom(id));
+  const updatingSkill = skills?.find((skill) => skill.name === updating);
+
+  return (
+    <>
+      <Dialog
+        open={removing !== null}
+        onClose={() => {
+          setRemoving(null);
+        }}
+        dismissible={!removed.waiting}
+        title={`Remove the ${removing ?? ""} skill?`}
+      >
+        {removing !== null && <RemoveSkillDialog id={id} name={removing} />}
+      </Dialog>
+      <Dialog
+        open={updating !== null}
+        onClose={() => {
+          setUpdating(null);
+        }}
+        dismissible={!updated.waiting}
+        title={`Update the ${updating ?? ""} skill?`}
+      >
+        {updatingSkill !== undefined && <UpdateSkillDialog id={id} skill={updatingSkill} />}
+      </Dialog>
+    </>
+  );
+};
+
+/**
  * The Skills Environment `id` keeps (ADR-0026), or `EVERY_ENVIRONMENT` those kept for every Environment: each one's
  * name, description and when it was saved, with its Skill source when it was installed from GitHub, and a removal
  * behind a confirmation. The agent saves them (those for every Environment only with your Approval) and installs them
@@ -480,15 +610,8 @@ export const SkillsSection = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSkillsAtom(id));
   const everywhere = id === EVERY_ENVIRONMENT;
   const every = useAtomValue(environmentSkillsAtom(EVERY_ENVIRONMENT));
-  const [removing, setRemoving] = useAtom(skillDialogAtom(id));
-  const removed = useAtomValue(removeSkillAtom(id));
-  const forgetRemove = useAtomSet(removeSkillAtom(id));
-  const [updating, setUpdating] = useAtom(skillUpdateDialogAtom(id));
-  const updated = useAtomValue(updateSkillAtom(id));
-  const forgetUpdate = useAtomSet(updateSkillAtom(id));
   const skills = loaded.pipe(AsyncResult.value, Option.getOrNull);
   const loadError = failureOf(loaded);
-  const updatingSkill = skills?.find((skill) => skill.name === updating);
   const [viewing, setViewing] = useAtom(skillFilesDialogAtom(id));
 
   const { inherited, overridden } =
@@ -545,66 +668,10 @@ export const SkillsSection = ({ id }: { id: string }) => {
                   {/* @effect-diagnostics-next-line globalDate:off */}
                   Saved {relativeTime(skill.savedAt, Date.now())}
                 </span>
-                {skill.source !== undefined && (
-                  <a
-                    href={skillSourceUrl(skill.source)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="truncate font-mono text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-                    title="Open this skill on GitHub at the commit it was installed at"
-                  >
-                    {skillSourceText(skill.source)}
-                  </a>
-                )}
-                {(skill.modified === true || skill.updateAvailable === true) && (
-                  <span className="flex flex-wrap gap-1 text-xs">
-                    {skill.modified === true && (
-                      <span
-                        className="rounded border border-amber-500/60 px-1 text-amber-600 dark:text-amber-400"
-                        title="The agent edited this skill after it was installed. An update replaces the edits."
-                      >
-                        modified
-                      </span>
-                    )}
-                    {skill.updateAvailable === true && (
-                      <span
-                        className="rounded border border-sky-500/60 px-1 text-sky-600 dark:text-sky-400"
-                        title="Its folder changed at its Skill source, on the ref it was installed from."
-                      >
-                        update available
-                      </span>
-                    )}
-                  </span>
-                )}
+                {skill.source !== undefined && <SourceLink skill={skill} source={skill.source} />}
+                <SkillMarks skill={skill} />
               </span>
-              {skill.source !== undefined && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-8 shrink-0"
-                  aria-label={`Update ${skill.name}`}
-                  title={`Update ${skill.name}`}
-                  onClick={() => {
-                    forgetUpdate(Atom.Reset);
-                    setUpdating(skill.name);
-                  }}
-                >
-                  <RefreshCw />
-                </Button>
-              )}
-              <Button
-                size="icon"
-                variant="ghost"
-                className="size-8 shrink-0"
-                aria-label={`Remove ${skill.name}`}
-                title={`Remove ${skill.name}`}
-                onClick={() => {
-                  forgetRemove(Atom.Reset);
-                  setRemoving(skill.name);
-                }}
-              >
-                <Trash2 />
-              </Button>
+              <SkillRowActions id={id} skill={skill} />
             </li>
           ))}
         </ul>
@@ -621,26 +688,7 @@ export const SkillsSection = ({ id }: { id: string }) => {
         </p>
       )}
       <AddSkillsForm id={id} />
-      <Dialog
-        open={removing !== null}
-        onClose={() => {
-          setRemoving(null);
-        }}
-        dismissible={!removed.waiting}
-        title={`Remove the ${removing ?? ""} skill?`}
-      >
-        {removing !== null && <RemoveSkillDialog id={id} name={removing} />}
-      </Dialog>
-      <Dialog
-        open={updating !== null}
-        onClose={() => {
-          setUpdating(null);
-        }}
-        dismissible={!updated.waiting}
-        title={`Update the ${updating ?? ""} skill?`}
-      >
-        {updatingSkill !== undefined && <UpdateSkillDialog id={id} skill={updatingSkill} />}
-      </Dialog>
+      <SkillDialogs id={id} skills={skills} />
       <Dialog
         open={viewing !== null}
         onClose={() => {

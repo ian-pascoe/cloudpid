@@ -80,14 +80,15 @@ export interface SkillUpdateRequest {
 
 /**
  * Update Skill `name` of Environment `id` (or `EVERY_ENVIRONMENT`) to the latest commit of its ref, on the owner's word:
- * no Approval, and no Agent change, so no revert. It answers how the Skill went; the Skills list asks again either way.
+ * no Approval, and no Agent change, so no revert. It answers how the Skill went; the Skills list, and the badges of the
+ * pages that show where a Skill is installed (the `skill-badges` key), ask again either way.
  */
 export const updateSkillAtom = Atom.family((id: string) =>
   appRuntime.fn(
     ({ name, overwrite }: SkillUpdateRequest) =>
       RegistryClient.use((registry) =>
         registry("updateEnvironmentSkills", { environment: id, names: [name], overwrite }),
-      ).pipe(changing([`environment-skills:${id}`])),
+      ).pipe(changing([`environment-skills:${id}`, "skill-badges"])),
     { concurrent: true },
   ),
 );
@@ -102,7 +103,7 @@ export const removeSkillAtom = Atom.family((id: string) =>
       RegistryClient.use((registry) =>
         registry("removeEnvironmentSkill", { environment: id, name }),
       ).pipe(
-        changing([`environment-skills:${id}`]),
+        changing([`environment-skills:${id}`, "skill-badges"]),
         Effect.tap(() =>
           Effect.sync(() => {
             get.set(skillDialogAtom(id), null);
