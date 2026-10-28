@@ -14,20 +14,18 @@ const CardState = ScopedAtom.make(() =>
 );
 
 /**
- * The classes of a value on the card: one line as a sentence, several (a Skill's files, as written) in a fixed-width
- * box that keeps its lines and scrolls when long.
+ * The classes of a value on the card: one line as a sentence, several (a Skill's files, as written) in fixed-width
+ * text that keeps its lines. The card's body bounds and scrolls them.
  */
 const valueClass = (value: string): string =>
-  value.includes("\n")
-    ? "max-h-72 overflow-auto font-mono text-xs break-words whitespace-pre-wrap"
-    : "break-words";
+  value.includes("\n") ? "font-mono text-xs break-words whitespace-pre-wrap" : "break-words";
 
 /**
  * The card for one Approval request (`docs/spec.md` → Approval): the change the agent wants to make, its target, the
  * value before and after (for a delete, what is deleted), and the agent's reason, with Approve and Decline. A Decline
  * may carry the owner's reason to the agent. The card closes when the Session's next list leaves the request out.
  */
-const ApprovalCard = ({
+const Card = ({
   request,
   disabled,
   onAnswer,
@@ -56,14 +54,17 @@ const ApprovalCard = ({
       <p className="mt-1 text-xs text-muted-foreground">
         {request.target} · <span className="font-mono">{request.tool}</span>
       </p>
-      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-        <dt className="text-muted-foreground">Now</dt>
-        <dd className={valueClass(request.before)}>{request.before}</dd>
-        <dt className="text-muted-foreground">After</dt>
-        <dd className={valueClass(request.after)}>{request.after}</dd>
-        <dt className="text-muted-foreground">Why</dt>
-        <dd className="break-words">{request.reason}</dd>
-      </dl>
+      {/* The values scroll in their own region, so the reason input and the buttons stay in view whatever the size. */}
+      <div className="mt-3 max-h-[30dvh] overflow-y-auto overscroll-contain">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+          <dt className="text-muted-foreground">Now</dt>
+          <dd className={valueClass(request.before)}>{request.before}</dd>
+          <dt className="text-muted-foreground">After</dt>
+          <dd className={valueClass(request.after)}>{request.after}</dd>
+          <dt className="text-muted-foreground">Why</dt>
+          <dd className="break-words">{request.reason}</dd>
+        </dl>
+      </div>
       <label className="mt-3 flex flex-col gap-1 text-sm">
         <span className="text-xs font-medium">
           Reason for a Decline (optional, the agent sees it)
@@ -108,6 +109,17 @@ const ApprovalCard = ({
   );
 };
 
+/** One card, keyed by its request in the list so that it starts unanswered. */
+export const ApprovalCard = (props: {
+  request: ApprovalRequest;
+  disabled: boolean;
+  onAnswer: (approve: boolean, reason: string) => void;
+}) => (
+  <CardState.Provider>
+    <Card {...props} />
+  </CardState.Provider>
+);
+
 /** The cards for the Approval requests waiting for the owner in the Session shown, oldest first. */
 export const ApprovalRequests = () => {
   const sessionId = useShownSessionId();
@@ -117,17 +129,15 @@ export const ApprovalRequests = () => {
   const answer = useAtomSet(answerApprovalAtom(sessionId));
 
   return Arr.map(requests, (request) => (
-    // Keyed by request, so each card starts unanswered.
-    <CardState.Provider key={request.id}>
-      <ApprovalCard
-        request={request}
-        disabled={disabled}
-        onAnswer={(approve, reason) => {
-          answer(
-            approve ? { request: request.id, approve } : { request: request.id, approve, reason },
-          );
-        }}
-      />
-    </CardState.Provider>
+    <ApprovalCard
+      key={request.id}
+      request={request}
+      disabled={disabled}
+      onAnswer={(approve, reason) => {
+        answer(
+          approve ? { request: request.id, approve } : { request: request.id, approve, reason },
+        );
+      }}
+    />
   ));
 };

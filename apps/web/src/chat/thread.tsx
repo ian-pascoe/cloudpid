@@ -33,9 +33,7 @@ import { EarlierHistory } from "./earlier-history.tsx";
 import { ModelPicker, type PickerHandle } from "./model-picker.tsx";
 import { UsageBadge } from "./usage-badge.tsx";
 import { Messages } from "./messages.tsx";
-import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
-import { SecretRequests } from "./secret-form.tsx";
-import { ApprovalRequests } from "./approval-card.tsx";
+import { WaitingRequests } from "./waiting-requests.tsx";
 import type { Rename } from "./title-state.ts";
 
 /** An archived Session: read-only until the owner unarchives it, which resolves to null or why it failed. */
@@ -463,11 +461,7 @@ export const Thread = ({
           {problem}
         </p>
       )}
-      <div className="px-4">
-        <BrowserHandoffRequests />
-        <SecretRequests />
-        <ApprovalRequests />
-      </div>
+      <WaitingRequests />
       {archived === undefined ? (
         <Composer
           steerLane={lanes.steer}
