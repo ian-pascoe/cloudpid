@@ -904,7 +904,7 @@ describe("Subagent Workspaces", () => {
     await session.settle();
 
     expect(workspaces.requests).toEqual([
-      { agent: "agent-1", parent: null, base: "main", branch: undefined, limit: 3 },
+      { agent: "agent-1", parent: null, base: "main", branch: undefined, limit: 1 },
     ]);
 
     const spawned = (await session.texts("toolResult"))[0];
