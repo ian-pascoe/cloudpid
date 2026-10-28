@@ -3,6 +3,7 @@
 // (`EMPTY_SKILL_SET`, `skill-set-schema.ts`) until one is handed over (`Workspace.updateSkills`).
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { type EagerMount, type MountWriteAPI, WorkerBundle } from "@cloudflare/computer";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { EMPTY_SKILL_SET, SkillSet } from "./skill-set-schema.ts";
@@ -72,8 +73,15 @@ export const checkSkillSet = (
 /** Where the held set's hash is kept; absent, the Workspace holds the empty set. */
 const HASH_KEY = "cloudpid:skills:hash";
 
-/** Where each file of the held set is kept, under `<prefix><path>`: one entry per file keeps each value small. */
+/**
+ * Where each file of the held set is kept, under `<prefix><path>`, as its UTF-8 bytes: one entry per file keeps each
+ * value under the 2 MB a value may hold, as a file is at most `MAX_FILE_BYTES` of UTF-8 (a string would be serialized
+ * at two bytes a character when it holds one past Latin-1). A set kept before holds strings, which are read as they are.
+ */
 const FILE_PREFIX = "cloudpid:skills:file:";
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 export type SkillSetStorage = {
   readonly kv: SyncKvStorage;
@@ -91,8 +99,10 @@ export const skillSetStore = (storage: SkillSetStorage) => {
 
     const files: Record<string, string> = {};
 
-    for (const [key, content] of storage.kv.list<string>({ prefix: FILE_PREFIX })) {
-      files[key.slice(FILE_PREFIX.length)] = content;
+    for (const [key, content] of storage.kv.list<Uint8Array | string>({ prefix: FILE_PREFIX })) {
+      files[key.slice(FILE_PREFIX.length)] = Predicate.isString(content)
+        ? content
+        : decoder.decode(content);
     }
 
     return { hash, files };
@@ -116,7 +126,7 @@ export const skillSetStore = (storage: SkillSetStorage) => {
         }
 
         for (const [path, content] of Object.entries(set.files)) {
-          storage.kv.put(`${FILE_PREFIX}${path}`, content);
+          storage.kv.put(`${FILE_PREFIX}${path}`, encoder.encode(content));
         }
 
         storage.kv.put(HASH_KEY, set.hash);

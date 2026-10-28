@@ -1,4 +1,5 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
+import { MAX_FILE_BYTES, MAX_SKILL_BYTES } from "@cloudpid/extensions/skill-checks";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { fetchSkills, fetchSkillsAt, GithubReadError, type RepoReader } from "./skill-fetch.ts";
@@ -402,7 +403,7 @@ describe("fetchSkills", () => {
   });
 
   it("skips a Skill with a file the checks refuse, before reading it when its size is in the tree", async () => {
-    const big = "x".repeat(128 * 1024 + 1);
+    const big = "x".repeat(MAX_FILE_BYTES + 1);
 
     const files = {
       "skills/big/SKILL.md": skillMd("big"),
@@ -419,7 +420,7 @@ describe("fetchSkills", () => {
       status: "fetched",
       skills: [{ name: "fine" }],
       skipped: [
-        { name: "big", message: expect.stringContaining("huge.md: 131073 bytes") },
+        { name: "big", message: expect.stringContaining(`huge.md: ${MAX_FILE_BYTES + 1} bytes`) },
         { name: "binary", message: expect.stringContaining("a binary file") },
       ],
     });
@@ -427,13 +428,16 @@ describe("fetchSkills", () => {
     expect(reads).not.toContain("skills/big/huge.md");
   });
 
-  it("skips a Skill whose files together are over 1 MB", async () => {
-    const chunk = "y".repeat(100 * 1024);
+  it("skips a Skill whose files together are over the limit", async () => {
+    const chunk = "y".repeat(1024 * 1024);
 
     const files = {
       "skills/many/SKILL.md": skillMd("many"),
       ...Object.fromEntries(
-        Array.from({ length: 11 }, (_, at) => [`skills/many/part-${at}.md`, chunk]),
+        Array.from({ length: MAX_SKILL_BYTES / chunk.length + 1 }, (_, at) => [
+          `skills/many/part-${at}.md`,
+          chunk,
+        ]),
       ),
     };
 
@@ -443,7 +447,10 @@ describe("fetchSkills", () => {
       status: "fetched",
       skills: [],
       skipped: [
-        { name: "many", message: expect.stringContaining("together, more than the 1048576") },
+        {
+          name: "many",
+          message: expect.stringContaining(`together, more than the ${MAX_SKILL_BYTES}`),
+        },
       ],
     });
   });

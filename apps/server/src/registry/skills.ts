@@ -253,7 +253,7 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
     return true;
   },
   put: (scope, skill, contents, now) => {
-    // One row per text keeps each row far below the 2 MB a row may hold: a file is at most 128 KB.
+    // One row per text keeps each row below the 2 MB a row may hold: a file is at most 1.5 MiB.
     for (const hash of new Set(Record.values(skill.files))) {
       const text = contents.get(hash);
 
@@ -363,7 +363,7 @@ export type CheckedSkill = { readonly name: string; readonly description: string
 /**
  * The Skill in folder `folder` with `files`, as a save checks it (ADR-0026): a `SKILL.md` whose frontmatter names it by
  * the Agent Skills rules (the folder's own name) and describes it in at most 1024 characters, and files that are text,
- * at most 128 KB each and 1 MB together, with nothing that looks like a credential or a local path. Each problem is a
+ * at most 1.5 MiB each and 4 MiB together, with nothing that looks like a credential or a local path. Each problem is a
  * line of the answer.
  */
 export const checkSkill = (

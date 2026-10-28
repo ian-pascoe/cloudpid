@@ -35,6 +35,7 @@ import { fakeFolderEnv, fakeSkills } from "./environment-skills.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
+import { MAX_FILE_BYTES } from "./skill-checks.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
@@ -348,9 +349,9 @@ describe("environment_skill_save", () => {
       "logo.png: a binary file",
     ],
     [
-      "a file over 128 KB",
-      { "/workspace/.cloudpid/tmp/release/big.md": "x".repeat(128 * 1024 + 1) },
-      "big.md: 131073 bytes",
+      "a file over the limit",
+      { "/workspace/.cloudpid/tmp/release/big.md": "x".repeat(MAX_FILE_BYTES + 1) },
+      `big.md: ${MAX_FILE_BYTES + 1} bytes`,
     ],
     [
       "a credential",

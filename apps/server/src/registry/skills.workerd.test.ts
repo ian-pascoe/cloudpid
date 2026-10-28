@@ -4,6 +4,7 @@
 // Workspaces serve, each text kept once, and reverted unless saved again since.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+import { MAX_FILE_BYTES } from "@cloudpid/extensions/skill-checks";
 import { runInDurableObject } from "cloudflare:test";
 import {
   DEFAULT_ENVIRONMENT,
@@ -244,10 +245,10 @@ describe("saving an Environment's Skill", () => {
     ],
     ["a binary file", "release", { ...release, "logo.bin": "PNG\0\0" }, "a binary file"],
     [
-      "a file over 128 KB",
+      "a file over the limit",
       "release",
-      { ...release, "big.md": "x".repeat(128 * 1024 + 1) },
-      "more than the 131072",
+      { ...release, "big.md": "x".repeat(MAX_FILE_BYTES + 1) },
+      `more than the ${MAX_FILE_BYTES}`,
     ],
     [
       "a credential",
