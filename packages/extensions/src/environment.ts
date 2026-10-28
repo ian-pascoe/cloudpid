@@ -467,7 +467,7 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
  * When a change of a Container setting at Global (`field`) applies, whom it does not reach, and whose Build was asked
  * for.
  */
-const describeAppliedGlobal = (
+export const describeAppliedGlobal = (
   field: string,
   { overriddenIn, newBuilds, own }: GlobalChanged,
 ): string =>

@@ -18,7 +18,7 @@ import type {
   KeptSecretListing,
 } from "@cloudpid/extensions/environment";
 import { EnvironmentsError, GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/extensions/environment";
-import { SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
+import { containerOverridesFrom, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import type { BuildView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -582,14 +582,13 @@ export const sessionEnvironments = ({
         }
 
         // The Session's own Workspace takes it now, not at its next readying; one that cannot be reached gets it then.
-        // What it is handed has the variables kept Global merged in, which the change may not have
-        // touched.
+        // It is handed every setting in force, Global's among them, which the change may not have touched.
         if (own?.environment === environment) {
           yield* handToWorkspace(
             own.object,
             Effect.map(
               registry.workspaceOverrides({ environment }),
-              (handed) => handed ?? answer.state.overrides,
+              (handed) => handed ?? containerOverridesFrom(answer.state.settings),
             ),
           );
         }

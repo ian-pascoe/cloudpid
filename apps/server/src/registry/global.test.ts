@@ -163,11 +163,26 @@ describe("saving the Container settings at Global", () => {
     ).toBe(true);
   });
 
-  it("leaves alone an Environment saved larger before it had a limit, whose limit the change leaves as it was", () => {
-    // Its size raises the limit it inherits: a lower limit at Global changes nothing there.
+  it("refuses a limit below the size of an Environment that inherits it, whatever its limit was", () => {
+    // The limit at Global was the Environment's own size: lowering it is refused as lowering it from above is.
+    const documents = store({ "0000abcd": { name: "Web", overrides: { instance: "cpu-2" } } });
+
+    expect(writeGlobal(documents, { maxInstance: "cpu-1" }, 1)).toEqual(
+      Result.fail(
+        expect.stringMatching(/^instance: environment "Web" \(0000abcd\): .*cpu-2.*cpu-1/),
+      ),
+    );
+  });
+
+  it("leaves alone an Environment saved larger before it had a limit, unless the save changes the limit it inherits", () => {
+    // Its size raised the limit it inherits as it was read: a save of another field keeps it as it ran, and a new
+    // limit at Global is checked against its size, as any Environment's.
     const documents = store({ "0000abcd": { name: "Old", overrides: { instance: "standard-3" } } });
 
-    expect(Result.isSuccess(writeGlobal(documents, { maxInstance: "cpu-1" }, 1))).toBe(true);
+    expect(Result.isSuccess(writeGlobal(documents, { idleMinutes: 30 }, 1))).toBe(true);
+    expect(writeGlobal(documents, { maxInstance: "cpu-1" }, 2)).toEqual(
+      Result.fail(expect.stringContaining('environment "Old" (0000abcd)')),
+    );
   });
 
   it("refuses a save that would leave an Environment with more than 50 variables, naming it, and saves nothing", () => {

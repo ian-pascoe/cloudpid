@@ -921,18 +921,25 @@ describe("an Agent change to a Container setting at Global", () => {
     expect(listed).toHaveLength(1);
   });
 
-  it("lowers the limit under an Environment's own size, which keeps its size as its limit", async () => {
-    // As for an Environment saved larger before it had a limit: its size raises the limit it inherits.
-    const [outcome, after] = await inRegistry(({ change, changeAtGlobal, store }) => {
-      change({ field: "instance", value: "cpu-2" });
+  it("refuses a limit under the own size of an Environment that inherits it, naming it", async () => {
+    // The limit at Global was the Environment's own size, cpu-2: a lower one would leave its size above it.
+    const [outcome, listed, after] = await inRegistry(
+      ({ change, changeAtGlobal, changes, store }) => {
+        change({ field: "instance", value: "cpu-2" });
 
-      return [
-        changeAtGlobal({ field: "maxInstance", value: "cpu-1" }, 2_000),
-        environmentSettingsOf(store, DEFAULT_ENVIRONMENT),
-      ];
+        return [
+          changeAtGlobal({ field: "maxInstance", value: "cpu-1" }, 2_000),
+          changes.list(GLOBAL_SCOPE),
+          environmentSettingsOf(store, DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining('environment "Default" (default)'),
     });
-
-    expect(outcome).toMatchObject({ status: "changed" });
+    expect(listed).toEqual([]);
     expect(after?.settings).toMatchObject({ instance: "cpu-2", maxInstance: "cpu-2" });
   });
 

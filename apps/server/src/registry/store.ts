@@ -1,6 +1,5 @@
 import {
   type ContainerSettings,
-  DEFAULT_CONTAINER_SETTINGS,
   resolveContainerOverridesLeniently,
   resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
@@ -293,7 +292,7 @@ export type RegistryStore = {
     newId: () => string,
     now: number,
     /** The Container settings at Global, whose Spare Workspace setting an Environment without an Override inherits. */
-    global?: ContainerSettings,
+    global: ContainerSettings,
   ) => SpareUpkeep;
   /** The id of an Environment's spare, current or stale, or null. */
   readonly getSpare: (environment: string) => string | null;
@@ -1285,7 +1284,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         toWorkspace,
       ),
 
-    upkeepSpares: (environments, newId, now, global = DEFAULT_CONTAINER_SETTINGS) =>
+    upkeepSpares: (environments, newId, now, global) =>
       storage.transactionSync((): SpareUpkeep => {
         const stale: string[] = [];
         const made: SpareSetup[] = [];

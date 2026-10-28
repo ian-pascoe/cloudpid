@@ -3,7 +3,7 @@
 // applied as the owner's reset is (`changeEnvironment` with no value) and recorded as an Agent change whose value after
 // is inherited. A reset of the size limit may raise or lower the largest size the Environment allows, so it is a Limit:
 // it waits for the owner's Approval (`./approvals.ts`), as `environment_container_size_limit_set` does. Global's own
-// settings are not reset here: an Environment's Override is what this tool takes back (`settings_reset` resets Global).
+// settings are not reset here: Global inherits nothing, and its value is changed with the setting's own tool at `*`.
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
 import { compareInstances, INSTANCE_DESCRIPTIONS, InstanceType } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";

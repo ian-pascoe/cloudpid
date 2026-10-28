@@ -129,25 +129,21 @@ export const patchEnvironmentSettings = (
 };
 
 /**
- * Whether the size or size limit in force with `overrides` over Global's differ between Global's `before` and `after`.
- * In force: a limit raised to the size (an Environment saved larger before it had a limit) counts as raised, so a
- * change at Global that leaves such an Environment as it was does not count.
+ * Why the Overrides `overrides` cannot have Global's settings change from `before` to `after` under them, or undefined:
+ * their size would be above their size limit. Checked only when the size or size limit they inherit changes, and
+ * before any raise, so an Environment saved larger than its limit before it had one is left as it ran by any other
+ * change at Global, and checked against a new limit there as every Environment is.
  */
-// @effect-diagnostics-next-line missingPipeableSignature:off -- a comparison, not a combinator.
-export const sizesDiffer = (
-  overrides: ContainerSettingsOverrides,
-  before: ContainerSettings,
-  after: ContainerSettings,
-): boolean => {
-  const was = resolveEnvironmentContainerSettings(before, overrides);
-  const is = resolveEnvironmentContainerSettings(after, overrides);
-
-  return was.instance !== is.instance || was.maxInstance !== is.maxInstance;
-};
-
-/** Why the Overrides `overrides` cannot have Global's `global` under them for their size, or undefined. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a check, not a combinator.
 export const inheritedSizeProblem = (
   overrides: ContainerSettingsOverrides,
-  global: ContainerSettings,
-): string | undefined => instanceLimitProblem(sizesOf(global, overrides));
+  before: ContainerSettings,
+  after: ContainerSettings,
+): string | undefined => {
+  const was = sizesOf(before, overrides);
+  const is = sizesOf(after, overrides);
+
+  return was.instance === is.instance && was.maxInstance === is.maxInstance
+    ? undefined
+    : instanceLimitProblem(is);
+};

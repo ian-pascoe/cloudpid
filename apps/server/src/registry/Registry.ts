@@ -6,11 +6,7 @@ import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import {
-  type ContainerPatch,
-  type ContainerSettings,
-  resolveContainerOverridesLeniently,
-} from "@cloudpid/config";
+import type { ContainerPatch, ContainerSettings } from "@cloudpid/config";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   AgentChange,
@@ -124,6 +120,7 @@ import { type EnvironmentSettingsState, patchEnvironmentSettings } from "./envir
 import {
   environmentSettingsOf,
   globalSettingsOf,
+  overridesOf,
   type GlobalState,
   overriddenIn,
   patchGlobal,
@@ -208,7 +205,7 @@ export type GlobalContainerState = GlobalState & {
 };
 
 /** How saving the Container settings at Global went: once saved, also what they were before. */
-export type GlobalSettingsUpdate =
+export type GlobalContainerUpdate =
   | {
       readonly status: "saved";
       readonly state: GlobalContainerState;
@@ -372,7 +369,7 @@ export type RegistryMethods = {
    */
   readonly updateGlobalContainerSettings: (
     input: ContainerPatch,
-  ) => Effect.Effect<GlobalSettingsUpdate>;
+  ) => Effect.Effect<GlobalContainerUpdate>;
   /**
    * An Agent change (`docs/architecture/agent-changes.md`): give one Container setting at Global a new value, by the
    * rules of `updateGlobalContainerSettings`, and record it with its `author` under the scope `*`. Says which
@@ -1007,8 +1004,8 @@ export const RegistryLive = Registry.make(
             Effect.sync(() => ({ ...readGlobal(store), overriddenIn: overriddenIn(store) })),
           updateGlobalContainerSettings: ({ set, reset }) =>
             Clock.currentTimeMillis.pipe(
-              Effect.map((now): GlobalSettingsUpdate =>
-                state.raw.storage.transactionSync((): GlobalSettingsUpdate => {
+              Effect.map((now): GlobalContainerUpdate =>
+                state.raw.storage.transactionSync((): GlobalContainerUpdate => {
                   const previous = globalSettingsOf(store);
                   const saved = patchGlobal(store, { set, reset }, now);
 
@@ -1065,9 +1062,7 @@ export const RegistryLive = Registry.make(
                 id: record.id,
                 name: record.name,
                 repos: record.repos,
-                overrides: resolveContainerOverridesLeniently(
-                  store.getEnvironmentSettings(record.id) ?? {},
-                ).overrides,
+                overrides: overridesOf(store, record.id),
               }));
 
               const reach = yield* Effect.promise(() =>
@@ -1397,9 +1392,7 @@ export const RegistryLive = Registry.make(
                   Effect.map((digest): BuildWork => ({
                     environment: environment.id,
                     repos: environment.repos,
-                    overrides: resolveContainerOverridesLeniently(
-                      store.getEnvironmentSettings(environment.id) ?? {},
-                    ).overrides,
+                    overrides: overridesOf(store, environment.id),
                     global,
                     recorded,
                     // The values a Build gets, as a keyed digest only: the key is stored and shown in the clear.

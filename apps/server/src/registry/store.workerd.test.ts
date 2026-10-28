@@ -1,12 +1,13 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { DEFAULT_ENVIRONMENT, MAX_ENVIRONMENT_SECRETS, SPARE_BRANCH } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import { GLOBAL_DOCUMENT, readGlobal, writeGlobal } from "./global.ts";
+import { GLOBAL_DOCUMENT, globalSettingsOf, readGlobal, writeGlobal } from "./global.ts";
 import {
   MIGRATIONS,
   migrate,
@@ -225,7 +226,7 @@ describe("the Registry store", () => {
     expect(await registry.getDocument("settings")).toBe('{"a":1}');
   });
 
-  it("keeps the variables at Global in a document, across an eviction, with no migration of its own", async () => {
+  it("keeps the Container settings at Global in a document, across an eviction, with no migration of its own", async () => {
     const registry = fresh();
 
     await runInDurableObject(registry, (_: TestRegistry, state) => {
@@ -239,7 +240,7 @@ describe("the Registry store", () => {
       const store = openRegistryStore(state.storage);
 
       expect(readGlobal(store)).toEqual({
-        settings: { variables: { EMAIL: "me@test" } },
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: { EMAIL: "me@test" } },
         overrides: { variables: { EMAIL: "me@test" } },
       });
       expect(store.getDocument(GLOBAL_DOCUMENT)).toBe('{"variables":{"EMAIL":"me@test"}}');
@@ -1282,7 +1283,9 @@ describe("the Registry store", () => {
 
         const store = openRegistryStore(storage);
 
-        expect(store.upkeepSpares(["0000abcd"], () => "6b6b6b6b", 6)).toEqual({
+        expect(
+          store.upkeepSpares(["0000abcd"], () => "6b6b6b6b", 6, globalSettingsOf(store)),
+        ).toEqual({
           stale: [],
           made: [],
         });
@@ -1299,7 +1302,9 @@ describe("the Registry store", () => {
           status: null,
         });
 
-        expect(store.upkeepSpares(["0000abcd"], () => "6b6b6b6b", 8)).toEqual({
+        expect(
+          store.upkeepSpares(["0000abcd"], () => "6b6b6b6b", 8, globalSettingsOf(store)),
+        ).toEqual({
           stale: ["5a5a5a5a"],
           made: [],
         });

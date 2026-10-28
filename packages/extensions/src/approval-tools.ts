@@ -45,6 +45,7 @@ import {
   credentialCheck,
   type DeployCredentials,
   describeApplied,
+  describeAppliedGlobal,
   refuseGlobal,
   Environments,
   EnvironmentsError,
@@ -681,7 +682,7 @@ export const ApprovalTools: Effect.Effect<
                     output: [
                       {
                         type: "text" as const,
-                        text: `The user approved: the size limit of ${named(applied.environment)} was ${maxInstance}, and is ${size} now. environment_container_resize and container_resize may now use sizes up to ${size}. ${describeApplied(own, applied.newBuild)} The change is recorded as approved, with your reason; the user can revert it on the Environments page.`,
+                        text: `The user approved: the size limit of ${named(applied.environment)} was ${maxInstance}, and is ${size} now. environment_container_resize and container_resize may now use sizes up to ${size}. ${applied.global === undefined ? describeApplied(own, applied.newBuild) : describeAppliedGlobal("maxInstance", applied.global)} The change is recorded as approved, with your reason; the user can revert it on the Environments page.`,
                       },
                     ],
                     details: {

@@ -210,12 +210,24 @@ const setUp = async ({
               return { status: "changed-since" as const, current: before };
             }
 
-            return {
+            const changed = {
               status: "changed" as const,
               environment: { id: known.id, name: known.name },
               change: change({ scope: environment, field, before, after: value, approved: true }),
               newBuild: false,
             };
+
+            // At Global, one Environment overrides the limit and one inherits it, wanting a Build.
+            return environment === "*"
+              ? {
+                  ...changed,
+                  global: {
+                    overriddenIn: [{ id: "0000abcd", name: "Web" }],
+                    newBuilds: [{ id: "default", name: "Default" }],
+                    own: true,
+                  },
+                }
+              : changed;
           }),
       }),
       Effect.provideService(EnvironmentRemoval, {
@@ -664,6 +676,8 @@ describe("environment_container_size_limit_set", () => {
     expect(text).toContain(
       "The user approved: the size limit of Global was cpu-2, and is cpu-3 now",
     );
+    expect(text).toContain('it does not reach Environment "Web" (0000abcd), which override it');
+    expect(text).toContain('a new Build was asked for in Environment "Default" (default)');
     expect(logged).toEqual([
       {
         tool: "environment_container_size_limit_set",

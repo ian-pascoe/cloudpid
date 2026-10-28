@@ -17,7 +17,7 @@ import {
   resolveContainerSettings,
   resolveContainerSettingsLeniently,
 } from "@cloudpid/config";
-import type { OverridingEnvironment } from "@cloudpid/protocol";
+import { type OverridingEnvironment, variableField } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
@@ -27,7 +27,6 @@ import {
   type EnvironmentSettingsState,
   inheritedSizeProblem,
   readEnvironmentSettings,
-  sizesDiffer,
 } from "./environment-settings.ts";
 import type { DocumentStore } from "./settings.ts";
 import type { RegistryStore } from "./store.ts";
@@ -77,17 +76,25 @@ export const globalSettingsOf = (
 ): ContainerSettings => readGlobal(documents).settings;
 
 /** The store as the Container settings at Global are read and saved with the Environments that inherit them. */
-export type GlobalStore = DocumentStore &
-  Pick<RegistryStore, "listEnvironments" | "getEnvironmentSettings">;
+export type GlobalStore = DocumentStore & OverridesStore;
+
+/** The store as the Environments' Overrides are read. */
+type OverridesStore = Pick<RegistryStore, "listEnvironments" | "getEnvironmentSettings">;
+
+/** `environment`'s saved Overrides that still resolve (none for one not registered). */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a store read, not a combinator.
+export const overridesOf = (
+  store: Pick<RegistryStore, "getEnvironmentSettings">,
+  environment: string,
+): ContainerSettingsOverrides =>
+  resolveContainerOverridesLeniently(store.getEnvironmentSettings(environment) ?? {}).overrides;
 
 /** Each Environment's Overrides that still resolve, with its id and name. */
-const overridesOfEach = (
-  store: Pick<RegistryStore, "listEnvironments" | "getEnvironmentSettings">,
-) =>
+const overridesOfEach = (store: OverridesStore) =>
   Arr.map(store.listEnvironments(), ({ id, name }) => ({
     id,
     name,
-    overrides: resolveContainerOverridesLeniently(store.getEnvironmentSettings(id) ?? {}).overrides,
+    overrides: overridesOf(store, id),
   }));
 
 /**
@@ -119,9 +126,7 @@ export const writeGlobal = (
         const named = `environment ${JSON.stringify(name)} (${id})`;
         const variables = mergedVariablesProblem(overrides.variables ?? {}, settings.variables);
 
-        const size = sizesDiffer(overrides, previous, settings)
-          ? inheritedSizeProblem(overrides, settings)
-          : undefined;
+        const size = inheritedSizeProblem(overrides, previous, settings);
 
         return [
           ...(size === undefined
@@ -162,7 +167,7 @@ export const patchGlobal = (
  * out.
  */
 export const overriddenIn = (
-  store: Pick<RegistryStore, "listEnvironments" | "getEnvironmentSettings">,
+  store: OverridesStore,
 ): Record<string, ReadonlyArray<OverridingEnvironment>> => {
   const fields: Record<string, Array<OverridingEnvironment>> = {};
 
@@ -172,7 +177,7 @@ export const overriddenIn = (
         CONTAINER_SETTING_NAMES,
         (field) => field !== "variables" && overrides[field] !== undefined,
       ),
-      ...Arr.map(Record.keys(overrides.variables ?? {}), (variable) => `variables.${variable}`),
+      ...Arr.map(Record.keys(overrides.variables ?? {}), variableField),
     ];
 
     for (const path of paths) (fields[path] ??= []).push({ id, name });
