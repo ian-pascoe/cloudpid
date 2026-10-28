@@ -103,6 +103,7 @@ const inRegistry = <A>(
       input: {
         source: string;
         skills?: string[];
+        folders?: string[];
         owner?: boolean;
         environment?: string;
         pin?: SkillInstallPin;
@@ -141,11 +142,16 @@ const inRegistry = <A>(
         changes,
         storage: state.storage,
         context,
-        install: (reader, { source, skills: names, owner = false, environment, pin }, at = 1_000) =>
+        install: (
+          reader,
+          { source, skills: names, folders, owner = false, environment, pin },
+          at = 1_000,
+        ) =>
           installSkills(context(at), reader, {
             environment: environment ?? DEFAULT_ENVIRONMENT,
             source,
             skills: names,
+            folders,
             author: owner ? null : { ...author, approved: environment === "*" ? true : undefined },
             pin,
           }),
@@ -709,6 +715,91 @@ describe("installing Skills from GitHub", () => {
         },
       ],
     });
+  });
+
+  it("installs exactly the folders the owner picked: two folders that declare one name, and a name that is another folder's", async () => {
+    const files = {
+      "skills/claude/tdd/SKILL.md": skillMd("tdd", "Claude's."),
+      "skills/codex/tdd/SKILL.md": skillMd("tdd", "Codex's."),
+      // A folder named foo that holds the Skill bar, beside a folder named bar that holds baz.
+      "skills/foo/SKILL.md": skillMd("bar"),
+      "skills/bar/SKILL.md": skillMd("baz"),
+    };
+
+    const [codex, foo, both, kept] = await inRegistry(async ({ install, skills }) => {
+      const codex = await install(readerOf(files), {
+        source: "o/skills",
+        folders: ["skills/codex/tdd"],
+        owner: true,
+        environment: "*",
+      });
+
+      const foo = await install(readerOf(files), {
+        source: "o/skills",
+        folders: ["skills/foo"],
+        owner: true,
+        environment: "*",
+      });
+
+      // Both tdd folders at once: the Environment keeps a Skill by name, so the second is refused, said, not swapped.
+      const both = await install(readerOf(files), {
+        source: "o/skills",
+        folders: ["skills/claude/tdd", "skills/codex/tdd"],
+        owner: true,
+        environment: DEFAULT_ENVIRONMENT,
+      });
+
+      return [codex, foo, both, [skills.list("*"), skills.list(DEFAULT_ENVIRONMENT)]] as const;
+    });
+
+    expect(codex).toMatchObject({
+      status: "installed",
+      results: [{ name: "tdd", path: "skills/codex/tdd", outcome: "installed" }],
+    });
+    expect(foo).toMatchObject({
+      results: [{ name: "bar", path: "skills/foo", outcome: "installed" }],
+    });
+    expect(both).toMatchObject({
+      results: [
+        { name: "tdd", path: "skills/claude/tdd", outcome: "installed" },
+        { name: "tdd", path: "skills/codex/tdd", outcome: "rejected" },
+      ],
+    });
+    // What is kept says the folder that was picked, so a badge by repo and folder lands on that row, and the other
+    // folders of the repo are not installed.
+    expect(kept[0].map(({ name, source }) => [name, source?.path])).toEqual([
+      ["bar", "skills/foo"],
+      ["tdd", "skills/codex/tdd"],
+    ]);
+    expect(kept[1].map(({ name, source }) => [name, source?.path])).toEqual([
+      ["tdd", "skills/claude/tdd"],
+    ]);
+  });
+
+  it("installs by folder from a repo too large to choose by name in, where a name install is refused", async () => {
+    const files: Record<string, string> = {};
+
+    for (let at = 0; at < 205; at += 1) {
+      files[`skills/f${at}/SKILL.md`] = skillMd(`n${at}`);
+    }
+
+    const [byFolder, byName] = await inRegistry(async ({ install }) => [
+      await install(readerOf(files), {
+        source: "o/skills",
+        folders: ["skills/f7", "skills/f204"],
+        owner: true,
+      }),
+      await install(readerOf(files), { source: "o/skills", skills: ["n7"], owner: true }),
+    ]);
+
+    expect(byFolder).toMatchObject({
+      status: "installed",
+      results: [
+        { name: "n7", path: "skills/f7", outcome: "installed" },
+        { name: "n204", path: "skills/f204", outcome: "installed" },
+      ],
+    });
+    expect(byName).toMatchObject({ status: "refused", message: expect.stringContaining("205") });
   });
 
   it("refuses a preview of more Skills than one Approval shows, before reading their files", async () => {

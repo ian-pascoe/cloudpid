@@ -147,5 +147,5 @@ export const changeText = (change: number): string =>
  */
 export const installSource = (source: string, ref?: string): string =>
   ref === undefined || ref === ""
-    ? source
-    : `https://github.com/${source}/tree/${encodeURIComponent(ref)}`;
+    ? source.trim()
+    : `https://github.com/${source.trim()}/tree/${encodeURIComponent(ref)}`;

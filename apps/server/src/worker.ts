@@ -19,6 +19,8 @@ import { hello } from "./hello.ts";
 import { buildUpkeep } from "./registry/builds.ts";
 import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
 import { skillDirectoryOver } from "./registry/skill-directory.ts";
+import { githubSkillReader } from "./registry/skill-reader.ts";
+import { skillReposOver } from "./registry/skill-repo.ts";
 import { searchSkillsSh } from "./registry/skill-search.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import {
@@ -207,7 +209,19 @@ export default class Server extends Cloudflare.Worker<Server>()(
 
     // The draft's Start from menu, asked of GitHub with a read-only token of the GitHub App; each repo's list is kept for
     // 60 s per isolate, and the token until less than 45 minutes are left of it.
-    const branches = draftBranches(githubBranches(yield* GitHubAppConfig));
+    const github = yield* GitHubAppConfig;
+    const branches = draftBranches(githubBranches(github));
+
+    // The repo page's Skills, read with a read-only token of the GitHub App (one reader, so one token) and kept by blob in
+    // the Worker's cache (a Durable Object has none). `caches` exists only in a request's isolate, not where the stack is
+    // planned (`alchemy dev` and a deploy run this init in Node), so the cache is looked up per call.
+    const skillRepos = skillReposOver({
+      reader: githubSkillReader(github),
+      cache: {
+        match: (url) => caches.default.match(url),
+        put: (url, response) => caches.default.put(url, response),
+      },
+    });
 
     return {
       fetch: Effect.gen(function* () {
@@ -237,6 +251,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
             skillSearch: searchSkillsSh,
             // The Worker's own cache: a Durable Object has none.
             skillDirectory: skillDirectoryOver({ cache: caches.default }),
+            skillRepos,
             background: (effect) => execution.waitUntil(effect),
           });
 

@@ -204,13 +204,62 @@ export const skillsPath = (params: Partial<SkillsParams> = {}): string => {
 export const skillOwnerPath = (owner: string): string =>
   `${SKILLS_PATH}/${encodeURIComponent(owner)}`;
 
-/** The page of a repo's Skills. */
-export const skillRepoPath = (owner: string, repo: string): string =>
-  `${skillOwnerPath(owner)}/${encodeURIComponent(repo)}`;
+/** `?ref=<ref>` (the branch, tag or commit a repo's page shows), or `""` for the default branch. */
+const refQuery = (ref: string | undefined): string =>
+  ref === undefined || ref === "" ? "" : `?ref=${encodeURIComponent(ref)}`;
 
-/** The page of one Skill of a repo. */
-export const skillPagePath = (owner: string, repo: string, skill: string): string =>
-  `${skillRepoPath(owner, repo)}/${encodeURIComponent(skill)}`;
+/** The page of a repo's Skills, at `ref` (a branch, tag or commit) when one is named, else the default branch. */
+export const skillRepoPath = (owner: string, repo: string, ref?: string): string =>
+  `${skillOwnerPath(owner)}/${encodeURIComponent(repo)}${refQuery(ref)}`;
+
+/** What a Skill's page link names beyond the Skill: the ref, and the folder that holds the Skill. */
+export interface SkillPageTarget {
+  /** The branch, tag or commit; absent for the repo's default branch. */
+  readonly ref?: string | undefined;
+  /**
+   * The folder (repo-relative, `""` for the repo's root) that holds the Skill: what makes the link exact when the Skill's
+   * name in the path is not (two folders can share a folder name or declare one name). Absent when the link does not know it.
+   */
+  readonly path?: string | undefined;
+}
+
+/** The page of one Skill of a repo, at `target.ref` and in the folder `target.path` when they are named. */
+export const skillPagePath = (
+  owner: string,
+  repo: string,
+  skill: string,
+  { ref, path }: SkillPageTarget = {},
+): string => {
+  const query = new URLSearchParams();
+
+  if (ref !== undefined && ref !== "") query.set("ref", ref);
+
+  if (path !== undefined) query.set("path", path);
+
+  return `${skillOwnerPath(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(skill)}${query.size === 0 ? "" : `?${query.toString()}`}`;
+};
+
+/** What a repo's or a Skill's page names in its query. */
+export interface SkillRepoParams {
+  /** The branch, tag or commit to show; undefined (also for an empty `?ref=`) is the repo's default branch. */
+  readonly ref: string | undefined;
+  /**
+   * The Skill page's folder (`?path=`): the folder that holds the Skill, `""` for the repo's root, undefined when the query
+   * does not name one (the Skill is then found by the name in the path).
+   */
+  readonly path: string | undefined;
+}
+
+/** The repo and Skill pages' parameters in `search`. */
+export const skillRepoParamsOf = (search: string): SkillRepoParams => {
+  const params = new URLSearchParams(search);
+  const ref = params.get("ref");
+
+  return {
+    ref: ref === null || ref === "" ? undefined : ref,
+    path: params.get("path") ?? undefined,
+  };
+};
 
 /** The Skills page, or a page below it: an owner's, then a repo's, then a Skill's segment. */
 const SKILLS_PAGE = /^\/skills(?:\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?)?\/?$/;
@@ -320,3 +369,6 @@ export const agentIdAtom = Atom.map(pathAtom, agentIdOf);
 
 /** What the Skills page's query names now. */
 export const skillsParamsAtom = Atom.map(searchAtom, skillsParamsOf);
+
+/** What a repo's or a Skill's page names in its query now. */
+export const skillRepoParamsAtom = Atom.map(searchAtom, skillRepoParamsOf);

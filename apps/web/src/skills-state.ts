@@ -242,6 +242,12 @@ export interface SkillsToInstall {
   readonly source: string;
   /** The Skills of the source to install, by ID; only these are installed, whatever else the source holds. */
   readonly skills: ReadonlyArray<string>;
+  /**
+   * The folders (repo-relative, `""` for the repo's root) that hold the Skills, when the page knows them, as a repo's page
+   * does: the install then takes exactly these folders and `skills` only labels them, since names are not exact (two
+   * folders can declare one name, a name can be another folder's). Absent: the install resolves `skills` by name.
+   */
+  readonly folders?: ReadonlyArray<string> | undefined;
   /** The branch, tag or commit to install at (a repo's or a Skill's page `?ref=`); absent: the repo's default branch. */
   readonly ref?: string | undefined;
 }
@@ -264,12 +270,12 @@ export interface SkillInstallToTarget extends SkillsToInstall {
  * and a repo's or a Skill's page, which put their badge queries on that key) ask again, so the badges update.
  */
 export const installToTargetAtom = appRuntime.fn(
-  ({ target, source, skills, ref }: SkillInstallToTarget) =>
+  ({ target, source, skills, folders, ref }: SkillInstallToTarget) =>
     RegistryClient.use((registry) =>
       registry("installEnvironmentSkills", {
         environment: target,
         source: installSource(source, ref),
-        skills,
+        ...(folders === undefined ? { skills } : { folders }),
       }),
     ).pipe(changing([`environment-skills:${target}`, "skill-badges"])),
 );

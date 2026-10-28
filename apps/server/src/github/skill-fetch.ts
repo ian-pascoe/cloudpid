@@ -42,6 +42,8 @@ const FetchFailureKind = Schema.Literals([
   "refused",
   /** The repo's tree is larger than one listing holds. */
   "truncated",
+  /** The repo is readable but has no such ref (a branch, a tag or a commit). */
+  "bad_ref",
   /** The repo holds no Skill under the path. */
   "no_skills",
   /** A Skill asked for is not in the repo. */
@@ -186,6 +188,43 @@ const decoder = new TextDecoder();
 type Candidate = ListedSkill & {
   readonly skillMdPath: string;
   readonly internal: boolean;
+};
+
+/** What a `SKILL.md` says of its Skill, or why it is not one. */
+export type SkillMdInfo =
+  | {
+      readonly ok: true;
+      readonly name: string;
+      readonly description: string;
+      /** The repo marks it `metadata.internal`: the CLI leaves it out unless one is asked for by name. */
+      readonly internal: boolean;
+    }
+  | { readonly ok: false; readonly message: string };
+
+/** Read `text` as a Skill's `SKILL.md`: it needs a name and a description in its frontmatter. */
+export const readSkillMd = (text: string): SkillMdInfo => {
+  const frontmatter = readFrontmatter(text);
+  const name = Predicate.isString(frontmatter?.name) ? oneLine(frontmatter.name) : "";
+
+  const description = Predicate.isString(frontmatter?.description)
+    ? oneLine(frontmatter.description)
+    : "";
+
+  if (name === "" || description === "") {
+    return {
+      ok: false,
+      message: "SKILL.md's frontmatter sets no name or no description, so it is not a Skill",
+    };
+  }
+
+  const metadata = frontmatter?.metadata;
+
+  return {
+    ok: true,
+    name,
+    description,
+    internal: Predicate.hasProperty(metadata, "internal") && metadata.internal === true,
+  };
 };
 
 const failed = (kind: FetchFailureKind, message: string): SkillFetch => ({
@@ -371,27 +410,19 @@ export const fetchSkills = async (
         return undefined;
       }
 
-      const text = decoder.decode(await blob(entry));
-      const frontmatter = readFrontmatter(text);
-      const name = Predicate.isString(frontmatter?.name) ? oneLine(frontmatter.name) : "";
+      const info = readSkillMd(decoder.decode(await blob(entry)));
 
-      const description = Predicate.isString(frontmatter?.description)
-        ? oneLine(frontmatter.description)
-        : "";
-
-      if (name === "" || description === "") {
+      if (!info.ok) {
         unreadable.push({
           name: basename(folder) || source.name,
           path: folder,
-          message: "SKILL.md's frontmatter sets no name or no description, so it is not a Skill",
+          message: info.message,
         });
 
         return undefined;
       }
 
-      const metadata = frontmatter?.metadata;
-
-      const internal = Predicate.hasProperty(metadata, "internal") && metadata.internal === true;
+      const { name, description, internal } = info;
 
       return { name, description, path: folder, skillMdPath, internal };
     });
@@ -632,6 +663,156 @@ export const fetchSkillsAt = async (
     }
 
     return { status: "fetched", commit, skills };
+  } catch (cause) {
+    if (Schema.is(GithubReadError)(cause)) {
+      return { status: "failed", kind: cause.kind, message: cause.message };
+    }
+
+    throw cause;
+  }
+};
+
+/**
+ * Where what a listing reads of a `SKILL.md` is kept, by the blob's SHA: a blob's content never changes, so what it says of
+ * its Skill is kept as it is, and the next listing of the repo (at any ref) reads from GitHub only the `SKILL.md` files
+ * that changed. A cache that cannot answer or be written to costs a read of the blob, nothing more.
+ */
+export type SkillMdCache = {
+  readonly get: (repo: SkillRepo, sha: string) => Promise<SkillMdInfo | undefined>;
+  readonly put: (repo: SkillRepo, sha: string, info: SkillMdInfo) => Promise<void>;
+};
+
+/** Every Skill a repo holds at a ref, or why GitHub gave no listing. */
+export type RepoSkillsListing =
+  | {
+      readonly status: "listed";
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      /** In the walk's order, the CLI's. Without the Skills the repo marks `metadata.internal`, which an install leaves out. */
+      readonly skills: ReadonlyArray<ListedSkill>;
+      /** `SKILL.md` files that cannot be read as Skills. */
+      readonly unreadable: ReadonlyArray<SkippedSkill>;
+      /** How many Skills the repo marks `metadata.internal` that are left out of `skills`. */
+      readonly internal: number;
+      /** How many `SKILL.md` files were left unread past `MAX_SKILL_CANDIDATES`. */
+      readonly omitted: number;
+    }
+  | { readonly status: "failed"; readonly kind: FetchFailureKind; readonly message: string };
+
+/**
+ * Every Skill `repo` holds at `ref` (the default branch's head when null), found by the walk an install uses
+ * (`findSkillMdPaths`) at one commit, each with the name and description its `SKILL.md` gives. Only the `SKILL.md`
+ * files are read, and not those `cache` knows by blob. At most `MAX_SKILL_CANDIDATES` are read; the rest are counted.
+ * A ref the repo does not have is told apart from a repo that cannot be read: when the ref is not found, the default
+ * branch is asked, so a repo that answers it has no such ref.
+ */
+export const listRepoSkills = async (
+  reader: RepoReader,
+  {
+    repo,
+    ref,
+    cache,
+  }: { readonly repo: SkillRepo; readonly ref: string | null; readonly cache?: SkillMdCache },
+): Promise<RepoSkillsListing> => {
+  const name = `${repo.owner}/${repo.name}`;
+
+  try {
+    const commit = await reader.commit(repo, ref).catch(async (cause: unknown) => {
+      if (ref !== null && Schema.is(GithubReadError)(cause) && cause.kind === "not_found") {
+        const head = await reader.commit(repo, null).then(
+          () => true,
+          () => false,
+        );
+
+        if (head) {
+          throw GithubReadError.of(
+            "bad_ref",
+            `${name} has no ref ${JSON.stringify(ref)} (a branch, a tag or a commit).`,
+          );
+        }
+      }
+
+      throw cause;
+    });
+
+    const tree = await reader.tree(repo, commit);
+
+    if (tree.truncated) {
+      return {
+        status: "failed",
+        kind: "truncated",
+        message: `GitHub listed only part of ${name}'s files (the repo is larger than one listing holds), so its Skills cannot be found reliably.`,
+      };
+    }
+
+    const found = findSkillMdPaths({ tree: tree.entries }).filter(
+      (path) => basename(path).toLowerCase() === "skill.md",
+    );
+
+    const toRead = found.slice(0, MAX_SKILL_CANDIDATES);
+    const entryOf = new Map(tree.entries.map((entry) => [entry.path, entry] as const));
+    const blob = blobReader(reader, repo);
+
+    const read = await mapLimited(toRead, async (skillMdPath) => {
+      const entry = entryOf.get(skillMdPath);
+      const folder = skillFolderOf(skillMdPath);
+
+      if (entry === undefined) return undefined;
+
+      if (entry.size !== undefined && entry.size > MAX_FILE_BYTES) {
+        return {
+          folder,
+          info: {
+            ok: false,
+            message: `SKILL.md: ${entry.size} bytes, more than the ${MAX_FILE_BYTES} a Skill's file may be`,
+          } satisfies SkillMdInfo,
+        };
+      }
+
+      const known = await cache?.get(repo, entry.sha).catch(() => undefined);
+
+      if (known !== undefined) return { folder, info: known };
+
+      const info = readSkillMd(decoder.decode(await blob(entry)));
+
+      await cache?.put(repo, entry.sha, info).catch(() => undefined);
+
+      return { folder, info };
+    });
+
+    const skills: ListedSkill[] = [];
+    const unreadable: SkippedSkill[] = [];
+    let internal = 0;
+
+    for (const each of read) {
+      if (each === undefined) continue;
+
+      const { folder, info } = each;
+
+      if (!info.ok) {
+        unreadable.push({
+          name: basename(folder) || repo.name,
+          path: folder,
+          message: info.message,
+        });
+      } else if (info.internal) {
+        internal += 1;
+      } else {
+        skills.push({ name: info.name, description: info.description, path: folder });
+      }
+    }
+
+    return {
+      status: "listed",
+      repo: name,
+      ref,
+      commit,
+      skills,
+      unreadable,
+      internal,
+      omitted: found.length - toRead.length,
+    };
   } catch (cause) {
     if (Schema.is(GithubReadError)(cause)) {
       return { status: "failed", kind: cause.kind, message: cause.message };

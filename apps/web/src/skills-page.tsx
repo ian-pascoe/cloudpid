@@ -4,7 +4,7 @@
 // tabs (`?q=`), the tab bar (Installed · All time · Trending (24h) · Hot, the tab in `?tab=`), and the tab shown, or the
 // search's results in its place while a query is set. The Installed tab holds the owner's Skill management
 // (`skills-installed.tsx`); the other tabs are the Skill directory's lists (`skills-directory.tsx`), and a row's Install
-// opens the target picker (`skills-install-dialog.tsx`). The pages below `/skills` (an owner's, a repo's, a Skill's) are
+// opens the target picker (`skills-install-dialog.tsx`). A repo's page is `skills-repo.tsx`; an owner's and a Skill's are
 // still to come and say so.
 
 import { useAtomValue } from "@effect/atom-react";
@@ -135,7 +135,7 @@ export const SkillsPage = () => {
   );
 };
 
-/** A page below `/skills` (an owner's, a repo's or a Skill's, named by `path`), until it comes. */
+/** A page below `/skills` (an owner's or a Skill's, named by `path`), until it comes. */
 export const SkillDirectoryPage = ({ path }: { path: string }) => (
   <SkillsFrame title={path}>
     <p className="text-sm text-muted-foreground">

@@ -24,6 +24,7 @@ import {
   SessionNotFound,
   SETTINGS_SCOPE,
   SkillDirectoryError,
+  SkillRepoError,
   type SkillChangeFiles,
   type SkillFile,
   type SkillInstallation,
@@ -58,6 +59,7 @@ import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
 import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
+import type { SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -831,9 +833,11 @@ const fakeRegistries = () => {
                 ],
               };
       }),
-    installSkills: ({ environment, source, skills }) =>
+    installSkills: ({ environment, source, skills, folders }) =>
       Effect.sync(() => {
-        calls.push(`installSkills:${environment}:${source}:${skills?.join(",") ?? ""}`);
+        calls.push(
+          `installSkills:${environment}:${source}:${skills?.join(",") ?? ""}${folders === undefined ? "" : `:in ${folders.join(",")}`}`,
+        );
 
         return skillInstallation(environment, skills);
       }),
@@ -1409,12 +1413,64 @@ const fakeRegistries = () => {
                   : [{ source: "o/other", skillId: "other", name: "other", installs: 3 }],
             }),
       search: (query) =>
-        query === "down"
+        query.startsWith("down")
           ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh did not answer" }))
           : Effect.succeed([
               { source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 },
             ]),
     } satisfies SkillDirectory,
+    /** GitHub's repos: `o/gone` is not found, `o/ref` has no ref `nope`, `o/empty` holds no Skill, the rest hold three. */
+    skillRepos: {
+      list: ({ owner, repo, ref }) => {
+        const where = `${owner}/${repo}`;
+
+        if (repo === "gone") {
+          return Effect.fail(
+            SkillRepoError.make({ kind: "not_found", message: `${where} is gone` }),
+          );
+        }
+
+        if (ref === "nope") {
+          return Effect.fail(
+            SkillRepoError.make({ kind: "bad_ref", message: `${where} has no ref` }),
+          );
+        }
+
+        const commit = "c0ffee0000000000000000000000000000000009";
+
+        return Effect.succeed({
+          repo: where,
+          ref: ref ?? null,
+          commit,
+          skills:
+            repo === "empty"
+              ? []
+              : [
+                  {
+                    name: "grill-me",
+                    description: "Interview me.",
+                    path: "skills/productivity/grill-me",
+                    skillId: "grill-me",
+                  },
+                  {
+                    name: "zzz",
+                    description: "Nothing known of it.",
+                    path: "skills/zzz",
+                    skillId: "zzz",
+                  },
+                  {
+                    name: "tdd",
+                    description: "Test first.",
+                    path: "skills/engineering/tdd",
+                    skillId: "tdd",
+                  },
+                ],
+          unreadable: repo === "empty" ? [{ path: "docs", message: "no name" }] : [],
+          internal: 0,
+          omitted: 0,
+        });
+      },
+    } satisfies SkillRepos,
     registries,
     /** The Registry's methods, as the Session DO calls them. */
     registry,
@@ -1460,6 +1516,7 @@ const worker =
       branches: fake.branches,
       skillSearch: fake.skillSearch,
       skillDirectory: fake.skillDirectory,
+      skillRepos: fake.skillRepos,
       background: fake.background,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
@@ -3125,6 +3182,32 @@ it("updates Skills for the page as the owner's own save, saying how each went an
   expect(fake.calls).toContain("updateSkills:*::true");
 });
 
+it("installs the folders the repo page picked as the owner's install, and refuses naming Skills as well", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.installEnvironmentSkills({
+      environment: "*",
+      source: "mattpocock/skills",
+      folders: ["skills/codex/tdd", ""],
+    }),
+  );
+
+  const both = await call(fake, (registry) =>
+    Effect.flip(
+      registry.installEnvironmentSkills({
+        environment: "*",
+        source: "mattpocock/skills",
+        skills: ["tdd"],
+        folders: ["skills/tdd"],
+      }),
+    ),
+  );
+
+  expect(fake.calls).toEqual(["installSkills:*:mattpocock/skills::in skills/codex/tdd,"]);
+  expect(both.message).toBe("Name the Skills to install or the folders that hold them, not both");
+});
+
 it("searches skills.sh for the page and reports why a search failed", async () => {
   const fake = fakeRegistries();
 
@@ -3261,6 +3344,92 @@ it("searches the Skill directory with the same badges, and reports why a list or
   expect(searchFailed.message).toBe("skills.sh did not answer");
   expect(listFailed).toBeInstanceOf(SkillDirectoryError);
   expect(listFailed.message).toBe("skills.sh answered 503");
+});
+
+it("lists a repo's Skills with installs from the Skill directory and badges matched by repo and folder", async () => {
+  const fake = fakeRegistries();
+  const commit = "c0ffee0000000000000000000000000000000001";
+
+  fake.skillsKept.set("*", [
+    {
+      name: "Grill Me",
+      description: "Interview me.",
+      savedAt: 1,
+      source: {
+        repo: "Mattpocock/Skills",
+        path: "skills/productivity/grill-me",
+        ref: "dev",
+        commit,
+      },
+      updateAvailable: true,
+    },
+    // The same repo and name, from another folder: not this repo's grill-me.
+    {
+      name: "tdd",
+      description: "Test first.",
+      savedAt: 1,
+      source: { repo: "mattpocock/skills", path: "elsewhere/tdd", ref: null, commit },
+    },
+  ]);
+
+  const listing = await call(fake, (registry) =>
+    registry.listRepoSkills({ owner: "mattpocock", repo: "skills" }),
+  );
+
+  expect(listing.repo).toBe("mattpocock/skills");
+  expect(listing.ref).toBeNull();
+  // tdd's installs come from the directory's search of the repo, so it is first; the rest are in the repo's order.
+  expect(listing.skills).toEqual([
+    {
+      name: "tdd",
+      description: "Test first.",
+      path: "skills/engineering/tdd",
+      skillId: "tdd",
+      installs: 900_000,
+    },
+    {
+      name: "grill-me",
+      description: "Interview me.",
+      path: "skills/productivity/grill-me",
+      skillId: "grill-me",
+      installed: { everyEnvironment: true, environments: [], updateAvailable: true },
+    },
+    { name: "zzz", description: "Nothing known of it.", path: "skills/zzz", skillId: "zzz" },
+  ]);
+});
+
+it("lists a repo's Skills at a ref, with no installs when skills.sh does not answer", async () => {
+  const fake = fakeRegistries();
+
+  // skills.sh is down for a query that starts with `down`.
+  const listing = await call(fake, (registry) =>
+    registry.listRepoSkills({ owner: "down", repo: "skills", ref: "v2" }),
+  );
+
+  expect(listing.ref).toBe("v2");
+  expect(listing.skills.map(({ name }) => name)).toEqual(["grill-me", "zzz", "tdd"]);
+  expect(listing.skills.every((skill) => skill.installs === undefined)).toBe(true);
+});
+
+it("lists a repo with no Skills as an empty list, and says why a repo cannot be listed", async () => {
+  const fake = fakeRegistries();
+
+  const empty = await call(fake, (registry) =>
+    registry.listRepoSkills({ owner: "o", repo: "empty" }),
+  );
+
+  const gone = await call(fake, (registry) =>
+    Effect.flip(registry.listRepoSkills({ owner: "o", repo: "gone" })),
+  );
+
+  const badRef = await call(fake, (registry) =>
+    Effect.flip(registry.listRepoSkills({ owner: "o", repo: "skills", ref: "nope" })),
+  );
+
+  expect(empty).toMatchObject({ skills: [], unreadable: [{ path: "docs", message: "no name" }] });
+  expect(gone).toBeInstanceOf(SkillRepoError);
+  expect(gone).toMatchObject({ kind: "not_found", message: "o/gone is gone" });
+  expect(badRef).toMatchObject({ kind: "bad_ref" });
 });
 
 it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {

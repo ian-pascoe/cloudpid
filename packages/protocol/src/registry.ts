@@ -23,6 +23,9 @@ import {
   SkillDirectoryView,
   SkillFile,
   SkillInstall,
+  MAX_REPO_PART_LENGTH,
+  SkillRepoError,
+  SkillRepoListing,
   SkillSearchResult,
   SkillUpdate,
 } from "./skills.ts";
@@ -738,7 +741,10 @@ export class RegistryRpcs extends RpcGroup.make(
    * ref resolved to; each is kept with its Skill source, in place of one of its name, if it passes a save's checks (not an
    * Agent change, as an owner's save is not, and with no Approval for `*`: it is the owner's own). `skills`
    * names the Skills to take (`["*"]` for all of them); a repo that holds several and is given none installs nothing and
-   * answers the list for the page to tick. Fails with an `EnvironmentError` saying why (no such repo, a private one the
+   * answers the list for the page to tick. `folders` (repo-relative paths, `""` for the repo's root) names the Skills by
+   * the folder that holds each instead, which is exact where names are not (two folders can declare one name, a name can be
+   * another folder's): exactly those folders are read, whatever the repo's other Skills are called, and the Skill source
+   * kept records each folder. It is exclusive with `skills`. Fails with an `EnvironmentError` saying why (no such repo, a private one the
    * GitHub App cannot see, the rate limit, a source that is not GitHub's).
    */
   Rpc.make("installEnvironmentSkills", {
@@ -746,6 +752,9 @@ export class RegistryRpcs extends RpcGroup.make(
       environment: AgentChangeScope,
       source: Schema.String,
       skills: Schema.optionalKey(Schema.String.pipe(Schema.Array)),
+      folders: Schema.optionalKey(
+        Schema.String.pipe(Schema.Array, Schema.check(Schema.isMaxLength(200))),
+      ),
     },
     success: SkillInstall,
     error: EnvironmentError,
@@ -779,6 +788,24 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { query: Schema.String },
     success: Schema.Array(DirectorySkill),
     error: SkillDirectoryError,
+  }),
+  /**
+   * Every Skill GitHub has in repo `owner`/`repo` at `ref` (a branch, tag or commit; absent: the default branch's head),
+   * as the walk an install uses finds them, read by the main Worker as the GitHub App with a read-only token, so a private
+   * repo the app can read works and a repo skills.sh does not list does too. Each Skill has its description (from its
+   * SKILL.md's frontmatter, kept by blob), its installs when skills.sh knows them, and where it is installed here, matched
+   * by the repo and the Skill's folder. A repo with no Skills answers an empty list. Fails with a `SkillRepoError` when GitHub
+   * gives no listing: no such repo or a private one the app cannot read, a ref the repo does not have, a refused token or the
+   * rate limit.
+   */
+  Rpc.make("listRepoSkills", {
+    payload: {
+      owner: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)),
+      repo: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)),
+      ref: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH))),
+    },
+    success: SkillRepoListing,
+    error: SkillRepoError,
   }),
   /**
    * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The

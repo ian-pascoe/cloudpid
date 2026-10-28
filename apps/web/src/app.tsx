@@ -19,6 +19,7 @@ import { Sidebar, sessionTitle, type ShownPage } from "./sidebar.tsx";
 import { DraftComposer } from "./draft-composer.tsx";
 import { EnvironmentsPage } from "./environments-page.tsx";
 import { SkillDirectoryPage, SkillsPage } from "./skills-page.tsx";
+import { SkillRepoPage } from "./skills-repo.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
 
 /**
@@ -167,9 +168,9 @@ export const App = () => {
             settings: () => <SettingsPage />,
             environments: () => <EnvironmentsPage />,
             skills: () => <SkillsPage />,
-            // The pages below `/skills` are still to come.
+            // The owner's and a Skill's pages are still to come.
             skillOwner: ({ owner }) => <SkillDirectoryPage path={owner} />,
-            skillRepo: ({ owner, repo }) => <SkillDirectoryPage path={`${owner}/${repo}`} />,
+            skillRepo: ({ owner, repo }) => <SkillRepoPage owner={owner} repo={repo} />,
             skill: ({ owner, repo, skill }) => (
               <SkillDirectoryPage path={`${owner}/${repo}/${skill}`} />
             ),
