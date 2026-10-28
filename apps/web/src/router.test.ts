@@ -173,6 +173,15 @@ describe("the Skills paths", () => {
     });
   });
 
+  it("show an owner named like a tab as an owner's page, from the path an owner's link writes", () => {
+    for (const owner of ["installed", "all-time", "trending", "hot"]) {
+      expect(skillOwnerPath(owner)).toBe(`/skills/${owner}`);
+      expect(pageOf(skillOwnerPath(owner))).toEqual({ kind: "skillOwner", owner });
+    }
+
+    expect(pageOf("/skills/mattpocock/")).toEqual({ kind: "skillOwner", owner: "mattpocock" });
+  });
+
   it("keep a path that cannot be decoded from showing anything", () => {
     expect(pageOf("/skills/%E0%A4%A")).toEqual({ kind: "empty" });
     expect(pageOf("/skills/o/%E0%A4%A")).toEqual({ kind: "empty" });

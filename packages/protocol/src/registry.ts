@@ -25,6 +25,7 @@ import {
   SkillInstall,
   MAX_REPO_PART_LENGTH,
   SkillRepoError,
+  SkillOwnerListing,
   SkillRepoListing,
   SkillSearchResult,
   SkillUpdate,
@@ -806,6 +807,19 @@ export class RegistryRpcs extends RpcGroup.make(
     },
     success: SkillRepoListing,
     error: SkillRepoError,
+  }),
+  /**
+   * The repos of `owner` (a GitHub user or organization) that the Skill directory (skills.sh) lists Skills of, grouped from
+   * its search: each repo with the number of its Skills found and their installs added up, the most installed first. The
+   * search is fuzzy and answers at most 200 results, so the list can be incomplete (`capped` says the limit was hit); a
+   * repo the directory does not list is still opened on its own page, where GitHub gives the full list. An owner the
+   * directory lists nothing of answers an empty list. Fails with a `SkillDirectoryError` when skills.sh cannot be reached
+   * or does not answer as expected.
+   */
+  Rpc.make("listOwnerRepos", {
+    payload: { owner: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)) },
+    success: SkillOwnerListing,
+    error: SkillDirectoryError,
   }),
   /**
    * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The

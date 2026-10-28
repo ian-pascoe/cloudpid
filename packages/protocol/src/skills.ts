@@ -265,6 +265,12 @@ export const SkillDirectoryPageNumber = Schema.Int.check(
 /** How many rows skills.sh answers for a leaderboard page, and the most a search finds. */
 export const SKILL_DIRECTORY_PAGE_SIZE = 200;
 
+/**
+ * The most results skills.sh's search answers, however many are asked for. A search that returns this many may have left
+ * more out, so what is built from one (an owner's repos) says it may be incomplete.
+ */
+export const SKILL_SEARCH_LIMIT = 200;
+
 /** The skills.sh failure the Skills page shows plainly: it could not be reached or answered otherwise. */
 export class SkillDirectoryError extends Schema.TaggedError<
   SkillDirectoryError,
@@ -397,6 +403,33 @@ export const SkillRepoListing = Schema.Struct({
 });
 
 export type SkillRepoListing = typeof SkillRepoListing.Type;
+
+/** A repo of an owner that the Skill directory lists Skills of, as the owner page shows it. */
+export const OwnerRepo = Schema.Struct({
+  /** The repo's name, without the owner, as skills.sh spells it. */
+  repo: Schema.String,
+  /** How many of its Skills the directory's search found: at most what the search holds, so possibly fewer than the repo has. */
+  skills: Schema.Int,
+  /** Their installs, all time, added up. */
+  installs: Schema.Finite,
+});
+
+export type OwnerRepo = typeof OwnerRepo.Type;
+
+/** What the Skill directory knows of an owner (a GitHub user or organization): its repos that hold Skills. */
+export const SkillOwnerListing = Schema.Struct({
+  /** The owner as asked. */
+  owner: Schema.String,
+  /** The owner's repos, the most installed first. Empty when the directory lists nothing of the owner. */
+  repos: Schema.Array(OwnerRepo),
+  /**
+   * Whether the search that found them hit its limit of 200 results, so that it may have left some of the owner's Skills
+   * and repos out. Search is fuzzy, too: even below the limit a repo can be missing.
+   */
+  capped: Schema.Boolean,
+});
+
+export type SkillOwnerListing = typeof SkillOwnerListing.Type;
 
 /** How the owner's update of one Skill went. */
 export const SkillUpdated = Schema.Struct({

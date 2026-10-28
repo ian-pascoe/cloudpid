@@ -3,7 +3,7 @@
 // `/api/search` and a reading of its answer, in plain TypeScript so the `skill_search` tool (in the Session DO, through the
 // web transport) and the Skills page (through the main Worker) share them. skills.sh is used for search only: what
 // is installed is fetched from GitHub, and nothing here records anything.
-import { SkillSearchResult } from "@cloudpid/protocol";
+import { SKILL_SEARCH_LIMIT, SkillSearchResult } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -28,7 +28,7 @@ export const SEARCH_TIMEOUT_MS = 15_000;
 export const SEARCH_HEADERS = { accept: "application/json", "user-agent": "cloudpid" };
 
 /** The most results the Skills page asks of a search: what skills.sh answers at most. */
-export const MAX_DIRECTORY_LIMIT = 200;
+export const MAX_DIRECTORY_LIMIT = SKILL_SEARCH_LIMIT;
 
 /** The request URL for `query`: `limit` results, at most `max` (the tool's `MAX_LIMIT`, or the page's `MAX_DIRECTORY_LIMIT`). */
 export const skillSearchUrl = (query: string, limit = DEFAULT_LIMIT, max = MAX_LIMIT): string =>
@@ -55,7 +55,12 @@ const decodeError = Schema.decodeUnknownOption(Schema.Struct({ error: Schema.Str
 
 /** What a search found, or why it did not. */
 export type SkillSearch =
-  | { readonly ok: true; readonly results: ReadonlyArray<SkillSearchResult> }
+  | {
+      readonly ok: true;
+      readonly results: ReadonlyArray<SkillSearchResult>;
+      /** How many entries skills.sh answered, before those that are not Skills were left out. */
+      readonly listed: number;
+    }
   | { readonly ok: false; readonly message: string };
 
 /**
@@ -86,6 +91,7 @@ export const readSkillSearch = async (response: Response): Promise<SkillSearch> 
 
   return {
     ok: true,
+    listed: answer.value.skills.length,
     results: Arr.flatMap(answer.value.skills, (entry) =>
       Option.match(decodeResult(entry), { onNone: () => [], onSome: (result) => [result] }),
     ),
