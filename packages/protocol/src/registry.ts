@@ -1043,8 +1043,8 @@ export class RegistryRpcs extends RpcGroup.make(
   /**
    * Change Environment `environment`'s Overrides: `set`, a deep partial of the settings, overrides each field it holds
    * (a Role whole, completed from the Role in force; an extension's option by key, null resetting it, and an extension
-   * set to null resetting each of its options), even to the Global value; `reset` names fields (`model`, `roles.small`, `compaction.enabled`, `tools.offered`,
-   * `extensions.<extension>.<key>`) whose Override is removed, so they inherit again. Fails with a `SettingsError`,
+   * set to null resetting each of its options), even to the Global value; `reset` names fields (`model`,
+   * `roles.small`, `compaction.enabled`, `tools.offered`, `extensions.<extension>.<key>`) whose Override is removed, so they inherit again. Fails with a `SettingsError`,
    * saving nothing, for values the settings do not take, a field that is not one, or an Environment that does not
    * exist. The Environment's Sessions read them when they next admit input.
    */

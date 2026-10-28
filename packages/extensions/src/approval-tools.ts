@@ -1,12 +1,12 @@
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
 // The tools whose Agent changes wait for the owner's Approval (`docs/architecture/agent-changes.md` → Approval,
 // ADR-0019): those that change a Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`,
-// `settings_subagent_workspaces_set`, `environment_container_size_limit_set`, and `settings_reset` of a Limit) and those no revert can undo (`environment_delete`, `environment_secret_delete`). The
-// Settings' Limits are kept at both Scopes (ADR-0027): their tools and `settings_reset` take a required `scope`, `*` for
+// `settings_subagent_workspaces_set`, `environment_container_size_limit_set`, and `settings_reset` of a Limit) and
+// those no revert can undo (`environment_delete`, `environment_secret_delete`). The Settings' Limits are kept at both Scopes (ADR-0027): their tools and `settings_reset` take a required `scope`, `*` for
 // Global or an Environment's id, and ask at either. `settings_reset` lives here for its Limits, but a reset of any other
 // field is made at once, without asking, as the `settings` tools make a change. Each checks what it can first and
-// refuses without asking what it would refuse anyway; then it asks the owner (`withApproval`), and on Approve makes the change as the other tools do (applied, recorded
-// with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
+// refuses without asking what it would refuse anyway; then it asks the owner (`withApproval`), and on Approve makes
+// the change as the other tools do (applied, recorded with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
 // changes nothing, and the result carries the owner's reason. The tools are the root conversation's only
 // (`PARENT_ONLY_TOOL_PREFIXES` has `environment_` and `settings_`), run alone, and are replayed after an eviction: the
 // rerun waits for the same request, or takes the answer given meanwhile.
