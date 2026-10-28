@@ -147,8 +147,24 @@ _Avoid_: Feedback, comment batch, code review (for the message)
 ## Environments, Repos and Workspaces
 
 **Environment**:
-What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Skills, Container settings, Setup and Start Scripts). Every Workspace is made from one. Variables, Secrets and Skills can also be kept for every Environment; an Environment's own of the same name wins.
+What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, Variables, Secrets, Skills, Container settings, Setup and Start Scripts). Every Workspace is made from one. All of that but its name and Repos, and the Settings too, can also be kept Global; an Environment's Override wins.
 _Avoid_: Project, template, Machine, sandbox
+
+**Scope**:
+What a setting, Variable, Secret or Skill is kept for: Global, or one Environment. The Environment's Scope wins over Global.
+_Avoid_: Level, layer, context
+
+**Global**:
+The Scope every Environment inherits from.
+_Avoid_: For every Environment, all environments, default (the Default Environment is one Environment)
+
+**Override**:
+An Environment's own value of a setting, set on purpose and shown against the Global value it replaces until it is reset. A field without one is **inherited**. Keyed settings (Variables, Secrets, Skills, Roles) are overridden name by name, every other setting whole.
+_Avoid_: Local setting, customization
+
+**Variable**:
+A plain `NAME=value` that the commands and scripts of an Environment's Containers get, kept Global or for an Environment. The agent can read it, unlike a Secret.
+_Avoid_: Env var, environment variable (it reads as an Environment's own)
 
 **Repo**:
 A git repository an Environment names; each Workspace of the Environment holds a clone of its own in a directory of the Repo's name.
@@ -245,8 +261,8 @@ A tool left out of the model's tool list until `tool_search` loads it, though sc
 _Avoid_: Hidden tool, optional tool
 
 **Skill**:
-A directory with a `SKILL.md` (name, description, instructions) and supporting files that the agent reads by path when a task matches its description: a Repo's own, an Environment's own, or one kept for every Environment, the nearer winning over another of the same name.
-_Avoid_: Plugin, command, global Skill (say: for every Environment), Bundled Skill (cloudpid ships none: ADR-0026)
+A directory with a `SKILL.md` (name, description, instructions) and supporting files that the agent reads by path when a task matches its description: a Repo's own, an Environment's own, or a Global one, the nearer winning over another of the same name.
+_Avoid_: Plugin, command, Bundled Skill (cloudpid ships none: ADR-0026)
 
 **Skill directory**:
 A public index of Skills, such as skills.sh, that cloudpid searches and ranks. It holds no Skill files: an install always fetches from GitHub.
@@ -257,7 +273,7 @@ Where a Skill was installed from: a GitHub repo, the Skill's path in it, the ref
 _Avoid_: Upstream (alone), origin, registry
 
 **Skill set**:
-The Skills a Workspace serves at `/workspace/.agents/skills`: its Environment's own, then those kept for every Environment, merged so the nearer wins. It changes only when one of them does, and a Repo's own Skills are not part of it.
+The Skills a Workspace serves at `/workspace/.agents/skills`: its Environment's own, then the Global ones, merged so the nearer wins. It changes only when one of them does, and a Repo's own Skills are not part of it.
 _Avoid_: Skill bundle, skills mount (for the Skills themselves)
 
 **Toolchain**:
@@ -289,8 +305,24 @@ A Web Push to the owner's subscribed devices when a Session's Run ends, fails, o
 _Avoid_: Alert, push message (for the user-facing thing)
 
 **Settings**:
-The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options). The overrides the owner or the agent saves live in the Registry, and each Session reads them before its next request.
+The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options), kept Global and as an Environment's Overrides. Each Session reads its Environment's, resolved over Global and the defaults, before its next request.
 _Avoid_: Config, preferences
+
+**Settings page**:
+The one page where the owner configures cloudpid, for the Scope picked at its top: the Settings, Environments, Workspaces, Skills, Variables, Secrets, Notifications and Agent changes, each in a Settings section.
+_Avoid_: Preferences, admin page
+
+**Settings section**:
+One part of the Settings page, listed in its navigation, such as Models or Secrets.
+_Avoid_: Tab, pane, category, settings page (for one part)
+
+**Instructions**:
+Text the owner writes in the Settings that every conversation's model is shown from the start of its Context Window: the Global ones, then the Environment's, then the Project instructions, the nearer winning where two disagree.
+_Avoid_: System prompt, custom prompt, rules, memory
+
+**Project instructions**:
+The `AGENTS.md` (or `CLAUDE.md`) files of a Workspace, each applying to the files of its directory and below.
+_Avoid_: Instructions (alone), repo rules
 
 **Usage**:
 What a Session has spent on model requests: tokens by kind and the cost in US dollars, summed over its root conversation, its subagents and its title call. Shown in the Session's header.
@@ -311,13 +343,13 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Skills kept for every Environment, or one no revert can undo (deleting an Environment or a kept Secret).
+The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Global Skills, to Instructions, or one no revert can undo (deleting an Environment or a kept Secret).
 _Avoid_: Confirmation, permission, consent
 
 ## Credentials and the browser
 
 **Secret**:
-A value the agent may use but never see: entered by the owner for one Session, kept for an Environment or for every Environment, or resolved from 1Password at use time.
+A value the agent may use but never see: entered by the owner for one Session, kept for an Environment or Global, or resolved from 1Password at use time.
 _Avoid_: Env var, key (in general)
 
 **Secret Reference**:
