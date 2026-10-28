@@ -833,9 +833,11 @@ const fakeRegistries = () => {
                 ],
               };
       }),
-    installSkills: ({ environment, source, skills }) =>
+    installSkills: ({ environment, source, skills, folders }) =>
       Effect.sync(() => {
-        calls.push(`installSkills:${environment}:${source}:${skills?.join(",") ?? ""}`);
+        calls.push(
+          `installSkills:${environment}:${source}:${skills?.join(",") ?? ""}${folders === undefined ? "" : `:in ${folders.join(",")}`}`,
+        );
 
         return skillInstallation(environment, skills);
       }),
@@ -1464,6 +1466,7 @@ const fakeRegistries = () => {
                   },
                 ],
           unreadable: repo === "empty" ? [{ path: "docs", message: "no name" }] : [],
+          internal: 0,
           omitted: 0,
         });
       },
@@ -3177,6 +3180,32 @@ it("updates Skills for the page as the owner's own save, saying how each went an
   // Skills are not part of a Build: nothing else runs. The owner's Update needs no Approval, even for `*`.
   expect(fake.calls.filter((name) => !name.startsWith("updateSkills"))).toEqual([]);
   expect(fake.calls).toContain("updateSkills:*::true");
+});
+
+it("installs the folders the repo page picked as the owner's install, and refuses naming Skills as well", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.installEnvironmentSkills({
+      environment: "*",
+      source: "mattpocock/skills",
+      folders: ["skills/codex/tdd", ""],
+    }),
+  );
+
+  const both = await call(fake, (registry) =>
+    Effect.flip(
+      registry.installEnvironmentSkills({
+        environment: "*",
+        source: "mattpocock/skills",
+        skills: ["tdd"],
+        folders: ["skills/tdd"],
+      }),
+    ),
+  );
+
+  expect(fake.calls).toEqual(["installSkills:*:mattpocock/skills::in skills/codex/tdd,"]);
+  expect(both.message).toBe("Name the Skills to install or the folders that hold them, not both");
 });
 
 it("searches skills.sh for the page and reports why a search failed", async () => {

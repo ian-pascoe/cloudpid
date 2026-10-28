@@ -89,7 +89,10 @@ const RepoSkillRow = ({
     />
     <div className="flex min-w-0 flex-1 flex-col gap-0.5">
       <InAppLink
-        href={skillPagePath(repo.owner, repo.repo, skill.skillId, repo.ref)}
+        href={skillPagePath(repo.owner, repo.repo, skill.skillId, {
+          ref: repo.ref,
+          path: skill.path,
+        })}
         className="truncate font-mono text-sm font-medium hover:underline"
       >
         {skill.name}
@@ -177,10 +180,17 @@ const RepoSkills = ({ listing, repo }: { listing: SkillRepoListing; repo: SkillR
           />
         ))}
       </ul>
+      {listing.internal > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {listing.internal === 1
+            ? "1 more skill is left out: the repo marks it internal."
+            : `${listing.internal} more skills are left out: the repo marks them internal.`}
+        </p>
+      )}
       {listing.omitted > 0 && (
         <p className="text-xs text-muted-foreground">
-          The repo holds {listing.omitted} more SKILL.md files than are listed here. Install one
-          from the Installed tab with its folder's GitHub URL.
+          {listing.omitted} more SKILL.md files in the repo were not read: a listing reads at most
+          200. Any of them may be a skill.
         </p>
       )}
       {listing.skills.some((skill) => skill.installs !== undefined) && <Credit />}

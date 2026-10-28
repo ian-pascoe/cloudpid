@@ -693,6 +693,8 @@ export type RepoSkillsListing =
       readonly skills: ReadonlyArray<ListedSkill>;
       /** `SKILL.md` files that cannot be read as Skills. */
       readonly unreadable: ReadonlyArray<SkippedSkill>;
+      /** How many Skills the repo marks `metadata.internal` that are left out of `skills`. */
+      readonly internal: number;
       /** How many `SKILL.md` files were left unread past `MAX_SKILL_CANDIDATES`. */
       readonly omitted: number;
     }
@@ -781,6 +783,7 @@ export const listRepoSkills = async (
 
     const skills: ListedSkill[] = [];
     const unreadable: SkippedSkill[] = [];
+    let internal = 0;
 
     for (const each of read) {
       if (each === undefined) continue;
@@ -793,7 +796,9 @@ export const listRepoSkills = async (
           path: folder,
           message: info.message,
         });
-      } else if (!info.internal) {
+      } else if (info.internal) {
+        internal += 1;
+      } else {
         skills.push({ name: info.name, description: info.description, path: folder });
       }
     }
@@ -805,6 +810,7 @@ export const listRepoSkills = async (
       commit,
       skills,
       unreadable,
+      internal,
       omitted: found.length - toRead.length,
     };
   } catch (cause) {

@@ -511,11 +511,15 @@ export type RegistryMethods = {
     readonly source: string;
     readonly skills?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SkillInstallPreview>;
-  /** The owner installs Skills from a GitHub `source` (as `agentInstallSkills`), recorded as no Agent change. */
+  /**
+   * The owner installs Skills from a GitHub `source` (as `agentInstallSkills`), recorded as no Agent change: those `skills`
+   * names, or exactly the Skills in `folders` (the repo page's picks; the agent's tool has no such choice).
+   */
   readonly installSkills: (input: {
     readonly environment: string;
     readonly source: string;
     readonly skills?: ReadonlyArray<string> | undefined;
+    readonly folders?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SkillInstallation>;
   /**
    * An Agent change (`docs/architecture/workspace.md` → Installing from GitHub → Updates): update the Skills `names` (absent: every one marked
@@ -759,6 +763,7 @@ export const RegistryLive = Registry.make(
           readonly environment: string;
           readonly source: string;
           readonly skills: ReadonlyArray<string> | undefined;
+          readonly folders?: ReadonlyArray<string> | undefined;
           readonly author: AgentChangeAuthor | null;
           readonly pin?: SkillInstallPin | undefined;
         }) =>
@@ -1253,8 +1258,8 @@ export const RegistryLive = Registry.make(
                 skills: names,
               }),
             ),
-          installSkills: ({ environment, source, skills: names }) =>
-            installFromGithub({ environment, source, skills: names, author: null }),
+          installSkills: ({ environment, source, skills: names, folders }) =>
+            installFromGithub({ environment, source, skills: names, folders, author: null }),
           agentUpdateSkills: ({ environment, names, overwrite, pins, author }) =>
             Effect.suspend(() => {
               const unapproved = unapprovedEveryChange(environment, pins !== undefined);

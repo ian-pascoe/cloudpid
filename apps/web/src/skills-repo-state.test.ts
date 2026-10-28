@@ -37,6 +37,7 @@ const listing = (
   commit: COMMIT,
   skills,
   unreadable: [],
+  internal: 0,
   omitted: 0,
 });
 
@@ -121,6 +122,7 @@ describe("Install selected", () => {
     expect(installSelected(repo, new Set(["skills/tdd", "skills/grill-me"]), undefined)).toEqual({
       source: "o/skills",
       skills: ["grill-me", "tdd"],
+      folders: ["skills/grill-me", "skills/tdd"],
       ref: undefined,
     });
   });
@@ -129,7 +131,25 @@ describe("Install selected", () => {
     expect(installSelected(repo, new Set(["skills/tdd"]), "v1.2")).toEqual({
       source: "o/skills",
       skills: ["tdd"],
+      folders: ["skills/tdd"],
       ref: "v1.2",
+    });
+  });
+
+  it("names the folder of each checked Skill, so two folders that declare one name are told apart", () => {
+    const variants = listing([
+      skill("tdd", { path: "skills/claude/tdd", skillId: "tdd" }),
+      skill("tdd", { path: "skills/codex/tdd", skillId: "tdd" }),
+      skill("bar", { path: "skills/foo", skillId: "foo" }),
+    ]);
+
+    expect(installSelected(variants, new Set(["skills/codex/tdd"]), undefined)).toMatchObject({
+      skills: ["tdd"],
+      folders: ["skills/codex/tdd"],
+    });
+    expect(installSelected(variants, new Set(["skills/foo"]), undefined)).toMatchObject({
+      skills: ["bar"],
+      folders: ["skills/foo"],
     });
   });
 
@@ -156,7 +176,8 @@ describe("Install selected", () => {
       const installs: Array<{
         environment: string;
         source: string;
-        skills: ReadonlyArray<string>;
+        skills: ReadonlyArray<string> | undefined;
+        folders: ReadonlyArray<string> | undefined;
       }> = [];
 
       let asked = 0;
@@ -169,8 +190,8 @@ describe("Install selected", () => {
             listing([skill("tdd", installs.length === 0 ? {} : { installed: INSTALLED })]),
           );
         },
-        installEnvironmentSkills: ({ environment, source, skills }) => {
-          installs.push({ environment, source, skills: skills ?? [] });
+        installEnvironmentSkills: ({ environment, source, skills, folders }) => {
+          installs.push({ environment, source, skills, folders });
 
           return Effect.succeed({
             status: "installed" as const,
@@ -201,9 +222,14 @@ describe("Install selected", () => {
       registry.set(installToTargetAtom, { target: EVERY_ENVIRONMENT, ...toInstall });
       yield* settled(registry, installToTargetAtom);
 
-      // The install names a ref as an install does: a tree URL, with only the checked Skill.
+      // The install names a ref as an install does: a tree URL, and the checked Skill by its folder, not by a name.
       expect(installs).toEqual([
-        { environment: "*", source: "https://github.com/o/skills/tree/v1", skills: ["tdd"] },
+        {
+          environment: "*",
+          source: "https://github.com/o/skills/tree/v1",
+          skills: undefined,
+          folders: ["skills/tdd"],
+        },
       ]);
 
       const after = AsyncResult.getOrThrow(yield* settled(registry, atom));

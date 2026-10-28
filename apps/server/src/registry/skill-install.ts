@@ -50,6 +50,11 @@ type InstallRequest = {
   readonly environment: string;
   readonly source: string;
   readonly skills?: ReadonlyArray<string> | undefined;
+  /**
+   * Read exactly the Skills in these folders (`""` is the repo's root) instead of choosing by `skills`: what the owner
+   * picked on a repo's page, where two folders can declare one name. An approved `pin` names its own folders and wins.
+   */
+  readonly folders?: ReadonlyArray<string> | undefined;
 };
 
 /**
@@ -80,7 +85,7 @@ const readSkills = async (
     source: parsed.source,
     skills: input.skills,
     commit: pin?.commit,
-    folders: pin?.skills.map(({ path }) => path),
+    folders: pin?.skills.map(({ path }) => path) ?? input.folders,
     limit: input.limit,
   });
 

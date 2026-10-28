@@ -870,9 +870,20 @@ export const serveRegistryRpc = <R = never>(
       // Fetched by the Registry as the GitHub App; each Workspace of the Environment (of every Environment, for `*`) is
       // handed its Skill set with the Skills at its next readying. The owner's install is not an Agent change, as the
       // owner's removal is not.
-      installEnvironmentSkills: ({ environment, source, skills }) =>
+      installEnvironmentSkills: ({ environment, source, skills, folders }) =>
         Effect.gen(function* () {
-          const installation = yield* registry.installSkills({ environment, source, skills });
+          if (skills !== undefined && folders !== undefined) {
+            return yield* failed(
+              "Name the Skills to install or the folders that hold them, not both",
+            );
+          }
+
+          const installation = yield* registry.installSkills({
+            environment,
+            source,
+            skills,
+            folders,
+          });
 
           switch (installation.status) {
             case "missing":

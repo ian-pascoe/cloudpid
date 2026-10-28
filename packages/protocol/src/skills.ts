@@ -390,7 +390,9 @@ export const SkillRepoListing = Schema.Struct({
   skills: Schema.Array(RepoSkill),
   /** `SKILL.md` files that are not Skills (no name or description, or too large). */
   unreadable: Schema.Array(UnreadableSkill),
-  /** How many more Skills the repo holds than are listed (the walk reads at most 200). */
+  /** How many Skills the repo marks `metadata.internal`, which an install leaves out unless one is named: not in `skills`. */
+  internal: Schema.Int,
+  /** How many `SKILL.md` files were not read, past the 200 a listing reads: any of them may be a Skill, internal or not one. */
   omitted: Schema.Int,
 });
 

@@ -182,24 +182,48 @@ describe("the Skills paths", () => {
 
 describe("a repo's and a Skill's query", () => {
   it("names the ref to show, and none for the default branch", () => {
-    expect(skillRepoParamsOf("")).toEqual({ ref: undefined });
-    expect(skillRepoParamsOf("?ref=v1.2")).toEqual({ ref: "v1.2" });
-    expect(skillRepoParamsOf("?ref=feature%2Fx")).toEqual({ ref: "feature/x" });
-    expect(skillRepoParamsOf("?ref=")).toEqual({ ref: undefined });
+    expect(skillRepoParamsOf("")).toEqual({ ref: undefined, path: undefined });
+    expect(skillRepoParamsOf("?ref=v1.2")).toEqual({ ref: "v1.2", path: undefined });
+    expect(skillRepoParamsOf("?ref=feature%2Fx")).toEqual({ ref: "feature/x", path: undefined });
+    expect(skillRepoParamsOf("?ref=")).toEqual({ ref: undefined, path: undefined });
   });
 
   it("is written on the repo's and the Skill's path with the ref encoded, and nothing for none", () => {
     expect(skillRepoPath("o", "r")).toBe("/skills/o/r");
     expect(skillRepoPath("o", "r", "")).toBe("/skills/o/r");
     expect(skillRepoPath("o", "r", "feature/x y")).toBe("/skills/o/r?ref=feature%2Fx%20y");
-    expect(skillPagePath("o", "r", "s", "v1")).toBe("/skills/o/r/s?ref=v1");
+    expect(skillPagePath("o", "r", "s", { ref: "v1" })).toBe("/skills/o/r/s?ref=v1");
 
     // The query is not part of the path, so the page is the same page.
     expect(pageOf("/skills/o/r")).toEqual({ kind: "skillRepo", owner: "o", repo: "r" });
 
     const written = new URL(skillRepoPath("o", "r", "feature/x&y"), "https://x.test");
 
-    expect(skillRepoParamsOf(written.search)).toEqual({ ref: "feature/x&y" });
+    expect(skillRepoParamsOf(written.search)).toEqual({ ref: "feature/x&y", path: undefined });
+  });
+
+  it("names the folder of a Skill's page in ?path=, which the root's empty folder is one of", () => {
+    expect(skillPagePath("o", "r", "tdd")).toBe("/skills/o/r/tdd");
+    expect(skillPagePath("o", "r", "tdd", { path: "skills/codex/tdd" })).toBe(
+      "/skills/o/r/tdd?path=skills%2Fcodex%2Ftdd",
+    );
+    expect(skillPagePath("o", "r", "only-one", { ref: "v1", path: "" })).toBe(
+      "/skills/o/r/only-one?ref=v1&path=",
+    );
+    expect(skillRepoParamsOf("?ref=v1&path=skills%2Fcodex%2Ftdd")).toEqual({
+      ref: "v1",
+      path: "skills/codex/tdd",
+    });
+    // An empty path is the repo's root; no path is none named.
+    expect(skillRepoParamsOf("?path=")).toEqual({ ref: undefined, path: "" });
+    expect(skillRepoParamsOf("?ref=v1").path).toBeUndefined();
+
+    const written = new URL(
+      skillPagePath("o", "r", "x", { ref: "a/b", path: "c d/e" }),
+      "https://x.test",
+    );
+
+    expect(skillRepoParamsOf(written.search)).toEqual({ ref: "a/b", path: "c d/e" });
   });
 
   it("follows the location", () => {
@@ -208,10 +232,10 @@ describe("a repo's and a Skill's query", () => {
     const registry = AtomRegistry.make();
 
     registry.mount(skillRepoParamsAtom);
-    expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: undefined });
+    expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: undefined, path: undefined });
 
     navigate(skillRepoPath("o", "r", "v2"));
-    expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: "v2" });
+    expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: "v2", path: undefined });
   });
 });
 

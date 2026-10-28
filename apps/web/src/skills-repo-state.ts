@@ -81,8 +81,10 @@ export const checkedSkillsOf = (
 ): ReadonlyArray<RepoSkill> => listing.skills.filter((skill) => checked.has(skill.path));
 
 /**
- * What Install selected opens the target picker for: the checked Skills of the repo by name, from the repo itself (never
- * the whole repo), at the page's `ref` so the install pins to it; null while none is checked.
+ * What Install selected opens the target picker for: the checked Skills of the repo, named by the folder that holds each
+ * (a name does not say which Skill: two folders can declare one, and a name can be another folder's) with their names as
+ * labels, from the repo itself (never the whole repo), at the page's `ref` so the install pins to it; null while none is
+ * checked.
  */
 export const installSelected = (
   listing: SkillRepoListing,
@@ -93,5 +95,10 @@ export const installSelected = (
 
   return skills.length === 0
     ? null
-    : { source: listing.repo, skills: skills.map((skill) => skill.name), ref };
+    : {
+        source: listing.repo,
+        skills: skills.map((skill) => skill.name),
+        folders: skills.map((skill) => skill.path),
+        ref,
+      };
 };

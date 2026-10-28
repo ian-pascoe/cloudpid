@@ -11,6 +11,7 @@ const rows = (skills: SkillRepoRows["skills"]): SkillRepoRows => ({
   commit: "c".repeat(40),
   skills,
   unreadable: [],
+  internal: 0,
   omitted: 0,
 });
 

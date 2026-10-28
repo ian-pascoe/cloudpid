@@ -183,6 +183,7 @@ export const skillReposOver = ({
                 commit: listing.commit,
                 skills: listing.skills.map((skill) => ({ ...skill, skillId: skillIdOf(skill) })),
                 unreadable: listing.unreadable.map(({ path, message }) => ({ path, message })),
+                internal: listing.internal,
                 omitted: listing.omitted,
               }),
         ),

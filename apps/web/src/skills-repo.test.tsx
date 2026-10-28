@@ -45,6 +45,7 @@ const listing = (over: Partial<SkillRepoListing> = {}): SkillRepoListing => ({
   commit: COMMIT,
   skills: SKILLS,
   unreadable: [],
+  internal: 0,
   omitted: 0,
   ...over,
 });
@@ -117,8 +118,9 @@ describe("the repo page", () => {
 
         expect(hrefs).toContain("/skills/mattpocock");
         // A row's name is the route of the Skill's page; its folder is on GitHub at the commit that was listed.
-        expect(hrefs).toContain("/skills/mattpocock/skills/tdd");
-        expect(hrefs).toContain("/skills/mattpocock/skills/root");
+        // Always with its folder, so a Skill whose name in the path is not unique still opens the one that was listed.
+        expect(hrefs).toContain("/skills/mattpocock/skills/tdd?path=skills%2Fengineering%2Ftdd");
+        expect(hrefs).toContain("/skills/mattpocock/skills/root?path=");
         expect(hrefs).toContain(
           `https://github.com/mattpocock/skills/tree/${COMMIT}/skills/engineering/tdd`,
         );
@@ -158,7 +160,7 @@ describe("the repo page", () => {
       expect(asked).toEqual([{ owner: "mattpocock", repo: "skills", ref: "feature/x" }]);
       expect(text(markup)).toContain("feature/x");
       expect(links(markup).map(({ href }) => href)).toContain(
-        "/skills/mattpocock/skills/tdd?ref=feature%2Fx",
+        "/skills/mattpocock/skills/tdd?ref=feature%2Fx&path=skills%2Fengineering%2Ftdd",
       );
     }),
   );
@@ -227,9 +229,11 @@ describe("the repo page", () => {
       expect(text(failed)).toContain("The limit is used up.");
       expect(failed).toContain("Try again");
 
-      const many = yield* render(() => Effect.succeed(listing({ omitted: 5 })));
+      const many = yield* render(() => Effect.succeed(listing({ omitted: 5, internal: 2 })));
 
-      expect(text(many)).toContain("5 more SKILL.md files than are listed");
+      expect(text(many)).toContain("5 more SKILL.md files in the repo were not read");
+      expect(text(many)).toContain("2 more skills are left out: the repo marks them internal.");
+      expect(text(yield* render(() => Effect.succeed(listing())))).not.toContain("internal");
     }),
   );
 });

@@ -76,6 +76,7 @@ describe("a repo's Skills", () => {
           message: "SKILL.md's frontmatter sets no name or no description, so it is not a Skill",
         },
       ],
+      internal: 1,
       omitted: 0,
     });
   });
@@ -108,6 +109,30 @@ describe("a repo's Skills", () => {
     );
 
     expect(listing).toMatchObject({ skills: [], unreadable: [], omitted: 0 });
+  });
+
+  it("are the first 200 of a repo with more SKILL.md files, the rest counted as unread", async () => {
+    const github = fakeGithub();
+
+    github.push(
+      "o/many",
+      Object.fromEntries(
+        Array.from({ length: 205 }, (_, at) => [`skills/s${at}/SKILL.md`, skillMd(`s${at}`)]),
+      ),
+    );
+
+    const { store } = await realCache();
+
+    github.reset();
+
+    const listing = await run(
+      skillReposOver({ reader: github.reader, cache: store }).list({ owner: "o", repo: "many" }),
+    );
+
+    expect(listing.skills).toHaveLength(200);
+    expect(listing.omitted).toBe(5);
+    // Only 200 were read from GitHub.
+    expect(blobsAsked(github.requests)).toHaveLength(200);
   });
 
   it("are read at the ref named: a branch, a tag or a commit", async () => {
@@ -323,26 +348,6 @@ describe("a repo that cannot be listed", () => {
     }
 
     expect(github.requests).toEqual([]);
-  });
-
-  it("is a failure of the read and not a crash when more than 200 SKILL.md files are in the repo: 200 are listed and the rest counted", async () => {
-    const github = fakeGithub();
-
-    github.push(
-      "o/many",
-      Object.fromEntries(
-        Array.from({ length: 205 }, (_, at) => [`skills/s${at}/SKILL.md`, skillMd(`s${at}`)]),
-      ),
-    );
-
-    const { store } = await realCache();
-
-    const listing = await run(
-      skillReposOver({ reader: github.reader, cache: store }).list({ owner: "o", repo: "many" }),
-    );
-
-    expect(listing.skills).toHaveLength(200);
-    expect(listing.omitted).toBe(5);
   });
 });
 
