@@ -147,7 +147,7 @@ const updatedOutcome = (
                 ...(refusedModified.length === 0
                   ? []
                   : [
-                      `${namesOf(refusedModified)} ${refusedModified.length === 1 ? "was" : "were"} edited since installed: call again with overwrite set to replace the edits (the user can revert the update on the Environments page, which brings them back).`,
+                      `${namesOf(refusedModified)} ${refusedModified.length === 1 ? "was" : "were"} edited since installed: call again with overwrite set to replace the edits (the user can revert the update on the Skills page, which brings them back).`,
                     ]),
               ],
               "\n",
@@ -216,7 +216,7 @@ const updatedOutcome = (
                     ? `Every Environment's Workspaces and spares get it at their next readying${updated.handed ? "; this Session's Workspace has it now" : ""}${current === null || updated.handed ? "" : " (or its Environment keeps its own Skill of the name, which hides it there)"}.`
                     : reach(environment, updated.handed, own),
                   PROMPT_NOTE,
-                  `Each change is recorded${approved ? " as approved" : ""} with your reason and the files and Skill source before and after, and the user can revert it on the Environments page.`,
+                  `Each change is recorded${approved ? " as approved" : ""} with your reason and the files and Skill source before and after, and the user can revert it on the Skills page.`,
                 ]),
           ],
           " ",
@@ -493,7 +493,7 @@ export const updateTool = ({
     name: TOOL,
     description: Arr.join(
       [
-        `Update installed Skills of an Environment (this Session's unless id names another) to the latest commit of the ref each was installed from: cloudpid fetches them, not you (no Container, no \`npx skills\`). Each Skill moved is kept in place of itself with its new Skill source and recorded as an Agent change with the files before and after, so the user can revert it on the Environments page. Skills stay pinned until someone updates them; environment_get marks a Skill "update available" when the daily check found its folder changed at its Skill source, and "modified" when it was edited since it was installed.`,
+        `Update installed Skills of an Environment (this Session's unless id names another) to the latest commit of the ref each was installed from: cloudpid fetches them, not you (no Container, no \`npx skills\`). Each Skill moved is kept in place of itself with its new Skill source and recorded as an Agent change with the files before and after, so the user can revert it on the Skills page. Skills stay pinned until someone updates them; environment_get marks a Skill "update available" when the daily check found its folder changed at its Skill source, and "modified" when it was edited since it was installed.`,
         `names are the Skills to update (as environment_get lists them); without names, every Skill marked update available is updated. A Skill whose folder is the same at the new commit records nothing. A modified Skill is refused, and named in the result, unless overwrite is true: that replaces the edits made to it (the user's revert brings them back); only set it when the user wants their edits replaced. A Skill that was not installed from GitHub has no source to update from, and one the checks refuse (the Agent Skills name rules, text only, ${SKILL_SIZES.file} a file, ${SKILL_SIZES.skill} a Skill, 100 Skills and ${SKILL_SIZES.set} in a set) is reported while the others are updated. After an update, this Session's Workspace serves the new files at ${SKILLS_ROOT}/<name> at once; the skills list in your system prompt changes at the next Context Window.`,
         `With id "${EVERY_ENVIRONMENT_ID}" the Skills kept for every Environment are updated, which the user must approve because they steer every future Session: they read the files each Skill would take on the card (the first ${MAX_CARD_CHARS} characters of each Skill's files, with a warning for what is cut), and the update is made at exactly those commits. ${SKILL_APPROVAL}`,
       ],

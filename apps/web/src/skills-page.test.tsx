@@ -118,21 +118,27 @@ const render = (
     search = "",
     more = [],
     before,
+    handlers = {},
+    loaded = scopes,
   }: {
     search?: string;
     more?: ReadonlyArray<Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>;
     before?: (registry: AtomRegistry.AtomRegistry) => void;
+    /** Handlers in place of the fixture's. */
+    handlers?: Partial<RegistryHandlers>;
+    /** The scopes whose Skills are loaded before the render: the others may still be loading. */
+    loaded?: ReadonlyArray<string>;
   } = {},
 ) =>
   Effect.gen(function* () {
-    const registry = registryWith(HANDLERS);
+    const registry = registryWith({ ...HANDLERS, ...handlers });
 
     registry.set(searchAtom, search);
     before?.(registry);
     yield* settle(registry, [
       environmentsAtom,
       sessionsAtom,
-      ...scopes.map((scope) => environmentSkillsAtom(scope)),
+      ...loaded.map((scope) => environmentSkillsAtom(scope)),
       ...scopes.map((scope) => agentChangesAtom(scope)),
       ...more,
     ]);
@@ -253,6 +259,21 @@ describe("the Installed tab", () => {
     }),
   );
 
+  it.effect("says why it cannot name the Environment ?environment= names when the list fails", () =>
+    Effect.gen(function* () {
+      const markup = yield* render(<SkillsPage />, {
+        search: "?tab=installed&environment=work",
+        handlers: {
+          listEnvironments: () => Effect.die("Registry down"),
+        },
+      });
+
+      expect(markup).toContain("The environments could not load.");
+      expect(markup).toContain("Registry down");
+      expect(markup).not.toContain("Loading…");
+    }),
+  );
+
   it.effect("lists the Skills' Agent changes with their Revert, and no other change", () =>
     Effect.gen(function* () {
       const work = section(yield* renderSkills("?tab=installed&environment=work"), "Work");
@@ -324,6 +345,25 @@ describe("the Environments page", () => {
         href: "/skills?tab=installed&environment=*",
       });
     }),
+  );
+
+  it.effect(
+    "counts an Environment's Skills only once those for every Environment have loaded",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render(<EnvironmentsPage />, {
+          handlers: {
+            listEnvironmentSkills: ({ environment }) =>
+              environment === "*" ? Effect.never : Effect.succeed(SKILLS.get(environment) ?? []),
+            // A defect of another call would end the pending one too: the card's settings stay unanswered.
+            getEnvironmentSettings: () => Effect.never,
+          },
+          loaded: ["default", "work"],
+        });
+
+        expect(section(markup, "Work")).toMatch(/Loading skills… · <a [^>]*>Manage<\/a>/);
+        expect(section(markup, "Work")).not.toContain("2 skills");
+      }),
   );
 
   it.effect("manages no Skill itself, and lists the Agent changes of the settings only", () =>

@@ -7,7 +7,6 @@
 // it waits for no Approval.
 
 import {
-  type EnvironmentRecord,
   type EnvironmentSkill,
   type SessionRecord,
   type SkillFile,
@@ -20,7 +19,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { Download, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 import { AgentChangesSection, isSkillChange } from "./agent-change-list.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
@@ -659,19 +658,28 @@ export const SkillsSection = ({ id }: { id: string }) => {
 
 const SKILL_CHANGES_EMPTY = "The agent has changed no skill here.";
 
-/** The section of the Skills kept for every Environment: what they are, the list, and their Agent changes. */
-const EverySkillsSection = ({ sessions }: { sessions: readonly SessionRecord[] }) => (
-  <section aria-label="For every environment" className="flex flex-col gap-4 rounded-lg border p-4">
-    <h2 className="text-sm font-semibold">For every environment</h2>
-    <p className="text-xs text-muted-foreground">
-      A skill kept here is served read-only in every environment's workspaces at their next
-      readying. It steers every future session, so the agent's save, install or removal of one waits
-      for your Approval in its session. An environment's own skill of the same name wins in that
-      environment. Adding or removing one here is your own change: it waits for nothing.
-    </p>
-    <SkillsSection id={EVERY_ENVIRONMENT} />
+/**
+ * The section of one scope's Skills (an Environment's own, or `EVERY_ENVIRONMENT`'s): its title, what it says of them
+ * (`children`), the list with its forms, and the Skills' Agent changes.
+ */
+const ScopeSection = ({
+  id,
+  title,
+  sessions,
+  children,
+}: {
+  id: string;
+  title: string;
+  /** The Sessions whose Agent changes the section may link: the Environment's, or every one for `EVERY_ENVIRONMENT`. */
+  sessions: readonly SessionRecord[];
+  children?: ReactNode;
+}) => (
+  <section aria-label={title} className="flex flex-col gap-4 rounded-lg border p-4">
+    <h2 className="truncate text-sm font-semibold">{title}</h2>
+    {children}
+    <SkillsSection id={id} />
     <AgentChangesSection
-      id={EVERY_ENVIRONMENT}
+      id={id}
       sessions={sessions}
       only={isSkillChange}
       empty={SKILL_CHANGES_EMPTY}
@@ -679,26 +687,19 @@ const EverySkillsSection = ({ sessions }: { sessions: readonly SessionRecord[] }
   </section>
 );
 
-/** The section of an Environment's own Skills: the list, what it gets from every Environment, and their Agent changes. */
-const EnvironmentSkillsSection = ({
-  environment,
-  sessions,
-}: {
-  environment: EnvironmentRecord;
-  /** Every Session made in the Environment, archived ones included. */
-  sessions: readonly SessionRecord[];
-}) => (
-  <section aria-label={environment.name} className="flex flex-col gap-4 rounded-lg border p-4">
-    <h2 className="truncate text-sm font-semibold">{environment.name}</h2>
-    <SkillsSection id={environment.id} />
-    <AgentChangesSection
-      id={environment.id}
-      sessions={sessions}
-      only={isSkillChange}
-      empty={SKILL_CHANGES_EMPTY}
-    />
-  </section>
-);
+/** What the Installed tab says of its filter: whose Skills it shows, or why it cannot say. */
+const filterText = (
+  filter: string,
+  named: string | undefined,
+  loading: boolean,
+  failed: boolean,
+): string => {
+  if (named !== undefined) return `Showing the skills of ${named} only.`;
+
+  if (failed) return "The environments could not load.";
+
+  return loading ? "Loading…" : `No environment has the id ${filter}.`;
+};
 
 /**
  * The Installed tab: the Skills kept for every Environment, then each Environment's own, or only the scope
@@ -721,11 +722,7 @@ export const InstalledTab = () => {
     <div className="flex flex-col gap-4">
       {filter !== undefined && (
         <p className="text-sm text-muted-foreground">
-          {named === undefined
-            ? environments === null
-              ? "Loading…"
-              : `No environment has the id ${filter}.`
-            : `Showing the skills of ${named} only.`}{" "}
+          {filterText(filter, named, environments === null, listError !== null)}{" "}
           <InAppLink
             href={skillsPath({ tab: "installed" })}
             className="underline underline-offset-2 hover:text-foreground"
@@ -736,7 +733,17 @@ export const InstalledTab = () => {
       )}
       <DialogProblem problem={listError} />
       {/* The Skills kept for every Environment need no Environment list; an Environment's section waits for it. */}
-      {scopes.includes(EVERY_ENVIRONMENT) && <EverySkillsSection sessions={sessions} />}
+      {scopes.includes(EVERY_ENVIRONMENT) && (
+        <ScopeSection id={EVERY_ENVIRONMENT} title="For every environment" sessions={sessions}>
+          <p className="text-xs text-muted-foreground">
+            A skill kept here is served read-only in every environment's workspaces at their next
+            readying. It steers every future session, so the agent's save, install or removal of one
+            waits for your Approval in its session. An environment's own skill of the same name wins
+            in that environment. Adding or removing one here is your own change: it waits for
+            nothing.
+          </p>
+        </ScopeSection>
+      )}
       {environments === null ? (
         filter === undefined && listError === null ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
@@ -745,9 +752,10 @@ export const InstalledTab = () => {
         environments
           .filter((environment) => scopes.includes(environment.id))
           .map((environment) => (
-            <EnvironmentSkillsSection
+            <ScopeSection
               key={environment.id}
-              environment={environment}
+              id={environment.id}
+              title={environment.name}
               sessions={sessions.filter((session) => session.environment === environment.id)}
             />
           ))

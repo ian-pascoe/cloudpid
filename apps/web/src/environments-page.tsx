@@ -1263,21 +1263,19 @@ const SkillsLine = ({ id }: { id: string }) => {
   const own = useAtomValue(environmentSkillsAtom(id));
   const every = useAtomValue(environmentSkillsAtom(EVERY_ENVIRONMENT));
   const skills = own.pipe(AsyncResult.value, Option.getOrNull);
-
-  const inherited = every.pipe(
-    AsyncResult.value,
-    Option.getOrElse(() => []),
-  );
+  const everywhere = id === EVERY_ENVIRONMENT;
+  // An Environment's count includes the Skills it gets from every Environment, so it waits for them too.
+  const inherited = everywhere ? [] : every.pipe(AsyncResult.value, Option.getOrNull);
 
   return (
     <p className="text-xs text-muted-foreground">
-      {skills === null
-        ? (failureOf(own) ?? "Loading skills…")
-        : skillCountText(skills, id === EVERY_ENVIRONMENT ? undefined : inherited)}
+      {skills === null || inherited === null
+        ? (failureOf(own) ?? failureOf(every) ?? "Loading skills…")
+        : skillCountText(skills, everywhere ? undefined : inherited)}
       {" · "}
       <InAppLink
         href={skillsPath({ tab: "installed", environment: id })}
-        aria-label={`Manage the skills of ${id === EVERY_ENVIRONMENT ? "every environment" : "this environment"}`}
+        aria-label={`Manage the skills of ${everywhere ? "every environment" : "this environment"}`}
         className="underline underline-offset-2 hover:text-foreground"
       >
         Manage

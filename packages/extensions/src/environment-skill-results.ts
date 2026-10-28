@@ -433,7 +433,7 @@ export const savedOutcome = (
                     ? reachEvery(saved.handed, saved.overriddenIn, current)
                     : reach(saved.environment, saved.handed, own),
                   PROMPT_NOTE,
-                  `The change is recorded${approved ? " as approved" : ""} with your reason and the files before and after, and the user can revert it on the Environments page.`,
+                  `The change is recorded${approved ? " as approved" : ""} with your reason and the files before and after, and the user can revert it on the Skills page.`,
                   ...(approved && note !== undefined ? [note] : []),
                 ],
                 " ",
@@ -587,7 +587,7 @@ export const installedOutcome = (
                   ...(saved.length === 0
                     ? []
                     : [
-                        `Each change is recorded${approved ? " as approved" : ""} with your reason and the files before and after, and the user can revert it on the Environments page.`,
+                        `Each change is recorded${approved ? " as approved" : ""} with your reason and the files before and after, and the user can revert it on the Skills page.`,
                       ]),
                   ...(approved && note !== undefined ? [note] : []),
                 ],
@@ -676,7 +676,7 @@ export const removedOutcome = (
                     ? reachEvery(removed.handed, removed.overriddenIn, current)
                     : reach(removed.environment, removed.handed, own),
                   PROMPT_NOTE,
-                  `The change is recorded${approved ? " as approved" : ""} with your reason and the files the Skill had, and the user can revert it on the Environments page.`,
+                  `The change is recorded${approved ? " as approved" : ""} with your reason and the files the Skill had, and the user can revert it on the Skills page.`,
                 ],
                 " ",
               ),
