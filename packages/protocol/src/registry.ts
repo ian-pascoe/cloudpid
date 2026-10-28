@@ -14,8 +14,13 @@ import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
 import {
+  DirectorySkill,
   EnvironmentSkill,
   SkillChangeFiles,
+  SkillDirectoryError,
+  SkillDirectoryPage,
+  SkillDirectoryPageNumber,
+  SkillDirectoryView,
   SkillFile,
   SkillInstall,
   SkillSearchResult,
@@ -753,6 +758,27 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { query: Schema.String },
     success: Schema.Array(SkillSearchResult),
     error: EnvironmentError,
+  }),
+  /**
+   * One page of a Skill directory list (GLOSSARY.md → Skill directory): skills.sh's all-time, trending or hot leaderboard,
+   * 200 rows a page from page 0, which the main Worker asks for and keeps about an hour. Each row says where its Skill is
+   * installed here, matched by Skill source repo and path. Fails with a `SkillDirectoryError` when skills.sh cannot be
+   * reached or answers otherwise; nothing else on the Skills page depends on it.
+   */
+  Rpc.make("listSkillDirectory", {
+    payload: { view: SkillDirectoryView, page: SkillDirectoryPageNumber },
+    success: SkillDirectoryPage,
+    error: SkillDirectoryError,
+  }),
+  /**
+   * Search the Skill directory (skills.sh's undocumented `/api/search`, fuzzy, at most 200 results) for `query`, each
+   * result with where its Skill is installed here, as `listSkillDirectory`'s rows. Records nothing. Fails with a
+   * `SkillDirectoryError` when the query is too short or long, or skills.sh cannot be reached or answers otherwise.
+   */
+  Rpc.make("searchSkillDirectory", {
+    payload: { query: Schema.String },
+    success: Schema.Array(DirectorySkill),
+    error: SkillDirectoryError,
   }),
   /**
    * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The

@@ -15,6 +15,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
+import { installedIn } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import {
   contentHash,
@@ -856,5 +857,41 @@ describe("installing Skills from GitHub", () => {
       message: "GitHub has no repo o/skills",
     });
     expect(missing).toEqual({ status: "missing" });
+  });
+});
+
+describe("the Skill directory's badges over installed Skills", () => {
+  it("find a Skill by its source repo and folder in each scope that keeps it, whatever it is named", async () => {
+    const [every, own, none] = await inRegistry(async ({ install, skills }) => {
+      await install(readerOf(REPO), { source: "o/skills@grill-me", owner: true, environment: "*" });
+      await install(readerOf(REPO), { source: "o/skills@grill-me", owner: true });
+      await install(readerOf(REPO), { source: "o/skills@tdd", owner: true });
+
+      const installed = skills
+        .listSourced()
+        .flatMap(({ scope, name, source, updateAvailable }) =>
+          source === null
+            ? []
+            : [{ scope, name, repo: source.repo, path: source.path, updateAvailable }],
+        );
+
+      return [
+        installedIn(installed, { repo: "O/Skills", skillId: "grill-me" }),
+        installedIn(installed, { repo: "o/skills", path: "skills/tdd" }),
+        installedIn(installed, { repo: "other/skills", skillId: "grill-me" }),
+      ];
+    });
+
+    expect(every).toEqual({
+      everyEnvironment: true,
+      environments: [DEFAULT_ENVIRONMENT],
+      updateAvailable: false,
+    });
+    expect(own).toEqual({
+      everyEnvironment: false,
+      environments: [DEFAULT_ENVIRONMENT],
+      updateAvailable: false,
+    });
+    expect(none).toBeUndefined();
   });
 });

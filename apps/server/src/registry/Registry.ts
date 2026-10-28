@@ -40,6 +40,7 @@ import {
   skillSetOf,
   unapprovedEveryChange,
 } from "./skills.ts";
+import type { InstalledSkillRef } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
@@ -560,6 +561,11 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly change: number;
   }) => Effect.Effect<SkillChangeFiles | null>;
+  /**
+   * Every Skill kept in any scope that has a Skill source, for the Skill directory's badges (`skill-badges.ts`): the
+   * Environment's id that keeps it, or `*` for every Environment.
+   */
+  readonly installedSkills: () => Effect.Effect<ReadonlyArray<InstalledSkillRef>>;
   /** The files kept for Skill `name` of `environment` (or `*`), with their texts, by path; null when it keeps none of the name. */
   readonly skillFiles: (input: {
     readonly environment: string;
@@ -1295,6 +1301,14 @@ export const RegistryLive = Registry.make(
             }),
           skillFiles: ({ environment, name }) =>
             Effect.sync(() => keptSkillFiles(skills, environment, name)),
+          installedSkills: () =>
+            Effect.sync(() =>
+              Arr.flatMap(skills.listSourced(), ({ scope, name, source, updateAvailable }) =>
+                source === null
+                  ? []
+                  : [{ scope, name, repo: source.repo, path: source.path, updateAvailable }],
+              ),
+            ),
           workspaceSkillSet: ({ environment }) =>
             Effect.suspend(() =>
               store.getEnvironment(environment) === null

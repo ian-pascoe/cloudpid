@@ -27,9 +27,12 @@ export const SEARCH_TIMEOUT_MS = 15_000;
 /** The headers of a search. */
 export const SEARCH_HEADERS = { accept: "application/json", "user-agent": "cloudpid" };
 
-/** The request URL for `query`. */
-export const skillSearchUrl = (query: string, limit = DEFAULT_LIMIT): string =>
-  `${SKILLS_SEARCH_URL}?${new URLSearchParams({ q: query, limit: String(Math.min(limit, MAX_LIMIT)) }).toString()}`;
+/** The most results the Skills page asks of a search: what skills.sh answers at most. */
+export const MAX_DIRECTORY_LIMIT = 200;
+
+/** The request URL for `query`: `limit` results, at most `max` (the tool's `MAX_LIMIT`, or the page's `MAX_DIRECTORY_LIMIT`). */
+export const skillSearchUrl = (query: string, limit = DEFAULT_LIMIT, max = MAX_LIMIT): string =>
+  `${SKILLS_SEARCH_URL}?${new URLSearchParams({ q: query, limit: String(Math.min(limit, max)) }).toString()}`;
 
 /** Why `query` is not searched for, or undefined. */
 export const queryProblem = (query: string): string | undefined => {
