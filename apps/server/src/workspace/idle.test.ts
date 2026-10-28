@@ -2,7 +2,7 @@
 // has used it for the idle time. The Workspace DO's alarm and storage are faked; the clock is a number the test moves.
 // @effect-diagnostics asyncFunction:off
 import { describe, expect, it } from "vitest";
-import { IdleStop } from "./idle.ts";
+import { CONTAINER_HOLD_CAP_MS, type ContainerHold, type HeldStop, IdleStop } from "./idle.ts";
 
 const MINUTE = 60_000;
 
@@ -18,6 +18,12 @@ type FakeState = {
   failNextSetAlarm: boolean;
   /** Runs inside `stop`, while the Container is being stopped. */
   duringStop: (() => Promise<void>) | undefined;
+  /** The last activity stored. */
+  activity: number | undefined;
+  /** Whether a Container runs. */
+  running: boolean;
+  /** The held stops reported. */
+  held: HeldStop[];
 };
 
 /** A fake Durable Object: a clock, one alarm, one stored time, and a count of Container stops. */
@@ -33,6 +39,9 @@ const open = (initialIdleMs = 15 * MINUTE) => {
     duringSnapshot: undefined,
     failNextSetAlarm: false,
     duringStop: undefined,
+    activity: undefined,
+    running: true,
+    held: [],
   };
 
   const make = () =>
@@ -43,6 +52,11 @@ const open = (initialIdleMs = 15 * MINUTE) => {
       save: async (at) => {
         state.saved = at;
       },
+      loadActivity: async () => state.activity,
+      saveActivity: async (at) => {
+        state.activity = at;
+      },
+      running: () => state.running,
       setAlarm: async (at) => {
         if (state.failNextSetAlarm) {
           state.failNextSetAlarm = false;
@@ -58,6 +72,9 @@ const open = (initialIdleMs = 15 * MINUTE) => {
       stop: async () => {
         await state.duringStop?.();
         state.stops++;
+      },
+      held: async (stop) => {
+        state.held.push(stop);
       },
     });
 
@@ -287,11 +304,13 @@ describe("IdleStop", () => {
 
   it("keeps the Container when a command arrives while its disk is being snapshotted, which stopping would kill", async () => {
     const { state, idle, fire } = open();
+    let command: ContainerHold | undefined;
 
     await idle.touch();
     state.duringSnapshot = async () => {
       state.now += 5_000;
-      await idle.begin();
+      command = idle.hold();
+      await command.begun;
     };
 
     await fire(idle);
@@ -304,7 +323,7 @@ describe("IdleStop", () => {
     await fire(idle);
     expect(state.stops).toBe(0);
 
-    await idle.end();
+    await command?.end();
     await fire(idle);
     expect(state.stops).toBe(1);
   });
@@ -330,8 +349,9 @@ describe("IdleStop", () => {
 
   it("keeps the Container, waiting again at each alarm, while a command runs", async () => {
     const { state, idle, fire } = open();
+    const command = idle.hold();
 
-    await idle.begin();
+    await command.begun;
 
     for (let alarm = 0; alarm < 3; alarm++) {
       await fire(idle);
@@ -341,7 +361,7 @@ describe("IdleStop", () => {
 
     // The end of the command is a use: the idle time counts from it.
     state.now += 10 * MINUTE;
-    await idle.end();
+    await command.end();
     await fire(idle);
     expect(state.stops).toBe(0);
 
@@ -352,13 +372,16 @@ describe("IdleStop", () => {
   it("keeps the Container until the last of several commands ends", async () => {
     const { state, idle, fire } = open();
 
-    await idle.begin();
-    await idle.begin();
-    await idle.end();
+    const first = idle.hold();
+    const second = idle.hold();
+
+    await first.end();
+    // A hold ends once: ending it again releases nothing.
+    await first.end();
     await fire(idle);
     expect(state.stops).toBe(0);
 
-    await idle.end();
+    await second.end();
     await fire(idle);
     expect(state.stops).toBe(1);
   });
@@ -367,8 +390,7 @@ describe("IdleStop", () => {
     it("snapshots and stops the Container though it was just used", async () => {
       const { state, idle } = open();
 
-      await idle.begin();
-      await idle.end();
+      await idle.hold().end();
       await idle.stop();
 
       expect(state.snapshots).toBe(1);
@@ -378,7 +400,7 @@ describe("IdleStop", () => {
     it("keeps the Container while a command runs", async () => {
       const { state, idle } = open();
 
-      await idle.begin();
+      idle.hold();
       await idle.stop();
 
       expect(state.snapshots).toBe(0);
@@ -403,6 +425,236 @@ describe("IdleStop", () => {
       await fire(idle);
       expect(state.stops).toBe(1);
     });
+  });
+});
+
+describe("IdleStop's hold cap", () => {
+  /** Fire every alarm due up to `until`, as the platform does; the clock ends at `until`. */
+  const runUntil = async (
+    { state, fire }: ReturnType<typeof open>,
+    idle: IdleStop,
+    until: number,
+  ) => {
+    while (state.alarm !== undefined && state.alarm <= until) await fire(idle);
+
+    state.now = Math.max(state.now, until);
+  };
+
+  it("stops a Container a command handle never released holds, once the cap passes without activity", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle } = fake;
+
+    // The agent runs a command whose handle is never disposed: its start is the last activity.
+    await idle.active();
+
+    const lastActivity = state.now;
+
+    await idle.hold().begun;
+
+    await runUntil(fake, idle, lastActivity + CONTAINER_HOLD_CAP_MS - 1);
+    expect(state.stops).toBe(0);
+
+    await runUntil(fake, idle, lastActivity + CONTAINER_HOLD_CAP_MS + 2 * MINUTE);
+
+    // Snapshotted first, so the next command starts the Container from the snapshot, and reported for the notice.
+    expect(state.snapshots).toBe(1);
+    expect(state.stops).toBe(1);
+    expect(state.held).toEqual([
+      { at: lastActivity + CONTAINER_HOLD_CAP_MS, lastActivity, holds: 1 },
+    ]);
+  });
+
+  it("drops the holds it stopped, so a handle never released keeps no later Container", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle } = fake;
+
+    await idle.active();
+
+    const leaked = idle.hold();
+
+    await leaked.begun;
+    await runUntil(fake, idle, state.now + CONTAINER_HOLD_CAP_MS + 2 * MINUTE);
+    expect(state.stops).toBe(1);
+
+    // The next command starts a Container; the old handle is disposed late, and must not end the new hold.
+    await idle.active();
+
+    const next = idle.hold();
+
+    await next.begun;
+    await leaked.end();
+    await runUntil(fake, idle, state.now + 10 * MINUTE);
+    expect(state.stops).toBe(1);
+
+    await next.end();
+    await runUntil(fake, idle, state.now + 2 * MINUTE);
+    expect(state.stops).toBe(2);
+    expect(state.held).toHaveLength(1);
+  });
+
+  it("stops a Container an open Container preview keeps, by its socket and its requests, once the cap passes", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle } = fake;
+
+    await idle.active();
+
+    const lastActivity = state.now;
+
+    // The page's carried socket holds the Container, and its dev server's pings are uses every 30 s.
+    await idle.hold().begun;
+
+    while (state.stops === 0 && state.now < lastActivity + 2 * CONTAINER_HOLD_CAP_MS) {
+      await idle.touch();
+      await runUntil(fake, idle, state.now + 30_000);
+    }
+
+    expect(state.stops).toBe(1);
+    expect(state.held).toEqual([
+      { at: lastActivity + CONTAINER_HOLD_CAP_MS, lastActivity, holds: 1 },
+    ]);
+  });
+
+  it("stops a Container a page's requests alone keep in use, once the cap passes", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle } = fake;
+
+    await idle.active();
+
+    const lastActivity = state.now;
+
+    while (state.stops === 0 && state.now < lastActivity + 2 * CONTAINER_HOLD_CAP_MS) {
+      await idle.touch();
+      await runUntil(fake, idle, state.now + 30_000);
+    }
+
+    expect(state.stops).toBe(1);
+    expect(state.held).toEqual([
+      { at: lastActivity + CONTAINER_HOLD_CAP_MS, lastActivity, holds: 0 },
+    ]);
+  });
+
+  it("does not stop a long-running command while there is activity in the Workspace", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle } = fake;
+
+    await idle.active();
+
+    const build = idle.hold();
+
+    await build.begun;
+
+    // Three hours of build, the Session's Run live meanwhile (its heartbeat is activity).
+    for (let minute = 0; minute < 180; minute += 30) {
+      await runUntil(fake, idle, state.now + 30 * MINUTE);
+      await idle.active();
+    }
+
+    expect(state.stops).toBe(0);
+    expect(state.snapshots).toBe(0);
+
+    // The build ends, and the Container goes at its idle time.
+    await build.end();
+    await runUntil(fake, idle, state.now + 2 * MINUTE);
+    expect(state.stops).toBe(1);
+    expect(state.held).toEqual([]);
+  });
+
+  it("keeps the Container, holds and all, when activity comes while its disk is being snapshotted", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle } = fake;
+
+    await idle.active();
+
+    const command = idle.hold();
+
+    await command.begun;
+    state.duringSnapshot = async () => {
+      state.now += 5_000;
+      await idle.active();
+    };
+
+    await runUntil(fake, idle, state.now + CONTAINER_HOLD_CAP_MS);
+    expect(state.snapshots).toBe(1);
+    expect(state.stops).toBe(0);
+    expect(state.held).toEqual([]);
+
+    // The command still holds it: no idle stop until it ends.
+    state.duringSnapshot = undefined;
+    await runUntil(fake, idle, state.now + 30 * MINUTE);
+    expect(state.stops).toBe(0);
+
+    await command.end();
+    await runUntil(fake, idle, state.now + 2 * MINUTE);
+    expect(state.stops).toBe(1);
+  });
+
+  it("only drops the holds when no Container runs at the cap", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle } = fake;
+
+    await idle.active();
+    await idle.hold().begun;
+
+    // A restart stopped the Container since.
+    state.running = false;
+    await runUntil(fake, idle, state.now + CONTAINER_HOLD_CAP_MS);
+
+    expect(state.snapshots).toBe(0);
+    expect(state.stops).toBe(0);
+    expect(state.held).toEqual([]);
+    expect(await idle.stopsBy()).not.toBeNull();
+  });
+
+  it("never stops a Container sooner than its own idle time, when that is longer than the cap", async () => {
+    const idleMs = 2 * CONTAINER_HOLD_CAP_MS;
+    const fake = open(idleMs);
+    const { state, idle } = fake;
+
+    await idle.active();
+    await idle.touch();
+
+    const lastUse = state.now;
+
+    await runUntil(fake, idle, lastUse + idleMs - 1);
+    expect(state.stops).toBe(0);
+
+    await runUntil(fake, idle, lastUse + idleMs);
+    expect(state.stops).toBe(1);
+  });
+
+  it("counts the cap from the stored activity when the object was evicted since", async () => {
+    const fake = open(2 * MINUTE);
+    const { state, idle, make } = fake;
+
+    await idle.active();
+
+    const lastActivity = state.now;
+
+    // A page's requests keep the Container in use; the object is evicted and a new instance goes on.
+    state.now += 30 * MINUTE;
+    await idle.touch();
+
+    const revived = make();
+
+    while (state.stops === 0 && state.now < lastActivity + 2 * CONTAINER_HOLD_CAP_MS) {
+      await revived.touch();
+      await runUntil(fake, revived, state.now + 30_000);
+    }
+
+    expect(state.held[0]?.lastActivity).toBe(lastActivity);
+  });
+
+  it("knows the Container stops by the cap when that comes before its idle time", async () => {
+    const { state, idle } = open(2 * MINUTE);
+
+    await idle.active();
+
+    const lastActivity = state.now;
+
+    state.now = lastActivity + CONTAINER_HOLD_CAP_MS - MINUTE;
+    await idle.touch();
+
+    expect(await idle.stopsBy()).toBe(lastActivity + CONTAINER_HOLD_CAP_MS);
   });
 });
 
@@ -433,11 +685,14 @@ describe("IdleStop's reports to the usage ledger", () => {
   it("reports every use, and when commands begin to run and the last one ends", async () => {
     const { state, idle } = reporting();
 
-    await idle.begin();
-    await idle.begin();
-    await idle.end();
-    await idle.end();
-    await idle.end();
+    const first = idle.hold();
+    const second = idle.hold();
+
+    await first.begun;
+    await second.begun;
+    await first.end();
+    await second.end();
+    await second.end();
 
     expect(state.uses).toBe(5);
     expect(state.busy).toEqual([true, false]);
@@ -448,12 +703,14 @@ describe("IdleStop's reports to the usage ledger", () => {
 
     expect(await idle.stopsBy()).toBeNull();
 
-    await idle.begin();
+    const command = idle.hold();
+
+    await command.begun;
 
     expect(await idle.stopsBy()).toBeNull();
 
     state.now += MINUTE;
-    await idle.end();
+    await command.end();
 
     expect(await idle.stopsBy()).toBe(state.now + 15 * MINUTE);
   });

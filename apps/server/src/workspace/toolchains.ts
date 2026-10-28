@@ -146,7 +146,7 @@ export type ToolchainOptions = {
    * Told when a bootstrap begins and ends, so the Container counts as in use while it runs (the idle stop): a Setup
    * Script can outlast the idle time, and the command that waited for it may have gone.
    */
-  readonly activity?: Pick<IdleStop, "begin" | "end"> | undefined;
+  readonly activity?: Pick<IdleStop, "hold"> | undefined;
   /** Where a failed bootstrap or Setup Script is reported (never with the token). */
   readonly warn: (message: string) => void;
   readonly now: () => number;
@@ -440,7 +440,9 @@ export class ToolchainBackend implements WorkspaceBackend {
     const log = (cause: unknown) =>
       warn(`idle stop: tracking the bootstrap failed: ${String(cause)}`);
 
-    await activity?.begin().catch(log);
+    const hold = activity?.hold();
+
+    await hold?.begun.catch(log);
 
     try {
       const environment = await this.#environment();
@@ -454,7 +456,7 @@ export class ToolchainBackend implements WorkspaceBackend {
 
       return await this.#installAndSetUp(shell, environment);
     } finally {
-      await activity?.end().catch(log);
+      await hold?.end().catch(log);
     }
   }
 

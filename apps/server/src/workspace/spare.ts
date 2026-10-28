@@ -32,7 +32,7 @@ export type SparePreparationDeps = {
   /** Ready the Workspace with `setup` on the object's own Container, its bootstrap included. */
   readonly prepare: (setup: WorkspaceSetup) => Promise<void>;
   /** The idle stop: it holds the Container while the work runs, and stops it after (`IdleStop.stop`). */
-  readonly idle: Pick<IdleStop, "begin" | "end" | "stop">;
+  readonly idle: Pick<IdleStop, "hold" | "stop">;
   readonly now: () => number;
   readonly info: (message: string) => void;
   readonly warn: (message: string) => void;
@@ -129,7 +129,9 @@ export class SparePreparation {
     };
 
     // Held from the start, so the idle stop never stops the Container midway, and its alarm is armed.
-    idle.begin().catch(trackingFailed);
+    const hold = idle.hold();
+
+    hold.begun.catch(trackingFailed);
 
     let prepared = false;
 
@@ -142,7 +144,7 @@ export class SparePreparation {
         `${LOG_KEY}: preparing failed after ${now() - started} ms; the Session that takes it readies it: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
     } finally {
-      await idle.end().catch(trackingFailed);
+      await hold.end().catch(trackingFailed);
     }
 
     try {

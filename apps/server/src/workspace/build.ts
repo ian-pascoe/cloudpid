@@ -39,7 +39,7 @@ import {
 import * as Schema from "effect/Schema";
 import type { BuildRequest, BuildState, EnvironmentBuild, TestBuildState } from "./build-record.ts";
 import { buildSecretEnvironment, type HeldSecrets } from "./environment-secrets.ts";
-import type { IdleStop } from "./idle.ts";
+import type { ContainerHold, IdleStop } from "./idle.ts";
 import { CLONE_TIMEOUT_SECONDS, SCRIPT_RUN_MARGIN_SECONDS, type ScriptRun } from "./prepare.ts";
 import type { RemoteHeads } from "./remote-heads.ts";
 
@@ -97,7 +97,7 @@ export type BuildRunnerDeps = {
   /** Stop the Container. */
   readonly stop: () => Promise<void>;
   /** The idle stop: it holds the Container while a Build runs. */
-  readonly idle: Pick<IdleStop, "begin" | "end">;
+  readonly idle: Pick<IdleStop, "hold">;
   /** `text` with the GitHub token and the Environment's Secrets taken out. */
   readonly redact: (text: string) => string;
   /** A fresh id for a request, which tags the processes its scripts start. */
@@ -417,8 +417,8 @@ export class BuildRunner {
 
     let outcome: Outcome;
     let lost = false;
-    // Whether the Container is needed: the daily look that finds nothing to build never starts it.
-    let usedContainer = false;
+    // The Container's hold, taken once it is needed: the daily look that finds nothing to build never starts it.
+    let hold: ContainerHold | undefined;
 
     try {
       const { settings } = resolveContainerSettingsLeniently(request.settings);
@@ -431,8 +431,8 @@ export class BuildRunner {
         outcome = { kind: "unchanged" };
       } else {
         // Held from here, so the idle stop never stops the Container midway, and its alarm is armed.
-        usedContainer = true;
-        deps.idle.begin().catch(trackingFailed);
+        hold = deps.idle.hold();
+        hold.begun.catch(trackingFailed);
 
         await deps.handOver(buildContainerSettings(settings));
 
@@ -518,14 +518,14 @@ export class BuildRunner {
       };
     }
 
-    if (usedContainer) {
+    if (hold !== undefined) {
       try {
         await deps.stop();
       } catch (cause) {
         deps.warn(`${LOG_KEY}: stopping the Container failed: ${String(cause)}`);
       }
 
-      await deps.idle.end().catch(trackingFailed);
+      await hold.end().catch(trackingFailed);
     }
 
     if (this.#cancelled === request.id) this.#cancelled = undefined;

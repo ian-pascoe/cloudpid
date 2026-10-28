@@ -82,7 +82,7 @@ import {
   WorkspaceRunsModule,
 } from "./runs.ts";
 import { WorkspaceWorkStateModule } from "./work-state.ts";
-import { IdleStop } from "./idle.ts";
+import { type HeldStop, IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
 import {
@@ -178,6 +178,25 @@ const ContainerHost = withWorkspaceContainer(class extends DurableObject<Workspa
 
 /** Where the last use of the Container is kept, for an alarm that wakes an evicted object. */
 const LAST_USE_KEY = "cloudpid:container-last-use";
+
+/** Where the last owner or agent activity in the Workspace is kept, which the hold cap counts from (`IdleStop.active`). */
+const LAST_ACTIVITY_KEY = "cloudpid:container-last-activity";
+
+/** Where the Workspace's latest held stops are kept, for its Sessions' notices (`containerHeldStops`). */
+const HELD_STOPS_KEY = "cloudpid:container-held-stops";
+
+/** How many held stops are kept: a Session that has missed more shows the latest. */
+const HELD_STOPS_KEPT = 10;
+
+/** The file operations that write: a model tool's write is activity in the Workspace (`IdleStop.active`). */
+const WRITE_OPERATIONS: ReadonlySet<EnvRequest["op"]> = new Set([
+  "writeFile",
+  "truncate",
+  "rename",
+  "createDir",
+  "remove",
+  "createTempDir",
+]);
 
 /** Where the Container's launch (its instance type, idle time, paths, snapshot) and its latest snapshot are kept. */
 const LAUNCH_KEY = "cloudpid:container-launch";
@@ -443,6 +462,9 @@ export class Workspace extends ContainerHost {
       now: () => Date.now(),
       load: () => ctx.storage.get<number>(LAST_USE_KEY),
       save: (at) => ctx.storage.put(LAST_USE_KEY, at),
+      loadActivity: () => ctx.storage.get<number>(LAST_ACTIVITY_KEY),
+      saveActivity: (at) => ctx.storage.put(LAST_ACTIVITY_KEY, at),
+      running: () => this.containerRunning(),
       // The one alarm is shared with the spare's preparation and a Build, which the idle stop does not put off.
       setAlarm: async (at) =>
         ctx.storage.setAlarm(await this.#builds.alarmAt(await this.#spare.alarmAt(at))),
@@ -454,6 +476,16 @@ export class Workspace extends ContainerHost {
       },
       // The size the agent's resize recorded lasts until here.
       stop: () => resizes.stopIdle(),
+      // A Container held past the hold cap without activity: logged, and kept for the Sessions' notices.
+      held: async (stop) => {
+        console.warn(
+          `workspace.container.held-stop: stopped after ${Math.round((stop.at - stop.lastActivity) / 60_000)} min without owner or agent activity, ${stop.holds} hold(s) dropped (a command handle never released, or a Container preview left open)`,
+        );
+
+        const kept = (await ctx.storage.get<ReadonlyArray<HeldStop>>(HELD_STOPS_KEY)) ?? [];
+
+        await ctx.storage.put(HELD_STOPS_KEY, [...kept, stop].slice(-HELD_STOPS_KEPT));
+      },
       used: () => void tally(usage.seen()),
       busy: (busy) => void tally(usage.busy(busy)),
     });
@@ -1034,13 +1066,37 @@ export class Workspace extends ContainerHost {
   async resizeContainer(options: { readonly size: InstanceType }): Promise<ContainerResizeOutcome> {
     this.#spare.noteUse();
 
-    await this.#idle.begin();
+    const hold = this.#idle.hold();
+
+    await hold.begun;
 
     try {
       return await this.#resizes.resize(options.size);
     } finally {
-      await this.#idle.end();
+      await hold.end();
     }
+  }
+
+  /**
+   * A Session in this Workspace is at work: the owner sent a message, or a Run is live (its heartbeat). The hold cap
+   * counts from here (docs/architecture/container.md → Idle stop); it is not a use of the Container, which it neither
+   * starts nor keeps from its idle stop.
+   */
+  async noteSessionActivity(): Promise<void> {
+    this.#spare.noteUse();
+
+    await this.#idle.active();
+  }
+
+  /**
+   * The held stops of this Workspace's Container after `after` (epoch milliseconds), oldest first: each a stop of a
+   * Container kept past the hold cap without owner or agent activity, which its Sessions show as a notice. The latest
+   * few are kept. Not a use of the Workspace.
+   */
+  async containerHeldStops(after: number): Promise<ReadonlyArray<HeldStop>> {
+    const kept = (await this.ctx.storage.get<ReadonlyArray<HeldStop>>(HELD_STOPS_KEY)) ?? [];
+
+    return kept.filter((stop) => stop.at > after);
   }
 
   /**
@@ -1404,6 +1460,14 @@ export class Workspace extends ContainerHost {
   /** One of `ComputerExecutionEnv`'s file operations, answered as plain data. */
   fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
     this.#spare.noteUse();
+
+    // A Session's write (a model tool's) is activity in the Workspace, which the hold cap counts from; a read is not, as
+    // a watcher polls.
+    if (WRITE_OPERATIONS.has(request.op)) {
+      this.#idle
+        .active()
+        .catch((cause: unknown) => console.warn("idle stop: noting activity failed", cause));
+    }
 
     return this.#fileOperation(request);
   }

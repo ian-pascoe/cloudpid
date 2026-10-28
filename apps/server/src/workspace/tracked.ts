@@ -1,7 +1,8 @@
 // The Workspace stub the DO hands out, with the commands that run on the Container counted (docs/architecture/container.md →
-// idle stop). A command's exec handle lives until its client disposes it (the client always holds it
+// Idle stop). A command's exec handle lives until its client disposes it (the client always holds it
 // with `using`, and Workers RPC disposes it when the client disconnects), so the command is running from `exec` until
-// then, and the Container is not idle meanwhile.
+// then, and the Container is not idle meanwhile. Every command started, on any backend, is activity in the Workspace,
+// which the hold cap counts from: a handle never disposed holds the Container no longer than that.
 // @effect-diagnostics asyncFunction:off globalConsole:off
 import {
   type Workspace as ComputerWorkspace,
@@ -17,7 +18,7 @@ import type { IdleStop } from "./idle.ts";
 type ExecHandle = WorkspaceRuntimeExecHandleStub<"utf8" | undefined>;
 
 /** The commands' side of the idle stop: what `IdleStop` offers them. */
-export type CommandTracker = Pick<IdleStop, "begin" | "end">;
+export type CommandTracker = Pick<IdleStop, "hold" | "active">;
 
 /** An exec handle stub that ends its command's run on the Container when its client disposes it. */
 class TrackedExecHandle extends RpcTarget {
@@ -74,11 +75,16 @@ class TrackedRuntime extends WorkspaceRuntimeStub {
     const tracker = this.#tracker;
     const log = (cause: unknown) => console.warn("idle stop: tracking a command failed", cause);
 
+    // A command started is the owner's or the agent's activity, whichever backend runs it.
+    tracker.active().catch(log);
+
     // A failed write only shortens the idle time: the alarm works from what was stored before.
-    if (onContainer) tracker.begin().catch(log);
+    const hold = onContainer ? tracker.hold() : undefined;
+
+    hold?.begun.catch(log);
 
     const end = () => {
-      tracker.end().catch(log);
+      hold?.end().catch(log);
     };
 
     try {

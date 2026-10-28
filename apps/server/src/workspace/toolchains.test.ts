@@ -1159,11 +1159,15 @@ describe("the Setup Scripts", () => {
 
     const { toolchains } = open(container, {
       activity: {
-        begin: async () => {
+        hold: () => {
           activity.push("begin");
-        },
-        end: async () => {
-          activity.push("end");
+
+          return {
+            begun: Promise.resolve(),
+            end: async () => {
+              activity.push("end");
+            },
+          };
         },
       },
     });

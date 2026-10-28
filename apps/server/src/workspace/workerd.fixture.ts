@@ -566,15 +566,19 @@ export class TestWorkspace extends Workspace {
 
         return idle.touch();
       },
-      begin: () => {
+      hold: () => {
         uses.begin++;
 
-        return idle.begin();
-      },
-      end: () => {
-        uses.end++;
+        const hold = idle.hold();
 
-        return idle.end();
+        return {
+          begun: hold.begun,
+          end: () => {
+            uses.end++;
+
+            return hold.end();
+          },
+        };
       },
     };
   }
