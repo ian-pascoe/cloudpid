@@ -78,10 +78,10 @@ const HASH_KEY = "cloudpid:skills:hash";
  * value under the 2 MB a value may hold, as a file is at most `MAX_FILE_BYTES` of UTF-8 (a string would be serialized
  * at two bytes a character when it holds one past Latin-1). A set kept before holds strings, which are read as they are.
  */
-const FILE_PREFIX = "cloudpid:skills:file:";
+export const FILE_PREFIX = "cloudpid:skills:file:";
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
 
 export type SkillSetStorage = {
   readonly kv: SyncKvStorage;
@@ -102,7 +102,7 @@ export const skillSetStore = (storage: SkillSetStorage) => {
     for (const [key, content] of storage.kv.list<Uint8Array | string>({ prefix: FILE_PREFIX })) {
       files[key.slice(FILE_PREFIX.length)] = Predicate.isString(content)
         ? content
-        : decoder.decode(content);
+        : utf8Decoder.decode(content);
     }
 
     return { hash, files };
@@ -126,7 +126,7 @@ export const skillSetStore = (storage: SkillSetStorage) => {
         }
 
         for (const [path, content] of Object.entries(set.files)) {
-          storage.kv.put(`${FILE_PREFIX}${path}`, encoder.encode(content));
+          storage.kv.put(`${FILE_PREFIX}${path}`, utf8Encoder.encode(content));
         }
 
         storage.kv.put(HASH_KEY, set.hash);

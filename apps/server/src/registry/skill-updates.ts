@@ -28,6 +28,7 @@ import { scopeOf } from "./secret-changes.ts";
 import {
   hashFiles,
   keepSkillAsOwner,
+  previewSizeProblem,
   previewSkillSave,
   sameFiles,
   saveSkillAs,
@@ -298,34 +299,38 @@ export const previewSkillUpdates = async (
 
   const { settled, candidates, order, environment } = planned;
 
-  return {
-    status: "done",
-    environment,
-    results: ordered<SkillUpdateEntry | SkillUpdateReady>(order, [
-      ...settled,
-      ...candidates.map(({ ready, same, skill, hashed }): SkillUpdateEntry | SkillUpdateReady => {
-        if (same) {
-          return {
-            name: skill.name,
-            outcome: "unchanged",
-            message: "its folder is the same at the ref's latest commit",
-          };
-        }
+  const results = ordered<SkillUpdateEntry | SkillUpdateReady>(order, [
+    ...settled,
+    ...candidates.map(({ ready, same, skill, hashed }): SkillUpdateEntry | SkillUpdateReady => {
+      if (same) {
+        return {
+          name: skill.name,
+          outcome: "unchanged",
+          message: "its folder is the same at the ref's latest commit",
+        };
+      }
 
-        // The caps are checked before the owner is asked, as a save's are: against the sets the update would make.
-        const checked = previewSkillSave(context, {
-          environment: request.environment,
-          folder: skill.name,
-          files: ready.files,
-          hashed,
-        });
+      // The caps are checked before the owner is asked, as a save's are: against the sets the update would make.
+      const checked = previewSkillSave(context, {
+        environment: request.environment,
+        folder: skill.name,
+        files: ready.files,
+        hashed,
+      });
 
-        return checked.status === "rejected"
-          ? { name: skill.name, outcome: "rejected", message: checked.message }
-          : ready;
-      }),
-    ]),
-  };
+      return checked.status === "rejected"
+        ? { name: skill.name, outcome: "rejected", message: checked.message }
+        : ready;
+    }),
+  ]);
+
+  const tooLarge = previewSizeProblem(
+    results.flatMap((result) => (result.outcome === "ready" ? [result.files] : [])),
+  );
+
+  if (tooLarge !== undefined) return { status: "refused", message: tooLarge };
+
+  return { status: "done", environment, results };
 };
 
 /**

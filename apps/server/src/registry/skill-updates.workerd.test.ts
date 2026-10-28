@@ -4,6 +4,7 @@
 // the source and the mark, and the check marks the Skills whose folder moved with one request for each repo and ref.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of GitHub and the Registry over native arrays.
+import { MAX_FILE_BYTES, MAX_SKILL_SET_BYTES } from "@cloudpid/extensions/skill-checks";
 import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT, type SkillUpdatePin } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
@@ -1035,6 +1036,41 @@ describe("the daily check", () => {
       ],
     });
     expect(skill?.source?.commit).toBeDefined();
+  });
+
+  it("refuses a preview of updates more than a Skill set may hold together, though each passes alone", async () => {
+    const github = fakeGithub();
+    const names = ["l0", "l1", "l2"];
+
+    github.push(
+      REPO,
+      Object.fromEntries(names.map((name) => [`skills/${name}/SKILL.md`, skillMd(name)])),
+    );
+
+    const view = await inRegistry(async ({ install, preview }) => {
+      await install(REPO, { environment: "*" });
+
+      // Each grows to 3 MiB: 9 MiB together.
+      const data = "x".repeat(MAX_FILE_BYTES);
+
+      github.push(
+        REPO,
+        Object.fromEntries(
+          names.flatMap((name) => [
+            [`skills/${name}/SKILL.md`, skillMd(name)],
+            [`skills/${name}/a.txt`, data],
+            [`skills/${name}/b.txt`, data],
+          ]),
+        ),
+      );
+
+      return preview({ environment: "*", names });
+    }, github);
+
+    expect(view).toMatchObject({
+      status: "refused",
+      message: expect.stringContaining(`more than the ${MAX_SKILL_SET_BYTES} a Skill set may hold`),
+    });
   });
 
   it("applies nothing: the Skills' files and sources stay as they were", async () => {

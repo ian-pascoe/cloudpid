@@ -11,7 +11,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 import { EMPTY_SKILL_SET } from "./skill-set-schema.ts";
-import { skillSetStore } from "./skill-set.ts";
+import { FILE_PREFIX, skillSetStore } from "./skill-set.ts";
 import { skillFile } from "./skills.fixtures.ts";
 import { UNWRITABLE_SKILL_SET } from "./workerd.fixture.ts";
 
@@ -527,7 +527,7 @@ describe("the Skill set a Workspace keeps", () => {
     await withTdd(slug);
 
     const files = await runInDurableObject(workspace, async (_instance, state) => {
-      state.storage.kv.put("cloudpid:skills:file:tdd/tests.md", "# Kept as a string\n");
+      state.storage.kv.put(`${FILE_PREFIX}tdd/tests.md`, "# Kept as a string\n");
 
       return skillSetStore({
         kv: state.storage.kv,

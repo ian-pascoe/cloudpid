@@ -23,6 +23,7 @@ import {
   type HashedFiles,
   hashFiles,
   keepSkillAsOwner,
+  previewSizeProblem,
   previewSkillSave,
   saveSkillAs,
   type SkillChangeContext,
@@ -274,6 +275,10 @@ export const previewSkillInstall = async (
   });
 
   for (const skipped of fetched.skipped) rejected.push(skipped);
+
+  const tooLarge = previewSizeProblem(skills.map(({ files }) => files));
+
+  if (tooLarge !== undefined) return { status: "refused", message: tooLarge };
 
   return { status: "previewed", environment: scope, repo, ref, commit, skills, rejected };
 };

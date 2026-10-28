@@ -11,6 +11,7 @@ import {
   MAX_FILE_BYTES,
   MAX_SKILL_BYTES,
   MAX_SKILL_DESCRIPTION_LENGTH,
+  MAX_SKILL_SET_BYTES,
   problemsIn,
   skillNameProblem,
 } from "@cloudpid/extensions/skill-checks";
@@ -253,7 +254,7 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
     return true;
   },
   put: (scope, skill, contents, now) => {
-    // One row per text keeps each row below the 2 MB a row may hold: a file is at most 1.5 MiB.
+    // One row per text keeps each row below the 2 MB a row may hold: a file is at most `MAX_FILE_BYTES`.
     for (const hash of new Set(Record.values(skill.files))) {
       const text = contents.get(hash);
 
@@ -363,7 +364,7 @@ export type CheckedSkill = { readonly name: string; readonly description: string
 /**
  * The Skill in folder `folder` with `files`, as a save checks it (ADR-0026): a `SKILL.md` whose frontmatter names it by
  * the Agent Skills rules (the folder's own name) and describes it in at most 1024 characters, and files that are text,
- * at most 1.5 MiB each and 4 MiB together, with nothing that looks like a credential or a local path. Each problem is a
+ * at most `MAX_FILE_BYTES` each and `MAX_SKILL_BYTES` together, with nothing that looks like a credential or a local path. Each problem is a
  * line of the answer.
  */
 export const checkSkill = (
@@ -503,10 +504,19 @@ export const skillSetOf = (merged: MergedSkills, skills: Skills): SkillSet => {
 };
 
 /**
- * The most UTF-8 bytes an Environment's Skill set may hold: the whole set goes to a Workspace in one Durable Object
- * call, and each Workspace keeps a copy.
+ * Why one Approval cannot show Skills whose files are `shown`, or undefined when it can: more than `MAX_SKILL_SET_BYTES`
+ * of UTF-8 together, which no Skill set could keep at once. It bounds the preview the Registry answers too, which goes to
+ * the Session in one Durable Object call (32 MiB, and V8 sends a string past Latin-1 at two bytes a character).
  */
-export const MAX_SKILL_SET_BYTES = 8 * 1024 * 1024;
+export const previewSizeProblem = (shown: ReadonlyArray<SkillFiles>): string | undefined => {
+  const bytes = Arr.reduce(shown, 0, (total, files) =>
+    Arr.reduce(Record.values(files), total, (sum, text) => sum + utf8Bytes(text)),
+  );
+
+  return bytes > MAX_SKILL_SET_BYTES
+    ? `These Skills are ${bytes} bytes together, more than the ${MAX_SKILL_SET_BYTES} a Skill set may hold, so one Approval cannot show them: name fewer, then call again for the rest`
+    : undefined;
+};
 
 /** A Skill as a set counts it: its name and files. */
 type Counted = Pick<StoredSkill, "name" | "files">;

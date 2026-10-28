@@ -45,7 +45,7 @@ export const SKILL_APPROVAL =
   "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the Skill of the name was saved again, or the folder's files changed, meanwhile, the approval does not apply and you are told to ask again.";
 
 /**
- * The most characters of a Skill's files the Approval card shows. A Skill may be far larger (1 MB), so the card says
+ * The most characters of a Skill's files the Approval card shows. A Skill may be far larger (`MAX_SKILL_BYTES`), so the card says
  * what it cut, since the owner approves what they can read.
  */
 export const MAX_CARD_CHARS = 16_000;

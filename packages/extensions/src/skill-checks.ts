@@ -12,6 +12,21 @@ export const MAX_FILE_BYTES = 1536 * 1024;
 /** A Skill, all its files together, may be this large: every Workspace holds a copy of its Skill set. */
 export const MAX_SKILL_BYTES = 4 * 1024 * 1024;
 
+/**
+ * The most UTF-8 bytes an Environment's Skill set may hold: the whole set goes to a Workspace in one Durable Object
+ * call, and each Workspace keeps a copy.
+ */
+export const MAX_SKILL_SET_BYTES = 8 * 1024 * 1024;
+
+const inMiB = (bytes: number): string => `${bytes / (1024 * 1024)} MiB`;
+
+/** The size limits of a Skill's file, a Skill and a Skill set, as the tools' descriptions say them. */
+export const SKILL_SIZES = {
+  file: inMiB(MAX_FILE_BYTES),
+  skill: inMiB(MAX_SKILL_BYTES),
+  set: inMiB(MAX_SKILL_SET_BYTES),
+} as const;
+
 /** The most files a Skill's folder may hold, far above any real one. */
 export const MAX_SKILL_FILES = 500;
 
