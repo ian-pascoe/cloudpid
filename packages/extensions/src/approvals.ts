@@ -11,7 +11,7 @@
 //   is withdrawn once the Session is idle (`dropAbandoned`).
 //
 // `withApproval` is the way a tool waits: one request per call (its task's id), settled when the call ends however it
-// ends. It is shared by the tools that change a Limit or delete, and meant for the Guardian (#38) too.
+// ends. It is shared by the tools that change a Limit or delete, by those that change the Skills kept for every Environment, and meant for the Guardian (#38) too.
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -302,3 +302,24 @@ export const withApproval = <A, E, R>(
     .ask({ ...change, id, conversationId: api.conversationId })
     .pipe(Effect.flatMap(then), Effect.ensuring(approvals.settle(id)));
 };
+
+/** What the result of a declined request says. */
+export const declined = (answer: Extract<ApprovalAnswer, { approved: false }>, what: string) => ({
+  output: [
+    {
+      type: "text" as const,
+      text: `The user declined: ${what}. Nothing changed.${
+        answer.reason === undefined ? "" : ` Their reason: ${answer.reason}`
+      } Do not ask again for the same change unless the user wants it.`,
+    },
+  ],
+  // The reason is null when the owner gave none.
+  details: { approval: { approved: false, reason: answer.reason ?? null } },
+});
+
+/**
+ * What a change the owner approved says when the target has the value already: this call made it before the Session
+ * restarted (recorded then), or the user made it meanwhile.
+ */
+export const approvedAlready = (what: string) =>
+  `The user approved, and ${what} already, as approved: nothing more needed changing.`;

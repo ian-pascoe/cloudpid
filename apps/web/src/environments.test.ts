@@ -22,6 +22,7 @@ import {
   EMPTY_SECRET_DRAFT,
   EVERY_ENVIRONMENT,
   inheritedSecrets,
+  inheritedSkills,
   inheritedVariables,
   secretDraftProblems,
   secretDraftReady,
@@ -573,6 +574,24 @@ describe("an Environment's Secrets", () => {
 
   it("reach a Build's scripts as the variable a Session's commands get them as", () => {
     expect(secretVariable("NPM_KEY")).toBe("PI_SECRET" + "_NPM_KEY");
+  });
+});
+
+describe("the Skills an Environment gets from every Environment", () => {
+  const skill = (name: string) => ({ name, description: `What ${name} does.`, savedAt: 1 });
+
+  it("are those kept for every Environment that it keeps none of its own of the name, by name", () => {
+    const every = [skill("review"), skill("release"), skill("triage")];
+
+    expect(inheritedSkills([skill("release")], every)).toEqual({
+      inherited: ["review", "triage"],
+      overridden: ["release"],
+    });
+    expect(inheritedSkills([], every)).toEqual({
+      inherited: ["release", "review", "triage"],
+      overridden: [],
+    });
+    expect(inheritedSkills([skill("mine")], [])).toEqual({ inherited: [], overridden: [] });
   });
 });
 

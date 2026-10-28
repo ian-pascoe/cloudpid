@@ -661,11 +661,12 @@ export const revertAgentChange = (
     if (every && variable !== null)
       return revertEveryVariable(store, changes, change, variable, now);
 
-    if (known === null) return { status: "missing" };
-
+    // A Skill's change reverts in either scope: an Environment's own Skills, and those kept for every Environment.
     if (fieldSkill(change.field) !== null) {
-      return revertSkillChange({ ...kept, changes, now }, environment, change);
+      return revertSkillChange({ ...kept, store, changes, now }, environment, change);
     }
+
+    if (known === null) return { status: "missing" };
 
     if (isLifecycleField(change.field)) {
       const reverted = revertLifecycleChange(store, changes, known.record, change, now);

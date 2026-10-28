@@ -58,7 +58,11 @@ export type SecretMarkStore = Pick<
 /** The part of the store a delete uses. */
 export type SecretDeleteStore = SecretMarkStore & Pick<RegistryStore, "deleteEnvironmentSecret">;
 
-const scopeOf = (scope: string, store: SecretMarkStore): SecretScope | null => {
+/** `scope` (an Environment's id, or `*`) as a change names it, or null for an Environment that is not registered. */
+export const scopeOf = (
+  scope: string,
+  store: Pick<RegistryStore, "getEnvironment">,
+): SecretScope | null => {
   if (scope === EVERY_ENVIRONMENT_SCOPE) {
     return { id: EVERY_ENVIRONMENT_SCOPE, name: EVERY_ENVIRONMENT_NAME };
   }

@@ -117,7 +117,7 @@ export const installSkills = async (
             name: skill.name,
             path: skill.path,
             outcome: "installed" as const,
-            shadows: kept.shadows,
+            shadows: kept.bundled,
           };
 
           results.push(kept.change === undefined ? saved : { ...saved, change: kept.change });

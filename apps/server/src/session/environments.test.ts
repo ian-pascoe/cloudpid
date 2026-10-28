@@ -15,6 +15,20 @@ import { workspacePlacement } from "./workspace.ts";
 
 const DEFAULT = { id: "default", name: "Default", repos: [], createdAt: 0 };
 const OTHER = { id: "0000abcd", name: "Other", repos: [], createdAt: 0 };
+const EVERY_SCOPE = { id: "*", name: "every Environment" };
+const DEFAULT_SCOPE = { id: "default", name: "Default" };
+
+/** The scopes the fake Registry names in an answer, by id. */
+const SCOPES = new Map([
+  ["*", EVERY_SCOPE],
+  ["default", DEFAULT_SCOPE],
+]);
+
+/** The Skills the fake Registry keeps, by scope. */
+const SKILLS_KEPT = new Map([
+  ["default", [{ name: "release", description: "Cut a release.", savedAt: 9 }]],
+  ["*", [{ name: "shared", description: "Shared by all.", savedAt: 5 }]],
+]);
 
 const CHANGE: AgentChange = {
   id: 7,
@@ -133,11 +147,7 @@ const open = (
         createdAt: 0,
       }),
     listSkills: ({ environment }: { readonly environment: string }) =>
-      Effect.succeed(
-        environment === "default"
-          ? [{ name: "release", description: "Cut a release.", savedAt: 9 }]
-          : [],
-      ),
+      Effect.succeed(SKILLS_KEPT.get(environment) ?? []),
     workspaceSkillSet: ({ environment }: { readonly environment: string }) =>
       Effect.succeed({ hash: `set-of-${environment}`, files: {} }),
     agentSaveSkill: (input: Parameters<EnvironmentsRegistry["agentSaveSkill"]>[0]) =>
@@ -146,7 +156,7 @@ const open = (
 
         return {
           status: "saved" as const,
-          environment: input.environment === "default" ? DEFAULT : OTHER,
+          environment: SCOPES.get(input.environment) ?? OTHER,
           change: { ...CHANGE, field: "skills.release", tool: "environment_skill_save" },
           skill: {
             name: "release",
@@ -155,14 +165,42 @@ const open = (
             source: null,
             savedAt: 1,
           },
-          shadows: false,
+          bundled: false,
+          inherited: false,
+          // The Session's Environment keeps its own Skill of the name, which hides one kept for every Environment.
+          overriddenIn:
+            input.environment === "*" && overridesHere ? [{ id: "default", name: "Default" }] : [],
+        };
+      }),
+    agentPreviewSkill: (input: Parameters<EnvironmentsRegistry["agentPreviewSkill"]>[0]) =>
+      Effect.sync(() => {
+        skillsAsked.push(input);
+
+        return {
+          status: "ready" as const,
+          environment: EVERY_SCOPE,
+          name: input.folder,
+          description: "Cut a release.",
+          current: null,
         };
       }),
     agentRemoveSkill: (input: Parameters<EnvironmentsRegistry["agentRemoveSkill"]>[0]) =>
       Effect.sync(() => {
         skillsAsked.push(input);
 
-        return { status: "absent" as const, environment: DEFAULT };
+        return input.name === "release"
+          ? {
+              status: "removed" as const,
+              environment: input.environment === "*" ? EVERY_SCOPE : DEFAULT_SCOPE,
+              change: { ...CHANGE, field: "skills.release", after: null },
+              bundled: false,
+              inherited: false,
+              overriddenIn:
+                input.environment === "*" && overridesHere
+                  ? [{ id: "default", name: "Default" }]
+                  : [],
+            }
+          : { status: "absent" as const, environment: DEFAULT_SCOPE };
       }),
     agentInstallSkills: (input: Parameters<EnvironmentsRegistry["agentInstallSkills"]>[0]) =>
       Effect.sync(() => {
@@ -320,6 +358,43 @@ describe("the Session's Environments", () => {
     expect(skillSetsHanded).toEqual([]);
   });
 
+  it("list the Skills kept for every Environment in an Environment's details and in what is kept for every Environment", async () => {
+    const { environments } = open();
+    const shared = [{ name: "shared", description: "Shared by all.", savedAt: 5 }];
+
+    expect((await Effect.runPromise(environments.get("default")))?.everySkills).toEqual(shared);
+    expect((await Effect.runPromise(environments.every)).skills).toEqual(shared);
+  });
+
+  it("hand the Session's own Workspace its Environment's Skill set after a Skill saved for every Environment", async () => {
+    const { environments, skillSetsHanded, skillsAsked, upkept } = open();
+    const files = { "SKILL.md": "---\nname: release\n---\n" };
+    const expected = { savedAt: null };
+
+    const saved = await Effect.runPromise(
+      environments.saveSkill({ environment: "*", folder: "release", files, expected, author }),
+    );
+
+    expect(skillsAsked).toEqual([
+      {
+        environment: "*",
+        folder: "release",
+        files,
+        expected,
+        author: { session: "s-1", ...author },
+      },
+    ]);
+    expect(saved).toMatchObject({
+      status: "saved",
+      environment: { id: "*" },
+      overriddenIn: [],
+      handed: true,
+    });
+    // The Session's Environment is the one handed its set: the Skill reaches it through the layers.
+    expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
+    expect(upkept).toEqual([]);
+  });
+
   it("hand the Session's own Workspace the Skill set after an install, asking the Registry to fetch as the App", async () => {
     const { environments, skillSetsHanded, skillsAsked, upkept } = open();
     const input = { environment: "default", source: "mattpocock/skills@grill-me", author };
@@ -343,6 +418,53 @@ describe("the Session's Environments", () => {
     });
     expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
     expect(upkept).toEqual([]);
+  });
+
+  it("hand nothing when the Session's Environment keeps its own Skill of the name kept for every Environment", async () => {
+    const { environments, skillSetsHanded } = open("changed", "changed", true);
+
+    const saved = await Effect.runPromise(
+      environments.saveSkill({ environment: "*", folder: "release", files: {}, author }),
+    );
+
+    const removed = await Effect.runPromise(
+      environments.removeSkill({ environment: "*", name: "release", author }),
+    );
+
+    expect(saved).toMatchObject({
+      status: "saved",
+      overriddenIn: [{ id: "default", name: "Default" }],
+      handed: false,
+    });
+    expect(removed).toMatchObject({ status: "removed", handed: false });
+    expect(skillSetsHanded).toEqual([]);
+  });
+
+  it("hand the Session's own Workspace its Environment's Skill set after a Skill removed for every Environment", async () => {
+    const { environments, skillSetsHanded, skillsAsked } = open();
+    const expected = { savedAt: 5 };
+
+    const removed = await Effect.runPromise(
+      environments.removeSkill({ environment: "*", name: "release", expected, author }),
+    );
+
+    expect(skillsAsked).toEqual([
+      { environment: "*", name: "release", expected, author: { session: "s-1", ...author } },
+    ]);
+    expect(removed).toMatchObject({ status: "removed", handed: true, inherited: false });
+    expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
+  });
+
+  it("check a Skill for every Environment as the Registry does, saving nothing", async () => {
+    const { environments, skillsAsked } = open();
+    const files = { "SKILL.md": "x" };
+
+    const checked = await Effect.runPromise(
+      environments.previewSkill({ environment: "*", folder: "release", files }),
+    );
+
+    expect(checked).toMatchObject({ status: "ready", name: "release", current: null });
+    expect(skillsAsked).toEqual([{ environment: "*", folder: "release", files }]);
   });
 
   it("leave the Session's Workspace as it is after an install for another Environment, or for none", async () => {
@@ -387,6 +509,7 @@ describe("the Session's Environments", () => {
         { name: "API_KEY", scope: "every", build: false },
         { name: "NPM_TOKEN", scope: "every", build: false },
       ],
+      skills: [{ name: "shared", description: "Shared by all.", savedAt: 5 }],
     });
   });
 

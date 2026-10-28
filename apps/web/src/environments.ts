@@ -13,6 +13,7 @@ import {
   EVERY_ENVIRONMENT_SCOPE,
   DELETED_FIELD,
   type EnvironmentSecretRecord,
+  type EnvironmentSkill,
   fieldRepo,
   fieldSecret,
   fieldSkill,
@@ -234,6 +235,29 @@ export const inheritedVariables = (
   return {
     inherited: names.filter((name) => !Record.has(own, name)),
     overridden: names.filter((name) => Record.has(own, name)),
+  };
+};
+
+/** The names of the Skills kept for every Environment that an Environment gets, and of its own that override one. */
+export type InheritedSkills = {
+  readonly inherited: readonly string[];
+  readonly overridden: readonly string[];
+};
+
+/**
+ * The Skills kept for every Environment (`every`) that an Environment keeping the Skills `own` gets, by name, and the
+ * ones of its own that override one: the counterpart of `inheritedVariables`. Its own wins.
+ */
+export const inheritedSkills = (
+  own: readonly EnvironmentSkill[],
+  every: readonly EnvironmentSkill[],
+): InheritedSkills => {
+  const kept = new Set(own.map((skill) => skill.name));
+  const names = every.map((skill) => skill.name).toSorted();
+
+  return {
+    inherited: names.filter((name) => !kept.has(name)),
+    overridden: names.filter((name) => kept.has(name)),
   };
 };
 

@@ -122,6 +122,7 @@ import {
   deleteConfirmed,
   EVERY_ENVIRONMENT,
   inheritedSecrets,
+  inheritedSkills,
   type InheritedVariables,
   inheritedVariables,
   secretDraftProblems,
@@ -1275,7 +1276,10 @@ const BuildStatus = ({ id }: { id: string }) => {
   );
 };
 
-/** Confirm removing Skill `name` from Environment `id`, after saying what follows. */
+/**
+ * Confirm removing Skill `name` from Environment `id` (or `EVERY_ENVIRONMENT`: the Skills kept for every Environment),
+ * after saying what follows. It is the owner's own change, so it waits for no Approval.
+ */
 const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
   const [removed, remove] = useAtom(removeSkillAtom(id));
   const setDialog = useAtomSet(skillDialogAtom(id));
@@ -1291,11 +1295,20 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
-      <p className="text-sm">
-        Its workspaces stop serving it at their next readying, and the bundle's skill of the same
-        name is served again. Sessions already running keep it in their skills list until their next
-        context window.
-      </p>
+      {id === EVERY_ENVIRONMENT ? (
+        <p className="text-sm">
+          Every environment's workspaces stop serving it at their next readying, except those of an
+          environment that keeps its own skill of the same name. Where none does, the bundle's skill
+          of the same name is served again. Sessions already running keep it in their skills list
+          until their next context window.
+        </p>
+      ) : (
+        <p className="text-sm">
+          Its workspaces stop serving it at their next readying, and the skill of the same name kept
+          for every environment is served again, else the bundle's. Sessions already running keep it
+          in their skills list until their next context window.
+        </p>
+      )}
       <p className="text-sm">
         This cannot be undone: your removal is not an agent change, so it has no revert, and a later
         revert of the agent's save of this skill is refused. To get it back, ask the agent to save
@@ -1561,28 +1574,45 @@ const AddSkillsForm = ({ id }: { id: string }) => {
 };
 
 /**
- * The Skills Environment `id` keeps (ADR-0026): each one's name, description and when it was saved, with its Skill
- * source when it was installed from GitHub, and a removal behind a confirmation. The agent saves and installs them,
- * and so does the owner's form; every Workspace of the Environment serves them read-only.
+ * The Skills Environment `id` keeps (ADR-0026), or `EVERY_ENVIRONMENT` those kept for every Environment: each one's
+ * name, description and when it was saved, with its Skill source when it was installed from GitHub, and a removal
+ * behind a confirmation. The agent saves them (those for every Environment only with your Approval) and installs them
+ * for an Environment, and so does the owner's form; every Workspace of the Environment serves them read-only. An
+ * Environment's section names the Skills it gets from every Environment, and which of its own win.
  */
 const SkillsSection = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSkillsAtom(id));
+  const everywhere = id === EVERY_ENVIRONMENT;
+  const every = useAtomValue(environmentSkillsAtom(EVERY_ENVIRONMENT));
   const [removing, setRemoving] = useAtom(skillDialogAtom(id));
   const removed = useAtomValue(removeSkillAtom(id));
   const forgetRemove = useAtomSet(removeSkillAtom(id));
   const skills = loaded.pipe(AsyncResult.value, Option.getOrNull);
   const loadError = failureOf(loaded);
 
+  const { inherited, overridden } =
+    everywhere || skills === null
+      ? { inherited: [], overridden: [] }
+      : inheritedSkills(
+          skills,
+          every.pipe(
+            AsyncResult.value,
+            Option.getOrElse(() => []),
+          ),
+        );
+
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-xs font-medium text-muted-foreground">Skills</h3>
+      <h3 className="text-xs font-medium text-muted-foreground">
+        {everywhere ? "Skills for every environment" : "Skills"}
+      </h3>
       {skills === null ? (
         <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
       ) : skills.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          None of its own: its workspaces serve the bundle's skills. Add some from GitHub below, or
-          the agent saves one with environment_skill_save or installs one with
-          environment_skill_install.
+          {everywhere
+            ? "None kept for every environment. The agent saves one with environment_skill_save and the id *, and you approve it in its session."
+            : "None of its own: its workspaces serve those kept for every environment and the bundle's. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install."}
         </p>
       ) : (
         <ul className="flex flex-col gap-1">
@@ -1627,7 +1657,18 @@ const SkillsSection = ({ id }: { id: string }) => {
           ))}
         </ul>
       )}
-      <AddSkillsForm id={id} />
+      {inherited.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Also from every environment: <span className="font-mono">{inherited.join(", ")}</span>
+        </p>
+      )}
+      {overridden.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Overriding the one for every environment:{" "}
+          <span className="font-mono">{overridden.join(", ")}</span>
+        </p>
+      )}
+      {!everywhere && <AddSkillsForm id={id} />}
       <Dialog
         open={removing !== null}
         onClose={() => {
@@ -2451,6 +2492,13 @@ export const EnvironmentsPage = () => {
             title="Secrets for every environment"
             empty="None kept for every environment."
           />
+          <p className="text-xs text-muted-foreground">
+            A skill kept here is served read-only in every environment's workspaces at their next
+            readying. It steers every future session, so the agent's save or removal of one waits
+            for your Approval in its session. An environment's own skill of the same name wins in
+            that environment. Removing one here is your own change: it waits for nothing.
+          </p>
+          <SkillsSection id={EVERY_ENVIRONMENT} />
           <AgentChangesSection id={EVERY_ENVIRONMENT} sessions={sessions ?? []} />
         </section>
         <DialogProblem problem={error ?? sessionsError} />

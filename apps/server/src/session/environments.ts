@@ -5,9 +5,11 @@
 // and a change that reaches the Session's own Environment is handed to its Workspace at once
 // (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
 // Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
-// installed or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentInstallSkills`, `agentRemoveSkill`);
-// the Session's own Workspace is handed its Environment's new Skill set at once (`updateSkills`), and no Build's upkeep runs: Skills are not part of
-// a Build.
+// installed or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentInstallSkills`, `agentRemoveSkill`,
+// `agentPreviewSkill`), for an Environment or, saved or removed, for every Environment (`*`); the Session's own Workspace
+// is handed its Environment's new Skill set at once (`updateSkills`), unless the change is to those kept for every
+// Environment and its Environment keeps its own Skill of the name, and no Build's upkeep runs: Skills are not part of a
+// Build.
 import type {
   AppliedChange,
   EnvironmentDetails,
@@ -45,6 +47,7 @@ export type EnvironmentsRegistry = Pick<
   | "workspaceOverrides"
   | "agentMarkSecretBuild"
   | "agentSaveSkill"
+  | "agentPreviewSkill"
   | "agentRemoveSkill"
   | "agentInstallSkills"
   | "listSkills"
@@ -215,6 +218,29 @@ export const sessionEnvironments = ({
       ),
     );
 
+  /**
+   * Hand the Session's own Workspace its Environment's Skill set after a change to the Skills kept for `environment`
+   * (an Environment's id, or `*`): whether the Workspace took it. A change to those kept for every Environment reaches
+   * the Session's Environment unless it is one of those `hidden` by an own Skill of the name.
+   */
+  const handSkillsAfter = (environment: string, hidden: ReadonlyArray<{ readonly id: string }>) =>
+    Effect.gen(function* () {
+      if (environment !== EVERY_ENVIRONMENT_ID) return yield* handSkillsIfOwn(environment);
+
+      const own = yield* where.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            "The Session's Workspace could not be found to hand it the Skill set; it takes it at its next readying",
+            cause,
+          ).pipe(Effect.as(null)),
+        ),
+      );
+
+      return own === null || Arr.some(hidden, ({ id }) => id === own.environment)
+        ? false
+        : yield* handSkillsIfOwn(own.environment);
+    });
+
   /** The refusal of a change by a Session the Registry does not list. */
   const unlisted = Effect.suspend(() =>
     EnvironmentsError.make({
@@ -252,6 +278,7 @@ export const sessionEnvironments = ({
         const secrets = yield* registry.listEnvironmentSecrets();
         const every = yield* registry.getEveryEnvironmentSettings();
         const skills = yield* registry.listSkills({ environment: id });
+        const everySkills = yield* registry.listSkills({ environment: EVERY_ENVIRONMENT_ID });
 
         return {
           id,
@@ -263,21 +290,24 @@ export const sessionEnvironments = ({
           secrets: keptFor(id, secrets),
           everyVariables: every.settings.variables,
           skills: skills ?? [],
+          everySkills: everySkills ?? [],
         } satisfies EnvironmentDetails;
       }),
     every: Effect.gen(function* () {
       const { settings } = yield* registry.getEveryEnvironmentSettings();
       const secrets = yield* registry.listEnvironmentSecrets();
+      const skills = yield* registry.listSkills({ environment: EVERY_ENVIRONMENT_ID });
 
       return {
         variables: settings.variables,
+        skills: skills ?? [],
         secrets: Arr.map(
           Arr.filter(secrets, (record) => record.environment === null),
           ({ name, build }): KeptSecretListing => ({ name, scope: "every", build }),
         ),
       };
     }),
-    saveSkill: ({ environment, folder, files, author }) =>
+    saveSkill: ({ environment, folder, files, expected, author }) =>
       Effect.gen(function* () {
         if (session === undefined) return yield* unlisted;
 
@@ -285,56 +315,62 @@ export const sessionEnvironments = ({
           environment,
           folder,
           files,
+          expected,
           author: { session, ...author },
         });
 
         switch (saved.status) {
           case "rejected":
           case "missing":
+          case "changed-since":
             return saved;
           case "unchanged":
             // Nothing changed, but the Session's Workspace may not have taken the set when it was saved.
-            yield* handSkillsIfOwn(environment);
+            yield* handSkillsAfter(environment, []);
 
-            return {
-              status: "unchanged",
-              environment: changedEnvironment(saved.environment),
-              name: folder,
-            };
+            return { status: "unchanged", environment: saved.environment, name: folder };
           case "saved":
             // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves it now.
             return {
               status: "saved",
-              environment: changedEnvironment(saved.environment),
+              environment: saved.environment,
               change: saved.change,
               name: saved.skill.name,
-              shadows: saved.shadows,
-              handed: yield* handSkillsIfOwn(environment),
+              bundled: saved.bundled,
+              inherited: saved.inherited,
+              overriddenIn: saved.overriddenIn,
+              handed: yield* handSkillsAfter(environment, saved.overriddenIn),
             };
         }
       }),
-    removeSkill: ({ environment, name, author }) =>
+    previewSkill: ({ environment, folder, files }) =>
+      registry.agentPreviewSkill({ environment, folder, files }),
+    removeSkill: ({ environment, name, expected, author }) =>
       Effect.gen(function* () {
         if (session === undefined) return yield* unlisted;
 
         const removed = yield* registry.agentRemoveSkill({
           environment,
           name,
+          expected,
           author: { session, ...author },
         });
 
         switch (removed.status) {
           case "missing":
-            return removed;
           case "absent":
-            return { status: "absent", environment: changedEnvironment(removed.environment) };
+          case "changed-since":
+          case "rejected":
+            return removed;
           case "removed":
             return {
               status: "removed",
-              environment: changedEnvironment(removed.environment),
+              environment: removed.environment,
               change: removed.change,
               bundled: removed.bundled,
-              handed: yield* handSkillsIfOwn(environment),
+              inherited: removed.inherited,
+              overriddenIn: removed.overriddenIn,
+              handed: yield* handSkillsAfter(environment, removed.overriddenIn),
             };
         }
       }),

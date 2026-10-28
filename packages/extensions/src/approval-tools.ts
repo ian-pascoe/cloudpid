@@ -31,10 +31,11 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
-  type ApprovalAnswer,
   type ApprovalCall,
   Approvals,
+  approvedAlready,
   askedBefore,
+  declined,
   withApproval,
 } from "./approvals.ts";
 import {
@@ -196,30 +197,9 @@ const within = (now: EnvironmentFootprint, approved: EnvironmentFootprint): bool
 const footprintWords = (footprint: EnvironmentFootprint): string =>
   `${count(footprint.workspaces, "Workspace")} with ${count(footprint.sessions, "Session")} (archived ones too), its spare Workspace and Build, ${count(footprint.secrets, "kept Secret")} and its Agent changes`;
 
-/** What the result of a declined request says. */
-const declined = (answer: Extract<ApprovalAnswer, { approved: false }>, what: string) => ({
-  output: [
-    {
-      type: "text" as const,
-      text: `The user declined: ${what}. Nothing changed.${
-        answer.reason === undefined ? "" : ` Their reason: ${answer.reason}`
-      } Do not ask again for the same change unless the user wants it.`,
-    },
-  ],
-  // The reason is null when the owner gave none.
-  details: { approval: { approved: false, reason: answer.reason ?? null } },
-});
-
 /** What a change the owner approved says when the target changed between the request and the answer. */
 const changedSince = (what: string, now: string) =>
   `The user approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
-
-/**
- * What a change the owner approved says when the target has the value already: this call made it before the Session
- * restarted (recorded then), or the user made it meanwhile.
- */
-const approvedAlready = (what: string) =>
-  `The user approved, and ${what} already, as approved: nothing more needed changing.`;
 
 const Reason = Schema.String.check(
   Schema.isMinLength(1),

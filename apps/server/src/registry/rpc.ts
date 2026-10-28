@@ -838,11 +838,13 @@ export const serveRegistryRpc = <R = never>(
       removeEnvironmentSkill: ({ environment, name }) =>
         registry.removeSkill({ environment, name }).pipe(
           Effect.flatMap((removed) => {
-            switch (removed) {
+            switch (removed.status) {
               case "removed":
                 return Effect.void;
               case "absent":
                 return failed(`The environment keeps no Skill named ${JSON.stringify(name)}`);
+              case "rejected":
+                return failed(`Not removed: ${removed.message}`);
               case "missing":
                 return failed(noEnvironment(environment));
             }

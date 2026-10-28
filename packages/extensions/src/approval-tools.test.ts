@@ -70,6 +70,7 @@ const details = (id: string, name: string, settings = {}): EnvironmentDetails =>
   secrets: [],
   everyVariables: {},
   skills: [],
+  everySkills: [],
 });
 
 /** What a fake recorded being asked to do. */
@@ -169,7 +170,7 @@ const setUp = async ({
         current: Effect.succeed(current),
         list: Effect.succeed([]),
         get: (id) => Effect.succeed(held[id] ?? null),
-        every: Effect.succeed({ variables: {}, secrets: [] }),
+        every: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
         change: ({ environment, change: { field, value }, expected, author }) =>
           Effect.sync(() => {
             calls.environments.push({
@@ -623,7 +624,9 @@ describe("environment_container_size_limit_set", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toContain('The id "*" names the variables and Secrets kept for every Environment');
+    expect(text).toContain(
+      'The id "*" names the variables, Secrets and Skills kept for every Environment',
+    );
     expect(asked).toEqual([]);
   });
 

@@ -21,22 +21,26 @@ import type {
 } from "@cloudpid/protocol";
 import type { SkillSet } from "../workspace/bundled-skill-set.ts";
 import {
+  previewSkillSave,
   hashBundle,
   hashFiles,
   mergeSkills,
   openSkills,
+  type OwnerRemoval,
   removeSkill,
   removeSkillAs,
   saveSkillAs,
   skillChangeFiles,
+  type SkillPreview,
   type SkillFiles,
+  skillLayers,
   type SkillRemoval,
   type SkillSave,
   skillSetOf,
 } from "./skills.ts";
 import { installSkills, type SkillInstallation } from "./skill-install.ts";
 import { githubSkillReader } from "./skill-reader.ts";
-import { SETTINGS_SCOPE } from "@cloudpid/protocol";
+import { SETTINGS_SCOPE, type SkillExpectation } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
   type AgentChangeAuthor,
@@ -142,7 +146,7 @@ export type WorkspaceChoice =
  * good Build (null for none yet) and kept Secrets, opened (docs/spec.md → Secrets): the Workspace keeps them sealed,
  * to search a snapshot for and to take out of output. When the Registry cannot open them, `secrets` is absent and
  * `secretsUnavailable` says so (`SECRETS_UNAVAILABLE`), and the Workspace refuses the snapshots that would need them.
- * `skills` is the Environment's Skill set (its own Skills over the bundle), absent when the Workspace holds it already.
+ * `skills` is the Environment's Skill set (its own Skills over those kept for every Environment, over the bundle), absent when the Workspace holds it already.
  */
 export type WorkspaceSetupWithSettings = WorkspaceSetup & {
   readonly settings: Schema.Json;
@@ -438,21 +442,33 @@ export type RegistryMethods = {
   }) => Effect.Effect<boolean>;
   /**
    * An Agent change (`docs/spec.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
-   * its path in the folder) for `environment`, in place of one of its name, if it passes a save's checks, and record it
-   * with its files before and after. The same files as kept record nothing. The caller hands the Session's own Workspace
-   * its new Skill set after.
+   * its path in the folder) for `environment` (an Environment's id, or `*` for every Environment), in place of one of its
+   * name, if it passes a save's checks, and record it with its files before and after. The same files as kept record
+   * nothing. With `expected`, only while the Skill of the name was last saved then (null: none kept), as an Approval
+   * asked against it. The caller hands the Session's own Workspace its new Skill set after.
    */
   readonly agentSaveSkill: (input: {
     readonly environment: string;
     readonly folder: string;
     readonly files: SkillFiles;
     readonly author: AgentChangeAuthor;
+    readonly expected?: SkillExpectation | undefined;
   }) => Effect.Effect<SkillSave>;
-  /** An Agent change: remove Skill `name` kept for `environment`, recorded with its files before. */
+  /**
+   * What `agentSaveSkill` would do with the same input: the save's checks and what the scope keeps of the name, with
+   * nothing saved or recorded. The agent's Approval card shows it before the owner is asked.
+   */
+  readonly agentPreviewSkill: (input: {
+    readonly environment: string;
+    readonly folder: string;
+    readonly files: SkillFiles;
+  }) => Effect.Effect<SkillPreview>;
+  /** An Agent change: remove Skill `name` kept for `environment` (or `*`), recorded with its files before. */
   readonly agentRemoveSkill: (input: {
     readonly environment: string;
     readonly name: string;
     readonly author: AgentChangeAuthor;
+    readonly expected?: SkillExpectation | undefined;
   }) => Effect.Effect<SkillRemoval>;
   /**
    * An Agent change (`docs/spec.md` → Installing from GitHub): install from the GitHub `source` the Skills `skills` names
@@ -472,21 +488,27 @@ export type RegistryMethods = {
     readonly source: string;
     readonly skills?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SkillInstallation>;
-  /** The Skills kept for `environment`, by name; null when it is not registered. */
+  /** The Skills kept for `environment` (or `*` for every Environment), by name; null when it is not registered. */
   readonly listSkills: (input: {
     readonly environment: string;
   }) => Effect.Effect<ReadonlyArray<EnvironmentSkill> | null>;
-  /** The owner removes Skill `name` kept for `environment` (not an Agent change). */
+  /**
+   * The owner removes Skill `name` kept for `environment` (or `*`; not an Agent change, and no Approval), refused when
+   * it would serve a Skill from the layer below that does not fit.
+   */
   readonly removeSkill: (input: {
     readonly environment: string;
     readonly name: string;
-  }) => Effect.Effect<"removed" | "absent" | "missing">;
+  }) => Effect.Effect<OwnerRemoval | { readonly status: "missing" }>;
   /** The files before and after Agent change `change` of a Skill of `environment`, with their texts; null for none. */
   readonly skillChangeFiles: (input: {
     readonly environment: string;
     readonly change: number;
   }) => Effect.Effect<SkillChangeFiles | null>;
-  /** The Skill set `environment`'s Workspaces serve: its own Skills over the bundle. Null when it is not registered. */
+  /**
+   * The Skill set `environment`'s Workspaces serve: its own Skills over those kept for every Environment, over the
+   * bundle. Null when it is not registered.
+   */
   readonly workspaceSkillSet: (input: {
     readonly environment: string;
   }) => Effect.Effect<SkillSet | null>;
@@ -696,10 +718,13 @@ export const RegistryLive = Registry.make(
             );
           });
 
-        /** `environment`'s Skill set before its texts are read: its own Skills over the bundle. */
+        /**
+         * `environment`'s Skill set before its texts are read: its own Skills over those kept for every Environment,
+         * over the bundle.
+         */
         const mergedSkills = (environment: string) =>
           Effect.flatMap(bundle, (hashed) =>
-            Effect.promise(() => mergeSkills([skills.list(environment)], hashed)),
+            Effect.promise(() => mergeSkills(skillLayers(skills, environment), hashed)),
           );
 
         /** `environment`'s Skill set with its texts, unless its hash is `held`'s. */
@@ -1089,7 +1114,7 @@ export const RegistryLive = Registry.make(
 
               return setup === null ? Effect.succeed(null) : withSettings(setup, skillSetHash);
             }),
-          agentSaveSkill: ({ environment, folder, files, author }) =>
+          agentSaveSkill: ({ environment, folder, files, author, expected }) =>
             Effect.gen(function* () {
               const hashed = yield* Effect.promise(() => hashFiles(files));
               const hashedBundle = yield* bundle;
@@ -1097,17 +1122,27 @@ export const RegistryLive = Registry.make(
 
               return saveSkillAs(
                 { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
-                { environment, folder, files, hashed, author },
+                { environment, folder, files, hashed, author, expected },
               );
             }),
-          agentRemoveSkill: ({ environment, name, author }) =>
+          agentPreviewSkill: ({ environment, folder, files }) =>
+            Effect.gen(function* () {
+              const hashed = yield* Effect.promise(() => hashFiles(files));
+              const hashedBundle = yield* bundle;
+
+              return previewSkillSave(
+                { store, skills, bundle: hashedBundle },
+                { environment, folder, files, hashed },
+              );
+            }),
+          agentRemoveSkill: ({ environment, name, author, expected }) =>
             Effect.gen(function* () {
               const hashedBundle = yield* bundle;
               const now = yield* Clock.currentTimeMillis;
 
               return removeSkillAs(
                 { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
-                { environment, name, author },
+                { environment, name, author, expected },
               );
             }),
           agentInstallSkills: ({ environment, source, skills: names, author }) =>
@@ -1116,7 +1151,7 @@ export const RegistryLive = Registry.make(
             installFromGithub({ environment, source, skills: names, author: null }),
           listSkills: ({ environment }) =>
             Effect.sync(() =>
-              store.getEnvironment(environment) === null
+              environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
                 ? null
                 : Arr.map(skills.list(environment), ({ name, description, savedAt, source }) => {
                     const listed = { name, description, savedAt };
@@ -1125,12 +1160,20 @@ export const RegistryLive = Registry.make(
                   }),
             ),
           removeSkill: ({ environment, name }) =>
-            Effect.sync(() => {
-              if (store.getEnvironment(environment) === null) return "missing" as const;
+            Effect.gen(function* () {
+              if (
+                environment !== EVERY_ENVIRONMENT_SCOPE &&
+                store.getEnvironment(environment) === null
+              ) {
+                return { status: "missing" as const };
+              }
 
-              return removeSkill(state.raw.storage, skills, { environment, name })
-                ? ("removed" as const)
-                : ("absent" as const);
+              const hashedBundle = yield* bundle;
+
+              return removeSkill(
+                { storage: state.raw.storage, store, skills, bundle: hashedBundle },
+                { environment, name },
+              );
             }),
           skillChangeFiles: ({ environment, change }) =>
             Effect.sync(() => {

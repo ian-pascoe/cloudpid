@@ -356,6 +356,78 @@ describe("installing Skills from GitHub", () => {
     expect(listed).toEqual([expect.objectContaining({ name: "grill-me", source: GRILL_SOURCE })]);
   });
 
+  it("keeps the source of a Skill kept for every Environment that the agent saves again", async () => {
+    const [saved, change, listed] = await inRegistry(async ({ skills, context, changes }) => {
+      const kept = { "SKILL.md": skillMd("grill-me") };
+      const hashedKept = await hashFiles(kept);
+
+      skills.put(
+        "*",
+        {
+          name: "grill-me",
+          description: "What grill-me does.",
+          files: hashedKept.files,
+          source: GRILL_SOURCE,
+        },
+        hashedKept.contents,
+        1_000,
+      );
+
+      const edited = { "SKILL.md": skillMd("grill-me", "Edited.") };
+
+      const save = saveSkillAs(context(2_000), {
+        environment: "*",
+        folder: "grill-me",
+        files: edited,
+        hashed: await hashFiles(edited),
+        author: { ...author, tool: "environment_skill_save" },
+      });
+
+      return [save, changes.list("*")[0], skills.list("*")];
+    });
+
+    expect(saved).toMatchObject({ status: "saved", skill: { source: GRILL_SOURCE } });
+    expect(change).toMatchObject({
+      before: { source: GRILL_SOURCE },
+      after: { source: GRILL_SOURCE },
+    });
+    expect(listed).toEqual([expect.objectContaining({ name: "grill-me", source: GRILL_SOURCE })]);
+  });
+
+  it("counts the Skills kept for every Environment in the set an install would make", async () => {
+    const results = await inRegistry(async ({ install, skills }) => {
+      // The bundle holds `pr`: 99 more Skills for every Environment make 100, the most a set may hold.
+      for (let at = 0; at < 99; at += 1) {
+        const files = { "SKILL.md": skillMd(`every-${at}`) };
+        const hashed = await hashFiles(files);
+
+        skills.put(
+          "*",
+          {
+            name: `every-${at}`,
+            description: `What every-${at} does.`,
+            files: hashed.files,
+            source: null,
+          },
+          hashed.contents,
+          1_000,
+        );
+      }
+
+      const result = await install(readerOf(REPO), { source: "o/skills@grill-me" });
+
+      return result.status === "installed" ? result.results : result;
+    });
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        name: "grill-me",
+        outcome: "rejected",
+        message: expect.stringContaining("would hold 101 Skills, more than the 100 a set may"),
+      }),
+    ]);
+  });
+
   it("shows the files an install added through the Agent change's texts", async () => {
     const [files] = await inRegistry(async ({ install, skills, changes }) => {
       await install(readerOf(REPO), { source: "o/skills@grill-me" });
