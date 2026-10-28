@@ -1,4 +1,4 @@
-# The Workspace Container's image (docs/spec.md → Container and Toolchains, ADR-0004): Ubuntu 24.04 LTS with fuse3, the
+# The Workspace Container's image (docs/spec.md → Container and Toolchains, ADR-0004): Ubuntu 26.04 LTS with fuse3, the
 # everyday command-line tools, a C toolchain, Docker, computerd under its supervisor with a memory guard, and mise with
 # its installs of the base mise.toml's Toolchains. Every program a project uses is a mise Toolchain; the image's installs are only found by mise for a
 # Workspace that asks for those versions. The image is glibc-based because computerd is a glibc Node SEA, and
@@ -12,13 +12,13 @@ ARG MISE_SHA256=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a
 
 # Every base image is pinned by digest as well as by tag, so a rebuild cannot move to another computerd build or Ubuntu
 # point release. Refresh a digest together with its tag: computerd's is the manifest of
-# `ghcr.io/cloudflare/computer-computerd-linux-x64:<COMPUTERD_VERSION>`, Ubuntu's the index of `ubuntu:24.04`.
+# `ghcr.io/cloudflare/computer-computerd-linux-x64:<COMPUTERD_VERSION>`, Ubuntu's the index of `ubuntu:26.04`.
 
 # A single layer over scratch whose only content is the computerd binary at /usr/local/bin/computerd.
 FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:de6f3727a12c8adb2f8ece853105ccc461fef02f90e368fac4e0578eacc461aa AS computerd
 
 # mise is fetched and checked against its digest in a stage of its own, so the final image holds only the binary.
-FROM --platform=linux/amd64 ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS mise
+FROM --platform=linux/amd64 ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS mise
 ARG MISE_VERSION
 ARG MISE_SHA256
 RUN apt-get update \
@@ -27,7 +27,7 @@ RUN apt-get update \
  && echo "${MISE_SHA256}  /mise" | sha256sum -c - \
  && chmod 755 /mise
 
-FROM --platform=linux/amd64 ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+FROM --platform=linux/amd64 ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd
 
 # The everyday tools agents and scripts expect (#169; some from exe.dev's exeuntu list), build-essential and the
 # headers native npm and pip packages build against, Docker for Start Scripts' services, and earlyoom, the memory guard
@@ -36,7 +36,7 @@ FROM --platform=linux/amd64 ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1d
 # package pulled in would not shadow mise's. fd's binary is fdfind here; it gets its own name too.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      fuse3 libfuse2t64 ca-certificates \
+      fuse3 ca-certificates \
       curl wget jq ripgrep fd-find unzip zip xz-utils \
       procps psmisc lsof iproute2 dnsutils netcat-openbsd \
       less file tree openssh-client gnupg sudo sqlite3 tzdata \
