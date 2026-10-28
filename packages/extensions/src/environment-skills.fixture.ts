@@ -4,6 +4,8 @@
 import {
   type AgentChange,
   type EnvironmentSkill,
+  type SkillInstallPin,
+  type SkillInstallPreview,
   type SkillExpectation,
   skillField,
 } from "@cloudpid/protocol";
@@ -14,13 +16,7 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { ChangeAuthor } from "./environment.ts";
-import type {
-  EnvironmentSkills,
-  SkillPreview,
-  SkillsInstallPin,
-  SkillsInstallPreview,
-  SkillsInstalled,
-} from "./environment-skills.ts";
+import type { EnvironmentSkills, SkillPreview, SkillsInstalled } from "./environment-skills.ts";
 
 /** Skills that fail when called, for a fake that serves the other tools only. */
 export const unusedSkills: EnvironmentSkills = {
@@ -79,11 +75,11 @@ export const fakeSkills = () => {
     reason: string;
     /** Whether the owner approved the install first (an Agent change made as approved). */
     approved?: boolean | undefined;
-    pin?: SkillsInstallPin | undefined;
+    pin?: SkillInstallPin | undefined;
   }> = [];
 
   /** What the Registry answers a preview of an install with, and what it was asked. */
-  let preview: SkillsInstallPreview | undefined;
+  let preview: SkillInstallPreview | undefined;
 
   const previews: Array<{
     environment: string;
@@ -307,7 +303,7 @@ export const fakeSkills = () => {
     installs,
     previews,
     /** Answer the next previews of an install with `answer`. */
-    answerPreview: (answer: SkillsInstallPreview) => {
+    answerPreview: (answer: SkillInstallPreview) => {
       preview = answer;
     },
     /** Answer the next installs with `answer`. */

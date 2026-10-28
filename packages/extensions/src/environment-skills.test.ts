@@ -4,7 +4,7 @@
 // each waits for the owner's Approval.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
-import { type AgentChange, skillField } from "@cloudpid/protocol";
+import { type AgentChange, type PreviewedSkill, skillField } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   ROOT_CONVERSATION_ID,
@@ -32,7 +32,6 @@ import {
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { fakeFolderEnv, fakeSkills } from "./environment-skills.fixture.ts";
-import type { SkillsInstallPreview } from "./environment-skills.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
@@ -1349,8 +1348,6 @@ const GRILL_FILES = {
   "references/questions.md": "- Why?\n",
 };
 
-type PreviewedSkill = Extract<SkillsInstallPreview, { status: "previewed" }>["skills"][number];
-
 /** A Skill the Registry would keep, as its preview shows it. */
 const previewedSkill = (
   name: string,
@@ -1360,6 +1357,7 @@ const previewedSkill = (
   path: `skills/${name}`,
   description: "Interview me.",
   files,
+  digest: `digest-of-${name}`,
   unchanged: false,
   current: null,
 });
@@ -1439,14 +1437,24 @@ describe("environment_skill_install for every Environment", () => {
         skills: ["grill-me"],
         reason: "Every project should grill the plan",
         approved: true,
-        pin: { commit: GRILL_COMMIT, expected: { "grill-me": null } },
+        pin: {
+          commit: GRILL_COMMIT,
+          skills: [
+            {
+              name: "grill-me",
+              path: "skills/grill-me",
+              digest: "digest-of-grill-me",
+              savedAt: null,
+            },
+          ],
+        },
       },
     ]);
     expect(text).toContain(
       "The user approved: installed grill-me for every Environment from mattpocock/skills at c0ffee0.",
     );
     expect(text).toContain(
-      "Every Environment's Workspaces and spares get it at their next readying",
+      "Every Environment's Workspaces and spares get them at their next readying",
     );
     expect(text).toContain("This Session's Workspace has the change now");
     expect(text).toContain("recorded as approved");
@@ -1483,7 +1491,9 @@ describe("environment_skill_install for every Environment", () => {
     );
     expect(installs[0]?.pin).toEqual({
       commit: GRILL_COMMIT,
-      expected: { "grill-me": 1_234 },
+      skills: [
+        { name: "grill-me", path: "skills/grill-me", digest: "digest-of-grill-me", savedAt: 1_234 },
+      ],
     });
   });
 
@@ -1667,17 +1677,16 @@ describe("environment_skill_install for every Environment", () => {
     expect(text).toContain("saved again since the user was asked");
   });
 
-  it("takes the answer given meanwhile on a rerun, and installs the commit and Skills the owner was shown", async () => {
-    const { call, answeredEarlier, answerPreview, answerInstall, installs } = await setUp();
+  it("takes the answer given meanwhile on a rerun, reading nothing first, and installs the commit and Skills the owner was shown", async () => {
+    const { call, answeredEarlier, answerInstall, installs, previews } = await setUp();
 
     const shownEarlier = {
       commit: "feed0000000000000000000000000000000000f1",
-      skills: [{ name: "grill-me", savedAt: 5 }],
+      skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: 5 }],
       unseen: { files: 0, characters: 0 },
     };
 
-    // The rerun finds the repo moved on; the owner approved the earlier commit.
-    answerPreview(previewOf([previewedSkill("grill-me")]));
+    // The preview would fail now (GitHub is unreachable): the rerun does not ask it.
     answerInstall(installedEverywhere(["grill-me"]));
     await answeredEarlier(7, shownEarlier);
 
@@ -1686,14 +1695,61 @@ describe("environment_skill_install for every Environment", () => {
       task: 7,
     });
 
+    expect(previews).toEqual([]);
     expect(installs).toEqual([
       expect.objectContaining({
         approved: true,
         skills: ["grill-me"],
-        pin: { commit: shownEarlier.commit, expected: { "grill-me": 5 } },
+        pin: { commit: shownEarlier.commit, skills: shownEarlier.skills },
       }),
     ]);
     expect(text).toContain("The user approved: installed grill-me");
+  });
+
+  it("reports an approved install a rerun finds made, as approved, with nothing more changed", async () => {
+    const { call, answeredEarlier, answerInstall } = await setUp();
+
+    await answeredEarlier(9, {
+      commit: GRILL_COMMIT,
+      skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: null }],
+      unseen: { files: 0, characters: 0 },
+    });
+    answerInstall({
+      ...installedEverywhere([]),
+      results: [{ name: "grill-me", path: "skills/grill-me", outcome: "unchanged" }],
+    });
+
+    const { text, result } = await call("environment_skill_install", INSTALL_ARGS, {
+      approve: true,
+      task: 9,
+    });
+
+    expect(text).toContain("The user approved, and every Environment keeps grill-me from");
+    expect(result.details).toMatchObject({ approval: { approved: true } });
+  });
+
+  it("says which Environments' own Skills hide each Skill installed, and whether this Session's Workspace has them", async () => {
+    const { call, answerPreview, answerInstall } = await setUp();
+
+    answerPreview(previewOf([previewedSkill("grill-me"), previewedSkill("tdd")]));
+    answerInstall({
+      ...installedEverywhere(["grill-me", "tdd"]),
+      results: [
+        ...installedEverywhere(["grill-me"]).results,
+        {
+          ...installedEverywhere(["tdd"]).results[0]!,
+          overriddenIn: [{ id: "0000abcd", name: "Other" }],
+        },
+      ],
+    });
+
+    const { text } = await call("environment_skill_install", { ...INSTALL_ARGS, skills: ["*"] });
+
+    expect(text).toContain("This Session's Workspace has the change now.");
+    expect(text).toContain(
+      'tdd does not reach Environment "Other" (0000abcd), whose own Skill of that name hides it.',
+    );
+    expect(text).not.toContain("grill-me does not reach");
   });
 
   it("refuses a Secret in the reason or the source, asking nothing", async () => {
@@ -1716,8 +1772,7 @@ describe("environment_skill_install for every Environment", () => {
     expect(description).toContain("the user must approve the install");
     expect(description).toContain("small enough to review in full");
     expect(description).toContain("16000 characters");
-    expect(description).toContain(
-      "If the Skill of the name was saved again, or the folder's files changed, meanwhile",
-    );
+    expect(description).toContain("A Skill is installed only if it is the one the user was shown");
+    expect(description).not.toContain("the folder's files changed");
   });
 });

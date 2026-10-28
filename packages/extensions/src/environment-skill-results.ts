@@ -10,6 +10,8 @@ import {
   type AgentChange,
   type ListedSkill,
   type SkillExpectation,
+  type SkillInstallPin,
+  type SkillInstallPreview,
   shortSha,
   SKILLS_ROOT,
   skillField,
@@ -106,48 +108,6 @@ export type SkillsInstalled =
   | { readonly status: "refused"; readonly message: string }
   | { readonly status: "missing" };
 
-/** What an install of Skills would do, with nothing kept or recorded: what the owner is asked to approve. */
-export type SkillsInstallPreview =
-  | Extract<SkillsInstalled, { status: "missing" | "refused" | "listed" }>
-  | {
-      readonly status: "previewed";
-      readonly environment: ChangedEnvironment;
-      readonly repo: string;
-      readonly ref: string | null;
-      readonly commit: string;
-      /** The Skills an install would keep, or that the scope keeps already. */
-      readonly skills: ReadonlyArray<{
-        readonly name: string;
-        /** Its folder in the repo. */
-        readonly path: string;
-        readonly description: string;
-        /** Its files' text by path in its folder. */
-        readonly files: Readonly<Record<string, string>>;
-        /** The scope keeps the Skill with these files and this Skill source already. */
-        readonly unchanged: boolean;
-        /** The Skill of the name the scope keeps now. Null for a new Skill. */
-        readonly current: {
-          readonly description: string;
-          readonly savedAt: number;
-          readonly files: ReadonlyArray<string>;
-        } | null;
-      }>;
-      /** The Skills the repo holds that an install would not keep, each with why. */
-      readonly rejected: ReadonlyArray<{
-        readonly name: string;
-        readonly path: string;
-        readonly message: string;
-      }>;
-    };
-
-/** What an Approval of an install was asked against, which the install must still find. */
-export type SkillsInstallPin = {
-  /** The commit the owner was shown. */
-  readonly commit: string;
-  /** When the Skill of each name shown was last saved (null: none kept). */
-  readonly expected: Readonly<Record<string, number | null>>;
-};
-
 /** How the removal of a Skill went. */
 export type SkillRemoved =
   | {
@@ -231,14 +191,14 @@ export type EnvironmentSkills = {
     readonly skills?: ReadonlyArray<string> | undefined;
     readonly author: ChangeAuthor;
     /** What the owner's Approval was asked against: read at its commit, and a Skill kept only while it still holds. */
-    readonly pin?: SkillsInstallPin | undefined;
+    readonly pin?: SkillInstallPin | undefined;
   }) => Effect.Effect<SkillsInstalled, EnvironmentsError>;
   /** What `installSkills` would do with the same source, nothing kept or recorded. */
   readonly previewInstall: (input: {
     readonly environment: string;
     readonly source: string;
     readonly skills?: ReadonlyArray<string> | undefined;
-  }) => Effect.Effect<SkillsInstallPreview, EnvironmentsError>;
+  }) => Effect.Effect<SkillInstallPreview, EnvironmentsError>;
 };
 
 /** What the tools need of `EnvironmentTools`: what they build over, and its refusals. */
@@ -314,6 +274,42 @@ const reachEvery = (
         : [
             `It does not reach the Environments whose own Skill of that name hides it: ${Arr.join(Arr.map(others, named), ", ")}.`,
           ]),
+    ],
+    " ",
+  );
+};
+
+/**
+ * What the result of an install of several Skills kept for every Environment says of where it reaches: as
+ * `reachEvery`, but for each Skill, since an Environment's own Skill hides only the one of its name.
+ */
+const reachInstalledEvery = (
+  handed: boolean,
+  saved: ReadonlyArray<{
+    readonly name: string;
+    readonly overriddenIn?: ReadonlyArray<ChangedEnvironment> | undefined;
+  }>,
+  current: string | null,
+): string => {
+  const hidden = Arr.filter(saved, (skill) => (skill.overriddenIn ?? []).length > 0);
+
+  const hereHidden =
+    saved.length > 0 &&
+    Arr.every(saved, (skill) => Arr.some(skill.overriddenIn ?? [], ({ id }) => id === current));
+
+  return Arr.join(
+    [
+      "Every Environment's Workspaces and spares get them at their next readying.",
+      handed
+        ? "This Session's Workspace has the change now."
+        : hereHidden
+          ? "This Session's Environment keeps its own Skill of each name, which hides them there."
+          : "This Session's Workspace gets them at their next readying (it could not take them now).",
+      ...Arr.map(
+        hidden,
+        (skill) =>
+          `${skill.name} does not reach ${Arr.join(Arr.map(skill.overriddenIn ?? [], named), ", ")}, whose own Skill of that name hides it.`,
+      ),
     ],
     " ",
   );
@@ -561,15 +557,6 @@ export const installedOutcome = (
         const first = (saved[0] ?? unchanged[0])?.name ?? "<name>";
         const current = everywhere ? yield* environments.current : null;
 
-        // The Environments whose own Skill of a name installed hides it there.
-        const overriddenIn = Arr.dedupeWith(
-          Arr.flatMap(
-            saved,
-            (result): ReadonlyArray<ChangedEnvironment> => result.overriddenIn ?? [],
-          ),
-          (left: ChangedEnvironment, right: ChangedEnvironment) => left.id === right.id,
-        );
-
         const details = {
           agentChanges: Arr.map(changes, (change) => changeDetails(installed.environment, change)),
           own: everywhere ? installed.handed : own,
@@ -605,7 +592,7 @@ export const installedOutcome = (
                     ? `They are served now at ${SKILLS_ROOT}/<name> (read-only): read ${SKILLS_ROOT}/${first}/SKILL.md to use one.`
                     : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
                   everywhere
-                    ? reachEvery(installed.handed, overriddenIn, current)
+                    ? reachInstalledEvery(installed.handed, saved, current)
                     : reach(installed.environment, installed.handed, own),
                   PROMPT_NOTE,
                   ...(saved.length === 0

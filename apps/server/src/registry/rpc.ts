@@ -850,8 +850,8 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
-      // Fetched by the Registry as the GitHub App; each Workspace of the Environment is handed its Skill set with the
-      // Skills at its next readying. The owner's install is not an Agent change, as the owner's removal is not.
+      // Fetched by the Registry as the GitHub App; each Workspace of the Environment (of every Environment, for `*`) is handed
+      // its Skill set with the Skills at its next readying. The owner's install is not an Agent change, as the owner's removal is not.
       installEnvironmentSkills: ({ environment, source, skills }) =>
         Effect.gen(function* () {
           const installation = yield* registry.installSkills({ environment, source, skills });

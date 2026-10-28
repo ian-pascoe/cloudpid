@@ -57,6 +57,12 @@ const EVERY = { SHARED: "all" };
  */
 const MERGED = { variables: { A: "1", ...EVERY } };
 
+/** The scopes the fake Registry names, by id. */
+const scopes = new Map([
+  ["default", DEFAULT],
+  ["*", EVERY_SCOPE],
+]);
+
 const open = (
   answer: Effect.Success<
     ReturnType<EnvironmentsRegistry["changeEnvironment"]>
@@ -210,12 +216,7 @@ const open = (
           ? ({ status: "missing" } as const)
           : ({
               status: "installed" as const,
-              environment:
-                input.environment === "default"
-                  ? DEFAULT
-                  : input.environment === "*"
-                    ? EVERY_SCOPE
-                    : OTHER,
+              environment: scopes.get(input.environment) ?? OTHER,
               repo: "mattpocock/skills",
               ref: null,
               commit: "c0ffee0000000000000000000000000000000001",
@@ -506,8 +507,9 @@ describe("the Session's Environments", () => {
   it("hand the Session's own Workspace the set after an install for every Environment, unless its own Skills hide all of them, and pass the Approval's pin on", async () => {
     const pin = {
       commit: "c0ffee0000000000000000000000000000000001",
-      expected: { "grill-me": null },
+      skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: null }],
     };
+
     const everywhere = open();
 
     const installed = await Effect.runPromise(

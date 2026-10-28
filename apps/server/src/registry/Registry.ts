@@ -38,15 +38,14 @@ import {
   type SkillSave,
   skillSetOf,
 } from "./skills.ts";
+import { installSkills, previewSkillInstall, type SkillInstallation } from "./skill-install.ts";
+import { githubSkillReader } from "./skill-reader.ts";
 import {
-  installSkills,
-  previewSkillInstall,
-  type SkillInstallation,
+  SETTINGS_SCOPE,
+  type SkillExpectation,
   type SkillInstallPin,
   type SkillInstallPreview,
-} from "./skill-install.ts";
-import { githubSkillReader } from "./skill-reader.ts";
-import { SETTINGS_SCOPE, type SkillExpectation } from "@cloudpid/protocol";
+} from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
   type AgentChangeAuthor,
@@ -490,7 +489,9 @@ export type RegistryMethods = {
     /** What the owner's Approval was asked against: read at its commit, and a Skill kept only while it still holds. */
     readonly pin?: SkillInstallPin | undefined;
   }) => Effect.Effect<SkillInstallation>;
-  /** What `agentInstallSkills` would do, with nothing kept or recorded: the Skills with their files, and what is refused. */
+  /**
+   * What `agentInstallSkills` would do, with nothing kept or recorded: the Skills with their files, and what is refused.
+   */
   readonly agentPreviewSkillInstall: (input: {
     readonly environment: string;
     readonly source: string;

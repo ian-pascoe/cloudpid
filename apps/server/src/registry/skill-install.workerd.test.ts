@@ -4,12 +4,17 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
 import { runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT, type SkillSource } from "@cloudpid/protocol";
+import {
+  DEFAULT_ENVIRONMENT,
+  type SkillInstallPin,
+  type SkillInstallPreview,
+  type SkillSource,
+} from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
-import { installSkills, previewSkillInstall, type SkillInstallPin } from "./skill-install.ts";
+import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import {
   contentHash,
   hashBundle,
@@ -58,6 +63,23 @@ const readerOf = (files: Repo, commit = COMMIT): RepoReader => ({
   }),
   blob: async (_repo, sha) => new TextEncoder().encode(files[sha] ?? ""),
 });
+
+/** What an Approval of the Skills `named` of a preview is asked against. */
+const pinOf = (previewed: SkillInstallPreview, named: ReadonlyArray<string>): SkillInstallPin => {
+  if (previewed.status !== "previewed") throw new Error("the preview shows no Skills");
+
+  return {
+    commit: previewed.commit,
+    skills: previewed.skills
+      .filter((skill) => named.includes(skill.name))
+      .map(({ name, path, digest, current }) => ({
+        name,
+        path,
+        digest,
+        savedAt: current?.savedAt ?? null,
+      })),
+  };
+};
 
 const REPO = {
   "skills/grill-me/SKILL.md": skillMd("grill-me"),
@@ -541,7 +563,7 @@ describe("installing Skills from GitHub", () => {
     expect(set.map((skill) => skill.name)).toEqual(["tdd"]);
   });
 
-  it("reads at the commit it was pinned to, keeping a Skill only while the Skill of its name is the one the owner was shown", async () => {
+  it("reads at the commit it was pinned to, keeping a Skill only if it is the one the owner was shown, and while the Skill of its name is the one that was", async () => {
     const asked: Array<string | null> = [];
 
     const reader: RepoReader = {
@@ -553,37 +575,59 @@ describe("installing Skills from GitHub", () => {
       },
     };
 
-    const [done, again, listed] = await inRegistry(async ({ install, skills, context }) => {
-      const first = await install(reader, {
-        environment: "*",
-        source: "o/skills@grill-me",
-        skills: ["grill-me"],
-        pin: { commit: LATER, expected: { "grill-me": null } },
-      });
+    const [done, again, notShown, listed] = await inRegistry(
+      async ({ install, preview, skills, context }) => {
+        const shown = await preview(reader, {
+          environment: "*",
+          source: "o/skills",
+          skills: ["*"],
+        });
 
-      // The Skill of the name was saved again since the owner was asked.
-      const edited = { "SKILL.md": skillMd("tdd", "Saved meanwhile.") };
+        const pin = pinOf(shown, ["grill-me"]);
 
-      saveSkillAs(context(1_500), {
-        environment: "*",
-        folder: "tdd",
-        files: edited,
-        hashed: await hashFiles(edited),
-        author: { ...author, tool: "environment_skill_save" },
-      });
+        // The branch moved on since the owner was shown the Skills; they are read at the commit they saw.
+        const first = await install(reader, {
+          environment: "*",
+          source: "o/skills@grill-me",
+          skills: ["grill-me"],
+          pin: { ...pin, commit: LATER },
+        });
 
-      const second = await install(reader, {
-        environment: "*",
-        source: "o/skills",
-        skills: ["tdd"],
-        pin: { commit: LATER, expected: { tdd: null } },
-      });
+        // The Skill of the name was saved again since the owner was asked.
+        const edited = { "SKILL.md": skillMd("tdd", "Saved meanwhile.") };
 
-      return [first, second, skills.list("*")];
-    });
+        saveSkillAs(context(1_500), {
+          environment: "*",
+          folder: "tdd",
+          files: edited,
+          hashed: await hashFiles(edited),
+          author: { ...author, tool: "environment_skill_save" },
+        });
+
+        const second = await install(reader, {
+          environment: "*",
+          source: "o/skills",
+          skills: ["tdd"],
+          pin: { ...pinOf(shown, ["tdd"]), commit: LATER },
+        });
+
+        // A Skill the card did not show (here, tdd), and one whose files are not the ones shown.
+        const third = await install(reader, {
+          environment: "*",
+          source: "o/skills",
+          skills: ["*"],
+          pin: {
+            commit: LATER,
+            skills: [{ ...pin.skills[0]!, digest: "not-the-digest-shown" }],
+          },
+        });
+
+        return [first, second, third, skills.list("*")];
+      },
+    );
 
     // The ref was the commit the owner saw, not the branch's head now; the Skill source names the ref as written.
-    expect(asked).toEqual([LATER, LATER]);
+    expect(asked).toContain(LATER);
     expect(done).toMatchObject({
       status: "installed",
       commit: LATER,
@@ -599,11 +643,41 @@ describe("installing Skills from GitHub", () => {
         },
       ],
     });
+    expect(notShown).toMatchObject({
+      results: [
+        {
+          name: "grill-me",
+          outcome: "rejected",
+          message: expect.stringContaining("not the Skill the user was shown"),
+        },
+        {
+          name: "tdd",
+          outcome: "rejected",
+          message: expect.stringContaining("not the Skill the user was shown"),
+        },
+      ],
+    });
     expect(listed.find((skill) => skill.name === "grill-me")?.source).toEqual({
       ...GRILL_SOURCE,
       commit: LATER,
     });
     expect(listed.find((skill) => skill.name === "tdd")?.description).toBe("What tdd does.");
+  });
+
+  it("is the owner's install for every Environment: kept with its source, no Agent change, the checks across every Environment's set", async () => {
+    const [installed, listed, changes] = await inRegistry(async ({ install, skills, changes }) => [
+      await install(readerOf(REPO), { environment: "*", source: "o/skills@tdd", owner: true }),
+      skills.list("*"),
+      changes.list("*"),
+    ]);
+
+    expect(installed).toMatchObject({
+      status: "installed",
+      environment: { id: "*" },
+      results: [{ name: "tdd", outcome: "installed" }],
+    });
+    expect(listed).toEqual([expect.objectContaining({ name: "tdd" })]);
+    expect(changes).toEqual([]);
   });
 
   it("previews what an install would keep, with the files, what is kept already and what the checks refuse, recording nothing", async () => {
@@ -645,6 +719,7 @@ describe("installing Skills from GitHub", () => {
           unchanged: false,
           current: null,
           files: { "SKILL.md": skillMd("grill-me"), "references/questions.md": "- why?\n" },
+          digest: expect.stringMatching(/^[0-9a-f]{64}$/),
         },
         { name: "tdd", unchanged: true, current: { description: "What tdd does." } },
       ],

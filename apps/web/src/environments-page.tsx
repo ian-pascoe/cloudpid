@@ -1472,8 +1472,8 @@ const SkillSearchResults = ({ id, installing }: { id: string; installing: boolea
 };
 
 /**
- * The form that adds Skills to Environment `id` (or, with `EVERY_ENVIRONMENT`, to every Environment) from GitHub, on the owner's word: a source (`owner/repo`,
- * `owner/repo@skill` or a GitHub URL), or a search of skills.sh. A source that holds several Skills lists them to tick.
+ * The form that adds Skills to Environment `id` (or, with `EVERY_ENVIRONMENT`, to every Environment) from GitHub, on the
+ * owner's word: a source (`owner/repo`, `owner/repo@skill` or a GitHub URL), or a search of skills.sh. A source that holds several Skills lists them to tick.
  * The Registry fetches it as the GitHub App, pinned to a commit.
  */
 const AddSkillsForm = ({ id }: { id: string }) => {

@@ -100,6 +100,71 @@ export const ListedSkill = Schema.Struct({
 
 export type ListedSkill = typeof ListedSkill.Type;
 
+/** A Skill an install of a repo's Skills would keep, as its owner is shown it for their Approval. */
+export type PreviewedSkill = {
+  readonly name: string;
+  /** Its folder in the repo. */
+  readonly path: string;
+  readonly description: string;
+  /** Its files' text, by path in its folder. */
+  readonly files: Readonly<Record<string, string>>;
+  /** A digest of the files, computed by the Registry: what an Approval pins. */
+  readonly digest: string;
+  /** The scope keeps the Skill with these files and this Skill source already: nothing to approve. */
+  readonly unchanged: boolean;
+  /** The Skill of the name the scope keeps now, with its files' paths. Null for a new Skill. */
+  readonly current: {
+    readonly description: string;
+    readonly savedAt: number;
+    readonly files: ReadonlyArray<string>;
+  } | null;
+};
+
+/** What an install of GitHub Skills would do, with nothing kept or recorded: what the owner is asked to approve. */
+export type SkillInstallPreview =
+  | { readonly status: "missing" }
+  /** The source is not one, GitHub gave no answer, or the repo holds no such Skill. */
+  | { readonly status: "refused"; readonly message: string }
+  /** The source holds several Skills and none was named. */
+  | {
+      readonly status: "listed";
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      readonly available: ReadonlyArray<ListedSkill>;
+    }
+  | {
+      readonly status: "previewed";
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      /** The Skills the install would keep, and those the scope keeps already. */
+      readonly skills: ReadonlyArray<PreviewedSkill>;
+      /** The Skills the repo holds that the install would not keep, each with why. */
+      readonly rejected: ReadonlyArray<{
+        readonly name: string;
+        readonly path: string;
+        readonly message: string;
+      }>;
+    };
+
+/**
+ * What the owner's Approval of an install for every Environment was asked against, which the install must still find: the
+ * commit shown, and for each Skill shown its folder, the digest of its files, and when the Skill of its name was last saved
+ * (null: none kept). The Skills are read again at the commit; one that is not as shown, or that was not shown, is not kept.
+ */
+export type SkillInstallPin = {
+  readonly commit: string;
+  readonly skills: ReadonlyArray<{
+    readonly name: string;
+    readonly path: string;
+    readonly digest: string;
+    readonly savedAt: number | null;
+  }>;
+};
+
 /** How the install of one Skill went. */
 export const SkillInstalled = Schema.Struct({
   name: Schema.String,
