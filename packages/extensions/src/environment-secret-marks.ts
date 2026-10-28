@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import {
   type ChangedEnvironment,
   EnvironmentsError,
+  idOrGlobal,
   MAX_CHANGE_REASON,
   type EnvironmentsService,
   type RunChange,
@@ -72,9 +73,9 @@ export type SecretMarkDeps = {
   readonly refuseSecrets: (
     texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
   ) => Effect.Effect<void, EnvironmentsError>;
-  /** The Environment `id` names, the Session's own by default. */
+  /** The Environment `id` names (never assumed). */
   readonly target: (
-    id: string | undefined,
+    id: string,
   ) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
 };
 
@@ -115,18 +116,14 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
     name: "environment_secret_build",
     description: Arr.join(
       [
-        `Mark a Secret kept for an Environment as reaching the Build, or take the mark off (this Session's Environment unless id names another; id "${GLOBAL_ID}" is a Secret kept Global). Only a Secret the user kept can be marked: ask for one with secret_ask and keep, and the user chooses in the form whether to keep it.`,
+        `Mark a Secret kept for an Environment as reaching the Build, or take the mark off (the one id names; id "${GLOBAL_ID}" is a Secret kept Global). Only a Secret the user kept can be marked: ask for one with secret_ask and keep, and the user chooses in the form whether to keep it.`,
         "A Secret marked for the Build reaches every Setup Script of the Environment as $PI_SECRET_<NAME>: the Environment's own and each Repo's .cloudpid/setup.sh, in the Environment's Build and in the Setup Scripts of each Workspace's Container. A script can print it or write it to a file, so mark only a Secret a Setup Script needs (a private registry token); an unmarked one reaches only commands and Sessions. A Secret marked for the Build is part of the Build's key, so changing the mark can make a new Build.",
         "The change is recorded with your reason, the mark before and after (never the value), and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(
-        Schema.String.annotate({
-          description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for a Secret kept Global`,
-        }),
-      ),
+      id: idOrGlobal("a Secret kept Global"),
       name: SecretName.annotate({ description: "The Secret's name, such as NPM_TOKEN" }),
       build: Schema.Boolean.annotate({
         description: "true marks the Secret for the Build, false takes the mark off",

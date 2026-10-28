@@ -238,10 +238,14 @@ describe("environment_create", () => {
 });
 
 describe("environment_rename", () => {
-  it("renames this Session's Environment by default and records the names before and after", async () => {
+  it("renames the Environment id names and records the names before and after", async () => {
     const { tool, held, logged } = await setUp();
 
-    const result = await run(tool("environment_rename"), { name: "Main", reason: "Clearer" });
+    const result = await run(tool("environment_rename"), {
+      id: "default",
+      name: "Main",
+      reason: "Clearer",
+    });
 
     expect(held.get("default")?.name).toBe("Main");
     expect(text(result)).toContain('Renamed "Default" to "Main"');
@@ -270,15 +274,20 @@ describe("environment_rename", () => {
   it("refuses a name another Environment has, whatever the case", async () => {
     const { tool, logged } = await setUp();
 
-    expect(await failure(run(tool("environment_rename"), { name: "other", reason: "r" }))).toBe(
-      'Nothing was saved: Another environment is already named "other"',
-    );
+    expect(
+      await failure(run(tool("environment_rename"), { id: "default", name: "other", reason: "r" })),
+    ).toBe('Nothing was saved: Another environment is already named "other"');
     expect(logged).toEqual([]);
   });
 
   it("says so of the name it has already, and records nothing", async () => {
     const { tool, logged } = await setUp();
-    const result = await run(tool("environment_rename"), { name: "Default", reason: "r" });
+
+    const result = await run(tool("environment_rename"), {
+      id: "default",
+      name: "Default",
+      reason: "r",
+    });
 
     expect(result.isError).not.toBe(true);
     expect(text(result)).toContain("already has that name");
@@ -299,6 +308,7 @@ describe("environment_repo_add and environment_repo_remove", () => {
     const { tool, held, logged } = await setUp();
 
     const result = await run(tool("environment_repo_add"), {
+      id: "default",
       url: "o/api",
       reason: "The API lives there",
     });
@@ -340,11 +350,17 @@ describe("environment_repo_add and environment_repo_remove", () => {
   it("refuse a directory another Repo has, and leave one with the same address alone", async () => {
     const { tool, logged } = await setUp();
 
-    expect(await failure(run(tool("environment_repo_add"), { url: "x/app", reason: "r" }))).toBe(
-      "Nothing was saved: The environment already has a repo in app: name this one",
-    );
+    expect(
+      await failure(
+        run(tool("environment_repo_add"), { id: "default", url: "x/app", reason: "r" }),
+      ),
+    ).toBe("Nothing was saved: The environment already has a repo in app: name this one");
 
-    const again = await run(tool("environment_repo_add"), { url: "o/app", reason: "r" });
+    const again = await run(tool("environment_repo_add"), {
+      id: "default",
+      url: "o/app",
+      reason: "r",
+    });
 
     expect(text(again)).toContain("has that repo already");
     expect(logged).toEqual([]);
@@ -352,7 +368,12 @@ describe("environment_repo_add and environment_repo_remove", () => {
 
   it("remove a Repo and say that no Workspace loses its clone", async () => {
     const { tool, held, logged } = await setUp();
-    const result = await run(tool("environment_repo_remove"), { name: "app", reason: "Moved" });
+
+    const result = await run(tool("environment_repo_remove"), {
+      id: "default",
+      name: "app",
+      reason: "Moved",
+    });
 
     expect(held.get("default")?.repos).toEqual([]);
     expect(text(result)).toContain("Took the repo app (https://github.com/o/app.git) out of");
@@ -368,7 +389,9 @@ describe("environment_repo_add and environment_repo_remove", () => {
     const { tool, logged } = await setUp();
 
     expect(
-      await failure(run(tool("environment_repo_remove"), { name: "ghost", reason: "r" })),
+      await failure(
+        run(tool("environment_repo_remove"), { id: "default", name: "ghost", reason: "r" }),
+      ),
     ).toBe('Nothing was saved: The environment has no repo "ghost"');
     expect(logged).toEqual([]);
   });
@@ -377,7 +400,11 @@ describe("environment_repo_add and environment_repo_remove", () => {
 describe("environment_rebuild", () => {
   it("asks for a Build and says it is under way", async () => {
     const { tool, logged } = await setUp();
-    const result = await run(tool("environment_rebuild"), { reason: "The base image moved" });
+
+    const result = await run(tool("environment_rebuild"), {
+      id: "default",
+      reason: "The base image moved",
+    });
 
     expect(text(result)).toContain("the Build is under way");
     expect(text(result)).toContain("environment_get");
@@ -392,9 +419,12 @@ describe("environment_rebuild", () => {
   it("says a Build is under way already, and records nothing a second time", async () => {
     const { tool, logged } = await setUp();
 
-    await run(tool("environment_rebuild"), { reason: "The base image moved" });
+    await run(tool("environment_rebuild"), { id: "default", reason: "The base image moved" });
 
-    const again = await run(tool("environment_rebuild"), { reason: "Once more" });
+    const again = await run(tool("environment_rebuild"), {
+      id: "default",
+      reason: "Once more",
+    });
 
     expect(text(again)).toContain("is already under way");
     expect(text(again)).toContain("nothing was recorded");
@@ -415,9 +445,13 @@ describe("environment_rebuild", () => {
     const { tool, calls, logged } = await setUp();
     const api = callApi(4);
 
-    await run(tool("environment_rebuild"), { reason: "The base image moved" }, api);
+    await run(tool("environment_rebuild"), { id: "default", reason: "The base image moved" }, api);
 
-    const rerun = await run(tool("environment_rebuild"), { reason: "The base image moved" }, api);
+    const rerun = await run(
+      tool("environment_rebuild"),
+      { id: "default", reason: "The base image moved" },
+      api,
+    );
 
     expect(text(rerun)).toContain("asks for nothing again");
     expect(Arr.filter(calls, (call) => call.op === "rebuild")).toHaveLength(1);
@@ -438,6 +472,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     const result = await run(
       tool("environment_rebuild"),
       {
+        id: "default",
         reason: "Check the Postgres client installs",
         proposed: { setup_script: "apt-get install -y postgresql-client", variables: { CI: "1" } },
       },
@@ -484,7 +519,11 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     ];
 
     const message = await failure(
-      run(tool("environment_rebuild"), { reason: "r", proposed: { setup_script: "exit 1" } }),
+      run(tool("environment_rebuild"), {
+        id: "default",
+        reason: "r",
+        proposed: { setup_script: "exit 1" },
+      }),
     );
 
     expect(message).toContain(
@@ -504,7 +543,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     // The first run is cut off while it waits (the eviction runs no finalizer: here, its wait is left hanging).
     void run(
       tool("environment_rebuild"),
-      { reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
+      { id: "default", reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
       callApi(9, memos),
       withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
     ).catch(() => undefined);
@@ -516,7 +555,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
 
     const rerun = await run(
       tool("environment_rebuild"),
-      { reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
+      { id: "default", reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
       callApi(9, memos),
     );
 
@@ -538,7 +577,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
 
     void run(
       tool("environment_rebuild"),
-      { reason: "r", proposed: { setup_script: "make" } },
+      { id: "default", reason: "r", proposed: { setup_script: "make" } },
       callApi(9, memos),
       withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
     ).catch(() => undefined);
@@ -552,7 +591,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     const message = await failure(
       run(
         tool("environment_rebuild"),
-        { reason: "r", proposed: { setup_script: "make" } },
+        { id: "default", reason: "r", proposed: { setup_script: "make" } },
         callApi(9, memos),
       ),
     );
@@ -573,7 +612,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
 
     const stopped = run(
       tool("environment_rebuild"),
-      { reason: "r", proposed: { setup_script: "sleep 600" } },
+      { id: "default", reason: "r", proposed: { setup_script: "sleep 600" } },
       callApi(11),
       withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
     ).catch(() => undefined);
@@ -599,7 +638,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
 
     void run(
       tool("environment_rebuild"),
-      { reason: "r", proposed: {} },
+      { id: "default", reason: "r", proposed: {} },
       callApi(1),
       withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
     ).catch(() => undefined);
@@ -608,7 +647,9 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     });
 
     expect(
-      await failure(run(tool("environment_rebuild"), { reason: "r", proposed: {} }, callApi(2))),
+      await failure(
+        run(tool("environment_rebuild"), { id: "default", reason: "r", proposed: {} }, callApi(2)),
+      ),
     ).toBe(
       "Nothing was built: Another Test Build of the environment is under way, and one runs at a time: wait for it to end, then ask again",
     );
@@ -620,7 +661,11 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
 
     expect(
       await failure(
-        run(tool("environment_rebuild"), { reason: "r", proposed: { setup_script: "a\u0000b" } }),
+        run(tool("environment_rebuild"), {
+          id: "default",
+          reason: "r",
+          proposed: { setup_script: "a\u0000b" },
+        }),
       ),
     ).toContain("Nothing was built: The proposed settings are refused: setupScript");
     expect(tests.starts).toBe(0);
@@ -632,6 +677,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     expect(
       await failure(
         run(tool("environment_rebuild"), {
+          id: "default",
           reason: "r",
           proposed: { variables: { NPM_TOKEN: "npm_0123456789abcdef" } },
         }),
@@ -640,6 +686,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     expect(
       await failure(
         run(tool("environment_rebuild"), {
+          id: "default",
           reason: "r",
           proposed: { setup_script: `git clone https://${GITHUB_TOKEN}@github.com/o/x` },
         }),
@@ -652,9 +699,9 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     const { tool, tests } = await setUp();
 
     for (const proposed of [{ start_script: "x" }, { size: "cpu-2" }, { idle_minutes: 5 }]) {
-      expect((await run(tool("environment_rebuild"), { reason: "r", proposed })).isError).toBe(
-        true,
-      );
+      expect(
+        (await run(tool("environment_rebuild"), { id: "default", reason: "r", proposed })).isError,
+      ).toBe(true);
     }
 
     expect(tests.starts).toBe(0);

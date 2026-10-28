@@ -274,7 +274,11 @@ describe("environment_skill_save", () => {
 
     const result = await run(
       tool("environment_skill_save"),
-      { path: ".cloudpid/tmp/release", reason: "The release steps are the same every time" },
+      {
+        id: "default",
+        path: ".cloudpid/tmp/release",
+        reason: "The release steps are the same every time",
+      },
       scratch(),
     );
 
@@ -319,7 +323,7 @@ describe("environment_skill_save", () => {
 
   it("records nothing for the files the Environment keeps already", async () => {
     const { tool, logged } = await setUp();
-    const args = { path: "/workspace/.cloudpid/tmp/release", reason: "r" };
+    const args = { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" };
 
     await run(tool("environment_skill_save"), args, scratch());
     const again = await run(tool("environment_skill_save"), args, scratch());
@@ -337,7 +341,7 @@ describe("environment_skill_save", () => {
     const message = await failure(
       run(
         tool("environment_skill_save"),
-        { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+        { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
         scratch(),
       ),
     );
@@ -370,7 +374,7 @@ describe("environment_skill_save", () => {
       await failure(
         run(
           tool("environment_skill_save"),
-          { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+          { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
           scratch(more),
         ),
       ),
@@ -384,7 +388,7 @@ describe("environment_skill_save", () => {
     const message = await failure(
       run(
         tool("environment_skill_save"),
-        { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+        { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
         scratch({ "/workspace/.cloudpid/tmp/release/notes.md": "Use sk-live-abcdefghijkl." }),
       ),
     );
@@ -398,19 +402,27 @@ describe("environment_skill_save", () => {
 
     expect(
       await failure(
-        run(tool("environment_skill_save"), { path: "/tmp/release", reason: "r" }, scratch()),
+        run(
+          tool("environment_skill_save"),
+          { id: "default", path: "/tmp/release", reason: "r" },
+          scratch(),
+        ),
       ),
     ).toContain("is not in the Workspace's files");
     expect(
       await failure(
-        run(tool("environment_skill_save"), { path: "/workspace/nothing", reason: "r" }, scratch()),
+        run(
+          tool("environment_skill_save"),
+          { id: "default", path: "/workspace/nothing", reason: "r" },
+          scratch(),
+        ),
       ),
     ).toContain("/workspace/nothing does not exist");
     expect(
       await failure(
         run(
           tool("environment_skill_save"),
-          { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+          { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
           fakeFolderEnv({ "/workspace/.cloudpid/tmp/release/SKILL.md": SKILL_MD }, [
             "/workspace/.cloudpid/tmp/release/linked",
           ]),
@@ -435,7 +447,7 @@ describe("environment_skill_save", () => {
       await failure(
         run(
           tool("environment_skill_save"),
-          { path: "/workspace/app/dist/release", reason: "r" },
+          { id: "default", path: "/workspace/app/dist/release", reason: "r" },
           fakeFolderEnv(files, [], onContainer),
         ),
       ),
@@ -444,7 +456,7 @@ describe("environment_skill_save", () => {
       await failure(
         run(
           tool("environment_skill_save"),
-          { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+          { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
           fakeFolderEnv(files, [], onContainer),
         ),
       ),
@@ -458,7 +470,7 @@ describe("environment_skill_save", () => {
     const message = await failure(
       run(
         tool("environment_skill_save"),
-        { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+        { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
         fakeFolderEnv({ "/workspace/.cloudpid/tmp/release/SKILL.md": SKILL_MD }, [], "fails"),
       ),
     );
@@ -477,11 +489,12 @@ describe("environment_skill_remove", () => {
 
     await run(
       tool("environment_skill_save"),
-      { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+      { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
       scratch(),
     );
 
     const result = await run(tool("environment_skill_remove"), {
+      id: "default",
       name: "release",
       reason: "Not used",
     });
@@ -505,7 +518,7 @@ describe("environment_skill_remove", () => {
     const { tool, logged } = await setUp();
 
     const message = await failure(
-      run(tool("environment_skill_remove"), { name: "pr", reason: "r" }),
+      run(tool("environment_skill_remove"), { id: "default", name: "pr", reason: "r" }),
     );
 
     expect(message).toContain('keeps no Skill named "pr"');
@@ -571,6 +584,7 @@ describe("environment_skill_install", () => {
     });
 
     const result = await run(tool("environment_skill_install"), {
+      id: "default",
       source: "mattpocock/skills@grill-me",
       reason: "The user asked for grill-me",
     });
@@ -634,6 +648,7 @@ describe("environment_skill_install", () => {
 
     const said = text(
       await run(tool("environment_skill_install"), {
+        id: "default",
         source: "o/skills",
         skills: ["*"],
         reason: "r",
@@ -666,6 +681,7 @@ describe("environment_skill_install", () => {
     });
 
     const result = await run(tool("environment_skill_install"), {
+      id: "default",
       source: "mattpocock/skills",
       reason: "r",
     });
@@ -686,7 +702,9 @@ describe("environment_skill_install", () => {
     answerInstall({ status: "refused", message: "GitHub has no repo o/gone" });
 
     expect(
-      await failure(run(tool("environment_skill_install"), { source: "o/gone", reason: "r" })),
+      await failure(
+        run(tool("environment_skill_install"), { id: "default", source: "o/gone", reason: "r" }),
+      ),
     ).toBe("Nothing was installed: GitHub has no repo o/gone");
 
     answerInstall({
@@ -700,7 +718,7 @@ describe("environment_skill_install", () => {
     });
 
     const message = await failure(
-      run(tool("environment_skill_install"), { source: "o/r", reason: "r" }),
+      run(tool("environment_skill_install"), { id: "default", source: "o/r", reason: "r" }),
     );
 
     expect(message).toContain("Nothing was installed from o/r; each Skill was refused:");
@@ -722,6 +740,7 @@ describe("environment_skill_install", () => {
     expect(
       await failure(
         run(tool("environment_skill_install"), {
+          id: "default",
           source: "o/r",
           reason: "using s3cr3t-value-123456",
         }),
@@ -731,6 +750,7 @@ describe("environment_skill_install", () => {
     expect(
       await failure(
         run(tool("environment_skill_install"), {
+          id: "default",
           source: `https://${GITHUB_TOKEN}@github.com/o/r`,
           reason: "r",
         }),
@@ -1029,6 +1049,7 @@ describe("environment_skill_save over an Environment's own Skill of a name kept 
     keep("*", "release", { "SKILL.md": OTHER_MD });
 
     const { text, shown } = await call("environment_skill_save", {
+      id: "default",
       path: "/workspace/.cloudpid/tmp/release",
       reason: "Ours differs",
     });
@@ -1158,6 +1179,7 @@ describe("environment_skill_remove for an Environment's own Skill", () => {
     keep("*", "release", { "SKILL.md": OTHER_MD });
 
     const { text, shown } = await call("environment_skill_remove", {
+      id: "default",
       name: "release",
       reason: "Back to the shared one",
     });
@@ -1295,7 +1317,7 @@ describe("environment_skill_remove that would serve a Skill that does not fit", 
     );
 
     const own = await failure(
-      run(tool("environment_skill_remove"), { name: "release", reason: "r" }),
+      run(tool("environment_skill_remove"), { id: "default", name: "release", reason: "r" }),
     );
 
     const atGlobal = await call("environment_skill_remove", {
@@ -1325,12 +1347,12 @@ describe("a rerun after an eviction of a change that went through", () => {
 
     const saved = await run(
       tool("environment_skill_save"),
-      { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+      { id: "default", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
       scratch(),
     );
 
     const removed = await failure(
-      run(tool("environment_skill_remove"), { name: "gone", reason: "r" }),
+      run(tool("environment_skill_remove"), { id: "default", name: "gone", reason: "r" }),
     );
 
     expect(text(saved)).toContain(
@@ -1855,6 +1877,7 @@ describe("environment_skill_update", () => {
     });
 
     const result = await run(tool("environment_skill_update"), {
+      id: "default",
       names: ["grill-me"],
       reason: "The user asked for the latest grill-me",
     });
@@ -1890,7 +1913,10 @@ describe("environment_skill_update", () => {
 
     answerUpdate({ status: "nothing", environment: DEFAULT });
 
-    const result = await run(tool("environment_skill_update"), { reason: "Keep Skills current" });
+    const result = await run(tool("environment_skill_update"), {
+      id: "default",
+      reason: "Keep Skills current",
+    });
 
     expect(updates[0]).toMatchObject({ names: undefined });
     expect(text(result)).toContain(
@@ -1919,7 +1945,10 @@ describe("environment_skill_update", () => {
     });
 
     const said = text(
-      await run(tool("environment_skill_update"), { reason: "Keep Skills current" }),
+      await run(tool("environment_skill_update"), {
+        id: "default",
+        reason: "Keep Skills current",
+      }),
     );
 
     expect(updates[0]).toMatchObject({ overwrite: false });
@@ -1947,7 +1976,11 @@ describe("environment_skill_update", () => {
     });
 
     const said = await failure(
-      run(tool("environment_skill_update"), { names: ["tdd", "mine"], reason: "Update both" }),
+      run(tool("environment_skill_update"), {
+        id: "default",
+        names: ["tdd", "mine"],
+        reason: "Update both",
+      }),
     );
 
     expect(said).toContain("Nothing was updated:");
@@ -1968,6 +2001,7 @@ describe("environment_skill_update", () => {
 
     const said = text(
       await run(tool("environment_skill_update"), {
+        id: "default",
         names: ["grill-me"],
         overwrite: true,
         reason: "The user wants the upstream version",
@@ -1992,6 +2026,7 @@ describe("environment_skill_update", () => {
     expect(
       await failure(
         run(tool("environment_skill_update"), {
+          id: "default",
           reason: "Use sk-live-0123456789abcdef to fetch",
         }),
       ),

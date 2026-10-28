@@ -205,9 +205,9 @@ export type SkillToolDeps = {
   readonly refuseSecrets: (
     texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
   ) => Effect.Effect<void, EnvironmentsError>;
-  /** The Environment `id` names, the Session's own by default. */
+  /** The Environment `id` names (never assumed), with whether it is the Session's own. */
   readonly target: (
-    id: string | undefined,
+    id: string,
   ) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
   readonly notFound: (id: string) => EnvironmentsError;
 };

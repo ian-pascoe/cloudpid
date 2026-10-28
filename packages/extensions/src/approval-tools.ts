@@ -55,6 +55,8 @@ import {
   refuseGlobal,
   Environments,
   EnvironmentsError,
+  Id,
+  idOrGlobal,
   MAX_CHANGE_REASON,
   sizeWords,
 } from "./environment.ts";
@@ -345,22 +347,12 @@ export const ApprovalTools: Effect.Effect<
               }),
         );
 
-  /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
-  const target = (id: string | undefined) =>
+  /** The Environment `id` names (never assumed: a call without one fails to decode), with whether it is this Session's. */
+  const target = (id: string) =>
     Effect.gen(function* () {
       yield* refuseGlobal(id);
 
-      const current = yield* environments.current;
-      const environment = id ?? current;
-
-      if (environment === null) {
-        return yield* EnvironmentsError.make({
-          message:
-            "This Session belongs to no Environment the Registry lists: name one with id (environment_list shows them).",
-        });
-      }
-
-      return { environment, own: environment === current };
+      return { environment: id, own: id === (yield* environments.current) };
     });
 
   const notFound = (id: string) =>
@@ -737,12 +729,12 @@ export const ApprovalTools: Effect.Effect<
       }),
   });
 
-  const Id = Schema.String.annotate({
-    description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for the size limit at Global, which each Environment that does not override it inherits`,
-  });
+  const LimitId = idOrGlobal(
+    "the size limit at Global, which each Environment that does not override it inherits",
+  );
 
   /** The size settings where the limit is set (an Environment's in force, or Global's), and how a result names it. */
-  const limitTarget = (id: string | undefined) =>
+  const limitTarget = (id: string) =>
     Effect.gen(function* () {
       if (id === GLOBAL_ID) {
         const { settings } = yield* environments.global;
@@ -796,14 +788,14 @@ export const ApprovalTools: Effect.Effect<
     name: "environment_container_size_limit_set",
     description: Arr.join(
       [
-        "Set an Environment's size limit (this Session's unless id names another): the largest size its Containers may have, which bounds environment_container_resize and container_resize. A larger limit lets the agent run larger, costlier Containers, so it is a Limit and the user must approve the change. It cannot be below the Environment's own size: lower that first with environment_container_resize.",
+        "Set an Environment's size limit (the one id names): the largest size its Containers may have, which bounds environment_container_resize and container_resize. A larger limit lets the agent run larger, costlier Containers, so it is a Limit and the user must approve the change. It cannot be below the Environment's own size: lower that first with environment_container_resize.",
         `With id "${GLOBAL_ID}" the limit at Global is set: each Environment that does not override it inherits it, and a limit that would leave such an Environment's size above it is refused. Setting an Environment's limit makes it the Environment's own; environment_setting_reset makes it inherit Global's again.`,
         APPROVAL,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: LimitId,
       size: InstanceType.annotate({ description: "The largest size the Environment allows" }),
       reason: Reason,
     }),
@@ -949,9 +941,7 @@ export const ApprovalTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.String.annotate({
-        description: "The Environment's id, as environment_list shows it",
-      }),
+      id: Id,
       reason: Reason,
     }),
     executionMode: "sequential",
@@ -1068,17 +1058,13 @@ export const ApprovalTools: Effect.Effect<
     name: "environment_secret_delete",
     description: Arr.join(
       [
-        `Delete a Secret kept for an Environment (this Session's unless id names another; id "${GLOBAL_ID}" is a Secret kept Global), as the user's delete on the Environments page does: commands and Sessions no longer get it, nor Builds. The history keeps no value, so no revert brings it back, and the user must approve it. environment_get lists the Secrets kept (names only).`,
+        `Delete a Secret kept for an Environment (the one id names; id "${GLOBAL_ID}" is a Secret kept Global), as the user's delete on the Environments page does: commands and Sessions no longer get it, nor Builds. The history keeps no value, so no revert brings it back, and the user must approve it. environment_get lists the Secrets kept (names only).`,
         APPROVAL,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(
-        Schema.String.annotate({
-          description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for a Secret kept Global`,
-        }),
-      ),
+      id: idOrGlobal("a Secret kept Global"),
       name: SecretName.annotate({ description: "The Secret's name, such as NPM_TOKEN" }),
       reason: Reason,
     }),

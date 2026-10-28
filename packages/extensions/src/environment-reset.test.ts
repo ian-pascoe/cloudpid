@@ -259,6 +259,7 @@ describe("environment_setting_reset", () => {
     const { reset, calls, logged, asked } = await setUp({ overrides: { idleMinutes: 10 } });
 
     const { result, text } = await reset({
+      id: "default",
       setting: "idleMinutes",
       reason: "Global's idle time is right now",
     });
@@ -291,7 +292,7 @@ describe("environment_setting_reset", () => {
   it("says a field that inherits Global's already is unchanged, recording nothing", async () => {
     const { reset, logged, asked } = await setUp();
 
-    const { result, text } = await reset({ setting: "idleMinutes", reason: "r" });
+    const { result, text } = await reset({ id: "default", setting: "idleMinutes", reason: "r" });
 
     expect(result.isError).not.toBe(true);
     expect(text).toContain("inherited from Global already (2 minutes): nothing changed");
@@ -314,7 +315,11 @@ describe("environment_setting_reset", () => {
   it("refuses a reason that holds a GitHub token, changing nothing", async () => {
     const { reset, calls } = await setUp({ overrides: { idleMinutes: 10 } });
 
-    const { result } = await reset({ setting: "idleMinutes", reason: `with ${GITHUB_TOKEN}` });
+    const { result } = await reset({
+      id: "default",
+      setting: "idleMinutes",
+      reason: `with ${GITHUB_TOKEN}`,
+    });
 
     expect(result.isError).toBe(true);
     expect(calls).toEqual([]);
@@ -324,6 +329,7 @@ describe("environment_setting_reset", () => {
     const { reset, calls, asked, logged } = await setUp({ overrides: { maxInstance: "cpu-3" } });
 
     const { result, text } = await reset({
+      id: "default",
       setting: "maxInstance",
       reason: "Global's limit will do",
     });
@@ -362,7 +368,7 @@ describe("environment_setting_reset", () => {
     const { reset, calls, asked, logged } = await setUp({ overrides: { maxInstance: "cpu-3" } });
 
     const { result, text } = await reset(
-      { setting: "maxInstance", reason: "r" },
+      { id: "default", setting: "maxInstance", reason: "r" },
       { approve: false, reason: "Keep the room" },
     );
 
@@ -378,7 +384,7 @@ describe("environment_setting_reset", () => {
   it("answers, without asking, that a size limit with no Override is inherited from Global already", async () => {
     const { reset, calls, asked } = await setUp();
 
-    const { result, text } = await reset({ setting: "maxInstance", reason: "r" });
+    const { result, text } = await reset({ id: "default", setting: "maxInstance", reason: "r" });
 
     expect(result.isError).not.toBe(true);
     expect(text).toContain("inherited from Global already (cpu-2): nothing changed");
@@ -392,7 +398,7 @@ describe("environment_setting_reset", () => {
       overrides: { instance: "cpu-2", maxInstance: "cpu-3" },
     });
 
-    const { result, text } = await reset({ setting: "maxInstance", reason: "r" });
+    const { result, text } = await reset({ id: "default", setting: "maxInstance", reason: "r" });
 
     expect(result.isError).toBe(true);
     expect(text).toContain(

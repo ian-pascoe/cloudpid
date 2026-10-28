@@ -280,7 +280,7 @@ export const resetTool = ({
     name: "environment_setting_reset",
     description: Arr.join(
       [
-        "Reset one of an Environment's Container settings (this Session's unless id names another): take its own value (its Override) back, so the setting inherits the value at Global again, and each later change of it at Global. environment_get shows which settings are the Environment's own (overridden here) and which are inherited from Global.",
+        "Reset one of an Environment's Container settings (the one id names): take its own value (its Override) back, so the setting inherits the value at Global again, and each later change of it at Global. environment_get shows which settings are the Environment's own (overridden here) and which are inherited from Global.",
         `The setting is one of ${Arr.join(RESETTABLE_SETTINGS, ", ")}. A variable of its own is taken back with environment_variable_unset, after which a variable at Global of the same name applies again.`,
         "A reset is refused as the user's save would refuse it, such as a size that would be above the size limit. Resetting the size limit (maxInstance) changes a Limit, so the user must approve it: the call waits for their answer on a card in the Session; on Decline nothing changes.",
         "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.",
@@ -288,12 +288,10 @@ export const resetTool = ({
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(
-        Schema.String.annotate({
-          description:
-            "The Environment's id, as environment_list shows it (default: this Session's Environment); not \"*\": Global's settings are not reset here",
-        }),
-      ),
+      id: Schema.String.annotate({
+        description:
+          "The id of the Environment, as environment_list shows it (it marks this Session's own). Name it on purpose: there is no default. Not \"*\": Global's settings are not reset here",
+      }),
       setting: Schema.Literals(RESETTABLE_SETTINGS).annotate({
         description: "The Container setting that inherits Global's value again",
       }),

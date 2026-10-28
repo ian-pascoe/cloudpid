@@ -531,10 +531,12 @@ export const plainValue = (value: Schema.Json | null): string =>
 export const pathsLine = (value: Schema.Json | null): string =>
   Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
-/** A tool's `id`: one Environment, the Session's own by default. */
+/** Where a tool's `id` description says to find this Session's own Environment: it is named like any other. */
+const FIND_OWN = "environment_list marks this Session's own";
+
+/** A tool's required `id`: one Environment, named even when it is this Session's own. */
 export const Id = Schema.String.annotate({
-  description:
-    "The Environment's id, as environment_list shows it (default: this Session's Environment)",
+  description: `The id of the Environment, as environment_list shows it (${FIND_OWN}). Name it on purpose: there is no default`,
 });
 
 /**
@@ -543,14 +545,14 @@ export const Id = Schema.String.annotate({
  */
 export const idOrGlobal = (kept: string) =>
   Schema.String.annotate({
-    description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for ${kept}`,
+    description: `The id of the Environment, as environment_list shows it (${FIND_OWN}), or "${GLOBAL_ID}" for ${kept}. Name it on purpose: there is no default`,
   });
 
 /**
  * Fails when `id` is `*`, which only the tools that keep something at Global take: the others change one
  * Environment's own record, or (`environment_setting_reset`) make one Environment's field inherit Global's.
  */
-export const refuseGlobal = (id: string | undefined) =>
+export const refuseGlobal = (id: string) =>
   id === GLOBAL_ID
     ? EnvironmentsError.make({
         message: `The id "${GLOBAL_ID}" names what is kept Global (the Container settings, Secrets and Skills): only environment_get, the Container setting tools (environment_variable_set, environment_variable_unset, environment_container_resize, environment_container_size_limit_set, environment_idle_time_set, environment_ignore_set, environment_setup_script_set, environment_start_script_set, environment_toolchains_set, environment_spare_workspace_set), environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
@@ -619,22 +621,12 @@ export const EnvironmentTools: Effect.Effect<
           () => secrets.redact(value) !== value || holdsCredential(value),
         );
 
-  /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
-  const target = (id: string | undefined) =>
+  /** The Environment `id` names (never assumed: a call without one fails to decode), with whether it is this Session's. */
+  const target = (id: string) =>
     Effect.gen(function* () {
       yield* refuseGlobal(id);
 
-      const current = yield* environments.current;
-      const environment = id ?? current;
-
-      if (environment === null) {
-        return yield* EnvironmentsError.make({
-          message:
-            "This Session belongs to no Environment the Registry lists: name one with id (environment_list shows them).",
-        });
-      }
-
-      return { environment, own: environment === current };
+      return { environment: id, own: id === (yield* environments.current) };
     });
 
   /**
@@ -657,7 +649,7 @@ export const EnvironmentTools: Effect.Effect<
     changed,
   }: {
     readonly tool: string;
-    readonly id: string | undefined;
+    readonly id: string;
     readonly field: string;
     readonly value: Schema.Json | null;
     /** The text the value is made of, kept as written: none holds a Secret's value or a credential. */
@@ -799,7 +791,7 @@ export const EnvironmentTools: Effect.Effect<
       value,
       reason,
     }: {
-      readonly id?: string | undefined;
+      readonly id: string;
       readonly name: string;
       readonly value: string | null;
       readonly reason: string;
@@ -846,7 +838,7 @@ export const EnvironmentTools: Effect.Effect<
       readonly field: "setupScript" | "startScript" | "toolchains";
       /** What the setting is called in a result. */
       readonly what: string;
-      readonly id: string | undefined;
+      readonly id: string;
       readonly text: string;
       readonly reason: string;
       /** What the result adds of when the setting runs or is used. */
@@ -904,9 +896,9 @@ export const EnvironmentTools: Effect.Effect<
 
   const get = yield* defineEffectTool({
     name: "environment_get",
-    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace) in force, each marked as its own (overridden here) or inherited from Global, the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its Container settings with the Environments that override each, the names of its Secrets and its Skills.`,
+    description: `Show an Environment (the one id names; environment_list marks this Session's own): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace) in force, each marked as its own (overridden here) or inherited from Global, the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its Container settings with the Environments that override each, the names of its Secrets and its Skills.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrGlobal("the Container settings, Secrets and Skills kept Global")),
+      id: idOrGlobal("the Container settings, Secrets and Skills kept Global"),
     }),
     replay: "safe",
     execute: ({ id }) =>
@@ -937,7 +929,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_variable_set",
     description: Arr.join(
       [
-        "Set one of an Environment's variables (this Session's Environment unless id names another): every command on its Workspaces' Containers, their Setup and Start Scripts and the Environment's Build get it. The same rules as the user's Edit dialog: at most 50 variables, values of at most 4096 characters, and names a shell can export, other than those the Container sets itself (PATH, HOME, GITHUB_TOKEN, CLOUDPID_…).",
+        "Set one of an Environment's variables (the one id names): every command on its Workspaces' Containers, their Setup and Start Scripts and the Environment's Build get it. The same rules as the user's Edit dialog: at most 50 variables, values of at most 4096 characters, and names a shell can export, other than those the Container sets itself (PATH, HOME, GITHUB_TOKEN, CLOUDPID_…).",
         `With id "${GLOBAL_ID}" the variable is kept Global, for a value that is shared and not secret (an email, a URL); an Environment's own variable of the same name wins, and the 50 counts an Environment's own and the ones it inherits together, so a call that would leave any Environment with more is refused. Each Environment's Build is made with it, so a new Build is asked for in each Environment that does not override it.`,
         PLAIN_VALUES,
         "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.",
@@ -945,7 +937,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrGlobal("a variable kept Global")),
+      id: idOrGlobal("a variable kept Global"),
       name: VariableName,
       value: Schema.String.annotate({ description: "The value, saved as written" }),
       reason: Reason,
@@ -958,9 +950,9 @@ export const EnvironmentTools: Effect.Effect<
 
   const unset = yield* defineEffectTool({
     name: "environment_variable_unset",
-    description: `Unset one of an Environment's variables (this Session's Environment unless id names another; id "${GLOBAL_ID}" is a variable kept Global, which no Environment inherits any more, and a new Build is asked for in each that did). The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now. A variable that is not set is left as it is, and nothing is recorded.`,
+    description: `Unset one of an Environment's variables (the one id names; id "${GLOBAL_ID}" is a variable kept Global, which no Environment inherits any more, and a new Build is asked for in each that did). The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now. A variable that is not set is left as it is, and nothing is recorded.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrGlobal("a variable kept Global")),
+      id: idOrGlobal("a variable kept Global"),
       name: VariableName,
       reason: Reason,
     }),
@@ -974,7 +966,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_container_resize",
     description: Arr.join(
       [
-        "Set the Container size of an Environment (this Session's unless id names another): the size the next Container of every one of its Workspaces starts on, and the size they keep after each idle stop.",
+        "Set the Container size of an Environment (the one id names): the size the next Container of every one of its Workspaces starts on, and the size they keep after each idle stop.",
         `Sizes, by memory, then vCPU:\n${SIZE_LINES}`,
         "Memory is what a running Container costs, so a larger size costs more for every Workspace of the Environment. The Environment's size limit bounds the size: a larger one is refused, and the limit is a Limit that only the user can raise, with environment_container_size_limit_set, which asks for their Approval.",
         "This changes the Environment, not a Container that runs: it keeps the size it started on, and a size container_resize gave it holds there until its idle stop. To restart only this Workspace's current Container at another size, for more memory now, use container_resize, which changes no Environment.",
@@ -983,7 +975,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(SettingId),
+      id: SettingId,
       size: InstanceType.annotate({ description: "The size of the Environment's next Containers" }),
       reason: Reason,
     }),
@@ -1019,14 +1011,14 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_idle_time_set",
     description: Arr.join(
       [
-        `Set an Environment's idle time (this Session's unless id names another): the minutes a Container may sit without a command before its Workspace stops it, from 1 to ${MAX_IDLE_MINUTES}. A disk snapshot is taken first, so the next command starts a new Container from it in several seconds.`,
+        `Set an Environment's idle time (the one id names): the minutes a Container may sit without a command before its Workspace stops it, from 1 to ${MAX_IDLE_MINUTES}. A disk snapshot is taken first, so the next command starts a new Container from it in several seconds.`,
         "A Container is billed for its memory for as long as it runs, idle or not, so a long idle time costs more; a short one stops a Container between a few minutes of thought and work. The result names the cost at the Environment's size.",
         RECORDED,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(SettingId),
+      id: SettingId,
       minutes: Schema.Finite.annotate({
         description: `Minutes of idle time, a whole number from 1 to ${MAX_IDLE_MINUTES}`,
       }),
@@ -1054,7 +1046,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_setup_script_set",
     description: Arr.join(
       [
-        `Set an Environment's own Setup Script (this Session's unless id names another): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It prepares what the Environment's Workspaces need whatever their Repos (system packages, a Docker image), in /workspace.`,
+        `Set an Environment's own Setup Script (the one id names): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It prepares what the Environment's Workspaces need whatever their Repos (system packages, a Docker image), in /workspace.`,
         "It runs once per content on each Container (when the content changes, or on a Container started from the image; one restored from a snapshot has run it already), before the Repos' own Setup Scripts, and in the Environment's Build. A Setup Script is part of what a Build is made with, so a changed one makes a new Build. It gets the Environment's variables and the Secrets marked for the Build, runs for 15 minutes at most, and a failure stops no command. Nothing validates the bash before it runs.",
         "A step that belongs to one Repo (installing its dependencies) is usually better in that Repo's own .cloudpid/setup.sh, which is committed with the code; use this one for what is the Environment's.",
         "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
@@ -1063,7 +1055,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(SettingId),
+      id: SettingId,
       script: Schema.String.annotate({
         description: "The whole script, replacing the one there is; empty removes it",
       }),
@@ -1090,7 +1082,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_start_script_set",
     description: Arr.join(
       [
-        `Set an Environment's own Start Script (this Session's unless id names another): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It brings up what a snapshot cannot hold, such as a database or docker compose up, in /workspace.`,
+        `Set an Environment's own Start Script (the one id names): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It brings up what a snapshot cannot hold, such as a database or docker compose up, in /workspace.`,
         "It runs at every Container start (a restored Container too), after the Setup Scripts and before the Repos' own Start Scripts, for 5 minutes at most; a failure stops no command. A service it starts must detach, or the script never ends: setsid nohup cmd >/tmp/cmd.log 2>&1 &. It may run again on a Container that already runs, so it should leave a service that is up alone. A Start Script is not part of the Build.",
         "A step that belongs to one Repo is usually better in that Repo's own .cloudpid/start.sh, which is committed with the code; use this one for what is the Environment's.",
         "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
@@ -1099,7 +1091,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(SettingId),
+      id: SettingId,
       script: Schema.String.annotate({
         description: "The whole script, replacing the one there is; empty removes it",
       }),
@@ -1126,7 +1118,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_toolchains_set",
     description: Arr.join(
       [
-        `Set an Environment's Toolchains (this Session's unless id names another): the text of a mise.toml, at most ${MAX_TOOLCHAINS_BYTES / 1024} KiB of UTF-8 with no NUL; empty means the image's base Toolchains. mise reads it, not the save: a bad one fails the install at the next Container start.`,
+        `Set an Environment's Toolchains (the one id names): the text of a mise.toml, at most ${MAX_TOOLCHAINS_BYTES / 1024} KiB of UTF-8 with no NUL; empty means the image's base Toolchains. mise reads it, not the save: a bad one fails the install at the next Container start.`,
         "The bootstrap writes it as /workspace/mise.toml where a Workspace has none or still has the copy it wrote last, and installs from it; a Workspace whose own mise.toml was changed keeps that one. Toolchains are part of what a Build is made with, so a changed text makes a new Build.",
         "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
         RECORDED,
@@ -1134,7 +1126,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(SettingId),
+      id: SettingId,
       mise_toml: Schema.String.annotate({
         description:
           "The whole mise.toml, replacing the one there is; empty means the base Toolchains",
@@ -1162,7 +1154,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_ignore_set",
     description: Arr.join(
       [
-        `Set an Environment's extra Container-only paths (this Session's unless id names another): the full list, replacing the one there is, of at most ${MAX_IGNORE_PATTERNS} patterns. A path matching one lives on the Container's disk only: it is not synced to the Workspace, so it is fast and kept out of its storage, and it is gone when the Workspace's Container is restarted fresh. The built-in list already covers node_modules, .venv, caches and build tools' output directories.`,
+        `Set an Environment's extra Container-only paths (the one id names): the full list, replacing the one there is, of at most ${MAX_IGNORE_PATTERNS} patterns. A path matching one lives on the Container's disk only: it is not synced to the Workspace, so it is fast and kept out of its storage, and it is gone when the Workspace's Container is restarted fresh. The built-in list already covers node_modules, .venv, caches and build tools' output directories.`,
         'A pattern starts with "/" (from /workspace: "/data" is /workspace/data) or "**/" (at any depth), may start with "!" to keep a path synced again, and has only "*" and "**" (a whole segment) as wildcards. The last pattern that matches a path wins. A bad pattern is refused as the user\'s save refuses it.',
         "A changed list means the next Container of each Workspace starts without the Workspace's snapshot (a snapshot is tied to the list its Container launched with): from the Environment's Build once there is one for the new list, else from the image, so dependency directories, build output and caches are made again and the Setup Scripts run again, which takes minutes.",
         "The patterns are stored as written: a Secret this Session holds, or a GitHub token, in one is refused.",
@@ -1171,7 +1163,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(SettingId),
+      id: SettingId,
       patterns: Schema.Array(Schema.String).annotate({
         description: "The whole list of extra Container-only paths; empty removes them all",
       }),
@@ -1201,7 +1193,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_spare_workspace_set",
     description: Arr.join(
       [
-        "Turn an Environment's Spare Workspace on or off (this Session's unless id names another). On (the default), the Environment keeps one Workspace made ahead from its last good Build while it had a Session in the last 3 days: cloned, its Setup Scripts run, its Container snapshotted and stopped, so a new Session takes it and starts without waiting for the clones and the Setup Scripts. Each spare prepared runs a Container for a minute or two and keeps a Snapshot, after every Session that takes one and every new Build.",
+        "Turn an Environment's Spare Workspace on or off (the one id names). On (the default), the Environment keeps one Workspace made ahead from its last good Build while it had a Session in the last 3 days: cloned, its Setup Scripts run, its Container snapshotted and stopped, so a new Session takes it and starts without waiting for the clones and the Setup Scripts. Each spare prepared runs a Container for a minute or two and keeps a Snapshot, after every Session that takes one and every new Build.",
         "Off: no spare is prepared, the one there is is removed with its Snapshot, and a new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts as the first Workspace after a Build does. Off saves that Container time for an Environment whose new Sessions can wait; on suits one whose new Sessions should start fast.",
         `With id "${GLOBAL_ID}" the setting is changed at Global: every Environment that does not override it inherits it. Setting an Environment's value makes it the Environment's own, which a later change at Global does not reach; environment_setting_reset makes it inherit Global's again.`,
         "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at once: no Container restarts, and no new Build is made.",
@@ -1209,7 +1201,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(SettingId),
+      id: SettingId,
       enabled: Schema.Boolean.annotate({
         description: "true keeps a spare made ahead; false removes it and prepares none",
       }),
