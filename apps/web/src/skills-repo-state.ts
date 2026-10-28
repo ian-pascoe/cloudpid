@@ -2,7 +2,7 @@
 // The repo page's state (`/skills/:owner/:repo`; ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the
 // Skills GitHub has in the repo at a ref, with their installs and where each is installed, and which of them are checked
 // for Install selected. The Skill's page (`skills-skill-state.ts`) asks for the repo through the same key and the same failure; the owner's
-// page (#310) has no GitHub to ask.
+// page (`skills-owner-state.ts`) has no GitHub to ask.
 
 import {
   type RepoSkill,
