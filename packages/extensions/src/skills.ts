@@ -4,8 +4,8 @@
 // description and the path of its `SKILL.md`, which the agent loads with `read` when a task matches. Skills are found
 // in the `.agents/skills` directory of the conversation's `cwd` and of each directory above it up to the Workspace root,
 // nearest first, so a repo's own skills come before the Workspace's, whose `.agents/skills` holds the Environment's
-// Skills (its own and those kept for every Environment, mounted read-only). Discovery (`skills-discovery.ts`) reads only files, so it never starts the Container:
-// an environment that discovers skills itself (`SkillSource`: the Workspace's, which does it next to the files) is asked
+// Skills (its own and those kept for every Environment, mounted read-only). Discovery (`skills-discovery.ts`) reads
+// only files, so it never starts the Container: an environment that discovers skills itself (`SkillSource`: the Workspace's, which does it next to the files) is asked
 // once, and any other is walked through its file operations. The section is read once per Context Window and then
 // shown as it was, as `project_context` is (`frozenSection`): a Skill can change during a Session, and a changed
 // section would rewrite the system prompt, the head of the provider's cache prefix.
