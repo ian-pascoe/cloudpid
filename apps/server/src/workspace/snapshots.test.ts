@@ -14,7 +14,11 @@ import {
   ContainerSnapshots,
   SNAPSHOT_TIMEOUT_MS,
   scanContainerDisk,
-  scanPatterns,
+  secretLabel,
+  TOKEN_LABEL,
+  scanGroups,
+  type ScanGroup,
+  type ScanHit,
   type SnapshotRecord,
 } from "./snapshots.ts";
 
@@ -23,13 +27,13 @@ type Fake = {
   image: string | undefined;
   stored: SnapshotRecord | undefined;
   taken: string[];
-  scans: string[][];
+  scans: ScanGroup[][];
   /** The Environment's Secrets the Workspace holds. */
   held: HeldSecrets;
   warnings: string[];
   notes: string[];
-  /** Paths the scan finds the secret in. */
-  leaks: string[];
+  /** What the scan finds, and in which files. */
+  leaks: ScanHit[];
   scanFails: boolean;
   snapshotFails: boolean;
   /** Holds the snapshot call until released. */
@@ -40,6 +44,9 @@ type Fake = {
 };
 
 const SECRET = "ghp_test_secret_value";
+
+/** A file the scan found, holding what the labels name. */
+const hit = (path: string, ...found: string[]): ScanHit => ({ path, found });
 
 const IMAGE = "registry/image@sha256:one";
 
@@ -83,8 +90,8 @@ const open = (
       return { id: `snap-${state.taken.length}`, size: 1234 };
     },
     secrets: async () => state.held,
-    scan: async (patterns) => {
-      state.scans.push([...patterns]);
+    scan: async (groups) => {
+      state.scans.push([...groups]);
       await state.scanGate;
 
       if (state.scanFails) throw new Error("exec is not available");
@@ -123,7 +130,7 @@ describe("ContainerSnapshots.capture", () => {
   it("says why it took none: the token on the disk (naming the file, never the value), or the platform's refusal", async () => {
     const { state, snapshots } = open();
 
-    state.leaks = ["/root/.netrc"];
+    state.leaks = [hit("/root/.netrc", TOKEN_LABEL)];
 
     const leaked = await snapshots.capture("build", IMAGE);
 
@@ -154,11 +161,11 @@ describe("ContainerSnapshots and the Environment's Secrets", () => {
     const { state, snapshots } = open();
 
     state.held = { ok: true, secrets: [kept] };
-    state.leaks = ["/app/.env"];
+    state.leaks = [hit("/app/.env", secretLabel("API_KEY"))];
 
     const leaked = await snapshots.capture("idle", IMAGE);
 
-    expect(state.scans).toEqual([scanPatterns([SECRET], [kept])]);
+    expect(state.scans).toEqual([scanGroups([SECRET], [kept])]);
     expect(leaked).toMatchObject({ outcome: "skipped" });
     expect(JSON.stringify(leaked)).toContain("/app/.env");
     expect(JSON.stringify(leaked)).not.toContain(kept.value);
@@ -173,11 +180,52 @@ describe("ContainerSnapshots and the Environment's Secrets", () => {
   it("does not send a leak of the token alone to the variables", async () => {
     const { state, snapshots } = open();
 
-    state.leaks = ["/root/.netrc"];
+    state.leaks = [hit("/root/.netrc", TOKEN_LABEL)];
 
     const leaked = await snapshots.capture("idle", IMAGE);
 
-    expect(leaked).toEqual({ outcome: "skipped", reason: "the GitHub token is in /root/.netrc" });
+    expect(leaked).toEqual({ outcome: "skipped", reason: "a GitHub token in /root/.netrc" });
+  });
+
+  it("names, per file, what each holds: a token, a kept Secret, or both, never a value", async () => {
+    const { state, snapshots } = open();
+    const other: KeptSecret = { ...kept, name: "DB_PASSWORD", value: "hunter2-hunter2-hunter2" };
+
+    state.held = { ok: true, secrets: [kept, other] };
+    state.leaks = [
+      hit("/root/.gitconfig", TOKEN_LABEL),
+      hit("/var/state.db", secretLabel("API_KEY"), TOKEN_LABEL),
+      hit("/app/.env", secretLabel("API_KEY"), secretLabel("DB_PASSWORD")),
+    ];
+
+    const leaked = await snapshots.capture("idle", IMAGE);
+
+    expect(leaked).toMatchObject({ outcome: "skipped" });
+
+    const reason = leaked.outcome === "taken" ? "" : leaked.reason;
+
+    expect(reason).toContain("a GitHub token in /root/.gitconfig");
+    expect(reason).toContain("the Secret `API_KEY` and a GitHub token in /var/state.db");
+    expect(reason).toContain("the Secret `API_KEY` and the Secret `DB_PASSWORD` in /app/.env");
+
+    for (const value of [SECRET, kept.value, other.value, btoa(kept.value), btoa(SECRET)]) {
+      expect(reason).not.toContain(value);
+    }
+  });
+
+  it("counts the files beyond the first five, and names a token alone without the hint on variables", async () => {
+    const { state, snapshots } = open();
+
+    state.leaks = Array.from({ length: 7 }, (_, index) => hit(`/f${index}`, TOKEN_LABEL));
+
+    const leaked = await snapshots.capture("idle", IMAGE);
+
+    expect(leaked).toMatchObject({
+      outcome: "skipped",
+      reason: expect.stringContaining("a GitHub token in /f4 and 2 more files"),
+    });
+    expect(JSON.stringify(leaked)).not.toContain("/f5");
+    expect(JSON.stringify(leaked)).not.toContain("variables");
   });
 
   it("searches for them also where there is no token", async () => {
@@ -186,7 +234,7 @@ describe("ContainerSnapshots and the Environment's Secrets", () => {
     state.held = { ok: true, secrets: [kept] };
 
     expect(await snapshots.take("install", IMAGE)).toBe("taken");
-    expect(state.scans).toEqual([scanPatterns([], [kept])]);
+    expect(state.scans).toEqual([scanGroups([], [kept])]);
   });
 
   it("takes none while the Workspace cannot show which Secrets it must search for", async () => {
@@ -212,13 +260,18 @@ describe("what the scan searches for", () => {
   });
 
   it("is each GitHub token as it is and in base64, alone or in the basic-auth pair", () => {
-    expect(scanPatterns(["ghs_first", "ghs_second"], [])).toEqual([
-      "ghs_first",
-      btoa("ghs_first"),
-      btoa("x-access-token:ghs_first"),
-      "ghs_second",
-      btoa("ghs_second"),
-      btoa("x-access-token:ghs_second"),
+    expect(scanGroups(["ghs_first", "ghs_second"], [])).toEqual([
+      {
+        label: TOKEN_LABEL,
+        patterns: [
+          "ghs_first",
+          btoa("ghs_first"),
+          btoa("x-access-token:ghs_first"),
+          "ghs_second",
+          btoa("ghs_second"),
+          btoa("x-access-token:ghs_second"),
+        ],
+      },
     ]);
   });
 
@@ -226,13 +279,15 @@ describe("what the scan searches for", () => {
     const value = "pässword-0123456789";
     const base64 = btoa(String.fromCharCode(...new TextEncoder().encode(value)));
 
-    expect(scanPatterns([], [kept(value)])).toEqual([value, base64]);
+    expect(scanGroups([], [kept(value)])).toEqual([
+      { label: secretLabel("KEY"), patterns: [value, base64] },
+    ]);
   });
 
   it("is a multi-line Secret's longest line, which a file holding it holds, not a common line such as a PEM header", () => {
     const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj";
     const pem = `-----BEGIN PRIVATE KEY-----\n${body}\nabc\n-----END PRIVATE KEY-----\n`;
-    const patterns = scanPatterns([], [kept(pem)]);
+    const patterns = scanGroups([], [kept(pem)]).flatMap((group) => group.patterns);
 
     expect(patterns[0]).toBe(body);
     expect(patterns.join("\n")).not.toContain("BEGIN PRIVATE KEY");
@@ -244,7 +299,7 @@ describe("what the scan searches for", () => {
       String.fromCharCode(97 + (index % 26)),
     ).join("");
 
-    const [excerpt] = scanPatterns([], [kept(value)]);
+    const [excerpt] = scanGroups([], [kept(value)]).flatMap((group) => group.patterns);
 
     expect(excerpt?.length).toBe(256);
     expect(value).toContain(excerpt);
@@ -252,7 +307,7 @@ describe("what the scan searches for", () => {
   });
 
   it("leaves out a Secret too short to search for without finding it by chance", () => {
-    expect(scanPatterns([], [kept("1234567")])).toEqual([]);
+    expect(scanGroups([], [kept("1234567")])).toEqual([]);
   });
 });
 
@@ -304,11 +359,11 @@ describe("ContainerSnapshots.take", () => {
   it("scans the Container's disk for the GitHub token first, and snapshots nothing that holds it", async () => {
     const { state, snapshots } = open();
 
-    state.leaks = ["/root/.netrc"];
+    state.leaks = [hit("/root/.netrc", TOKEN_LABEL)];
 
     expect(await snapshots.take("idle", IMAGE)).toBe("skipped");
 
-    expect(state.scans).toEqual([scanPatterns([SECRET], [])]);
+    expect(state.scans).toEqual([scanGroups([SECRET], [])]);
     expect(state.taken).toHaveLength(0);
     // The warning names the file and never the value.
     expect(state.warnings.join("\n")).toContain("/root/.netrc");
@@ -319,7 +374,7 @@ describe("ContainerSnapshots.take", () => {
     const { state, snapshots } = open();
 
     await snapshots.take("install", IMAGE);
-    state.leaks = ["/tmp/credentials"];
+    state.leaks = [hit("/tmp/credentials", TOKEN_LABEL)];
     await snapshots.take("idle", IMAGE);
 
     expect(state.stored?.id).toBe("snap-1");
@@ -344,8 +399,8 @@ describe("ContainerSnapshots.take", () => {
     await snapshots.take("idle", IMAGE);
 
     expect(state.scans).toEqual([
-      scanPatterns(["ghs_first"], []),
-      scanPatterns(["ghs_first", "ghs_second"], []),
+      scanGroups(["ghs_first"], []),
+      scanGroups(["ghs_first", "ghs_second"], []),
     ]);
   });
 
@@ -591,17 +646,17 @@ describe("scanContainerDisk", () => {
           return output("", 1);
         },
       },
-      scanPatterns([SECRET], []),
+      scanGroups([SECRET], []),
     );
 
     expect(found).toEqual([]);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.cmd.join(" ")).not.toContain(SECRET);
 
-    // The token and its base64 forms go to grep as patterns.
-    const patterns = Object.values(calls[0]?.env ?? {})
-      .join("\n")
-      .split("\n");
+    // The token and its base64 forms go to grep as patterns; the labels do not leave the Workspace DO.
+    const patterns = Object.entries(calls[0]?.env ?? {})
+      .filter(([name]) => name.startsWith("CLOUDPID_SCAN_SECRET_"))
+      .flatMap(([, value]) => value.split("\n"));
 
     expect(patterns).toEqual([SECRET, btoa(SECRET), btoa(`x-access-token:${SECRET}`)]);
   });
@@ -617,7 +672,7 @@ describe("scanContainerDisk", () => {
           return output("", 1);
         },
       },
-      scanPatterns([SECRET], []),
+      scanGroups([SECRET], []),
     );
 
     expect(script).toContain("/*");
@@ -639,7 +694,7 @@ describe("scanContainerDisk", () => {
             return { output: () => new Promise(() => undefined) };
           },
         },
-        scanPatterns([SECRET], []),
+        scanGroups([SECRET], []),
         20,
       ),
     ).rejects.toThrow(/did not finish/);
@@ -647,18 +702,60 @@ describe("scanContainerDisk", () => {
     expect(signal?.aborted).toBe(true);
   });
 
-  it("lists the files grep found it in", async () => {
+  it("lists the files the search found, with the labels of the groups that hold each", async () => {
+    const kept: KeptSecret = {
+      name: "API_KEY",
+      value: "sk-live-0123456789abcdef",
+      scope: "environment",
+      build: false,
+    };
+
     const found = await scanContainerDisk(
-      { exec: async () => output("/root/.netrc\n/tmp/x\n", 0) },
-      scanPatterns([SECRET], []),
+      { exec: async () => output("0\t/root/.netrc\n0,1\t/tmp/x\n\t/tmp/beyond\n", 0) },
+      scanGroups([SECRET], [kept]),
     );
 
-    expect(found).toEqual(["/root/.netrc", "/tmp/x"]);
+    expect(found).toEqual([
+      { path: "/root/.netrc", found: [TOKEN_LABEL] },
+      { path: "/tmp/x", found: [TOKEN_LABEL, secretLabel("API_KEY")] },
+      { path: "/tmp/beyond", found: [] },
+    ]);
+  });
+
+  it("sends neither a label nor a value in the command line or a variable's name", async () => {
+    const calls: { cmd: readonly string[]; env: Record<string, string> | undefined }[] = [];
+
+    await scanContainerDisk(
+      {
+        exec: async (cmd, options) => {
+          calls.push({ cmd, env: options?.env });
+
+          return output("", 1);
+        },
+      },
+      scanGroups(
+        [SECRET],
+        [
+          {
+            name: "API_KEY",
+            value: "sk-live-0123456789abcdef",
+            scope: "environment",
+            build: false,
+          },
+        ],
+      ),
+    );
+
+    const sent = JSON.stringify(calls);
+
+    expect(sent).not.toContain("API_KEY");
+    expect(sent).not.toContain("sk-live-0123456789abcdef".slice(0, 12) + "x");
+    expect(calls[0]?.cmd.join(" ")).not.toContain("sk-live");
   });
 
   describe("run by bash over a directory tree", () => {
     // The real script, run here by bash and given a root to search as its first argument, in place of the disk.
-    const scan = (dir: string, patterns = scanPatterns([SECRET], [])) =>
+    const scan = (dir: string, patterns: ScanGroup[] = scanGroups([SECRET], [])) =>
       scanContainerDisk(
         {
           exec: async (cmd, options) => {
@@ -680,6 +777,8 @@ describe("scanContainerDisk", () => {
 
     let root = "";
 
+    const paths = (hits: ReadonlyArray<ScanHit>) => hits.map((found) => found.path).sort();
+
     const write = (path: string, content: string) => {
       mkdirSync(dirname(join(root, path)), { recursive: true });
       writeFileSync(join(root, path), content);
@@ -698,10 +797,7 @@ describe("scanContainerDisk", () => {
       write("etc/auth", btoa(`x-access-token:${SECRET}`));
       write("etc/clean", "nothing here");
 
-      expect([...(await scan(root))].sort()).toEqual([
-        join(root, "etc/auth"),
-        join(root, "root/.netrc"),
-      ]);
+      expect(paths(await scan(root))).toEqual([join(root, "etc/auth"), join(root, "root/.netrc")]);
     });
 
     it("skips pnpm's store and the virtual store in node_modules, which hold only the packages pnpm installed", async () => {
@@ -725,13 +821,15 @@ describe("scanContainerDisk", () => {
     it("still searches the rest of node_modules, where tools and commands write", async () => {
       write("workspace/repo/node_modules/.cache/build.js", `const token = "${SECRET}"`);
 
-      expect(await scan(root)).toEqual([join(root, "workspace/repo/node_modules/.cache/build.js")]);
+      expect(paths(await scan(root))).toEqual([
+        join(root, "workspace/repo/node_modules/.cache/build.js"),
+      ]);
     });
 
     it("finds an Environment's Secrets among many, whose patterns are split over several variables", async () => {
       const secrets = Array.from({ length: 200 }, (_, index): KeptSecret => ({
         name: `KEY_${index}`,
-        value: `${String(index).padStart(4, "0")}-${"v".repeat(300)}-${index}`,
+        value: `${String(index).padStart(4, "0")}-`.repeat(80),
         scope: "every",
         build: false,
       }));
@@ -742,10 +840,74 @@ describe("scanContainerDisk", () => {
       write("app/encoded", btoa(secrets[3]?.value ?? ""));
       write("app/clean", "nothing here");
 
-      expect([...(await scan(root, scanPatterns([SECRET], secrets)))].sort()).toEqual([
-        join(root, "app/.env"),
-        join(root, "app/encoded"),
+      const found = [...(await scan(root, scanGroups([SECRET], secrets)))].sort((a, b) =>
+        a.path.localeCompare(b.path),
+      );
+
+      expect(found).toEqual([
+        { path: join(root, "app/.env"), found: [secretLabel("KEY_199")] },
+        { path: join(root, "app/encoded"), found: [secretLabel("KEY_3")] },
       ]);
+    });
+
+    describe("attributes each file to what it holds", () => {
+      const kept = (name: string, value: string): KeptSecret => ({
+        name,
+        value,
+        scope: "environment",
+        build: false,
+      });
+
+      const API = kept("API_KEY", "sk-live-0123456789abcdef");
+      const DB = kept("DB_PASSWORD", "hunter2-hunter2-hunter2");
+
+      const sorted = async (patterns: ScanGroup[]) =>
+        [...(await scan(root, patterns))].sort((a, b) => a.path.localeCompare(b.path));
+
+      it("names a token", async () => {
+        write("root/.gitconfig", `[url "https://x-access-token:${SECRET}@github.com/"]`);
+        write("root/clean", "nothing here");
+
+        expect(await sorted(scanGroups([SECRET], [API]))).toEqual([
+          { path: join(root, "root/.gitconfig"), found: [TOKEN_LABEL] },
+        ]);
+      });
+
+      it("names a kept Secret held as it is and as base64", async () => {
+        write("app/.env", `API_KEY=${API.value}`);
+        write("app/encoded", `data ${btoa(DB.value)}`);
+
+        expect(await sorted(scanGroups([SECRET], [API, DB]))).toEqual([
+          { path: join(root, "app/.env"), found: [secretLabel("API_KEY")] },
+          { path: join(root, "app/encoded"), found: [secretLabel("DB_PASSWORD")] },
+        ]);
+      });
+
+      it("names both in one scan, per file", async () => {
+        write("root/.gitconfig", `url = https://x-access-token:${SECRET}@github.com/`);
+        write("var/state.db", `${SECRET}\n${API.value}\n${btoa(DB.value)}`);
+        write("app/.env", `API_KEY=${API.value}`);
+        write("app/clean", "nothing here");
+
+        expect(await sorted(scanGroups([SECRET], [API, DB]))).toEqual([
+          { path: join(root, "app/.env"), found: [secretLabel("API_KEY")] },
+          { path: join(root, "root/.gitconfig"), found: [TOKEN_LABEL] },
+          {
+            path: join(root, "var/state.db"),
+            found: [TOKEN_LABEL, secretLabel("API_KEY"), secretLabel("DB_PASSWORD")],
+          },
+        ]);
+      });
+
+      it("lists the files beyond the first twenty without saying what they hold", async () => {
+        for (let index = 0; index < 25; index++) write(`many/${index}`, SECRET);
+
+        const found = await scan(root);
+
+        expect(found).toHaveLength(25);
+        expect(found.filter((file) => file.found.length === 0)).toHaveLength(5);
+        expect(found.filter((file) => file.found.length === 1)).toHaveLength(20);
+      });
     });
 
     it("fails when the tree cannot be walked, which is not the same as finding nothing", async () => {
@@ -755,7 +917,7 @@ describe("scanContainerDisk", () => {
 
   it("fails when grep itself fails, which is not the same as finding nothing", async () => {
     await expect(
-      scanContainerDisk({ exec: async () => output("", 2) }, scanPatterns([SECRET], [])),
+      scanContainerDisk({ exec: async () => output("", 2) }, scanGroups([SECRET], [])),
     ).rejects.toThrow(/exit/);
   });
 });
