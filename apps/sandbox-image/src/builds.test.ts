@@ -20,7 +20,6 @@ import {
   buildCommitsScript,
   buildPrelude,
   parseCommits,
-  remoteHeadsScript,
 } from "@cloudpid/sandbox-image/builds";
 import {
   environmentSetupScriptRun,
@@ -182,7 +181,7 @@ describe("a Build's scratch clones", () => {
     expect(sh(buildCloneScript(repos, root)).status).toBe(1);
   });
 
-  it("tells each clone's commit, and each remote's default branch head, the same way", () => {
+  it("tells each clone's commit", () => {
     const { root, repos, app, api, git, sh } = container();
 
     sh(buildCloneScript(repos, root, "file"));
@@ -192,19 +191,6 @@ describe("a Build's scratch clones", () => {
     expect(commits).toEqual({
       app: git("rev-parse HEAD", app.work),
       api: git("rev-parse HEAD", api.work),
-    });
-
-    writeFileSync(join(app.work, "next.txt"), "next\n");
-    git("add next.txt", app.work);
-    git("commit -q -m next", app.work);
-    git("push -q origin main", app.work);
-
-    const heads = sh(remoteHeadsScript(repos, "file"));
-
-    expect(heads.status, heads.stderr).toBe(0);
-    expect(parseCommits(heads.stdout)).toEqual({
-      app: git("rev-parse HEAD", app.work),
-      api: commits["api"],
     });
   });
 
@@ -218,15 +204,6 @@ describe("a Build's scratch clones", () => {
 
     expect(sh(buildCloneScript(repos, root, "file")).status).toBe(0);
     expect(parseCommits(sh(buildCommitsScript(repos, root)).stdout)).toEqual({ empty: null });
-    expect(parseCommits(sh(remoteHeadsScript(repos, "file")).stdout)).toEqual({ empty: null });
-  });
-
-  it("fails when a remote cannot be asked for its head", () => {
-    const { base, sh } = container();
-
-    const heads = sh(remoteHeadsScript([{ name: "gone", url: join(base, "missing.git") }], "file"));
-
-    expect(heads.status).toBe(1);
   });
 });
 

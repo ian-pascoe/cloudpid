@@ -62,7 +62,7 @@ ${repos.map((repo) => `clone ${shellQuote(repo.name)} ${shellQuote(repo.url)} ||
 exit 0
 `;
 
-/** The word a line of `buildCommitsScript` and `remoteHeadsScript` begins with. */
+/** The word a line of `buildCommitsScript` begins with. */
 const COMMIT_LINE = "cloudpid-commit";
 
 /**
@@ -82,26 +82,7 @@ exit 0
 `;
 
 /**
- * The bash script that prints the commit each Repo's default branch is at on its remote (`git ls-remote`, which needs no
- * clone), a `cloudpid-commit <repo> <commit>` line each (`-` for a remote with no commits), for `parseCommits`. It exits 1
- * when a remote cannot be asked.
- */
-export const remoteHeadsScript = (
-  repos: ReadonlyArray<WorkspaceRepo>,
-  protocols: string = "https",
-): string => `set -u -o pipefail
-export GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=${shellQuote(protocols)}
-head_of() {
-  out=$(git ls-remote -- "$2" HEAD) || { echo "cloudpid: could not ask $2 for its default branch" >&2; return 1; }
-  commit=$(printf '%s\\n' "$out" | awk '$2 == "HEAD" { print $1; exit }')
-  printf '${COMMIT_LINE} %s %s\\n' "$1" "\${commit:--}"
-}
-${repos.map((repo) => `head_of ${shellQuote(repo.name)} ${shellQuote(repo.url)} || exit 1`).join("\n")}
-exit 0
-`;
-
-/**
- * Each Repo's commit, by name, from what `buildCommitsScript` or `remoteHeadsScript` printed: null for a Repo with none
+ * Each Repo's commit, by name, from what `buildCommitsScript` printed: null for a Repo with none
  * yet (an empty repository).
  */
 export const parseCommits = (output: string) =>

@@ -116,6 +116,7 @@ import {
 
 import type { BuildRequest, BuildState, EnvironmentBuild } from "./build-record.ts";
 import { BuildRunner, type StoredBuilds } from "./build.ts";
+import { remoteHeads } from "./remote-heads.ts";
 import {
   discoverWorkspaceInstructions,
   discoverWorkspacePrompts,
@@ -583,6 +584,8 @@ export class Workspace extends ContainerHost {
       },
       run: (script, timeoutSeconds, scriptEnv) =>
         this.#ownHost(`computer:build:${ctx.id.toString()}`).run(script, timeoutSeconds, scriptEnv),
+      // The daily look asks GitHub (or the remote) from here, so a Build that finds nothing moved starts no Container.
+      heads: remoteHeads({ fetch: (url, init) => this.githubFetch(url, init), github }),
       secrets: () => environmentSecrets.read(),
       snapshot: () => launch.captureBuild(),
       stop: destroyContainer,
