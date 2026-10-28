@@ -200,7 +200,9 @@ const decodeOverrides = Schema.decodeUnknownResult(Settings, {
 });
 
 /** One thing wrong with overrides: the keys that lead to it, and a line for a person to read. */
-type Problem = { readonly keys: ReadonlyArray<string>; readonly line: string };
+export type SettingsProblem = { readonly keys: ReadonlyArray<string>; readonly line: string };
+
+type Problem = SettingsProblem;
 
 const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
   Arr.map(formatIssues(error.issue).issues, (issue) => {
@@ -229,7 +231,7 @@ const RENAMED_TOOLS: ReadonlyMap<string, string> = new Map([
  * a list saved before a rename keeps offering the tool, is not reported, and is saved with the new name. Patterns are
  * left as they are.
  */
-const withRenamedTools = (overrides: Schema.Json): Schema.Json => {
+export const withRenamedTools = (overrides: Schema.Json): Schema.Json => {
   if (!isJsonObject(overrides)) return overrides;
 
   const tools = overrides["tools"];
@@ -254,6 +256,12 @@ const withRenamedTools = (overrides: Schema.Json): Schema.Json => {
 
   return Record.map(overrides, (entry, key) => (key === "tools" ? renamedTools : entry));
 };
+
+/** The settings `overrides` give over the defaults strictly, or every problem with the keys it lies at. */
+export const decodeSettingsOverrides = (
+  overrides: Schema.Json,
+): Result.Result<Settings, ReadonlyArray<SettingsProblem>> =>
+  Result.mapError(decodeOverrides(overrides), problemsOf);
 
 /** The settings `overrides` give over the defaults, or why they are not valid settings. */
 export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings, SettingsError> =>
