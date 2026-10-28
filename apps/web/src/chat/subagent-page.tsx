@@ -19,12 +19,9 @@ import { sessionClientAtom, sessionStatusAtom, taskGraphAtom } from "../session/
 import { conversationKey } from "../session/conversation-key.ts";
 import { layoutKey } from "../session-layout.ts";
 import { showLayoutAtom } from "../session-layout-state.ts";
-import { ApprovalRequests } from "./approval-card.tsx";
 import { ChildThread } from "./child-thread.tsx";
 import { ShownSession, ShownSubagentContext } from "./conversation.ts";
-import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { Messages } from "./messages.tsx";
-import { SecretRequests } from "./secret-form.tsx";
 import { CONNECTION_NOTICE } from "./session-chat.tsx";
 import { SessionDetails, SessionDetailsButton } from "./session-details.tsx";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
@@ -32,6 +29,7 @@ import { AgentStatus, AgentStopButton, AgentSummary } from "./subagent-card.tsx"
 import { subagentOnPage } from "./subagent-page-state.ts";
 import { type Archived, ArchivedBanner } from "./thread.tsx";
 import { TreeBarScope } from "./tree-actions.ts";
+import { WaitingRequests } from "./waiting-requests.tsx";
 
 /** The link back to the Session's page, as the breadcrumb's first step. */
 const SessionCrumb = ({ sessionId, title }: { sessionId: string; title: string | undefined }) => (
@@ -164,13 +162,7 @@ const LiveSubagent = ({
               conversationId={agent.conversationId}
               messages={<Messages />}
               page={{
-                requests: (
-                  <div className="px-4">
-                    <BrowserHandoffRequests />
-                    <SecretRequests />
-                    <ApprovalRequests />
-                  </div>
-                ),
+                requests: <WaitingRequests />,
                 archived:
                   archived === undefined ? undefined : <ArchivedBanner archived={archived} />,
               }}
