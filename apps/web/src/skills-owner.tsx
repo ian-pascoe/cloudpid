@@ -183,7 +183,7 @@ export const SkillOwnerPage = ({ owner }: { owner: string }) => (
         <ExternalLink className="size-3" />
       </a>
     </div>
-    <OpenRepo key={owner} owner={owner} />
-    <OwnerBody key={owner} owner={owner} />
+    <OpenRepo key={`open:${owner}`} owner={owner} />
+    <OwnerBody key={`repos:${owner}`} owner={owner} />
   </SkillsFrame>
 );
