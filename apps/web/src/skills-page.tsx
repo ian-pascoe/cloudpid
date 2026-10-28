@@ -4,8 +4,7 @@
 // tabs (`?q=`), the tab bar (Installed · All time · Trending (24h) · Hot, the tab in `?tab=`), and the tab shown, or the
 // search's results in its place while a query is set. The Installed tab holds the owner's Skill management
 // (`skills-installed.tsx`); the other tabs are the Skill directory's lists (`skills-directory.tsx`), and a row's Install
-// opens the target picker (`skills-install-dialog.tsx`). A repo's page is `skills-repo.tsx`, an owner's `skills-owner.tsx`; a
-// Skill's is still to come and says so.
+// opens the target picker (`skills-install-dialog.tsx`). A repo's page is `skills-repo.tsx`, an owner's `skills-owner.tsx`, a Skill's `skills-skill.tsx`.
 
 import { useAtomValue } from "@effect/atom-react";
 import { ArrowLeft } from "lucide-react";
@@ -14,7 +13,6 @@ import { InAppLink } from "./in-app-link.tsx";
 import { cn } from "./lib/utils.ts";
 import {
   navigate,
-  SKILLS_PATH,
   SKILLS_TABS,
   skillsParamsAtom,
   skillsPath,
@@ -134,15 +132,3 @@ export const SkillsPage = () => {
     </SkillsShell>
   );
 };
-
-/** A page below `/skills` (a Skill's, named by `path`), until it comes. */
-export const SkillDirectoryPage = ({ path }: { path: string }) => (
-  <SkillsFrame title={path}>
-    <p className="text-sm text-muted-foreground">
-      This page is coming soon.{" "}
-      <InAppLink href={SKILLS_PATH} className="underline underline-offset-2 hover:text-foreground">
-        Back to skills
-      </InAppLink>
-    </p>
-  </SkillsFrame>
-);

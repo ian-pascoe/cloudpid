@@ -18,7 +18,7 @@ import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle, type ShownPage } from "./sidebar.tsx";
 import { DraftComposer } from "./draft-composer.tsx";
 import { EnvironmentsPage } from "./environments-page.tsx";
-import { SkillDirectoryPage, SkillsPage } from "./skills-page.tsx";
+import { SkillsPage } from "./skills-page.tsx";
 import { SkillOwnerPage } from "./skills-owner.tsx";
 import { SkillRepoPage } from "./skills-repo.tsx";
 import { SkillPage } from "./skills-skill.tsx";
