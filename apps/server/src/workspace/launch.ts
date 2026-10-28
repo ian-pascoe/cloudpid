@@ -259,12 +259,15 @@ export class ContainerLaunch {
       record.scanned,
     );
 
-    // The files this Container has not changed since it started are now shown clean of what that scan searched for.
+    // The files this Container has not changed since it started are now shown clean of what that scan searched for;
+    // not those of another Container launched meanwhile (this one died during the scan or the snapshot).
     if (outcome === "taken") {
       const scanned = await this.#deps.snapshots.coverage();
       const current = await this.#current();
 
-      if (current !== undefined) await this.#remember({ ...current, scanned });
+      if (current !== undefined && current.launchedAt === record.launchedAt) {
+        await this.#remember({ ...current, scanned });
+      }
     }
 
     return outcome;

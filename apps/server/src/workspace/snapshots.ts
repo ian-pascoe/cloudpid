@@ -14,11 +14,12 @@
 // - The disk is searched for the GitHub token and the Environment's kept Secrets before a snapshot
 //   (`scanContainerDisk`: everything but the pseudo file systems, the Workspace mount and pnpm's stores, for each as it
 //   is and in base64: `scanGroups`), and a snapshot that cannot be shown clean is not taken, nor one of a Workspace
-//   that cannot show which Secrets to search for. A Container restored from a snapshot whose scan searched for all of
-//   them (`ScanCoverage`) has only the files whose status changed since it started searched (`covers`); a Build, and
-//   the first snapshot of a Container started from the image or a Build, have the whole disk searched. The bootstrap keeps the token off disk (git reads it from the
+//   that cannot show which Secrets to search for. The bootstrap keeps the token off disk (git reads it from the
 //   environment), so this is for what a command wrote; a value encoded some other way is not found. The warning for a
 //   refused snapshot names, per file, what it holds: "a GitHub token" or "the Secret `NAME`", never a value.
+// - A Container restored from a snapshot whose scan searched for all that is searched for now (`ScanCoverage`) has
+//   only the files whose status changed since it started searched (`covers`); a Build, and the first snapshot of a
+//   Container started from the image or a Build, have the whole disk searched.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import { CONTAINER_START_MARKER } from "@cloudpid/sandbox-image/supervisor";
@@ -143,7 +144,7 @@ export type SnapshotCapture =
       readonly id: string;
       readonly size: number;
       readonly tookMs: number;
-      readonly scanned: ScanScope;
+      readonly scope: ScanScope;
       readonly covered: ScanCoverage | undefined;
     }
   | { readonly outcome: "skipped" | "failed"; readonly reason: string };
@@ -313,7 +314,7 @@ export class ContainerSnapshots {
         id,
         size,
         tookMs: deps.now() - started,
-        scanned: scope,
+        scope,
         covered,
       };
     } catch (cause) {
@@ -399,7 +400,7 @@ export class ContainerSnapshots {
     }
 
     deps.info(
-      `Container snapshot (${reason}) taken: ${Math.round(captured.size / 1e6)} MB in ${captured.tookMs} ms, ${SCOPE_NOTES[captured.scanned]}`,
+      `Container snapshot (${reason}) taken: ${Math.round(captured.size / 1e6)} MB in ${captured.tookMs} ms, ${SCOPE_NOTES[captured.scope]}`,
     );
 
     return "taken";
@@ -443,8 +444,12 @@ type Searching = {
  * searched for what is searched for now: every kept Secret's patterns were searched for then (one added or changed
  * since may have been on the disk already, under no name), and so was every GitHub token, but one minted after
  * `scanned`'s snapshot was taken, which no file of that snapshot can hold. A token of unknown minting must have been
- * searched for.
+ * searched for, and so must one minted within `MINTED_AFTER_MARGIN_MS` after: the Workspace DO's clock, by which both
+ * times are told, may differ by a little from one host to the next.
  */
+/** How long after a snapshot a token must have been minted to be known not to be in it (`covers`). */
+const MINTED_AFTER_MARGIN_MS = 60_000;
+
 const covers = (scanned: ScanCoverage, searching: Searching): boolean => {
   const searched = new Set(scanned.searched);
 
@@ -452,7 +457,8 @@ const covers = (scanned: ScanCoverage, searching: Searching): boolean => {
     searching.secrets.every((digest) => searched.has(digest)) &&
     searching.tokens.every(
       ({ digest, mintedAt }) =>
-        searched.has(digest) || (mintedAt !== undefined && mintedAt > scanned.at),
+        searched.has(digest) ||
+        (mintedAt !== undefined && mintedAt > scanned.at + MINTED_AFTER_MARGIN_MS),
     )
   );
 };

@@ -151,7 +151,7 @@ describe("ContainerSnapshots.capture", () => {
       id: "snap-1",
       size: 1234,
       tookMs: 0,
-      scanned: "whole",
+      scope: "whole",
       covered: { at: 5_000, searched: await searchedFor([SECRET], []) },
     });
     expect(state.taken).toEqual(["workspace-build"]);
@@ -567,8 +567,13 @@ describe("ContainerSnapshots: the scan of the files changed since the Container 
     const covered = await first(snapshots);
 
     // Minted after it: no file of that snapshot can hold it.
-    live.push({ token: "ghs_after", mintedAt: covered.at + 1 });
+    live.push({ token: "ghs_after", mintedAt: covered.at + 60_001 });
     await snapshots.take("idle", IMAGE, undefined, covered);
+
+    // Just after, by a clock that may not be the snapshot's.
+    live.push({ token: "ghs_just_after", mintedAt: covered.at + 30_000 });
+    await snapshots.take("idle", IMAGE, undefined, covered);
+    live.pop();
 
     // Minted before it, yet not searched for (a token the list did not have then), or of unknown minting.
     live.push({ token: "ghs_before", mintedAt: covered.at - 1 });
@@ -577,7 +582,7 @@ describe("ContainerSnapshots: the scan of the files changed since the Container 
     live.push({ token: "ghs_unknown" });
     await snapshots.take("idle", IMAGE, undefined, covered);
 
-    expect(state.sinceStart).toEqual([false, true, false, false]);
+    expect(state.sinceStart).toEqual([false, true, false, false, false]);
   });
 
   it("records what it searched for, by digest, never a value, and when the snapshot was taken, after the scan", async () => {

@@ -45,6 +45,9 @@ collapse_base64="s#(data:[-A-Za-z0-9.+/;=_]*;base64,)[-A-Za-z0-9+/=_]{${base64_m
 # an older one (it then searches more).
 rm -f -- "$start_marker"
 { : >"$start_marker"; } 2>/dev/null
+# A file's times are the kernel's coarse clock, one tick (up to 10 ms) apart: what starts next writes a tick later, so
+# the scan, which takes only the files changed after the marker, never misses a write of the same tick.
+sleep 0.02
 
 scratch=$(mktemp -d /dev/shm/cloudpid-supervise.XXXXXX 2>/dev/null || mktemp -d)
 mkfifo "$scratch/out" "$scratch/keep"

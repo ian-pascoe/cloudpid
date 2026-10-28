@@ -55,6 +55,8 @@ type Fake = {
   takeScanned: Array<ScanCoverage | undefined>;
   /** What a snapshot taken records its scan covered. */
   takeCovers: ScanCoverage | undefined;
+  /** Holds a snapshot until released. */
+  takeGate: Promise<void> | undefined;
   /** The Container-only paths each launch asked for a snapshot of. */
   restorableIgnores: Array<readonly string[] | undefined>;
   record: LaunchRecord | undefined;
@@ -92,6 +94,7 @@ const open = (
     takeIgnores: [],
     takeScanned: [],
     takeCovers: undefined,
+    takeGate: undefined,
     restorableIgnores: [],
     record: undefined,
     starts: [],
@@ -158,6 +161,7 @@ const open = (
           state.takeImages.push(image);
           state.takeIgnores.push(ignore);
           state.takeScanned.push(scanned);
+          await state.takeGate;
 
           return state.takeOutcome;
         },
@@ -172,7 +176,7 @@ const open = (
                 id: "build-snap",
                 size: 5,
                 tookMs: 1,
-                scanned: "whole",
+                scope: "whole",
                 covered: undefined,
               }
             : { outcome: state.takeOutcome, reason: "the platform refused" };
@@ -421,6 +425,58 @@ describe("a launch", () => {
       state.takeCovers = OWN;
       await launch.snapshot("idle");
 
+      expect(state.record?.scanned).toEqual(COVERED);
+    });
+
+    it("is kept for a Container adopted as it runs", async () => {
+      const { state, container } = open();
+
+      state.restorable = { id: "snap-7", image: "img-1", covered: COVERED };
+      await container.start(SPEC);
+      state.running = true;
+      state.outcome = "adopted";
+      await container.start(SPEC);
+
+      expect(state.record?.scanned).toEqual(COVERED);
+    });
+
+    it("is nothing when the platform refuses the snapshot and the Container starts from the image", async () => {
+      const { state, container } = open();
+
+      state.restorable = { id: "snap-7", image: "img-1", covered: COVERED };
+      state.rejectSnapshotStart = true;
+      await container.start(SPEC);
+
+      expect(state.record?.restoredFrom).toBeUndefined();
+      expect(state.record?.scanned).toBeUndefined();
+    });
+
+    it("is not given to another Container launched while the snapshot was taken", async () => {
+      const { state, container, launch } = open();
+
+      await container.start(SPEC);
+      state.running = true;
+
+      let release: () => void = () => undefined;
+
+      state.takeGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      state.takeCovers = OWN;
+
+      const taking = launch.snapshot("idle");
+
+      await Promise.resolve();
+
+      // The Container dies meanwhile, and the next one starts from an older snapshot.
+      state.running = false;
+      state.now += 1;
+      state.restorable = { id: "snap-old", image: "img-1", covered: COVERED };
+      await container.start(SPEC);
+      release();
+      await taking;
+
+      expect(state.record?.restoredFrom).toBe("snap-old");
       expect(state.record?.scanned).toEqual(COVERED);
     });
 
