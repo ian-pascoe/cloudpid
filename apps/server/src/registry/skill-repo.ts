@@ -334,6 +334,7 @@ export const joinSkillView = (
         { name: rows.name, description: rows.description, path: rows.path, skillId: rows.skillId },
       ],
       unreadable: [],
+      internal: 0,
       omitted: 0,
     },
     installed,

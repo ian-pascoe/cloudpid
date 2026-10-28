@@ -162,7 +162,10 @@ export const skillPageOfSource = (name: string, source: SkillSource): string | n
 
   return github === null
     ? null
-    : skillPagePath(github.owner, github.repo, name, source.ref ?? undefined, source.path);
+    : skillPagePath(github.owner, github.repo, name, {
+        ref: source.ref ?? undefined,
+        path: source.path,
+      });
 };
 
 /**

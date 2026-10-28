@@ -61,12 +61,14 @@ export const skillViewAtom = Atom.family(({ owner, repo, skill, path, ref }: Ski
 });
 
 /**
- * What Install opens the target picker for: this Skill of its repo by name, at the page's `ref` so the install pins to it
- * (never the whole repo).
+ * What Install opens the target picker for: this Skill of its repo by its folder (a name does not say which Skill: two
+ * folders can declare one), with its name as the label, at the page's `ref` so the install pins to it (never the whole
+ * repo).
  */
 export const skillToInstall = (skill: SkillView, ref: string | undefined): SkillsToInstall => ({
   source: skill.repo,
   skills: [skill.name],
+  folders: [skill.path],
   ref,
 });
 

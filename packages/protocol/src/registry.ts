@@ -746,7 +746,7 @@ export class RegistryRpcs extends RpcGroup.make(
    * answers the list for the page to tick. `folders` (repo-relative paths, `""` for the repo's root) names the Skills by
    * the folder that holds each instead, which is exact where names are not (two folders can declare one name, a name can be
    * another folder's): exactly those folders are read, whatever the repo's other Skills are called, and the Skill source
-   * kept records each folder. It is exclusive with `skills`. Fails with an `EnvironmentError` saying why (no such repo, a private one the
+   * kept records each folder; it names at least one. It is exclusive with `skills`. Fails with an `EnvironmentError` saying why (no such repo, a private one the
    * GitHub App cannot see, the rate limit, a source that is not GitHub's).
    */
   Rpc.make("installEnvironmentSkills", {
@@ -755,7 +755,10 @@ export class RegistryRpcs extends RpcGroup.make(
       source: Schema.String,
       skills: Schema.optionalKey(Schema.String.pipe(Schema.Array)),
       folders: Schema.optionalKey(
-        Schema.String.pipe(Schema.Array, Schema.check(Schema.isMaxLength(200))),
+        Schema.String.pipe(
+          Schema.Array,
+          Schema.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+        ),
       ),
     },
     success: SkillInstall,

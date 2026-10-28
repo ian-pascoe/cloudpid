@@ -242,7 +242,9 @@ const section = (markup: string, label: string): string | undefined => {
 describe("the Skills page's tabs", () => {
   it.effect("are Installed, All time, Trending (24h) and Hot, Installed shown by default", () =>
     Effect.gen(function* () {
-      const tabs = links(yield* renderSkills("")).filter(({ href }) => href?.startsWith("/skills"));
+      const tabs = links(yield* renderSkills("")).filter(({ href }) =>
+        href?.startsWith("/skills?tab="),
+      );
 
       expect(tabs).toEqual([
         { href: "/skills?tab=installed", text: "Installed", current: true },

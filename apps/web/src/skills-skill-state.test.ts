@@ -173,15 +173,17 @@ describe("a Skill's page", () => {
     }),
   );
 
-  it("is what Install installs: this Skill of its repo by name, at the ref shown", () => {
+  it("is what Install installs: this Skill of its repo by its folder, at the ref shown", () => {
     expect(skillToInstall(view(), undefined)).toEqual({
       source: "o/skills",
       skills: ["tdd"],
+      folders: ["skills/tdd"],
       ref: undefined,
     });
-    expect(skillToInstall(view(), "v1")).toEqual({
+    expect(skillToInstall(view({ path: "" }), "v1")).toEqual({
       source: "o/skills",
       skills: ["tdd"],
+      folders: [""],
       ref: "v1",
     });
   });
@@ -265,7 +267,8 @@ describe("Install, Update and Remove from a Skill's page", () => {
         const installs: Array<{
           environment: string;
           source: string;
-          skills: ReadonlyArray<string>;
+          skills: ReadonlyArray<string> | undefined;
+          folders: ReadonlyArray<string> | undefined;
         }> = [];
 
         let copies: EnvironmentSkill[] = [];
@@ -290,8 +293,8 @@ describe("Install, Update and Remove from a Skill's page", () => {
             ),
           listEnvironmentSkills: ({ environment }) =>
             Effect.succeed(environment === "work" ? copies : []),
-          installEnvironmentSkills: ({ environment, source, skills }) => {
-            installs.push({ environment, source, skills: skills ?? [] });
+          installEnvironmentSkills: ({ environment, source, skills, folders }) => {
+            installs.push({ environment, source, skills, folders });
             copies = [kept("tdd", "skills/tdd")];
 
             return Effect.succeed({
@@ -332,7 +335,13 @@ describe("Install, Update and Remove from a Skill's page", () => {
         yield* settled(registry, installToTargetAtom);
 
         expect(installs).toEqual([
-          { environment: "work", source: "https://github.com/o/skills/tree/v1", skills: ["tdd"] },
+          {
+            environment: "work",
+            source: "https://github.com/o/skills/tree/v1",
+            skills: undefined,
+            // Exactly this Skill's folder, whatever else the repo holds or calls the same.
+            folders: ["skills/tdd"],
+          },
         ]);
 
         const after = AsyncResult.getOrThrow(yield* settled(registry, atom));

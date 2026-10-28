@@ -77,7 +77,7 @@ const SkillProblem = ({
           <p className="text-muted-foreground">
             The repo can be read.{" "}
             <InAppLink
-              href={skillPagePath(page.owner, page.repo, page.skill, undefined, page.path)}
+              href={skillPagePath(page.owner, page.repo, page.skill, { path: page.path })}
               className="underline underline-offset-2 hover:text-foreground"
             >
               Show the Skill on its default branch
@@ -140,7 +140,10 @@ const Candidates = ({
       {candidates.map((candidate) => (
         <li key={candidate.path} className="flex flex-col gap-0.5 py-3">
           <InAppLink
-            href={skillPagePath(page.owner, page.repo, candidate.name, page.ref, candidate.path)}
+            href={skillPagePath(page.owner, page.repo, candidate.name, {
+              ref: page.ref,
+              path: candidate.path,
+            })}
             className="w-fit font-mono text-sm font-medium hover:underline"
           >
             {candidate.name}

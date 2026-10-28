@@ -3334,6 +3334,23 @@ it("installs the folders the repo page picked as the owner's install, and refuse
   expect(both.message).toBe("Name the Skills to install or the folders that hold them, not both");
 });
 
+it("refuses an install that names no folders at all, which would install nothing", async () => {
+  const fake = fakeRegistries();
+
+  const none = await call(fake, (registry) =>
+    Effect.exit(
+      registry.installEnvironmentSkills({
+        environment: "*",
+        source: "mattpocock/skills",
+        folders: [],
+      }),
+    ),
+  );
+
+  expect(none._tag).toBe("Failure");
+  expect(fake.calls).toEqual([]);
+});
+
 it("searches skills.sh for the page and reports why a search failed", async () => {
   const fake = fakeRegistries();
 
