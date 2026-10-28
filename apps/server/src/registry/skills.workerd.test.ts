@@ -1,6 +1,6 @@
-// An Environment's own Skills, and those kept for every Environment (scope `*`), over real Durable Object SQLite (ADR-0026,
+// An Environment's own Skills, and those kept Global (scope `*`), over real Durable Object SQLite (ADR-0026,
 // docs/architecture/workspace.md → The Environment's own Skills): saved and removed by the agent as Agent changes with their files before
-// and after, merged (the Environment's own, then those for every Environment) into the Skill set its
+// and after, merged (the Environment's own, then those at Global) into the Skill set its
 // Workspaces serve, each text kept once, and reverted unless saved again since.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
@@ -8,7 +8,7 @@ import { MAX_FILE_BYTES } from "@cloudpid/extensions/skill-checks";
 import { runInDurableObject } from "cloudflare:test";
 import {
   DEFAULT_ENVIRONMENT,
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   MAX_AGENT_CHANGES,
   type SkillExpectation,
   skillField,
@@ -166,7 +166,7 @@ describe("saving an Environment's Skill", () => {
       return [
         first,
         keptSkillFiles(skills, DEFAULT_ENVIRONMENT, "release"),
-        keptSkillFiles(skills, EVERY_ENVIRONMENT_SCOPE, "release"),
+        keptSkillFiles(skills, GLOBAL_SCOPE, "release"),
         keptSkillFiles(skills, DEFAULT_ENVIRONMENT, "review"),
       ];
     });
@@ -541,7 +541,7 @@ describe("the texts of a Skill's files", () => {
   });
 });
 
-const EVERY = EVERY_ENVIRONMENT_SCOPE;
+const EVERY = GLOBAL_SCOPE;
 
 /** About 1 MB a Skill: 8 files of 126 KB. */
 const big = (name: string): SkillFiles => ({
@@ -554,8 +554,8 @@ const big = (name: string): SkillFiles => ({
   ),
 });
 
-describe("Skills kept for every Environment", () => {
-  it("are kept under the scope *, recorded under it with their files, and reach every Environment's set", async () => {
+describe("Skills kept Global", () => {
+  it("are kept under the scope *, recorded under it with their files, and reach each Environment's set", async () => {
     const [saved, listed, changed, defaults, others] = await inRegistry(
       async ({ store, save, skills, changes, set }) => {
         store.createEnvironment("0000abcd", "Other", 1_000);
@@ -572,7 +572,7 @@ describe("Skills kept for every Environment", () => {
 
     expect(saved).toMatchObject({
       status: "saved",
-      environment: { id: "*", name: "every Environment" },
+      environment: { id: "*", name: "Global" },
       skill: { name: "release" },
       inherited: false,
       overriddenIn: [],
@@ -609,8 +609,8 @@ describe("Skills kept for every Environment", () => {
     expect(every).toHaveLength(1);
   });
 
-  it("are served to every Environment, and an Environment's own Skill of the name hides them there only", async () => {
-    const everyPr = { "SKILL.md": skillMd("pr", "Our pr for every Environment.") };
+  it("are served to Global, and an Environment's own Skill of the name hides them there only", async () => {
+    const everyPr = { "SKILL.md": skillMd("pr", "Our pr at Global.") };
     const ownPr = { "SKILL.md": skillMd("pr", "Default's own pr.") };
 
     const [everywhere, withOwn, other] = await inRegistry(async ({ store, save, set }) => {
@@ -628,7 +628,7 @@ describe("Skills kept for every Environment", () => {
     expect(everywhere.files["pr/SKILL.md"]).toBe(everyPr["SKILL.md"]);
     expect(withOwn.files["pr/SKILL.md"]).toBe(ownPr["SKILL.md"]);
     expect(other.files["pr/SKILL.md"]).toBe(everyPr["SKILL.md"]);
-    // The other Skill for every Environment is served all the same, and no Skill's files are mixed.
+    // The other Skill at Global is served all the same, and no Skill's files are mixed.
     expect(withOwn.files["tdd/SKILL.md"]).toBe(skillMd("tdd"));
     expect(Object.keys(withOwn.files).sort()).toEqual(["pr/SKILL.md", "tdd/SKILL.md"]);
   });
@@ -649,7 +649,7 @@ describe("Skills kept for every Environment", () => {
     expect(set.files["release/SKILL.md"]).toBe(own["SKILL.md"]);
   });
 
-  it("change the set's hash, and an Environment's own copy of the name does not change it for a Skill kept for every Environment", async () => {
+  it("change the set's hash, and an Environment's own copy of the name does not change it for a Skill kept Global", async () => {
     const [emptyHash, everyHash, shadowedHash] = await inRegistry(async ({ save, set }) => {
       const first = await set();
 
@@ -664,11 +664,11 @@ describe("Skills kept for every Environment", () => {
 
     expect(emptyHash).toBe(EMPTY_SKILL_SET.hash);
     expect(everyHash).not.toBe(EMPTY_SKILL_SET.hash);
-    // The Environment's own `release` hides the one kept for every Environment: its set did not change.
+    // The Environment's own `release` hides the one kept Global: its set did not change.
     expect(shadowedHash).toBe(true);
   });
 
-  it("say which Environments' own Skills hide a save, and whether an Environment's own save hides the one for every Environment", async () => {
+  it("say which Environments' own Skills hide a save, and whether an Environment's own save hides the one at Global", async () => {
     const [everyOne, ownOne] = await inRegistry(async ({ store, save }) => {
       store.createEnvironment("0000abcd", "Other", 1_000);
       await save("release", { "SKILL.md": skillMd("release", "Other's.") }, 500, "0000abcd");
@@ -728,7 +728,7 @@ describe("Skills kept for every Environment", () => {
     expect(saved[1]).toEqual([]);
   });
 
-  it("are refused when the set of an Environment keeping none of its own would pass 8 MB, though every Environment hides the Skill", async () => {
+  it("are refused when the set of an Environment keeping none of its own would pass 8 MB, though Global hides the Skill", async () => {
     const saved = await inRegistry(async ({ store, save, skills }) => {
       store.createEnvironment("0000abcd", "Other", 1_000);
 
@@ -750,7 +750,7 @@ describe("Skills kept for every Environment", () => {
     expect(saved[1]).toBe(8);
   });
 
-  it("refuse an Environment's removal of its own Skill that hides a larger one kept for every Environment, when the set would pass 8 MB", async () => {
+  it("refuse an Environment's removal of its own Skill that hides a larger one kept Global, when the set would pass 8 MB", async () => {
     const [save, agent, owner, reverted, kept] = await inRegistry(
       async ({ save, remove, revert, skills, store, storage }) => {
         for (let index = 0; index < 8; index += 1) {
@@ -792,7 +792,7 @@ describe("Skills kept for every Environment", () => {
     expect(kept).toEqual(["big-0", "extra"]);
   });
 
-  it("take out an Environment's own Skill that hides one kept for every Environment when the set still fits", async () => {
+  it("take out an Environment's own Skill that hides one kept Global when the set still fits", async () => {
     const [removed, owner] = await inRegistry(async ({ save, remove }) => {
       await save("release", release, 1_000, EVERY);
       await save("release", { "SKILL.md": skillMd("release", "Mine.") }, 2_000);
@@ -806,7 +806,7 @@ describe("Skills kept for every Environment", () => {
 
   it("count in an Environment's own set, which a save of its own Skill is refused past 100 and 8 MB for", async () => {
     const saved = await inRegistry(async ({ save }) => {
-      // 99 for every Environment, and the Environment's own `mine` make 100.
+      // 99 at Global, and the Environment's own `mine` make 100.
       for (let index = 0; index < 99; index += 1) {
         await save(`every-${index}`, { "SKILL.md": skillMd(`every-${index}`) }, 1_000, EVERY);
       }
@@ -814,7 +814,7 @@ describe("Skills kept for every Environment", () => {
       return [
         await save("mine", { "SKILL.md": skillMd("mine") }),
         await save("one-more", { "SKILL.md": skillMd("one-more") }),
-        // A Skill of the same name as one for every Environment replaces it in the Environment: no more Skills.
+        // A Skill of the same name as one at Global replaces it in the Environment: no more Skills.
         await save("every-0", { "SKILL.md": skillMd("every-0", "Mine.") }, 2_000),
       ];
     });
@@ -908,7 +908,7 @@ describe("Skills kept for every Environment", () => {
         await save("pr", { "SKILL.md": skillMd("pr", "For all.") }, 2_500, EVERY);
         await save("pr", { "SKILL.md": skillMd("pr", "Mine.") }, 2_600);
 
-        // Mine hides the one for every Environment, which is served again once it is gone.
+        // Mine hides the one at Global, which is served again once it is gone.
         const ownRemoval = remove("pr", 3_000);
 
         return [everyRemoval, ownRemoval, await set(), changes.list(EVERY)];
@@ -922,7 +922,7 @@ describe("Skills kept for every Environment", () => {
       overriddenIn: [{ id: "0000abcd", name: "Other" }],
     });
     expect(ownRemoval).toMatchObject({ status: "removed", inherited: true });
-    // The default Environment now serves the one for every Environment.
+    // The default Environment now serves the one at Global.
     expect(set.files["pr/SKILL.md"]).toContain("For all.");
     expect(changes.map(({ field, after }) => [field, after === null])).toEqual([
       [skillField("pr"), false],
@@ -932,7 +932,7 @@ describe("Skills kept for every Environment", () => {
   });
 });
 
-describe("the Agent changes of Skills kept for every Environment", () => {
+describe("the Agent changes of Skills kept Global", () => {
   it("are reverted by the owner, as an owner's change under the scope *, with no Approval", async () => {
     const edited = { "SKILL.md": skillMd("release", "Edited.") };
 
@@ -959,7 +959,7 @@ describe("the Agent changes of Skills kept for every Environment", () => {
     expect(recorded.every((change) => change.scope === "*")).toBe(true);
   });
 
-  it("revert a removal by bringing the Skill back for every Environment, and refuse a revert once it was saved again", async () => {
+  it("revert a removal by bringing the Skill back at Global, and refuse a revert once it was saved again", async () => {
     const [restored, refused] = await inRegistry(
       async ({ save, remove, revert, changes, skills }) => {
         await save("release", release, 1_000, EVERY);
@@ -1035,7 +1035,7 @@ describe("the Agent changes of Skills kept for every Environment", () => {
     expect(dropped).toBe(false);
   });
 
-  it("go with the owner's removal of a Skill kept for every Environment, which records no change", async () => {
+  it("go with the owner's removal of a Skill kept Global, which records no change", async () => {
     const [removed, left, changes] = await inRegistry(
       async ({ save, skills, storage, changes, store }) => {
         await save("release", release, 1_000, EVERY);
@@ -1058,7 +1058,7 @@ describe("the Agent changes of Skills kept for every Environment", () => {
 });
 
 describe("unapprovedEveryChange", () => {
-  it("refuses a change to the Skills kept for every Environment that names no Approval, and no other", () => {
+  it("refuses a change to the Skills kept Global that names no Approval, and no other", () => {
     expect(unapprovedEveryChange("*", false)).toContain("only against what the owner approved");
     expect(unapprovedEveryChange("*", true)).toBeUndefined();
     expect(unapprovedEveryChange("some-environment", false)).toBeUndefined();

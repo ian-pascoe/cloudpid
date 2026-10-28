@@ -1,4 +1,4 @@
-// The `environment` extension's tools for an Environment's own Skills, and those kept for every Environment (docs/architecture/workspace.md
+// The `environment` extension's tools for an Environment's own Skills, and those kept Global (docs/architecture/workspace.md
 // → The Environment's own Skills, → Approval): `environment_skill_save` reads a Skill's folder from the Workspace and
 // saves it, `environment_skill_remove` removes one, over fake Skills that keep them as the Registry does. With `id: "*"`
 // each waits for the owner's Approval.
@@ -251,7 +251,7 @@ const scratch = (more: Readonly<Record<string, string | Uint8Array>> = {}) =>
   });
 
 describe("environment_skill_save", () => {
-  it("runs alone, is rerun after an eviction (a change to every Environment waits for the same request), and is the root conversation's only", async () => {
+  it("runs alone, is rerun after an eviction (a change to Global waits for the same request), and is the root conversation's only", async () => {
     const { tool } = await setUp();
 
     for (const name of ["environment_skill_save", "environment_skill_remove"]) {
@@ -534,7 +534,7 @@ const installChange = (id: number, name: string): AgentChange => ({
 const DEFAULT = { id: "default", name: "Default" };
 
 describe("environment_skill_install", () => {
-  it("runs alone, is rerun after an eviction (an install for every Environment waits for the same request), and is the root conversation's only", async () => {
+  it("runs alone, is rerun after an eviction (an install at Global waits for the same request), and is the root conversation's only", async () => {
     const { tool } = await setUp();
 
     expect(tool("environment_skill_install").replay).toBe("safe");
@@ -747,9 +747,9 @@ describe("environment_get", () => {
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        everyVariables: {},
+        globalVariables: {},
         skills: [{ name: "release", description: "Cut a release.", savedAt: 0 }],
-        everySkills: [],
+        globalSkills: [],
       },
       true,
     );
@@ -758,9 +758,7 @@ describe("environment_get", () => {
       "Skills (its own, served read-only at /workspace/.agents/skills/<name>",
     );
     expect(shown).toContain("\n  release (saved 1970-01-01T00:00:00.000Z): Cut a release.");
-    expect(shown).toContain(
-      "over those kept for every Environment of the same name; environment_skill_save",
-    );
+    expect(shown).toContain("over those kept Global of the same name; environment_skill_save");
     expect(shown).not.toContain("bundle");
   });
 
@@ -773,7 +771,7 @@ describe("environment_get", () => {
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        everyVariables: {},
+        globalVariables: {},
         skills: [
           {
             name: "grill-me",
@@ -787,7 +785,7 @@ describe("environment_get", () => {
             },
           },
         ],
-        everySkills: [],
+        globalSkills: [],
       },
       true,
     );
@@ -807,7 +805,7 @@ const EVERY_ARGS = {
 const OTHER_MD =
   "---\nname: release\ndescription: Cut a different release.\n---\nPush, then tag.\n";
 
-describe("environment_skill_save for every Environment", () => {
+describe("environment_skill_save at Global", () => {
   it("asks the owner on a card showing the Skill, notifies them once, and saves it only on Approve", async () => {
     const { call, saves, logged, notified, kept, recorded } = await setUp();
 
@@ -822,9 +820,9 @@ describe("environment_skill_save for every Environment", () => {
     expect(shown).toHaveLength(1);
     expect(shown[0]).toMatchObject({
       tool: "environment_skill_save",
-      target: "every Environment",
+      target: "Global",
       change: 'Save the Skill "release"',
-      before: "Not kept for every Environment",
+      before: "Not kept Global",
       reason: "Every project cuts releases the same way",
     });
     // The card shows what steers every Session: the description, and each file's text.
@@ -843,18 +841,16 @@ describe("environment_skill_save for every Environment", () => {
       }),
     ]);
     expect(kept.has("*:release")).toBe(true);
-    expect(text).toContain(
-      "The user approved: Saved the new Skill release for every Environment (2 files).",
-    );
+    expect(text).toContain("The user approved: Saved the new Skill release for Global (2 files).");
     expect(text).toContain("served now at /workspace/.agents/skills/release (read-only)");
     expect(text).toContain(
-      "Every Environment's Workspaces and spares get it at their next readying",
+      "Each Environment's Workspaces and spares get it at their next readying",
     );
     expect(text).toContain("This Session's Workspace has the change now");
     expect(result.details).toMatchObject({
       approval: { approved: true },
       agentChange: {
-        environment: { id: "*", name: "every Environment" },
+        environment: { id: "*", name: "Global" },
         field: "skills.release",
         before: null,
       },
@@ -862,7 +858,7 @@ describe("environment_skill_save for every Environment", () => {
     expect(logged).toEqual([
       {
         tool: "environment_skill_save",
-        environmentName: "every Environment",
+        environmentName: "Global",
         field: "skills.release",
       },
     ]);
@@ -889,7 +885,7 @@ describe("environment_skill_save for every Environment", () => {
       reason: "Not now",
     });
 
-    expect(text).toContain("The user declined: saving the Skill release for every Environment");
+    expect(text).toContain("The user declined: saving the Skill release at Global");
     expect(text).toContain("Their reason: Not now");
     expect(result.details).toMatchObject({ approval: { approved: false, reason: "Not now" } });
     expect(saves).toEqual([]);
@@ -905,7 +901,7 @@ describe("environment_skill_save for every Environment", () => {
     const { shown } = await call("environment_skill_save", EVERY_ARGS);
 
     expect(shown[0]?.before).toBe(
-      "Kept for every Environment: Cut a different release. (files: SKILL.md, old.md)",
+      "Kept at Global: Cut a different release. (files: SKILL.md, old.md)",
     );
     expect(saves[0]?.expected?.savedAt).toEqual(expect.any(Number));
   });
@@ -951,7 +947,7 @@ describe("environment_skill_save for every Environment", () => {
     expect(notified).toEqual([]);
   });
 
-  it("asks nothing for the files kept for every Environment already", async () => {
+  it("asks nothing for the files kept Global already", async () => {
     const { call, keep, notified, saves, logged } = await setUp();
 
     keep("*", "release", {
@@ -997,7 +993,7 @@ describe("environment_skill_save for every Environment", () => {
 
     const { text } = await call("environment_skill_save", EVERY_ARGS, { approve: true, task: 9 });
 
-    expect(text).toContain("The user approved, and every Environment keeps the Skill release");
+    expect(text).toContain("The user approved, and Global keeps the Skill release");
     expect(logged).toEqual([]);
   });
 
@@ -1019,8 +1015,8 @@ describe("environment_skill_save for every Environment", () => {
   });
 });
 
-describe("environment_skill_save over an Environment's own Skill of a name kept for every Environment", () => {
-  it("saves at once, with no Approval, and says it hides the one kept for every Environment", async () => {
+describe("environment_skill_save over an Environment's own Skill of a name kept Global", () => {
+  it("saves at once, with no Approval, and says it hides the one kept Global", async () => {
     const { call, keep, notified, saves } = await setUp();
 
     keep("*", "release", { "SKILL.md": OTHER_MD });
@@ -1033,13 +1029,11 @@ describe("environment_skill_save over an Environment's own Skill of a name kept 
     expect(shown).toEqual([]);
     expect(notified).toEqual([]);
     expect(saves).toHaveLength(1);
-    expect(text).toContain(
-      "It hides the Skill of that name kept for every Environment, in this Environment.",
-    );
+    expect(text).toContain("It hides the Skill of that name kept Global, in this Environment.");
   });
 });
 
-describe("environment_skill_remove for every Environment", () => {
+describe("environment_skill_remove at Global", () => {
   it("asks the owner on a card naming the Skill, and removes it only on Approve", async () => {
     const { call, keep, kept, removals, logged, notified } = await setUp();
 
@@ -1054,14 +1048,14 @@ describe("environment_skill_remove for every Environment", () => {
 
     expect(shown[0]).toMatchObject({
       tool: "environment_skill_remove",
-      target: "every Environment",
+      target: "Global",
       change: 'Remove the Skill "release"',
       before: "release: Cut a release.",
     });
     await vi.waitFor(() => expect(notified).toHaveLength(1));
     expect(removals).toEqual([{ environment: "*", name: "release" }]);
     expect(kept.has("*:release")).toBe(false);
-    expect(text).toContain("The user approved: removed the Skill release from every Environment.");
+    expect(text).toContain("The user approved: removed the Skill release from Global.");
     expect(text).toContain('Environment "Other" (0000abcd)');
     expect(result.details).toMatchObject({
       approval: { approved: true },
@@ -1070,7 +1064,7 @@ describe("environment_skill_remove for every Environment", () => {
     expect(logged).toEqual([
       {
         tool: "environment_skill_remove",
-        environmentName: "every Environment",
+        environmentName: "Global",
         field: "skills.release",
       },
     ]);
@@ -1087,16 +1081,16 @@ describe("environment_skill_remove for every Environment", () => {
       { approve: false, reason: "Keep it" },
     );
 
-    expect(text).toContain("The user declined: removing the Skill release from every Environment");
+    expect(text).toContain("The user declined: removing the Skill release from Global");
     expect(text).toContain("Their reason: Keep it");
     expect(removals).toEqual([]);
     expect(kept.has("*:release")).toBe(true);
   });
 
-  it("refuses without asking a Skill that is not kept for every Environment, pointing to environment_get", async () => {
+  it("refuses without asking a Skill that is not kept Global, pointing to environment_get", async () => {
     const { call, keep, notified } = await setUp();
 
-    // An Environment's own Skill of the name is not the one kept for every Environment.
+    // An Environment's own Skill of the name is not the one kept Global.
     keep("default", "release", { "SKILL.md": SKILL_MD });
 
     const { result, text, shown } = await call("environment_skill_remove", {
@@ -1106,7 +1100,7 @@ describe("environment_skill_remove for every Environment", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toContain('no Skill named "release" is kept for every Environment');
+    expect(text).toContain('no Skill named "release" is kept Global');
     expect(text).toContain('environment_get with id "*"');
     expect(shown).toEqual([]);
     expect(notified).toEqual([]);
@@ -1150,7 +1144,7 @@ describe("environment_skill_remove for every Environment", () => {
 });
 
 describe("environment_skill_remove for an Environment's own Skill", () => {
-  it("says the Skill kept for every Environment is served instead, and asks nothing", async () => {
+  it("says the Skill kept Global is served instead, and asks nothing", async () => {
     const { call, keep, notified } = await setUp();
 
     keep("default", "release", { "SKILL.md": SKILL_MD });
@@ -1164,13 +1158,13 @@ describe("environment_skill_remove for an Environment's own Skill", () => {
     expect(shown).toEqual([]);
     expect(notified).toEqual([]);
     expect(text).toContain(
-      "The Skill of that name kept for every Environment is served at /workspace/.agents/skills/release instead.",
+      "The Skill of that name kept Global is served at /workspace/.agents/skills/release instead.",
     );
   });
 });
 
-describe("environment_get for every Environment's Skills", () => {
-  it("lists the Skills kept for every Environment, and for an Environment those it overrides", () => {
+describe("environment_get for each Environment's Skills", () => {
+  it("lists the Skills kept Global, and for an Environment those it overrides", () => {
     const base = {
       id: "default",
       name: "Default",
@@ -1178,9 +1172,9 @@ describe("environment_get for every Environment's Skills", () => {
       build: { status: "none" as const },
       settings: DEFAULT_CONTAINER_SETTINGS,
       secrets: [],
-      everyVariables: {},
+      globalVariables: {},
       skills: [{ name: "release", description: "Ours.", savedAt: 0 }],
-      everySkills: [
+      globalSkills: [
         { name: "release", description: "Shared release.", savedAt: 0 },
         { name: "review", description: "Review code.", savedAt: 0 },
       ],
@@ -1189,7 +1183,7 @@ describe("environment_get for every Environment's Skills", () => {
     const shown = describeEnvironment(base, true);
 
     expect(shown).toContain(
-      'Skills for every Environment (id "*"; the Environment\'s own of the same name win): \n  review (saved 1970-01-01T00:00:00.000Z): Review code.\n  overridden here: release',
+      'Skills at Global (id "*"; the Environment\'s own of the same name win): \n  review (saved 1970-01-01T00:00:00.000Z): Review code.\n  overridden here: release',
     );
     // What it keeps of its own is listed apart.
     expect(shown).toContain("\n  release (saved 1970-01-01T00:00:00.000Z): Ours.");
@@ -1197,7 +1191,7 @@ describe("environment_get for every Environment's Skills", () => {
     expect(shown).not.toContain("bundle");
   });
 
-  it("says none when nothing is kept for every Environment", () => {
+  it("says none when nothing is kept Global", () => {
     const shown = describeEnvironment(
       {
         id: "default",
@@ -1206,20 +1200,20 @@ describe("environment_get for every Environment's Skills", () => {
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        everyVariables: {},
+        globalVariables: {},
         skills: [],
-        everySkills: [],
+        globalSkills: [],
       },
       false,
     );
 
     expect(shown).toContain(
-      'Skills for every Environment (id "*"; the Environment\'s own of the same name win): none',
+      'Skills at Global (id "*"; the Environment\'s own of the same name win): none',
     );
   });
 });
 
-describe("the Approval card of a Skill kept for every Environment", () => {
+describe("the Approval card of a Skill kept Global", () => {
   const long = (size: number) => "Step.\n".repeat(Math.ceil(size / 6)).slice(0, size);
 
   it("shows a Skill that fits in full, with no warning", async () => {
@@ -1264,7 +1258,7 @@ describe("the Approval card of a Skill kept for every Environment", () => {
     expect(text).toContain("small enough to review in full");
   });
 
-  it("tells the agent in its description to keep a Skill for every Environment reviewable", async () => {
+  it("tells the agent in its description to keep a Skill at Global reviewable", async () => {
     const { tool } = await setUp();
 
     expect(tool("environment_skill_save").description).toContain("small enough to review in full");
@@ -1282,7 +1276,7 @@ describe("the Approval card of a Skill kept for every Environment", () => {
 });
 
 describe("environment_skill_remove that would serve a Skill that does not fit", () => {
-  it("passes on the refusal, saying why, and records nothing, for an own Skill and for every Environment", async () => {
+  it("passes on the refusal, saying why, and records nothing, for an own Skill and Global", async () => {
     const { call, tool, keep, refuseRemoval, logged, recorded } = await setUp();
 
     keep("default", "release", { "SKILL.md": SKILL_MD });
@@ -1339,7 +1333,7 @@ describe("a rerun after an eviction of a change that went through", () => {
   });
 });
 
-const EVERY_SCOPE = { id: "*", name: "every Environment" };
+const EVERY_SCOPE = { id: "*", name: "Global" };
 
 const INSTALL_ARGS = {
   id: "*",
@@ -1397,7 +1391,7 @@ const installedEverywhere = (names: ReadonlyArray<string>) => ({
   handed: true,
 });
 
-describe("environment_skill_install for every Environment", () => {
+describe("environment_skill_install at Global", () => {
   it("asks the owner on a card showing each Skill, and installs with the commit and Skills it showed only on Approve", async () => {
     const { call, answerPreview, answerInstall, installs, previews, logged, notified } =
       await setUp();
@@ -1419,9 +1413,9 @@ describe("environment_skill_install for every Environment", () => {
     expect(shown).toHaveLength(1);
     expect(shown[0]).toMatchObject({
       tool: "environment_skill_install",
-      target: "every Environment",
+      target: "Global",
       change: 'Install the Skill "grill-me" from mattpocock/skills at c0ffee0',
-      before: "grill-me: not kept for every Environment",
+      before: "grill-me: not kept Global",
       reason: "Every project should grill the plan",
     });
     // The card shows what steers every Session: the description and each file's text.
@@ -1455,10 +1449,10 @@ describe("environment_skill_install for every Environment", () => {
       },
     ]);
     expect(text).toContain(
-      "The user approved: installed grill-me for every Environment from mattpocock/skills at c0ffee0.",
+      "The user approved: installed grill-me for Global from mattpocock/skills at c0ffee0.",
     );
     expect(text).toContain(
-      "Every Environment's Workspaces and spares get them at their next readying",
+      "Each Environment's Workspaces and spares get them at their next readying",
     );
     expect(text).toContain("This Session's Workspace has the change now");
     expect(text).toContain("recorded as approved");
@@ -1469,7 +1463,7 @@ describe("environment_skill_install for every Environment", () => {
     expect(logged).toEqual([
       {
         tool: "environment_skill_install",
-        environmentName: "every Environment",
+        environmentName: "Global",
         field: "skills.grill-me",
       },
     ]);
@@ -1490,9 +1484,7 @@ describe("environment_skill_install for every Environment", () => {
 
     const { shown } = await call("environment_skill_install", INSTALL_ARGS);
 
-    expect(shown[0]?.before).toBe(
-      "grill-me: kept for every Environment: Old. (files: SKILL.md, old.md)",
-    );
+    expect(shown[0]?.before).toBe("grill-me: kept Global: Old. (files: SKILL.md, old.md)");
     expect(installs[0]?.pin).toEqual({
       commit: GRILL_COMMIT,
       skills: [
@@ -1549,7 +1541,7 @@ describe("environment_skill_install for every Environment", () => {
       "grill-me",
       "tdd",
     ]);
-    expect(text).toContain("installed grill-me, tdd for every Environment");
+    expect(text).toContain("installed grill-me, tdd for Global");
   });
 
   it("says plainly what the card could not show of each Skill, and tells the agent after Approve", async () => {
@@ -1738,7 +1730,7 @@ describe("environment_skill_install for every Environment", () => {
       task: 9,
     });
 
-    expect(text).toContain("The user approved, and every Environment keeps grill-me from");
+    expect(text).toContain("The user approved, and Global keeps grill-me from");
     expect(text).toContain("Refused: tdd (skills/tdd): SKILL.md: too large");
     expect(result.details).toMatchObject({ approval: { approved: true } });
   });
@@ -2000,9 +1992,9 @@ describe("environment_skill_update", () => {
   });
 });
 
-describe("environment_skill_update for every Environment", () => {
+describe("environment_skill_update at Global", () => {
   const NEW_COMMIT = "dec0de0000000000000000000000000000000002";
-  const EVERY = { id: "*", name: "every Environment" };
+  const EVERY = { id: "*", name: "Global" };
 
   const from = {
     repo: "mattpocock/skills",
@@ -2068,12 +2060,12 @@ describe("environment_skill_update for every Environment", () => {
     expect(updatePreviews).toEqual([{ environment: "*", names: ["grill-me"], overwrite: false }]);
     expect(shown[0]).toMatchObject({
       tool: "environment_skill_update",
-      target: "every Environment",
+      target: "Global",
       change: expect.stringContaining('"grill-me"'),
       reason: args.reason,
     });
     expect(shown[0]?.before).toContain(
-      "grill-me: kept for every Environment: mattpocock/skills/skills/grill-me at c0ffee0",
+      "grill-me: kept Global: mattpocock/skills/skills/grill-me at c0ffee0",
     );
     expect(shown[0]?.after).toContain("New steps.");
     expect(shown[0]?.after).toContain("━━ grill-me (skills/grill-me) at");
@@ -2095,13 +2087,13 @@ describe("environment_skill_update for every Environment", () => {
 
     expect(said).toContain("The user approved: updated grill-me");
     expect(said).toContain(
-      "Every Environment's Workspaces and spares get it at their next readying",
+      "Each Environment's Workspaces and spares get it at their next readying",
     );
     expect(result.details).toMatchObject({ approval: { approved: true } });
     expect(logged).toEqual([
       {
         tool: "environment_skill_update",
-        environmentName: "every Environment",
+        environmentName: "Global",
         field: "skills.grill-me",
       },
     ]);
@@ -2326,7 +2318,7 @@ describe("environment_get marks", () => {
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        everyVariables: {},
+        globalVariables: {},
         skills: [
           {
             name: "grill-me",
@@ -2355,7 +2347,7 @@ describe("environment_get marks", () => {
             updateAvailable: false,
           },
         ],
-        everySkills: [],
+        globalSkills: [],
       },
       true,
     );

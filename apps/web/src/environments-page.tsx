@@ -70,10 +70,10 @@ import {
   environmentListAtom,
   environmentSettingsAtom,
   environmentsErrorAtom,
-  everyEnvironmentSettingsAtom,
-  everyEnvironmentSettingsErrorAtom,
-  everyVariablesAtom,
-  everyVariablesDraftAtom,
+  globalSettingsAtom,
+  globalSettingsErrorAtom,
+  globalVariablesAtom,
+  globalVariablesDraftAtom,
   saveEveryVariablesAtom,
   newEnvironmentNameAtom,
   rebuildEnvironmentAtom,
@@ -92,7 +92,7 @@ import {
 import {
   buildLine,
   deleteConfirmed,
-  EVERY_ENVIRONMENT,
+  GLOBAL,
   inheritedSecrets,
   type InheritedVariables,
   inheritedVariables,
@@ -441,12 +441,12 @@ const SecretRow = ({
 };
 
 /**
- * The names of Environment `id`'s own variables, then those it gets from every Environment, as `SecretsSection` names
+ * The names of Environment `id`'s own variables, then those it gets from Global, as `SecretsSection` names
  * the Secrets it gets: the values are in the Edit dialog.
  */
 const VariablesSummary = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSettingsAtom(id));
-  const every = useAtomValue(everyVariablesAtom);
+  const every = useAtomValue(globalVariablesAtom);
 
   const own = loaded.pipe(
     AsyncResult.value,
@@ -472,7 +472,7 @@ const VariablesSummary = ({ id }: { id: string }) => {
       )}
       {inherited.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          Also from every environment: <span className="font-mono">{inherited.join(", ")}</span>
+          Also from Global: <span className="font-mono">{inherited.join(", ")}</span>
         </p>
       )}
     </div>
@@ -480,8 +480,8 @@ const VariablesSummary = ({ id }: { id: string }) => {
 };
 
 /**
- * The Secrets kept in section `sectionKey` (an Environment's id, or `EVERY_ENVIRONMENT`), with the form that keeps
- * another. An Environment's section names the Secrets it gets from every Environment, and which of its own win.
+ * The Secrets kept in section `sectionKey` (an Environment's id, or `GLOBAL`), with the form that keeps
+ * another. An Environment's section names the Secrets it gets from Global, and which of its own win.
  */
 const SecretsSection = ({
   sectionKey,
@@ -501,8 +501,7 @@ const SecretsSection = ({
   const forgetDelete = useAtomSet(deleteSecretAtom(sectionKey));
   const switched = useAtomValue(setSecretBuildAtom(sectionKey));
 
-  const inherited =
-    sectionKey === EVERY_ENVIRONMENT || all === null ? [] : inheritedSecrets(all, sectionKey);
+  const inherited = sectionKey === GLOBAL || all === null ? [] : inheritedSecrets(all, sectionKey);
 
   const switchError = settledFailureOf(switched);
 
@@ -533,7 +532,7 @@ const SecretsSection = ({
       )}
       {inherited.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          Also from every environment:{" "}
+          Also from Global:{" "}
           <span className="font-mono">{inherited.map((record) => record.name).join(", ")}</span>
         </p>
       )}
@@ -555,14 +554,14 @@ const SecretsSection = ({
 };
 
 /**
- * The variables kept for every Environment, a `NAME=value` line each, with the form that saves them. They are plain, as
+ * The variables kept Global, a `NAME=value` line each, with the form that saves them. They are plain, as
  * an Environment's own are: an Environment's own variable of the same name wins.
  */
 const EveryVariablesSection = () => {
-  const loaded = useAtomValue(everyEnvironmentSettingsAtom);
-  const loadError = useAtomValue(everyEnvironmentSettingsErrorAtom);
-  const saved = useAtomValue(everyVariablesAtom);
-  const [draft, setDraft] = useAtom(everyVariablesDraftAtom);
+  const loaded = useAtomValue(globalSettingsAtom);
+  const loadError = useAtomValue(globalSettingsErrorAtom);
+  const saved = useAtomValue(globalVariablesAtom);
+  const [draft, setDraft] = useAtom(globalVariablesDraftAtom);
   const [kept, save] = useAtom(saveEveryVariablesAtom);
   // Until the variables in force are known, `saved` is empty and a save would wipe them.
   const ready = loaded.pipe(AsyncResult.value, Option.isSome);
@@ -584,13 +583,13 @@ const EveryVariablesSection = () => {
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
       <CodeField
-        id="variables-every-environment"
-        label="Variables for every environment (NAME=value, one per line)"
+        id="variables-global"
+        label="Variables at Global (NAME=value, one per line)"
         rows={3}
         value={text}
         placeholder={"NODE_ENV=development\nCI=1"}
         problem={problem}
-        hint="Every command, Setup Script and Start Script of every environment gets them, at its next container start. They are plain: the agent can read them, so keep a secret value as a secret instead. An environment's own variable of the same name wins."
+        hint="Every command, Setup Script and Start Script gets them, at its next container start. They are plain: the agent can read them, so keep a secret value as a secret instead. An environment's own variable of the same name wins."
         onChange={setDraft}
       />
       <div className="flex items-center justify-end gap-2">
@@ -681,7 +680,7 @@ const StartupFields = ({
   id: string;
   draft: StartupDraft;
   variablesProblem: string | null;
-  /** The variables kept for every Environment that this one gets, and those of its own that override one. */
+  /** The variables kept Global that this one gets, and those of its own that override one. */
   inherited: InheritedVariables;
   onChange: (change: Partial<StartupDraft>) => void;
 }) => (
@@ -715,13 +714,12 @@ const StartupFields = ({
     />
     {inherited.inherited.length > 0 && (
       <p className="text-xs text-muted-foreground">
-        Also from every environment:{" "}
-        <span className="font-mono">{inherited.inherited.join(", ")}</span>
+        Also from Global: <span className="font-mono">{inherited.inherited.join(", ")}</span>
       </p>
     )}
     {inherited.overridden.length > 0 && (
       <p className="text-xs text-muted-foreground">
-        Overriding the one for every environment:{" "}
+        Overriding the one at Global:{" "}
         <span className="font-mono">{inherited.overridden.join(", ")}</span>
       </p>
     )}
@@ -979,8 +977,8 @@ export const EditEnvironmentDialog = ({
 
   const renamed = name.trim() !== environment.name;
   const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
-  const everyVariables = useAtomValue(everyVariablesAtom);
-  const parsedVariables = parseVariables(variables ?? "", everyVariables);
+  const globalVariables = useAtomValue(globalVariablesAtom);
+  const parsedVariables = parseVariables(variables ?? "", globalVariables);
   const variablesProblem = Result.isFailure(parsedVariables) ? parsedVariables.failure : null;
   const typedVariables = Result.getOrElse(parsedVariables, () => ({}));
 
@@ -1093,7 +1091,7 @@ export const EditEnvironmentDialog = ({
               startScript: startScript ?? "",
             }}
             variablesProblem={variablesProblem}
-            inherited={inheritedVariables(typedVariables, everyVariables)}
+            inherited={inheritedVariables(typedVariables, globalVariables)}
             onChange={(change) => {
               setDraft((current) => ({ ...current, ...change }));
             }}
@@ -1288,15 +1286,15 @@ const isSettingChange = (change: AgentChange): boolean => !isSkillChange(change)
 const SETTING_CHANGES_EMPTY = "The agent has changed nothing here.";
 
 /**
- * How many Skills Environment `id` (or `EVERY_ENVIRONMENT`) has, on one line with a link to manage them on the Skills
+ * How many Skills Environment `id` (or `GLOBAL`) has, on one line with a link to manage them on the Skills
  * page's Installed tab, filtered to it.
  */
 const SkillsLine = ({ id }: { id: string }) => {
   const own = useAtomValue(environmentSkillsAtom(id));
-  const every = useAtomValue(environmentSkillsAtom(EVERY_ENVIRONMENT));
+  const every = useAtomValue(environmentSkillsAtom(GLOBAL));
   const skills = own.pipe(AsyncResult.value, Option.getOrNull);
-  const everywhere = id === EVERY_ENVIRONMENT;
-  // An Environment's count includes the Skills it gets from every Environment, so it waits for them too.
+  const everywhere = id === GLOBAL;
+  // An Environment's count includes the Skills it gets from Global, so it waits for them too.
   const inherited = everywhere ? [] : every.pipe(AsyncResult.value, Option.getOrNull);
 
   return (
@@ -1307,7 +1305,7 @@ const SkillsLine = ({ id }: { id: string }) => {
       {" · "}
       <InAppLink
         href={skillsPath({ tab: "installed", environment: id })}
-        aria-label={`Manage the skills of ${everywhere ? "every environment" : "this environment"}`}
+        aria-label={`Manage the skills of ${everywhere ? "Global" : "this environment"}`}
         className="underline underline-offset-2 hover:text-foreground"
       >
         Manage
@@ -1929,10 +1927,7 @@ export const EnvironmentsPage = () => {
           own, and its own container, so sessions working at once do not step on each other.
         </p>
         <NewEnvironmentForm names={(environments ?? []).map((known) => known.name)} />
-        <section
-          aria-label="For every environment"
-          className="flex flex-col gap-2 rounded-lg border p-4"
-        >
+        <section aria-label="Global" className="flex flex-col gap-2 rounded-lg border p-4">
           <EveryVariablesSection />
           <p className="text-xs text-muted-foreground">
             A secret kept here or on an environment is used by reference in that environment's
@@ -1942,14 +1937,10 @@ export const EnvironmentsPage = () => {
             URL) belongs in the variables above: a kept secret found on a container's disk stops its
             snapshot.
           </p>
-          <SecretsSection
-            sectionKey={EVERY_ENVIRONMENT}
-            title="Secrets for every environment"
-            empty="None kept for every environment."
-          />
-          <SkillsLine id={EVERY_ENVIRONMENT} />
+          <SecretsSection sectionKey={GLOBAL} title="Secrets at Global" empty="None kept Global." />
+          <SkillsLine id={GLOBAL} />
           <AgentChangesSection
-            id={EVERY_ENVIRONMENT}
+            id={GLOBAL}
             sessions={sessions ?? []}
             only={isSettingChange}
             empty={SETTING_CHANGES_EMPTY}

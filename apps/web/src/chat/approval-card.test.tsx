@@ -13,7 +13,7 @@ const request = (after: string, before = "not kept"): ApprovalRequest => ({
   // SAFETY: a number is what the Session sends for a conversation ID.
   conversationId: 1 as ConversationId,
   tool: "environment_skill_install",
-  target: "Every environment",
+  target: "Global",
   change: "Install Skills",
   before,
   after,

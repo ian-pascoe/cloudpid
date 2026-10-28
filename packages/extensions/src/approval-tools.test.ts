@@ -68,9 +68,9 @@ const details = (id: string, name: string, settings = {}): EnvironmentDetails =>
   build: { status: "none" },
   settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
   secrets: [],
-  everyVariables: {},
+  globalVariables: {},
   skills: [],
-  everySkills: [],
+  globalSkills: [],
 });
 
 /** What a fake recorded being asked to do. */
@@ -212,7 +212,7 @@ const setUp = async ({
             calls.secrets.push({ environment, name, author });
 
             const secret = state.kept[environment]?.find((each) => each.name === name);
-            const where = { id: environment, name: held[environment]?.name ?? "every Environment" };
+            const where = { id: environment, name: held[environment]?.name ?? "Global" };
 
             if (secret === undefined) return { status: "absent" as const, environment: where };
 
@@ -224,7 +224,7 @@ const setUp = async ({
               status: "deleted" as const,
               environment: {
                 id: environment,
-                name: held[environment]?.name ?? "every Environment",
+                name: held[environment]?.name ?? "Global",
               },
               change: change({
                 scope: environment,
@@ -614,7 +614,7 @@ describe("settings_subagent_workspaces_set", () => {
 });
 
 describe("environment_container_size_limit_set", () => {
-  it("refuses, asking nothing, the id * of the variables and Secrets kept for every Environment", async () => {
+  it("refuses, asking nothing, the id * of the variables and Secrets kept Global", async () => {
     const { call, asked } = await setUp();
 
     const { result, text } = await call("environment_container_size_limit_set", {
@@ -624,9 +624,7 @@ describe("environment_container_size_limit_set", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toContain(
-      'The id "*" names the variables, Secrets and Skills kept for every Environment',
-    );
+    expect(text).toContain('The id "*" names the variables, Secrets and Skills kept Global');
     expect(asked).toEqual([]);
   });
 
@@ -794,7 +792,7 @@ describe("environment_secret_delete", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toContain("no Secret API_KEY is kept for every Environment");
+    expect(text).toContain("no Secret API_KEY is kept for Global");
     expect(asked).toEqual([]);
   });
 

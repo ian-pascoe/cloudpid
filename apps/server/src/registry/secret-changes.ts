@@ -1,9 +1,9 @@
-// Agent changes to the Secrets kept for an Environment, or for every Environment (`docs/architecture/agent-changes.md`,
+// Agent changes to the Secrets kept for an Environment, or Global (`docs/architecture/agent-changes.md`,
 // ADR-0019): the Build mark the agent sets with `environment_secret_build`, applied as the owner's switch on the
 // Environments page applies it and recorded with the mark before and after, and the revert of such a change. A Secret
 // the owner keeps through `secret_ask`'s form is recorded by `keepSecretAs` (`environment-secrets.ts`) and has no revert.
-// A name and a mark are all these records hold, never a value. The history of the Secrets kept for every Environment is
-// the scope `*` (`EVERY_ENVIRONMENT_SCOPE`), which no Environment id can be.
+// A name and a mark are all these records hold, never a value. The history of the Secrets kept Global is
+// the scope `*` (`GLOBAL_SCOPE`), which no Environment id can be.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import {
   type AgentChange,
@@ -19,16 +19,16 @@ import {
   type AgentChanges,
 } from "./agent-changes.ts";
 import {
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   type RegistryStorage,
   type RegistryStore,
   type EnvironmentRecord,
 } from "./store.ts";
 
-/** What the history of the Secrets kept for every Environment is called in a change's Environment. */
-export const EVERY_ENVIRONMENT_NAME = "every Environment";
+/** What the history of the Secrets kept Global is called in a change's Environment. */
+export const GLOBAL_NAME = "Global";
 
-/** An Environment, or every Environment, as a change names it. */
+/** An Environment, or Global, as a change names it. */
 export type SecretScope = { readonly id: string; readonly name: string };
 
 /** How the agent's change of a kept Secret's Build mark went. */
@@ -63,8 +63,8 @@ export const scopeOf = (
   scope: string,
   store: Pick<RegistryStore, "getEnvironment">,
 ): SecretScope | null => {
-  if (scope === EVERY_ENVIRONMENT_SCOPE) {
-    return { id: EVERY_ENVIRONMENT_SCOPE, name: EVERY_ENVIRONMENT_NAME };
+  if (scope === GLOBAL_SCOPE) {
+    return { id: GLOBAL_SCOPE, name: GLOBAL_NAME };
   }
 
   const record: EnvironmentRecord | null = store.getEnvironment(scope);
@@ -76,16 +76,14 @@ export const scopeOf = (
 const keptRecord = (store: SecretMarkStore, scope: string, name: string) =>
   store
     .listEnvironmentSecrets()
-    .find(
-      (record) => (record.environment ?? EVERY_ENVIRONMENT_SCOPE) === scope && record.name === name,
-    );
+    .find((record) => (record.environment ?? GLOBAL_SCOPE) === scope && record.name === name);
 
 /** The Build mark of the Secret `name` kept in `scope`, or null when none is kept there. */
 const markOf = (store: SecretMarkStore, scope: string, name: string): boolean | null =>
   keptRecord(store, scope, name)?.build ?? null;
 
 /**
- * Mark the Secret `name` kept in `scope` (an Environment's id, or `*` for every Environment) for the Build, or take the
+ * Mark the Secret `name` kept in `scope` (an Environment's id, or `*` at Global) for the Build, or take the
  * mark off, as the owner's switch does, and record the change by `author`. A Secret that has the mark records nothing.
  */
 export const markSecretBuildAs = (
@@ -117,7 +115,7 @@ export const markSecretBuildAs = (
     if (before === build) return { status: "unchanged", environment: where, build };
 
     store.setEnvironmentSecretBuild(
-      environment === EVERY_ENVIRONMENT_SCOPE ? null : environment,
+      environment === GLOBAL_SCOPE ? null : environment,
       name,
       build,
       now,
@@ -141,7 +139,7 @@ export const markSecretBuildAs = (
   });
 
 /**
- * Delete the Secret `name` kept in `scope` (an Environment's id, or `*` for every Environment), as the owner's delete on
+ * Delete the Secret `name` kept in `scope` (an Environment's id, or `*` at Global), as the owner's delete on
  * the Environments page does, and record it by `author`, the agent the owner approved: `secrets.<NAME>`, `kept` before
  * and none after. It has no revert: the history holds no value to bring back. With `expected`, the Secret is deleted
  * only while it was last changed then (its value or Build mark), as the owner saw it when asked.
@@ -174,12 +172,7 @@ export const deleteSecretAs = (
       return { status: "changed-since", environment: where };
     }
 
-    if (
-      !store.deleteEnvironmentSecret(
-        environment === EVERY_ENVIRONMENT_SCOPE ? null : environment,
-        name,
-      )
-    ) {
+    if (!store.deleteEnvironmentSecret(environment === GLOBAL_SCOPE ? null : environment, name)) {
       return { status: "absent", environment: where };
     }
 
@@ -228,7 +221,7 @@ export const revertSecretBuild = (
   }
 
   store.setEnvironmentSecretBuild(
-    scope === EVERY_ENVIRONMENT_SCOPE ? null : scope,
+    scope === GLOBAL_SCOPE ? null : scope,
     secret.name,
     change.before,
     now,

@@ -47,7 +47,7 @@ import { resolveTools } from "./subagents/toolsets.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 
-/** The variables kept for every Environment at the start of a test. */
+/** The variables kept Global at the start of a test. */
 const EVERY = { SHARED: "all", NODE_ENV: "prod" };
 
 const DEFAULT: EnvironmentDetails = {
@@ -60,9 +60,9 @@ const DEFAULT: EnvironmentDetails = {
     { name: "API_KEY", scope: "environment", build: true },
     { name: "NPM_TOKEN", scope: "every", build: false },
   ],
-  everyVariables: EVERY,
+  globalVariables: EVERY,
   skills: [],
-  everySkills: [],
+  globalSkills: [],
 };
 
 const OTHER: EnvironmentDetails = {
@@ -77,12 +77,12 @@ const OTHER: EnvironmentDetails = {
   },
   settings: DEFAULT_CONTAINER_SETTINGS,
   secrets: [],
-  everyVariables: EVERY,
+  globalVariables: EVERY,
   skills: [],
-  everySkills: [],
+  globalSkills: [],
 };
 
-const EVERY_ENVIRONMENT = { id: "*", name: "every Environment" };
+const GLOBAL = { id: "*", name: "Global" };
 
 const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
@@ -109,7 +109,7 @@ const fakeEnvironments = (current: string | null = "default") => {
 
   let next = 1;
 
-  /** The variables kept for every Environment. */
+  /** The variables kept Global. */
   const every: Record<string, string> = { ...EVERY };
 
   const service: EnvironmentsService = {
@@ -122,7 +122,7 @@ const fakeEnvironments = (current: string | null = "default") => {
       Effect.sync(() => {
         const found = details.get(id);
 
-        return found === undefined ? null : { ...found, everyVariables: { ...every } };
+        return found === undefined ? null : { ...found, globalVariables: { ...every } };
       }),
     every: Effect.sync(() => ({
       variables: { ...every },
@@ -131,13 +131,13 @@ const fakeEnvironments = (current: string | null = "default") => {
     })),
     change: ({ environment, change, author }) =>
       Effect.sync((): AppliedChange => {
-        // A variable kept for every Environment: the Environments with one of their own by the name do not get it.
-        if (environment === EVERY_ENVIRONMENT.id) {
+        // A variable kept Global: the Environments with one of their own by the name do not get it.
+        if (environment === GLOBAL.id) {
           const name = fieldVariable(change.field) ?? change.field;
           const before = every[name] ?? null;
 
           if (sameJson(before, change.value)) {
-            return { status: "unchanged", environment: EVERY_ENVIRONMENT, value: before };
+            return { status: "unchanged", environment: GLOBAL, value: before };
           }
 
           if (!Predicate.isString(change.value)) delete every[name];
@@ -156,7 +156,7 @@ const fakeEnvironments = (current: string | null = "default") => {
 
           return {
             status: "changed",
-            environment: EVERY_ENVIRONMENT,
+            environment: GLOBAL,
             change: {
               id: next++,
               scope: "*",
@@ -381,7 +381,7 @@ describe("the environment tools", () => {
     expect(shown).toContain(
       `API_KEY (kept for this Environment, reaches the Build; commands get it as $${secretEnvName("API_KEY")})`,
     );
-    expect(shown).toContain("NPM_TOKEN (kept for every Environment;");
+    expect(shown).toContain("NPM_TOKEN (kept Global;");
     expect(shown).toContain("Build: ready");
   });
 
@@ -585,12 +585,12 @@ describe("environment_variable_set", () => {
   });
 });
 
-describe("the variables kept for every Environment", () => {
+describe("the variables kept Global", () => {
   it("are counted by environment_list, which points to environment_get with id *", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
 
     expect(text(await run(tool("environment_list"), {}))).toContain(
-      'Variables for every Environment: 2 (environment_get with id "*")',
+      'Variables at Global: 2 (environment_get with id "*")',
     );
   });
 
@@ -599,11 +599,11 @@ describe("the variables kept for every Environment", () => {
     const shown = text(await run(tool("environment_get"), {}));
 
     expect(shown).toContain(
-      'Variables for every Environment (id "*"; the Environment\'s own of the same name win):',
+      'Variables at Global (id "*"; the Environment\'s own of the same name win):',
     );
     expect(shown).toContain("SHARED=all");
     expect(shown).toContain("overridden here: NODE_ENV");
-    // Its own NODE_ENV is test; the one for every Environment is not listed as a value it gets.
+    // Its own NODE_ENV is test; the one at Global is not listed as a value it gets.
     expect(shown).toContain("NODE_ENV=test");
     expect(shown).not.toContain("NODE_ENV=prod");
 
@@ -614,15 +614,15 @@ describe("the variables kept for every Environment", () => {
     expect(other).not.toContain("overridden here");
   });
 
-  it("are shown by environment_get with id *, with the names of the Secrets kept for every Environment", async () => {
+  it("are shown by environment_get with id *, with the names of the Secrets kept Global", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
     const result = await run(tool("environment_get"), { id: "*" });
     const shown = text(result);
 
-    expect(shown).toContain('Kept for every Environment (id "*")');
+    expect(shown).toContain('Kept at Global (id "*")');
     expect(shown).toContain("SHARED=all");
     expect(shown).toContain("NODE_ENV=prod");
-    expect(shown).toContain("NPM_TOKEN (kept for every Environment;");
+    expect(shown).toContain("NPM_TOKEN (kept Global;");
     expect(shown).not.toContain("API_KEY");
     expect(result.details).toMatchObject({ environment: { id: "*" }, current: false });
   });
@@ -636,7 +636,7 @@ describe("the variables kept for every Environment", () => {
       id: "*",
       name: "API_URL",
       value: "https://api.test",
-      reason: "Every Environment reads it",
+      reason: "Global reads it",
     });
 
     expect(environments.changes).toEqual([
@@ -644,17 +644,15 @@ describe("the variables kept for every Environment", () => {
         environment: "*",
         change: { field: "variables.API_URL", value: "https://api.test" },
         tool: "environment_variable_set",
-        reason: "Every Environment reads it",
+        reason: "Global reads it",
       },
     ]);
 
     const said = text(result);
 
-    expect(said).toContain(
-      'Set API_URL for every Environment: it was not set, and is "https://api.test" now.',
-    );
+    expect(said).toContain('Set API_URL for Global: it was not set, and is "https://api.test" now.');
     expect(said).toContain("No Environment has a variable of its own with that name");
-    expect(said).toContain("next Container start of each Workspace of every Environment");
+    expect(said).toContain("next Container start of every Workspace");
     expect(said).toContain("This Session's Workspace has the change already: container_restart");
     expect(said).toContain('a new Build was asked for in Environment "Default" (default)');
     expect(result.details).toMatchObject({
@@ -665,7 +663,7 @@ describe("the variables kept for every Environment", () => {
     expect(logged).toEqual([
       {
         tool: "environment_variable_set",
-        environmentName: "every Environment",
+        environmentName: "Global",
         field: "variables.API_URL",
       },
     ]);
@@ -702,13 +700,13 @@ describe("the variables kept for every Environment", () => {
       environment: "*",
       change: { field: "variables.SHARED", value: null },
     });
-    expect(unset).toContain('Unset SHARED for every Environment: it was "all", and is not set now');
+    expect(unset).toContain('Unset SHARED for Global: it was "all", and is not set now');
 
     const again = text(
       await run(tool("environment_variable_unset"), { id: "*", name: "SHARED", reason: "r" }),
     );
 
-    expect(again).toContain("SHARED is not set for every Environment: nothing changed");
+    expect(again).toContain("SHARED is not set for Global: nothing changed");
     expect(logged).toHaveLength(1);
   });
 
@@ -761,7 +759,7 @@ describe("the variables kept for every Environment", () => {
       ["environment_rebuild", { proposed: { variables: { A: "1" } } }],
     ] as const) {
       expect(await failure(run(tool(name), { id: "*", reason: "r", ...args })), name).toContain(
-        'The id "*" names the variables, Secrets and Skills kept for every Environment',
+        'The id "*" names the variables, Secrets and Skills kept Global',
       );
     }
 

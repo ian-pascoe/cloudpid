@@ -14,7 +14,7 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import { skillRepoFailureOf } from "./skills-repo-state.ts";
 import {
@@ -240,7 +240,7 @@ describe("where a Skill is installed", () => {
 
         expect(loading).toBe(false);
         expect(scopes.map(({ scope, copies }) => [scope, copies.map(({ name }) => name)])).toEqual([
-          [EVERY_ENVIRONMENT, ["tdd"]],
+          [GLOBAL, ["tdd"]],
           // GitHub's names ignore case; the copy keeps its own name.
           ["work", ["tdd-copy"]],
         ]);
@@ -261,95 +261,93 @@ describe("where a Skill is installed", () => {
 });
 
 describe("Install, Update and Remove from a Skill's page", () => {
-  it.effect(
-    "install into every Environment or one at the ref, and the page's badge and copies follow",
-    () =>
-      Effect.gen(function* () {
-        const installs: Array<{
-          environment: string;
-          source: string;
-          skills: ReadonlyArray<string> | undefined;
-          folders: ReadonlyArray<string> | undefined;
-        }> = [];
+  it.effect("install into Global or one at the ref, and the page's badge and copies follow", () =>
+    Effect.gen(function* () {
+      const installs: Array<{
+        environment: string;
+        source: string;
+        skills: ReadonlyArray<string> | undefined;
+        folders: ReadonlyArray<string> | undefined;
+      }> = [];
 
-        let copies: EnvironmentSkill[] = [];
+      let copies: EnvironmentSkill[] = [];
 
-        const registry = registryWith({
-          listEnvironments: () => Effect.succeed(ENVIRONMENTS),
-          viewSkill: () =>
-            Effect.succeed(
-              found(
-                view(
-                  copies.length === 0
-                    ? {}
-                    : {
-                        installed: {
-                          everyEnvironment: false,
-                          environments: ["work"],
-                          updateAvailable: false,
-                        },
+      const registry = registryWith({
+        listEnvironments: () => Effect.succeed(ENVIRONMENTS),
+        viewSkill: () =>
+          Effect.succeed(
+            found(
+              view(
+                copies.length === 0
+                  ? {}
+                  : {
+                      installed: {
+                        global: false,
+                        environments: ["work"],
+                        updateAvailable: false,
                       },
-                ),
+                    },
               ),
             ),
-          listEnvironmentSkills: ({ environment }) =>
-            Effect.succeed(environment === "work" ? copies : []),
-          installEnvironmentSkills: ({ environment, source, skills, folders }) => {
-            installs.push({ environment, source, skills, folders });
-            copies = [kept("tdd", "skills/tdd")];
+          ),
+        listEnvironmentSkills: ({ environment }) =>
+          Effect.succeed(environment === "work" ? copies : []),
+        installEnvironmentSkills: ({ environment, source, skills, folders }) => {
+          installs.push({ environment, source, skills, folders });
+          copies = [kept("tdd", "skills/tdd")];
 
-            return Effect.succeed({
-              status: "installed" as const,
-              environment,
-              repo: "o/skills",
-              ref: "v1",
-              commit: COMMIT,
-              skills: [
-                {
-                  name: "tdd",
-                  path: "skills/tdd",
-                  outcome: "installed" as const,
-                  overriddenIn: [],
-                },
-              ],
-            });
-          },
-        });
+          return Effect.succeed({
+            status: "installed" as const,
+            environment,
+            repo: "o/skills",
+            ref: "v1",
+            commit: COMMIT,
+            skills: [
+              {
+                name: "tdd",
+                path: "skills/tdd",
+                outcome: "installed" as const,
+                overriddenIn: [],
+              },
+            ],
+          });
+        },
+      });
 
-        const atom = skillViewAtom(skillViewKey("o", "skills", "tdd", undefined, "v1"));
-        const here = installedCopiesAtom({ repo: "o/skills", path: "skills/tdd" });
+      const atom = skillViewAtom(skillViewKey("o", "skills", "tdd", undefined, "v1"));
+      const here = installedCopiesAtom({ repo: "o/skills", path: "skills/tdd" });
 
-        registry.mount(atom);
-        registry.mount(here);
-        registry.mount(installToTargetAtom);
+      registry.mount(atom);
+      registry.mount(here);
+      registry.mount(installToTargetAtom);
 
-        const before = AsyncResult.getOrThrow(yield* settled(registry, atom));
+      const before = AsyncResult.getOrThrow(yield* settled(registry, atom));
 
-        if (before.status !== "found") throw new Error("not found");
+      if (before.status !== "found") throw new Error("not found");
 
-        expect(before.skill.installed).toBeUndefined();
+      expect(before.skill.installed).toBeUndefined();
 
-        registry.set(installToTargetAtom, {
-          target: "work",
-          ...skillToInstall(before.skill, "v1"),
-        });
-        yield* settled(registry, installToTargetAtom);
+      registry.set(installToTargetAtom, {
+        target: "work",
+        ...skillToInstall(before.skill, "v1"),
+      });
+      yield* settled(registry, installToTargetAtom);
 
-        expect(installs).toEqual([
-          {
-            environment: "work",
-            source: "https://github.com/o/skills/tree/v1",
-            skills: undefined,
-            // Exactly this Skill's folder, whatever else the repo holds or calls the same.
-            folders: ["skills/tdd"],
-          },
-        ]);
+      expect(installs).toEqual([
+        {
+          environment: "work",
+          source: "https://github.com/o/skills/tree/v1",
+          skills: undefined,
+          // Exactly this Skill's folder, whatever else the repo holds or calls the same.
+          folders: ["skills/tdd"],
+        },
+      ]);
 
-        const after = AsyncResult.getOrThrow(yield* settled(registry, atom));
+      const after = AsyncResult.getOrThrow(yield* settled(registry, atom));
 
-        expect(after.status === "found" && after.skill.installed?.environments).toEqual(["work"]);
-        registry.dispose();
-      }),
+      expect(after.status === "found" && after.skill.installed?.environments).toEqual(["work"]);
+      registry.dispose();
+    }),
   );
 
   it.effect(
@@ -368,7 +366,7 @@ describe("Install, Update and Remove from a Skill's page", () => {
             return Effect.succeed(found(view()));
           },
           listEnvironmentSkills: ({ environment }) =>
-            Effect.succeed(environment === EVERY_ENVIRONMENT ? copies : []),
+            Effect.succeed(environment === GLOBAL ? copies : []),
           updateEnvironmentSkills: ({ environment, names, overwrite }) => {
             calls.push(`update ${environment} ${(names ?? []).join(",")} ${String(overwrite)}`);
             copies = [kept("tdd", "skills/tdd")];
@@ -387,20 +385,20 @@ describe("Install, Update and Remove from a Skill's page", () => {
 
         registry.mount(atom);
         registry.mount(here);
-        registry.mount(updateSkillAtom(EVERY_ENVIRONMENT));
-        registry.mount(removeSkillAtom(EVERY_ENVIRONMENT));
+        registry.mount(updateSkillAtom(GLOBAL));
+        registry.mount(removeSkillAtom(GLOBAL));
         yield* settled(registry, atom);
 
-        registry.set(updateSkillAtom(EVERY_ENVIRONMENT), { name: "tdd", overwrite: false });
-        yield* settled(registry, updateSkillAtom(EVERY_ENVIRONMENT));
+        registry.set(updateSkillAtom(GLOBAL), { name: "tdd", overwrite: false });
+        yield* settled(registry, updateSkillAtom(GLOBAL));
         yield* settled(registry, atom);
 
         expect(calls).toEqual(["update * tdd false"]);
         expect(asked).toBe(2);
         expect(registry.get(here).scopes[0]?.copies[0]?.updateAvailable).toBeUndefined();
 
-        registry.set(removeSkillAtom(EVERY_ENVIRONMENT), "tdd");
-        yield* settled(registry, removeSkillAtom(EVERY_ENVIRONMENT));
+        registry.set(removeSkillAtom(GLOBAL), "tdd");
+        yield* settled(registry, removeSkillAtom(GLOBAL));
         yield* settled(registry, atom);
 
         expect(calls).toEqual(["update * tdd false", "remove * tdd"]);

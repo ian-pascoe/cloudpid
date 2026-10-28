@@ -1,4 +1,4 @@
-// Secrets kept for an Environment, or for every Environment (`docs/architecture/agent-capabilities.md` → Secrets, ADR-0016): what the owner sets
+// Secrets kept for an Environment, or Global (`docs/architecture/agent-capabilities.md` → Secrets, ADR-0016): what the owner sets
 // on the Environments page and what the Registry lists. A value goes in once and never comes back: the Registry keeps
 // it sealed, and lists only names, scopes, build flags and times.
 import * as Schema from "effect/Schema";
@@ -12,7 +12,7 @@ export const MAX_SECRET_NAME_LENGTH = 128;
 /** The longest value a kept Secret may have, in bytes of UTF-8: a key file or a service account's JSON fits. */
 export const MAX_ENVIRONMENT_SECRET_BYTES = 32 * 1024;
 
-/** How many Secrets one scope (an Environment, or every Environment) may keep. */
+/** How many Secrets one scope (an Environment, or Global) may keep. */
 export const MAX_ENVIRONMENT_SECRETS = 100;
 
 /** Why `name` cannot name a Secret, or undefined when it can. */
@@ -48,7 +48,7 @@ export const SecretName = Schema.String.check(
 
 /** A kept Secret as the Registry lists it: never its value. Times are epoch milliseconds. */
 export const EnvironmentSecretRecord = Schema.Struct({
-  /** The Environment it is kept for, or null for every Environment (an Environment's own of the same name wins). */
+  /** The Environment it is kept for, or null at Global (an Environment's own of the same name wins). */
   environment: Schema.NullOr(Schema.String),
   name: Schema.String,
   /** Whether it reaches the Environment's Build, as an environment variable of its scripts. */

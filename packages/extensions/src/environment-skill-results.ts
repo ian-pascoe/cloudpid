@@ -1,7 +1,7 @@
 // What `environment_skill_save` and `environment_skill_remove` are built over and say (ADR-0026, `docs/architecture/agent-changes.md`):
 // the Session's `EnvironmentSkills` service they call, what each call can come to (`SkillSaved`,
 // `SkillRemoved`), and the results they give for each, shared by a change to an Environment's own Skills and one to those
-// kept for every Environment (which waits for the owner's Approval first: `./environment-skills-every.ts`).
+// kept Global (which waits for the owner's Approval first: `./environment-skills-global.ts`).
 //
 // `environment.ts` imports `./environment-skills.ts`, which imports this file, so what it takes from `environment.ts` is
 // used inside functions only: its exports are not there yet when this module loads.
@@ -32,27 +32,27 @@ import {
   type EnvironmentsService,
   type RunChange,
 } from "./environment.ts";
-import { EVERY_ENVIRONMENT_ID, EVERY_ENVIRONMENT_NAME } from "./environment-secret-marks.ts";
+import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 
 /** How the save of a Skill went. */
 export type SkillSaved =
   | {
       readonly status: "saved";
-      /** The Environment, or every Environment (`EVERY_ENVIRONMENT_ID`). */
+      /** The Environment, or Global (`GLOBAL_ID`). */
       readonly environment: ChangedEnvironment;
       /** The change as the Registry recorded it, with the files before and after by hash. */
       readonly change: AgentChange;
       readonly name: string;
-      /** Whether it is an Environment's own Skill that hides the one of the name kept for every Environment. */
+      /** Whether it is an Environment's own Skill that hides the one of the name kept Global. */
       readonly inherited: boolean;
       /**
-       * For a Skill kept for every Environment: the Environments whose own Skill of the name hides it, so it does not
+       * For a Skill kept Global: the Environments whose own Skill of the name hides it, so it does not
        * reach them.
        */
       readonly overriddenIn: ReadonlyArray<ChangedEnvironment>;
       /**
        * Whether this Session's own Workspace serves it now: it took the new Skill set (it is the Environment's, or the
-       * Skill is kept for every Environment and its Environment does not keep one of the name).
+       * Skill is kept Global and its Environment does not keep one of the name).
        */
       readonly handed: boolean;
     }
@@ -71,7 +71,7 @@ export type SkillSaved =
 /**
  * How an install of Skills from GitHub went: as the Registry answers (`SkillInstallation`), and for one that kept Skills,
  * whether this Session's own Workspace serves them now (it took the new Skill set: it is the Environment's, or the Skills
- * are kept for every Environment and its Environment does not hide all of them).
+ * are kept Global and its Environment does not hide all of them).
  */
 export type SkillsInstalled =
   | Exclude<SkillInstallation, { readonly status: "installed" }>
@@ -91,13 +91,13 @@ export type SkillRemoved =
       readonly status: "removed";
       readonly environment: ChangedEnvironment;
       readonly change: AgentChange;
-      /** Whether the Skill of the name kept for every Environment is served in its place, for an Environment's own. */
+      /** Whether the Skill of the name kept Global is served in its place, for an Environment's own. */
       readonly inherited: boolean;
-      /** For a Skill kept for every Environment: the Environments whose own Skill of the name stays served there. */
+      /** For a Skill kept Global: the Environments whose own Skill of the name stays served there. */
       readonly overriddenIn: ReadonlyArray<ChangedEnvironment>;
       /**
        * Whether this Session's own Workspace no longer serves it: it took the new Skill set (it is the Environment's, or
-       * the Skill was kept for every Environment and its Environment keeps none of the name).
+       * the Skill was kept Global and its Environment keeps none of the name).
        */
       readonly handed: boolean;
     }
@@ -128,7 +128,7 @@ export type SkillPreview =
   | { readonly status: "missing" };
 
 /**
- * What the Session does for the Skills of an Environment and of every Environment (`EVERY_ENVIRONMENT_ID`), over the
+ * What the Session does for the Skills of an Environment and of Global (`GLOBAL_ID`), over the
  * Registry: saves or removes one as an Agent change, and hands its own Workspace its Environment's new Skill set at once
  * when the change reaches it.
  */
@@ -197,7 +197,7 @@ export type EnvironmentSkills = {
 /** What the tools need of `EnvironmentTools`: what they build over, and its refusals. */
 export type SkillToolDeps = {
   readonly environments: EnvironmentsService;
-  /** The Session's Approval requests, which a change to the Skills kept for every Environment waits on. */
+  /** The Session's Approval requests, which a change to the Skills kept Global waits on. */
   readonly approvals: ApprovalsService;
   /** Where the Run's Agent changes are kept for the Notification of its end. */
   readonly log: { readonly record: (change: RunChange) => Effect.Effect<void> };
@@ -212,8 +212,8 @@ export type SkillToolDeps = {
   readonly notFound: (id: string) => EnvironmentsError;
 };
 
-/** Every Environment, as a change to the Skills kept for it names it. */
-export const EVERY = { id: EVERY_ENVIRONMENT_ID, name: EVERY_ENVIRONMENT_NAME };
+/** Global, as a change to the Skills kept for it names it. */
+export const EVERY = { id: GLOBAL_ID, name: GLOBAL_NAME };
 
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
 // SAFETY: the two types describe the same values; the details are never mutated.
@@ -227,11 +227,9 @@ export const refused = (message: string) =>
 /** Where a Skill is served in each Workspace of its Environment. */
 export const servedAt = (name: string): string => `${SKILLS_ROOT}/${name}`;
 
-/** An Environment as a result names it, or every Environment. */
+/** An Environment as a result names it, or Global. */
 export const named = ({ id, name }: ChangedEnvironment): string =>
-  id === EVERY_ENVIRONMENT_ID
-    ? EVERY_ENVIRONMENT_NAME
-    : `Environment ${JSON.stringify(name)} (${id})`;
+  id === GLOBAL_ID ? GLOBAL_NAME : `Environment ${JSON.stringify(name)} (${id})`;
 
 /** What a result says of where a change to an Environment's own Skills reaches. */
 export const reach = (environment: ChangedEnvironment, handed: boolean, own: boolean): string =>
@@ -242,7 +240,7 @@ export const reach = (environment: ChangedEnvironment, handed: boolean, own: boo
       : `The Workspaces of ${named(environment)} and its spare get it at their next readying; this Session's Workspace, of another Environment, does not.`;
 
 /**
- * What a result says of where a change to the Skills kept for every Environment reaches: every Environment's Workspaces
+ * What a result says of where a change to the Skills kept Global reaches: each Environment's Workspaces
  * and spares at their next readying, this Session's Workspace at once unless its Environment keeps its own Skill of the
  * name, and not the Environments that do.
  */
@@ -256,7 +254,7 @@ const reachEvery = (
 
   return Arr.join(
     [
-      "Every Environment's Workspaces and spares get it at their next readying.",
+      "Each Environment's Workspaces and spares get it at their next readying.",
       handed
         ? "This Session's Workspace has the change now."
         : hereHidden
@@ -273,7 +271,7 @@ const reachEvery = (
 };
 
 /**
- * What the result of an install of several Skills kept for every Environment says of where it reaches: as
+ * What the result of an install of several Skills kept Global says of where it reaches: as
  * `reachEvery`, but for each Skill, since an Environment's own Skill hides only the one of its name.
  */
 const reachInstalledEvery = (
@@ -292,7 +290,7 @@ const reachInstalledEvery = (
 
   return Arr.join(
     [
-      "Every Environment's Workspaces and spares get them at their next readying.",
+      "Each Environment's Workspaces and spares get them at their next readying.",
       handed
         ? "This Session's Workspace has the change now."
         : hereHidden
@@ -329,7 +327,7 @@ export type SkillCall = {
   readonly environments: Pick<EnvironmentsService, "current">;
   readonly log: SkillToolDeps["log"];
   readonly notFound: SkillToolDeps["notFound"];
-  /** The Environment the call named, or every Environment (`EVERY_ENVIRONMENT_ID`). */
+  /** The Environment the call named, or Global (`GLOBAL_ID`). */
   readonly scope: string;
   /** Whether the call named the Session's own Environment (for an Environment's own Skills). */
   readonly own: boolean;
@@ -359,7 +357,7 @@ export const savedOutcome = (
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_save";
-    const everywhere = scope === EVERY_ENVIRONMENT_ID;
+    const everywhere = scope === GLOBAL_ID;
 
     switch (saved.status) {
       case "missing":
@@ -425,9 +423,7 @@ export const savedOutcome = (
                     ? `It is served now at ${servedAt(saved.name)} (read-only): read ${servedAt(saved.name)}/SKILL.md to use it.`
                     : `It is served at ${servedAt(saved.name)} (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
                   ...(saved.inherited
-                    ? [
-                        "It hides the Skill of that name kept for every Environment, in this Environment.",
-                      ]
+                    ? ["It hides the Skill of that name kept Global, in this Environment."]
                     : []),
                   everywhere
                     ? reachEvery(saved.handed, saved.overriddenIn, current)
@@ -448,7 +444,7 @@ export const savedOutcome = (
 
 /**
  * The result of an install, whatever it came to: the tool's own result, or its refusal. `approved`: the owner approved the
- * install first (one for every Environment), which the result and its record say.
+ * install first (one at Global), which the result and its record say.
  */
 export const installedOutcome = (
   installed: SkillsInstalled,
@@ -467,7 +463,7 @@ export const installedOutcome = (
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_install";
-    const everywhere = scope === EVERY_ENVIRONMENT_ID;
+    const everywhere = scope === GLOBAL_ID;
 
     switch (installed.status) {
       case "missing":
@@ -616,7 +612,7 @@ export const removedOutcome = (
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_remove";
-    const everywhere = scope === EVERY_ENVIRONMENT_ID;
+    const everywhere = scope === GLOBAL_ID;
 
     switch (removed.status) {
       case "missing":
@@ -643,7 +639,7 @@ export const removedOutcome = (
               details: { approval: { approved: true } },
             }
           : yield* EnvironmentsError.make({
-              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}" (if an earlier run of this call removed it before the Session restarted, it is done). environment_get lists the Skills it keeps; those kept for every Environment are not the Environment's.`,
+              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}" (if an earlier run of this call removed it before the Session restarted, it is done). environment_get lists the Skills it keeps; those kept Global are not the Environment's.`,
             });
       case "removed": {
         const { change } = removed;
@@ -670,7 +666,7 @@ export const removedOutcome = (
                   everywhere
                     ? `Nothing is served at ${servedAt(name)} any more, where an Environment keeps none of its own.`
                     : removed.inherited
-                      ? `The Skill of that name kept for every Environment is served at ${servedAt(name)} instead.`
+                      ? `The Skill of that name kept Global is served at ${servedAt(name)} instead.`
                       : `Nothing is served at ${servedAt(name)} any more.`,
                   everywhere
                     ? reachEvery(removed.handed, removed.overriddenIn, current)

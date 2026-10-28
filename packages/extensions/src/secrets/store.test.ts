@@ -570,7 +570,7 @@ describe("Secrets the owner chooses to keep when they answer", () => {
       expect(yield* secrets.nextExpiry).toBeUndefined();
     }));
 
-  test("keeps a Secret for every Environment when the owner chose that", () =>
+  test("keeps a Secret at Global when the owner chose that", () =>
     Effect.gen(function* () {
       const { load, keep, state } = registry();
       const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load, keep);
@@ -671,7 +671,7 @@ describe("Secrets the owner chooses to keep when they answer", () => {
       expect(secrets.redact("older-entered-value-1")).toBe(secretReference("API_KEY"));
     }));
 
-  test("says when the Environment's own Secret of the name wins over one kept for every Environment", () =>
+  test("says when the Environment's own Secret of the name wins over one kept Global", () =>
     Effect.gen(function* () {
       const { load, keep, state } = registry();
       const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load, keep);

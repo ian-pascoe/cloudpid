@@ -6,7 +6,7 @@ import type {
   EnvironmentFootprint,
   EnvironmentRemovalService,
 } from "@cloudpid/extensions/approval-tools";
-import { EnvironmentsError, EVERY_ENVIRONMENT_ID } from "@cloudpid/extensions/environment";
+import { EnvironmentsError, GLOBAL_ID } from "@cloudpid/extensions/environment";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type { Builds } from "../registry/builds.ts";
@@ -40,11 +40,11 @@ export const sessionEnvironmentRemoval = ({
 }: SessionEnvironmentRemovalOptions): EnvironmentRemovalService => {
   const { deleteEnvironment } = removals(registry, objects);
 
-  /** The Secrets kept in `scope` alone: an Environment's id, or every Environment's (`*`). */
+  /** The Secrets kept in `scope` alone: an Environment's id, or each Environment's (`*`). */
   const keptIn = (scope: string) =>
     Effect.map(registry.listEnvironmentSecrets(), (records) =>
       Arr.filter(records, (record) =>
-        scope === EVERY_ENVIRONMENT_ID ? record.environment === null : record.environment === scope,
+        scope === GLOBAL_ID ? record.environment === null : record.environment === scope,
       ),
     );
 
@@ -78,10 +78,7 @@ export const sessionEnvironmentRemoval = ({
           ),
     keptSecrets: (scope) =>
       Effect.gen(function* () {
-        if (
-          scope !== EVERY_ENVIRONMENT_ID &&
-          (yield* registry.getEnvironment({ id: scope })) === null
-        ) {
+        if (scope !== GLOBAL_ID && (yield* registry.getEnvironment({ id: scope })) === null) {
           return null;
         }
 

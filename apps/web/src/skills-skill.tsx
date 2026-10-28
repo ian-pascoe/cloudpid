@@ -16,7 +16,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Download, ExternalLink } from "lucide-react";
 import { Button } from "./components/ui/button.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import { byteSize, compactCount } from "./format.ts";
 import { InAppLink } from "./in-app-link.tsx";
 import { StaticMarkdown } from "./markdown.tsx";
@@ -198,9 +198,7 @@ const InstalledHere = ({ skill }: { skill: SkillView }) => {
           {installed.scopes.map(({ scope, skills, copies }) => (
             <li key={scope} className="flex flex-col gap-1 rounded-lg border p-3">
               <h3 className="text-xs font-medium text-muted-foreground">
-                {scope === EVERY_ENVIRONMENT
-                  ? "Every environment"
-                  : (names[scope] ?? `Environment ${scope}`)}
+                {scope === GLOBAL ? "Global" : (names[scope] ?? `Environment ${scope}`)}
               </h3>
               <ul className="flex flex-col gap-1">
                 {copies.map((copy) => (

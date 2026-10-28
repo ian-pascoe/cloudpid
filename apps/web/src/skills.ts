@@ -1,11 +1,11 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over native arrays, not combinators.
 
 // The Skills page's pure parts (ADR-0026, docs/architecture/workspace.md → Installing from GitHub): which Skills an
-// Environment gets from every Environment, the lines the Installed tab shows of an install and an update, the line an
+// Environment gets from Global, the lines the Installed tab shows of an install and an update, the line an
 // Environment's card on the Environments page shows of its Skills, and which sections the Installed tab shows.
 
 import {
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   type EnvironmentRecord,
   type EnvironmentSkill,
   type SkillInstall,
@@ -16,14 +16,14 @@ import {
 import * as Arr from "effect/Array";
 import { skillPagePath } from "./router.ts";
 
-/** The names of the Skills kept for every Environment that an Environment gets, and of its own that override one. */
+/** The names of the Skills kept Global that an Environment gets, and of its own that override one. */
 export type InheritedSkills = {
   readonly inherited: readonly string[];
   readonly overridden: readonly string[];
 };
 
 /**
- * The Skills kept for every Environment (`every`) that an Environment keeping the Skills `own` gets, by name, and the
+ * The Skills kept Global (`every`) that an Environment keeping the Skills `own` gets, by name, and the
  * ones of its own that override one: the counterpart of `inheritedVariables`. Its own wins.
  */
 export const inheritedSkills = (
@@ -47,8 +47,8 @@ const skills = (count: number): string => {
 
 /**
  * How many Skills a card of the Environments page says it has: an Environment keeping `own` serves those and the ones
- * kept for every Environment (`every`) it does not override, and says how many came from every Environment; the card for
- * every Environment (no `every`) counts its own.
+ * kept Global (`every`) it does not override, and says how many came from Global; the card for
+ * Global (no `every`) counts its own.
  */
 export const skillCountText = (
   own: readonly EnvironmentSkill[],
@@ -57,18 +57,18 @@ export const skillCountText = (
   const { inherited } = inheritedSkills(own, every ?? []);
   const total = skills(own.length + inherited.length);
 
-  return inherited.length === 0 ? total : `${total}, ${inherited.length} from every environment`;
+  return inherited.length === 0 ? total : `${total}, ${inherited.length} from Global`;
 };
 
 /**
- * The scopes whose Skills the Installed tab shows, in order: those kept for every Environment (`*`), then each
+ * The scopes whose Skills the Installed tab shows, in order: those kept Global (`*`), then each
  * Environment's, or only the one `filter` names (`?environment=`); none when it names an Environment not listed.
  */
 export const installedScopes = (
   environments: readonly EnvironmentRecord[],
   filter: string | undefined,
 ): readonly string[] => {
-  const all = [EVERY_ENVIRONMENT_SCOPE, ...environments.map((environment) => environment.id)];
+  const all = [GLOBAL_SCOPE, ...environments.map((environment) => environment.id)];
 
   return filter === undefined ? all : all.filter((scope) => scope === filter);
 };
@@ -117,16 +117,16 @@ export const githubSource = (
 };
 
 /**
- * The badges a Skill directory row shows of where its Skill is installed here, in order: for every Environment, or in N
+ * The badges a Skill directory row shows of where its Skill is installed here, in order: at Global, or in N
  * Environments that keep their own; and update available. None for a Skill installed nowhere.
  */
 export const directoryBadges = (installed: SkillInstalledIn | undefined): ReadonlyArray<string> => {
   if (installed === undefined) return [];
 
-  const { everyEnvironment, environments, updateAvailable } = installed;
+  const { global, environments, updateAvailable } = installed;
   const where = [];
 
-  if (everyEnvironment) where.push("Installed · every environment");
+  if (global) where.push("Installed · Global");
   else if (environments.length > 0) {
     where.push(
       `Installed · in ${environments.length} ${environments.length === 1 ? "environment" : "environments"}`,

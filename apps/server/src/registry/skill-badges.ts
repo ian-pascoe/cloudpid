@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- the badges are worked out over native arrays.
 // Where the Skills of the Skill directory are installed here (GLOSSARY.md → Skill directory, `docs/architecture/workspace.md` →
-// _The Skill directory_): the badges of a row (installed for every Environment, installed in N Environments, update
+// _The Skill directory_): the badges of a row (installed at Global, installed in N Environments, update
 // available), worked out in the Registry from the Skills it keeps so that every page that lists Skills (the lists, a repo's
 // Skills, a Skill's page) answers them the same way. A copy matches by its Skill source's repo and path, not by name alone.
 import type { SkillInstalledIn } from "@cloudpid/protocol";
@@ -9,7 +9,7 @@ import type { Skills } from "./skills.ts";
 
 /** One installed Skill that has a Skill source: where it is kept, and where it came from. */
 export type InstalledSkillRef = {
-  /** The Environment's id that keeps it as its own, or `*` for the Skills kept for every Environment. */
+  /** The Environment's id that keeps it as its own, or `*` for the Skills kept Global. */
   readonly scope: string;
   /** Its name, from its SKILL.md. */
   readonly name: string;
@@ -65,7 +65,7 @@ export const installedIn = (
   for (const { scope } of found) if (scope !== "*") environments.add(scope);
 
   return {
-    everyEnvironment: found.some(({ scope }) => scope === "*"),
+    global: found.some(({ scope }) => scope === "*"),
     environments: [...environments].toSorted(),
     updateAvailable: found.some(({ updateAvailable }) => updateAvailable),
   };

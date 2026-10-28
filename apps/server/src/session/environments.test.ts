@@ -15,7 +15,7 @@ import { workspacePlacement } from "./workspace.ts";
 
 const DEFAULT = { id: "default", name: "Default", repos: [], createdAt: 0 };
 const OTHER = { id: "0000abcd", name: "Other", repos: [], createdAt: 0 };
-const EVERY_SCOPE = { id: "*", name: "every Environment" };
+const EVERY_SCOPE = { id: "*", name: "Global" };
 const DEFAULT_SCOPE = { id: "default", name: "Default" };
 
 /** The scopes the fake Registry names in an answer, by id. */
@@ -49,11 +49,11 @@ const CHANGE: AgentChange = {
 /** What the fake Registry answers a mark with. */
 type MarkAnswers = { mark: SecretBuildMark };
 
-/** The variables kept for every Environment in the fake Registry. */
+/** The variables kept Global in the fake Registry. */
 const EVERY = { SHARED: "all" };
 
 /**
- * What the Workspace of the Session's Environment is handed: its own `A`, and the variables kept for every Environment.
+ * What the Workspace of the Session's Environment is handed: its own `A`, and the variables kept Global.
  */
 const MERGED = { variables: { A: "1", ...EVERY } };
 
@@ -68,9 +68,9 @@ const open = (
     ReturnType<EnvironmentsRegistry["changeEnvironment"]>
   >["status"] = "changed",
   everyAnswer: Effect.Success<
-    ReturnType<EnvironmentsRegistry["changeEveryEnvironment"]>
+    ReturnType<EnvironmentsRegistry["changeGlobal"]>
   >["status"] = "changed",
-  // Whether the Session's Environment has a variable of its own by the name that changed for every Environment.
+  // Whether the Session's Environment has a variable of its own by the name that changed at Global.
   overridesHere = false,
   // Whether the Registry fails to say what the Session's Workspace is handed.
   overridesUnreadable = false,
@@ -108,15 +108,13 @@ const open = (
           ? { settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} }
           : null,
       ),
-    getEveryEnvironmentSettings: () =>
+    getGlobalSettings: () =>
       Effect.succeed({ settings: { variables: EVERY }, overrides: { variables: EVERY } }),
     workspaceOverrides: ({ environment }: { readonly environment: string }) =>
       overridesUnreadable
         ? Effect.die("Registry is down")
         : Effect.succeed(environment === "default" ? MERGED : null),
-    changeEveryEnvironment: (
-      input: Parameters<EnvironmentsRegistry["changeEveryEnvironment"]>[0],
-    ) =>
+    changeGlobal: (input: Parameters<EnvironmentsRegistry["changeGlobal"]>[0]) =>
       Effect.sync(() => {
         everyAsked.push(input);
 
@@ -176,7 +174,7 @@ const open = (
             savedAt: 1,
           },
           inherited: false,
-          // The Session's Environment keeps its own Skill of the name, which hides one kept for every Environment.
+          // The Session's Environment keeps its own Skill of the name, which hides one kept Global.
           overriddenIn:
             input.environment === "*" && overridesHere ? [{ id: "default", name: "Default" }] : [],
         };
@@ -397,7 +395,7 @@ describe("the Session's Environments", () => {
     ]);
   });
 
-  it("show an Environment's own Secrets, then those of every Environment it does not override", async () => {
+  it("show an Environment's own Secrets, then those kept Global that it does not override", async () => {
     const { environments } = open();
     const details = await Effect.runPromise(environments.get("default"));
 
@@ -443,15 +441,15 @@ describe("the Session's Environments", () => {
     expect(skillSetsHanded).toEqual([]);
   });
 
-  it("list the Skills kept for every Environment in an Environment's details and in what is kept for every Environment", async () => {
+  it("list the Skills kept Global in an Environment's details and in what is kept Global", async () => {
     const { environments } = open();
     const shared = [{ name: "shared", description: "Shared by all.", savedAt: 5 }];
 
-    expect((await Effect.runPromise(environments.get("default")))?.everySkills).toEqual(shared);
+    expect((await Effect.runPromise(environments.get("default")))?.globalSkills).toEqual(shared);
     expect((await Effect.runPromise(environments.every)).skills).toEqual(shared);
   });
 
-  it("hand the Session's own Workspace its Environment's Skill set after a Skill saved for every Environment", async () => {
+  it("hand the Session's own Workspace its Environment's Skill set after a Skill saved at Global", async () => {
     const { environments, skillSetsHanded, skillsAsked, upkept } = open();
     const files = { "SKILL.md": "---\nname: release\n---\n" };
     const expected = { savedAt: null };
@@ -562,7 +560,7 @@ describe("the Session's Environments", () => {
     expect(skillSetsHanded).toEqual([]);
   });
 
-  it("hand nothing when the Session's Environment keeps its own Skill of the name kept for every Environment", async () => {
+  it("hand nothing when the Session's Environment keeps its own Skill of the name kept Global", async () => {
     const { environments, skillSetsHanded } = open("changed", "changed", true);
 
     const saved = await Effect.runPromise(
@@ -582,7 +580,7 @@ describe("the Session's Environments", () => {
     expect(skillSetsHanded).toEqual([]);
   });
 
-  it("hand the Session's own Workspace its Environment's Skill set after a Skill removed for every Environment", async () => {
+  it("hand the Session's own Workspace its Environment's Skill set after a Skill removed at Global", async () => {
     const { environments, skillSetsHanded, skillsAsked } = open();
     const expected = { savedAt: 5 };
 
@@ -597,7 +595,7 @@ describe("the Session's Environments", () => {
     expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
   });
 
-  it("check a Skill for every Environment as the Registry does, saving nothing", async () => {
+  it("check a Skill at Global as the Registry does, saving nothing", async () => {
     const { environments, skillsAsked } = open();
     const files = { "SKILL.md": "x" };
 
@@ -609,7 +607,7 @@ describe("the Session's Environments", () => {
     expect(skillsAsked).toEqual([{ environment: "*", folder: "release", files }]);
   });
 
-  it("hand the Session's own Workspace the set after an install for every Environment, unless its own Skills hide all of them, and pass the Approval's pin on", async () => {
+  it("hand the Session's own Workspace the set after an install at Global, unless its own Skills hide all of them, and pass the Approval's pin on", async () => {
     const pin = {
       commit: "c0ffee0000000000000000000000000000000001",
       skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: null }],
@@ -654,7 +652,7 @@ describe("the Session's Environments", () => {
     expect(hidden.skillSetsHanded).toEqual([]);
   });
 
-  it("preview an install for every Environment through the Registry, naming the scope", async () => {
+  it("preview an install at Global through the Registry, naming the scope", async () => {
     const { environments, skillsAsked } = open();
 
     const previewed = await Effect.runPromise(
@@ -699,13 +697,13 @@ describe("the Session's Environments", () => {
     expect(skillSetsHanded).toEqual([]);
   });
 
-  it("carry the variables kept for every Environment in an Environment's details", async () => {
+  it("carry the variables kept Global in an Environment's details", async () => {
     const { environments } = open();
 
-    expect((await Effect.runPromise(environments.get("default")))?.everyVariables).toEqual(EVERY);
+    expect((await Effect.runPromise(environments.get("default")))?.globalVariables).toEqual(EVERY);
   });
 
-  it("show what is kept for every Environment: its variables, and its Secrets by name", async () => {
+  it("show what is kept Global: its variables, and its Secrets by name", async () => {
     const { environments } = open();
 
     expect(await Effect.runPromise(environments.every)).toEqual({
@@ -734,13 +732,13 @@ describe("the Session's Environments", () => {
       change: CHANGE,
       newBuild: true,
     });
-    // What the Registry says its Workspaces are handed, with the variables kept for every Environment merged in, not
+    // What the Registry says its Workspaces are handed, with the variables kept Global merged in, not
     // the Environment's own overrides alone.
     expect(handedOver).toEqual([{ object: "ws:0a1b2c3d", overrides: MERGED }]);
     expect(upkept).toEqual(["default"]);
   });
 
-  it("hand a change of a variable kept for every Environment to the Session's Workspace, and keep every Environment's Build current", async () => {
+  it("hand a change of a variable kept Global to the Session's Workspace, and keep each Environment's Build current", async () => {
     const { environments, handedOver, upkept, everyAsked, asked } = open();
 
     const applied = await Effect.runPromise(
@@ -753,7 +751,7 @@ describe("the Session's Environments", () => {
     ]);
     expect(applied).toEqual({
       status: "changed",
-      environment: { id: "*", name: "every Environment" },
+      environment: { id: "*", name: "Global" },
       change: { ...CHANGE, scope: "*", field: "variables.SHARED" },
       newBuild: true,
       every: {
@@ -778,7 +776,7 @@ describe("the Session's Environments", () => {
     }
   });
 
-  it("leave the Session's Workspace as it is for a variable for every Environment that its Environment overrides", async () => {
+  it("leave the Session's Workspace as it is for a variable at Global that its Environment overrides", async () => {
     const { environments, handedOver, upkept } = open("changed", "changed", true);
 
     const applied = await Effect.runPromise(
@@ -793,7 +791,7 @@ describe("the Session's Environments", () => {
     expect(upkept).toEqual(["default", "0000abcd"]);
   });
 
-  it("do nothing after a change for every Environment that changed nothing or was refused", async () => {
+  it("do nothing after a change at Global that changed nothing or was refused", async () => {
     for (const status of ["unchanged", "rejected"] as const) {
       const { environments, handedOver, upkept } = open("changed", status);
 
@@ -855,7 +853,7 @@ describe("the Session's Environments", () => {
     expect(upkept).toEqual(["default"]);
   });
 
-  it("keep every Environment's Build current after the mark of a Secret kept for every Environment", async () => {
+  it("keep each Environment's Build current after the mark of a Secret kept Global", async () => {
     const { environments, upkept } = open();
 
     await Effect.runPromise(

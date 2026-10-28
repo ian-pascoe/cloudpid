@@ -60,9 +60,9 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
               ...listing,
               settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: variables() },
               secrets: [],
-              everyVariables: {},
+              globalVariables: {},
               skills: [],
-              everySkills: [],
+              globalSkills: [],
             }
           : null,
       ),

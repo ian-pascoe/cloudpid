@@ -6,7 +6,7 @@ import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { withEveryEnvironmentVariables } from "@cloudpid/config";
+import { withGlobalVariables } from "@cloudpid/config";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   AgentChange,
@@ -64,10 +64,10 @@ import {
   type AgentChangeAuthor,
   type AgentChangeRevert,
   changeEnvironment,
-  changeEveryEnvironment,
+  changeGlobal,
   type ContainerFieldChange,
   type EnvironmentChange,
-  type EveryEnvironmentChange,
+  type GlobalChange,
   everyChangeReach,
   openAgentChanges,
   revertAgentChange,
@@ -89,7 +89,7 @@ import {
   markSecretBuildAs,
   type SecretBuildMark,
   type SecretDeletion,
-  EVERY_ENVIRONMENT_NAME,
+  GLOBAL_NAME,
 } from "./secret-changes.ts";
 import {
   buildSecretsOf,
@@ -121,18 +121,18 @@ import {
   writeEnvironmentSettings,
 } from "./environment-settings.ts";
 import {
-  type EveryEnvironmentState,
-  everyVariablesOf,
-  readEveryEnvironment,
+  type GlobalState,
+  globalVariablesOf,
+  readGlobal,
   workspaceOverridesOf,
-  writeEveryEnvironment,
-} from "./every-environment.ts";
+  writeGlobal,
+} from "./global.ts";
 import {
   type Deletion,
   type EnvironmentDeletion,
   type EnvironmentNaming,
   type EnvironmentRecord,
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   type LegacyObject,
   openRegistryStore,
   type RepoChange,
@@ -164,7 +164,7 @@ export type WorkspaceChoice =
  * good Build (null for none yet) and kept Secrets, opened (docs/architecture/agent-capabilities.md → Secrets): the Workspace keeps them sealed,
  * to search a snapshot for and to take out of output. When the Registry cannot open them, `secrets` is absent and
  * `secretsUnavailable` says so (`SECRETS_UNAVAILABLE`), and the Workspace refuses the snapshots that would need them.
- * `skills` is the Environment's Skill set (its own Skills over those kept for every Environment), absent when the
+ * `skills` is the Environment's Skill set (its own Skills over those kept Global), absent when the
  * Workspace holds it already.
  */
 export type WorkspaceSetupWithSettings = WorkspaceSetup & {
@@ -199,21 +199,21 @@ export type EnvironmentChangeAnswer =
     }
   | Exclude<EnvironmentChange, { readonly status: "changed" }>;
 
-/** How saving the settings kept for every Environment went. */
-export type EveryEnvironmentSettingsUpdate =
-  | { readonly status: "saved"; readonly state: EveryEnvironmentState }
+/** How saving the settings kept Global went. */
+export type GlobalSettingsUpdate =
+  | { readonly status: "saved"; readonly state: GlobalState }
   | { readonly status: "rejected"; readonly message: string };
 
 /**
- * How an Agent change to a variable kept for every Environment went (`changeEveryEnvironment`): as
- * `EveryEnvironmentChange` says, a change also saying which Environments override the variable, so it does not reach
+ * How an Agent change to a variable kept Global went (`changeGlobal`): as
+ * `GlobalChange` says, a change also saying which Environments override the variable, so it does not reach
  * them, and which want a new Build (`wantsNewBuild`).
  */
-export type EveryEnvironmentChangeAnswer =
+export type GlobalChangeAnswer =
   | {
       readonly status: "changed";
       readonly change: AgentChange;
-      /** The variables kept for every Environment now. */
+      /** The variables kept Global now. */
       readonly variables: Readonly<Record<string, string>>;
       readonly overriddenIn: ReadonlyArray<{ readonly id: string; readonly name: string }>;
       readonly newBuilds: ReadonlyArray<{ readonly id: string; readonly name: string }>;
@@ -223,7 +223,7 @@ export type EveryEnvironmentChangeAnswer =
        */
       readonly own: boolean | undefined;
     }
-  | Exclude<EveryEnvironmentChange, { readonly status: "changed" }>;
+  | Exclude<GlobalChange, { readonly status: "changed" }>;
 
 /** How keeping one Secret the owner chose to keep in a `secret_ask` form went: a message never holds the value. */
 export type KeptAskedResult =
@@ -236,7 +236,7 @@ export type KeptAsked =
   | { readonly status: "unknown" }
   | {
       readonly status: "done";
-      /** Where they were kept: the Session's Environment, or every Environment (id `*`). */
+      /** Where they were kept: the Session's Environment, or Global (id `*`). */
       readonly environment: { readonly id: string; readonly name: string };
       readonly results: ReadonlyArray<KeptAskedResult>;
     };
@@ -345,26 +345,26 @@ export type RegistryMethods = {
     readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<EnvironmentChangeAnswer>;
-  /** The settings kept for every Environment in force (the variables) and their overrides. */
-  readonly getEveryEnvironmentSettings: () => Effect.Effect<EveryEnvironmentState>;
+  /** The settings kept Global in force (the variables) and their overrides. */
+  readonly getGlobalSettings: () => Effect.Effect<GlobalState>;
   /**
-   * Save the settings kept for every Environment if they resolve and no Environment is left with more variables than it
+   * Save the settings kept Global if they resolve and no Environment is left with more variables than it
    * may have with its own; otherwise say why not, and save nothing.
    */
-  readonly updateEveryEnvironmentSettings: (input: {
+  readonly updateGlobalSettings: (input: {
     readonly overrides: Schema.Json;
-  }) => Effect.Effect<EveryEnvironmentSettingsUpdate>;
+  }) => Effect.Effect<GlobalSettingsUpdate>;
   /**
-   * An Agent change (`docs/architecture/agent-changes.md`): give one variable kept for every Environment a new value, by the
-   * rules of `updateEveryEnvironmentSettings`, and record it with its `author` under the scope `*`. Says which
+   * An Agent change (`docs/architecture/agent-changes.md`): give one variable kept Global a new value, by the
+   * rules of `updateGlobalSettings`, and record it with its `author` under the scope `*`. Says which
    * Environments override it and which want a new Build; a variable that already has the value records nothing. The
    * caller runs the Build upkeep after. `environment` is the caller's own, to say whether the change reaches it.
    */
-  readonly changeEveryEnvironment: (input: {
+  readonly changeGlobal: (input: {
     readonly change: ContainerFieldChange;
     readonly author: AgentChangeAuthor;
     readonly environment?: string | undefined;
-  }) => Effect.Effect<EveryEnvironmentChangeAnswer>;
+  }) => Effect.Effect<GlobalChangeAnswer>;
   /**
    * The Container settings overrides a Workspace of `environment` is handed: its own with the variables kept for every
    * Environment under them. Null when the Environment is not registered.
@@ -407,7 +407,7 @@ export type RegistryMethods = {
   }) => Effect.Effect<LifecycleOutcome<LifecycleChanged>>;
   /**
    * An Agent change (`docs/architecture/agent-changes.md`): mark the Secret `name` kept for `environment` (an Environment's id,
-   * or `*` for every Environment) for the Build, or take the mark off, as the owner's switch does, and record it with its
+   * or `*` at Global) for the Build, or take the mark off, as the owner's switch does, and record it with its
    * `author`; a Secret that has the mark records nothing. The caller runs the Builds' upkeep after.
    */
   readonly agentMarkSecretBuild: (input: {
@@ -418,7 +418,7 @@ export type RegistryMethods = {
   }) => Effect.Effect<SecretBuildMark>;
   /**
    * An Agent change the owner approved (`docs/architecture/agent-changes.md` → Approval): delete the Secret `name` kept for `environment` (an
-   * Environment's id, or `*` for every Environment), as the owner's delete does, and record it by name with its
+   * Environment's id, or `*` at Global), as the owner's delete does, and record it by name with its
    * `author`, provided it was last changed at `expected.updatedAt` (as the owner saw it). The caller runs the Builds'
    * upkeep after.
    */
@@ -430,7 +430,7 @@ export type RegistryMethods = {
   }) => Effect.Effect<SecretDeletion>;
   /**
    * Keep Secrets the owner chose to keep in the form of a `secret_ask` of `session`'s conversation `conversation`: for
-   * the Session's Environment (`scope` "environment") or for every Environment ("every"), sealed here as the owner's form
+   * the Session's Environment (`scope` "environment") or Global ("every"), sealed here as the owner's form
    * on the Environments page seals them, by the same name and value rules. Each kept Secret is recorded by name in the
    * scope's Agent changes as the owner's choice made on the agent's request (`reason` is the agent's). The caller runs
    * the Builds' upkeep after. For the Session DO only: the values arrive over Durable Object RPC and are never answered.
@@ -442,7 +442,7 @@ export type RegistryMethods = {
     readonly reason: string;
     readonly secrets: ReadonlyArray<{ readonly name: string; readonly value: string }>;
   }) => Effect.Effect<KeptAsked>;
-  /** An Environment's Agent changes (or those of the Secrets kept for every Environment, `*`), newest first; null when it is not registered. */
+  /** An Environment's Agent changes (or those of the Secrets kept Global, `*`), newest first; null when it is not registered. */
   readonly listAgentChanges: (input: {
     readonly environment: string;
   }) => Effect.Effect<ReadonlyArray<AgentChange> | null>;
@@ -461,7 +461,7 @@ export type RegistryMethods = {
   }) => Effect.Effect<boolean>;
   /**
    * An Agent change (`docs/architecture/workspace.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
-   * its path in the folder) for `environment` (an Environment's id, or `*` for every Environment), in place of one of its
+   * its path in the folder) for `environment` (an Environment's id, or `*` at Global), in place of one of its
    * name, if it passes a save's checks, and record it with its files before and after. The same files as kept record
    * nothing. With `expected`, only while the Skill of the name was last saved then (null: none kept), as an Approval
    * asked against it. The caller hands the Session's own Workspace its new Skill set after.
@@ -534,7 +534,7 @@ export type RegistryMethods = {
   ) => Effect.Effect<SkillUpdateRun>;
   /**
    * What `agentUpdateSkills` would do, with nothing saved or recorded: the files each Skill would take, for the owner's
-   * Approval card of an update for every Environment.
+   * Approval card of an update at Global.
    */
   readonly previewSkillUpdates: (
     input: Omit<UpdateRequest, "pins">,
@@ -548,7 +548,7 @@ export type RegistryMethods = {
    * what GitHub refuses is logged and the marks are left as they are.
    */
   readonly checkSkillUpdates: () => Effect.Effect<void>;
-  /** The Skills kept for `environment` (or `*` for every Environment), by name; null when it is not registered. */
+  /** The Skills kept for `environment` (or `*` at Global), by name; null when it is not registered. */
   readonly listSkills: (input: {
     readonly environment: string;
   }) => Effect.Effect<ReadonlyArray<EnvironmentSkill> | null>;
@@ -567,7 +567,7 @@ export type RegistryMethods = {
   }) => Effect.Effect<SkillChangeFiles | null>;
   /**
    * Every Skill kept in any scope that has a Skill source, for the Skill directory's badges (`skill-badges.ts`): the
-   * Environment's id that keeps it, or `*` for every Environment.
+   * Environment's id that keeps it, or `*` at Global.
    */
   readonly installedSkills: () => Effect.Effect<ReadonlyArray<InstalledSkillRef>>;
   /** The files kept for Skill `name` of `environment` (or `*`), with their texts, by path; null when it keeps none of the name. */
@@ -576,7 +576,7 @@ export type RegistryMethods = {
     readonly name: string;
   }) => Effect.Effect<ReadonlyArray<SkillFile> | null>;
   /**
-   * The Skill set `environment`'s Workspaces serve: its own Skills over those kept for every Environment. Null
+   * The Skill set `environment`'s Workspaces serve: its own Skills over those kept Global. Null
    * when it is not registered.
    */
   readonly workspaceSkillSet: (input: {
@@ -617,7 +617,7 @@ export type RegistryMethods = {
   /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
   readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<Deletion>;
   /**
-   * What keeps the spare Workspace of each of `environments` (every Environment when undefined) current, in one call:
+   * What keeps the spare Workspace of each of `environments` (all of them when undefined) current, in one call:
    * the stale spares to remove (`forgetSpare`, then their objects), and the spares registered now, each with what its
    * object prepares itself with, only for an Environment that had a Session in the last `SPARE_REFILL_WINDOW_MS`.
    * Nothing to do is two empty lists.
@@ -626,7 +626,7 @@ export type RegistryMethods = {
     readonly environments?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SpareWork>;
   /**
-   * What keeping the Builds of `environments` (every Environment when undefined) current needs: each Environment's
+   * What keeping the Builds of `environments` (all of them when undefined) current needs: each Environment's
    * Repos and Container settings overrides, and what is recorded of its Build.
    */
   readonly buildWork: (input: {
@@ -643,7 +643,7 @@ export type RegistryMethods = {
   /** Every kept Secret: names, scopes, build flags and times, never a value. */
   readonly listEnvironmentSecrets: () => Effect.Effect<ReadonlyArray<EnvironmentSecretRecord>>;
   /**
-   * Keep `value` under `name` for `environment` (null: every Environment), sealed here; replaces a value kept there.
+   * Keep `value` under `name` for `environment` (null: Global), sealed here; replaces a value kept there.
    * The answer never holds the value.
    */
   readonly setEnvironmentSecret: (input: {
@@ -817,7 +817,7 @@ export const RegistryLive = Registry.make(
           Effect.catchCause((cause) => Effect.logWarning("The Skill update check failed", cause)),
         );
 
-        /** `environment`'s Skill set before its texts are read: its own Skills over those kept for every Environment. */
+        /** `environment`'s Skill set before its texts are read: its own Skills over those kept Global. */
         const mergedSkills = (environment: string) =>
           Effect.promise(() => mergeSkills(skillLayers(skills, environment)));
 
@@ -966,7 +966,7 @@ export const RegistryLive = Registry.make(
             Effect.sync((): EnvironmentSettingsUpdate => {
               if (store.getEnvironment(environment) === null) return { status: "missing" };
 
-              const saved = writeEnvironmentSettings(overrides, everyVariablesOf(store));
+              const saved = writeEnvironmentSettings(overrides, globalVariablesOf(store));
 
               if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
 
@@ -974,11 +974,11 @@ export const RegistryLive = Registry.make(
 
               return { status: "saved", state: saved.success };
             }),
-          getEveryEnvironmentSettings: () => Effect.sync(() => readEveryEnvironment(store)),
-          updateEveryEnvironmentSettings: ({ overrides }) =>
+          getGlobalSettings: () => Effect.sync(() => readGlobal(store)),
+          updateGlobalSettings: ({ overrides }) =>
             Clock.currentTimeMillis.pipe(
-              Effect.map((now): EveryEnvironmentSettingsUpdate => {
-                const saved = writeEveryEnvironment(store, overrides, now);
+              Effect.map((now): GlobalSettingsUpdate => {
+                const saved = writeGlobal(store, overrides, now);
 
                 return Result.isSuccess(saved)
                   ? { status: "saved", state: saved.success }
@@ -1002,23 +1002,23 @@ export const RegistryLive = Registry.make(
 
               const { previous, ...changed } = outcome;
 
-              const every = everyVariablesOf(store);
+              const every = globalVariablesOf(store);
 
               const newBuild = yield* Effect.promise(() =>
                 wantsNewBuild(
                   outcome.environment.repos,
-                  withEveryEnvironmentVariables(previous, every),
-                  withEveryEnvironmentVariables(outcome.state.settings, every),
+                  withGlobalVariables(previous, every),
+                  withGlobalVariables(outcome.state.settings, every),
                 ),
               );
 
               return { ...changed, newBuild } satisfies EnvironmentChangeAnswer;
             }),
-          changeEveryEnvironment: ({ change, author, environment }) =>
+          changeGlobal: ({ change, author, environment }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
 
-              const outcome = changeEveryEnvironment(
+              const outcome = changeGlobal(
                 state.raw.storage,
                 store,
                 changes,
@@ -1047,7 +1047,7 @@ export const RegistryLive = Registry.make(
                 change: outcome.change,
                 variables,
                 ...reach,
-              } satisfies EveryEnvironmentChangeAnswer;
+              } satisfies GlobalChangeAnswer;
             }),
           agentCreateEnvironment: ({ name, repos, author }) =>
             Effect.gen(function* () {
@@ -1171,7 +1171,7 @@ export const RegistryLive = Registry.make(
                 status: "done",
                 environment:
                   environment === null
-                    ? { id: EVERY_ENVIRONMENT_SCOPE, name: EVERY_ENVIRONMENT_NAME }
+                    ? { id: GLOBAL_SCOPE, name: GLOBAL_NAME }
                     : {
                         id: known.environment,
                         name: store.getEnvironment(known.environment)?.name ?? known.environment,
@@ -1181,7 +1181,7 @@ export const RegistryLive = Registry.make(
             }),
           listAgentChanges: ({ environment }) =>
             Effect.sync(() =>
-              environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
+              environment !== GLOBAL_SCOPE && store.getEnvironment(environment) === null
                 ? null
                 : changes.list(environment),
             ),
@@ -1209,7 +1209,7 @@ export const RegistryLive = Registry.make(
             }),
           agentSaveSkill: ({ environment, folder, files, author, expected }) =>
             Effect.gen(function* () {
-              // A change to the Skills kept for every Environment is made only against what the owner approved.
+              // A change to the Skills kept Global is made only against what the owner approved.
               const unapproved = unapprovedEveryChange(environment, expected !== undefined);
 
               if (unapproved !== undefined)
@@ -1282,7 +1282,7 @@ export const RegistryLive = Registry.make(
           checkSkillUpdates: () => checkInstalledSkills,
           listSkills: ({ environment }) =>
             Effect.sync(() =>
-              environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
+              environment !== GLOBAL_SCOPE && store.getEnvironment(environment) === null
                 ? null
                 : Arr.map(
                     skills.list(environment),
@@ -1295,7 +1295,7 @@ export const RegistryLive = Registry.make(
             ),
           removeSkill: ({ environment, name }) =>
             Effect.sync(() =>
-              environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
+              environment !== GLOBAL_SCOPE && store.getEnvironment(environment) === null
                 ? { status: "missing" as const }
                 : removeSkill({ storage: state.raw.storage, store, skills }, { environment, name }),
             ),
@@ -1343,7 +1343,7 @@ export const RegistryLive = Registry.make(
             }),
           buildWork: ({ environments }) =>
             Effect.gen(function* () {
-              const every = everyVariablesOf(store);
+              const every = globalVariablesOf(store);
 
               const wanted = Arr.filterMap(store.listEnvironments(), (environment) => {
                 const recorded = store.getBuild(environment.id);
@@ -1362,7 +1362,7 @@ export const RegistryLive = Registry.make(
                     settings: readEnvironmentSettings(
                       store.getEnvironmentSettings(environment.id) ?? {},
                     ).overrides,
-                    everyVariables: every,
+                    globalVariables: every,
                     recorded,
                     // The values a Build gets, as a keyed digest only: the key is stored and shown in the clear.
                     secrets: digest,

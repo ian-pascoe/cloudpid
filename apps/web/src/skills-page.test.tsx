@@ -104,7 +104,7 @@ const DIRECTORY: Record<SkillDirectoryView, ReadonlyArray<DirectorySkill>> = {
       skillId: "grill-me",
       name: "grill-me",
       installs: 1_451_450,
-      installed: { everyEnvironment: true, environments: [], updateAvailable: true },
+      installed: { global: true, environments: [], updateAvailable: true },
     },
     {
       source: "mattpocock/skills",
@@ -112,7 +112,7 @@ const DIRECTORY: Record<SkillDirectoryView, ReadonlyArray<DirectorySkill>> = {
       name: "tdd",
       installs: 950,
       installed: {
-        everyEnvironment: false,
+        global: false,
         environments: ["work", "default"],
         updateAvailable: false,
       },
@@ -331,18 +331,16 @@ describe("the Skill directory's tabs", () => {
     }),
   );
 
-  it.effect(
-    "show where a Skill is installed: every environment, N environments, update available",
-    () =>
-      Effect.gen(function* () {
-        const markup = yield* renderDirectory("?tab=all-time", "all-time");
+  it.effect("show where a Skill is installed: Global, N environments, update available", () =>
+    Effect.gen(function* () {
+      const markup = yield* renderDirectory("?tab=all-time", "all-time");
 
-        expect(rowOf(markup, "find-skills")).not.toContain("Installed");
-        expect(rowOf(markup, "grill-me")).toContain("Installed · every environment");
-        expect(rowOf(markup, "grill-me")).toContain("update available");
-        expect(rowOf(markup, "tdd")).toContain("Installed · in 2 environments");
-        expect(rowOf(markup, "tdd")).not.toContain("update available");
-      }),
+      expect(rowOf(markup, "find-skills")).not.toContain("Installed");
+      expect(rowOf(markup, "grill-me")).toContain("Installed · Global");
+      expect(rowOf(markup, "grill-me")).toContain("update available");
+      expect(rowOf(markup, "tdd")).toContain("Installed · in 2 environments");
+      expect(rowOf(markup, "tdd")).not.toContain("update available");
+    }),
   );
 
   it.effect("show the Hot tab's change, and the Trending tab its own list", () =>
@@ -419,7 +417,7 @@ describe("the search", () => {
       expect(markup).not.toContain("find-skills");
       // It is a list of results, not a ranking.
       expect(markup).not.toMatch(/>1<\/span>/);
-      expect(rowOf(markup, "grill-me")).toContain("Installed · every environment");
+      expect(rowOf(markup, "grill-me")).toContain("Installed · Global");
       // The tab is still the one the query names.
       expect(links(markup).find(({ current }) => current)?.text).toBe("Hot");
     }),
@@ -474,13 +472,13 @@ describe("the search", () => {
 });
 
 describe("the Installed tab", () => {
-  it.effect("lists the Skills kept for every Environment, then each Environment's own", () =>
+  it.effect("lists the Skills kept Global, then each Environment's own", () =>
     Effect.gen(function* () {
       const markup = yield* renderSkills("?tab=installed");
-      const every = section(markup, "For every environment");
+      const every = section(markup, "Global");
       const work = section(markup, "Work");
 
-      expect(markup.indexOf('aria-label="For every environment"')).toBeLessThan(
+      expect(markup.indexOf('aria-label="Global"')).toBeLessThan(
         markup.indexOf('aria-label="Default"'),
       );
       expect(markup.indexOf('aria-label="Default"')).toBeLessThan(
@@ -488,22 +486,22 @@ describe("the Installed tab", () => {
       );
       expect(every).toContain("grill-me");
       expect(every).toContain("update available");
-      expect(every).toContain("Add skills from GitHub for every environment");
+      expect(every).toContain("Add skills from GitHub at Global");
       expect(work).toContain("notes");
       expect(work).toContain("modified");
       expect(work).toContain('aria-label="Update tdd"');
       expect(work).toContain('aria-label="Remove notes"');
-      expect(work).toContain("Also from every environment");
+      expect(work).toContain("Also from Global");
       expect(section(markup, "Default")).toContain("Add skills from GitHub");
     }),
   );
 
-  it.effect("shows only the Environment ?environment= names, or every Environment's for *", () =>
+  it.effect("shows only the Environment ?environment= names, or each Environment's for *", () =>
     Effect.gen(function* () {
       const work = yield* renderSkills("?tab=installed&environment=work");
 
       expect(section(work, "Work")).toBeDefined();
-      expect(section(work, "For every environment")).toBeUndefined();
+      expect(section(work, "Global")).toBeUndefined();
       expect(section(work, "Default")).toBeUndefined();
       expect(work).toContain("Showing the skills of Work only.");
       expect(links(work)).toContainEqual({
@@ -514,14 +512,14 @@ describe("the Installed tab", () => {
 
       const every = yield* renderSkills("?environment=*");
 
-      expect(section(every, "For every environment")).toBeDefined();
+      expect(section(every, "Global")).toBeDefined();
       expect(section(every, "Work")).toBeUndefined();
-      expect(every).toContain("Showing the skills of every environment only.");
+      expect(every).toContain("Showing the skills of Global only.");
 
       const gone = yield* renderSkills("?tab=installed&environment=gone");
 
       expect(gone).toContain("No environment has the id gone.");
-      expect(section(gone, "For every environment")).toBeUndefined();
+      expect(section(gone, "Global")).toBeUndefined();
     }),
   );
 
@@ -599,37 +597,35 @@ describe("the Environments page", () => {
       };
 
       expect(line("Work")).toEqual({
-        text: "3 skills, 1 from every environment",
+        text: "3 skills, 1 from Global",
         href: "/skills?tab=installed&environment=work",
       });
       expect(line("Default")).toEqual({
-        text: "1 skill, 1 from every environment",
+        text: "1 skill, 1 from Global",
         href: "/skills?tab=installed&environment=default",
       });
-      expect(line("For every environment")).toEqual({
+      expect(line("Global")).toEqual({
         text: "1 skill",
         href: "/skills?tab=installed&environment=*",
       });
     }),
   );
 
-  it.effect(
-    "counts an Environment's Skills only once those for every Environment have loaded",
-    () =>
-      Effect.gen(function* () {
-        const markup = yield* render(<EnvironmentsPage />, {
-          handlers: {
-            listEnvironmentSkills: ({ environment }) =>
-              environment === "*" ? Effect.never : Effect.succeed(SKILLS.get(environment) ?? []),
-            // A defect of another call would end the pending one too: the card's settings stay unanswered.
-            getEnvironmentSettings: () => Effect.never,
-          },
-          loaded: ["default", "work"],
-        });
+  it.effect("counts an Environment's Skills only once those at Global have loaded", () =>
+    Effect.gen(function* () {
+      const markup = yield* render(<EnvironmentsPage />, {
+        handlers: {
+          listEnvironmentSkills: ({ environment }) =>
+            environment === "*" ? Effect.never : Effect.succeed(SKILLS.get(environment) ?? []),
+          // A defect of another call would end the pending one too: the card's settings stay unanswered.
+          getEnvironmentSettings: () => Effect.never,
+        },
+        loaded: ["default", "work"],
+      });
 
-        expect(section(markup, "Work")).toMatch(/Loading skills… · <a [^>]*>Manage<\/a>/);
-        expect(section(markup, "Work")).not.toContain("2 skills");
-      }),
+      expect(section(markup, "Work")).toMatch(/Loading skills… · <a [^>]*>Manage<\/a>/);
+      expect(section(markup, "Work")).not.toContain("2 skills");
+    }),
   );
 
   it.effect("manages no Skill itself, and lists the Agent changes of the settings only", () =>

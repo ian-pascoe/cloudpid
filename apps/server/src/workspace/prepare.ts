@@ -58,7 +58,7 @@ export type WorkspaceSetup = WorkspaceClones & {
    */
   readonly secretsUnavailable?: string | undefined;
   /**
-   * The Environment's Skill set (its own Skills over those kept for every Environment, ADR-0026), which the Workspace
+   * The Environment's Skill set (its own Skills over those kept Global, ADR-0026), which the Workspace
    * mounts at once. Absent, it keeps the one it holds: the Registry leaves it out when the Workspace holds it already.
    */
   readonly skills?: SkillSet | undefined;

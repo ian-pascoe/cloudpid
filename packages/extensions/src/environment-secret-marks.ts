@@ -1,5 +1,5 @@
 // The `environment` extension's tool for the Build mark of a kept Secret (`docs/architecture/agent-changes.md`, ADR-0019):
-// `environment_secret_build` marks a Secret kept for an Environment, or for every Environment, as reaching the Build, or
+// `environment_secret_build` marks a Secret kept for an Environment, or Global, as reaching the Build, or
 // takes the mark off. The Registry applies it as the owner's switch on the Environments page does and records it, with the
 // mark before and after, so the owner can revert it. Keeping a Secret is not a tool: only the owner's choice in
 // `secret_ask`'s form keeps one (`secrets/store.ts`).
@@ -19,17 +19,17 @@ import {
 } from "./environment.ts";
 import { secretEnvName } from "./secrets/references.ts";
 
-/** The id that addresses the variables and Secrets kept for every Environment. */
-export const EVERY_ENVIRONMENT_ID = "*";
+/** The id that addresses the variables and Secrets kept Global. */
+export const GLOBAL_ID = "*";
 
-/** The name the Agent changes of the variables and Secrets kept for every Environment give their scope. */
-export const EVERY_ENVIRONMENT_NAME = "every Environment";
+/** The name the Agent changes of the variables and Secrets kept Global give their scope. */
+export const GLOBAL_NAME = "Global";
 
 /** How the Build mark of a kept Secret was changed. */
 export type SecretMarked =
   | {
       readonly status: "changed";
-      /** The Environment, or every Environment (`EVERY_ENVIRONMENT_ID`), whose history records it. */
+      /** The Environment, or Global (`GLOBAL_ID`), whose history records it. */
       readonly environment: ChangedEnvironment;
       /** The change as the Registry recorded it, with the mark before and after. */
       readonly change: AgentChange;
@@ -47,11 +47,11 @@ export type SecretMarked =
 /**
  * What the Session does for the Build mark of a kept Secret, over the Registry: applies it as the owner's switch does,
  * records it as an Agent change, and runs the Builds' upkeep the owner's switch runs (each Environment's, for a Secret
- * kept for every Environment).
+ * kept Global).
  */
 export type SecretMarks = {
   readonly markSecret: (input: {
-    /** The Environment's id, or `EVERY_ENVIRONMENT_ID`. */
+    /** The Environment's id, or `GLOBAL_ID`. */
     readonly environment: string;
     readonly name: string;
     readonly build: boolean;
@@ -84,9 +84,7 @@ const asJsonValue = (value: AgentChange["before"]): JsonValue | null => value as
 
 /** Where a Secret is kept, as a result names it. */
 const where = (named: ChangedEnvironment): string =>
-  named.id === EVERY_ENVIRONMENT_ID
-    ? "every Environment"
-    : `Environment ${JSON.stringify(named.name)} (${named.id})`;
+  named.id === GLOBAL_ID ? "Global" : `Environment ${JSON.stringify(named.name)} (${named.id})`;
 
 const noEnvironment = (id: string) =>
   EnvironmentsError.make({
@@ -113,7 +111,7 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
     name: "environment_secret_build",
     description: Arr.join(
       [
-        `Mark a Secret kept for an Environment as reaching the Build, or take the mark off (this Session's Environment unless id names another; id "${EVERY_ENVIRONMENT_ID}" is a Secret kept for every Environment). Only a Secret the user kept can be marked: ask for one with secret_ask and keep, and the user chooses in the form whether to keep it.`,
+        `Mark a Secret kept for an Environment as reaching the Build, or take the mark off (this Session's Environment unless id names another; id "${GLOBAL_ID}" is a Secret kept Global). Only a Secret the user kept can be marked: ask for one with secret_ask and keep, and the user chooses in the form whether to keep it.`,
         "A Secret marked for the Build reaches every Setup Script of the Environment as $PI_SECRET_<NAME>: the Environment's own and each Repo's .cloudpid/setup.sh, in the Environment's Build and in the Setup Scripts of each Workspace's Container. A script can print it or write it to a file, so mark only a Secret a Setup Script needs (a private registry token); an unmarked one reaches only commands and Sessions. A Secret marked for the Build is part of the Build's key, so changing the mark can make a new Build.",
         "The change is recorded with your reason, the mark before and after (never the value), and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start.",
       ],
@@ -122,7 +120,7 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
     parameters: Schema.Struct({
       id: Schema.optionalKey(
         Schema.String.annotate({
-          description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${EVERY_ENVIRONMENT_ID}" for a Secret kept for every Environment`,
+          description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for a Secret kept Global`,
         }),
       ),
       name: SecretName.annotate({ description: "The Secret's name, such as NPM_TOKEN" }),
@@ -137,8 +135,7 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
       Effect.gen(function* () {
         yield* refuseSecrets([{ what: "the reason", text: reason }]);
 
-        const environment =
-          id === EVERY_ENVIRONMENT_ID ? EVERY_ENVIRONMENT_ID : (yield* target(id)).environment;
+        const environment = id === GLOBAL_ID ? GLOBAL_ID : (yield* target(id)).environment;
 
         const marked = yield* environments.markSecret({
           environment,
@@ -156,7 +153,7 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
             return yield* noEnvironment(environment);
           case "absent":
             return yield* EnvironmentsError.make({
-              message: `Nothing was saved: no Secret ${name} is kept for ${where(marked.environment)}. environment_get shows the Secrets kept (names only); a Secret kept for every Environment is addressed with id "${EVERY_ENVIRONMENT_ID}". To keep one, call secret_ask with keep: the user chooses in the form whether to keep it.`,
+              message: `Nothing was saved: no Secret ${name} is kept for ${where(marked.environment)}. environment_get shows the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}". To keep one, call secret_ask with keep: the user chooses in the form whether to keep it.`,
             });
           case "unchanged":
             return {

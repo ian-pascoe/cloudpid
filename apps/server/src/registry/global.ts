@@ -1,17 +1,17 @@
-// The variables kept for every Environment (`docs/architecture/container.md` → Container settings, ADR-0023):
+// The variables kept Global (`docs/architecture/container.md` → Container settings, ADR-0023):
 // one JSON document in the store's document table, as the settings are. Reading falls back to the defaults and writing
 // validates, so what a Workspace is handed always resolves. The Registry merges them under each Environment's own
 // variables when it hands settings over (`workspaceOverridesOf`), so the Workspace DO never knows of them.
 import {
   type ContainerSettingsOverrides,
   containerOverridesFrom,
-  DEFAULT_EVERY_ENVIRONMENT_SETTINGS,
-  type EveryEnvironmentSettings,
-  everyEnvironmentOverridesFrom,
+  DEFAULT_GLOBAL_SETTINGS,
+  type GlobalSettings,
+  globalOverridesFrom,
   mergedVariablesProblem,
-  resolveEveryEnvironmentSettings,
-  resolveEveryEnvironmentSettingsLeniently,
-  withEveryEnvironmentVariables,
+  resolveGlobalSettings,
+  resolveGlobalSettingsLeniently,
+  withGlobalVariables,
 } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -21,12 +21,12 @@ import { readEnvironmentSettings } from "./environment-settings.ts";
 import type { DocumentStore } from "./settings.ts";
 import type { RegistryStore } from "./store.ts";
 
-/** The name of the document holding the variables kept for every Environment. */
-export const EVERY_ENVIRONMENT_DOCUMENT = "every-environment";
+/** The name of the document holding the variables kept Global. */
+export const GLOBAL_DOCUMENT = "every-environment";
 
-/** The settings kept for every Environment in force, and the overrides they come from. */
-export type EveryEnvironmentState = {
-  readonly settings: EveryEnvironmentSettings;
+/** The settings kept Global in force, and the overrides they come from. */
+export type GlobalState = {
+  readonly settings: GlobalSettings;
   readonly overrides: Schema.Json;
   /** Why only some of the saved overrides applied, when a later release no longer accepts one. */
   readonly problem?: string;
@@ -34,17 +34,17 @@ export type EveryEnvironmentState = {
 
 const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 
-const defaults: EveryEnvironmentState = {
-  settings: DEFAULT_EVERY_ENVIRONMENT_SETTINGS,
+const defaults: GlobalState = {
+  settings: DEFAULT_GLOBAL_SETTINGS,
   overrides: {},
 };
 
 /**
- * The settings kept for every Environment in force. Saved overrides that no longer resolve cost only themselves, and
+ * The settings kept Global in force. Saved overrides that no longer resolve cost only themselves, and
  * `problem` lists what was left out. Text that is not JSON gives the defaults, with the `problem`.
  */
-export const readEveryEnvironment = (documents: DocumentStore): EveryEnvironmentState => {
-  const body = documents.getDocument(EVERY_ENVIRONMENT_DOCUMENT);
+export const readGlobal = (documents: DocumentStore): GlobalState => {
+  const body = documents.getDocument(GLOBAL_DOCUMENT);
 
   if (body === null) return defaults;
 
@@ -53,19 +53,19 @@ export const readEveryEnvironment = (documents: DocumentStore): EveryEnvironment
   if (Option.isNone(saved)) {
     return {
       ...defaults,
-      problem: "The saved variables for every Environment are not valid JSON.",
+      problem: "The saved variables at Global are not valid JSON.",
     };
   }
 
-  const { settings, dropped } = resolveEveryEnvironmentSettingsLeniently(saved.value);
-  const state = { settings, overrides: everyEnvironmentOverridesFrom(settings) };
+  const { settings, dropped } = resolveGlobalSettingsLeniently(saved.value);
+  const state = { settings, overrides: globalOverridesFrom(settings) };
 
   return dropped.length === 0 ? state : { ...state, problem: Arr.join(dropped, "\n") };
 };
 
-/** The variables kept for every Environment in force. */
-export const everyVariablesOf = (documents: DocumentStore): Readonly<Record<string, string>> =>
-  readEveryEnvironment(documents).settings.variables;
+/** The variables kept Global in force. */
+export const globalVariablesOf = (documents: DocumentStore): Readonly<Record<string, string>> =>
+  readGlobal(documents).settings.variables;
 
 /**
  * Replace the saved overrides with `overrides`, keeping only what differs from the defaults, or say why not, one
@@ -73,13 +73,13 @@ export const everyVariablesOf = (documents: DocumentStore): Readonly<Record<stri
  * (`mergedVariablesProblem`). Nothing is saved then.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a store operation, not a combinator.
-export const writeEveryEnvironment = (
+export const writeGlobal = (
   store: DocumentStore & Pick<RegistryStore, "listEnvironments" | "getEnvironmentSettings">,
   overrides: Schema.Json,
   now: number,
-): Result.Result<EveryEnvironmentState, string> =>
+): Result.Result<GlobalState, string> =>
   Result.flatMap(
-    Result.mapError(resolveEveryEnvironmentSettings(overrides), (error) => error.message),
+    Result.mapError(resolveGlobalSettings(overrides), (error) => error.message),
     (settings) => {
       const problems = Arr.flatMap(store.listEnvironments(), ({ id, name }) => {
         const own = store.getEnvironmentSettings(id);
@@ -98,9 +98,9 @@ export const writeEveryEnvironment = (
 
       if (problems.length > 0) return Result.fail(Arr.join(problems, "\n"));
 
-      const kept = everyEnvironmentOverridesFrom(settings);
+      const kept = globalOverridesFrom(settings);
 
-      store.putDocument(EVERY_ENVIRONMENT_DOCUMENT, JSON.stringify(kept), now);
+      store.putDocument(GLOBAL_DOCUMENT, JSON.stringify(kept), now);
 
       return Result.succeed({ settings, overrides: kept });
     },
@@ -117,7 +117,7 @@ export type WorkspaceOverrides = {
 };
 
 /**
- * The overrides of `environment`'s settings with the variables kept for every Environment under its own: what a
+ * The overrides of `environment`'s settings with the variables kept Global under its own: what a
  * Workspace and a Build are handed. Null when the Environment is not registered.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a store operation, not a combinator.
@@ -130,9 +130,9 @@ export const workspaceOverridesOf = (
   if (own === null) return null;
 
   const { settings } = readEnvironmentSettings(own);
-  const every = everyVariablesOf(store);
+  const every = globalVariablesOf(store);
   const problem = mergedVariablesProblem(settings.variables, every);
-  const overrides = containerOverridesFrom(withEveryEnvironmentVariables(settings, every));
+  const overrides = containerOverridesFrom(withGlobalVariables(settings, every));
 
   return problem === undefined ? { overrides } : { overrides, problem };
 };

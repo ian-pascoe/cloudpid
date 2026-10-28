@@ -120,7 +120,7 @@ describe("the Skill set mounted in a Workspace", () => {
     expect(skills).toContain("<description>Test-driven development.");
     expect(skills).toContain("<location>/workspace/.agents/skills/tdd/SKILL.md</location>");
     expect(skills).toContain(
-      "The skills in /workspace/.agents/skills are the Environment's (its own, and those kept for every Environment) and read-only: change them with environment_skill_save and the other environment_skill_* tools",
+      "The skills in /workspace/.agents/skills are the Environment's (its own, and those kept Global) and read-only: change them with environment_skill_save and the other environment_skill_* tools",
     );
   });
 

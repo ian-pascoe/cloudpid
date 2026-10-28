@@ -7,7 +7,7 @@ import { type RepoSkill, SkillRepoError, type SkillRepoListing } from "@cloudpid
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import {
   checkedSkillsAtom,
@@ -41,7 +41,7 @@ const listing = (
   omitted: 0,
 });
 
-const INSTALLED = { everyEnvironment: true, environments: [], updateAvailable: false };
+const INSTALLED = { global: true, environments: [], updateAvailable: false };
 
 describe("a repo's Skills", () => {
   it.effect("are asked of the Registry for the owner, the repo and the ref when one is named", () =>
@@ -219,7 +219,7 @@ describe("Install selected", () => {
 
       if (toInstall === null) throw new Error("nothing to install");
 
-      registry.set(installToTargetAtom, { target: EVERY_ENVIRONMENT, ...toInstall });
+      registry.set(installToTargetAtom, { target: GLOBAL, ...toInstall });
       yield* settled(registry, installToTargetAtom);
 
       // The install names a ref as an install does: a tree URL, and the checked Skill by its folder, not by a name.
@@ -236,7 +236,7 @@ describe("Install selected", () => {
 
       expect(asked).toBe(2);
       expect(after.skills[0]?.installed).toEqual({
-        everyEnvironment: true,
+        global: true,
         environments: [],
         updateAvailable: false,
       });

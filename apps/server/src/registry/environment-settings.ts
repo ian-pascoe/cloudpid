@@ -33,7 +33,7 @@ export const readEnvironmentSettings = (overrides: Schema.Json): EnvironmentSett
 
 /**
  * The state to save for `overrides`, or why they do not resolve, one problem per line, or why the size is larger than
- * the size limit (`instanceLimitProblem`), or why the variables with the ones kept for every Environment, `every`, are
+ * the size limit (`instanceLimitProblem`), or why the variables with the ones kept Global, `every`, are
  * more than a Workspace takes (`mergedVariablesProblem`). Only what differs from the defaults is kept, so a setting
  * left alone follows later changes of the default.
  */

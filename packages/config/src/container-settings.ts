@@ -326,7 +326,7 @@ const VariableValue = Schema.String.check(
   Schema.makeFilter((value: string) => (hasNul(value) ? "contains a NUL character" : undefined)),
 );
 
-/** An Environment's variables, and the ones kept for every Environment (`EveryEnvironmentSettings`): the same rules. */
+/** An Environment's variables, and the ones kept Global (`GlobalSettings`): the same rules. */
 export const ContainerVariables = Schema.Record(Schema.String, VariableValue).check(
   Schema.isMaxProperties(MAX_VARIABLES),
   Schema.makeFilter(variableNamesProblem),
@@ -394,7 +394,7 @@ export const ContainerSettings = Schema.Struct({
   /**
    * Environment variables every command on the Container gets, and its bootstrap and scripts, under the Container's own
    * (`toolchainEnv`) and what a caller passes. Plain: the agent can read them. A Workspace is handed them merged with
-   * the ones kept for every Environment (`withEveryEnvironmentVariables`), so its copy of these settings holds both.
+   * the ones kept Global (`withGlobalVariables`), so its copy of these settings holds both.
    */
   variables: ContainerVariables.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
   /** The Environment's own Setup Script (bash), run in `/workspace` before the repos' when it is due. Empty: none. */
@@ -426,17 +426,17 @@ export const SPARE_WORKSPACE_FIELD = "spareWorkspace" satisfies keyof ContainerS
 export type ContainerSettingsOverrides = typeof ContainerSettings.Encoded;
 
 /**
- * The settings kept for every Environment, under each Environment's own (`withEveryEnvironmentVariables`): the
+ * The settings kept Global, under each Environment's own (`withGlobalVariables`): the
  * variables, for now. A struct so another setting can join them. Like the rest, every field has a decoding default.
  */
-export const EveryEnvironmentSettings = Schema.Struct({
+export const GlobalSettings = Schema.Struct({
   variables: ContainerVariables.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 });
 
-export type EveryEnvironmentSettings = typeof EveryEnvironmentSettings.Type;
+export type GlobalSettings = typeof GlobalSettings.Type;
 
 /** What is stored: the settings that differ from the defaults. */
-export type EveryEnvironmentSettingsOverrides = typeof EveryEnvironmentSettings.Encoded;
+export type GlobalSettingsOverrides = typeof GlobalSettings.Encoded;
 
 export class ContainerSettingsError extends Schema.TaggedError<
   ContainerSettingsError,
@@ -480,7 +480,7 @@ const withCurrentInstanceNames = (overrides: Schema.Json): Schema.Json =>
 const decodeOverrides = (overrides: Schema.Json) =>
   decodeCurrentOverrides(withCurrentInstanceNames(overrides));
 
-const decodeEveryOverrides = Schema.decodeUnknownResult(EveryEnvironmentSettings, {
+const decodeEveryOverrides = Schema.decodeUnknownResult(GlobalSettings, {
   onExcessProperty: "error",
   errors: "all",
 });
@@ -499,10 +499,10 @@ export const resolveContainerSettings = (
 ): Result.Result<ContainerSettings, ContainerSettingsError> =>
   Result.mapError(decodeOverrides(overrides), settingsError);
 
-/** The settings kept for every Environment that `overrides` give, or why they are not valid, one problem per line. */
-export const resolveEveryEnvironmentSettings = (
+/** The settings kept Global that `overrides` give, or why they are not valid, one problem per line. */
+export const resolveGlobalSettings = (
   overrides: Schema.Json,
-): Result.Result<EveryEnvironmentSettings, ContainerSettingsError> =>
+): Result.Result<GlobalSettings, ContainerSettingsError> =>
   Result.mapError(decodeEveryOverrides(overrides), settingsError);
 
 /** The settings with every field at its default. */
@@ -511,11 +511,9 @@ export const DEFAULT_CONTAINER_SETTINGS: ContainerSettings = Schema.decodeSync(C
   {},
 );
 
-/** The settings kept for every Environment with every field at its default. */
+/** The settings kept Global with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
-export const DEFAULT_EVERY_ENVIRONMENT_SETTINGS: EveryEnvironmentSettings = Schema.decodeSync(
-  EveryEnvironmentSettings,
-)({});
+export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = Schema.decodeSync(GlobalSettings)({});
 
 /** The overrides that make the defaults into `settings`: only what differs. What a settings form saves. */
 export const containerOverridesFrom = (settings: ContainerSettings): ContainerSettingsOverrides => {
@@ -551,9 +549,7 @@ export const containerOverridesFrom = (settings: ContainerSettings): ContainerSe
 };
 
 /** The overrides that make the defaults into `settings`: `{}` when there are no variables. What the Registry stores. */
-export const everyEnvironmentOverridesFrom = (
-  settings: EveryEnvironmentSettings,
-): EveryEnvironmentSettingsOverrides =>
+export const globalOverridesFrom = (settings: GlobalSettings): GlobalSettingsOverrides =>
   Record.isEmptyRecord(settings.variables) ? {} : { variables: settings.variables };
 
 /** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
@@ -578,10 +574,10 @@ const withLimitAtLeastSize = (settings: ContainerSettings): ContainerSettings =>
     : { ...settings, maxInstance: settings.instance };
 
 /**
- * The settings kept for every Environment, resolved from overrides that may be partly stale, and what was left out to
+ * The settings kept Global, resolved from overrides that may be partly stale, and what was left out to
  * do it.
  */
-export type LenientEveryEnvironmentSettings = Lenient<EveryEnvironmentSettings>;
+export type LenientGlobalSettings = Lenient<GlobalSettings>;
 
 const resolveLeniently = <Settings>(
   decode: (overrides: Schema.Json) => Result.Result<Settings, Schema.SchemaError>,
@@ -637,17 +633,15 @@ export const resolveContainerSettingsLeniently = (
 };
 
 /**
- * The settings kept for every Environment that `overrides` give once every override that does not resolve is dropped:
+ * The settings kept Global that `overrides` give once every override that does not resolve is dropped:
  * lenient like `resolveContainerSettingsLeniently`.
  */
-export const resolveEveryEnvironmentSettingsLeniently = (
-  overrides: Schema.Json,
-): LenientEveryEnvironmentSettings =>
-  resolveLeniently(decodeEveryOverrides, DEFAULT_EVERY_ENVIRONMENT_SETTINGS, overrides);
+export const resolveGlobalSettingsLeniently = (overrides: Schema.Json): LenientGlobalSettings =>
+  resolveLeniently(decodeEveryOverrides, DEFAULT_GLOBAL_SETTINGS, overrides);
 
 /**
- * Why an Environment with the variables `own` cannot also have the ones kept for every Environment, `every`, or
- * undefined when it can: a Workspace is handed both as one set (`withEveryEnvironmentVariables`), and the Workspace DO
+ * Why an Environment with the variables `own` cannot also have the ones kept Global, `every`, or
+ * undefined when it can: a Workspace is handed both as one set (`withGlobalVariables`), and the Workspace DO
  * refuses more than `MAX_VARIABLES` of them. Counts each name once: an Environment's own wins over the one for every
  * Environment. The words go after a prefix the caller adds.
  */
@@ -660,18 +654,18 @@ export const mergedVariablesProblem = (
   const total = Record.size(own) + inherited;
 
   return total > MAX_VARIABLES
-    ? `with the ${inherited} ${inherited === 1 ? "variable" : "variables"} for every Environment it does not override, it would have ${total}: at most ${MAX_VARIABLES}`
+    ? `with the ${inherited} ${inherited === 1 ? "variable" : "variables"} at Global it does not override, it would have ${total}: at most ${MAX_VARIABLES}`
     : undefined;
 };
 
 /**
- * `settings` with the variables kept for every Environment under its own: what a Workspace and a Build are handed. An
+ * `settings` with the variables kept Global under its own: what a Workspace and a Build are handed. An
  * Environment's variable of the same name wins. At most `MAX_VARIABLES` are kept, the Environment's own first and then
  * the others by name, for a set that `mergedVariablesProblem` refuses (a save never makes one). Answers `settings`
  * itself when `every` is empty.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- called with both arguments at the places that hand settings over.
-export const withEveryEnvironmentVariables = (
+export const withGlobalVariables = (
   settings: ContainerSettings,
   every: Readonly<Record<string, string>>,
 ): ContainerSettings => {

@@ -5,7 +5,7 @@ import {
   INSTANCE_TYPES,
   containerOverridesFrom,
   type ContainerSettings,
-  resolveEveryEnvironmentSettings,
+  resolveGlobalSettings,
 } from "@cloudpid/config";
 import {
   type AgentChange,
@@ -51,9 +51,9 @@ import {
   environmentDraftAtom,
   environmentNamesAtom,
   environmentSettingsAtom,
-  everyEnvironmentSettingsAtom,
-  everyVariablesAtom,
-  everyVariablesDraftAtom,
+  globalSettingsAtom,
+  globalVariablesAtom,
+  globalVariablesDraftAtom,
   saveEveryVariablesAtom,
   environmentListAtom,
   environmentsAtom,
@@ -72,7 +72,7 @@ import {
   workspaceListAtom,
   workspacesAtom,
 } from "./environments-state.ts";
-import { EMPTY_SECRET_DRAFT, EVERY_ENVIRONMENT } from "./environments.ts";
+import { EMPTY_SECRET_DRAFT, GLOBAL } from "./environments.ts";
 
 describe("Subagent Workspaces on the Environments page", () => {
   it("says what a Workspace has not pushed, per Repo", () => {
@@ -1256,9 +1256,9 @@ describe("an Environment's Build", () => {
   );
 });
 
-/** The variables kept for every Environment before a test changes them. */
+/** The variables kept Global before a test changes them. */
 const API_URL_ONLY = Result.getOrThrow(
-  resolveEveryEnvironmentSettings({ variables: { API_URL: "https://api.test" } }),
+  resolveGlobalSettings({ variables: { API_URL: "https://api.test" } }),
 );
 
 describe("the Agent changes", () => {
@@ -1324,7 +1324,7 @@ describe("the Agent changes", () => {
   );
 
   it.effect(
-    "of the Secrets kept for every Environment load by the scope *, and a revert loads the Secrets again",
+    "of the Secrets kept Global load by the scope *, and a revert loads the Secrets again",
     () =>
       Effect.gen(function* () {
         const asked: string[] = [];
@@ -1353,17 +1353,17 @@ describe("the Agent changes", () => {
           listBuilds: () => Effect.succeed([]),
         });
 
-        registry.mount(agentChangesAtom(EVERY_ENVIRONMENT));
+        registry.mount(agentChangesAtom(GLOBAL));
         registry.mount(environmentSecretsAtom);
-        yield* settled(registry, agentChangesAtom(EVERY_ENVIRONMENT));
+        yield* settled(registry, agentChangesAtom(GLOBAL));
         expect(asked).toEqual(["*"]);
         expect(AsyncResult.getOrThrow(yield* settled(registry, environmentSecretsAtom))).toEqual([
           { environment: null, name: "NPM_TOKEN", build: true, updatedAt: 1 },
         ]);
 
-        registry.mount(revertAgentChangeAtom(EVERY_ENVIRONMENT));
-        registry.set(revertAgentChangeAtom(EVERY_ENVIRONMENT), 1);
-        yield* settled(registry, revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        registry.mount(revertAgentChangeAtom(GLOBAL));
+        registry.set(revertAgentChangeAtom(GLOBAL), 1);
+        yield* settled(registry, revertAgentChangeAtom(GLOBAL));
         yield* settled(registry, environmentSecretsAtom);
 
         expect(secretsAsked).toBe(2);
@@ -1374,43 +1374,41 @@ describe("the Agent changes", () => {
       }),
   );
 
-  it.effect(
-    "of the variables kept for every Environment load by the scope *, and a revert loads them again",
-    () =>
-      Effect.gen(function* () {
-        let held = API_URL_ONLY.variables;
-        let asked = 0;
+  it.effect("of the variables kept Global load by the scope *, and a revert loads them again", () =>
+    Effect.gen(function* () {
+      let held = API_URL_ONLY.variables;
+      let asked = 0;
 
-        const registry = registryWith({
-          listAgentChanges: () => Effect.succeed([{ ...change(1), scope: "*" }]),
-          revertAgentChange: () =>
-            Effect.sync(() => {
-              held = {};
+      const registry = registryWith({
+        listAgentChanges: () => Effect.succeed([{ ...change(1), scope: "*" }]),
+        revertAgentChange: () =>
+          Effect.sync(() => {
+            held = {};
 
-              return { ...change(2), scope: "*", actor: "owner" as const, reverts: 1 };
-            }),
-          getEveryEnvironmentSettings: () =>
-            Effect.sync(() => {
-              asked += 1;
+            return { ...change(2), scope: "*", actor: "owner" as const, reverts: 1 };
+          }),
+        getGlobalSettings: () =>
+          Effect.sync(() => {
+            asked += 1;
 
-              return { settings: { variables: held }, overrides: { variables: held } };
-            }),
-          listBuilds: () => Effect.succeed([]),
-        });
+            return { settings: { variables: held }, overrides: { variables: held } };
+          }),
+        listBuilds: () => Effect.succeed([]),
+      });
 
-        registry.mount(everyEnvironmentSettingsAtom);
-        yield* settled(registry, everyEnvironmentSettingsAtom);
-        expect(registry.get(everyVariablesAtom)).toEqual({ API_URL: "https://api.test" });
+      registry.mount(globalSettingsAtom);
+      yield* settled(registry, globalSettingsAtom);
+      expect(registry.get(globalVariablesAtom)).toEqual({ API_URL: "https://api.test" });
 
-        registry.mount(revertAgentChangeAtom(EVERY_ENVIRONMENT));
-        registry.set(revertAgentChangeAtom(EVERY_ENVIRONMENT), 1);
-        yield* settled(registry, revertAgentChangeAtom(EVERY_ENVIRONMENT));
-        yield* settled(registry, everyEnvironmentSettingsAtom);
+      registry.mount(revertAgentChangeAtom(GLOBAL));
+      registry.set(revertAgentChangeAtom(GLOBAL), 1);
+      yield* settled(registry, revertAgentChangeAtom(GLOBAL));
+      yield* settled(registry, globalSettingsAtom);
 
-        expect(asked).toBe(2);
-        expect(registry.get(everyVariablesAtom)).toEqual({});
-        registry.dispose();
-      }),
+      expect(asked).toBe(2);
+      expect(registry.get(globalVariablesAtom)).toEqual({});
+      registry.dispose();
+    }),
   );
 
   it.effect("say why a revert was refused", () =>
@@ -1460,7 +1458,7 @@ describe("the Agent changes", () => {
   );
 });
 
-describe("the variables kept for every Environment", () => {
+describe("the variables kept Global", () => {
   /** A Registry keeping them in memory, and the overrides it was asked to keep. */
   const keeping = () => {
     let held = API_URL_ONLY.variables;
@@ -1468,14 +1466,14 @@ describe("the variables kept for every Environment", () => {
     let builds = 0;
 
     const registry = registryWith({
-      getEveryEnvironmentSettings: () =>
+      getGlobalSettings: () =>
         Effect.sync(() => ({ settings: { variables: held }, overrides: { variables: held } })),
-      updateEveryEnvironmentSettings: ({ overrides }) =>
+      updateGlobalSettings: ({ overrides }) =>
         JSON.stringify(overrides).includes("TOO_MANY")
           ? refused("variables: with the 50 variables it would have 51")
           : Effect.sync(() => {
               saved.push(overrides);
-              held = Result.getOrThrow(resolveEveryEnvironmentSettings(overrides)).variables;
+              held = Result.getOrThrow(resolveGlobalSettings(overrides)).variables;
 
               return { settings: { variables: held }, overrides };
             }),
@@ -1494,16 +1492,16 @@ describe("the variables kept for every Environment", () => {
     Effect.gen(function* () {
       const { registry } = keeping();
 
-      registry.mount(everyEnvironmentSettingsAtom);
+      registry.mount(globalSettingsAtom);
 
-      yield* settled(registry, everyEnvironmentSettingsAtom);
-      expect(registry.get(everyVariablesAtom)).toEqual({ API_URL: "https://api.test" });
-      expect(registry.get(everyVariablesDraftAtom)).toBeUndefined();
+      yield* settled(registry, globalSettingsAtom);
+      expect(registry.get(globalVariablesAtom)).toEqual({ API_URL: "https://api.test" });
+      expect(registry.get(globalVariablesDraftAtom)).toBeUndefined();
 
-      registry.set(everyVariablesDraftAtom, "A=1");
-      registry.refresh(everyEnvironmentSettingsAtom);
-      yield* settled(registry, everyEnvironmentSettingsAtom);
-      expect(registry.get(everyVariablesDraftAtom)).toBe("A=1");
+      registry.set(globalVariablesDraftAtom, "A=1");
+      registry.refresh(globalSettingsAtom);
+      yield* settled(registry, globalSettingsAtom);
+      expect(registry.get(globalVariablesDraftAtom)).toBe("A=1");
       registry.dispose();
     }),
   );
@@ -1514,19 +1512,19 @@ describe("the variables kept for every Environment", () => {
       Effect.gen(function* () {
         const { registry, saved, builds } = keeping();
 
-        registry.mount(everyEnvironmentSettingsAtom);
+        registry.mount(globalSettingsAtom);
         registry.mount(buildsAtom);
-        yield* settled(registry, everyEnvironmentSettingsAtom);
+        yield* settled(registry, globalSettingsAtom);
         yield* settled(registry, buildsAtom);
-        registry.set(everyVariablesDraftAtom, "NODE_ENV=test");
+        registry.set(globalVariablesDraftAtom, "NODE_ENV=test");
         registry.mount(saveEveryVariablesAtom);
         registry.set(saveEveryVariablesAtom, { NODE_ENV: "test" });
         yield* settled(registry, saveEveryVariablesAtom);
-        yield* settled(registry, everyEnvironmentSettingsAtom);
+        yield* settled(registry, globalSettingsAtom);
 
         expect(saved).toEqual([{ variables: { NODE_ENV: "test" } }]);
-        expect(registry.get(everyVariablesAtom)).toEqual({ NODE_ENV: "test" });
-        expect(registry.get(everyVariablesDraftAtom)).toBeUndefined();
+        expect(registry.get(globalVariablesAtom)).toEqual({ NODE_ENV: "test" });
+        expect(registry.get(globalVariablesDraftAtom)).toBeUndefined();
         expect(builds()).toBe(2);
         registry.dispose();
       }),
@@ -1580,7 +1578,7 @@ describe("the kept Secrets", () => {
       listEnvironmentSecrets: () => Effect.sync(() => [...records]),
       setEnvironmentSecret: (payload) =>
         payload.value === "refused"
-          ? refused("At most 100 Secrets are kept for every environment: delete one first")
+          ? refused("At most 100 Secrets are kept Global: delete one first")
           : Effect.sync(() => {
               values.push({ ...payload });
 
@@ -1614,7 +1612,7 @@ describe("the kept Secrets", () => {
         }),
       deleteEnvironmentSecret: ({ environment: scope, name }) =>
         name === "STUCK"
-          ? refused("No Secret STUCK is kept for every environment")
+          ? refused("No Secret STUCK is kept Global")
           : Effect.sync(() => {
               records.splice(
                 records.findIndex((known) => known.environment === scope && known.name === name),
@@ -1627,44 +1625,40 @@ describe("the kept Secrets", () => {
     return { registry, records, values };
   };
 
-  it.effect("are listed by section: an Environment's, and those for every Environment", () =>
+  it.effect("are listed by section: an Environment's, and those at Global", () =>
     Effect.gen(function* () {
       const { registry } = keeping();
 
       registry.mount(secretsInAtom("work"));
-      registry.mount(secretsInAtom(EVERY_ENVIRONMENT));
+      registry.mount(secretsInAtom(GLOBAL));
       yield* settled(registry, environmentSecretsAtom);
 
       expect(registry.get(secretsInAtom("work"))?.map((record) => record.name)).toEqual([
         "NPM_KEY",
       ]);
-      expect(registry.get(secretsInAtom(EVERY_ENVIRONMENT))?.map((record) => record.name)).toEqual([
-        "SHARED",
-      ]);
+      expect(registry.get(secretsInAtom(GLOBAL))?.map((record) => record.name)).toEqual(["SHARED"]);
       expect(registry.get(environmentSecretsErrorAtom)).toBeNull();
     }),
   );
 
-  it.effect(
-    "keeps a new one for every Environment, then empties the form so the value is held nowhere",
-    () =>
-      Effect.gen(function* () {
-        const { registry, values } = keeping();
-        const draft = { name: "API_KEY", value: "sk-live-0123", build: true };
+  it.effect("keeps a new one at Global, then empties the form so the value is held nowhere", () =>
+    Effect.gen(function* () {
+      const { registry, values } = keeping();
+      const draft = { name: "API_KEY", value: "sk-live-0123", build: true };
 
-        registry.mount(secretsInAtom(EVERY_ENVIRONMENT));
-        registry.mount(secretDraftAtom(EVERY_ENVIRONMENT));
-        registry.set(secretDraftAtom(EVERY_ENVIRONMENT), draft);
-        registry.set(saveSecretAtom(EVERY_ENVIRONMENT), undefined);
+      registry.mount(secretsInAtom(GLOBAL));
+      registry.mount(secretDraftAtom(GLOBAL));
+      registry.set(secretDraftAtom(GLOBAL), draft);
+      registry.set(saveSecretAtom(GLOBAL), undefined);
 
-        expect(
-          AsyncResult.getOrThrow(yield* settled(registry, saveSecretAtom(EVERY_ENVIRONMENT))),
-        ).toMatchObject({ environment: null, name: "API_KEY", build: true });
-        expect(values).toEqual([
-          { environment: null, name: "API_KEY", value: "sk-live-0123", build: true },
-        ]);
-        expect(registry.get(secretDraftAtom(EVERY_ENVIRONMENT))).toEqual(EMPTY_SECRET_DRAFT);
-      }),
+      expect(
+        AsyncResult.getOrThrow(yield* settled(registry, saveSecretAtom(GLOBAL))),
+      ).toMatchObject({ environment: null, name: "API_KEY", build: true });
+      expect(values).toEqual([
+        { environment: null, name: "API_KEY", value: "sk-live-0123", build: true },
+      ]);
+      expect(registry.get(secretDraftAtom(GLOBAL))).toEqual(EMPTY_SECRET_DRAFT);
+    }),
   );
 
   it.effect("replaces the value of one kept under the name, leaving its build flag as it is", () =>
@@ -1717,21 +1711,21 @@ describe("the kept Secrets", () => {
     Effect.gen(function* () {
       const { registry, records } = keeping();
 
-      registry.mount(secretDialogAtom(EVERY_ENVIRONMENT));
-      registry.set(secretDialogAtom(EVERY_ENVIRONMENT), "SHARED");
-      registry.set(deleteSecretAtom(EVERY_ENVIRONMENT), "SHARED");
-      yield* settled(registry, deleteSecretAtom(EVERY_ENVIRONMENT));
+      registry.mount(secretDialogAtom(GLOBAL));
+      registry.set(secretDialogAtom(GLOBAL), "SHARED");
+      registry.set(deleteSecretAtom(GLOBAL), "SHARED");
+      yield* settled(registry, deleteSecretAtom(GLOBAL));
 
       expect(records.map((record) => record.name)).toEqual(["NPM_KEY"]);
-      expect(registry.get(secretDialogAtom(EVERY_ENVIRONMENT))).toBeNull();
+      expect(registry.get(secretDialogAtom(GLOBAL))).toBeNull();
 
-      registry.set(secretDialogAtom(EVERY_ENVIRONMENT), "STUCK");
-      registry.set(deleteSecretAtom(EVERY_ENVIRONMENT), "STUCK");
+      registry.set(secretDialogAtom(GLOBAL), "STUCK");
+      registry.set(deleteSecretAtom(GLOBAL), "STUCK");
 
-      expect(
-        settledFailureOf(yield* settled(registry, deleteSecretAtom(EVERY_ENVIRONMENT))),
-      ).toMatch(/No Secret STUCK/);
-      expect(registry.get(secretDialogAtom(EVERY_ENVIRONMENT))).toBe("STUCK");
+      expect(settledFailureOf(yield* settled(registry, deleteSecretAtom(GLOBAL)))).toMatch(
+        /No Secret STUCK/,
+      );
+      expect(registry.get(secretDialogAtom(GLOBAL))).toBe("STUCK");
     }),
   );
 });

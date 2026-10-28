@@ -167,7 +167,7 @@ describe("environment_secret_build", () => {
     ]);
   });
 
-  it("addresses a Secret kept for every Environment with id *", async () => {
+  it("addresses a Secret kept Global with id *", async () => {
     const { tool, logged, kept } = await setUp();
 
     const result = await run(tool("environment_secret_build"), {
@@ -177,16 +177,16 @@ describe("environment_secret_build", () => {
       reason: "The Setup Script installs from the private registry",
     });
 
-    expect(text(result)).toContain("kept for every Environment");
+    expect(text(result)).toContain("kept for Global");
     expect(text(result)).toContain(`$${secretEnvName("NPM_TOKEN")}`);
     expect(markOf(kept, "NPM_TOKEN")).toBe(true);
     expect(result.details).toMatchObject({
-      agentChange: { environment: { id: "*", name: "every Environment" }, after: true },
+      agentChange: { environment: { id: "*", name: "Global" }, after: true },
     });
     expect(logged).toEqual([
       {
         tool: "environment_secret_build",
-        environmentName: "every Environment",
+        environmentName: "Global",
         field: "secrets.NPM_TOKEN.build",
       },
     ]);

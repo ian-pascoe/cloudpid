@@ -66,7 +66,7 @@ export const SECRET_GUIDELINES = [
   "When a task needs a Secret such as an API key or password, call secret_ask instead of asking the user to paste it into the conversation; the user enters it in a masked form, and its value never reaches you.",
   `Use a held Secret as $${secretEnvName("NAME")} in bash commands, which keeps it off the command line, and as ${secretReference("NAME")} in other tool arguments. Tool output shows ${secretReference("NAME")} where a value was redacted.`,
   "Secrets expire 15 minutes after the user enters them; call secret_ask again for one that expired, and secret_forget for one no longer needed. Secrets the user keeps for the Environment do not expire and cannot be forgotten; secret_list shows them.",
-  'A Secret that every Session of an Environment needs (a database URL, a registry token) is better kept than asked for again each time: pass keep to secret_ask ("environment", or "all" for every Environment) to offer it. The user chooses in the form, this Session only by default, and the answer says what they chose.',
+  'A Secret that every Session of an Environment needs (a database URL, a registry token) is better kept than asked for again each time: pass keep to secret_ask ("environment", or "all" at Global) to offer it. The user chooses in the form, this Session only by default, and the answer says what they chose.',
 ];
 
 const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));
@@ -276,7 +276,7 @@ const AskParameters = Schema.Struct({
   keep: Schema.optional(
     SecretKeep.annotate({
       description:
-        'Where to suggest keeping them: "session" (the default: held for this Session for 15 minutes), "environment" (kept for this Session\'s Environment, so every Session of it has them, without expiry) or "all" (kept for every Environment). It only pre-selects the choice in the form: the user always chooses among the three, and the answer says what they chose',
+        'Where to suggest keeping them: "session" (the default: held for this Session for 15 minutes), "environment" (kept for this Session\'s Environment, so every Session of it has them, without expiry) or "all" (kept Global). It only pre-selects the choice in the form: the user always chooses among the three, and the answer says what they chose',
     }),
   ),
 });
@@ -301,7 +301,7 @@ const askLine = (outcome: AskOutcome): string => {
     case "provided":
       return `${outcome.name}: provided. ${usage(outcome.name)} Held for this Session only: it expires ${iso(outcome.expiresAt)}.${outcome.notKept === undefined ? "" : ` The user chose to keep it, but it could not be kept: ${outcome.notKept}`}`;
     case "kept":
-      return `${outcome.name}: provided and ${keptWhere(outcome.scope)}, as the user chose; it does not expire. ${usage(outcome.name)}${outcome.shadowed === true ? " The Environment keeps its own Secret of this name, which wins in its Sessions over the one kept for every Environment." : ""}`;
+      return `${outcome.name}: provided and ${keptWhere(outcome.scope)}, as the user chose; it does not expire. ${usage(outcome.name)}${outcome.shadowed === true ? " The Environment keeps its own Secret of this name, which wins in its Sessions over the one kept Global." : ""}`;
     case "skipped":
       return `${outcome.name}: skipped by the user.`;
     case "cancelled":
@@ -311,7 +311,7 @@ const askLine = (outcome: AskOutcome): string => {
 
 /** Where a kept Secret is kept, as `secret_list` says it. */
 const keptWhere = (scope: KeptScope): string =>
-  scope === "environment" ? "kept for this Environment" : "kept for every Environment";
+  scope === "environment" ? "kept for this Environment" : "kept Global";
 
 /** What `secret_forget` says of one name. */
 const forgetLine = ({ name, forgotten, kept }: ForgetOutcome): string => {
@@ -376,7 +376,7 @@ export const secretsExtension = (
     const ask = yield* defineEffectTool({
       name: "secret_ask",
       description:
-        "Ask the user to enter Secrets (API keys, passwords, tokens) in a masked form in their browser. Waits for the answer and returns how to reference each one; never its value. The form lets the user keep what they enter for this Session only (the default, 15 minutes), for this Session's Environment or for every Environment, where it does not expire; keep only suggests one of the three, and the answer says which the user chose. A Secret kept this way is recorded in the Environment's Agent changes by name, and listed in the Run's Notification.",
+        "Ask the user to enter Secrets (API keys, passwords, tokens) in a masked form in their browser. Waits for the answer and returns how to reference each one; never its value. The form lets the user keep what they enter for this Session only (the default, 15 minutes), for this Session's Environment or Global, where it does not expire; keep only suggests one of the three, and the answer says which the user chose. A Secret kept this way is recorded in the Environment's Agent changes by name, and listed in the Run's Notification.",
       parameters: AskParameters,
       executionMode: "sequential",
       // An eviction cuts the wait off; the rerun waits for the same request, which the user still sees.

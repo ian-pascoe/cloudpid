@@ -1,5 +1,5 @@
 // The Registry DO's side of kept Secrets: checking what the owner sets, sealing it bound to its scope and name, and
-// opening what an Environment uses, its own over those kept for every Environment. The store is an in-memory stand-in
+// opening what an Environment uses, its own over those kept Global. The store is an in-memory stand-in
 // for the SQLite table (`store.workerd.test.ts` covers that one).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { openKeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
@@ -99,7 +99,7 @@ describe("keeping a Secret", () => {
     expect(rows.size).toBe(0);
   });
 
-  it("uses an Environment's own Secret over one of the same name kept for every Environment", async () => {
+  it("uses an Environment's own Secret over one of the same name kept Global", async () => {
     const { store } = table();
     const keys = await vault();
 
@@ -138,7 +138,7 @@ describe("keeping a Secret", () => {
 
     if (sealed === undefined) throw new Error("not kept");
 
-    // Moved to every Environment, and renamed in env-2.
+    // Moved to Global, and renamed in env-2.
     rows.set(key(null, "API_KEY"), { ...sealed, environment: null });
     rows.set(key("env-2", "OTHER"), { ...sealed, environment: "env-2", name: "OTHER" });
 

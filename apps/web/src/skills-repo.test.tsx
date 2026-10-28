@@ -23,7 +23,7 @@ const SKILLS: ReadonlyArray<RepoSkill> = [
     path: "skills/engineering/tdd",
     skillId: "tdd",
     installs: 1_450_000,
-    installed: { everyEnvironment: true, environments: [], updateAvailable: true },
+    installed: { global: true, environments: [], updateAvailable: true },
   },
   {
     name: "grill-me",
@@ -31,7 +31,7 @@ const SKILLS: ReadonlyArray<RepoSkill> = [
     path: "skills/productivity/grill-me",
     skillId: "grill-me",
     installed: {
-      everyEnvironment: false,
+      global: false,
       environments: ["work", "default"],
       updateAvailable: false,
     },
@@ -108,7 +108,7 @@ describe("the repo page", () => {
         expect(body).toContain("Interview me.");
         // Installs are compact, and blank when skills.sh does not know them.
         expect(body).toContain("1.5M");
-        expect(body).toContain("Installed · every environment");
+        expect(body).toContain("Installed · Global");
         expect(body).toContain("update available");
         expect(body).toContain("Installed · in 2 environments");
         expect(markup.match(/title="[\d,]+ installs"/g)).toHaveLength(1);

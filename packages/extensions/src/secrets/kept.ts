@@ -1,9 +1,9 @@
-// Secrets kept for an Environment, or for every Environment (`docs/architecture/agent-capabilities.md` → Secrets, ADR-0016): Secrets like
+// Secrets kept for an Environment, or Global (`docs/architecture/agent-capabilities.md` → Secrets, ADR-0016): Secrets like
 // `secret_ask`'s, used by reference and scrubbed from output and provider requests, that the owner sets on the
 // Environments page and that do not expire. Plain data, as they cross Durable Object RPC; a value is never stored
 // outside a vault (`openKeptVault`).
 
-/** Where a kept Secret is kept: for the Session's Environment, or for every Environment. */
+/** Where a kept Secret is kept: for the Session's Environment, or Global. */
 export type KeptScope = "environment" | "every";
 
 /** A kept Secret with its value, as the Registry hands it to a Session or a Workspace. */

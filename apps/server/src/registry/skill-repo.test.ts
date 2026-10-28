@@ -100,7 +100,7 @@ describe("joinRepoSkills", () => {
     const joined = joinRepoSkills(rows([tdd, grill]), installed, []);
 
     expect(joined.skills[0]?.installed).toEqual({
-      everyEnvironment: true,
+      global: true,
       environments: [],
       updateAvailable: true,
     });

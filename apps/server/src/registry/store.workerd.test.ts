@@ -6,11 +6,7 @@ import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import {
-  EVERY_ENVIRONMENT_DOCUMENT,
-  readEveryEnvironment,
-  writeEveryEnvironment,
-} from "./every-environment.ts";
+import { GLOBAL_DOCUMENT, readGlobal, writeGlobal } from "./global.ts";
 import {
   MIGRATIONS,
   migrate,
@@ -229,26 +225,24 @@ describe("the Registry store", () => {
     expect(await registry.getDocument("settings")).toBe('{"a":1}');
   });
 
-  it("keeps the variables for every Environment in a document, across an eviction, with no migration of its own", async () => {
+  it("keeps the variables at Global in a document, across an eviction, with no migration of its own", async () => {
     const registry = fresh();
 
     await runInDurableObject(registry, (_: TestRegistry, state) => {
       const store = openRegistryStore(state.storage);
 
-      Result.getOrThrow(writeEveryEnvironment(store, { variables: { EMAIL: "me@test" } }, 1_000));
+      Result.getOrThrow(writeGlobal(store, { variables: { EMAIL: "me@test" } }, 1_000));
     });
     await evictDurableObject(registry);
 
     await runInDurableObject(registry, (_: TestRegistry, state) => {
       const store = openRegistryStore(state.storage);
 
-      expect(readEveryEnvironment(store)).toEqual({
+      expect(readGlobal(store)).toEqual({
         settings: { variables: { EMAIL: "me@test" } },
         overrides: { variables: { EMAIL: "me@test" } },
       });
-      expect(store.getDocument(EVERY_ENVIRONMENT_DOCUMENT)).toBe(
-        '{"variables":{"EMAIL":"me@test"}}',
-      );
+      expect(store.getDocument(GLOBAL_DOCUMENT)).toBe('{"variables":{"EMAIL":"me@test"}}');
     });
   });
 
@@ -889,7 +883,7 @@ describe("the Registry store", () => {
       expect(await registry.getBuild("0000abcd")).toBeNull();
     });
 
-    it("gives every Environment stored before migration 13 no Build yet", async () => {
+    it("gives each Environment stored before migration 13 no Build yet", async () => {
       const registry = fresh();
 
       await runInDurableObject(registry, (_instance, state) => {
@@ -966,7 +960,7 @@ describe("the Registry store", () => {
       ).toEqual({ refused: "no-workspace" });
     });
 
-    it("keeps every Environment's spare when none is named, and draws again an id that is taken", async () => {
+    it("keeps each Environment's spare when none is named, and draws again an id that is taken", async () => {
       const registry = fresh();
 
       await registry.createEnvironment("0000abcd", "Cloudpid", 1_000);
@@ -1362,7 +1356,7 @@ describe("the Registry store", () => {
         });
       });
 
-      it("keeps every Environment's spare when none is named, making one only where a Session was recent", async () => {
+      it("keeps each Environment's spare when none is named, making one only where a Session was recent", async () => {
         const registry = fresh();
 
         await environmentWith(registry, "0000abcd", "Recent");
@@ -1686,7 +1680,7 @@ describe("the Registry store", () => {
       ).toMatchObject({ name: "S0", updatedAt: 2 });
     });
 
-    it("deletes an Environment's Secrets with it, and keeps those for every Environment", async () => {
+    it("deletes an Environment's Secrets with it, and keeps those at Global", async () => {
       const registry = fresh();
 
       await environmentWith(registry, "0000abcd", "Cloudpid");

@@ -10,7 +10,7 @@ import {
   branchProblem,
   BUILD_FIELD,
   CREATED_FIELD,
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   DELETED_FIELD,
   type EnvironmentSecretRecord,
   fieldRepo,
@@ -214,14 +214,14 @@ export const variablesText = (variables: Readonly<Record<string, string>>): stri
     .map(([name, value]) => `${name}=${value}`)
     .join("\n");
 
-/** The names of the variables kept for every Environment that an Environment gets, and of its own that override one. */
+/** The names of the variables kept Global that an Environment gets, and of its own that override one. */
 export type InheritedVariables = {
   readonly inherited: readonly string[];
   readonly overridden: readonly string[];
 };
 
 /**
- * The variables kept for every Environment that an Environment with the variables `own` gets, by name, and the ones of
+ * The variables kept Global that an Environment with the variables `own` gets, by name, and the ones of
  * its own that override such a variable: the counterpart of `inheritedSecrets`. Its own wins.
  */
 export const inheritedVariables = (
@@ -239,7 +239,7 @@ export const inheritedVariables = (
 /**
  * The variables typed in the Edit dialog, or why they cannot be saved: a `NAME=value` line each, the value everything
  * after the first `=` as typed, blank lines and lines starting with `#` left out. The server's rules
- * (`variableNameProblem`), with the first line that breaks them. With the variables kept for every Environment,
+ * (`variableNameProblem`), with the first line that breaks them. With the variables kept Global,
  * `inherited`, the 50 counts them too, the ones of the same name once.
  */
 export const parseVariables = (
@@ -281,7 +281,7 @@ export const parseVariables = (
 
   if (mergedVariablesProblem(typed, inherited) !== undefined) {
     return Result.fail(
-      `With the ${inheritedVariables(typed, inherited).inherited.length} variables for every environment it does not override, use at most ${MAX_VARIABLES} variables in all`,
+      `With the ${inheritedVariables(typed, inherited).inherited.length} variables at Global it does not override, use at most ${MAX_VARIABLES} variables in all`,
     );
   }
 
@@ -435,26 +435,25 @@ export const revertible = (change: AgentChange): boolean =>
   change.actor === "agent" && change.revertedBy === null && !unrevertableField(change.field);
 
 /**
- * The key of the Secrets kept for every Environment among the page's Secrets sections, which an Environment's id is
+ * The key of the Secrets kept Global among the page's Secrets sections, which an Environment's id is
  * not (ids are hexadecimal, or `default`).
  */
-export const EVERY_ENVIRONMENT = EVERY_ENVIRONMENT_SCOPE;
+export const GLOBAL = GLOBAL_SCOPE;
 
-/** The scope the Registry takes for Secrets section `key`: the Environment's id, or null for every Environment. */
-export const secretScopeOf = (key: string): string | null =>
-  key === EVERY_ENVIRONMENT ? null : key;
+/** The scope the Registry takes for Secrets section `key`: the Environment's id, or null at Global. */
+export const secretScopeOf = (key: string): string | null => (key === GLOBAL ? null : key);
 
-/** The Secrets of `records` kept in section `key` (an Environment's id, or `EVERY_ENVIRONMENT`), by name. */
+/** The Secrets of `records` kept in section `key` (an Environment's id, or `GLOBAL`), by name. */
 export const secretsIn = (
   records: readonly EnvironmentSecretRecord[],
   key: string,
 ): readonly EnvironmentSecretRecord[] =>
   records
-    .filter((record) => (record.environment ?? EVERY_ENVIRONMENT) === key)
+    .filter((record) => (record.environment ?? GLOBAL) === key)
     .toSorted((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 
 /**
- * The Secrets kept for every Environment that Environment `environment` gets, by name: those it keeps none of the same
+ * The Secrets kept Global that Environment `environment` gets, by name: those it keeps none of the same
  * name of, since its own wins.
  */
 export const inheritedSecrets = (
@@ -463,7 +462,7 @@ export const inheritedSecrets = (
 ): readonly EnvironmentSecretRecord[] => {
   const own = new Set(secretsIn(records, environment).map((record) => record.name));
 
-  return secretsIn(records, EVERY_ENVIRONMENT).filter((record) => !own.has(record.name));
+  return secretsIn(records, GLOBAL).filter((record) => !own.has(record.name));
 };
 
 /** What is typed in a Secrets section's form: a name, a value, and whether a new Secret reaches the Build. */

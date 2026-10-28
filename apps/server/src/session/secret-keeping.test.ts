@@ -123,7 +123,7 @@ describe("the Session's keeping of Secrets", () => {
     expect(JSON.stringify(pending)).not.toContain(VALUE);
   });
 
-  it("keeps the Builds current afterwards: the Environment's, or every Environment's for a Secret kept for all", async () => {
+  it("keeps the Builds current afterwards: the Environment's, or each Environment's for a Secret kept for all", async () => {
     const own = open(done([{ name: "API_KEY", status: "kept", shadowed: false }]));
 
     await Effect.runPromise(own.keep(request()));

@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { chosenKeep, defaultKeep, KEEP_CHOICES, KEEP_VALUES, keepNote } from "./secret-keep.ts";
 
 describe("the choice of what to do with the Secrets entered", () => {
-  it("offers the Session, the Environment and every Environment, whatever the agent suggested", () => {
+  it("offers the Session, the Environment and Global, whatever the agent suggested", () => {
     expect(KEEP_VALUES).toEqual(["session", "environment", "all"]);
     expect(KEEP_CHOICES.map(({ label }) => label)).toEqual([
       "This Session only",
       "Keep for this Environment",
-      "Keep for every Environment",
+      "Keep at Global",
     ]);
   });
 
@@ -29,6 +29,6 @@ describe("the choice of what to do with the Secrets entered", () => {
   it("says what each choice does", () => {
     expect(keepNote("session", 15)).toContain("15 minutes");
     expect(keepNote("environment", 15)).toContain("does not expire");
-    expect(keepNote("all", 15)).toContain("every Environment");
+    expect(keepNote("all", 15)).toContain("Global");
   });
 });

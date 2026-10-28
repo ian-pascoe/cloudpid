@@ -19,7 +19,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_SECRET_DRAFT,
-  EVERY_ENVIRONMENT,
+  GLOBAL,
   inheritedSecrets,
   inheritedVariables,
   secretDraftProblems,
@@ -311,7 +311,7 @@ describe("parseVariables", () => {
     expect(problem(`A=${"a".repeat(4097)}`)).toBe("A's value is longer than 4096 characters");
   });
 
-  it("counts the variables kept for every Environment in the limit, an overridden name once", () => {
+  it("counts the variables kept Global in the limit, an overridden name once", () => {
     const every = Record.fromEntries(Array.from({ length: 10 }, (_, i) => [`E${i}`, "x"] as const));
 
     const own = (count: number, names: readonly string[] = []) =>
@@ -322,7 +322,7 @@ describe("parseVariables", () => {
 
     expect(Result.isSuccess(parseVariables(own(MAX_VARIABLES - 10), every))).toBe(true);
     expect(problemWith(own(MAX_VARIABLES - 10 + 1), every)).toBe(
-      "With the 10 variables for every environment it does not override, use at most 50 variables in all",
+      "With the 10 variables at Global it does not override, use at most 50 variables in all",
     );
     // Ten of its own override those ten: 50 in all.
     expect(
@@ -340,7 +340,7 @@ describe("parseVariables", () => {
 });
 
 describe("inheritedVariables", () => {
-  it("names the variables for every Environment an Environment gets, and those of its own that override one", () => {
+  it("names the variables at Global an Environment gets, and those of its own that override one", () => {
     expect(inheritedVariables({ B: "1", C: "2" }, { A: "x", B: "y", D: "z" })).toEqual({
       inherited: ["A", "D"],
       overridden: ["B"],
@@ -530,17 +530,14 @@ describe("an Environment's Secrets", () => {
     kept("other", "DB_URL"),
   ];
 
-  it("are listed by section, by name, those for every Environment under their own key", () => {
+  it("are listed by section, by name, those at Global under their own key", () => {
     expect(secretsIn(records, "work").map((record) => record.name)).toEqual(["API_KEY", "NPM_KEY"]);
-    expect(secretsIn(records, EVERY_ENVIRONMENT).map((record) => record.name)).toEqual([
-      "API_KEY",
-      "SHARED",
-    ]);
-    expect(secretScopeOf(EVERY_ENVIRONMENT)).toBeNull();
+    expect(secretsIn(records, GLOBAL).map((record) => record.name)).toEqual(["API_KEY", "SHARED"]);
+    expect(secretScopeOf(GLOBAL)).toBeNull();
     expect(secretScopeOf("work")).toBe("work");
   });
 
-  it("include those kept for every Environment, but where the Environment keeps its own of the name", () => {
+  it("include those kept Global, but where the Environment keeps its own of the name", () => {
     expect(inheritedSecrets(records, "work").map((record) => record.name)).toEqual(["SHARED"]);
     expect(inheritedSecrets(records, "other").map((record) => record.name)).toEqual([
       "API_KEY",

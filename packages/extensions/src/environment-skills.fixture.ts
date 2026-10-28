@@ -40,15 +40,15 @@ const descriptionOf = (files: Readonly<Record<string, string>>): string =>
   /^description: (.*)$/m.exec(files["SKILL.md"] ?? "")?.[1] ?? "";
 
 /**
- * Skills over Environments `default` (named Default, this Session's) and `0000abcd` (named Other), and every Environment
+ * Skills over Environments `default` (named Default, this Session's) and `0000abcd` (named Other), and Global
  * (`*`), each keeping none at first. A save is refused with `refusal` when it is set, as the Registry
- * refuses one. A scope's Skill of a name hides the one kept for every Environment, as the Registry's layers do.
+ * refuses one. A scope's Skill of a name hides the one kept Global, as the Registry's layers do.
  */
 export const fakeSkills = () => {
   const names = new Map([
     ["default", "Default"],
     ["0000abcd", "Other"],
-    ["*", "every Environment"],
+    ["*", "Global"],
   ]);
 
   /** What each scope keeps, by `<scope>:<name>`. */
@@ -153,7 +153,7 @@ export const fakeSkills = () => {
     Record.size(before) === Record.size(after) &&
     Arr.every(Record.toEntries(after), ([path, text]) => before[path] === text);
 
-  /** The Environments (not `*`) whose own Skill of `name` hides the one kept for every Environment. */
+  /** The Environments (not `*`) whose own Skill of `name` hides the one kept Global. */
   const overriding = (name: string) =>
     Arr.filter(
       Arr.map(

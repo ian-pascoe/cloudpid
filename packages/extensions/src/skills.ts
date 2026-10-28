@@ -4,7 +4,7 @@
 // description and the path of its `SKILL.md`, which the agent loads with `read` when a task matches. Skills are found
 // in the `.agents/skills` directory of the conversation's `cwd` and of each directory above it up to the Workspace root,
 // nearest first, so a repo's own skills come before the Workspace's, whose `.agents/skills` holds the Environment's
-// Skills (its own and those kept for every Environment, mounted read-only). Discovery (`skills-discovery.ts`) reads
+// Skills (its own and those kept Global, mounted read-only). Discovery (`skills-discovery.ts`) reads
 // only files, so it never starts the Container: an environment that discovers skills itself (`SkillSource`: the
 // Workspace's, which does it next to the files) is asked once, and any other is walked through its file operations.
 // The section is read once per Context Window and then shown as it was, as `project_context` is (`frozenSection`): a
@@ -68,7 +68,7 @@ export const formatSkills = (
       "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
       ...(fromSkillSet
         ? [
-            `The skills in ${SKILL_SET_DIRECTORY} are the Environment's (its own, and those kept for every Environment) and read-only: change them with environment_skill_save and the other environment_skill_* tools, not by writing there.`,
+            `The skills in ${SKILL_SET_DIRECTORY} are the Environment's (its own, and those kept Global) and read-only: change them with environment_skill_save and the other environment_skill_* tools, not by writing there.`,
           ]
         : []),
       ...(hidden

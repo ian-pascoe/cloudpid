@@ -16,7 +16,7 @@ import {
   environmentDraftAtom,
   environmentsAtom,
   environmentSettingsAtom,
-  everyEnvironmentSettingsAtom,
+  globalSettingsAtom,
 } from "./environments-state.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 
@@ -29,16 +29,15 @@ const render = (settings: ContainerSettings, draft?: { readonly spareWorkspace: 
       listEnvironments: () => Effect.succeed([WORK]),
       getEnvironmentSettings: () =>
         Effect.succeed({ settings, overrides: containerOverridesFrom(settings) }),
-      getEveryEnvironmentSettings: () =>
-        Effect.succeed({ settings: { variables: {} }, overrides: {} }),
+      getGlobalSettings: () => Effect.succeed({ settings: { variables: {} }, overrides: {} }),
     });
 
     registry.mount(environmentsAtom);
     registry.mount(environmentSettingsAtom(WORK.id));
-    registry.mount(everyEnvironmentSettingsAtom);
+    registry.mount(globalSettingsAtom);
     yield* settled(registry, environmentsAtom);
     yield* settled(registry, environmentSettingsAtom(WORK.id));
-    yield* settled(registry, everyEnvironmentSettingsAtom);
+    yield* settled(registry, globalSettingsAtom);
 
     if (draft !== undefined) {
       registry.set(environmentDraftAtom(WORK.id), {

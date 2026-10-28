@@ -1,4 +1,4 @@
-// The `environment` extension's tools for an Environment's own Skills, and those kept for every Environment (ADR-0026,
+// The `environment` extension's tools for an Environment's own Skills, and those kept Global (ADR-0026,
 // `docs/architecture/agent-changes.md`, and → The Environment's own Skills): `environment_skill_save` reads a Skill's folder
 // from the Workspace (one the agent wrote, or one `npx skills add --copy` made) and saves it for the Environment, in
 // place of one of its name, `environment_skill_install` installs Skills from GitHub (fetched by the Registry, never by
@@ -7,8 +7,8 @@
 // a local path, at most 100 Skills in the merged set) and records each as an Agent change with the files before and after, so the owner
 // sees the diffs and can revert it. The Session hands its own Workspace the new Skill set at once; the Environment's
 // other Workspaces and its spare get it at their next readying. The skills list in the prompt changes at the next
-// Context Window. With `id: "*"` the Skill is kept for every Environment, and the change waits for the owner's Approval
-// (`./environment-skills-every.ts`), as a change to a Limit does: it steers every future Session. An Environment's own
+// Context Window. With `id: "*"` the Skill is kept Global, and the change waits for the owner's Approval
+// (`./environment-skills-global.ts`), as a change to a Limit does: it steers every future Session. An Environment's own
 // Skill of the same name wins in that Environment, with no Approval.
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
-import { EVERY_ENVIRONMENT_ID } from "./environment-secret-marks.ts";
+import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   installedOutcome,
   refused,
@@ -36,7 +36,7 @@ import {
   removeEverywhere,
   saveEverywhere,
   SKILL_APPROVAL,
-} from "./environment-skills-every.ts";
+} from "./environment-skills-global.ts";
 import {
   MAX_APPROVED_SKILLS,
   MAX_FILE_BYTES,
@@ -263,7 +263,7 @@ export const readSkillFolder = (
 
 /**
  * `environment_skill_save` and `environment_skill_remove`: each runs alone. A change to an Environment's own Skills is
- * made at once; one to the Skills kept for every Environment (`id: "*"`) waits for the owner's Approval, like a Limit
+ * made at once; one to the Skills kept Global (`id: "*"`) waits for the owner's Approval, like a Limit
  * (`withApproval`), and is replayed after an eviction to wait for the same request. So both are `replay: "safe"`: a
  * rerun of a save to an Environment's own Skills finds it made (the same files record nothing again), and a rerun of its
  * removal that finds the Skill gone says it may be this call's own earlier work. Built here, not at the module's top:
@@ -288,22 +288,22 @@ export const skillTools = ({
     name: "environment_skill_save",
     description: Arr.join(
       [
-        `Save a Skill for an Environment (this Session's unless id names another), from its folder in the Workspace: a folder you wrote (such as ${WORKSPACE_ROOT}/.cloudpid/tmp/<name>), or one \`npx skills add <source> --copy\` made. Every Workspace of the Environment then serves it read-only at ${SKILLS_ROOT}/<name>, over the Skill of the same name kept for every Environment, and lists it among the skills; Workspaces of other Environments do not. A Skill of the same name the Environment keeps is replaced. Saving a Skill whose name is also kept for every Environment makes the Environment's own copy, which wins in this Environment only.`,
-        `With id "${EVERY_ENVIRONMENT_ID}" the Skill is kept for every Environment: every Environment's Workspaces serve it at their next readying (this Session's at once, unless its Environment keeps its own Skill of the name). A Skill there steers every future Session, so the user must approve the change, reading the Skill on the card: it shows the first ${MAX_CARD_CHARS} characters of the files and warns the user of what it cuts, so keep a Skill for every Environment small enough to review in full, or expect it to be declined. ${SKILL_APPROVAL}`,
-        `The folder holds a SKILL.md whose YAML frontmatter sets name (1 to 64 lowercase letters, digits and hyphens, not starting or ending with a hyphen, no two in a row, and the folder's own name) and description (at most 1024 characters, saying what the Skill does and when to use it), and any files it refers to. The files must be text, at most ${SKILL_SIZES.file} each and ${SKILL_SIZES.skill} together, with nothing that looks like a credential or a path on somebody's machine (/home/<user>/…), nor the value of a Secret this Session holds. A Skill set holds at most 100 Skills and ${SKILL_SIZES.set}, every layer counted; a Skill for every Environment is refused when any Environment's set would pass either.`,
+        `Save a Skill for an Environment (this Session's unless id names another), from its folder in the Workspace: a folder you wrote (such as ${WORKSPACE_ROOT}/.cloudpid/tmp/<name>), or one \`npx skills add <source> --copy\` made. Every Workspace of the Environment then serves it read-only at ${SKILLS_ROOT}/<name>, over the Skill of the same name kept Global, and lists it among the skills; Workspaces of other Environments do not. A Skill of the same name the Environment keeps is replaced. Saving a Skill whose name is also kept Global makes the Environment's own copy, which wins in this Environment only.`,
+        `With id "${GLOBAL_ID}" the Skill is kept Global: each Environment's Workspaces serve it at their next readying (this Session's at once, unless its Environment keeps its own Skill of the name). A Skill there steers every future Session, so the user must approve the change, reading the Skill on the card: it shows the first ${MAX_CARD_CHARS} characters of the files and warns the user of what it cuts, so keep a Skill at Global small enough to review in full, or expect it to be declined. ${SKILL_APPROVAL}`,
+        `The folder holds a SKILL.md whose YAML frontmatter sets name (1 to 64 lowercase letters, digits and hyphens, not starting or ending with a hyphen, no two in a row, and the folder's own name) and description (at most 1024 characters, saying what the Skill does and when to use it), and any files it refers to. The files must be text, at most ${SKILL_SIZES.file} each and ${SKILL_SIZES.skill} together, with nothing that looks like a credential or a path on somebody's machine (/home/<user>/…), nor the value of a Secret this Session holds. A Skill set holds at most 100 Skills and ${SKILL_SIZES.set}, every layer counted; a Skill at Global is refused when any Environment's set would pass either.`,
         "To change a Skill, copy its folder from the skills directory to a scratch folder, edit it there, and save it again. The change is recorded with your reason and the files before and after, and the user can see the difference and revert it on the Skills page.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a Skill kept for every Environment")),
+      id: Schema.optionalKey(idOrEvery("a Skill kept Global")),
       path: Schema.String.check(Schema.isMinLength(1)).annotate({
         description: `The Skill's folder in the Workspace, absolute or relative to the working directory, such as ${WORKSPACE_ROOT}/.cloudpid/tmp/release-notes`,
       }),
       reason: SkillReason,
     }),
     executionMode: "sequential",
-    // A rerun after an eviction waits for the request a change to every Environment made, or takes its answer; one to an
+    // A rerun after an eviction waits for the request a change to Global made, or takes its answer; one to an
     // Environment's own Skills finds its change made (the same files record nothing again).
     replay: "safe",
     execute: ({ id, path, reason }, api) =>
@@ -312,10 +312,10 @@ export const skillTools = ({
 
         if (api.env === undefined) return yield* refused("no execution environment is configured");
 
-        const everywhere = id === EVERY_ENVIRONMENT_ID;
+        const everywhere = id === GLOBAL_ID;
 
         const { environment, own } = everywhere
-          ? { environment: EVERY_ENVIRONMENT_ID, own: false }
+          ? { environment: GLOBAL_ID, own: false }
           : yield* target(id);
 
         const { folder, files } = yield* readSkillFolder(api.env, path);
@@ -349,9 +349,9 @@ export const skillTools = ({
 
   const remove = defineEffectTool({
     name: "environment_skill_remove",
-    description: `Remove a Skill the Environment keeps (this Session's Environment unless id names another): its Workspaces stop serving it at ${SKILLS_ROOT}/<name>, and serve the Skill of that name kept for every Environment again if there is one (refused if a Skill set would then hold more than 100 Skills or ${SKILL_SIZES.set}). environment_get lists the Environment's own Skills; those kept for every Environment are not the Environment's and cannot be removed this way. With id "${EVERY_ENVIRONMENT_ID}" the Skill is removed from those kept for every Environment, which the user must approve: ${SKILL_APPROVAL} The change is recorded with your reason and the files the Skill had, and the user can revert it on the Skills page.`,
+    description: `Remove a Skill the Environment keeps (this Session's Environment unless id names another): its Workspaces stop serving it at ${SKILLS_ROOT}/<name>, and serve the Skill of that name kept Global again if there is one (refused if a Skill set would then hold more than 100 Skills or ${SKILL_SIZES.set}). environment_get lists the Environment's own Skills; those kept Global are not the Environment's and cannot be removed this way. With id "${GLOBAL_ID}" the Skill is removed from those kept Global, which the user must approve: ${SKILL_APPROVAL} The change is recorded with your reason and the files the Skill had, and the user can revert it on the Skills page.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a Skill kept for every Environment")),
+      id: Schema.optionalKey(idOrEvery("a Skill kept Global")),
       name: Schema.String.check(Schema.isMinLength(1)).annotate({
         description: "The Skill's name, as environment_get lists it",
       }),
@@ -363,8 +363,7 @@ export const skillTools = ({
       Effect.gen(function* () {
         yield* refuseSecrets([{ what: "the reason", text: reason }]);
 
-        if (id === EVERY_ENVIRONMENT_ID)
-          return yield* removeEverywhere(every, { name, reason }, api);
+        if (id === GLOBAL_ID) return yield* removeEverywhere(every, { name, reason }, api);
 
         const { environment, own } = yield* target(id);
 
@@ -392,14 +391,14 @@ export const skillTools = ({
       [
         `Install Skills from GitHub for an Environment (this Session's unless id names another): fetched by cloudpid, not by you (no Container, no \`npx skills\`), pinned to the commit the source's ref resolves to, and kept with their Skill source (repo, path, ref, commit). Every Workspace of the Environment then serves each at ${SKILLS_ROOT}/<name>, read-only; a Skill of the same name the Environment keeps is replaced.`,
         "source is owner/repo, owner/repo@skill, or a GitHub URL such as https://github.com/owner/repo/tree/<ref>/<path> (the first segment after tree/ is the ref, so write a branch name with a slash as feature%2Ffoo; without one, the default branch is used). Public repos work, and so do private ones in an account the GitHub App is installed on. Other sources (GitLab, other hosts, well-known indexes) are not fetched here: run `npx skills add <source> --copy` in a Container and save the folder with environment_skill_save.",
-        `With id "${EVERY_ENVIRONMENT_ID}" the Skills are kept for every Environment: every Environment's Workspaces serve them at their next readying (this Session's at once, unless its Environment keeps its own Skill of the name). They steer every future Session, so the user must approve the install, reading each Skill on the card: it shows the first ${MAX_CARD_CHARS} characters of each Skill's files and warns the user of what it cuts, so install Skills small enough to review in full, or expect them to be declined. One request shows at most ${MAX_APPROVED_SKILLS} Skills: name fewer with skills, then call again for the rest. The call reads the repo, asks about the Skills it would keep (those kept with the same files and Skill source already are left out), and on Approve installs exactly the commit the user was shown, each Skill only while the Skill of its name is still the one that was shown. ${INSTALL_APPROVAL}`,
+        `With id "${GLOBAL_ID}" the Skills are kept Global: each Environment's Workspaces serve them at their next readying (this Session's at once, unless its Environment keeps its own Skill of the name). They steer every future Session, so the user must approve the install, reading each Skill on the card: it shows the first ${MAX_CARD_CHARS} characters of each Skill's files and warns the user of what it cuts, so install Skills small enough to review in full, or expect them to be declined. One request shows at most ${MAX_APPROVED_SKILLS} Skills: name fewer with skills, then call again for the rest. The call reads the repo, asks about the Skills it would keep (those kept with the same files and Skill source already are left out), and on Approve installs exactly the commit the user was shown, each Skill only while the Skill of its name is still the one that was shown. ${INSTALL_APPROVAL}`,
         'skills names the Skills to install (by name): ["*"] installs every Skill the repo holds. When the repo holds several and you name none, nothing is installed and its Skills are listed; ask the user which they want, or call again with skills. skill_search finds a source on skills.sh.',
         `Each Skill passes the checks of environment_skill_save (the Agent Skills name rules, text only, ${SKILL_SIZES.file} a file, ${SKILL_SIZES.skill} a Skill, nothing that looks like a credential or a local path; a set holds at most 100 Skills and ${SKILL_SIZES.set}). One that fails is reported and the others are still installed. Each is recorded with your reason and the files before and after, and the user can revert it on the Skills page.`,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("Skills kept for every Environment")),
+      id: Schema.optionalKey(idOrEvery("Skills kept Global")),
       source: Schema.String.check(Schema.isMinLength(1)).annotate({
         description:
           "Where to install from: owner/repo, owner/repo@skill, or a GitHub URL (https://github.com/owner/repo/tree/<ref>/<path>)",
@@ -413,7 +412,7 @@ export const skillTools = ({
       reason: SkillReason,
     }),
     executionMode: "sequential",
-    // A rerun after an eviction waits for the request an install for every Environment made, or takes its answer; one for
+    // A rerun after an eviction waits for the request an install at Global made, or takes its answer; one for
     // an Environment's own Skills runs again: the Skills kept already come back unchanged, and a ref that moved is
     // installed at its new commit.
     replay: "safe",
@@ -425,7 +424,7 @@ export const skillTools = ({
           ...Arr.map(names ?? [], (name) => ({ what: "a Skill name", text: name })),
         ]);
 
-        if (id === EVERY_ENVIRONMENT_ID) {
+        if (id === GLOBAL_ID) {
           return yield* installEverywhere(every, { source, names, reason }, api);
         }
 
@@ -438,7 +437,7 @@ export const skillTools = ({
           author: { conversation: api.conversationId, tool: "environment_skill_install", reason },
         });
 
-        // An install into an Environment's own Skills is made at once; one for every Environment waits for the Approval.
+        // An install into an Environment's own Skills is made at once; one at Global waits for the Approval.
         return yield* installedOutcome(installed, {
           environments,
           log,
