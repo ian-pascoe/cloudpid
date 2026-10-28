@@ -1483,6 +1483,60 @@ const fakeRegistries = () => {
           omitted: 0,
         });
       },
+      view: ({ owner, repo, skill, path: folder, ref }) => {
+        const where = `${owner}/${repo}`;
+
+        if (repo === "gone") {
+          return Effect.fail(
+            SkillRepoError.make({ kind: "not_found", message: `${where} is gone` }),
+          );
+        }
+
+        if (ref === "nope") {
+          return Effect.fail(
+            SkillRepoError.make({ kind: "bad_ref", message: `${where} has no ref` }),
+          );
+        }
+
+        // `twin` is the name of two Skills of the repo, unless a folder says which.
+        if (skill === "twin" && folder === undefined) {
+          return Effect.succeed({
+            status: "ambiguous" as const,
+            repo: where,
+            ref: ref ?? null,
+            commit: "c0ffee0000000000000000000000000000000009",
+            candidates: [
+              { name: "twin", description: "One.", path: "a/twin" },
+              { name: "twin", description: "Two.", path: "b/twin" },
+            ],
+          });
+        }
+
+        const path =
+          folder ??
+          { "grill-me": "skills/productivity/grill-me", tdd: "skills/engineering/tdd" }[skill];
+
+        if (path === undefined || repo === "empty") {
+          return Effect.fail(
+            SkillRepoError.make({ kind: "no_skill", message: `${where} has no Skill ${skill}` }),
+          );
+        }
+
+        return Effect.succeed({
+          status: "found" as const,
+          skill: {
+            repo: where,
+            ref: ref ?? null,
+            commit: "c0ffee0000000000000000000000000000000009",
+            name: skill,
+            description: `What ${skill} does.`,
+            path,
+            skillId: skill,
+            skillMd: `---\nname: ${skill}\n---\nSteps.\n`,
+            files: [{ path: "SKILL.md", size: 30 }, { path: "references/q.md" }],
+          },
+        });
+      },
     } satisfies SkillRepos,
     registries,
     /** The Registry's methods, as the Session DO calls them. */
@@ -3526,6 +3580,105 @@ it("lists a repo with no Skills as an empty list, and says why a repo cannot be 
   expect(gone).toBeInstanceOf(SkillRepoError);
   expect(gone).toMatchObject({ kind: "not_found", message: "o/gone is gone" });
   expect(badRef).toMatchObject({ kind: "bad_ref" });
+});
+
+it("answers one Skill of a repo with its installs from the Skill directory and where it is installed", async () => {
+  const fake = fakeRegistries();
+  const commit = "c0ffee0000000000000000000000000000000001";
+
+  fake.skillsKept.set(DEFAULT_ENVIRONMENT, [
+    {
+      name: "tdd",
+      description: "Test first.",
+      savedAt: 1,
+      source: { repo: "mattpocock/skills", path: "skills/engineering/tdd", ref: null, commit },
+      updateAvailable: true,
+    },
+    // The same repo and name, from another folder: not this Skill.
+    {
+      name: "grill-me",
+      description: "Interview me.",
+      savedAt: 1,
+      source: { repo: "mattpocock/skills", path: "elsewhere/grill-me", ref: null, commit },
+    },
+  ]);
+
+  const view = await call(fake, (registry) =>
+    registry.viewSkill({ owner: "mattpocock", repo: "skills", skill: "tdd", ref: "v2" }),
+  );
+
+  const unknown = await call(fake, (registry) =>
+    registry.viewSkill({ owner: "mattpocock", repo: "skills", skill: "grill-me" }),
+  );
+
+  expect(view).toEqual({
+    status: "found",
+    skill: {
+      repo: "mattpocock/skills",
+      ref: "v2",
+      commit: "c0ffee0000000000000000000000000000000009",
+      name: "tdd",
+      description: "What tdd does.",
+      path: "skills/engineering/tdd",
+      skillId: "tdd",
+      skillMd: "---\nname: tdd\n---\nSteps.\n",
+      files: [{ path: "SKILL.md", size: 30 }, { path: "references/q.md" }],
+      // From the directory's search of the repo.
+      installs: 900_000,
+      installed: {
+        everyEnvironment: false,
+        environments: [DEFAULT_ENVIRONMENT],
+        updateAvailable: true,
+      },
+    },
+  });
+  expect(unknown.status === "found" && unknown.skill.installs).toBeFalsy();
+  expect(unknown.status === "found" && unknown.skill.installed).toBeUndefined();
+});
+
+it("answers a Skill's page without installs when skills.sh does not answer, and says why a Skill cannot be shown", async () => {
+  const fake = fakeRegistries();
+
+  const down = await call(fake, (registry) =>
+    registry.viewSkill({ owner: "down", repo: "skills", skill: "tdd" }),
+  );
+
+  const gone = await call(fake, (registry) =>
+    Effect.flip(registry.viewSkill({ owner: "o", repo: "gone", skill: "tdd" })),
+  );
+
+  const badRef = await call(fake, (registry) =>
+    Effect.flip(registry.viewSkill({ owner: "o", repo: "skills", skill: "tdd", ref: "nope" })),
+  );
+
+  const none = await call(fake, (registry) =>
+    Effect.flip(registry.viewSkill({ owner: "o", repo: "skills", skill: "nope" })),
+  );
+
+  expect(down.status === "found" && down.skill.name).toBe("tdd");
+  expect(down.status === "found" && down.skill.installs).toBeUndefined();
+  expect(gone).toBeInstanceOf(SkillRepoError);
+  expect(gone).toMatchObject({ kind: "not_found", message: "o/gone is gone" });
+  expect(badRef).toMatchObject({ kind: "bad_ref" });
+  expect(none).toMatchObject({ kind: "no_skill" });
+});
+
+it("answers the Skills a name could mean, and the one a folder names", async () => {
+  const fake = fakeRegistries();
+
+  const twins = await call(fake, (registry) =>
+    registry.viewSkill({ owner: "o", repo: "skills", skill: "twin" }),
+  );
+
+  const second = await call(fake, (registry) =>
+    registry.viewSkill({ owner: "o", repo: "skills", skill: "twin", path: "b/twin" }),
+  );
+
+  expect(twins).toMatchObject({
+    status: "ambiguous",
+    candidates: [{ path: "a/twin" }, { path: "b/twin" }],
+  });
+  expect(second).toMatchObject({ status: "found", skill: { name: "twin", path: "b/twin" } });
 });
 
 it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {

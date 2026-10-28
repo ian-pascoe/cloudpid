@@ -2,8 +2,9 @@
 // The Skills a GitHub repo holds, for the repo page (`/skills/:owner/:repo`; ADR-0026, GLOSSARY.md → Skill directory,
 // `docs/architecture/workspace.md` → _The Skill directory_): every Skill the walk an install uses finds in the repo at a ref,
 // read by the main Worker as the GitHub App with a read-only token (`skill-reader.ts`), so private repos the app can read are
-// listed and no token reaches a browser or a Session DO. The Skill's own page (#309) reads the same repo at the same ref
-// through the same `SkillRepos` seam and the same `SkillRepoError`; the owner page (#310) needs no GitHub.
+// listed and no token reaches a browser or a Session DO. The Skill's own page (`/skills/:owner/:repo/:skill`) reads the same
+// repo at the same ref through the same `SkillRepos` seam and the same `SkillRepoError` (`view`); the owner page needs no
+// GitHub.
 //
 // Why the Worker's Cache API holds what a listing reads of each `SKILL.md`, as the Skill directory's leaderboards are
 // kept (`skill-directory.ts`): a blob's SHA names its content for ever, so the answer for it never goes stale and is put
@@ -19,6 +20,8 @@ import {
   SkillRepoError,
   type SkillRepoErrorKind,
   type SkillRepoListing,
+  type SkillView,
+  type SkillViewAnswer,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -30,8 +33,11 @@ import {
   type RepoReader,
   type SkillMdCache,
   type SkillMdInfo,
+  type SkillViewing,
   type SkippedSkill,
+  skillIdOf,
   slug,
+  viewSkill,
 } from "../github/skill-fetch.ts";
 import { parseSkillSource } from "../github/skill-source.ts";
 import { installedIn, type InstalledSkillRef } from "./skill-badges.ts";
@@ -42,6 +48,14 @@ export type SkillRepoRows = Omit<SkillRepoListing, "skills" | "unreadable"> & {
   readonly skills: ReadonlyArray<ListedSkill & { readonly skillId: string }>;
   readonly unreadable: ReadonlyArray<Pick<SkippedSkill, "path" | "message">>;
 };
+
+/** What a Skill's page reads of GitHub, before the joins with the Skill directory and the installed Skills. */
+export type SkillViewRows = Omit<SkillView, "installs" | "installed">;
+
+/** What `SkillRepos.view` reads: the Skill, or the Skills its name could mean. */
+export type SkillViewed =
+  | { readonly status: "found"; readonly skill: SkillViewRows }
+  | Extract<SkillViewAnswer, { readonly status: "ambiguous" }>;
 
 /** The repo a page names, at a ref: `ref` absent or empty is the default branch. */
 export type SkillRepoAsk = {
@@ -54,16 +68,21 @@ export type SkillRepoAsk = {
 export type SkillRepos = {
   /** Every Skill the repo holds at the ref, from GitHub, with each `SKILL.md` read once per blob. */
   readonly list: (ask: SkillRepoAsk) => Effect.Effect<SkillRepoRows, SkillRepoError>;
+  /**
+   * The Skill `skill` of the repo at the ref, found as an install finds a named Skill, or the one in the folder `path`:
+   * its `SKILL.md` and the files an install takes, read at the ref's head; or the Skills the name could mean. Fails with
+   * kind `no_skill` when the repo, readable, holds no such Skill.
+   */
+  readonly view: (
+    ask: SkillRepoAsk & { readonly skill: string; readonly path?: string | undefined },
+  ) => Effect.Effect<SkillViewed, SkillRepoError>;
 };
-
-const folderName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 
 /**
  * What a Skill's page (`/skills/:owner/:repo/:skill`) calls it: its folder's name, or its own name for a Skill at the
  * repo's root, which has no folder. It is how a link names a Skill, so a page that finds the Skill again uses this.
  */
-export const skillIdOf = ({ path, name }: Pick<ListedSkill, "path" | "name">): string =>
-  folderName(path) === "" ? name : folderName(path);
+export { skillIdOf };
 
 /** How long the answer for a blob is kept: the max-age of what is put. The blob's content does not change; the cache may forget. */
 export const SKILL_MD_TTL_SECONDS = 30 * 24 * 3_600;
@@ -110,6 +129,8 @@ export const skillMdCacheOver = (cache: LeaderboardCache): SkillMdCache => ({
 /** The failure a page shows of a failed read of GitHub. */
 const errorKind = (kind: string): SkillRepoErrorKind => {
   switch (kind) {
+    case "no_match":
+      return "no_skill";
     case "not_found":
     case "bad_ref":
     case "rate_limited":
@@ -152,6 +173,27 @@ const repoOf = ({
   return { ok: true, name: { owner, name: repo }, ref: parsed.source.ref };
 };
 
+/** What a page shows of a Skill the walk found, or the Skills a name could mean. */
+const viewedRows = (viewing: Exclude<SkillViewing, { readonly status: "failed" }>): SkillViewed => {
+  if (viewing.status === "ambiguous") return viewing;
+
+  const skill: Types.Mutable<SkillViewRows> = {
+    repo: viewing.repo,
+    ref: viewing.ref,
+    commit: viewing.commit,
+    name: viewing.skill.name,
+    description: viewing.skill.description,
+    path: viewing.skill.path,
+    skillId: skillIdOf(viewing.skill),
+    skillMd: viewing.skillMd,
+    files: viewing.files,
+  };
+
+  if (viewing.refused !== undefined) skill.refused = viewing.refused;
+
+  return { status: "found", skill };
+};
+
 /** `SkillRepos` over GitHub, read through `reader`, each `SKILL.md`'s reading kept in `cache`. */
 export const skillReposOver = ({
   reader,
@@ -161,6 +203,9 @@ export const skillReposOver = ({
   readonly cache: LeaderboardCache;
 }): SkillRepos => {
   const skillMds = skillMdCacheOver(cache);
+
+  const failure = (kind: string, message: string) =>
+    Effect.fail(SkillRepoError.make({ kind: errorKind(kind), message }));
 
   return {
     list: (ask) => {
@@ -174,9 +219,7 @@ export const skillReposOver = ({
       ).pipe(
         Effect.flatMap((listing) =>
           listing.status === "failed"
-            ? Effect.fail(
-                SkillRepoError.make({ kind: errorKind(listing.kind), message: listing.message }),
-              )
+            ? failure(listing.kind, listing.message)
             : Effect.succeed({
                 repo: listing.repo,
                 ref: listing.ref,
@@ -186,6 +229,22 @@ export const skillReposOver = ({
                 internal: listing.internal,
                 omitted: listing.omitted,
               }),
+        ),
+      );
+    },
+    view: ({ skill, path, ...ask }) => {
+      const asked = repoOf(ask);
+
+      if (!asked.ok)
+        return Effect.fail(SkillRepoError.make({ kind: "invalid", message: asked.message }));
+
+      return Effect.promise(() =>
+        viewSkill(reader, { repo: asked.name, ref: asked.ref, skill, path, cache: skillMds }),
+      ).pipe(
+        Effect.flatMap((viewing) =>
+          viewing.status === "failed"
+            ? failure(viewing.kind, viewing.message)
+            : Effect.succeed(viewedRows(viewing)),
         ),
       );
     },
@@ -254,4 +313,38 @@ export const joinRepoSkills = (
     ...rows,
     skills: skills.toSorted((left, right) => (right.installs ?? -1) - (left.installs ?? -1)),
   };
+};
+
+/**
+ * A Skill's page's answer: `rows` with the Skill's installs and where it is installed. The installs come from the Skill
+ * directory's `found` rows of the same repo, matched as `joinRepoSkills` matches the repo's Skills; where it is installed
+ * is matched exactly by repo and folder.
+ */
+export const joinSkillView = (
+  rows: SkillViewRows,
+  installed: ReadonlyArray<InstalledSkillRef>,
+  found: ReadonlyArray<DirectoryRow>,
+): SkillView => {
+  const [skill] = joinRepoSkills(
+    {
+      repo: rows.repo,
+      ref: rows.ref,
+      commit: rows.commit,
+      skills: [
+        { name: rows.name, description: rows.description, path: rows.path, skillId: rows.skillId },
+      ],
+      unreadable: [],
+      omitted: 0,
+    },
+    installed,
+    found,
+  ).skills;
+
+  const view: Types.Mutable<SkillView> = { ...rows };
+
+  if (skill?.installs !== undefined) view.installs = skill.installs;
+
+  if (skill?.installed !== undefined) view.installed = skill.installed;
+
+  return view;
 };

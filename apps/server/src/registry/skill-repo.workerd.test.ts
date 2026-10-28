@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { githubContents } from "../github/contents.ts";
 import { fakeGithub, skillMd } from "../github/skill-repo.fixture.ts";
-import { GithubReadError } from "../github/skill-fetch.ts";
+import { fetchSkills, GithubReadError } from "../github/skill-fetch.ts";
 import type { LeaderboardCache } from "./skill-directory.ts";
 import { skillMdKey, skillReposOver } from "./skill-repo.ts";
 
@@ -446,5 +446,285 @@ describe("a private repo", () => {
 
     expect(error.kind).toBe("not_found");
     expect(error.message).toContain("private and the GitHub App is not installed on acme");
+  });
+});
+
+describe("a Skill's page", () => {
+  const found = <A extends { readonly status: string }>(viewed: A) => {
+    if (viewed.status !== "found") throw new Error(`not found: ${viewed.status}`);
+
+    // SAFETY: the status was just checked to be `found`.
+    return viewed as Extract<A, { status: "found" }>;
+  };
+
+  const viewIn = async (
+    github: ReturnType<typeof fakeGithub>,
+    ask: { skill: string; path?: string; ref?: string | undefined; repo?: string },
+  ) => {
+    const { store } = await realCache();
+    const { repo = "skills", ...rest } = ask;
+
+    return run(
+      skillReposOver({ reader: github.reader, cache: store }).view({ owner: "o", repo, ...rest }),
+    );
+  };
+
+  it("has its SKILL.md as it is at the commit and the files an install takes, SKILL.md first", async () => {
+    const github = fakeGithub();
+
+    const commit = github.push("o/skills", {
+      ...REPO,
+      "skills/grill-me/scripts/run.sh": "echo hi\n",
+      // What an install leaves out of a Skill's folder.
+      "skills/grill-me/metadata.json": "{}",
+      "skills/grill-me/.git/config": "x",
+      "skills/grill-me/__pycache__/a.pyc": "x",
+    });
+
+    const { skill } = found(await viewIn(github, { skill: "grill-me" }));
+
+    expect(skill).toEqual({
+      repo: "o/skills",
+      ref: null,
+      commit,
+      name: "grill-me",
+      description: "What grill-me does.",
+      path: "skills/grill-me",
+      skillId: "grill-me",
+      skillMd: skillMd("grill-me"),
+      files: [
+        { path: "SKILL.md", size: skillMd("grill-me").length },
+        { path: "references/questions.md", size: 7 },
+        { path: "scripts/run.sh", size: 8 },
+      ],
+    });
+  });
+
+  it("lists the very files an install of the Skill takes", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", {
+      ...REPO,
+      "skills/tdd/a/b.md": "b",
+      "skills/tdd/metadata.json": "{}",
+      "skills/tdd/.git/HEAD": "x",
+    });
+
+    const fetched = await fetchSkills(github.reader, {
+      source: { owner: "o", name: "skills", repo: "o/skills", ref: null, path: "", skill: null },
+      skills: ["tdd"],
+    });
+
+    const { skill } = found(await viewIn(github, { skill: "tdd" }));
+
+    if (fetched.status !== "fetched") throw new Error("not fetched");
+
+    expect(skill.files.map(({ path }) => path).toSorted()).toEqual(
+      Object.keys(fetched.skills[0]?.files ?? {}).toSorted(),
+    );
+    expect(skill.skillMd).toBe(fetched.skills[0]?.files["SKILL.md"]);
+    expect(skill.commit).toBe(fetched.commit);
+  });
+
+  it("is a Skill at the repo's root by its own name, with its SKILL.md alone (the rest of the repo is not the Skill's), in any case of file name", async () => {
+    const github = fakeGithub();
+
+    github.push("o/one", { "skill.md": skillMd("only-one"), "README.md": "hi", "src/a.ts": "x" });
+
+    const { skill } = found(await viewIn(github, { repo: "one", skill: "only-one" }));
+
+    expect(skill).toMatchObject({ name: "only-one", path: "", skillId: "only-one" });
+    expect(skill.files).toEqual([{ path: "SKILL.md", size: skillMd("only-one").length }]);
+  });
+
+  it("is found by the name its SKILL.md gives in any case, else by its folder's name, and by its folder with a path", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", {
+      "skills/grill/SKILL.md": skillMd("Grill Me"),
+      "skills/other/SKILL.md": skillMd("other"),
+    });
+
+    expect(found(await viewIn(github, { skill: "grill me" })).skill.path).toBe("skills/grill");
+    expect(found(await viewIn(github, { skill: "Grill-Me" })).skill.path).toBe("skills/grill");
+    // No Skill is named grill, but a folder is.
+    expect(found(await viewIn(github, { skill: "grill" })).skill.name).toBe("Grill Me");
+    expect(found(await viewIn(github, { skill: "x", path: "skills/other" })).skill.name).toBe(
+      "other",
+    );
+  });
+
+  it("is an internal Skill too, as an install by name takes it, but is not in the listing", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", REPO);
+
+    const { store } = await realCache();
+    const repos = skillReposOver({ reader: github.reader, cache: store });
+
+    expect(
+      found(await run(repos.view({ owner: "o", repo: "skills", skill: "secret" }))).skill.name,
+    ).toBe("secret");
+    expect(
+      (await run(repos.list({ owner: "o", repo: "skills" }))).skills.map((s) => s.name),
+    ).toEqual(["grill-me", "tdd"]);
+  });
+
+  it("is told apart when several Skills answer to a name, until a folder names one", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", {
+      "skills/a/twin/SKILL.md": skillMd("twin", "One."),
+      "skills/b/twin/SKILL.md": skillMd("twin", "Two."),
+      "skills/c/SKILL.md": skillMd("c"),
+    });
+
+    const twins = await viewIn(github, { skill: "twin" });
+
+    expect(twins).toMatchObject({
+      status: "ambiguous",
+      repo: "o/skills",
+      candidates: [
+        { name: "twin", path: "skills/a/twin" },
+        { name: "twin", path: "skills/b/twin" },
+      ],
+    });
+
+    const second = found(await viewIn(github, { skill: "twin", path: "skills/b/twin" }));
+
+    expect(second.skill.skillMd).toContain("Two.");
+  });
+
+  it("is read at the ref named, with the commit it was read at", async () => {
+    const github = fakeGithub();
+    const first = github.push("o/skills", { "skills/a/SKILL.md": skillMd("a", "Old.") });
+
+    github.push("o/skills", { "skills/a/SKILL.md": skillMd("a", "New.") });
+    github.push("o/skills", { "skills/a/SKILL.md": skillMd("a", "Tagged.") }, "v1.0");
+
+    const read = async (ref?: string) => found(await viewIn(github, { skill: "a", ref })).skill;
+
+    expect((await read()).skillMd).toContain("New.");
+    expect((await read("v1.0")).skillMd).toContain("Tagged.");
+    expect(await read(first)).toMatchObject({ commit: first, ref: first });
+    expect((await read(first)).skillMd).toContain("Old.");
+  });
+
+  it("reads each SKILL.md once to tell what it says, and none of the Skill's other files", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", REPO);
+    github.reset();
+
+    const { store, puts } = await realCache();
+    const repos = skillReposOver({ reader: github.reader, cache: store });
+
+    await run(repos.view({ owner: "o", repo: "skills", skill: "tdd" }));
+
+    // Each SKILL.md is read once to tell what it says (kept by blob); the text shown is the Skill's own, the same blob.
+    expect(blobsAsked(github.requests)).toHaveLength(4);
+    expect(puts).toHaveLength(4);
+
+    github.reset();
+    await run(repos.view({ owner: "o", repo: "skills", skill: "tdd" }));
+
+    // Only the text of the SKILL.md shown is read again.
+    expect(blobsAsked(github.requests)).toHaveLength(1);
+  });
+
+  it("is told when an install would refuse it for its size, with its files still listed", async () => {
+    const github = fakeGithub();
+
+    github.push("o/big", {
+      "skills/big/SKILL.md": skillMd("big"),
+      "skills/big/huge.txt": "x".repeat(1536 * 1024 + 1),
+    });
+
+    const { skill } = found(await viewIn(github, { repo: "big", skill: "big" }));
+
+    expect(skill.refused).toContain("huge.txt");
+    expect(skill.files.map(({ path }) => path)).toEqual(["SKILL.md", "huge.txt"]);
+  });
+
+  it("is not found when the repo is readable and holds no such Skill, nor a Skill in the folder", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", REPO);
+
+    const { store } = await realCache();
+    const repos = skillReposOver({ reader: github.reader, cache: store });
+
+    const none = await failure(repos.view({ owner: "o", repo: "skills", skill: "nope" }));
+
+    const noFolder = await failure(
+      repos.view({ owner: "o", repo: "skills", skill: "tdd", path: "docs" }),
+    );
+
+    const noSkill = await failure(
+      repos.view({ owner: "o", repo: "skills", skill: "draft", path: "skills/draft" }),
+    );
+
+    expect(none).toBeInstanceOf(SkillRepoError);
+    expect(none.kind).toBe("no_skill");
+    expect(none.message).toContain('no Skill named "nope"');
+    expect(noFolder.kind).toBe("no_skill");
+    expect(noSkill.kind).toBe("no_skill");
+    expect(noSkill.message).toContain("is no Skill");
+  });
+
+  it("fails as a listing does: not found, a ref the repo lacks, GitHub's own failures, names GitHub cannot have", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", REPO);
+
+    const { store } = await realCache();
+    const repos = skillReposOver({ reader: github.reader, cache: store });
+
+    expect((await failure(repos.view({ owner: "o", repo: "nope", skill: "tdd" }))).kind).toBe(
+      "not_found",
+    );
+    expect(
+      (await failure(repos.view({ owner: "o", repo: "skills", skill: "tdd", ref: "nope" }))).kind,
+    ).toBe("bad_ref");
+
+    github.fail("o/skills", GithubReadError.of("rate_limited", "GitHub said rate_limited"));
+
+    expect(await failure(repos.view({ owner: "o", repo: "skills", skill: "tdd" }))).toMatchObject({
+      kind: "rate_limited",
+      message: "GitHub said rate_limited",
+    });
+
+    github.fail("o/skills", undefined);
+    github.reset();
+
+    expect((await failure(repos.view({ owner: "o", repo: "..", skill: "tdd" }))).kind).toBe(
+      "invalid",
+    );
+    expect(github.requests).toEqual([]);
+
+    const truncated = skillReposOver({
+      reader: { ...github.reader, tree: async () => ({ entries: [], truncated: true }) },
+      cache: store,
+    });
+
+    expect((await failure(truncated.view({ owner: "o", repo: "skills", skill: "tdd" }))).kind).toBe(
+      "truncated",
+    );
+  });
+
+  it("is not served when the GitHub App loses access to the repo", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", REPO);
+
+    const { store } = await realCache();
+    const repos = skillReposOver({ reader: github.reader, cache: store });
+
+    await run(repos.view({ owner: "o", repo: "skills", skill: "tdd" }));
+    github.fail("o/skills", GithubReadError.of("not_found", "GitHub has no repo o/skills"));
+
+    expect((await failure(repos.view({ owner: "o", repo: "skills", skill: "tdd" }))).kind).toBe(
+      "not_found",
+    );
   });
 });

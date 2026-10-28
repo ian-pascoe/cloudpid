@@ -27,6 +27,7 @@ import {
   SkillRepoError,
   SkillOwnerListing,
   SkillRepoListing,
+  SkillViewAnswer,
   SkillSearchResult,
   SkillUpdate,
 } from "./skills.ts";
@@ -820,6 +821,27 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { owner: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)) },
     success: SkillOwnerListing,
     error: SkillDirectoryError,
+  }),
+  /**
+   * One Skill of a GitHub repo as a Skill's page shows it: Skill `skill` of `owner`/`repo` at `ref` (a branch, tag or
+   * commit; absent: the default branch's head), found as an install finds a named Skill (the name its SKILL.md gives, else
+   * its folder's name), or, with `path`, exactly the Skill in that folder of the repo (`""`: its root), whatever it is
+   * called. It answers the SKILL.md and the files an install would take, read at one commit by the main Worker as the
+   * GitHub App with a read-only token (so a private repo the app can read works), with the Skill's installs when skills.sh
+   * knows them and where it is installed here; or, when the name means several Skills and no `path` was given, those
+   * Skills, with nothing read of them. Fails with a `SkillRepoError` as `listRepoSkills` does, and with kind `no_skill`
+   * when the repo has no such Skill.
+   */
+  Rpc.make("viewSkill", {
+    payload: {
+      owner: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)),
+      repo: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)),
+      skill: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)),
+      path: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH * 4))),
+      ref: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH))),
+    },
+    success: SkillViewAnswer,
+    error: SkillRepoError,
   }),
   /**
    * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The
