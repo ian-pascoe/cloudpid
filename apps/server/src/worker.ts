@@ -213,8 +213,15 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const branches = draftBranches(githubBranches(github));
 
     // The repo page's Skills, read with a read-only token of the GitHub App (one reader, so one token) and kept by blob in
-    // the Worker's cache: a Durable Object has none.
-    const skillRepos = skillReposOver({ reader: githubSkillReader(github), cache: caches.default });
+    // the Worker's cache (a Durable Object has none). `caches` exists only in a request's isolate, not where the stack is
+    // planned (`alchemy dev` and a deploy run this init in Node), so the cache is looked up per call.
+    const skillRepos = skillReposOver({
+      reader: githubSkillReader(github),
+      cache: {
+        match: (url) => caches.default.match(url),
+        put: (url, response) => caches.default.put(url, response),
+      },
+    });
 
     return {
       fetch: Effect.gen(function* () {
