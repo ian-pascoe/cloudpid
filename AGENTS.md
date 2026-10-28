@@ -9,6 +9,13 @@
 
 Layout is in `docs/spec.md` → _Repository layout_. Root `typecheck`, `lint`, `test`, and `build` scripts run through Turborepo (`turbo.json`); `pnpm check` runs all but `build`, then `format:check` (oxfmt runs once at the root). Run one package with `pnpm --filter @cloudpid/protocol test`.
 
+**In the cloudpid harness, run focused checks only.** If you are an agent in a cloudpid Workspace (the repo is under `/workspace`, next to `/workspace/.cloudpid`), do not run `pnpm check`, a root `test`, or a whole package's test suite, and do not have your sub-agents run them. CI runs the full suite on every push. Run only:
+- the typecheck of the packages you touched;
+- `oxlint` and `oxfmt` on the files you changed;
+- the single test files that cover your change (`pnpm --filter @cloudpid/<pkg> exec vitest run <file>`; for workerd tests, add `--project workerd`).
+
+The pre-push hook's typecheck, lint and format check still run, and Turborepo caches them.
+
 Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<dir>` and follows the same shape:
 
 - **Just-in-time**: `exports` point at `src/*.ts`; there is no build step to run before dependents see a change. Add the package's own tests as `src/*.test.ts` (the web app's component tests may be `src/*.test.tsx`, rendered with `react-dom/server`). Tests that need workerd (Durable Object storage, alarms, eviction) are `src/**/*.workerd.test.ts`, run by the package's `workerd` Vitest project through `@cloudflare/vitest-plugin` (see `apps/server/vitest.config.ts`): `pnpm exec vitest run --project workerd <file>`. The plugin is patched (`patches/@cloudflare__vitest-plugin@1.4.6.patch`) to keep the module snapshot it sends a reused worker under workerd's 32 MiB WebSocket message limit, past which the worker dies with `1009 Message is too large` ([cloudflare/workers-sdk#16349](https://github.com/cloudflare/workers-sdk/issues/16349)). When upgrading the plugin, `pnpm install` fails on the stale patch: drop it if upstream fixed #16349, else port it.
@@ -89,7 +96,7 @@ Husky hooks run on every commit and push:
 
 - **pre-commit**: lint-staged runs `oxlint --fix` and `oxfmt` on staged files.
 - **commit-msg**: commitlint requires [Conventional Commits](https://www.conventionalcommits.org/) (`feat: …`, `fix: …`, `chore: …`).
-- **pre-push**: `pnpm run typecheck`, `pnpm run lint` (both through Turborepo, cached), and `pnpm run format:check`. Tests run in CI; run `pnpm run check` for everything locally.
+- **pre-push**: `pnpm run typecheck`, `pnpm run lint` (both through Turborepo, cached), and `pnpm run format:check`. Tests run in CI; run `pnpm run check` for everything locally (outside the cloudpid harness: see _Workspace_).
 - **post-merge / post-checkout**: `pnpm install` when `pnpm-lock.yaml` changed, otherwise a reference-repository sync.
 
 ## Agent skills
