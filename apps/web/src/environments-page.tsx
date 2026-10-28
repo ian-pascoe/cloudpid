@@ -1732,7 +1732,7 @@ const SkillsSection = ({ id }: { id: string }) => {
                     {skill.updateAvailable === true && (
                       <span
                         className="rounded border border-sky-500/60 px-1 text-sky-600 dark:text-sky-400"
-                        title="Its folder changed upstream on the ref it was installed from."
+                        title="Its folder changed at its Skill source, on the ref it was installed from."
                       >
                         update available
                       </span>

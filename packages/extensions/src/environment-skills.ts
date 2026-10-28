@@ -53,7 +53,6 @@ export type {
   SkillsInstalled,
   SkillsUpdated,
   SkillToolDeps,
-  SkillUpdatesPreview,
 } from "./environment-skill-results.ts";
 
 /** The Workspace's files: a folder elsewhere is the Container's only, and is not read. */

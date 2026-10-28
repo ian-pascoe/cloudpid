@@ -172,7 +172,7 @@ export type Skills = {
    * saved: the folder's hash at its source's commit, and whether an update is available. Only while the Skill still has
    * `commit` as its source's (it may have been saved again since the check read it); says whether it did.
    */
-  readonly note: (
+  readonly recordFound: (
     scope: string,
     name: string,
     commit: string,
@@ -225,7 +225,7 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
         .toArray(),
       (row) => ({ scope: row.scope, ...toSkill(row) }),
     ),
-  note: (scope, name, commit, { folderHash, updateAvailable }) => {
+  recordFound: (scope, name, commit, { folderHash, updateAvailable }) => {
     const [row] = sql
       .exec<SkillRow>(`SELECT ${COLUMNS} FROM skills WHERE scope = ? AND name = ?`, scope, name)
       .toArray();

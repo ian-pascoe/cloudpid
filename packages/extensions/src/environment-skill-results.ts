@@ -9,10 +9,12 @@
 import {
   type AgentChange,
   type SkillExpectation,
-  type SkillSource,
   type SkillInstallation,
   type SkillInstallPin,
   type SkillInstallPreview,
+  type SkillUpdatePin,
+  type SkillUpdatePreview,
+  type SkillUpdateRun,
   shortSha,
   SKILLS_ROOT,
   skillField,
@@ -77,75 +79,13 @@ export type SkillsInstalled =
   | Exclude<SkillInstallation, { readonly status: "installed" }>
   | (Extract<SkillInstallation, { readonly status: "installed" }> & { readonly handed: boolean });
 
-/** What became of one Skill an update was asked for. */
-export type SkillUpdateResult =
-  | {
-      readonly name: string;
-      readonly outcome: "updated";
-      readonly from: SkillSource;
-      readonly to: SkillSource;
-      /** Whether the edits the agent made to it were replaced. */
-      readonly overwrote: boolean;
-      readonly change?: AgentChange | undefined;
-    }
-  /** Its folder is the same at the ref's latest commit: nothing was changed or recorded. */
-  | { readonly name: string; readonly outcome: "unchanged"; readonly message: string }
-  /** Refused: it was edited since it was installed and no overwrite was asked. */
-  | { readonly name: string; readonly outcome: "modified"; readonly message: string }
-  /** Not updated: no such Skill, none installed, GitHub gave no answer, or the files fail a save's checks. */
-  | { readonly name: string; readonly outcome: "rejected"; readonly message: string }
-  /** It was saved again since the owner was asked: nothing was changed. */
-  | { readonly name: string; readonly outcome: "changed-since"; readonly message: string };
-
-/** A Skill an update would move, with the files it would take: for the owner's Approval card (nothing applied). */
-export type SkillUpdateReady = {
-  readonly name: string;
-  readonly outcome: "ready";
-  readonly from: SkillSource;
-  readonly to: SkillSource;
-  readonly description: string;
-  readonly files: Readonly<Record<string, string>>;
-  readonly folderHash: string;
-  /** When the Skill kept was last saved: the approved update is made only while it still was then. */
-  readonly savedAt: number;
-  /** The Skill is modified: the update would replace the agent's edits. */
-  readonly overwrites: boolean;
-  readonly current: { readonly description: string; readonly files: ReadonlyArray<string> };
-};
-
-/** How an update of Skills went. */
+/**
+ * How an update of Skills went: as the Registry answers (`SkillUpdateRun`), and for one that was made, whether this
+ * Session's own Workspace serves the new Skill set now.
+ */
 export type SkillsUpdated =
-  | {
-      readonly status: "done";
-      readonly environment: ChangedEnvironment;
-      /** Each Skill asked for (or marked update available), in the order it was asked. */
-      readonly results: ReadonlyArray<SkillUpdateResult>;
-      /** Whether this Session's own Workspace serves the new Skill set now. */
-      readonly handed: boolean;
-    }
-  /** No Skill was named and none is marked update available. */
-  | { readonly status: "nothing"; readonly environment: ChangedEnvironment }
-  | { readonly status: "refused"; readonly message: string }
-  | { readonly status: "missing" };
-
-/** What an update would do, with nothing applied. */
-export type SkillUpdatesPreview =
-  | {
-      readonly status: "done";
-      readonly environment: ChangedEnvironment;
-      readonly results: ReadonlyArray<SkillUpdateResult | SkillUpdateReady>;
-    }
-  | { readonly status: "nothing"; readonly environment: ChangedEnvironment }
-  | { readonly status: "refused"; readonly message: string }
-  | { readonly status: "missing" };
-
-/** The update the owner was shown for a Skill, which an approved update applies exactly. */
-export type SkillUpdatePin = {
-  readonly name: string;
-  readonly savedAt: number;
-  readonly commit: string;
-  readonly folderHash: string;
-};
+  | Exclude<SkillUpdateRun, { readonly status: "done" }>
+  | (Extract<SkillUpdateRun, { readonly status: "done" }> & { readonly handed: boolean });
 
 /** How the removal of a Skill went. */
 export type SkillRemoved =
@@ -249,7 +189,7 @@ export type EnvironmentSkills = {
     readonly environment: string;
     readonly names?: ReadonlyArray<string> | undefined;
     readonly overwrite: boolean;
-  }) => Effect.Effect<SkillUpdatesPreview, EnvironmentsError>;
+  }) => Effect.Effect<SkillUpdatePreview, EnvironmentsError>;
   /** What `installSkills` would do with the same source, nothing kept or recorded. */
   readonly previewInstall: (input: {
     readonly environment: string;

@@ -762,6 +762,19 @@ describe("the variables kept for every Environment", () => {
     }
 
     expect(environments.changes).toEqual([]);
+
+    const refusal = await failure(
+      run(tool("environment_container_resize"), { id: "*", reason: "r", size: "cpu-2" }),
+    );
+
+    for (const taker of [
+      "environment_skill_save",
+      "environment_skill_install",
+      "environment_skill_update",
+      "environment_skill_remove",
+    ]) {
+      expect(refusal, taker).toContain(taker);
+    }
   });
 });
 

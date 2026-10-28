@@ -44,9 +44,7 @@ import { githubSkillReader } from "./skill-reader.ts";
 import {
   previewSkillUpdates,
   runDailySkillCheck,
-  type SkillUpdatePreview,
-  type SkillUpdates,
-  type UpdatePin,
+  type UpdateRequest,
   updateSkills,
 } from "./skill-updates.ts";
 import {
@@ -55,6 +53,8 @@ import {
   type SkillInstallation,
   type SkillInstallPin,
   type SkillInstallPreview,
+  type SkillUpdatePreview,
+  type SkillUpdateRun,
 } from "@cloudpid/protocol";
 
 import { SecretsConfig } from "../session/secrets.ts";
@@ -522,28 +522,18 @@ export type RegistryMethods = {
    * Environment), the commits and folders the owner was shown, and only while each Skill was last saved then. The caller
    * hands the Session's own Workspace the new Skill set after.
    */
-  readonly agentUpdateSkills: (input: {
-    readonly environment: string;
-    readonly names?: ReadonlyArray<string> | undefined;
-    readonly overwrite: boolean;
-    readonly pins?: ReadonlyArray<UpdatePin> | undefined;
-    readonly author: AgentChangeAuthor;
-  }) => Effect.Effect<SkillUpdates>;
+  readonly agentUpdateSkills: (
+    input: UpdateRequest & { readonly author: AgentChangeAuthor },
+  ) => Effect.Effect<SkillUpdateRun>;
   /**
    * What `agentUpdateSkills` would do, with nothing saved or recorded: the files each Skill would take, for the owner's
    * Approval card of an update for every Environment.
    */
-  readonly previewSkillUpdates: (input: {
-    readonly environment: string;
-    readonly names?: ReadonlyArray<string> | undefined;
-    readonly overwrite: boolean;
-  }) => Effect.Effect<SkillUpdatePreview>;
+  readonly previewSkillUpdates: (
+    input: Omit<UpdateRequest, "pins">,
+  ) => Effect.Effect<SkillUpdatePreview>;
   /** The owner updates Skills (as `agentUpdateSkills`), recorded as no Agent change and waiting for no Approval. */
-  readonly updateSkills: (input: {
-    readonly environment: string;
-    readonly names?: ReadonlyArray<string> | undefined;
-    readonly overwrite: boolean;
-  }) => Effect.Effect<SkillUpdates>;
+  readonly updateSkills: (input: Omit<UpdateRequest, "pins">) => Effect.Effect<SkillUpdateRun>;
   /**
    * The daily check of the installed Skills (`checkSkillUpdates`): once a day at most, one request for each repo and ref the
    * Skills of every scope came from (and one more for the tree at the installed commit of Skills kept before their hash was
@@ -783,13 +773,9 @@ export const RegistryLive = Registry.make(
           });
 
         /** Update `environment`'s Skills: as Agent changes by `author`, or as the owner's save with none. */
-        const updateFromGithub = (input: {
-          readonly environment: string;
-          readonly names: ReadonlyArray<string> | undefined;
-          readonly overwrite: boolean;
-          readonly pins: ReadonlyArray<UpdatePin> | undefined;
-          readonly author: AgentChangeAuthor | null;
-        }) =>
+        const updateFromGithub = (
+          input: UpdateRequest & { readonly author: AgentChangeAuthor | null },
+        ) =>
           Effect.gen(function* () {
             const hashedBundle = yield* bundle;
             const now = yield* Clock.currentTimeMillis;
@@ -1293,7 +1279,7 @@ export const RegistryLive = Registry.make(
                 : Effect.succeed({ status: "refused" as const, message: unapproved });
             }),
           updateSkills: ({ environment, names, overwrite }) =>
-            updateFromGithub({ environment, names, overwrite, pins: undefined, author: null }),
+            updateFromGithub({ environment, names, overwrite, author: null }),
           previewSkillUpdates: ({ environment, names, overwrite }) =>
             Effect.gen(function* () {
               const hashedBundle = yield* bundle;

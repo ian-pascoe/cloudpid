@@ -7,6 +7,7 @@ import {
   type SkillInstallPin,
   type SkillInstallPreview,
   type SkillExpectation,
+  type SkillUpdatePreview,
   skillField,
 } from "@cloudpid/protocol";
 import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durable/env";
@@ -21,7 +22,6 @@ import type {
   SkillPreview,
   SkillsInstalled,
   SkillsUpdated,
-  SkillUpdatesPreview,
 } from "./environment-skills.ts";
 
 /** Skills that fail when called, for a fake that serves the other tools only. */
@@ -97,7 +97,7 @@ export const fakeSkills = () => {
 
   /** What the Registry answers an update and its preview with, and what each was asked. */
   let update: SkillsUpdated | undefined;
-  let updatePreview: SkillUpdatesPreview | undefined;
+  let updatePreview: SkillUpdatePreview | undefined;
 
   const updates: Array<{
     environment: string;
@@ -356,7 +356,7 @@ export const fakeSkills = () => {
       update = answer;
     },
     /** Answer the next previews of an update with `answer`. */
-    answerUpdatePreview: (answer: SkillUpdatesPreview) => {
+    answerUpdatePreview: (answer: SkillUpdatePreview) => {
       updatePreview = answer;
     },
     previews,

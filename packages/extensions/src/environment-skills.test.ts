@@ -2057,8 +2057,11 @@ describe("environment_skill_update for every Environment", () => {
       change: expect.stringContaining('"grill-me"'),
       reason: args.reason,
     });
-    expect(shown[0]?.before).toContain("grill-me: mattpocock/skills/skills/grill-me at c0ffee0");
+    expect(shown[0]?.before).toContain(
+      "grill-me: kept for every Environment: mattpocock/skills/skills/grill-me at c0ffee0",
+    );
     expect(shown[0]?.after).toContain("New steps.");
+    expect(shown[0]?.after).toContain("━━ grill-me (skills/grill-me) at");
     expect(shown[0]?.after).toContain("── SKILL.md (");
     expect(shown[0]?.after).not.toContain("NOT FULLY SHOWN");
     await vi.waitFor(() => expect(notified).toHaveLength(1));
@@ -2180,12 +2183,13 @@ describe("environment_skill_update for every Environment", () => {
   });
 
   const pin = { name: "grill-me", savedAt: 1_234, commit: NEW_COMMIT, folderHash: "folder-hash-1" };
+  const asked = { overwrite: false, pins: [pin], unseen: { files: 0, characters: 0 }, notKept: [] };
 
   it("applies on a rerun what the owner approved, though GitHub shows nothing to ask about now", async () => {
-    const { call, answeredEarlier, updates, answerUpdate } = await setUp();
+    const { call, answeredEarlier, updates, updatePreviews, answerUpdate } = await setUp();
 
-    // The owner approved the update before the eviction; the rerun's preview finds the Skill gone from the list (unanswered).
-    await answeredEarlier(7, { overwrite: false, pins: [pin] });
+    // The owner approved the update before the eviction; the rerun reads nothing, so GitHub's answer now cannot matter.
+    await answeredEarlier(7, asked);
 
     answerUpdate({
       status: "done",
@@ -2209,14 +2213,37 @@ describe("environment_skill_update for every Environment", () => {
     });
 
     expect(updates).toEqual([expect.objectContaining({ pins: [pin], approved: true })]);
+    expect(updatePreviews).toEqual([]);
     expect(said).toContain("The user approved: updated grill-me");
     expect(pending).toEqual([]);
   });
 
-  it("reports an approved update a rerun finds made, as approved, with nothing more changed", async () => {
-    const { call, answeredEarlier, logged, answerUpdate } = await setUp();
+  it("reports on a rerun the Skills the card left out, and what it could not show", async () => {
+    const { call, answeredEarlier, answerUpdate } = await setUp();
 
-    await answeredEarlier(9, { overwrite: false, pins: [pin] });
+    await answeredEarlier(8, {
+      ...asked,
+      unseen: { files: 2, characters: 900 },
+      notKept: [{ name: "tdd", outcome: "modified", message: "it was edited" }],
+    });
+
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [{ name: "grill-me", outcome: "updated", from, to, overwrote: false }],
+      handed: false,
+    });
+
+    const { text: said } = await call("environment_skill_update", args, { approve: true, task: 8 });
+
+    expect(said).toContain("- tdd (modified): it was edited");
+    expect(said).toContain("900 characters in 2 files were cut or left out");
+  });
+
+  it("reports an approved update a rerun finds made, as approved, with nothing more changed", async () => {
+    const { call, answeredEarlier, logged, updatePreviews, answerUpdate } = await setUp();
+
+    await answeredEarlier(9, asked);
 
     answerUpdate({
       status: "done",
@@ -2235,6 +2262,7 @@ describe("environment_skill_update for every Environment", () => {
 
     expect(said).toContain("The user approved, and the Skills grill-me were updated already");
     expect(logged).toEqual([]);
+    expect(updatePreviews).toEqual([]);
   });
 
   it("asks nothing and says why when the Registry refuses a preview of too many Skills", async () => {

@@ -5,11 +5,10 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of GitHub and the Registry over native arrays.
 import { runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, type SkillUpdatePin } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { fetchSkills, GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
-import { parseSkillSource } from "../github/skill-source.ts";
+import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { fakeGithub, type Files, skillMd } from "../github/skill-repo.fixture.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { installSkills } from "./skill-install.ts";
@@ -19,13 +18,11 @@ import {
   runDailySkillCheck,
   SKILL_CHECK_DOCUMENT,
   SKILL_CHECK_INTERVAL_MS,
-  type UpdatePin,
   updateSkills,
 } from "./skill-updates.ts";
 import {
   hashBundle,
   hashFiles,
-  keepSkillAsOwner,
   openSkills,
   saveSkillAs,
   type SkillChangeContext,
@@ -101,36 +98,6 @@ const inRegistry = <A>(
 
       store.createEnvironment("0000abcd", "Other", 1_000);
 
-      /** Keep a source's Skills for every Environment, as the owner's install does for one. */
-      const installEverywhere = async (source: string, at: number) => {
-        const parsed = parseSkillSource(source);
-
-        if (!parsed.ok) throw new Error(parsed.message);
-
-        const fetched = await fetchSkills(github.reader, { source: parsed.source, skills: ["*"] });
-
-        if (fetched.status !== "fetched") throw new Error(`not fetched: ${fetched.status}`);
-
-        for (const skill of fetched.skills) {
-          keepSkillAsOwner(
-            { storage: state.storage, store, skills, bundle, now: at },
-            {
-              environment: "*",
-              folder: skill.name,
-              files: skill.files,
-              hashed: await hashFiles(skill.files),
-              source: {
-                repo: fetched.repo,
-                path: skill.path,
-                ref: fetched.ref,
-                commit: fetched.commit,
-              },
-              folderHash: skill.folderHash,
-            },
-          );
-        }
-      };
-
       const context = (now: number): SkillChangeContext => ({
         storage: state.storage,
         store,
@@ -147,18 +114,15 @@ const inRegistry = <A>(
         storage: state.storage,
         context,
         install: async (source, { environment, owner = false, at = 1_000, reader } = {}) => {
-          // `installSkills` installs for an Environment; the Skills kept for every Environment are kept the same way.
-          if (environment === "*") {
-            await installEverywhere(source, at);
-
-            return;
-          }
-
+          // The Skills kept for every Environment are installed by the owner here: no Approval is part of the test.
           await installSkills(context(at), reader ?? github.reader, {
             environment: environment ?? DEFAULT_ENVIRONMENT,
             source,
             skills: ["*"],
-            author: owner ? null : { ...author, tool: "environment_skill_install" },
+            author:
+              owner || environment === "*"
+                ? null
+                : { ...author, tool: "environment_skill_install" },
           });
         },
         update: ({ owner = false, at = 2_000, overwrite = false, ...request }) =>
@@ -435,7 +399,7 @@ describe("updating installed Skills", () => {
 
         // Another file of the repo changed: the Skill's folder is the same.
         github.push(REPO, files({ "README.md": "Changed.\n" }));
-        skills.note(
+        skills.recordFound(
           DEFAULT_ENVIRONMENT,
           "tdd",
           skills.get(DEFAULT_ENVIRONMENT, "tdd")?.source?.commit ?? "",
@@ -599,7 +563,7 @@ describe("an update for every Environment the owner approved", () => {
 
         const ready = view.status === "done" ? view.results[0] : undefined;
 
-        const pins: UpdatePin[] =
+        const pins: SkillUpdatePin[] =
           ready?.outcome === "ready"
             ? [
                 {
@@ -652,7 +616,7 @@ describe("an update for every Environment the owner approved", () => {
       const view = await preview({ environment: "*", names: ["grill-me"] });
       const ready = view.status === "done" ? view.results[0] : undefined;
 
-      const pins: UpdatePin[] =
+      const pins: SkillUpdatePin[] =
         ready?.outcome === "ready"
           ? [
               {
@@ -685,6 +649,49 @@ describe("an update for every Environment the owner approved", () => {
         { name: "tdd", outcome: "changed-since", message: expect.stringContaining("not part") },
       ],
     });
+  });
+
+  it("finds an approved update made already, whatever moved since, and records nothing again", async () => {
+    const github = fakeGithub();
+
+    github.push(REPO, files());
+
+    const [first, again, changes, skill] = await inRegistry(
+      async ({ install, preview, update, skills, changes }) => {
+        await install(REPO, { environment: "*" });
+        github.push(REPO, files({}, "Shown steps."));
+
+        const view = await preview({ environment: "*", names: ["grill-me"] });
+        const ready = view.status === "done" ? view.results[0] : undefined;
+
+        const pins: SkillUpdatePin[] =
+          ready?.outcome === "ready"
+            ? [
+                {
+                  name: "grill-me",
+                  savedAt: ready.savedAt,
+                  commit: ready.to.commit,
+                  folderHash: ready.folderHash,
+                },
+              ]
+            : [];
+
+        const one = await update({ environment: "*", names: ["grill-me"], pins, at: 2_000 });
+
+        // The Session was evicted before it saw the answer: the same pins are applied again, later, with the ref moved on.
+        github.push(REPO, files({}, "Later steps."));
+
+        const two = await update({ environment: "*", names: ["grill-me"], pins, at: 3_000 });
+
+        return [one, two, changes.list("*"), skills.get("*", "grill-me")] as const;
+      },
+      github,
+    );
+
+    expect(first).toMatchObject({ results: [{ name: "grill-me", outcome: "updated" }] });
+    expect(again).toMatchObject({ results: [{ name: "grill-me", outcome: "unchanged" }] });
+    expect(changes).toHaveLength(1);
+    expect(skill?.files["SKILL.md"]).toBeDefined();
   });
 });
 

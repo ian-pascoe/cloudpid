@@ -61,80 +61,66 @@ type Card = {
 const bytesOf = (text: string): number => new TextEncoder().encode(text).length;
 
 /**
- * The files of one or more Skills as the Approval card shows them, each Skill's `SKILL.md` first, up to `MAX_CARD_CHARS`
- * characters in all (the Skills share the budget). Each Skill is `heading` (its description, or what the card says of it)
- * and its files. A file that is cut, or left out, says so where it is, and a warning that the owner has not seen the
- * rest, with how much, comes before the files and after them.
+ * A Skill's files as the Approval card shows them, `SKILL.md` first, up to `MAX_CARD_CHARS` characters in all. A file
+ * that is cut, or left out, says so where it is, and a warning that the owner has not seen the rest, with how much,
+ * comes before the files and after them.
  */
-export const cardOfSkills = (
-  skills: ReadonlyArray<{
-    readonly heading: string;
-    readonly files: Readonly<Record<string, string>>;
-  }>,
-): Card => {
+export const cardOf = (description: string, files: Readonly<Record<string, string>>): Card => {
+  const ordered = Arr.sort(
+    Record.toEntries(files),
+    Order.mapInput(Order.String, ([path]: readonly [string, string]) =>
+      path === "SKILL.md" ? "" : path,
+    ),
+  );
+
   let budget = MAX_CARD_CHARS;
   let unseenFiles = 0;
   let unseenCharacters = 0;
   let total = 0;
-  let count = 0;
 
-  const shownSkills = Arr.map(skills, ({ heading, files }) => {
-    const ordered = Arr.sort(
-      Record.toEntries(files),
-      Order.mapInput(Order.String, ([path]: readonly [string, string]) =>
-        path === "SKILL.md" ? "" : path,
-      ),
-    );
+  const shown = Arr.map(ordered, ([path, text]) => {
+    const head = `── ${path} (${bytesOf(text)} bytes)`;
 
-    const shown = Arr.map(ordered, ([path, text]) => {
-      const head = `── ${path} (${bytesOf(text)} bytes)`;
+    total += text.length;
 
-      total += text.length;
-      count += 1;
-
-      if (budget <= 0) {
-        unseenFiles += 1;
-        unseenCharacters += text.length;
-
-        return `${head}, NOT SHOWN ──`;
-      }
-
-      if (text.length <= budget) {
-        budget -= text.length;
-
-        return `${head} ──\n${text}`;
-      }
-
-      const cut = text.length - budget;
-
+    if (budget <= 0) {
       unseenFiles += 1;
-      unseenCharacters += cut;
+      unseenCharacters += text.length;
 
-      const kept = text.slice(0, budget);
+      return `${head}, NOT SHOWN ──`;
+    }
 
-      budget = 0;
+    if (text.length <= budget) {
+      budget -= text.length;
 
-      return `${head}, CUT ──\n${kept}\n… ${cut} more characters NOT SHOWN`;
-    });
+      return `${head} ──\n${text}`;
+    }
 
-    return `${heading}\n\n${Arr.join(shown, "\n\n")}`;
+    const cut = text.length - budget;
+
+    unseenFiles += 1;
+    unseenCharacters += cut;
+
+    const kept = text.slice(0, budget);
+
+    budget = 0;
+
+    return `${head}, CUT ──\n${kept}\n… ${cut} more characters NOT SHOWN`;
   });
 
-  const skill = Arr.join(shownSkills, "\n\n\n");
+  const body = Arr.join(shown, "\n\n");
+
+  const skill = `${description}\n\n${body}`;
 
   if (unseenFiles === 0) return { after: skill, unseen: null };
 
-  const warning = `⚠ NOT FULLY SHOWN: ${unseenCharacters} of ${total} characters (${unseenFiles} of ${count} files) are cut or left out below. Approving saves the whole Skill${skills.length === 1 ? "" : "s"}, including the part you have not seen: it was not reviewed. Decline, and ask for ${skills.length === 1 ? "a Skill" : "Skills"} small enough to review in full, unless you trust the part you cannot see.`;
+  const warning = `⚠ NOT FULLY SHOWN: ${unseenCharacters} of ${total} characters (${unseenFiles} of ${ordered.length} files) are cut or left out below. Approving saves the whole Skill, including the part you have not seen: it was not reviewed. Decline, and ask for a Skill small enough to review in full, unless you trust the part you cannot see.`;
 
   return {
     after: `${warning}\n\n${skill}\n\n${warning}`,
     unseen: { files: unseenFiles, characters: unseenCharacters },
   };
 };
-
-/** A Skill's files as the Approval card shows them (`cardOfSkills`), after its description. */
-export const cardOf = (description: string, files: Readonly<Record<string, string>>): Card =>
-  cardOfSkills([{ heading: description, files }]);
 
 const hex = (buffer: ArrayBuffer): string =>
   Arr.join(

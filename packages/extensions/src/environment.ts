@@ -392,7 +392,7 @@ const describeEveryEnvironment = (details: EveryEnvironmentDetails): string =>
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (served read-only at ${SKILLS_ROOT}/<name> in every Environment's Workspaces, over the bundle's of the same name; an Environment's own of the same name wins there; environment_skill_save, environment_skill_update and environment_skill_remove with id "${EVERY_ENVIRONMENT_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
+      `Skills (served read-only at ${SKILLS_ROOT}/<name> in every Environment's Workspaces, over the bundle's of the same name; an Environment's own of the same name wins there; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove with id "${EVERY_ENVIRONMENT_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
     ],
     "\n",
   );
@@ -514,7 +514,7 @@ export const idOrEvery = (kept: string) =>
 export const refuseEveryEnvironment = (id: string | undefined) =>
   id === EVERY_ENVIRONMENT_ID
     ? EnvironmentsError.make({
-        message: `The id "${EVERY_ENVIRONMENT_ID}" names the variables, Secrets and Skills kept for every Environment: only environment_variable_set, environment_variable_unset, environment_get, environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_remove and environment_skill_update take it. Name one Environment with its id (environment_list shows them).`,
+        message: `The id "${EVERY_ENVIRONMENT_ID}" names the variables, Secrets and Skills kept for every Environment: only environment_variable_set, environment_variable_unset, environment_get, environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
       })
     : Effect.void;
 

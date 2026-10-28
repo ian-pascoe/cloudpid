@@ -120,6 +120,22 @@ export const MAX_SKILL_CANDIDATES = 200;
 
 /** The most files a Skill's folder may hold, as a save reads at most this many. */
 
+/** A reader of the blobs of `repo` that asks GitHub once for each, whoever wants it again. */
+const blobReader = (reader: RepoReader, repo: SkillRepo) => {
+  const blobs = new Map<string, Promise<Uint8Array>>();
+
+  return (entry: TreeEntry) => {
+    let read = blobs.get(entry.sha);
+
+    if (read === undefined) {
+      read = reader.blob(repo, entry.sha);
+      blobs.set(entry.sha, read);
+    }
+
+    return read;
+  };
+};
+
 /** The most blobs read at once. */
 const CONCURRENCY = 6;
 
@@ -333,18 +349,7 @@ export const fetchSkills = async (
       );
     }
 
-    const blobs = new Map<string, Promise<Uint8Array>>();
-
-    const blob = (entry: TreeEntry) => {
-      let read = blobs.get(entry.sha);
-
-      if (read === undefined) {
-        read = reader.blob(repo, entry.sha);
-        blobs.set(entry.sha, read);
-      }
-
-      return read;
-    };
+    const blob = blobReader(reader, repo);
 
     const entryOf = new Map(tree.entries.map((entry) => [entry.path, entry] as const));
     // `SKILL.md` files that cannot be read as a Skill: reported only when every Skill was asked for, or when none else is left.
@@ -584,18 +589,7 @@ export const fetchSkillsAt = async (
       };
     }
 
-    const blobs = new Map<string, Promise<Uint8Array>>();
-
-    const blob = (entry: TreeEntry) => {
-      let read = blobs.get(entry.sha);
-
-      if (read === undefined) {
-        read = reader.blob(repo, entry.sha);
-        blobs.set(entry.sha, read);
-      }
-
-      return read;
-    };
+    const blob = blobReader(reader, repo);
 
     const skills: SkillRead[] = [];
 

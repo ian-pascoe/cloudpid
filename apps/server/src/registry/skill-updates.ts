@@ -7,7 +7,14 @@
 // request for each repo and ref, and marks the Skills whose folder changed at the ref's head; it applies nothing.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- GitHub is read through a Promise API, and the reads and the checks run over native arrays.
 import { MAX_APPROVED_SKILLS } from "@cloudpid/extensions/skill-checks";
-import type { AgentChange, SkillSource } from "@cloudpid/protocol";
+import type {
+  SkillSource,
+  SkillUpdateEntry,
+  SkillUpdatePin,
+  SkillUpdatePreview,
+  SkillUpdateReady,
+  SkillUpdateRun,
+} from "@cloudpid/protocol";
 import {
   fetchSkillsAt,
   GithubReadError,
@@ -25,7 +32,6 @@ import {
   sameFiles,
   saveSkillAs,
   type SkillChangeContext,
-  type SkillFiles,
   type SkillScope,
   type Skills,
   type StoredSkill,
@@ -47,71 +53,14 @@ const repoOf = (repo: string): SkillRepo => {
   return { owner: repo.slice(0, slash), name: repo.slice(slash + 1) };
 };
 
+/** The key of one read of GitHub: a repo at a ref (or a commit; "" for the repo's default branch). */
+const readKey = (repo: string, at: string | null): string => `${repo}\0${at ?? ""}`;
+
+/** What a `readKey` names, for a message. */
+const readKeyText = (key: string): string => key.replace("\0", "@");
+
 /** A full commit SHA: a ref that names one never moves. */
 const isCommit = (ref: string): boolean => /^[0-9a-f]{40}$/.test(ref);
-
-/** What the owner's Approval of an update was asked for, to apply exactly that: the commit and the folder it shows. */
-export type UpdatePin = {
-  readonly name: string;
-  /** When the Skill was last saved: the update is made only while it still was then. */
-  readonly savedAt: number;
-  /** The commit the owner was shown the files of, which the update reads again. */
-  readonly commit: string;
-  /** The digest of the folder at that commit (`folderHashOf`). */
-  readonly folderHash: string;
-};
-
-/** A Skill an update would move, with the files it would take: not applied (a preview). */
-export type ReadyUpdate = {
-  readonly name: string;
-  readonly outcome: "ready";
-  readonly from: SkillSource;
-  readonly to: SkillSource;
-  readonly description: string;
-  readonly files: SkillFiles;
-  readonly folderHash: string;
-  /** When the Skill kept was last saved: an approved update is made only while it still was then. */
-  readonly savedAt: number;
-  /** The Skill is modified: the update would replace the agent's edits. */
-  readonly overwrites: boolean;
-  readonly current: { readonly description: string; readonly files: ReadonlyArray<string> };
-};
-
-/** What became of one Skill an update was asked for. */
-export type UpdateEntry =
-  | {
-      readonly name: string;
-      readonly outcome: "updated";
-      readonly from: SkillSource;
-      readonly to: SkillSource;
-      /** Whether the agent's edits were replaced. */
-      readonly overwrote: boolean;
-      /** The Agent change that kept it (the agent's update only). */
-      readonly change?: AgentChange;
-    }
-  /** The folder is the same at the ref's head: nothing was changed or recorded. */
-  | { readonly name: string; readonly outcome: "unchanged"; readonly message: string }
-  /** Refused: the agent edited it and no overwrite was asked. */
-  | { readonly name: string; readonly outcome: "modified"; readonly message: string }
-  /** Not updated: no such Skill, none installed, GitHub gave no answer, the files fail a save's checks. */
-  | { readonly name: string; readonly outcome: "rejected"; readonly message: string }
-  /** The Skill was saved again since the owner was asked: nothing was changed. */
-  | { readonly name: string; readonly outcome: "changed-since"; readonly message: string };
-
-export type SkillUpdates<Entry = UpdateEntry> =
-  | { readonly status: "missing" }
-  /** Nothing was read or changed: more Skills than one Approval shows, or a change for every Environment with no Approval. */
-  | { readonly status: "refused"; readonly message: string }
-  /** No Skill was named and none is marked update available. */
-  | { readonly status: "nothing"; readonly environment: SkillScope }
-  | {
-      readonly status: "done";
-      readonly environment: SkillScope;
-      readonly results: ReadonlyArray<Entry>;
-    };
-
-/** What an update would do, with nothing applied: each Skill that would move, with the files it would take. */
-export type SkillUpdatePreview = SkillUpdates<UpdateEntry | ReadyUpdate>;
 
 /** What an update is asked: the Skills (absent: every one marked update available), and whether edits may be replaced. */
 export type UpdateRequest = {
@@ -120,13 +69,24 @@ export type UpdateRequest = {
   readonly names?: ReadonlyArray<string> | undefined;
   readonly overwrite: boolean;
   /** The updates the owner approved: read at those commits and made only against what they were shown. */
-  readonly pins?: ReadonlyArray<UpdatePin> | undefined;
+  readonly pins?: ReadonlyArray<SkillUpdatePin> | undefined;
 };
+
+/** Whether `skill` is, unedited, at the commit and folder `pin` approved: the approved update was made already. */
+const isAtPin = (
+  skill: StoredSkill & { readonly source: SkillSource },
+  pin: SkillUpdatePin | undefined,
+) =>
+  pin !== undefined &&
+  !skill.modified &&
+  skill.source.commit === pin.commit &&
+  skill.folderHash === pin.folderHash;
 
 /** A Skill to move, read at the commit it moves to. */
 type Candidate = {
   readonly skill: StoredSkill & { readonly source: SkillSource };
-  readonly read: ReadyUpdate;
+  /** What the update would take, as the Approval card shows it. */
+  readonly ready: SkillUpdateReady;
   readonly hashed: Awaited<ReturnType<typeof hashFiles>>;
   /** Its files at the new commit are the ones it has: only its mark and hash are brought up to date. */
   readonly same: boolean;
@@ -135,7 +95,7 @@ type Candidate = {
 /** What reading the Skills of a request came to: an entry for each that is settled already, and those to apply. */
 type Planned = {
   readonly environment: SkillScope;
-  readonly settled: ReadonlyArray<UpdateEntry>;
+  readonly settled: ReadonlyArray<SkillUpdateEntry>;
   readonly candidates: ReadonlyArray<Candidate>;
   /** The order the Skills were asked in, to answer in. */
   readonly order: ReadonlyArray<string>;
@@ -181,7 +141,7 @@ const plan = async (
     };
   }
 
-  const settled: UpdateEntry[] = [];
+  const settled: SkillUpdateEntry[] = [];
   const toRead: Array<StoredSkill & { readonly source: SkillSource }> = [];
 
   for (const name of asked) {
@@ -206,6 +166,14 @@ const plan = async (
         outcome: "modified",
         message: "it was edited since it was installed, and an update would replace the edits",
       });
+    } else if (isAtPin(skill, pinned.get(name))) {
+      // A rerun of an update made already (the Session was evicted before it saw the answer): saving it moved `savedAt`,
+      // which is not a reason to call the approved update failed.
+      settled.push({
+        name,
+        outcome: "unchanged",
+        message: "it is at the commit and files the user approved already",
+      });
     } else if (pinned.has(name) && pinned.get(name)?.savedAt !== skill.savedAt) {
       settled.push({
         name,
@@ -222,7 +190,7 @@ const plan = async (
 
   for (const skill of toRead) {
     const at = pinned.get(skill.name)?.commit ?? skill.source.ref ?? "";
-    const key = `${skill.source.repo}\0${at}`;
+    const key = readKey(skill.source.repo, at);
 
     groups.set(key, [...(groups.get(key) ?? []), skill]);
   }
@@ -287,7 +255,7 @@ const plan = async (
         skill,
         hashed,
         same: sameFiles(skill.files, hashed.files) && !skill.modified,
-        read: {
+        ready: {
           name: skill.name,
           outcome: "ready",
           from: skill.source,
@@ -333,9 +301,9 @@ export const previewSkillUpdates = async (
   return {
     status: "done",
     environment,
-    results: ordered<UpdateEntry | ReadyUpdate>(order, [
+    results: ordered<SkillUpdateEntry | SkillUpdateReady>(order, [
       ...settled,
-      ...candidates.map(({ read, same, skill, hashed }): UpdateEntry | ReadyUpdate => {
+      ...candidates.map(({ ready, same, skill, hashed }): SkillUpdateEntry | SkillUpdateReady => {
         if (same) {
           return {
             name: skill.name,
@@ -348,13 +316,13 @@ export const previewSkillUpdates = async (
         const checked = previewSkillSave(context, {
           environment: request.environment,
           folder: skill.name,
-          files: read.files,
+          files: ready.files,
           hashed,
         });
 
         return checked.status === "rejected"
           ? { name: skill.name, outcome: "rejected", message: checked.message }
-          : read;
+          : ready;
       }),
     ]),
   };
@@ -372,20 +340,20 @@ export const updateSkills = async (
   context: SkillChangeContext,
   reader: RepoReader,
   request: UpdateRequest & { readonly author: AgentChangeAuthor | null },
-): Promise<SkillUpdates> => {
+): Promise<SkillUpdateRun> => {
   const planned = await plan(context, reader, request);
 
   if ("status" in planned) return planned;
 
   const { settled, candidates, order, environment } = planned;
   const { author } = request;
-  const results: UpdateEntry[] = [...settled];
+  const results: SkillUpdateEntry[] = [...settled];
 
-  for (const { skill, read, hashed, same } of candidates) {
+  for (const { skill, ready, hashed, same } of candidates) {
     if (same) {
       // Nothing to keep: its mark is cleared, and the hash of the folder recorded for the next check.
-      context.skills.note(request.environment, skill.name, skill.source.commit, {
-        folderHash: read.folderHash,
+      context.skills.recordFound(request.environment, skill.name, skill.source.commit, {
+        folderHash: ready.folderHash,
         updateAvailable: false,
       });
 
@@ -401,10 +369,10 @@ export const updateSkills = async (
     const toKeep = {
       environment: request.environment,
       folder: skill.name,
-      files: read.files,
+      files: ready.files,
       hashed,
-      source: read.to,
-      folderHash: read.folderHash,
+      source: ready.to,
+      folderHash: ready.folderHash,
     };
 
     // With the owner's Approval, only what they were shown is applied.
@@ -439,9 +407,9 @@ export const updateSkills = async (
         const done = {
           name: skill.name,
           outcome: "updated" as const,
-          from: read.from,
-          to: read.to,
-          overwrote: read.overwrites,
+          from: ready.from,
+          to: ready.to,
+          overwrote: ready.overwrites,
         };
 
         results.push(kept.change === undefined ? done : { ...done, change: kept.change });
@@ -500,7 +468,7 @@ export type SkillCheck = {
  * leave the marks as they are; the rate limit ends the run. A ref that names a commit never moves and is not looked at.
  */
 export const checkSkillUpdates = async (
-  skills: Pick<Skills, "listSourced" | "note">,
+  skills: Pick<Skills, "listSourced" | "recordFound">,
   reader: RepoReader,
 ): Promise<SkillCheck> => {
   const sourced = skills
@@ -514,7 +482,7 @@ export const checkSkillUpdates = async (
   const groups = new Map<string, typeof sourced>();
 
   for (const skill of sourced) {
-    const key = `${skill.source.repo}\0${skill.source.ref ?? ""}`;
+    const key = readKey(skill.source.repo, skill.source.ref);
 
     groups.set(key, [...(groups.get(key) ?? []), skill]);
   }
@@ -539,7 +507,7 @@ export const checkSkillUpdates = async (
       const head = await reader.headTree(repo, ref);
 
       if (head.truncated) {
-        problems.push(`${key.replace("\0", "@")}: GitHub listed only part of the repo's files`);
+        problems.push(`${readKeyText(key)}: GitHub listed only part of the repo's files`);
         continue;
       }
 
@@ -556,7 +524,7 @@ export const checkSkillUpdates = async (
         let installed = skill.folderHash;
 
         if (installed === null) {
-          const treeKey = `${first.source.repo}\0${skill.source.commit}`;
+          const treeKey = readKey(first.source.repo, skill.source.commit);
           let tree = installedTrees.get(treeKey);
 
           if (tree === undefined) {
@@ -590,7 +558,9 @@ export const checkSkillUpdates = async (
           }
 
           installed = await folderHashOf({ tree: at.entries }, atMd);
-          skills.note(skill.scope, skill.name, skill.source.commit, { folderHash: installed });
+          skills.recordFound(skill.scope, skill.name, skill.source.commit, {
+            folderHash: installed,
+          });
         }
 
         const moved = (await folderHashOf({ tree: head.entries }, headMd)) !== installed;
@@ -601,11 +571,13 @@ export const checkSkillUpdates = async (
 
         if (!moved && skill.updateAvailable) cleared += 1;
 
-        skills.note(skill.scope, skill.name, skill.source.commit, { updateAvailable: moved });
+        skills.recordFound(skill.scope, skill.name, skill.source.commit, {
+          updateAvailable: moved,
+        });
       }
     } catch (cause) {
       if (Schema.is(GithubReadError)(cause)) {
-        problems.push(`${key.replace("\0", "@")}: ${cause.message}`);
+        problems.push(`${readKeyText(key)}: ${cause.message}`);
 
         if (cause.kind === "rate_limited")
           return { checked, marked, cleared, problems, rateLimited: true };
@@ -630,7 +602,7 @@ export const runDailySkillCheck = async (
     skills,
     documents,
   }: {
-    readonly skills: Pick<Skills, "listSourced" | "note">;
+    readonly skills: Pick<Skills, "listSourced" | "recordFound">;
     readonly documents: {
       readonly getDocument: (name: string) => string | null;
       readonly putDocument: (name: string, body: string, now: number) => void;
