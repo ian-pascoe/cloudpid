@@ -293,19 +293,22 @@ export class Workspace extends ContainerHost {
       transactionSync: (closure) => ctx.storage.transactionSync(closure),
     }));
 
-    let vault: Promise<KeptVault> | undefined;
+    let opened: Promise<KeptVault> | undefined;
+
+    // Derived for the Workspaces, once.
+    const vault = () =>
+      (opened ??= Effect.runPromise(
+        openKeptVault(env.SECRETS_ENCRYPTION_KEY ?? "", "workspace"),
+      ).catch((cause: unknown) => {
+        opened = undefined;
+
+        throw cause;
+      }));
 
     const environmentSecrets = (this.#environmentSecrets = workspaceSecretsStore({
       storage: ctx.storage,
-      // Derived for the Workspaces, once, and bound to this object's id with each Secret's name.
-      vault: () =>
-        (vault ??= Effect.runPromise(
-          openKeptVault(env.SECRETS_ENCRYPTION_KEY ?? "", "workspace"),
-        ).catch((cause: unknown) => {
-          vault = undefined;
-
-          throw cause;
-        })),
+      // Each value bound to this object's id with its Secret's name.
+      vault,
       owner: ctx.id.toString(),
     }));
 
@@ -337,9 +340,11 @@ export class Workspace extends ContainerHost {
     const snapshots = (this.#snapshots = new ContainerSnapshots({
       // The local Container has no real mount, and no snapshots.
       enabled: env.CONTAINER_FUSE !== "false",
-      tokens: githubTokens,
+      tokens: () => github?.liveMinted() ?? [],
       // The Environment's kept Secrets too: a Workspace that cannot show them takes no snapshot.
       secrets: () => environmentSecrets.read(),
+      // What a snapshot's scan searched for, under the Workspaces' key (never a value in the clear).
+      fingerprint: async (text) => Effect.runPromise((await vault()).digest(text)),
       timeoutMs: SNAPSHOT_TIMEOUT_MS,
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       running: () => ctx.container?.running === true,
@@ -348,10 +353,10 @@ export class Workspace extends ContainerHost {
 
         return ctx.container.snapshotContainer({ name });
       },
-      scan: (groups) => {
+      scan: (groups, { sinceStart }) => {
         if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
 
-        return scanContainerDisk(ctx.container, groups, SCAN_TIMEOUT_MS);
+        return scanContainerDisk(ctx.container, groups, { sinceStart, timeoutMs: SCAN_TIMEOUT_MS });
       },
       load: () => ctx.storage.get<SnapshotRecord>(SNAPSHOT_KEY),
       save: (record) => ctx.storage.put(SNAPSHOT_KEY, record),

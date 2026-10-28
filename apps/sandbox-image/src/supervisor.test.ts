@@ -6,6 +6,8 @@ import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  statSync,
+  utimesSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,6 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import { MEMORY_GUARD_AVOID } from "@cloudpid/sandbox-image/memory-guard";
 import {
+  CONTAINER_START_MARKER,
   EXIT_REPORT_BASE64_MARKER,
   EXIT_REPORT_BASE64_MIN,
   EXIT_REPORT_BYTES,
@@ -93,6 +96,7 @@ const supervise = (
         CLOUDPID_MEMORY_GUARD: "/nonexistent/cloudpid-memory-guard",
         CLOUDPID_EARLYOOM: "/nonexistent/earlyoom",
         CLOUDPID_MEMORY_NOTES: join(mkdtempSync(join(tmpdir(), "memory-notes-")), "notes"),
+        CLOUDPID_START_MARKER: join(mkdtempSync(join(tmpdir(), "start-marker-")), "started"),
         ...env,
       },
     });
@@ -263,6 +267,31 @@ describe("the supervisor", () => {
     const run = await supervise(computerd, port, undefined, { COMPUTERD_DB: db });
 
     expect(run.stdout).toBe("kept state.db\nkept state.db-wal\nkept state.db-shm\n");
+  });
+
+  it("makes the Container's start marker anew before computerd starts, whatever a snapshot kept of it", async () => {
+    const { port } = await reportServer();
+    const dir = mkdtempSync(join(tmpdir(), "start-marker-"));
+    const marker = join(dir, "started");
+
+    // A snapshot's marker: an older start's, with a content and times from long ago.
+    writeFileSync(marker, "an older start");
+    utimesSync(marker, new Date("2001-01-01"), new Date("2001-01-01"));
+
+    const before = Date.now();
+    const computerd = fakeComputerd('[ -f "$CLOUDPID_START_MARKER" ] && echo "marked"; exit 0');
+
+    const run = await supervise(computerd, port, undefined, { CLOUDPID_START_MARKER: marker });
+
+    expect(run.stdout).toBe("marked\n");
+    expect(readFileSync(marker, "utf8")).toBe("");
+    // A new file: its status changed at this start, which the scan compares the files' with.
+    expect(statSync(marker).ctimeMs).toBeGreaterThanOrEqual(before - 1_000);
+    expect(statSync(marker).mtimeMs).toBeGreaterThanOrEqual(before - 1_000);
+  });
+
+  it("makes the marker where the snapshot's scan looks for it", () => {
+    expect(source).toContain(`\${CLOUDPID_START_MARKER:-${CONTAINER_START_MARKER}}`);
   });
 
   it("does not wait on a process computerd left holding its output", async () => {

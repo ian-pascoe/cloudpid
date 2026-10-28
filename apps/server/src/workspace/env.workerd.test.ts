@@ -259,6 +259,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
       snapshots: {
         restorable: async () => ({ id: "snap-1", image: undefined }),
         restored: async () => undefined,
+        coverage: async () => undefined,
         forget: async () => {
           forgotten++;
         },
@@ -350,6 +351,7 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
         snapshots: {
           restorable: async () => snapshot,
           restored: async () => undefined,
+          coverage: async () => undefined,
           forget: async () => undefined,
           take: async (reason) => {
             taken.push(reason);

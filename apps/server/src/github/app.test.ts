@@ -162,6 +162,11 @@ describe("GitHubApp", () => {
     now += 1;
     expect(await app.token()).toBe("ghs_token2");
     expect(app.live()).toEqual(["ghs_token1", "ghs_token2"]);
+    // When each was minted, which the scan before a snapshot compares with when the restored one was taken.
+    expect(app.liveMinted()).toEqual([
+      { token: "ghs_token1", mintedAt: now - 1 - 15 * MINUTE },
+      { token: "ghs_token2", mintedAt: now },
+    ]);
 
     // The installations are listed again once the list is five minutes old.
     expect(github.seen.filter(({ url }) => url.includes("/app/installations?"))).toHaveLength(2);
@@ -321,6 +326,8 @@ describe("GitHubApp", () => {
     });
 
     expect(app.live()).toEqual(["ghs_old"]);
+    // One kept before tokens recorded when they were minted.
+    expect(app.liveMinted()).toEqual([{ token: "ghs_old", mintedAt: undefined }]);
 
     const all = await app.tokens();
 

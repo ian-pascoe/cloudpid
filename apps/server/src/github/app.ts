@@ -33,13 +33,17 @@ const INSTALLATIONS_TTL_MS = 5 * 60_000;
 
 /**
  * A minted token, the account (lower case) of the installation it is for (absent on one kept before tokens named
- * theirs), and when it expires (ms).
+ * theirs), when it expires (ms), and when it was minted (ms; absent on one kept before tokens recorded it).
  */
 export type MintedToken = {
   readonly account?: string | undefined;
   readonly token: string;
   readonly expiresAt: number;
+  readonly mintedAt?: number | undefined;
 };
+
+/** A token that has not expired, and when it was minted (ms), where that is known. */
+export type LiveToken = { readonly token: string; readonly mintedAt?: number | undefined };
 
 /** A token for each of the app's installations, for a command that may reach any of them. */
 export type InstallationTokens = {
@@ -348,6 +352,14 @@ export class GitHubApp implements GitHubTokens {
 
   /** The tokens minted that have not expired, oldest first: what output and snapshots must not hold. */
   live(): ReadonlyArray<string> {
+    return this.liveMinted().map(({ token }) => token);
+  }
+
+  /**
+   * The tokens minted that have not expired, oldest first, with when each was minted: the scan before a snapshot
+   * needs not search the files a restored snapshot holds for one minted after that snapshot was taken.
+   */
+  liveMinted(): ReadonlyArray<LiveToken> {
     const now = this.#options.now();
     const live = this.#minted.filter(({ expiresAt }) => expiresAt > now);
 
@@ -356,7 +368,7 @@ export class GitHubApp implements GitHubTokens {
       this.#options.kept?.save(live);
     }
 
-    return live.map(({ token }) => token);
+    return live.map(({ token, mintedAt }) => ({ token, mintedAt }));
   }
 
   /**
@@ -420,8 +432,8 @@ export class GitHubApp implements GitHubTokens {
       throw new Error("GitHub's answer to the GitHub App was not a token");
     }
 
-    const minted = { account, token: decoded.value.token, expiresAt };
     const now = this.#options.now();
+    const minted = { account, token: decoded.value.token, expiresAt, mintedAt: now };
 
     this.#minted = [...this.#minted.filter((kept) => kept.expiresAt > now), minted];
     this.#options.kept?.save(this.#minted);
