@@ -13,9 +13,10 @@
 // - A snapshot lives 30 days from its creation or latest restore, so one that is near that is not restored.
 // - The disk is searched for the GitHub token and the Environment's kept Secrets before a snapshot
 //   (`scanContainerDisk`: everything but the pseudo file systems, the Workspace mount and pnpm's stores, for each as it
-//   is and in base64: `scanPatterns`), and a snapshot that cannot be shown clean is not taken, nor one of a Workspace
+//   is and in base64: `scanGroups`), and a snapshot that cannot be shown clean is not taken, nor one of a Workspace
 //   that cannot show which Secrets to search for. The bootstrap keeps the token off disk (git reads it from the
-//   environment), so this is for what a command wrote; a value encoded some other way is not found.
+//   environment), so this is for what a command wrote; a value encoded some other way is not found. The warning for a
+//   refused snapshot names, per file, what it holds: "a GitHub token" or "the Secret `NAME`", never a value.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import { base64, PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
@@ -77,8 +78,8 @@ export type ContainerSnapshotDeps = {
   readonly running: () => boolean;
   /** The platform's `snapshotContainer`. */
   readonly snapshot: (name: string) => Promise<{ readonly id: string; readonly size: number }>;
-  /** The paths on the Container's disk whose content holds any of `patterns` (`scanPatterns`). */
-  readonly scan: (patterns: ReadonlyArray<string>) => Promise<ReadonlyArray<string>>;
+  /** The files on the Container's disk whose content holds any of `groups` (`scanGroups`), and which. */
+  readonly scan: (groups: ReadonlyArray<ScanGroup>) => Promise<ReadonlyArray<ScanHit>>;
   readonly load: () => Promise<SnapshotRecord | undefined>;
   readonly save: (record: SnapshotRecord) => Promise<void>;
   readonly clear: () => Promise<void>;
@@ -197,29 +198,12 @@ export class ContainerSnapshots {
 
         if (!held.ok) return { leaked: true, reason: held.reason } as const;
 
-        const patterns = scanPatterns(deps.tokens(), held.secrets);
+        const groups = scanGroups(deps.tokens(), held.secrets);
 
-        if (patterns.length > 0) {
-          const leaks = await deps.scan(patterns);
+        if (groups.length > 0) {
+          const hits = await deps.scan(groups);
 
-          if (leaks.length > 0) {
-            const what =
-              held.secrets.length === 0
-                ? "the GitHub token is"
-                : "the GitHub token or a Secret kept for the Environment is";
-
-            // A value that is not secret is a variable, not a Secret: only the message says so, not what the scan
-            // finds.
-            const hint =
-              held.secrets.length === 0
-                ? ""
-                : "; a value that is not secret belongs in the variables (kept for the Environment or for every Environment)";
-
-            return {
-              leaked: true,
-              reason: `${what} in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}${hint}`,
-            } as const;
-          }
+          if (hits.length > 0) return { leaked: true, reason: leakReason(hits) } as const;
         }
 
         return { leaked: false, snapshot: await deps.snapshot(`workspace-${reason}`) } as const;
@@ -311,14 +295,21 @@ export const samePaths = (
     ? a === b
     : a.length === b.length && a.every((pattern, index) => pattern === b[index]);
 
-/** The variable the patterns reach grep in, and the prefix of those that carry the rest. */
+/** The prefix of the variables the patterns reach grep in: `CLOUDPID_SCAN_SECRET_<group>_<part>`. */
 const SCAN_VARIABLE = "CLOUDPID_SCAN_SECRET";
 
+/** The variable that says how many groups of patterns there are (a count, no secret). */
+const SCAN_COUNT_VARIABLE = "CLOUDPID_SCAN_COUNT";
+
+/** How many files the scan attributes to the groups that hold them; the warning names five. */
+const ATTRIBUTED_FILES = 20;
+
 /**
- * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` and the variables named after it
- * (`CLOUDPID_SCAN_SECRET_1`, …: one per line, split so no variable is near the kernel's limit on one), anywhere on the Container's
- * disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount (`/workspace`, whose
- * files are searched in computerd's store); the directories given as arguments instead, if any (for the tests).
+ * Lists the files that hold any of the patterns in the variables named `CLOUDPID_SCAN_SECRET_<group>_<part>` (one
+ * pattern per line, a group's patterns split over parts so no variable is near the kernel's limit on one), anywhere on
+ * the Container's disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount
+ * (`/workspace`, whose files are searched in computerd's store); the directories given as arguments instead, if any
+ * (for the tests).
  *
  * Directories named `.pnpm-store` or `.pnpm` are not searched: pnpm's store (`/root/.pnpm-store`, which the Container's
  * global pnpm configuration names, `PNPM_STORE_DIRECTORY_NAME`, with the global virtual store in it, `v11/links`) and
@@ -328,7 +319,9 @@ const SCAN_VARIABLE = "CLOUDPID_SCAN_SECRET";
  * searched.
  *
  * The patterns reach grep as a pattern file on its standard input, read from the environment, so they are in no command
- * line.
+ * line. One search over all of them finds the files; then, for the first `ATTRIBUTED_FILES` of those only, a search per
+ * group tells which group holds each. A line of the output is the groups' numbers, separated by commas (none for a
+ * file beyond those), a tab, and the path.
  */
 const SCAN_SCRIPT = [
   'if [ "$#" -eq 0 ]; then',
@@ -338,7 +331,22 @@ const SCAN_SCRIPT = [
   '    [ -d "$d" ] && set -- "$@" "$d"',
   "  done",
   "fi",
-  `for name in "\${!${SCAN_VARIABLE}@}"; do printf '%s\\n' "\${!name}"; done | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@"`,
+  `found=$(for name in "\${!${SCAN_VARIABLE}@}"; do printf '%s\\n' "\${!name}"; done | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@")`,
+  "status=$?",
+  '[ "$status" -gt 1 ] && exit "$status"',
+  "count=0",
+  "while IFS= read -r file; do",
+  '  [ -z "$file" ] && continue',
+  "  count=$((count + 1))",
+  '  groups=""',
+  `  if [ "$count" -le ${ATTRIBUTED_FILES} ]; then`,
+  `    for ((i = 0; i < ${SCAN_COUNT_VARIABLE}; i++)); do`,
+  `      for name in $(compgen -A variable "${SCAN_VARIABLE}_\${i}_"); do printf '%s\\n' "\${!name}"; done | grep -qF -f - -- "$file" && groups="$groups,$i"`,
+  "    done",
+  "  fi",
+  `  printf '%s\\t%s\\n' "\${groups#,}" "$file"`,
+  'done <<< "$found"',
+  'exit "$status"',
 ].join("\n");
 
 /** What the scan needs of the platform's `ctx.container`. */
@@ -383,74 +391,133 @@ const excerpt = (text: string): string => {
 };
 
 /**
- * What the scan before a snapshot searches for (one line each, as `grep -F` takes them): each GitHub token in its forms
- * (`secretForms`), and each kept Secret as it is and as base64 of its UTF-8, each cut to a part of its middle when
- * long. A Secret of several lines is searched for by its longest line (a key's body, not a header any file can hold),
- * which every file holding the whole value holds. A Secret shorter than `MIN_SCANNED_LENGTH` is not searched for.
+ * What the scan searches for on behalf of one kind of match: the patterns (one line each, as `grep -F` takes them) and
+ * the words the warning names it by, which hold no value.
  */
-export const scanPatterns = (
+export type ScanGroup = { readonly label: string; readonly patterns: ReadonlyArray<string> };
+
+/** The label of the group of every GitHub token the Workspace DO minted. */
+export const TOKEN_LABEL = "a GitHub token";
+
+/** The label of the group of a kept Secret: its name, never its value. */
+export const secretLabel = (name: string): string => `the Secret \`${name}\``;
+
+/** A file the scan found, and the labels of the groups that hold it (none for one it did not attribute). */
+export type ScanHit = { readonly path: string; readonly found: ReadonlyArray<string> };
+
+/**
+ * What the scan before a snapshot searches for, a group per kind of match: the GitHub tokens (`TOKEN_LABEL`), each in
+ * its forms (`secretForms`), and each kept Secret (`secretLabel`) as it is and as base64 of its UTF-8, each cut to a
+ * part of its middle when long. A Secret of several lines is searched for by its longest line (a key's body, not a
+ * header any file can hold), which every file holding the whole value holds. A Secret shorter than
+ * `MIN_SCANNED_LENGTH` is not searched for. A group with nothing to search for is left out.
+ */
+export const scanGroups = (
   tokens: ReadonlyArray<string>,
   secrets: ReadonlyArray<KeptSecret>,
-): string[] => {
-  const patterns = tokens.flatMap((token) => (token === "" ? [] : secretForms(token)));
+): ScanGroup[] => {
+  const groups: ScanGroup[] = [];
+  const tokenPatterns = tokens.flatMap((token) => (token === "" ? [] : secretForms(token)));
 
-  for (const { value } of secrets) {
+  if (tokenPatterns.length > 0) groups.push({ label: TOKEN_LABEL, patterns: tokenPatterns });
+
+  for (const { name, value } of secrets) {
     if (value.length < MIN_SCANNED_LENGTH) continue;
 
     const longest = value
       .split(/\r?\n/)
       .reduce((best, line) => (line.length > best.length ? line : best), "");
 
-    for (const form of [excerpt(longest), excerpt(base64(value))]) {
-      if (form.length >= MIN_SCANNED_LENGTH && !patterns.includes(form)) patterns.push(form);
-    }
+    const patterns = [excerpt(longest), excerpt(base64(value))].filter(
+      (form, index, forms) => form.length >= MIN_SCANNED_LENGTH && forms.indexOf(form) === index,
+    );
+
+    if (patterns.length > 0) groups.push({ label: secretLabel(name), patterns });
   }
 
-  return patterns;
+  return groups;
+};
+
+/** The files named in a warning; the others are counted. */
+const NAMED_FILES = 5;
+
+/** `a`, `a and b`, `a, b and c`. */
+const joinLabels = (labels: ReadonlyArray<string>): string =>
+  labels.length < 2
+    ? (labels[0] ?? "")
+    : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1) ?? ""}`;
+
+/**
+ * Why a scan that found `hits` refused the snapshot: what each of the first files holds ("a GitHub token", "the Secret
+ * `NAME`"), never a value. A hit that names a Secret adds where a value that is not secret belongs.
+ */
+export const leakReason = (hits: ReadonlyArray<ScanHit>): string => {
+  const files = hits.slice(0, NAMED_FILES).map(({ path, found }) => {
+    const labels = [...new Set(found)];
+
+    return `${labels.length === 0 ? "a GitHub token or a Secret kept for the Environment" : joinLabels(labels)} in ${path}`;
+  });
+
+  const more = hits.length > NAMED_FILES ? ` and ${hits.length - NAMED_FILES} more files` : "";
+
+  // A value that is not secret is a variable, not a Secret: only the message says so, not what the scan finds.
+  const hint = hits.some(({ found }) => found.some((label) => label !== TOKEN_LABEL))
+    ? "; a value that is not secret belongs in the variables (kept for the Environment or for every Environment)"
+    : "";
+
+  return `${files.join("; ")}${more}${hint}`;
 };
 
 /** How much of the patterns one variable carries: well under Linux's 128 KiB for one environment string. */
 const SCAN_VARIABLE_BYTES = 64 * 1024;
 
-/** `patterns`, one per line, split over as many variables as their size needs. */
-const scanEnvironment = (patterns: ReadonlyArray<string>): Record<string, string> => {
-  const chunks: string[][] = [[]];
-  let size = 0;
+/**
+ * The groups' patterns, one per line, in variables `CLOUDPID_SCAN_SECRET_<group>_<part>`, a group split over as many as
+ * its size needs, and the number of groups in `CLOUDPID_SCAN_COUNT`.
+ */
+const scanEnvironment = (groups: ReadonlyArray<ScanGroup>) =>
+  Object.fromEntries([
+    [SCAN_COUNT_VARIABLE, String(groups.length)],
+    ...groups.flatMap(({ patterns }, group) => {
+      const parts: string[][] = [[]];
+      let size = 0;
 
-  for (const pattern of patterns) {
-    const bytes = new TextEncoder().encode(pattern).length + 1;
-    const current = chunks.at(-1) ?? [];
+      for (const pattern of patterns) {
+        const bytes = new TextEncoder().encode(pattern).length + 1;
+        const current = parts.at(-1) ?? [];
 
-    if (size + bytes > SCAN_VARIABLE_BYTES && current.length > 0) {
-      chunks.push([pattern]);
-      size = bytes;
-    } else {
-      current.push(pattern);
-      size += bytes;
-    }
-  }
+        if (size + bytes > SCAN_VARIABLE_BYTES && current.length > 0) {
+          parts.push([pattern]);
+          size = bytes;
+        } else {
+          current.push(pattern);
+          size += bytes;
+        }
+      }
 
-  return Object.fromEntries(
-    chunks.map((chunk, index) => [
-      index === 0 ? SCAN_VARIABLE : `${SCAN_VARIABLE}_${index}`,
-      chunk.join("\n"),
-    ]),
-  );
-};
+      return parts.map((part, index) => [`${SCAN_VARIABLE}_${group}_${index}`, part.join("\n")]);
+    }),
+  ]);
 
 /**
- * The files on the Container's disk whose content holds any of `patterns` (`scanPatterns`), found by a process of its
+ * The files on the Container's disk whose content holds any of the patterns of `groups` (`scanGroups`), and the labels
+ * of the groups that hold each, found by a process of its
  * own in the Container (`ctx.container.exec`), so it needs no connection to computerd, which the idle stop's alarm may
  * not have. Rejects when the search could not be run to the end, or took longer than `timeoutMs` (the process is then
- * killed): a disk that could not be searched is not shown to be clean. No patterns, nothing to search for.
+ * killed): a disk that could not be searched is not shown to be clean. No patterns, nothing to search for. Only the
+ * patterns are sent to the Container, the labels are matched to the groups here.
  */
 export const scanContainerDisk = async (
   container: ContainerExec,
-  patterns: ReadonlyArray<string>,
+  groups: ReadonlyArray<ScanGroup>,
   timeoutMs = 30_000,
-): Promise<ReadonlyArray<string>> => {
+): Promise<ReadonlyArray<ScanHit>> => {
   // An empty pattern would match every file.
-  const searched = patterns.filter((pattern) => pattern !== "");
+  const searched = groups.flatMap(({ label, patterns }) => {
+    const kept = patterns.filter((pattern) => pattern !== "");
+
+    return kept.length > 0 ? [{ label, patterns: kept }] : [];
+  });
 
   if (searched.length === 0) return [];
 
@@ -481,5 +548,15 @@ export const scanContainerDisk = async (
   return new TextDecoder()
     .decode(stdout)
     .split("\n")
-    .filter((line) => line !== "");
+    .filter((line) => line !== "")
+    .map((line) => {
+      const tab = line.indexOf("\t");
+      const numbers = tab < 0 ? "" : line.slice(0, tab);
+
+      return {
+        path: tab < 0 ? line : line.slice(tab + 1),
+        found:
+          numbers === "" ? [] : numbers.split(",").flatMap((n) => searched[Number(n)]?.label ?? []),
+      };
+    });
 };

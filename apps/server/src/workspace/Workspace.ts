@@ -332,10 +332,10 @@ export class Workspace extends ContainerHost {
 
         return ctx.container.snapshotContainer({ name });
       },
-      scan: (patterns) => {
+      scan: (groups) => {
         if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
 
-        return scanContainerDisk(ctx.container, patterns, SCAN_TIMEOUT_MS);
+        return scanContainerDisk(ctx.container, groups, SCAN_TIMEOUT_MS);
       },
       load: () => ctx.storage.get<SnapshotRecord>(SNAPSHOT_KEY),
       save: (record) => ctx.storage.put(SNAPSHOT_KEY, record),
