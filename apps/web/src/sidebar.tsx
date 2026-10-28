@@ -9,6 +9,7 @@ import {
   PanelLeftOpen,
   Plus,
   Settings as SettingsIcon,
+  Sparkles,
   X,
 } from "lucide-react";
 import {
@@ -25,7 +26,14 @@ import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
 import { InAppLink } from "./in-app-link.tsx";
 import { cn } from "./lib/utils.ts";
-import { DRAFT_PATH, ENVIRONMENTS_PATH, navigate, SETTINGS_PATH, sessionPath } from "./router.ts";
+import {
+  DRAFT_PATH,
+  ENVIRONMENTS_PATH,
+  navigate,
+  SETTINGS_PATH,
+  SKILLS_PATH,
+  sessionPath,
+} from "./router.ts";
 import { listProblemAtom, noticeAtom } from "./app-state.ts";
 import { groupCollapsedAtom, groupKey, type ListSection } from "./collapsed-groups.ts";
 import { subagentRows, subagentsExpandedAtom } from "./list-subagents.ts";
@@ -271,7 +279,7 @@ const NewSessionButton = () => (
   </Button>
 );
 
-/** A link to a page at the foot of the list (Environments, Settings): with its name, or as an icon alone on the rail. */
+/** A link to a page at the foot of the list (Environments, Skills, Settings): with its name, or as an icon alone on the rail. */
 const PageLink = ({
   href,
   active,
@@ -376,12 +384,14 @@ const SidebarRail = ({
   controls,
   settingsActive,
   environmentsActive,
+  skillsActive,
 }: {
   expand: () => void;
   expandButton: RefObject<HTMLButtonElement | null>;
   controls: string;
   settingsActive: boolean;
   environmentsActive: boolean;
+  skillsActive: boolean;
 }) => (
   <nav
     aria-label="Sessions"
@@ -419,6 +429,13 @@ const SidebarRail = ({
         iconOnly
       />
       <PageLink
+        href={SKILLS_PATH}
+        active={skillsActive}
+        icon={<Sparkles aria-hidden />}
+        label="Skills"
+        iconOnly
+      />
+      <PageLink
         href={SETTINGS_PATH}
         active={settingsActive}
         icon={<SettingsIcon aria-hidden />}
@@ -437,12 +454,15 @@ export const Sidebar = ({
   shown,
   settingsActive,
   environmentsActive,
+  skillsActive,
   className,
 }: {
   /** The Session page or Subagent page shown, if one is. */
   shown: ShownPage | undefined;
   settingsActive: boolean;
   environmentsActive: boolean;
+  /** The Skills page, or a page below it, is shown. */
+  skillsActive: boolean;
   className?: string;
 }) => {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
@@ -490,6 +510,7 @@ export const Sidebar = ({
           controls={columnId}
           settingsActive={settingsActive}
           environmentsActive={environmentsActive}
+          skillsActive={skillsActive}
         />
       )}
       <nav
@@ -603,6 +624,12 @@ export const Sidebar = ({
             active={environmentsActive}
             icon={<FolderGit2 aria-hidden />}
             label="Environments"
+          />
+          <PageLink
+            href={SKILLS_PATH}
+            active={skillsActive}
+            icon={<Sparkles aria-hidden />}
+            label="Skills"
           />
           <PageLink
             href={SETTINGS_PATH}

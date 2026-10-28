@@ -18,6 +18,7 @@ import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle, type ShownPage } from "./sidebar.tsx";
 import { DraftComposer } from "./draft-composer.tsx";
 import { EnvironmentsPage } from "./environments-page.tsx";
+import { SkillDirectoryPage, SkillsPage } from "./skills-page.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
 
 /**
@@ -152,6 +153,12 @@ export const App = () => {
         shown={shownOf(page)}
         settingsActive={page.kind === "settings"}
         environmentsActive={page.kind === "environments"}
+        skillsActive={
+          page.kind === "skills" ||
+          page.kind === "skillOwner" ||
+          page.kind === "skillRepo" ||
+          page.kind === "skill"
+        }
         className={cn(listOnly ? "flex" : "hidden md:flex")}
       />
       <main className={cn("min-w-0 flex-1 flex-col", listOnly ? "hidden md:flex" : "flex")}>
@@ -159,6 +166,13 @@ export const App = () => {
           Match.discriminatorsExhaustive("kind")({
             settings: () => <SettingsPage />,
             environments: () => <EnvironmentsPage />,
+            skills: () => <SkillsPage />,
+            // The pages below `/skills` are still to come.
+            skillOwner: ({ owner }) => <SkillDirectoryPage path={owner} />,
+            skillRepo: ({ owner, repo }) => <SkillDirectoryPage path={`${owner}/${repo}`} />,
+            skill: ({ owner, repo, skill }) => (
+              <SkillDirectoryPage path={`${owner}/${repo}/${skill}`} />
+            ),
             draft: () => <DraftComposer />,
             // On a wide screen the start page is the draft; a narrow one shows the list alone (`listOnly`).
             empty: () => <DraftComposer />,

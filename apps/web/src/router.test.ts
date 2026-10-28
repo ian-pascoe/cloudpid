@@ -21,6 +21,13 @@ import {
   agentIdOf,
   pageOf,
   subagentPath,
+  SKILLS_PATH,
+  skillOwnerPath,
+  skillPagePath,
+  skillRepoPath,
+  skillsParamsAtom,
+  skillsParamsOf,
+  skillsPath,
 } from "./router.ts";
 
 describe("Session paths", () => {
@@ -110,8 +117,137 @@ describe("the draft path", () => {
   });
 });
 
+describe("the Skills paths", () => {
+  it("show the Skills page at /skills, and no Session, settings or Environments", () => {
+    expect(pageOf(SKILLS_PATH)).toEqual({ kind: "skills" });
+    expect(pageOf("/skills/")).toEqual({ kind: "skills" });
+    expect(sessionIdOf(SKILLS_PATH)).toBeUndefined();
+    expect(isSettingsPath(SKILLS_PATH)).toBe(false);
+    expect(isEnvironmentsPath(SKILLS_PATH)).toBe(false);
+    expect(pageOf("/sessions/skills")).toEqual({ kind: "session", sessionId: "skills" });
+  });
+
+  it("take the first segment after /skills as an owner, even one named like a tab", () => {
+    expect(pageOf("/skills/mattpocock")).toEqual({ kind: "skillOwner", owner: "mattpocock" });
+    expect(pageOf("/skills/installed")).toEqual({ kind: "skillOwner", owner: "installed" });
+    expect(pageOf("/skills/all-time/")).toEqual({ kind: "skillOwner", owner: "all-time" });
+    expect(pageOf("/skills/hot/trending")).toEqual({
+      kind: "skillRepo",
+      owner: "hot",
+      repo: "trending",
+    });
+  });
+
+  it("show an owner's repo, then one Skill of it", () => {
+    expect(pageOf("/skills/mattpocock/skills")).toEqual({
+      kind: "skillRepo",
+      owner: "mattpocock",
+      repo: "skills",
+    });
+    expect(pageOf("/skills/mattpocock/skills/grill-me")).toEqual({
+      kind: "skill",
+      owner: "mattpocock",
+      repo: "skills",
+      skill: "grill-me",
+    });
+    expect(pageOf("/skills/a/b/c/d")).toEqual({ kind: "empty" });
+  });
+
+  it("round-trip an owner, a repo and a Skill, encoded", () => {
+    expect(skillOwnerPath("o w")).toBe("/skills/o%20w");
+    expect(pageOf(skillOwnerPath("o w"))).toEqual({ kind: "skillOwner", owner: "o w" });
+    expect(skillRepoPath("o", "r.js")).toBe("/skills/o/r.js");
+    expect(pageOf(skillRepoPath("o", "a/b"))).toEqual({
+      kind: "skillRepo",
+      owner: "o",
+      repo: "a/b",
+    });
+    expect(skillPagePath("o", "r", "s")).toBe("/skills/o/r/s");
+    expect(pageOf(skillPagePath("o", "r", "a b"))).toEqual({
+      kind: "skill",
+      owner: "o",
+      repo: "r",
+      skill: "a b",
+    });
+  });
+
+  it("keep a path that cannot be decoded from showing anything", () => {
+    expect(pageOf("/skills/%E0%A4%A")).toEqual({ kind: "empty" });
+    expect(pageOf("/skills/o/%E0%A4%A")).toEqual({ kind: "empty" });
+    expect(pageOf("/skills/o/r/%E0%A4%A")).toEqual({ kind: "empty" });
+  });
+});
+
+describe("the Skills page's query", () => {
+  it("names the tab, the search and the Environment the Installed tab shows", () => {
+    expect(skillsParamsOf("")).toEqual({ tab: undefined, query: "", environment: undefined });
+    expect(skillsParamsOf("?tab=installed&environment=work")).toEqual({
+      tab: "installed",
+      query: "",
+      environment: "work",
+    });
+    expect(skillsParamsOf("?tab=hot&q=grill%20me")).toEqual({
+      tab: "hot",
+      query: "grill me",
+      environment: undefined,
+    });
+    expect(skillsParamsOf("?tab=all-time").tab).toBe("all-time");
+    expect(skillsParamsOf("?tab=trending").tab).toBe("trending");
+  });
+
+  it("takes * as every Environment, and names no tab or Environment it cannot be", () => {
+    expect(skillsParamsOf("?environment=*").environment).toBe("*");
+    expect(skillsParamsOf("?environment=%2A").environment).toBe("*");
+    expect(skillsParamsOf("?environment=").environment).toBeUndefined();
+    expect(skillsParamsOf("?tab=popular").tab).toBeUndefined();
+    expect(skillsParamsOf("?tab=Installed").tab).toBeUndefined();
+  });
+
+  it("is written in the order tab, q, environment, leaving out what is not named", () => {
+    expect(skillsPath()).toBe(SKILLS_PATH);
+    expect(skillsPath({ tab: "installed", environment: "work" })).toBe(
+      "/skills?tab=installed&environment=work",
+    );
+    expect(skillsPath({ tab: "installed", environment: "*" })).toBe(
+      "/skills?tab=installed&environment=*",
+    );
+    expect(skillsPath({ environment: "*", query: "grill me", tab: "hot" })).toBe(
+      "/skills?tab=hot&q=grill+me&environment=*",
+    );
+    expect(skillsPath({ query: "" })).toBe(SKILLS_PATH);
+  });
+
+  it("round-trips what it writes", () => {
+    const params = { tab: "trending", query: "a&b=c", environment: "*" } as const;
+
+    expect(skillsParamsOf(new URL(skillsPath(params), "https://x.test").search)).toEqual(params);
+  });
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("the Skills page's location", () => {
+  it("follows a link to a tab filtered to an Environment, and back", () => {
+    const browser = stubWindow("/environments");
+    const registry = AtomRegistry.make();
+
+    registry.mount(pageAtom);
+    registry.mount(skillsParamsAtom);
+
+    navigate(skillsPath({ tab: "installed", environment: "work" }));
+    expect(registry.get(pageAtom)).toEqual({ kind: "skills" });
+    expect(registry.get(skillsParamsAtom)).toEqual({
+      tab: "installed",
+      query: "",
+      environment: "work",
+    });
+
+    browser.back();
+    expect(registry.get(pageAtom)).toEqual({ kind: "environments" });
+    expect(registry.get(skillsParamsAtom).environment).toBeUndefined();
+  });
 });
 
 describe("the page's path", () => {

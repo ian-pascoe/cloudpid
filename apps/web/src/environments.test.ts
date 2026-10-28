@@ -14,7 +14,6 @@ import {
   type AgentChange,
   DELETED_FIELD,
   type EnvironmentSecretRecord,
-  skillSourceText,
   type SessionRecord,
 } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
@@ -22,7 +21,6 @@ import {
   EMPTY_SECRET_DRAFT,
   EVERY_ENVIRONMENT,
   inheritedSecrets,
-  inheritedSkills,
   inheritedVariables,
   secretDraftProblems,
   secretDraftReady,
@@ -35,8 +33,6 @@ import {
   changeFieldText,
   changeTitleText,
   changeValueText,
-  installOutcomeLines,
-  updateOutcomeLines,
   fieldValueText,
   revertible,
   deleteConfirmed,
@@ -583,76 +579,5 @@ describe("an Environment's Secrets", () => {
 
   it("reach a Build's scripts as the variable a Session's commands get them as", () => {
     expect(secretVariable("NPM_KEY")).toBe("PI_SECRET" + "_NPM_KEY");
-  });
-});
-
-describe("the Skills an Environment gets from every Environment", () => {
-  const skill = (name: string) => ({ name, description: `What ${name} does.`, savedAt: 1 });
-
-  it("are those kept for every Environment that it keeps none of its own of the name, by name", () => {
-    const every = [skill("review"), skill("release"), skill("triage")];
-
-    expect(inheritedSkills([skill("release")], every)).toEqual({
-      inherited: ["review", "triage"],
-      overridden: ["release"],
-    });
-    expect(inheritedSkills([], every)).toEqual({
-      inherited: ["release", "review", "triage"],
-      overridden: [],
-    });
-    expect(inheritedSkills([skill("mine")], [])).toEqual({ inherited: [], overridden: [] });
-  });
-});
-
-describe("a Skill's source and the outcome of an install", () => {
-  it("says where a Skill came from: its folder, the ref named, and the short commit", () => {
-    const commit = "c0ffee0000000000000000000000000000000001";
-
-    expect(
-      skillSourceText({ repo: "mattpocock/skills", path: "skills/grill-me", ref: null, commit }),
-    ).toBe("mattpocock/skills/skills/grill-me at c0ffee0");
-    expect(skillSourceText({ repo: "o/one", path: "", ref: "v2", commit })).toBe(
-      "o/one at v2, c0ffee0",
-    );
-  });
-
-  it("says what each Skill of an install came to", () => {
-    expect(
-      installOutcomeLines([
-        { name: "a", outcome: "installed" },
-        { name: "b", outcome: "unchanged" },
-        { name: "c", outcome: "rejected", message: "notes.md: a binary file" },
-        { name: "d", outcome: "rejected" },
-      ]),
-    ).toEqual([
-      "a: installed",
-      "b: already installed from this commit, nothing changed",
-      "c: refused: notes.md: a binary file",
-      "d: refused",
-    ]);
-  });
-
-  it("says what each Skill of an update came to", () => {
-    expect(
-      updateOutcomeLines([
-        { name: "a", outcome: "updated" },
-        { name: "b", outcome: "unchanged" },
-        {
-          name: "c",
-          outcome: "modified",
-          message: "it was edited, and an update would replace the edits",
-        },
-        { name: "c2", outcome: "modified" },
-        { name: "d", outcome: "rejected", message: "GitHub's rate limit is used up" },
-        { name: "e", outcome: "rejected" },
-      ]),
-    ).toEqual([
-      "a: updated to the latest commit",
-      "b: already up to date, nothing changed",
-      "c: not updated: it was edited, and an update would replace the edits",
-      "c2: not updated: it was edited since it was installed",
-      "d: not updated: GitHub's rate limit is used up",
-      "e: not updated",
-    ]);
   });
 });

@@ -18,6 +18,12 @@
 // what they had just chosen to look at. A link, a reload or a push tap still opens the Session with the same Panes,
 // as the entry's URL holds them. Moving to another page (`navigate`) drops the query: Panes belong to one Session, whose
 // layout on the device (`session-layout-state.ts`) shows them again when the Session is opened without a query.
+//
+// The Skills page (`/skills`) keeps its view in the query too: `?tab=` (`installed`, `all-time`, `trending`, `hot`),
+// `?q=` (the search) and `?environment=` (an Environment's id, or `*` for the Skills kept for every Environment, that
+// the Installed tab shows alone). The tabs are a query, not a path, because the path's first segment after `/skills`
+// is always an owner: `/skills/:owner`, `/skills/:owner/:repo` and `/skills/:owner/:repo/:skill`, so an owner named
+// `installed` is an owner (docs/architecture/client-and-protocol.md → Skills page).
 
 import * as Arr from "effect/Array";
 import * as Atom from "effect/reactivity/Atom";
@@ -147,6 +153,68 @@ export const ENVIRONMENTS_PATH = "/environments";
 /** Whether a page path shows the Environments. */
 export const isEnvironmentsPath = (path: string): boolean => /^\/environments\/?$/.test(path);
 
+/** The Skills page: the Skills installed in the Environments, and the Skill directory's lists. */
+export const SKILLS_PATH = "/skills";
+
+/** The Skills page's tabs, as the query names them, in the order the tab bar shows them. */
+export const SKILLS_TABS = ["installed", "all-time", "trending", "hot"] as const;
+
+export type SkillsTab = (typeof SKILLS_TABS)[number];
+
+const isSkillsTab = (value: string | null): value is SkillsTab =>
+  value !== null && Arr.contains(SKILLS_TABS, value);
+
+/** What the Skills page's query names. */
+export interface SkillsParams {
+  /** The tab shown; undefined when the query names none (or one that is not a tab), for the page to choose. */
+  readonly tab: SkillsTab | undefined;
+  /** The search, as typed; `""` for none. */
+  readonly query: string;
+  /** The Environment whose Skills the Installed tab shows alone (`*`: those kept for every Environment); undefined for all. */
+  readonly environment: string | undefined;
+}
+
+/** The Skills page's parameters in `search`. */
+export const skillsParamsOf = (search: string): SkillsParams => {
+  const params = new URLSearchParams(search);
+  const tab = params.get("tab");
+  const environment = params.get("environment");
+
+  return {
+    tab: isSkillsTab(tab) ? tab : undefined,
+    query: params.get("q") ?? "",
+    environment: environment === null || environment === "" ? undefined : environment,
+  };
+};
+
+/** The Skills page showing `params`: `/skills?tab=…&q=…&environment=…`, leaving out what is not named. */
+export const skillsPath = (params: Partial<SkillsParams> = {}): string => {
+  const query = new URLSearchParams();
+
+  if (params.tab !== undefined) query.set("tab", params.tab);
+
+  if (params.query !== undefined && params.query !== "") query.set("q", params.query);
+
+  if (params.environment !== undefined) query.set("environment", params.environment);
+
+  return query.size === 0 ? SKILLS_PATH : `${SKILLS_PATH}?${query.toString()}`;
+};
+
+/** The page of a Skill directory's owner (a GitHub user or organization): its repos that hold Skills. */
+export const skillOwnerPath = (owner: string): string =>
+  `${SKILLS_PATH}/${encodeURIComponent(owner)}`;
+
+/** The page of a repo's Skills. */
+export const skillRepoPath = (owner: string, repo: string): string =>
+  `${skillOwnerPath(owner)}/${encodeURIComponent(repo)}`;
+
+/** The page of one Skill of a repo. */
+export const skillPagePath = (owner: string, repo: string, skill: string): string =>
+  `${skillRepoPath(owner, repo)}/${encodeURIComponent(skill)}`;
+
+/** The Skills page, or a page below it: an owner's, then a repo's, then a Skill's segment. */
+const SKILLS_PAGE = /^\/skills(?:\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?)?\/?$/;
+
 /** The draft page: write the first message of a new Session, and choose where it works. */
 export const DRAFT_PATH = "/new";
 
@@ -171,10 +239,36 @@ const SESSION_PAGE = /^\/sessions\/([^/]+)(?:\/agents\/([^/]+))?\/?$/;
 export type Page =
   | { readonly kind: "settings" }
   | { readonly kind: "environments" }
+  | { readonly kind: "skills" }
+  | { readonly kind: "skillOwner"; readonly owner: string }
+  | { readonly kind: "skillRepo"; readonly owner: string; readonly repo: string }
+  | {
+      readonly kind: "skill";
+      readonly owner: string;
+      readonly repo: string;
+      readonly skill: string;
+    }
   | { readonly kind: "draft" }
   | { readonly kind: "session"; readonly sessionId: string }
   | { readonly kind: "subagent"; readonly sessionId: string; readonly agentId: string }
   | { readonly kind: "empty" };
+
+/** The page below `/skills` that `match` (of `SKILLS_PAGE`) names; empty when a segment cannot be decoded. */
+const skillsPageOf = (match: RegExpExecArray): Page => {
+  const [owner, repo, skill] = Arr.map([match[1], match[2], match[3]], decoded);
+
+  if (match[1] === undefined) return { kind: "skills" };
+
+  if (owner === undefined) return { kind: "empty" };
+
+  if (match[2] === undefined) return { kind: "skillOwner", owner };
+
+  if (repo === undefined) return { kind: "empty" };
+
+  if (match[3] === undefined) return { kind: "skillRepo", owner, repo };
+
+  return skill === undefined ? { kind: "empty" } : { kind: "skill", owner, repo, skill };
+};
 
 /** What `path` shows. */
 export const pageOf = (path: string): Page => {
@@ -183,6 +277,10 @@ export const pageOf = (path: string): Page => {
   if (isEnvironmentsPath(path)) return { kind: "environments" };
 
   if (isDraftPath(path)) return { kind: "draft" };
+
+  const skills = SKILLS_PAGE.exec(path);
+
+  if (skills !== null) return skillsPageOf(skills);
 
   const match = SESSION_PAGE.exec(path);
   const sessionId = decoded(match?.[1]);
@@ -219,3 +317,6 @@ export const sessionIdAtom = Atom.map(pathAtom, sessionIdOf);
 
 /** The subagent whose Subagent page is shown, if one is. */
 export const agentIdAtom = Atom.map(pathAtom, agentIdOf);
+
+/** What the Skills page's query names now. */
+export const skillsParamsAtom = Atom.map(searchAtom, skillsParamsOf);
