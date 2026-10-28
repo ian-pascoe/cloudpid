@@ -24,6 +24,8 @@ import {
   SKILLS_PATH,
   skillOwnerPath,
   skillPagePath,
+  skillRepoParamsAtom,
+  skillRepoParamsOf,
   skillRepoPath,
   skillsParamsAtom,
   skillsParamsOf,
@@ -175,6 +177,41 @@ describe("the Skills paths", () => {
     expect(pageOf("/skills/%E0%A4%A")).toEqual({ kind: "empty" });
     expect(pageOf("/skills/o/%E0%A4%A")).toEqual({ kind: "empty" });
     expect(pageOf("/skills/o/r/%E0%A4%A")).toEqual({ kind: "empty" });
+  });
+});
+
+describe("a repo's and a Skill's query", () => {
+  it("names the ref to show, and none for the default branch", () => {
+    expect(skillRepoParamsOf("")).toEqual({ ref: undefined });
+    expect(skillRepoParamsOf("?ref=v1.2")).toEqual({ ref: "v1.2" });
+    expect(skillRepoParamsOf("?ref=feature%2Fx")).toEqual({ ref: "feature/x" });
+    expect(skillRepoParamsOf("?ref=")).toEqual({ ref: undefined });
+  });
+
+  it("is written on the repo's and the Skill's path with the ref encoded, and nothing for none", () => {
+    expect(skillRepoPath("o", "r")).toBe("/skills/o/r");
+    expect(skillRepoPath("o", "r", "")).toBe("/skills/o/r");
+    expect(skillRepoPath("o", "r", "feature/x y")).toBe("/skills/o/r?ref=feature%2Fx%20y");
+    expect(skillPagePath("o", "r", "s", "v1")).toBe("/skills/o/r/s?ref=v1");
+
+    // The query is not part of the path, so the page is the same page.
+    expect(pageOf("/skills/o/r")).toEqual({ kind: "skillRepo", owner: "o", repo: "r" });
+
+    const written = new URL(skillRepoPath("o", "r", "feature/x&y"), "https://x.test");
+
+    expect(skillRepoParamsOf(written.search)).toEqual({ ref: "feature/x&y" });
+  });
+
+  it("follows the location", () => {
+    stubWindow("/skills/o/r");
+
+    const registry = AtomRegistry.make();
+
+    registry.mount(skillRepoParamsAtom);
+    expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: undefined });
+
+    navigate(skillRepoPath("o", "r", "v2"));
+    expect(registry.get(skillRepoParamsAtom)).toEqual({ ref: "v2" });
   });
 });
 

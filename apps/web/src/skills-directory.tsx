@@ -45,7 +45,7 @@ const MIN_QUERY_LENGTH = 2;
 const TYPING_PAUSE_MS = 300;
 
 /** The credit for the data, a small link and nothing more: no Vercel branding. */
-const Credit = () => (
+export const Credit = () => (
   <p className="text-xs text-muted-foreground">
     <a
       href="https://skills.sh"

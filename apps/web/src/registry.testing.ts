@@ -52,6 +52,7 @@ const UNEXPECTED: Handlers = {
   searchSkills: unexpected("searchSkills"),
   listSkillDirectory: unexpected("listSkillDirectory"),
   searchSkillDirectory: unexpected("searchSkillDirectory"),
+  listRepoSkills: unexpected("listRepoSkills"),
   skillChangeFiles: unexpected("skillChangeFiles"),
   environmentSkillFiles: unexpected("environmentSkillFiles"),
   listBuilds: unexpected("listBuilds"),
