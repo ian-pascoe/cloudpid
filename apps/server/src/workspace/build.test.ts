@@ -7,6 +7,7 @@ import type { HeldSecrets } from "./environment-secrets.ts";
 import { type BuildRequest, buildKey, type EnvironmentBuild } from "./build-record.ts";
 import { BUILD_ATTEMPTS, BUILD_REFRESH_MS, BuildRunner, type StoredBuilds } from "./build.ts";
 import type { ScriptRun } from "./prepare.ts";
+import type { RemoteHeadsAnswer } from "./remote-heads.ts";
 
 const TOKEN = "ghp_build_token";
 
@@ -30,8 +31,6 @@ const request = (overrides: Partial<BuildRequest> = {}): BuildRequest => ({
 
 /** What a step's script is, from what it holds. */
 const stepOf = (script: string): string => {
-  if (script.includes("git ls-remote")) return "heads";
-
   if (script.includes("core.hooksPath=/dev/null clone")) return "clone";
 
   if (script.includes("/var/lib/cloudpid/environment/setup.sh")) return "environment-setup";
@@ -61,6 +60,10 @@ type Fake = {
   held: HeldSecrets;
   /** Holds the clone until it resolves. */
   gate: Promise<void> | undefined;
+  /** What the remotes answer to the daily look; the repos' heads the Build recorded by default. */
+  remote: RemoteHeadsAnswer;
+  /** The Repos each look asked about. */
+  asked: string[][];
   /** What a step answers, by step; anything else exits 0. */
   answers: Partial<Record<string, ScriptRun>>;
   snapshot:
@@ -90,6 +93,8 @@ const open = (enabled = true) => {
     envs: [],
     held: { ok: true, secrets: [] },
     gate: undefined,
+    remote: { ok: true, heads: { app: "aaa", api: "bbb" } },
+    asked: [],
     answers: {},
     snapshot: {
       ok: true,
@@ -118,6 +123,12 @@ const open = (enabled = true) => {
       image: () => "img-1",
       handOver: async (overrides) => {
         fake.handedOver.push(overrides);
+      },
+      heads: async (repos) => {
+        fake.steps.push("heads");
+        fake.asked.push(repos.map((repo) => repo.name));
+
+        return fake.remote;
       },
       secrets: async () => fake.held,
       run: async (script, _timeout, env) => {
@@ -411,17 +422,18 @@ describe("the daily look at the default branches", () => {
     const { fake, builds, build } = await built();
     const last = (await builds.state()).last;
 
-    fake.answers = {
-      ...GOOD_COMMITS,
-      heads: { exitCode: 0, output: "cloudpid-commit app aaa\ncloudpid-commit api bbb\n" },
-    };
+    fake.remote = { ok: true, heads: { app: "aaa", api: "bbb" } };
     fake.now += DAY;
     expect((await builds.request(request({ check: true }))).progress).toMatchObject({
       status: "checking",
     });
     await build();
 
-    expect(fake.steps).toEqual(["heads", "stop"]);
+    // Only the remotes were asked: the Container was neither held, started nor stopped.
+    expect(fake.steps).toEqual(["heads"]);
+    expect(fake.asked).toEqual([["app", "api"]]);
+    expect(fake.holds).toBe(0);
+    expect(fake.handedOver).toHaveLength(1);
     expect(await builds.state()).toEqual({
       image: "img-1",
       last,
@@ -433,10 +445,7 @@ describe("the daily look at the default branches", () => {
   it("builds again when a default branch moved", async () => {
     const { fake, builds, build } = await built();
 
-    fake.answers = {
-      ...GOOD_COMMITS,
-      heads: { exitCode: 0, output: "cloudpid-commit app ccc\ncloudpid-commit api bbb\n" },
-    };
+    fake.remote = { ok: true, heads: { app: "ccc", api: "bbb" } };
     fake.now += DAY;
     await builds.request(request({ check: true }));
     await build();
@@ -446,6 +455,48 @@ describe("the daily look at the default branches", () => {
     expect((await builds.state()).last?.finishedAt).toBe(fake.now);
   });
 
+  it("keeps the Build and tries again at the next look when a remote cannot be asked, with no Container", async () => {
+    const { fake, builds, build } = await built();
+    const last = (await builds.state()).last;
+
+    fake.remote = { ok: false, reason: "GitHub answered 502 asking for acme/app's default branch" };
+    fake.now += DAY;
+    await builds.request(request({ check: true }));
+    await build();
+
+    expect(fake.steps).toEqual(["heads"]);
+    expect(fake.holds).toBe(0);
+    expect(fake.warnings).toEqual([expect.stringContaining("answered 502")]);
+    expect(await builds.state()).toMatchObject({
+      last,
+      progress: {
+        status: "failed",
+        key: "key-1",
+        reason: expect.stringContaining("answered 502"),
+      },
+      attemptedAt: fake.now,
+    });
+    // The next look is due a day after this attempt, as a failed Build is tried again.
+    expect(fake.stored?.pending).toBeNull();
+  });
+
+  it("builds nothing for a Repo with no commits yet that still has none", async () => {
+    const { fake, builds, build } = open();
+
+    fake.answers = {
+      commits: { exitCode: 0, output: "cloudpid-commit app -\ncloudpid-commit api bbb\n" },
+    };
+    await builds.request(request());
+    await build();
+    fake.steps = [];
+    fake.remote = { ok: true, heads: { app: null, api: "bbb" } };
+    fake.now += DAY;
+    await builds.request(request({ check: true }));
+    await build();
+
+    expect(fake.steps).toEqual(["heads"]);
+  });
+
   it("builds again without looking when the last Build is old", async () => {
     const { fake, builds, build } = await built();
 
@@ -453,6 +504,7 @@ describe("the daily look at the default branches", () => {
     await builds.request(request({ check: true }));
     await build();
 
+    expect(fake.asked).toEqual([]);
     expect(fake.steps[0]).toBe("clone");
   });
 

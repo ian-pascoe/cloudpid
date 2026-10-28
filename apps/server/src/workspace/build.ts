@@ -28,7 +28,6 @@ import {
   buildCommitsScript,
   buildPrelude,
   parseCommits,
-  remoteHeadsScript,
 } from "@cloudpid/sandbox-image/builds";
 import {
   environmentSetupScriptRun,
@@ -42,6 +41,7 @@ import type { BuildRequest, BuildState, EnvironmentBuild, TestBuildState } from 
 import { buildSecretEnvironment, type HeldSecrets } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
 import { CLONE_TIMEOUT_SECONDS, SCRIPT_RUN_MARGIN_SECONDS, type ScriptRun } from "./prepare.ts";
+import type { RemoteHeads } from "./remote-heads.ts";
 
 /** What the object keeps: its Builds, and the request a Build waits to begin or runs for, until it ends. */
 export type StoredBuilds = Omit<BuildState, "image"> & {
@@ -54,7 +54,7 @@ export const BUILD_ATTEMPTS = 3;
 /** How old a good Build may get before the daily look makes a new one anyway: well within a snapshot's 30 days. */
 export const BUILD_REFRESH_MS = 20 * 24 * 60 * 60_000;
 
-/** How long asking the remotes for their default branches, reading the commits, or the clean-up may take, in seconds. */
+/** How long reading the commits or the clean-up may take, in seconds. */
 const SHORT_STEP_SECONDS = 5 * 60;
 
 /** How much of a step's output a failure keeps, from its end. */
@@ -77,6 +77,8 @@ export type BuildRunnerDeps = {
     timeoutSeconds: number,
     env?: Readonly<Record<string, string>>,
   ) => Promise<ScriptRun>;
+  /** Each Repo's default branch head on its remote, asked of GitHub (or the remote) from the object: no Container. */
+  readonly heads: RemoteHeads;
   /** The Environment's kept Secrets the object was handed with the request, or why it cannot show them. */
   readonly secrets: () => Promise<HeldSecrets>;
   /** Snapshot the running Container, after the scan for the token: the Build's snapshot, or why there is none. */
@@ -375,7 +377,11 @@ export class BuildRunner {
     );
   }
 
-  /** Whether the daily look finds nothing to build for: no default branch moved since `last`, which is recent. */
+  /**
+   * Whether the daily look finds nothing to build for: no default branch moved since `last`, which is recent. The remotes
+   * are asked from this object (`BuildRunnerDeps.heads`), never through the Container; a remote that cannot be asked
+   * throws, which fails the look and leaves `last` in use.
+   */
   async #unchanged(
     request: BuildRequest & { readonly id: string },
     last: EnvironmentBuild | null,
@@ -384,16 +390,17 @@ export class BuildRunner {
 
     if (this.#deps.now() - last.finishedAt > BUILD_REFRESH_MS) return false;
 
-    const heads = parseCommits(
-      await this.#step(
-        request.id,
-        "Asking the repos' remotes for their default branches",
-        remoteHeadsScript(request.repos),
-        SHORT_STEP_SECONDS,
-      ),
-    );
+    const asked = await this.#deps.heads(request.repos);
 
-    return request.repos.every((repo) => heads[repo.name] === (last.commits[repo.name] ?? null));
+    if (!asked.ok) {
+      throw new Error(
+        `Asking the repos' remotes for their default branches failed: ${asked.reason}`,
+      );
+    }
+
+    return request.repos.every(
+      (repo) => (asked.heads[repo.name] ?? null) === (last.commits[repo.name] ?? null),
+    );
   }
 
   async #run(request: StoredBuilds["pending"] & {}): Promise<void> {
@@ -405,22 +412,24 @@ export class BuildRunner {
       deps.warn(`idle stop: tracking the Build failed: ${String(cause)}`);
     };
 
-    // Held from the start, so the idle stop never stops the Container midway, and its alarm is armed.
-    deps.idle.begin().catch(trackingFailed);
-
     let outcome: Outcome;
     let lost = false;
+    // Whether the Container is needed: the daily look that finds nothing to build never starts it.
+    let usedContainer = false;
 
     try {
       const { settings } = resolveContainerSettingsLeniently(request.settings);
-
-      await deps.handOver(buildContainerSettings(settings));
-
       const last = (await deps.load())?.last ?? null;
 
       if (request.check === true && (await this.#unchanged(request, last))) {
         outcome = { kind: "unchanged" };
       } else {
+        // Held from here, so the idle stop never stops the Container midway, and its alarm is armed.
+        usedContainer = true;
+        deps.idle.begin().catch(trackingFailed);
+
+        await deps.handOver(buildContainerSettings(settings));
+
         // The snapshot is searched for every one of them, so a Build that cannot show them is not made.
         const held = await deps.secrets();
 
@@ -503,13 +512,15 @@ export class BuildRunner {
       };
     }
 
-    try {
-      await deps.stop();
-    } catch (cause) {
-      deps.warn(`${LOG_KEY}: stopping the Container failed: ${String(cause)}`);
-    }
+    if (usedContainer) {
+      try {
+        await deps.stop();
+      } catch (cause) {
+        deps.warn(`${LOG_KEY}: stopping the Container failed: ${String(cause)}`);
+      }
 
-    await deps.idle.end().catch(trackingFailed);
+      await deps.idle.end().catch(trackingFailed);
+    }
 
     if (this.#cancelled === request.id) this.#cancelled = undefined;
 
