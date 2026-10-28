@@ -5084,7 +5084,7 @@ it("sets a Secret's build flag and deletes it, and says when there is no such Se
     Effect.flip(registry.deleteEnvironmentSecret({ environment: null, name: "API_KEY" })),
   );
 
-  expect(missing.message).toBe("No Secret API_KEY is kept for Global");
+  expect(missing.message).toBe("No Secret API_KEY is kept Global");
 });
 
 it("hands a Build the Environment's Secrets, and builds again when a Secret for the Build changes", async () => {

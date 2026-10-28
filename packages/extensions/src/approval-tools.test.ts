@@ -792,7 +792,7 @@ describe("environment_secret_delete", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toContain("no Secret API_KEY is kept for Global");
+    expect(text).toContain("no Secret API_KEY is kept Global");
     expect(asked).toEqual([]);
   });
 

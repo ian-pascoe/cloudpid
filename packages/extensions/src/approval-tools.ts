@@ -183,6 +183,10 @@ const storedSizeWords = (stored: Schema.Json | null): string =>
 const named = ({ id, name }: ChangedEnvironment): string =>
   id === GLOBAL_ID ? GLOBAL_NAME : `Environment ${JSON.stringify(name)} (${id})`;
 
+/** "kept Global", or "kept for" the Environment, as a message says it. */
+const keptIn = (environment: ChangedEnvironment): string =>
+  environment.id === GLOBAL_ID ? "kept Global" : `kept for ${named(environment)}`;
+
 const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 /** Whether `now` takes no more of anything than `approved`, what the owner was shown. */
@@ -837,12 +841,12 @@ export const ApprovalTools: Effect.Effect<
 
         if (Option.isNone(secret) && !(yield* askedBefore(approvals, api))) {
           return yield* EnvironmentsError.make({
-            message: `Nothing was asked or deleted: no Secret ${name} is kept for ${named(scope)}. environment_get lists the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}".`,
+            message: `Nothing was asked or deleted: no Secret ${name} is ${keptIn(scope)}. environment_get lists the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}".`,
           });
         }
 
         const marked = Option.isSome(secret) && secret.value.build;
-        const before = `${name}, kept for ${named(scope)}${marked ? ", marked for the Build" : ""}`;
+        const before = `${name}, ${keptIn(scope)}${marked ? ", marked for the Build" : ""}`;
 
         return yield* withApproval(
           approvals,
@@ -887,7 +891,7 @@ export const ApprovalTools: Effect.Effect<
                       {
                         type: "text" as const,
                         text: approvedAlready(
-                          `no Secret ${name} is kept for ${named(deleted.environment)}`,
+                          `no Secret ${name} is ${keptIn(deleted.environment)}`,
                         ),
                       },
                     ],
@@ -895,7 +899,7 @@ export const ApprovalTools: Effect.Effect<
                   };
                 case "changed-since":
                   return yield* EnvironmentsError.make({
-                    message: `The user approved, but ${name}, kept for ${named(deleted.environment)}, changed since they were asked (its value or its Build mark): nothing was deleted. Ask again if it should still be deleted.`,
+                    message: `The user approved, but ${name}, ${keptIn(deleted.environment)}, changed since they were asked (its value or its Build mark): nothing was deleted. Ask again if it should still be deleted.`,
                   });
                 case "deleted":
                   yield* log.record({

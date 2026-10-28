@@ -412,6 +412,9 @@ export const serveRegistryRpc = <R = never>(
     const scopeWords = (environment: string | null) =>
       environment === null ? "Global" : `environment "${environment}"`;
 
+    const keptWords = (environment: string | null) =>
+      environment === null ? "kept Global" : `kept for ${scopeWords(environment)}`;
+
     /**
      * After a Secret or a variable kept Global changed: each Environment's Build is looked at again
      * (their key covers the Secrets and variables a Build gets).
@@ -1049,7 +1052,7 @@ export const serveRegistryRpc = <R = never>(
                 return failed(noEnvironment(environment ?? ""));
               case "full":
                 return failed(
-                  `At most ${MAX_ENVIRONMENT_SECRETS} Secrets are kept for ${scopeWords(environment)}: delete one first`,
+                  `At most ${MAX_ENVIRONMENT_SECRETS} Secrets are ${keptWords(environment)}: delete one first`,
                 );
             }
           }),
@@ -1057,7 +1060,7 @@ export const serveRegistryRpc = <R = never>(
       setEnvironmentSecretBuild: ({ environment, name, build }) =>
         registry.setEnvironmentSecretBuild({ environment, name, build }).pipe(
           Effect.filterOrFail(Predicate.isNotNull, () =>
-            failed(`No Secret ${name} is kept for ${scopeWords(environment)}`),
+            failed(`No Secret ${name} is ${keptWords(environment)}`),
           ),
           Effect.tap(() => secretChanged(environment)),
         ),
@@ -1068,7 +1071,7 @@ export const serveRegistryRpc = <R = never>(
             Effect.flatMap((deleted) =>
               deleted
                 ? secretChanged(environment)
-                : failed(`No Secret ${name} is kept for ${scopeWords(environment)}`),
+                : failed(`No Secret ${name} is ${keptWords(environment)}`),
             ),
           ),
       listWorkspaces: () => registry.listWorkspaces(),
