@@ -323,7 +323,7 @@ const failure = async (call: Promise<Result>) => {
 };
 
 describe("the environment tools", () => {
-  it("are the ten setting tools, and only the changes are kept from a rerun after an eviction", async () => {
+  it("are the eleven setting tools, and only the changes are kept from a rerun after an eviction", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
 
     expect(
@@ -339,12 +339,14 @@ describe("the environment tools", () => {
           "environment_start_script_set",
           "environment_toolchains_set",
           "environment_ignore_set",
+          "environment_spare_workspace_set",
         ],
         (name) => tool(name).replay,
       ),
     ).toEqual([
       "safe",
       "safe",
+      "unsafe",
       "unsafe",
       "unsafe",
       "unsafe",
@@ -374,6 +376,7 @@ describe("the environment tools", () => {
     expect(shown).toContain("Container size: cpu-1");
     expect(shown).toMatch(/Size limit \(.*\): cpu-2/);
     expect(shown).toContain("Idle time: 2 minutes");
+    expect(shown).toContain("Spare Workspace: on");
     expect(shown).toContain("NODE_ENV=test");
     expect(shown).toContain(
       `API_KEY (kept for this Environment, reaches the Build; commands get it as $${secretEnvName("API_KEY")})`,
@@ -751,6 +754,7 @@ describe("the variables kept for every Environment", () => {
       ["environment_start_script_set", { script: "make" }],
       ["environment_toolchains_set", { mise_toml: "[tools]" }],
       ["environment_ignore_set", { patterns: ["/data"] }],
+      ["environment_spare_workspace_set", { enabled: false }],
       ["environment_rename", { name: "New" }],
       ["environment_repo_add", { url: "acme/app" }],
       ["environment_repo_remove", { name: "app" }],
@@ -946,6 +950,58 @@ describe("environment_idle_time_set", () => {
       expect(logged).toEqual([]);
     },
   );
+});
+
+describe("environment_spare_workspace_set", () => {
+  it("turns the spare off, saying it is removed and a new Session waits for its Workspace", async () => {
+    const environments = fakeEnvironments();
+    const logged: RunChange[] = [];
+    const tool = await toolsOver(environments.service, { logged });
+
+    const result = await run(tool("environment_spare_workspace_set"), {
+      enabled: false,
+      reason: "Rarely used",
+    });
+
+    expect(environments.changes).toEqual([
+      {
+        environment: "default",
+        change: { field: "spareWorkspace", value: false },
+        tool: "environment_spare_workspace_set",
+        reason: "Rarely used",
+      },
+    ]);
+    expect(text(result)).toContain("Turned the Spare Workspace of");
+    expect(text(result)).toContain("off: its spare, if it had one, is removed");
+    expect(result.details).toMatchObject({
+      agentChange: { field: "spareWorkspace", before: true, after: false },
+    });
+    expect(logged).toEqual([
+      {
+        tool: "environment_spare_workspace_set",
+        environmentName: "Default",
+        field: "spareWorkspace",
+      },
+    ]);
+  });
+
+  it("says so of a spare that is on already, and records nothing", async () => {
+    const environments = fakeEnvironments();
+    const tool = await toolsOver(environments.service);
+
+    expect(
+      text(await run(tool("environment_spare_workspace_set"), { enabled: true, reason: "r" })),
+    ).toContain("is on already: nothing changed");
+    expect(environments.changes).toEqual([]);
+  });
+
+  it("describes the trade-off: new Sessions that start fast against the Container time of each spare", async () => {
+    const tool = await toolsOver(fakeEnvironments().service);
+    const { description } = tool("environment_spare_workspace_set");
+
+    expect(description).toContain("without waiting for the clones and the Setup Scripts");
+    expect(description).toContain("runs a Container for a minute or two");
+  });
 });
 
 const SCRIPT = "#!/usr/bin/env bash\nset -eu\napt-get install -y postgresql\n";

@@ -1,3 +1,4 @@
+import { resolveContainerSettingsLeniently } from "@cloudpid/config";
 import type { SealedValue } from "@cloudpid/extensions/secrets/core";
 import {
   DEFAULT_ENVIRONMENT,
@@ -279,7 +280,8 @@ export type RegistryStore = {
    * none gets one registered, under an id from `newId` that no Workspace has, on `SPARE_BRANCH` with the Environment's
    * Repos and its last good Build, which the spare records. Only an Environment that had a Session within
    * `SPARE_REFILL_WINDOW_MS` of `now` gets a spare made: another keeps the one it has while a Session can take it (one
-   * of another Build), and has one whose Repos are no longer its own listed but not replaced.
+   * of another Build), and has one whose Repos are no longer its own listed but not replaced. An Environment whose Spare
+   * Workspace setting is off (`spareWorkspace`) gets none, and has the one it has listed, current or not.
    */
   readonly upkeepSpares: (
     environments: ReadonlyArray<string> | undefined,
@@ -1266,6 +1268,18 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
           const hadRecentSession =
             lastSessionAt !== null && now - lastSessionAt <= SPARE_REFILL_WINDOW_MS;
+
+          // Read leniently, as every reader of the settings does: a value that does not resolve leaves the spare on.
+          const spareOn = resolveContainerSettingsLeniently(
+            Option.getOrElse(decodeJson(row.settings), () => ({})),
+          ).settings.spareWorkspace;
+
+          // Turned off: the spare it has is removed, however current, and none is made.
+          if (!spareOn) {
+            if (spare !== undefined) stale.push(spare.id);
+
+            continue;
+          }
 
           if (spare !== undefined) {
             const reposCurrent = sameRepos(decodeRepos(spare.repos), environment.repos);

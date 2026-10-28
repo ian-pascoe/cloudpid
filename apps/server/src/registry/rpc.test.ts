@@ -916,8 +916,12 @@ const fakeRegistries = () => {
           return { status: "refused", message: "A revert is not undone" };
 
         // A Repo put back or taken out changes the Environment's record, and a Skill's files are the Registry's, which
-        // the fake does not model.
-        if (fieldRepo(found.value.field) !== null || fieldSkill(found.value.field) !== null) {
+        // the fake does not model; nor does it model the Spare Workspace setting.
+        if (
+          fieldRepo(found.value.field) !== null ||
+          fieldSkill(found.value.field) !== null ||
+          found.value.field === "spareWorkspace"
+        ) {
           const repoRevert: AgentChange = {
             ...found.value,
             id: agentChanges.length + 1,
@@ -2706,6 +2710,28 @@ it("saves an Environment's Container overrides and answers the settings in force
   expect(read).toEqual(saved);
 });
 
+it("keeps the Environment's spare Workspace and Build current after a save of its Container settings", async () => {
+  const fake = fakeRegistries();
+
+  await fake.runBackground();
+  fake.calls.length = 0;
+
+  await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment: DEFAULT_ENVIRONMENT,
+      overrides: { spareWorkspace: false },
+    }),
+  );
+
+  // After the answer: the save waits for neither.
+  expect(fake.calls).not.toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
+
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
 it("fails overrides the Registry rejects with its readable message, saving nothing", async () => {
   const fake = fakeRegistries();
 
@@ -2907,6 +2933,43 @@ it("keeps the spare Workspace and the Build current after a revert of a Repo", a
 
   expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
   expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("keeps the spare Workspace current after a revert of the Spare Workspace setting", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "environment_spare_workspace_set",
+    field: "spareWorkspace",
+    after: false,
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("leaves the spare Workspace alone after a revert of a variable", async () => {
+  const fake = fakeRegistries();
+
+  fake.overridesOf.set(DEFAULT_ENVIRONMENT, { variables: { A: "2" } });
+  fake.agentChanges.push(agentChange(1, "A", "1", "2"));
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).not.toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
 });
 
 it("refuses to revert an Agent change whose variable changed since, showing its value now", async () => {

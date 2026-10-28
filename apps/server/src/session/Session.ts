@@ -360,6 +360,7 @@ export const SessionLive = Session.make(
             workspaces.getByName(object).updateContainerSettings(overrides),
           handSkills: (object, set) => workspaces.getByName(object).updateSkills(set),
           builds,
+          spares,
           lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
         });
 

@@ -2,7 +2,8 @@
 // `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset` (which also keep
 // variables for every Environment, with the id `*`), and one tool for each of the other Container settings
 // (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,
-// `environment_start_script_set`, `environment_toolchains_set` and `environment_ignore_set`), and
+// `environment_start_script_set`, `environment_toolchains_set`, `environment_ignore_set` and
+// `environment_spare_workspace_set`), and
 // `environment_secret_build` for the Build mark of a kept Secret, and `environment_skill_save`,
 // `environment_skill_install`, `environment_skill_update` and `environment_skill_remove` for its own Skills and, saved,
 // installed, updated or removed, those kept for every Environment (`environment-skills.ts`; a change to the latter waits for the owner's Approval, so this
@@ -24,6 +25,7 @@ import {
   MAX_IGNORE_PATTERNS,
   MAX_SCRIPT_BYTES,
   MAX_TOOLCHAINS_BYTES,
+  SPARE_WORKSPACE_FIELD,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
@@ -359,6 +361,7 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
       `Setup Script: ${block(settings.setupScript, "bash")}`,
       `Start Script: ${block(settings.startScript, "bash")}`,
       `Toolchains (mise.toml): ${settings.toolchains === "" ? "none: the image's base Toolchains" : block(settings.toolchains, "toml")}`,
+      `Spare Workspace: ${settings.spareWorkspace ? "on (a Workspace kept made ahead, so a new Session starts without waiting for the clones and the Setup Scripts)" : "off (a new Session's Workspace is made when the Session starts)"}`,
       `Kept Secrets (values never shown): ${
         details.secrets.length === 0
           ? "none"
@@ -842,7 +845,7 @@ export const EnvironmentTools: Effect.Effect<
 
   const get = yield* defineEffectTool({
     name: "environment_get",
-    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains), the variables kept for every Environment that its own do not override, the names of the Secrets kept for it and for every Environment (never their values), its own Skills (name, description, when saved) and the Skills kept for every Environment that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${EVERY_ENVIRONMENT_ID}", show what is kept for every Environment instead: its variables, the names of its Secrets and its Skills.`,
+    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace), the variables kept for every Environment that its own do not override, the names of the Secrets kept for it and for every Environment (never their values), its own Skills (name, description, when saved) and the Skills kept for every Environment that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${EVERY_ENVIRONMENT_ID}", show what is kept for every Environment instead: its variables, the names of its Secrets and its Skills.`,
     parameters: Schema.Struct({
       id: Schema.optionalKey(
         idOrEvery("the variables, Secrets and Skills kept for every Environment"),
@@ -1142,6 +1145,43 @@ export const EnvironmentTools: Effect.Effect<
       }),
   });
 
+  const spareWorkspace = yield* defineEffectTool({
+    name: "environment_spare_workspace_set",
+    description: Arr.join(
+      [
+        "Turn an Environment's Spare Workspace on or off (this Session's unless id names another). On (the default), the Environment keeps one Workspace made ahead from its last good Build while it had a Session in the last 3 days: cloned, its Setup Scripts run, its Container snapshotted and stopped, so a new Session takes it and starts without waiting for the clones and the Setup Scripts. Each spare prepared runs a Container for a minute or two and keeps a Snapshot, after every Session that takes one and every new Build.",
+        "Off: no spare is prepared, the one there is is removed with its Snapshot, and a new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts as the first Workspace after a Build does. Off saves that Container time for an Environment whose new Sessions can wait; on suits one whose new Sessions should start fast.",
+        "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at once: no Container restarts, and no new Build is made.",
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      enabled: Schema.Boolean.annotate({
+        description: "true keeps a spare made ahead; false removes it and prepares none",
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, enabled, reason }, api) =>
+      applyChange({
+        tool: "environment_spare_workspace_set",
+        id,
+        field: SPARE_WORKSPACE_FIELD,
+        value: enabled,
+        reason,
+        conversation: api.conversationId,
+        prepare: () => Effect.void,
+        unchanged: (where) =>
+          `The Spare Workspace of ${where} is ${enabled ? "on" : "off"} already: nothing changed, and nothing was recorded.`,
+        changed: ({ where }) =>
+          enabled
+            ? `Turned the Spare Workspace of ${where} on: a spare is prepared now if the Environment had a Session in the last 3 days, else after its next Session, and a new Session that takes it starts without waiting for the clones and the Setup Scripts.`
+            : `Turned the Spare Workspace of ${where} off: its spare, if it had one, is removed with its Snapshot, and none is prepared. A new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts.`,
+      }),
+  });
+
   /**
    * Fails, saving nothing (`outcome` says what was not done), when a text holds a Secret the Session holds or a
    * deploy-time credential.
@@ -1185,6 +1225,7 @@ export const EnvironmentTools: Effect.Effect<
       startScript,
       toolchains,
       ignore,
+      spareWorkspace,
       ...lifecycle,
       ...secretMarks,
       ...skills,

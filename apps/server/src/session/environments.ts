@@ -2,6 +2,7 @@
 // Environments, read and changed for the agent. A change is applied and recorded by the Registry (`changeEnvironment`,
 // and `changeEveryEnvironment` for a variable kept for every Environment), as the owner's save is applied; then, as
 // after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),
+// and the spares' upkeep after a change of its Spare Workspace setting,
 // and a change that reaches the Session's own Environment is handed to its Workspace at once
 // (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
 // Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
@@ -22,6 +23,7 @@ import {
   EVERY_ENVIRONMENT_ID,
   EVERY_ENVIRONMENT_NAME,
 } from "@cloudpid/extensions/environment";
+import { SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import type { BuildView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -29,6 +31,7 @@ import type * as Schema from "effect/Schema";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
 import type { Builds } from "../registry/builds.ts";
+import type { Spares } from "../registry/rpc.ts";
 import type { Placement } from "./workspace.ts";
 import type { SkillSet } from "../workspace/skill-set-schema.ts";
 
@@ -75,6 +78,8 @@ export type SessionEnvironmentsOptions = {
   ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }>;
   /** The Builds' upkeep, run for an Environment after each change, as after the owner's save. */
   readonly builds: Pick<Builds, "of">;
+  /** The spares' upkeep, run for an Environment after a change of its Spare Workspace setting. */
+  readonly spares: Pick<Spares, "of">;
   /** What the agent does to an Environment's own record: make, rename, Repos, Build (`sessionLifecycle`). */
   readonly lifecycle: EnvironmentLifecycle;
 };
@@ -159,6 +164,7 @@ export const sessionEnvironments = ({
   handOver,
   handSkills,
   builds,
+  spares,
   lifecycle,
 }: SessionEnvironmentsOptions): EnvironmentsService => {
   /** The Session's Workspace and its Environment, once found: neither changes for the Session's life. */
@@ -583,7 +589,10 @@ export const sessionEnvironments = ({
           );
         }
 
-        // As after the owner's save: the variables are among what a Build is made with.
+        // As after the owner's save: the Spare Workspace setting keeps or removes the spare, and the variables are
+        // among what a Build is made with.
+        if (change.field === SPARE_WORKSPACE_FIELD) yield* spares.of(environment);
+
         yield* builds.of(environment);
 
         return {

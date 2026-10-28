@@ -731,6 +731,26 @@ describe("the dialogs of an Environment's card", () => {
     }),
   );
 
+  it.effect("saves the Spare Workspace turned off as an override, and on again as none", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = paging();
+
+      registry.mount(saveEnvironmentAtom("work"));
+      registry.set(saveEnvironmentAtom("work"), {
+        name: undefined,
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, spareWorkspace: false },
+      });
+      yield* settled(registry, saveEnvironmentAtom("work"));
+      registry.set(saveEnvironmentAtom("work"), {
+        name: undefined,
+        settings: DEFAULT_CONTAINER_SETTINGS,
+      });
+      yield* settled(registry, saveEnvironmentAtom("work"));
+
+      expect(saved).toEqual([{ spareWorkspace: false }, {}]);
+    }),
+  );
+
   it.effect("keeps the Edit dialog open, saving nothing more, when the rename is refused", () =>
     Effect.gen(function* () {
       const { registry, saved } = paging();
@@ -838,6 +858,7 @@ describe("the Edit dialog's draft", () => {
         setupScript: undefined,
         startScript: undefined,
         toolchains: undefined,
+        spareWorkspace: undefined,
       });
 
       yield* Deferred.succeed(gate, undefined);
@@ -853,6 +874,7 @@ describe("the Edit dialog's draft", () => {
         setupScript: "",
         startScript: "",
         toolchains: "",
+        spareWorkspace: true,
       });
     }),
   );
@@ -919,6 +941,7 @@ describe("the Edit dialog's draft", () => {
         setupScript: undefined,
         startScript: "typed\n",
         toolchains: undefined,
+        spareWorkspace: false,
       });
       yield* Deferred.succeed(gate, undefined);
       yield* settled(registry, environmentSettingsAtom("work"));
@@ -933,6 +956,7 @@ describe("the Edit dialog's draft", () => {
         setupScript: "",
         startScript: "typed\n",
         toolchains: "",
+        spareWorkspace: false,
       });
     }),
   );
@@ -953,6 +977,7 @@ describe("the Edit dialog's draft", () => {
         setupScript: "",
         startScript: "",
         toolchains: "",
+        spareWorkspace: false,
       });
       registry.refresh(environmentSettingsAtom("work"));
       yield* settled(registry, environmentSettingsAtom("work"));
@@ -967,6 +992,7 @@ describe("the Edit dialog's draft", () => {
         setupScript: "",
         startScript: "",
         toolchains: "",
+        spareWorkspace: false,
       });
     }),
   );

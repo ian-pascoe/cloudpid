@@ -1473,6 +1473,59 @@ describe("the Registry store", () => {
         });
       });
     });
+
+    describe("kept only while the Environment's Spare Workspace setting is on", () => {
+      it("removes the spare once the setting is off, makes none while it is, and one again once it is on", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 1_000);
+        await registry.putBuild("0000abcd", { build: build("snap-1"), status: null });
+        await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+
+        // Off: the spare it has is stale, current as it is, and none is made in its place.
+        await registry.putEnvironmentSettings("0000abcd", { spareWorkspace: false });
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 2_000)).toEqual({
+          stale: ["5a5a5a5a"],
+          made: [],
+        });
+        expect(await registry.forgetSpare("5a5a5a5a")).toBe(true);
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 2_000)).toEqual({
+          stale: [],
+          made: [],
+        });
+
+        // A new Session gets a Workspace of its own, and still no spare is made behind it.
+        expect(await sessionIn(registry, "s-2", "2b3c4d5e", "0000abcd", 3_000)).toMatchObject({
+          workspace: "2b3c4d5e",
+        });
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 3_000)).toEqual({
+          stale: [],
+          made: [],
+        });
+
+        // On again: the next upkeep makes one, from the last good Build.
+        await registry.putEnvironmentSettings("0000abcd", {});
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 4_000)).toMatchObject({
+          stale: [],
+          made: [
+            { id: "6b6b6b6b", environment: "0000abcd", build: { snapshot: { id: "snap-1" } } },
+          ],
+        });
+      });
+
+      it("reads a setting that does not resolve as on", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Cloudpid");
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 1_000);
+        await registry.putEnvironmentSettings("0000abcd", { spareWorkspace: "no" });
+
+        expect(await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000)).toMatchObject({
+          made: [{ id: "5a5a5a5a" }],
+        });
+      });
+    });
   });
 
   it("leases legacy objects to one caller at a time, Sessions before Machines", async () => {

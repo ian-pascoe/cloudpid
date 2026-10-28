@@ -434,7 +434,7 @@ export const dismissAgentChangeAtom = Atom.family((id: string) =>
 
 /**
  * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables,
- * scripts and Toolchains as typed.
+ * scripts and Toolchains as typed, and whether the Environment keeps a Spare Workspace.
  */
 export interface EnvironmentDraft {
   readonly name: string;
@@ -454,6 +454,8 @@ export interface EnvironmentDraft {
   readonly startScript: string | undefined;
   /** The Environment's Toolchains (a mise.toml); undefined until the settings have answered and nothing was typed. */
   readonly toolchains: string | undefined;
+  /** Whether it keeps a Spare Workspace; undefined until the settings have answered and nothing was picked. */
+  readonly spareWorkspace: boolean | undefined;
 }
 
 /** `draft`, with the settings it has not got yet taken from `saved`, the settings in force once they answer. */
@@ -473,6 +475,7 @@ const filledFrom = (
         setupScript: draft.setupScript ?? saved.settings.setupScript,
         startScript: draft.startScript ?? saved.settings.startScript,
         toolchains: draft.toolchains ?? saved.settings.toolchains,
+        spareWorkspace: draft.spareWorkspace ?? saved.settings.spareWorkspace,
       };
 
 /**
@@ -495,6 +498,7 @@ export const environmentDraftAtom = Atom.family((id: string) =>
           setupScript: undefined,
           startScript: undefined,
           toolchains: undefined,
+          spareWorkspace: undefined,
         })),
         saved,
       );

@@ -1,9 +1,9 @@
 // An Environment's Container settings (`docs/architecture/container.md` → Container settings): the Container's
 // instance size, how long it may sit unused before its Workspace stops it, the paths it keeps to itself on top of the
 // built-in ones, the variables every command gets, the Environment's own Setup and Start Scripts, and its Toolchains (a
-// mise.toml). Like the global settings, every field has a decoding default, so decoding the saved overrides gives
-// the resolved settings and the schema's `Encoded` side is the overrides' shape. The Registry keeps them per
-// Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
+// mise.toml), and whether it keeps a Spare Workspace. Like the global settings, every field has a decoding default, so
+// decoding the saved overrides gives the resolved settings and the schema's `Encoded` side is the overrides' shape. The
+// Registry keeps them per Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
@@ -406,9 +406,21 @@ export const ContainerSettings = Schema.Struct({
    * Workspace has none, or has the one it last wrote. Empty: the image's base Toolchains (`BASE_MISE_TOML`).
    */
   toolchains: Toolchains.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  /**
+   * Whether the Environment keeps a Spare Workspace made ahead (GLOSSARY.md), so a new Session does not wait for the
+   * clones and the Setup Scripts. Off: no spare is prepared, the one there is is removed, and a new Session's Workspace
+   * is made when it is asked for, which saves the Container time each spare's preparation takes.
+   */
+  spareWorkspace: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
 });
 
 export type ContainerSettings = typeof ContainerSettings.Type;
+
+/**
+ * The name of the Spare Workspace setting, as an Agent change's field: a change to it keeps or removes the
+ * Environment's spare, so the spares' upkeep runs after it.
+ */
+export const SPARE_WORKSPACE_FIELD = "spareWorkspace" satisfies keyof ContainerSettings;
 
 /** What is stored: the settings that differ from the defaults. */
 export type ContainerSettingsOverrides = typeof ContainerSettings.Encoded;
@@ -532,6 +544,8 @@ export const containerOverridesFrom = (settings: ContainerSettings): ContainerSe
   if (settings.startScript !== "") overrides.startScript = settings.startScript;
 
   if (settings.toolchains !== "") overrides.toolchains = settings.toolchains;
+
+  if (!settings.spareWorkspace) overrides.spareWorkspace = false;
 
   return overrides;
 };
