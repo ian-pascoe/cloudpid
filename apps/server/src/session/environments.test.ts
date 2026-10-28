@@ -159,14 +159,14 @@ const open = (
           environment: SCOPES.get(input.environment) ?? OTHER,
           change: { ...CHANGE, field: "skills.release", tool: "environment_skill_save" },
           skill: { name: "release", description: "Cut a release.", files: {}, savedAt: 1 },
-          shadows: false,
-          overrides: false,
+          bundled: false,
+          inherited: false,
           // The Session's Environment keeps its own Skill of the name, which hides one kept for every Environment.
           overriddenIn:
             input.environment === "*" && overridesHere ? [{ id: "default", name: "Default" }] : [],
         };
       }),
-    agentCheckSkill: (input: Parameters<EnvironmentsRegistry["agentCheckSkill"]>[0]) =>
+    agentPreviewSkill: (input: Parameters<EnvironmentsRegistry["agentPreviewSkill"]>[0]) =>
       Effect.sync(() => {
         skillsAsked.push(input);
 
@@ -402,7 +402,7 @@ describe("the Session's Environments", () => {
     const files = { "SKILL.md": "x" };
 
     const checked = await Effect.runPromise(
-      environments.checkSkill({ environment: "*", folder: "release", files }),
+      environments.previewSkill({ environment: "*", folder: "release", files }),
     );
 
     expect(checked).toMatchObject({ status: "ready", name: "release", current: null });

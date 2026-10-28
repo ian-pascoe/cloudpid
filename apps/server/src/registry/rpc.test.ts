@@ -741,7 +741,7 @@ const fakeRegistries = () => {
     agentDeleteSecret: () => Effect.die("The endpoint makes no Agent change"),
     keepAskedSecrets: () => Effect.die("The endpoint keeps no Secret for an ask"),
     agentSaveSkill: () => Effect.die("The endpoint makes no Agent change"),
-    agentCheckSkill: () => Effect.die("The endpoint makes no Agent change"),
+    agentPreviewSkill: () => Effect.die("The endpoint makes no Agent change"),
     agentRemoveSkill: () => Effect.die("The endpoint makes no Agent change"),
     listSkills: ({ environment }) =>
       Effect.sync(() =>
@@ -754,19 +754,24 @@ const fakeRegistries = () => {
         calls.push(`removeSkill:${environment}:${name}`);
 
         if (environment !== "*" && !Arr.some(environments, (item) => item.id === environment)) {
-          return "missing" as const;
+          return { status: "missing" as const };
         }
 
         const kept = skillsKept.get(environment) ?? [];
 
-        if (!Arr.some(kept, (skill) => skill.name === name)) return "absent" as const;
+        // A Skill whose removal would serve a larger one from the layer below.
+        if (name === "hides-a-big-one") {
+          return { status: "rejected" as const, message: "the set would be too large" };
+        }
+
+        if (!Arr.some(kept, (skill) => skill.name === name)) return { status: "absent" as const };
 
         skillsKept.set(
           environment,
           Arr.filter(kept, (skill) => skill.name !== name),
         );
 
-        return "removed" as const;
+        return { status: "removed" as const };
       }),
     skillChangeFiles: ({ environment, change }) =>
       Effect.sync(() => skillFiles.get(`${environment}:${change}`) ?? null),
@@ -2850,6 +2855,12 @@ it("lists the Skills kept for every Environment, removes one on the owner's word
   expect(files.after).toEqual([{ path: "SKILL.md", text: "---\nname: release\n---\n" }]);
   expect(fake.skillsKept.get("*")).toEqual([]);
   expect(absent.message).toBe('The environment keeps no Skill named "release"');
+
+  const refused = await call(fake, (registry) =>
+    Effect.flip(registry.removeEnvironmentSkill({ environment: "*", name: "hides-a-big-one" })),
+  );
+
+  expect(refused.message).toBe("Not removed: the set would be too large");
 });
 
 it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {

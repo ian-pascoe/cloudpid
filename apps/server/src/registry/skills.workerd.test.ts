@@ -9,13 +9,14 @@ import {
   DEFAULT_ENVIRONMENT,
   EVERY_ENVIRONMENT_SCOPE,
   MAX_AGENT_CHANGES,
+  type SkillExpectation,
   skillField,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import {
-  checkSkillSave,
+  previewSkillSave,
   hashBundle,
   hashFiles,
   mergeSkills,
@@ -62,18 +63,18 @@ const inRegistry = <A>(
       files: SkillFiles,
       at?: number,
       environment?: string,
-      expected?: { readonly savedAt: number | null },
+      expected?: SkillExpectation,
     ) => Promise<ReturnType<typeof saveSkillAs>>;
     readonly check: (
       folder: string,
       files: SkillFiles,
       environment?: string,
-    ) => Promise<ReturnType<typeof checkSkillSave>>;
+    ) => Promise<ReturnType<typeof previewSkillSave>>;
     readonly remove: (
       name: string,
       at?: number,
       environment?: string,
-      expected?: { readonly savedAt: number | null },
+      expected?: SkillExpectation,
     ) => ReturnType<typeof removeSkillAs>;
     readonly revert: (
       id: number,
@@ -87,6 +88,7 @@ const inRegistry = <A>(
     readonly changes: ReturnType<typeof openAgentChanges>;
     readonly store: ReturnType<typeof openRegistryStore>;
     readonly storage: DurableObjectStorage;
+    readonly bundle: Awaited<ReturnType<typeof hashBundle>>;
   }) => Promise<A>,
 ) =>
   runInDurableObject(
@@ -100,6 +102,7 @@ const inRegistry = <A>(
       return body({
         store,
         storage: state.storage,
+        bundle,
         changes,
         skills,
         save: async (folder, files, at = 1_000, environment = DEFAULT_ENVIRONMENT, expected) =>
@@ -108,7 +111,7 @@ const inRegistry = <A>(
             { environment, folder, files, hashed: await hashFiles(files), author, expected },
           ),
         check: async (folder, files, environment = DEFAULT_ENVIRONMENT) =>
-          checkSkillSave(
+          previewSkillSave(
             { store, skills, bundle },
             { environment, folder, files, hashed: await hashFiles(files) },
           ),
@@ -147,7 +150,7 @@ describe("saving an Environment's Skill", () => {
     expect(saved).toMatchObject({
       status: "saved",
       skill: { name: "release", description: "What release does." },
-      shadows: false,
+      bundled: false,
     });
     expect(listed).toEqual([
       expect.objectContaining({
@@ -178,7 +181,7 @@ describe("saving an Environment's Skill", () => {
       await set(),
     ]);
 
-    expect(saved).toMatchObject({ status: "saved", shadows: true });
+    expect(saved).toMatchObject({ status: "saved", bundled: true });
     expect(set.files).toEqual({
       "pr/SKILL.md": own["SKILL.md"],
       "tdd/SKILL.md": BUNDLE.files["tdd/SKILL.md"],
@@ -488,7 +491,7 @@ describe("the texts of a Skill's files", () => {
   });
 
   it("go with the owner's removal of a Skill no change refers to, and with the Environment", async () => {
-    const counts = await inRegistry(async ({ storage, skills, store }) => {
+    const counts = await inRegistry(async ({ storage, skills, store, bundle }) => {
       store.createEnvironment("0000abcd", "Other", 1_000);
       const hashed = await hashFiles({ "SKILL.md": skillMd("mine") });
 
@@ -511,7 +514,11 @@ describe("the texts of a Skill's files", () => {
           .exec<{ count: number }>("SELECT COUNT(*) AS count FROM skill_files")
           .toArray()[0]?.count;
 
-      const removed = removeSkill(storage, skills, { environment: "0000abcd", name: "mine" });
+      const removed = removeSkill(
+        { storage, store, skills, bundle },
+        { environment: "0000abcd", name: "mine" },
+      );
+
       const afterRemove = count();
 
       store.deleteEnvironment("0000abcd");
@@ -519,7 +526,7 @@ describe("the texts of a Skill's files", () => {
       return [removed, afterRemove, count(), skills.list("0000abcd")];
     });
 
-    expect(counts).toEqual([true, 1, 0, []]);
+    expect(counts).toEqual([{ status: "removed" }, 1, 0, []]);
   });
 });
 
@@ -556,7 +563,7 @@ describe("Skills kept for every Environment", () => {
       status: "saved",
       environment: { id: "*", name: "every Environment" },
       skill: { name: "release" },
-      overrides: false,
+      inherited: false,
       overriddenIn: [],
     });
     expect(listed).toEqual([expect.objectContaining({ name: "release", savedAt: 1_000 })]);
@@ -665,7 +672,7 @@ describe("Skills kept for every Environment", () => {
       status: "saved",
       overriddenIn: [{ id: "0000abcd", name: "Other" }],
     });
-    expect(ownOne).toMatchObject({ status: "saved", overrides: true, overriddenIn: [] });
+    expect(ownOne).toMatchObject({ status: "saved", inherited: true, overriddenIn: [] });
   });
 
   it("are refused when a save would take an Environment's set past 100 Skills, naming the Environment", async () => {
@@ -733,6 +740,60 @@ describe("Skills kept for every Environment", () => {
     expect(saved[1]).toBe(8);
   });
 
+  it("refuse an Environment's removal of its own Skill that hides a larger one kept for every Environment, when the set would pass 8 MB", async () => {
+    const [save, agent, owner, reverted, kept] = await inRegistry(
+      async ({ save, remove, revert, skills, store, storage, bundle }) => {
+        for (let index = 0; index < 8; index += 1) {
+          await save(`big-${index}`, big(`big-${index}`), 1_000, EVERY);
+        }
+
+        // Default hides big-0 with a small Skill of its own, and holds one more large Skill: 8 in all.
+        const hiding = await save("big-0", { "SKILL.md": skillMd("big-0") }, 2_000);
+
+        await save("extra", big("extra"), 2_100);
+
+        return [
+          hiding,
+          remove("big-0", 3_000),
+          removeSkill(
+            { storage, store, skills, bundle },
+            { environment: DEFAULT_ENVIRONMENT, name: "big-0" },
+          ),
+          // The change that made the Skill: its revert would take it out too.
+          revert(hiding.status === "saved" ? hiding.change.id : 0, 4_000),
+          skills.list(DEFAULT_ENVIRONMENT).map((skill) => skill.name),
+        ];
+      },
+    );
+
+    const refusal = expect.stringContaining(
+      "the Skill of the name in the layer below, which big-0 hides, is served instead",
+    );
+
+    expect(save).toMatchObject({ status: "saved" });
+    expect(agent).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("The Environment's Skill set would be"),
+    });
+    expect(agent).toMatchObject({ message: refusal });
+    expect(owner).toMatchObject({ status: "rejected", message: refusal });
+    expect(reverted).toMatchObject({ status: "refused", message: refusal });
+    // Nothing was removed, and the refusals recorded nothing.
+    expect(kept).toEqual(["big-0", "extra"]);
+  });
+
+  it("take out an Environment's own Skill that hides one kept for every Environment when the set still fits", async () => {
+    const [removed, owner] = await inRegistry(async ({ save, remove }) => {
+      await save("release", release, 1_000, EVERY);
+      await save("release", { "SKILL.md": skillMd("release", "Mine.") }, 2_000);
+
+      return [remove("release", 3_000), undefined];
+    });
+
+    expect(removed).toMatchObject({ status: "removed", inherited: true });
+    expect(owner).toBeUndefined();
+  });
+
   it("count in an Environment's own set, which a save of its own Skill is refused past 100 and 8 MB for", async () => {
     const saved = await inRegistry(async ({ save }) => {
       // The bundle's 2 and 97 for every Environment make 99.
@@ -751,7 +812,7 @@ describe("Skills kept for every Environment", () => {
     expect(saved[0]).toMatchObject({ status: "saved" });
     expect(saved[1]).toMatchObject({
       status: "rejected",
-      message: expect.stringContaining("the Environment's Skill set would hold 101 Skills"),
+      message: expect.stringContaining("The Environment's Skill set would hold 101 Skills"),
     });
     expect(saved[2]).toMatchObject({ status: "saved" });
   });
@@ -967,16 +1028,20 @@ describe("the Agent changes of Skills kept for every Environment", () => {
 
   it("go with the owner's removal of a Skill kept for every Environment, which records no change", async () => {
     const [removed, left, changes] = await inRegistry(
-      async ({ save, skills, storage, changes }) => {
+      async ({ save, skills, storage, changes, store, bundle }) => {
         await save("release", release, 1_000, EVERY);
         // As the page's Remove does: the owner's save, with no Agent change of its own.
-        const gone = removeSkill(storage, skills, { environment: EVERY, name: "release" });
+
+        const gone = removeSkill(
+          { storage, store, skills, bundle },
+          { environment: EVERY, name: "release" },
+        );
 
         return [gone, skills.list(EVERY), changes.list(EVERY).length];
       },
     );
 
-    expect(removed).toBe(true);
+    expect(removed).toEqual({ status: "removed" });
     expect(left).toEqual([]);
     // The save's change is the only one.
     expect(changes).toBe(1);

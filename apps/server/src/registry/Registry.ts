@@ -21,23 +21,24 @@ import type {
 } from "@cloudpid/protocol";
 import type { SkillSet } from "../workspace/bundled-skill-set.ts";
 import {
-  checkSkillSave,
+  previewSkillSave,
   hashBundle,
   hashFiles,
   mergeSkills,
   openSkills,
+  type OwnerRemoval,
   removeSkill,
   removeSkillAs,
   saveSkillAs,
   skillChangeFiles,
-  type SkillCheck,
+  type SkillPreview,
   type SkillFiles,
   skillLayers,
   type SkillRemoval,
   type SkillSave,
   skillSetOf,
 } from "./skills.ts";
-import { SETTINGS_SCOPE } from "@cloudpid/protocol";
+import { SETTINGS_SCOPE, type SkillExpectation } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
   type AgentChangeAuthor,
@@ -448,33 +449,36 @@ export type RegistryMethods = {
     readonly folder: string;
     readonly files: SkillFiles;
     readonly author: AgentChangeAuthor;
-    readonly expected?: { readonly savedAt: number | null } | undefined;
+    readonly expected?: SkillExpectation | undefined;
   }) => Effect.Effect<SkillSave>;
   /**
    * What `agentSaveSkill` would do with the same input: the save's checks and what the scope keeps of the name, with
    * nothing saved or recorded. The agent's Approval card shows it before the owner is asked.
    */
-  readonly agentCheckSkill: (input: {
+  readonly agentPreviewSkill: (input: {
     readonly environment: string;
     readonly folder: string;
     readonly files: SkillFiles;
-  }) => Effect.Effect<SkillCheck>;
+  }) => Effect.Effect<SkillPreview>;
   /** An Agent change: remove Skill `name` kept for `environment` (or `*`), recorded with its files before. */
   readonly agentRemoveSkill: (input: {
     readonly environment: string;
     readonly name: string;
     readonly author: AgentChangeAuthor;
-    readonly expected?: { readonly savedAt: number | null } | undefined;
+    readonly expected?: SkillExpectation | undefined;
   }) => Effect.Effect<SkillRemoval>;
   /** The Skills kept for `environment` (or `*` for every Environment), by name; null when it is not registered. */
   readonly listSkills: (input: {
     readonly environment: string;
   }) => Effect.Effect<ReadonlyArray<EnvironmentSkill> | null>;
-  /** The owner removes Skill `name` kept for `environment` (or `*`; not an Agent change, and no Approval). */
+  /**
+   * The owner removes Skill `name` kept for `environment` (or `*`; not an Agent change, and no Approval), refused when
+   * it would serve a Skill from the layer below that does not fit.
+   */
   readonly removeSkill: (input: {
     readonly environment: string;
     readonly name: string;
-  }) => Effect.Effect<"removed" | "absent" | "missing">;
+  }) => Effect.Effect<OwnerRemoval | { readonly status: "missing" }>;
   /** The files before and after Agent change `change` of a Skill of `environment`, with their texts; null for none. */
   readonly skillChangeFiles: (input: {
     readonly environment: string;
@@ -1077,12 +1081,12 @@ export const RegistryLive = Registry.make(
                 { environment, folder, files, hashed, author, expected },
               );
             }),
-          agentCheckSkill: ({ environment, folder, files }) =>
+          agentPreviewSkill: ({ environment, folder, files }) =>
             Effect.gen(function* () {
               const hashed = yield* Effect.promise(() => hashFiles(files));
               const hashedBundle = yield* bundle;
 
-              return checkSkillSave(
+              return previewSkillSave(
                 { store, skills, bundle: hashedBundle },
                 { environment, folder, files, hashed },
               );
@@ -1108,17 +1112,20 @@ export const RegistryLive = Registry.make(
                   })),
             ),
           removeSkill: ({ environment, name }) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               if (
                 environment !== EVERY_ENVIRONMENT_SCOPE &&
                 store.getEnvironment(environment) === null
               ) {
-                return "missing" as const;
+                return { status: "missing" as const };
               }
 
-              return removeSkill(state.raw.storage, skills, { environment, name })
-                ? ("removed" as const)
-                : ("absent" as const);
+              const hashedBundle = yield* bundle;
+
+              return removeSkill(
+                { storage: state.raw.storage, store, skills, bundle: hashedBundle },
+                { environment, name },
+              );
             }),
           skillChangeFiles: ({ environment, change }) =>
             Effect.sync(() => {

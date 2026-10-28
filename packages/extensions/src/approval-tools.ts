@@ -31,12 +31,10 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
-  APPROVAL,
-  Approvals,
   type ApprovalCall,
+  Approvals,
   approvedAlready,
   askedBefore,
-  changedSince,
   declined,
   withApproval,
 } from "./approvals.ts";
@@ -199,6 +197,10 @@ const within = (now: EnvironmentFootprint, approved: EnvironmentFootprint): bool
 const footprintWords = (footprint: EnvironmentFootprint): string =>
   `${count(footprint.workspaces, "Workspace")} with ${count(footprint.sessions, "Session")} (archived ones too), its spare Workspace and Build, ${count(footprint.secrets, "kept Secret")} and its Agent changes`;
 
+/** What a change the owner approved says when the target changed between the request and the answer. */
+const changedSince = (what: string, now: string) =>
+  `The user approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
+
 const Reason = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(MAX_CHANGE_REASON),
@@ -206,6 +208,9 @@ const Reason = Schema.String.check(
   description:
     "Why you make the change, shown to the user on the Approval card and kept with the change, such as 'the test suite needs 12 GiB of memory'",
 });
+
+const APPROVAL =
+  "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the user changes the same setting meanwhile, the approval does not apply and you are told to ask again.";
 
 /**
  * The tools that wait for the owner's Approval: over the Session's `Environments`, `EnvironmentRemoval` and

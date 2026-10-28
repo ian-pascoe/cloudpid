@@ -14,6 +14,15 @@ const CardState = ScopedAtom.make(() =>
 );
 
 /**
+ * The classes of a value on the card: one line as a sentence, several (a Skill's files, as written) in a fixed-width
+ * box that keeps its lines and scrolls when long.
+ */
+const valueClass = (value: string): string =>
+  value.includes("\n")
+    ? "max-h-72 overflow-auto font-mono text-xs break-words whitespace-pre-wrap"
+    : "break-words";
+
+/**
  * The card for one Approval request (`docs/spec.md` → Approval): the change the agent wants to make, its target, the
  * value before and after (for a delete, what is deleted), and the agent's reason, with Approve and Decline. A Decline
  * may carry the owner's reason to the agent. The card closes when the Session's next list leaves the request out.
@@ -49,10 +58,9 @@ const ApprovalCard = ({
       </p>
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
         <dt className="text-muted-foreground">Now</dt>
-        <dd className="break-words whitespace-pre-wrap">{request.before}</dd>
+        <dd className={valueClass(request.before)}>{request.before}</dd>
         <dt className="text-muted-foreground">After</dt>
-        {/* A Skill's files are shown as written, and may be long: they scroll. */}
-        <dd className="max-h-72 overflow-auto break-words whitespace-pre-wrap">{request.after}</dd>
+        <dd className={valueClass(request.after)}>{request.after}</dd>
         <dt className="text-muted-foreground">Why</dt>
         <dd className="break-words">{request.reason}</dd>
       </dl>

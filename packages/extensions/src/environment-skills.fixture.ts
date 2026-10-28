@@ -1,7 +1,12 @@
 // Fake Skills for the `environment` extension's tests: an Environment's own Skills kept in memory, saved and removed as
 // the Registry does (by name, the same files recording nothing), and a Workspace folder to save from.
 // @effect-diagnostics missingPipeableSignature:off
-import { type AgentChange, type EnvironmentSkill, skillField } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  type EnvironmentSkill,
+  type SkillExpectation,
+  skillField,
+} from "@cloudpid/protocol";
 import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -9,12 +14,12 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { ChangeAuthor } from "./environment.ts";
-import type { EnvironmentSkills, SkillChecked } from "./environment-skills.ts";
+import type { EnvironmentSkills, SkillPreview } from "./environment-skills.ts";
 
 /** Skills that fail when called, for a fake that serves the other tools only. */
 export const unusedSkills: EnvironmentSkills = {
   saveSkill: () => Effect.die("saveSkill is not used here"),
-  checkSkill: () => Effect.die("checkSkill is not used here"),
+  previewSkill: () => Effect.die("previewSkill is not used here"),
   removeSkill: () => Effect.die("removeSkill is not used here"),
 };
 
@@ -43,12 +48,16 @@ export const fakeSkills = () => {
     environment: string;
     folder: string;
     files: Readonly<Record<string, string>>;
-    expected?: { readonly savedAt: number | null } | undefined;
+    expected?: SkillExpectation | undefined;
   }> = [];
 
   const removals: Array<{ environment: string; name: string }> = [];
 
+  /** The changes recorded, in order, as the Registry records them. */
+  const recorded: AgentChange[] = [];
+
   let refusal: string | undefined;
+  let removalRefusal: string | undefined;
   let next = 1;
   let clock = 1_000;
 
@@ -75,7 +84,11 @@ export const fakeSkills = () => {
       revertedBy: null,
     };
 
-    return author.approved === true ? { ...change, approved: true } : change;
+    const made = author.approved === true ? { ...change, approved: true as const } : change;
+
+    recorded.push(made);
+
+    return made;
   };
 
   const sameFiles = (
@@ -103,7 +116,7 @@ export const fakeSkills = () => {
     environment: string;
     folder: string;
     files: Readonly<Record<string, string>>;
-  }): SkillChecked => {
+  }): SkillPreview => {
     const known = names.get(environment);
 
     if (known === undefined) return { status: "missing" };
@@ -161,8 +174,8 @@ export const fakeSkills = () => {
           environment: checked.environment,
           change: changeOf(environment, folder, author, before, files),
           name: folder,
-          shadows: folder === "pr",
-          overrides: !everywhere && kept.has(`*:${folder}`),
+          bundled: folder === "pr",
+          inherited: !everywhere && kept.has(`*:${folder}`),
           overriddenIn: hiding,
           // The Session's own Workspace takes it unless its Environment (default) keeps its own of the name.
           handed: everywhere
@@ -170,7 +183,7 @@ export const fakeSkills = () => {
             : environment === "default",
         };
       }),
-    checkSkill: (input) => Effect.sync(() => check(input)),
+    previewSkill: (input) => Effect.sync(() => check(input)),
     removeSkill: ({ environment, name, expected, author }) =>
       Effect.sync(() => {
         removals.push({ environment, name });
@@ -184,6 +197,10 @@ export const fakeSkills = () => {
         const before = kept.get(key);
 
         if (before === undefined) return { status: "absent" as const, environment: where };
+
+        if (removalRefusal !== undefined) {
+          return { status: "rejected" as const, message: removalRefusal };
+        }
 
         if (expected !== undefined && (savedAt.get(key) ?? null) !== expected.savedAt) {
           return { status: "changed-since" as const, environment: where };
@@ -227,8 +244,13 @@ export const fakeSkills = () => {
     saves,
     removals,
     listed,
+    recorded,
     refuse: (message: string) => {
       refusal = message;
+    },
+    /** Refuse the next removals, as the Registry does one that would serve a Skill that does not fit. */
+    refuseRemoval: (message: string) => {
+      removalRefusal = message;
     },
     /** Put a Skill in a scope as if saved long ago, with no change recorded. */
     keep: (scope: string, name: string, files: Readonly<Record<string, string>>) => {

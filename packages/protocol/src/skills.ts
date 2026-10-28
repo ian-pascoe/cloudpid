@@ -3,6 +3,12 @@
 // lists them and shows a change's files as diffs).
 import * as Schema from "effect/Schema";
 
+/**
+ * What the owner's Approval of a change to a Skill was asked against: when the Skill of the name was last saved (`null`:
+ * none kept). The Registry applies the change only while that still holds, else it answers `changed-since`.
+ */
+export type SkillExpectation = { readonly savedAt: number | null };
+
 /** Where every Workspace serves its Skill set, read-only: a Skill named `name` is at `<SKILLS_ROOT>/<name>`. */
 export const SKILLS_ROOT = "/workspace/.agents/skills";
 

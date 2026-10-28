@@ -11,7 +11,7 @@
 //   is withdrawn once the Session is idle (`dropAbandoned`).
 //
 // `withApproval` is the way a tool waits: one request per call (its task's id), settled when the call ends however it
-// ends. It is shared by the tools that change a Limit or delete, and meant for the Guardian (#38) too.
+// ends. It is shared by the tools that change a Limit or delete, by those that change the Skills kept for every Environment, and meant for the Guardian (#38) too.
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -317,17 +317,9 @@ export const declined = (answer: Extract<ApprovalAnswer, { approved: false }>, w
   details: { approval: { approved: false, reason: answer.reason ?? null } },
 });
 
-/** What a change the owner approved says when the target changed between the request and the answer. */
-export const changedSince = (what: string, now: string) =>
-  `The user approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
-
 /**
  * What a change the owner approved says when the target has the value already: this call made it before the Session
  * restarted (recorded then), or the user made it meanwhile.
  */
 export const approvedAlready = (what: string) =>
   `The user approved, and ${what} already, as approved: nothing more needed changing.`;
-
-/** What a tool's description says of the Approval it waits for. */
-export const APPROVAL =
-  "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the target changes meanwhile (a setting, or the Skill of the name), the approval does not apply and you are told to ask again.";

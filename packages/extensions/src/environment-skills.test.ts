@@ -317,7 +317,8 @@ describe("environment_skill_save", () => {
     await run(tool("environment_skill_save"), args, scratch());
     const again = await run(tool("environment_skill_save"), args, scratch());
 
-    expect(text(again)).toContain("with these files already: nothing changed");
+    expect(text(again)).toContain("with these files already: nothing was changed or recorded now");
+    expect(text(again)).toContain("it is done");
     expect(logged).toHaveLength(1);
   });
 
@@ -541,7 +542,7 @@ const OTHER_MD =
 
 describe("environment_skill_save for every Environment", () => {
   it("asks the owner on a card showing the Skill, notifies them once, and saves it only on Approve", async () => {
-    const { call, saves, logged, notified, kept } = await setUp();
+    const { call, saves, logged, notified, kept, recorded } = await setUp();
 
     const { result, text, shown } = await call("environment_skill_save", EVERY_ARGS, {
       approve: true,
@@ -598,6 +599,10 @@ describe("environment_skill_save for every Environment", () => {
         field: "skills.release",
       },
     ]);
+    // The change is recorded for the scope * as the owner approved it.
+    expect(recorded).toEqual([
+      expect.objectContaining({ scope: "*", field: "skills.release", approved: true }),
+    ]);
   });
 
   it("tells the agent in its description that the user must approve it", async () => {
@@ -649,7 +654,7 @@ describe("environment_skill_save for every Environment", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toContain("was saved again since they were asked: nothing was saved");
+    expect(text).toContain("was saved again since the user was asked: nothing was saved");
     expect(kept.get("*:release")).toEqual({ "SKILL.md": OTHER_MD });
     expect(logged).toEqual([]);
   });
@@ -857,7 +862,7 @@ describe("environment_skill_remove for every Environment", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(text).toContain("was saved again since they were asked: nothing was removed");
+    expect(text).toContain("was saved again since the user was asked: nothing was removed");
     expect(kept.has("*:release")).toBe(true);
     expect(logged).toEqual([]);
   });
@@ -942,6 +947,126 @@ describe("environment_get for every Environment's Skills", () => {
 
     expect(shown).toContain(
       'Skills for every Environment (id "*"; the Environment\'s own of the same name win): none',
+    );
+  });
+});
+
+describe("the Approval card of a Skill kept for every Environment", () => {
+  const long = (size: number) => "Step.\n".repeat(Math.ceil(size / 6)).slice(0, size);
+
+  it("shows a Skill that fits in full, with no warning", async () => {
+    const { call } = await setUp();
+
+    const { shown, text } = await call("environment_skill_save", EVERY_ARGS);
+
+    expect(shown[0]?.after).not.toContain("NOT FULLY SHOWN");
+    expect(text).not.toContain("not reviewed");
+  });
+
+  it("says plainly what it could not show, above the files and below them, and tells the agent after Approve", async () => {
+    const { call } = await setUp();
+
+    const env = fakeFolderEnv({
+      "/workspace/.cloudpid/tmp/release/SKILL.md": SKILL_MD,
+      // 40,000 characters: the card shows 16,000 in all, so this one is cut, and the next is left out.
+      "/workspace/.cloudpid/tmp/release/references/long.md": long(40_000),
+      "/workspace/.cloudpid/tmp/release/references/more.md": long(1_000),
+    });
+
+    const { shown, text } = await call(
+      "environment_skill_save",
+      EVERY_ARGS,
+      { approve: true },
+      env,
+    );
+
+    const after = shown[0]?.after ?? "";
+
+    // 41,000 characters and the SKILL.md's own, of which the card showed 16,000.
+    const total = SKILL_MD.length + 40_000 + 1_000;
+
+    expect(after.startsWith("⚠ NOT FULLY SHOWN: ")).toBe(true);
+    expect(after.endsWith("unless you trust the part you cannot see.")).toBe(true);
+    expect(after).toContain(`${total - 16_000} of ${total} characters (2 of 3 files)`);
+    expect(after).toContain("it was not reviewed");
+    expect(after).toContain("── references/long.md (40000 bytes), CUT ──");
+    expect(after).toContain("── references/more.md (1000 bytes), NOT SHOWN ──");
+    // The agent is told to keep such a Skill small enough to review.
+    expect(text).toContain("that part was not reviewed");
+    expect(text).toContain("small enough to review in full");
+  });
+
+  it("tells the agent in its description to keep a Skill for every Environment reviewable", async () => {
+    const { tool } = await setUp();
+
+    expect(tool("environment_skill_save").description).toContain("small enough to review in full");
+    expect(tool("environment_skill_save").description).toContain("16000 characters");
+  });
+
+  it("gives the Skill tools an Approval wording of their own, about the Skill, not a setting", async () => {
+    const { tool } = await setUp();
+
+    expect(tool("environment_skill_save").description).toContain(
+      "If the Skill of the name was saved again, or the folder's files changed, meanwhile",
+    );
+    expect(tool("environment_skill_save").description).not.toContain("changes the same setting");
+  });
+});
+
+describe("environment_skill_remove that would serve a Skill that does not fit", () => {
+  it("passes on the refusal, saying why, and records nothing, for an own Skill and for every Environment", async () => {
+    const { call, tool, keep, refuseRemoval, logged, recorded } = await setUp();
+
+    keep("default", "release", { "SKILL.md": SKILL_MD });
+    keep("*", "release", { "SKILL.md": OTHER_MD });
+    refuseRemoval(
+      'Environment "Default" (default)\'s Skill set would be 9000000 bytes, more than the 8388608 a set may once the Skill of the name in the layer below, which release hides, is served instead: remove another Skill first',
+    );
+
+    const own = await failure(
+      run(tool("environment_skill_remove"), { name: "release", reason: "r" }),
+    );
+
+    const every = await call("environment_skill_remove", {
+      id: "*",
+      name: "release",
+      reason: "r",
+    });
+
+    expect(own).toContain("Nothing was removed:");
+    expect(own).toContain("more than the 8388608 a set may");
+    expect(every.result.isError).toBe(true);
+    expect(every.text).toContain("The user approved, but nothing was removed:");
+    expect(every.text).toContain("remove another Skill first");
+    expect(logged).toEqual([]);
+    expect(recorded).toEqual([]);
+  });
+});
+
+describe("a rerun after an eviction of a change that went through", () => {
+  it("says an own save, and an own removal, may be done already", async () => {
+    const { tool, keep } = await setUp();
+
+    keep("default", "release", {
+      "SKILL.md": SKILL_MD,
+      "references/steps.md": "1. Tag.\n",
+    });
+
+    const saved = await run(
+      tool("environment_skill_save"),
+      { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+      scratch(),
+    );
+
+    const removed = await failure(
+      run(tool("environment_skill_remove"), { name: "gone", reason: "r" }),
+    );
+
+    expect(text(saved)).toContain(
+      "if an earlier run of this call saved it before the Session restarted, it is done",
+    );
+    expect(removed).toContain(
+      "if an earlier run of this call removed it before the Session restarted, it is done",
     );
   });
 });

@@ -5,7 +5,7 @@
 // and a change that reaches the Session's own Environment is handed to its Workspace at once
 // (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
 // Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved
-// or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentRemoveSkill`, `agentCheckSkill`), for an
+// or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentRemoveSkill`, `agentPreviewSkill`), for an
 // Environment or for every Environment (`*`); the Session's own Workspace is handed its Environment's new Skill set at
 // once (`updateSkills`), unless the change is to those kept for every Environment and its Environment keeps its own Skill
 // of the name, and no Build's upkeep runs: Skills are not part of a Build.
@@ -46,7 +46,7 @@ export type EnvironmentsRegistry = Pick<
   | "workspaceOverrides"
   | "agentMarkSecretBuild"
   | "agentSaveSkill"
-  | "agentCheckSkill"
+  | "agentPreviewSkill"
   | "agentRemoveSkill"
   | "listSkills"
   | "workspaceSkillSet"
@@ -334,15 +334,15 @@ export const sessionEnvironments = ({
               environment: saved.environment,
               change: saved.change,
               name: saved.skill.name,
-              shadows: saved.shadows,
-              overrides: saved.overrides,
+              bundled: saved.bundled,
+              inherited: saved.inherited,
               overriddenIn: saved.overriddenIn,
               handed: yield* handSkillsAfter(environment, saved.overriddenIn),
             };
         }
       }),
-    checkSkill: ({ environment, folder, files }) =>
-      registry.agentCheckSkill({ environment, folder, files }),
+    previewSkill: ({ environment, folder, files }) =>
+      registry.agentPreviewSkill({ environment, folder, files }),
     removeSkill: ({ environment, name, expected, author }) =>
       Effect.gen(function* () {
         if (session === undefined) return yield* unlisted;
@@ -358,6 +358,7 @@ export const sessionEnvironments = ({
           case "missing":
           case "absent":
           case "changed-since":
+          case "rejected":
             return removed;
           case "removed":
             return {
