@@ -43,7 +43,8 @@ export type LifecycleHost = {
   carry(branch: string, repos: ReadonlyArray<string>): Promise<void>;
   /**
    * What the object's clones of `repos` have not pushed of `branch`: uncommitted Changes, and commits no remote branch has
-   * (`workStateScript`). Runs on the Container, starting it if it is stopped.
+   * (as `workStateScript` reads them). Read by the Workspace DO itself while the Container is stopped, which starts it
+   * only for a repo it cannot read (`WorkspaceWorkStateModule`).
    */
   workState(branch: string, repos: ReadonlyArray<string>): Promise<ReadonlyArray<RepoWorkState>>;
 };

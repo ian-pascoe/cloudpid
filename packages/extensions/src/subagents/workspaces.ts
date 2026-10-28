@@ -48,7 +48,7 @@ export type SubagentWorkspaceMade = {
  */
 export interface SubagentWorkspaceHost {
   create(request: SubagentWorkspaceRequest): Promise<SubagentWorkspaceMade>;
-  /** What the Workspace's clones have not pushed of its branch; runs on its Container, starting it if needed. */
+  /** What the Workspace's clones have not pushed of its branch; its Container is started only for a repo that needs it. */
   workState(workspace: AgentWorkspace): Promise<ReadonlyArray<RepoWorkState>>;
   /** Remove the Workspace (its Container, files and record): Workspace removal. */
   remove(workspace: AgentWorkspace): Promise<void>;

@@ -6,10 +6,22 @@
 /** A repo as the set-up hands it over: each file's path (its `.git` included) and bytes, base64. */
 export type RepoFiles = Readonly<Record<string, string>>;
 
+/** The branch the work-state clones are on (`WorkStateRepos`). */
+export const WORK_STATE_BRANCH = "cloudpid/1a2b3c4d";
+
+/** The Repos the work-state test reads (the last, `missing`, not cloned), each clone's files, and the script's output. */
+export type WorkStateRepos = {
+  readonly repos: ReadonlyArray<string>;
+  readonly files: Readonly<Record<string, RepoFiles>>;
+  readonly stdout: string;
+};
+
 declare module "vitest" {
   export interface ProvidedContext {
     /** The repos real git made, by name (`changes.setup.ts`). */
     readonly changesRepos: Readonly<Record<string, RepoFiles>>;
+    /** A Workspace's clones real git made, and what the Container's `workStateScript` printed for them (`changes.setup.ts`). */
+    readonly workStateRepos: WorkStateRepos;
   }
 }
 

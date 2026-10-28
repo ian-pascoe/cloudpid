@@ -12,7 +12,7 @@ const hookTimeout = testTimeout;
 
 /**
  * Tests of the Workspace DO alone, in a test Worker that hosts it and the Worker Shell's loader: the environment
- * conformance cases, the Changes, the Comparisons and the Run copies (over repos real git made, `changes.setup.ts` and
+ * conformance cases, the Changes, the Comparisons, the Run copies, the read of unpushed work (over repos real git made, `changes.setup.ts` and
  * `comparison.setup.ts`), and the Container previews.
  */
 const workspaceOnly = [
@@ -21,6 +21,7 @@ const workspaceOnly = [
   "src/workspace/changes*.workerd.test.ts",
   "src/workspace/comparison*.workerd.test.ts",
   "src/workspace/runs*.workerd.test.ts",
+  "src/workspace/work-state*.workerd.test.ts",
 ];
 
 /** Every other Workspace test (Sessions and tools on a Workspace) runs in a test Worker that also hosts a Session host. */

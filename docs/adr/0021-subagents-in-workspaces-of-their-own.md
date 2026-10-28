@@ -22,6 +22,6 @@ A Subagent Workspace lasts as long as its subagent. `subagent_cancel` keeps it (
 
 - A Session's Container cost is its Workspace's and its Subagent Workspaces' summed. Several children running side by side cost a Container each: about 6¢ per running hour on `custom-2`, before CPU (ADR-0016). A deleted child's Workspace takes its usage with it.
 - A child runs at the Environment's size and may `container_resize` itself up to `maxInstance`; its restart or resize stops only its own Container.
-- The unpushed-work check runs `git` on the child's Container, starting it if it is stopped, at each report and each delete.
+- The unpushed-work check runs at each report and each delete. While the child's Container is stopped, its Workspace DO reads the clones itself with isomorphic-git, as it reads the Changes (ADR-0022), and starts no Container. Only a repo it cannot read (the Changes' guard, submodules, a long walk of commits, or isomorphic-git failing) is read by `git` on the Container, starting it. A running Container's `git` reads them all.
 - A Subagent Workspace takes no new Session: `createSession` refuses one, and the Environments page offers no _New session here_ on it.
 - Files, Changes and Terminal panes show the Session's Workspace only, and the owner cannot start a subagent in a new Workspace from the UI. (Changes: superseded by ADR-0024, whose Subagent page shows a Subagent's Workspace's Changes.)

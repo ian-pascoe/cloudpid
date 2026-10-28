@@ -2,7 +2,8 @@
 // extension's `SubagentWorkspaces`, over the Registry and the Workspace DOs. A Subagent Workspace is registered by the
 // Registry as the Session's (`createSubagentWorkspace`, which takes the Environment's spare as a new Session's Workspace
 // does, and counts it against the Subagent Workspace limit), readied by the Session when its subagent first works in it
-// (`sessionWorkspace`), read for what it has not pushed on its Container, and removed as a Workspace is.
+// (`sessionWorkspace`), read for what it has not pushed (by its Workspace DO, or its Container), and removed as a
+// Workspace is.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off
 import type {
   AgentWorkspace,
@@ -32,7 +33,7 @@ export type SessionSubagentWorkspacesOptions = {
   readonly session: string | undefined;
   /** Where the Session works: the Workspace a spawner without one of its own works in. */
   readonly placement: () => Promise<Placement>;
-  /** What the Workspaces' clones have not pushed, read on their Containers. */
+  /** What the Workspaces' clones have not pushed, read by their Workspace DOs (a Container only when it runs or must). */
   readonly objects: Pick<WorkspaceObjects, "workState">;
   /** Workspace removal of a Subagent Workspace: its object, then its record (`removals`). */
   readonly remove: (
