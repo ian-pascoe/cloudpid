@@ -41,6 +41,8 @@ export type WorkspaceNamespace = {
       | "skillSetHash"
       | "updateSkills"
       | "containerUsage"
+      | "noteSessionActivity"
+      | "containerHeldStops"
       | "changes"
       | "changeFile"
       | "comparisonSources"

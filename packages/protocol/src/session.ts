@@ -906,8 +906,8 @@ export const ContainerUsage = Schema.Struct({
   /** The running Container's rates; zero when none runs. */
   rates: ContainerRates,
   /**
-   * The latest the running Container goes on without another use (its idle stop), epoch milliseconds; null while a
-   * command runs, or when it is not known.
+   * The latest the running Container goes on without another use (its idle stop, or its hold cap when sooner), epoch
+   * milliseconds; null while a command runs, or when it is not known.
    */
   until: Schema.NullOr(Schema.Finite),
 });

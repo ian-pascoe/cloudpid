@@ -126,6 +126,7 @@ import {
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { contextUsageOf } from "./context-usage.ts";
+import { type HeldStopRecord, noticeHeldStops } from "./held-stops.ts";
 import { attempt, refuse, SessionError } from "./errors.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
@@ -292,6 +293,16 @@ export type SessionHostOptions<R = never> = {
   readonly containerUsage?:
     | ((subagents: ReadonlyArray<string>) => Promise<ContainerUsage | null>)
     | undefined;
+  /**
+   * Tell the Workspaces of the Session and of `subagents` that the Session is at work (a message admitted, a live Run's
+   * heartbeat): their Containers' hold cap counts from it (docs/architecture/container.md "Idle stop"). In the
+   * background: a failure is logged.
+   */
+  readonly workspaceActivity?: ((subagents: ReadonlyArray<string>) => Promise<void>) | undefined;
+  /** The held stops of the Session's Workspace's Container after `after`, which the Session shows as notices. */
+  readonly containerHeldStops?:
+    | ((after: number) => Promise<ReadonlyArray<HeldStopRecord>>)
+    | undefined;
   /** The Session's Subagent Workspaces, which the owner's delete of a subagent removes. */
   readonly subagentWorkspaces?: SubagentWorkspaceHost | undefined;
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
@@ -435,6 +446,11 @@ export type SessionHostService = {
   readonly sync: Effect.Effect<void, SessionError>;
   /** Which of its model and thinking level the Session picked itself; the rest follows the default. */
   readonly picks: Effect.Effect<Picks>;
+  /**
+   * Show the held stops of the Session's Workspace not shown yet as notices (docs/architecture/container.md "Idle
+   * stop"), as a client connects. Never fails.
+   */
+  readonly noticeContainerStops: Effect.Effect<void>;
   /**
    * Abort the work of the active branch, or of the conversation `conversationId` names (anything else fails),
    * and withdraw its queued input, once it is idle. Subagents below it keep working unless `subagents` is true.
@@ -949,13 +965,41 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     ),
   );
 
+  /** The objects of the Session's Subagent Workspaces, as the Subagents document has them. */
+  const subagentWorkspaceObjects = async (): Promise<ReadonlyArray<string>> => {
+    const state = await harness.harness.snapshot(SubagentsDoc, context);
+
+    return Arr.flatMap(Record.values(state?.agents ?? {}), (agent) =>
+      agent.workspace === undefined ? [] : [agent.workspace.object],
+    );
+  };
+
+  /**
+   * Tell the Workspaces the Session works in that it is at work, so their Containers' hold cap counts from now. In the
+   * background, and never failing: a lost note only shortens the cap.
+   */
+  const noteWorkspaceActivity = Effect.suspend(() => {
+    const note = options.workspaceActivity;
+
+    if (note === undefined) return Effect.void;
+
+    return attempt("workspaceActivity", async () => note(await subagentWorkspaceObjects())).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Noting the Session's activity failed", cause),
+      ),
+      Effect.forkIn(scope),
+      Effect.asVoid,
+    );
+  });
+
   const arm = (next: Wake) =>
     next.active
       ? // The heartbeat first: a report that cannot be made must not leave live work unwoken. Each beat writes again
-        // the subagents a failed write left due.
+        // the subagents a failed write left due, and tells the Workspaces the Session is at work.
         armHeartbeat.pipe(
           Effect.andThen(report("running")),
           Effect.andThen(Effect.sync(() => agentsReport.retry())),
+          Effect.andThen(noteWorkspaceActivity),
           Effect.asVoid,
         )
       : // Report before deleting the heartbeat: an unreported end, or subagents unwritten, keep it, to report again.
@@ -1163,6 +1207,36 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
+  /**
+   * Show the held stops of the Session's Workspace it has not shown, each as a notice on the active branch
+   * (`noticeHeldStops`): when a client connects and before input is admitted. Never failing: a stop not shown is shown
+   * at the next check.
+   */
+  const noticeContainerStops: Effect.Effect<void> = Effect.gen(function* () {
+    const read = options.containerHeldStops;
+
+    if (read === undefined) return;
+
+    const now = yield* Clock.currentTimeMillis;
+    const conversation = yield* active;
+
+    yield* attempt("containerHeldStops", () =>
+      noticeHeldStops({
+        kv,
+        now,
+        read,
+        write: async (draft) => {
+          await conversation.submit(draft, context);
+        },
+      }),
+    );
+  }).pipe(
+    Effect.timeout(options.reportTimeout ?? REPORT_TIMEOUT),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Showing the Container's held stops failed", cause),
+    ),
+  );
+
   /** Fail while the Session takes no message: it is being filled as a Fork or Clone, or carries its files to one. */
   const unlessForking = forks.refusal.pipe(
     Effect.flatMap((refusal) =>
@@ -1189,6 +1263,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never
       // holds up the alarm or a status report.
       yield* refreshSettings;
+
+      // A Container stopped for having been held without activity is shown before the message that follows it.
+      yield* noticeContainerStops;
 
       // Another conversation is checked before arming: a bad ID must not report the Session running to the Registry.
       const other = conversationId === undefined ? undefined : yield* addressed(conversationId);
@@ -1949,13 +2026,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     try {
       if (options.containerUsage === undefined) return null;
 
-      const state = await harness.harness.snapshot(SubagentsDoc, context);
-
-      const subagents = Arr.flatMap(Record.values(state?.agents ?? {}), (agent) =>
-        agent.workspace === undefined ? [] : [agent.workspace.object],
-      );
-
-      return (await options.containerUsage(subagents)) ?? null;
+      return (await options.containerUsage(await subagentWorkspaceObjects())) ?? null;
     } catch (error) {
       warn(error instanceof Error ? error.message : String(error));
 
@@ -2326,6 +2397,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         Effect.tap(usageChanged),
       ),
     sync: refreshSettings.pipe(Effect.andThen(applyAgent.pipe(serially))),
+    noticeContainerStops,
     picks: Effect.sync(() => {
       const pick = picked();
 

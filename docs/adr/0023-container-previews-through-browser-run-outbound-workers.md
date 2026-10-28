@@ -25,7 +25,10 @@ the object that made it. The spike (#244) measured it against a public token rou
 - **The Workspace DO serves the Container preview.** It never starts the Container for one: a stopped Container answers 503, and a
   port with nothing listening 502, saying the dev server must listen on `0.0.0.0` (the Container's port is reached on
   its interface, not its loopback). It refuses computerd's port. Every request is a use of the Container, and an
-  open page's socket counts as a running command, so the idle stop waits until the page or the browser closes.
+  open page's socket counts as a running command, so the idle stop waits until the page or the browser closes, but no
+  longer than the hold cap (#325): neither is owner or agent activity, so a Container a page keeps is snapshotted and
+  stopped an hour after the last activity in its Workspace (a command started, a message, a live Run, a file write),
+  as a command handle never released would be.
 - **WebSockets ride on HTTP.** Browser Run routes only HTTP requests, so HMR's WebSocket would fail. The Workspace DO
   puts a small script at the start of each HTML page it serves, which replaces `WebSocket` for the page's own host with
   one carried as a server-sent event stream and POSTs. The Workspace DO holds the real socket to the Container. Vite's
@@ -63,7 +66,10 @@ the object that made it. The spike (#244) measured it against a public token rou
 - A restart of the Workspace DO drops every Container preview's socket, and Vite then reloads the page, losing its state. The
   spike saw one four minutes into a page, with nothing deployed. A restart of the Container does the same.
 - An open Container preview keeps its Container running (about $0.03 an hour on `custom-1` for memory and disk, plus CPU
-  as used, as Vite's client pings every 30 s anyway) until the page or the browser closes. Requests themselves cost little: a page load is about a dozen.
+  as used, as Vite's client pings every 30 s anyway) until the page or the browser closes, or the hold cap passes
+  without activity in the Workspace (an hour, or the idle time when longer): the owner who only browses a dev server
+  for longer than that, with the Session idle, finds it stopped (503) and starts it again with a command. Requests
+  themselves cost little: a page load is about a dozen.
 - Exposure (`docs/architecture/risks-and-spikes.md` → Exposure of the shared browser session): only pages in the Session's browser
   reach a dev server. From an `https` page, requests to it are blocked as mixed content. A page with an `http` origin can
   send it blind requests but not read the answers. That is a laptop's `localhost`, less its mixed-content exemption. The

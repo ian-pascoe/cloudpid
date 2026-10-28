@@ -686,6 +686,27 @@ export const SessionLive = Session.make(
 
                   return sumContainerUsage(Arr.filter(read, (usage) => usage !== null));
                 },
+                // The Session at work is activity in its Workspace and its Subagent Workspaces, which their
+                // Containers' hold cap counts from. It readies nothing and starts nothing.
+                // @effect-diagnostics-next-line asyncFunction:off
+                workspaceActivity: async (subagents) => {
+                  const { workspace: id, object } = await placement();
+
+                  if (id === null) return;
+
+                  await Promise.all(
+                    Arr.map([object, ...subagents], (each) =>
+                      workspaces.getByName(each).noteSessionActivity(),
+                    ),
+                  );
+                },
+                // The stops of its Workspace's Container held without activity, for the Session's notices.
+                // @effect-diagnostics-next-line asyncFunction:off
+                containerHeldStops: async (after) => {
+                  const { workspace: id, object } = await placement();
+
+                  return id === null ? [] : workspaces.getByName(object).containerHeldStops(after);
+                },
                 subagentWorkspaces,
                 extensions: sessionExtensions.pipe(
                   // After every other extension, so each of their tools is named and its call is a span, and the
