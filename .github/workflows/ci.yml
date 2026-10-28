@@ -183,14 +183,32 @@ jobs:
     environment:
       name: preview
     # One deploy or destroy per pull request at a time, never cancelled midway: a newer push waits, and a close waits
-    # for the running deploy, then destroys what it made.
+    # for the running deploy, then destroys what it made. A deploy that only starts after the close (it waited for
+    # `check`, the destroy did not) deploys nothing: see the first step.
     concurrency:
       group: preview-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     steps:
+      # A push's deploy waits for `check` (minutes) but a close's destroy does not, so a pull request closed while its
+      # last push is still being checked is destroyed first, when the stage is empty ("Plan: no resources"), and then
+      # deployed by that push: a stage nothing destroys, left on the account (#328). The job holds the concurrency
+      # group here, so a close that arrives after this check waits for the deploy and destroys it. The event's own
+      # `pull_request.state` is the state at the push, so ask GitHub now.
+      - name: Check the pull request is still open
+        id: pull-request
+        if: github.event.action != 'closed'
+        run: |
+          state=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PULL_REQUEST" --jq .state)
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          if [ "$state" != open ]; then echo "::notice::Pull request $PULL_REQUEST is $state: not deploying its preview."; fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+
       # A destroy evaluates the stack too: check out the commit that was last deployed, since the merge ref of a closed
       # pull request may be gone.
       - uses: actions/checkout@v7
+        if: steps.pull-request.outputs.state != 'closed'
         with:
           ref: ${{ github.event.action == 'closed' && github.event.pull_request.head.sha || '' }}
           persist-credentials: false
@@ -199,12 +217,14 @@ jobs:
       # preview did not already need: a pull request can read only its own caches (written by its `check` job, from the
       # code this job deploys) and main's, and pnpm checks every package against the lockfile's integrity hash.
       - uses: ./.github/actions/setup
+        if: steps.pull-request.outputs.state != 'closed'
         with:
           save-cache: "false"
 
       # The deploy credentials are scoped to this step: install scripts never see them. `destroy` evaluates the stack,
       # so it needs every variable `deploy` does (see the `deploy` job for what each is).
       - name: ${{ github.event.action == 'closed' && 'Destroy' || 'Deploy' }} pr-${{ github.event.pull_request.number }}
+        if: steps.pull-request.outputs.state != 'closed'
         run: >-
           pnpm --filter @cloudpid/infra exec alchemy
           ${{ github.event.action == 'closed' && 'destroy' || 'deploy' }}
@@ -227,3 +247,26 @@ jobs:
           # comment with.
           PULL_REQUEST: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # `alchemy destroy` passes when the state it reads is empty, whatever is left on the account, so check the account
+      # itself: the stage's Container application (Cloudflare keeps it, with no instances, after its Worker is gone)
+      # must be gone, or the job fails. Matches `cloudpid-*-pr-<number>` exactly, never another stage's or project's.
+      - name: Check pr-${{ github.event.pull_request.number }} left no Container application
+        if: github.event.action == 'closed'
+        run: |
+          apps=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/applications")
+          jq -e '.success == true and (.result | type == "array")' <<<"$apps" >/dev/null \
+            || { echo "::error::Cloudflare did not list the Container applications: $apps"; exit 1; }
+          left=$(jq -r --arg stage "pr-$PULL_REQUEST" \
+            '.result[] | select(.name | test("^cloudpid-.*-" + $stage + "(-[a-z0-9]+)?$")) | "\(.name) (\(.id))"' \
+            <<<"$apps")
+          if [ -n "$left" ]; then
+            echo "::error::Stage pr-$PULL_REQUEST left Container applications on the account:"
+            echo "$left"
+            exit 1
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
