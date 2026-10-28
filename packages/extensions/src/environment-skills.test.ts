@@ -83,7 +83,12 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
-    global: Effect.sync(() => ({ variables: {}, secrets: [], skills: skills.listed("*") })),
+    global: Effect.sync(() => ({
+      settings: DEFAULT_CONTAINER_SETTINGS,
+      overriddenIn: {},
+      secrets: [],
+      skills: skills.listed("*"),
+    })),
     change: () => Effect.die("not used here"),
   };
 
@@ -747,7 +752,8 @@ describe("environment_get", () => {
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        globalVariables: {},
+        overrides: {},
+        global: DEFAULT_CONTAINER_SETTINGS,
         skills: [{ name: "release", description: "Cut a release.", savedAt: 0 }],
         globalSkills: [],
       },
@@ -770,8 +776,9 @@ describe("environment_get", () => {
         repos: [],
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
+        overrides: {},
+        global: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        globalVariables: {},
         skills: [
           {
             name: "grill-me",
@@ -1172,7 +1179,8 @@ describe("environment_get for each Environment's Skills", () => {
       build: { status: "none" as const },
       settings: DEFAULT_CONTAINER_SETTINGS,
       secrets: [],
-      globalVariables: {},
+      overrides: {},
+      global: DEFAULT_CONTAINER_SETTINGS,
       skills: [{ name: "release", description: "Ours.", savedAt: 0 }],
       globalSkills: [
         { name: "release", description: "Shared release.", savedAt: 0 },
@@ -1200,7 +1208,8 @@ describe("environment_get for each Environment's Skills", () => {
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        globalVariables: {},
+        overrides: {},
+        global: DEFAULT_CONTAINER_SETTINGS,
         skills: [],
         globalSkills: [],
       },
@@ -2317,8 +2326,9 @@ describe("environment_get marks", () => {
         repos: [],
         build: { status: "none" },
         settings: DEFAULT_CONTAINER_SETTINGS,
+        overrides: {},
+        global: DEFAULT_CONTAINER_SETTINGS,
         secrets: [],
-        globalVariables: {},
         skills: [
           {
             name: "grill-me",

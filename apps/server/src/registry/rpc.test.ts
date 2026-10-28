@@ -1,5 +1,10 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off
-import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
+import {
+  DEFAULT_CONTAINER_SETTINGS,
+  DEFAULT_SETTINGS,
+  resolveContainerOverridesLeniently,
+  SettingsError,
+} from "@cloudpid/config";
 import type { AgentChangeRevert } from "./agent-changes.ts";
 import type { SettingsChangeRevert } from "./settings-changes.ts";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
@@ -42,6 +47,7 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
@@ -56,7 +62,16 @@ import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
-import { GLOBAL_DOCUMENT, workspaceOverridesOf } from "./global.ts";
+import { patchEnvironmentSettings, readEnvironmentSettings } from "./environment-settings.ts";
+import {
+  GLOBAL_DOCUMENT,
+  type GlobalStore,
+  globalSettingsOf,
+  overriddenIn,
+  patchGlobal,
+  readGlobal,
+  workspaceOverridesOf,
+} from "./global.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillRepos } from "./skill-repo.ts";
@@ -99,26 +114,29 @@ const fakeRegistries = () => {
 
   const overridesOf = new Map<string, Schema.Json>();
 
-  /** The variables kept Global. */
-  const globalVariables = (): Readonly<Record<string, string>> =>
-    // SAFETY: the tests only save overrides of the settings' own shape.
-    (overridesOf.get(GLOBAL_SCOPE) as { variables?: Record<string, string> } | undefined)
-      ?.variables ?? {};
+  /**
+   * The Registry's store as the Container settings at Global are read and saved over the fake's saved overrides, so
+   * the fake reads, patches and merges them as the Registry does (`global.ts`).
+   */
+  const globalStore: GlobalStore = {
+    getDocument: (name) =>
+      name === GLOBAL_DOCUMENT ? JSON.stringify(overridesOf.get(GLOBAL_SCOPE) ?? {}) : null,
+    putDocument: (name, body) => {
+      if (name === GLOBAL_DOCUMENT) overridesOf.set(GLOBAL_SCOPE, JSON.parse(body));
+    },
+    listEnvironments: () => environments,
+    getEnvironmentSettings: (id) => overridesOf.get(id) ?? {},
+  };
+
+  /** The Container settings at Global in force. */
+  const globalSettings = () => globalSettingsOf(globalStore);
 
   /**
    * What `environment`'s Workspaces are handed: the Registry's own merge (`workspaceOverridesOf`) over the fake's saved
    * overrides.
    */
   const handedOverrides = (environment: string): Schema.Json =>
-    workspaceOverridesOf(
-      {
-        getDocument: (name) =>
-          name === GLOBAL_DOCUMENT ? JSON.stringify(overridesOf.get(GLOBAL_SCOPE) ?? {}) : null,
-        putDocument: () => undefined,
-        getEnvironmentSettings: (id) => overridesOf.get(id) ?? {},
-      },
-      environment,
-    )?.overrides ?? {};
+    workspaceOverridesOf(globalStore, environment)?.overrides ?? {};
 
   /** What is left from before Environments, to wipe. */
   const legacyObjects: LegacyObject[] = [];
@@ -742,15 +760,9 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         if (!Arr.some(environments, (item) => item.id === environment)) return null;
 
-        const overrides = overridesOf.get(environment) ?? {};
-
-        return {
-          // SAFETY: the tests only save overrides of the settings' own shape.
-          settings: { ...DEFAULT_CONTAINER_SETTINGS, ...(overrides as object) },
-          overrides,
-        };
+        return readEnvironmentSettings(overridesOf.get(environment) ?? {}, globalSettings());
       }),
-    updateEnvironmentSettings: ({ environment, overrides }) =>
+    updateEnvironmentSettings: ({ environment, set, reset }) =>
       Effect.sync(() => {
         calls.push("updateEnvironmentSettings");
 
@@ -758,39 +770,37 @@ const fakeRegistries = () => {
           return { status: "missing" as const };
         }
 
-        if (overrides === null) {
-          return { status: "rejected" as const, message: "idleMinutes: Expected a number" };
+        const saved = patchEnvironmentSettings(
+          overridesOf.get(environment) ?? {},
+          { set, reset },
+          globalSettings(),
+        );
+
+        if (Result.isFailure(saved)) {
+          return { status: "rejected" as const, message: saved.failure };
         }
 
-        overridesOf.set(environment, overrides);
+        overridesOf.set(environment, saved.success.overrides);
 
-        return {
-          status: "saved" as const,
-          // SAFETY: the tests only save overrides of the settings' own shape.
-          state: {
-            settings: { ...DEFAULT_CONTAINER_SETTINGS, ...(overrides as object) },
-            overrides,
-          },
-        };
+        return { status: "saved" as const, state: saved.success };
       }),
-    getGlobalSettings: () =>
-      Effect.sync(() => ({
-        settings: { variables: globalVariables() },
-        overrides: overridesOf.get(GLOBAL_SCOPE) ?? {},
-      })),
-    updateGlobalSettings: ({ overrides }) =>
+    getGlobalContainerSettings: () =>
+      Effect.sync(() => ({ ...readGlobal(globalStore), overriddenIn: overriddenIn(globalStore) })),
+    updateGlobalContainerSettings: ({ set, reset }) =>
       Effect.sync(() => {
-        calls.push("updateGlobalSettings");
+        calls.push("updateGlobalContainerSettings");
 
-        if (overrides === null) {
-          return { status: "rejected" as const, message: "variables: Expected an object" };
+        const previous = globalSettings();
+        const saved = patchGlobal(globalStore, { set, reset }, 0);
+
+        if (Result.isFailure(saved)) {
+          return { status: "rejected" as const, message: saved.failure };
         }
-
-        overridesOf.set(GLOBAL_SCOPE, overrides);
 
         return {
           status: "saved" as const,
-          state: { settings: { variables: globalVariables() }, overrides },
+          previous,
+          state: { ...saved.success, overriddenIn: overriddenIn(globalStore) },
         };
       }),
     workspaceOverrides: () => Effect.die("The endpoint hands no Workspace its overrides"),
@@ -996,6 +1006,7 @@ const fakeRegistries = () => {
           change: revert,
           state: {
             settings: { ...DEFAULT_CONTAINER_SETTINGS, variables },
+            global: DEFAULT_CONTAINER_SETTINGS,
             overrides: { variables },
           },
         };
@@ -1085,8 +1096,8 @@ const fakeRegistries = () => {
           (item) => ({
             environment: item.id,
             repos: item.repos,
-            settings: overridesOf.get(item.id) ?? {},
-            globalVariables: globalVariables(),
+            overrides: resolveContainerOverridesLeniently(overridesOf.get(item.id) ?? {}).overrides,
+            global: globalSettings(),
             recorded: buildRecords.get(item.id) ?? NO_BUILD,
             secrets: buildDigestOf(item.id),
           }),
@@ -2807,17 +2818,29 @@ it("reads an Environment's Container settings from the Registry", async () => {
     registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
   );
 
-  expect(state).toEqual({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} });
+  expect(state).toEqual({
+    settings: DEFAULT_CONTAINER_SETTINGS,
+    global: DEFAULT_CONTAINER_SETTINGS,
+    overrides: {},
+  });
   expect(fake.names).toEqual(["registry"]);
 });
 
-it("saves an Environment's Container overrides and answers the settings in force", async () => {
+it("saves an Environment's Container Overrides field by field and answers the settings in force", async () => {
   const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment: DEFAULT_ENVIRONMENT,
+      set: { idleMinutes: 30, variables: { A: "1", B: "2" } },
+    }),
+  );
 
   const saved = await call(fake, (registry) =>
     registry.updateEnvironmentSettings({
       environment: DEFAULT_ENVIRONMENT,
-      overrides: { idleMinutes: 30 },
+      set: { setupScript: "make" },
+      reset: ["variables.A"],
     }),
   );
 
@@ -2825,8 +2848,34 @@ it("saves an Environment's Container overrides and answers the settings in force
     registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
   );
 
-  expect(saved).toMatchObject({ settings: { idleMinutes: 30 }, overrides: { idleMinutes: 30 } });
+  expect(saved).toMatchObject({
+    settings: { idleMinutes: 30, setupScript: "make", variables: { B: "2" } },
+    overrides: { idleMinutes: 30, setupScript: "make", variables: { B: "2" } },
+  });
   expect(read).toEqual(saved);
+});
+
+it("resets an Environment's Override, which then inherits the setting at Global", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.updateGlobalContainerSettings({ set: { idleMinutes: 15 } }),
+  );
+  await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment: DEFAULT_ENVIRONMENT,
+      set: { idleMinutes: 30 },
+    }),
+  );
+
+  const reset = await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment: DEFAULT_ENVIRONMENT,
+      reset: ["idleMinutes"],
+    }),
+  );
+
+  expect(reset).toMatchObject({ settings: { idleMinutes: 15 }, overrides: {} });
 });
 
 it("keeps the Environment's spare Workspace and Build current after a save of its Container settings", async () => {
@@ -2838,7 +2887,7 @@ it("keeps the Environment's spare Workspace and Build current after a save of it
   await call(fake, (registry) =>
     registry.updateEnvironmentSettings({
       environment: DEFAULT_ENVIRONMENT,
-      overrides: { spareWorkspace: false },
+      set: { spareWorkspace: false },
     }),
   );
 
@@ -2856,12 +2905,15 @@ it("fails overrides the Registry rejects with its readable message, saving nothi
 
   const error = await call(fake, (registry) =>
     Effect.flip(
-      registry.updateEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT, overrides: null }),
+      registry.updateEnvironmentSettings({
+        environment: DEFAULT_ENVIRONMENT,
+        set: { idleMinutes: "5m" },
+      }),
     ),
   );
 
   expect(error).toBeInstanceOf(EnvironmentError);
-  expect(error.message).toBe("idleMinutes: Expected a number");
+  expect(error.message).toMatch(/^idleMinutes: /);
   expect(
     await call(fake, (registry) =>
       registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
@@ -2876,14 +2928,15 @@ it("saves the settings kept Global and keeps each Environment's Build current af
   await fake.runBackground();
 
   const saved = await call(fake, (registry) =>
-    registry.updateGlobalSettings({ overrides: { variables: { SHARED: "all" } } }),
+    registry.updateGlobalContainerSettings({ set: { variables: { SHARED: "all" } } }),
   );
 
-  const read = await call(fake, (registry) => registry.getGlobalSettings());
+  const read = await call(fake, (registry) => registry.getGlobalContainerSettings());
 
   expect(saved).toEqual({
-    settings: { variables: { SHARED: "all" } },
+    settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: { SHARED: "all" } },
     overrides: { variables: { SHARED: "all" } },
+    overriddenIn: {},
   });
   expect(read).toEqual(saved);
 
@@ -2893,26 +2946,58 @@ it("saves the settings kept Global and keeps each Environment's Build current af
   expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
   expect(fake.calls).toContain(`buildWork:${other}`);
   expect(fake.calls).not.toContain("buildWork:*");
+  // The Spare Workspace setting did not change: no spare is looked at.
+  expect(fake.calls.filter((made) => made.startsWith("upkeepSpares"))).toEqual([]);
+});
+
+it("says which Environments override each setting kept Global", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment: DEFAULT_ENVIRONMENT,
+      set: { idleMinutes: 30 },
+    }),
+  );
+
+  expect(
+    (await call(fake, (registry) => registry.getGlobalContainerSettings())).overriddenIn,
+  ).toEqual({ idleMinutes: [{ id: DEFAULT_ENVIRONMENT, name: "Default" }] });
+});
+
+it("keeps each Environment's spare Workspace current after the Spare Workspace setting at Global changes", async () => {
+  const fake = fakeRegistries();
+
+  await fake.runBackground();
+  fake.calls.length = 0;
+
+  await call(fake, (registry) =>
+    registry.updateGlobalContainerSettings({ set: { spareWorkspace: false } }),
+  );
+  await fake.runBackground();
+
+  expect(fake.calls).toContain("upkeepSpares:*");
 });
 
 it("fails settings kept Global that the Registry rejects with its readable message, saving nothing", async () => {
   const fake = fakeRegistries();
 
   const error = await call(fake, (registry) =>
-    Effect.flip(registry.updateGlobalSettings({ overrides: null })),
+    Effect.flip(registry.updateGlobalContainerSettings({ set: null })),
   );
 
   expect(error).toBeInstanceOf(EnvironmentError);
-  expect(error.message).toBe("variables: Expected an object");
-  expect(await call(fake, (registry) => registry.getGlobalSettings())).toEqual({
-    settings: { variables: {} },
+  expect(error.message).toBe("set: must be an object");
+  expect(await call(fake, (registry) => registry.getGlobalContainerSettings())).toEqual({
+    settings: DEFAULT_CONTAINER_SETTINGS,
     overrides: {},
+    overriddenIn: {},
   });
 
   await fake.runBackground();
 
   // No Build is looked at again for a save that was refused.
-  expect(fake.calls).toEqual(["updateGlobalSettings"]);
+  expect(fake.calls).toEqual(["updateGlobalContainerSettings"]);
 });
 
 it("refuses the settings of an Environment the Registry does not list", async () => {
@@ -2922,7 +3007,7 @@ it("refuses the settings of an Environment the Registry does not list", async ()
     (registry: Registry["Service"]) =>
       Effect.flip(registry.getEnvironmentSettings({ environment: "0000beef" })),
     (registry: Registry["Service"]) =>
-      Effect.flip(registry.updateEnvironmentSettings({ environment: "0000beef", overrides: {} })),
+      Effect.flip(registry.updateEnvironmentSettings({ environment: "0000beef", set: {} })),
   ]) {
     const error = await call(fake, attempt);
 
@@ -4392,7 +4477,7 @@ it("asks for a Build of an Environment with Toolchains only, and Rebuilds it", a
   await call(fake, (registry) =>
     registry.updateEnvironmentSettings({
       environment,
-      overrides: { toolchains: '[tools]\nnode = "22"\n' },
+      set: { toolchains: '[tools]\nnode = "22"\n' },
     }),
   );
   fake.calls.length = 0;
@@ -4413,7 +4498,7 @@ describe("a Test Build", () => {
     await call(fake, (registry) =>
       registry.updateEnvironmentSettings({
         environment,
-        overrides: { setupScript: "make deps", startScript: "make up", idleMinutes: 30 },
+        set: { setupScript: "make deps", startScript: "make up", idleMinutes: 30 },
       }),
     );
     await fake.runBackground();
@@ -4618,7 +4703,7 @@ it("asks for a Build again when the settings a Build uses change, and not for a 
   await call(fake, (registry) =>
     registry.updateEnvironmentSettings({
       environment,
-      overrides: { setupScript: "docker pull postgres", idleMinutes: 30 },
+      set: { setupScript: "docker pull postgres", idleMinutes: 30 },
     }),
   );
   fake.calls.length = 0;
@@ -4629,7 +4714,7 @@ it("asks for a Build again when the settings a Build uses change, and not for a 
   await call(fake, (registry) =>
     registry.updateEnvironmentSettings({
       environment,
-      overrides: { setupScript: "docker pull redis", idleMinutes: 30 },
+      set: { setupScript: "docker pull redis", idleMinutes: 30 },
     }),
   );
   fake.calls.length = 0;
@@ -4801,7 +4886,7 @@ it("leaves a Build of the wanted key that is under way, and tries a failed one a
   // A new idle time asks the upkeep to look again.
   const look = () =>
     call(fake, (registry) =>
-      registry.updateEnvironmentSettings({ environment, overrides: { idleMinutes: 30 } }),
+      registry.updateEnvironmentSettings({ environment, set: { idleMinutes: 30 } }),
     ).then(() => fake.runBackground());
 
   await look();

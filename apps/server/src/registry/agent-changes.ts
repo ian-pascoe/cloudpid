@@ -1,15 +1,19 @@
-// Agent changes (`docs/architecture/agent-changes.md`, ADR-0019): what the agent changes in an Environment, applied as the
-// owner's save is and recorded with when, the Session, the tool, the reason and the values before and after, so the
-// owner can see each one and revert it. Synchronous over the Registry DO's SQLite, as the store is, so a change and its
-// record are one step no other request lands in the middle of. The table is migration 17's (`store.ts`), and deleting
-// an Environment deletes its changes.
+// Agent changes (`docs/architecture/agent-changes.md`, ADR-0019, ADR-0027): what the agent changes in an Environment or
+// at Global (the scope `*`), applied as the owner's save is and recorded with when, the Session, the tool, the reason
+// and the values before and after (with whether each was inherited from Global), so the owner can see each one and
+// revert it at either Scope. Synchronous over the Registry DO's SQLite, as the store is, so a change and its record are
+// one step no other request lands in the middle of. The table is migration 17's (`store.ts`; the inherited marks
+// migration 25's), and deleting an Environment deletes its changes.
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- plain functions over SQLite, and a digest.
 import {
+  CONTAINER_SETTING_NAMES,
+  type ContainerPatch,
   type ContainerSettings,
-  containerOverridesFrom,
+  type ContainerSettingsOverrides,
   currentFieldValue,
   DEFAULT_CONTAINER_SETTINGS,
-  withGlobalVariables,
+  isContainerField,
+  resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
 import {
   type AgentChange,
@@ -23,18 +27,14 @@ import {
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import * as Record from "effect/Record";
+import type * as Types from "effect/Types";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import {
-  type EnvironmentSettingsState,
-  readEnvironmentSettings,
-  writeEnvironmentSettings,
-} from "./environment-settings.ts";
+import { type EnvironmentSettingsState, patchEnvironmentSettings } from "./environment-settings.ts";
 import type { EnvironmentRepo } from "@cloudpid/protocol";
 import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
-import { globalVariablesOf, writeGlobal } from "./global.ts";
+import { environmentSettingsOf, globalSettingsOf, patchGlobal } from "./global.ts";
 import { revertSecretBuild } from "./secret-changes.ts";
 import { dropUnreferencedSkillFiles, revertSkillChange, type Skills } from "./skills.ts";
 import {
@@ -55,8 +55,9 @@ export type AgentChangeAuthor = {
 };
 
 /**
- * One Container setting of an Environment, given a new value: `field` is a setting's name (`idleMinutes`) or
- * `variables.<NAME>` for one variable, and a `value` of null takes the setting back to its default (a variable: unset).
+ * One Container setting of an Environment or at Global, given a new value: `field` is a setting's name (`idleMinutes`)
+ * or `variables.<NAME>` for one variable. A `value` of null resets it: an Environment's field then inherits Global's
+ * (its variable is unset), and Global's takes the default.
  */
 export type ContainerFieldChange = {
   readonly field: string;
@@ -73,7 +74,10 @@ export type EnvironmentChange =
       readonly previous: ContainerSettings;
       readonly state: EnvironmentSettingsState;
     }
-  /** The field already had the value (a variable unset that was not set): nothing was saved or recorded. */
+  /**
+   * The field already had the value as its Override, or a reset found it inherited already (a variable unset that
+   * was not set): nothing was saved or recorded. `value` is what it is in force.
+   */
   | {
       readonly status: "unchanged";
       readonly environment: EnvironmentRecord;
@@ -85,21 +89,24 @@ export type EnvironmentChange =
   | { readonly status: "changed-since"; readonly current: Schema.Json | null }
   | { readonly status: "missing" };
 
-/** How an Agent change to the variables kept Global went. */
+/** How an Agent change to a Container setting at Global went. */
 export type GlobalChange =
   | {
       readonly status: "changed";
       readonly change: AgentChange;
-      /** The variable's name. */
-      readonly name: string;
-      /** The variables kept Global before it, and in force now. */
-      readonly previous: Readonly<Record<string, string>>;
-      readonly variables: Readonly<Record<string, string>>;
+      /** The Container settings at Global before it, and in force now. */
+      readonly previous: ContainerSettings;
+      readonly settings: ContainerSettings;
     }
-  /** The variable already had the value (one unset that was not set): nothing was saved or recorded. */
+  /** The field already had the value (a variable unset that was not set): nothing was saved or recorded. */
   | { readonly status: "unchanged"; readonly value: Schema.Json | null }
-  /** The value is not one a variable takes, or some Environment would have too many variables: nothing was saved. */
-  | { readonly status: "rejected"; readonly message: string };
+  /**
+   * The value is not one the setting takes, or an Environment that inherits it would be left above its size limit or
+   * with too many variables: nothing was saved.
+   */
+  | { readonly status: "rejected"; readonly message: string }
+  /** The field no longer has the value the change was approved against (`expected`): it is `current`, and nothing was saved. */
+  | { readonly status: "changed-since"; readonly current: Schema.Json | null };
 
 /** How the owner's revert of an Agent change went. */
 export type AgentChangeRevert =
@@ -132,13 +139,9 @@ const unrevertableMessage = ({ field, after }: AgentChange): string => {
     : "Keeping a secret is not reverted: the history holds no value to bring back, so delete the secret itself in the Secrets section";
 };
 
-const SETTING_NAMES: ReadonlySet<string> = new Set<string>(Record.keys(DEFAULT_CONTAINER_SETTINGS));
+const SETTING_NAMES: ReadonlySet<string> = new Set<string>(CONTAINER_SETTING_NAMES);
 
 const isSetting = (field: string): field is keyof ContainerSettings => SETTING_NAMES.has(field);
-
-/** Whether `field` names a Container setting or one variable. */
-const isContainerField = (field: string): boolean =>
-  fieldVariable(field) !== null || isSetting(field);
 
 /** The value `field` has in `settings`: null for a variable that is not set. */
 export const fieldValue = (settings: ContainerSettings, field: string): Schema.Json | null => {
@@ -149,38 +152,51 @@ export const fieldValue = (settings: ContainerSettings, field: string): Schema.J
   return isSetting(field) ? settings[field] : null;
 };
 
-/** `variables` with `name` set to `value`, or taken out for null. */
-const withVariable = (
-  variables: Readonly<Record<string, string>>,
-  name: string,
+/** The value `field` takes by default: null for a variable. */
+const defaultValue = (field: string): Schema.Json | null =>
+  fieldValue(DEFAULT_CONTAINER_SETTINGS, field);
+
+/** An Environment's Override of `field`, or undefined when it has none and the field is inherited from Global. */
+const overrideOf = (
+  overrides: ContainerSettingsOverrides,
+  field: string,
+): Schema.Json | undefined => {
+  const variable = fieldVariable(field);
+
+  if (variable !== null) return overrides.variables?.[variable];
+
+  return isSetting(field) ? overrides[field] : undefined;
+};
+
+/** What `field` is in an Environment's settings: its value in force, and whether it is inherited from Global. */
+const fieldState = (state: EnvironmentSettingsState, field: string) => ({
+  value: fieldValue(state.settings, field),
+  inherited: overrideOf(state.overrides, field) === undefined,
+});
+
+/** The patch that gives `field` the value `value`, or resets it for null. */
+const patchOf = ({ field, value }: ContainerFieldChange): ContainerPatch => {
+  if (value === null) return { reset: [field] };
+
+  const variable = fieldVariable(field);
+
+  return { set: variable === null ? { [field]: value } : { variables: { [variable]: value } } };
+};
+
+/**
+ * The Override a recorded value stands for: none for one marked inherited, and none for a variable recorded as not
+ * set (null), as every change from before Global held Container settings recorded one.
+ */
+const recordedOverride = (
   value: Schema.Json | null,
-): Record<string, Schema.Json> => {
-  const { [name]: _replaced, ...others } = variables;
-
-  return value === null ? others : { ...others, [name]: value };
-};
-
-/** The overrides that make `settings` into ones where `field` is `value` (null: its default, or a variable unset). */
-const overridesWith = (
-  settings: ContainerSettings,
-  { field, value }: ContainerFieldChange,
-): Schema.Json => {
-  const overrides: Record<string, Schema.Json> = { ...containerOverridesFrom(settings) };
-
-  const name = fieldVariable(field);
-
-  if (name !== null) {
-    overrides.variables = withVariable(settings.variables, name, value);
-  } else if (value === null) {
-    delete overrides[field];
-  } else {
-    overrides[field] = value;
-  }
-
-  return overrides;
-};
+  inherited: boolean | undefined,
+): Schema.Json | undefined => (inherited === true || value === null ? undefined : value);
 
 const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
+
+/** Whether two Overrides (undefined: none) are the same. */
+const sameOverride = (left: Schema.Json | undefined, right: Schema.Json | undefined): boolean =>
+  left === undefined || right === undefined ? left === right : sameJson(left, right);
 
 type AgentChangeRow = {
   id: number;
@@ -198,6 +214,8 @@ type AgentChangeRow = {
   reverted_by: number | null;
   approved: number;
   dismissed: number;
+  before_inherited: number | null;
+  after_inherited: number | null;
 };
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
@@ -230,24 +248,52 @@ const toChange = (row: AgentChangeRow): AgentChange => {
     revertedBy: row.reverted_by,
   };
 
-  // Only a change the owner approved says so (`docs/architecture/agent-changes.md` → Approval).
-  return row.approved === 1 ? { ...change, approved: true } : change;
+  return withMarks(change, {
+    // Only a change the owner approved says so (`docs/architecture/agent-changes.md` → Approval).
+    approved: row.approved === 1,
+    beforeInherited: row.before_inherited === 1,
+    afterInherited: row.after_inherited === 1,
+  });
+};
+
+/** The marks a change may carry, each left out of it unless set. */
+type Marks = {
+  readonly approved?: boolean | undefined;
+  readonly beforeInherited?: boolean | undefined;
+  readonly afterInherited?: boolean | undefined;
+};
+
+/** `change` with each of `marks` that is set, and none of the others. */
+const withMarks = (change: AgentChange, marks: Marks): AgentChange => {
+  const marked: Types.Mutable<AgentChange> = { ...change };
+
+  if (marks.approved === true) marked.approved = true;
+
+  if (marks.beforeInherited === true) marked.beforeInherited = true;
+
+  if (marks.afterInherited === true) marked.afterInherited = true;
+
+  return marked;
 };
 
 /**
- * What a change records: everything but its number, which the table gives it, and whether the owner approved it first
- * (absent or false: not).
+ * What a change records: everything but its number, which the table gives it, and its marks: whether the owner approved
+ * it first, and whether its value before or after was inherited from Global (absent or false: not).
  */
-type NewAgentChange = Omit<AgentChange, "id" | "revertedBy" | "approved"> & {
-  readonly approved?: boolean | undefined;
-};
+type NewAgentChange = Omit<
+  AgentChange,
+  "id" | "revertedBy" | "approved" | "beforeInherited" | "afterInherited"
+> &
+  Marks;
 
-/** `change` as it is recorded under `id`, with no revert yet; marked approved only when the owner approved it. */
+/** `change` as it is recorded under `id`, with no revert yet, and only the marks that are set. */
 export const asRecorded = (change: NewAgentChange, id: number): AgentChange => {
-  const { approved, ...made } = change;
-  const recorded: AgentChange = { ...made, id, revertedBy: null };
+  const { approved, beforeInherited, afterInherited, ...made } = change;
 
-  return approved === true ? { ...recorded, approved: true } : recorded;
+  return withMarks(
+    { ...made, id, revertedBy: null },
+    { approved, beforeInherited, afterInherited },
+  );
 };
 
 /** The Agent changes the Registry keeps, by scope (an Environment's id). */
@@ -286,8 +332,8 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
     record: (change) => {
       const [row] = sql
         .exec<{ id: number }>(
-          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved, before_inherited, after_inherited)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
           change.scope,
           change.at,
           change.actor,
@@ -300,6 +346,8 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
           change.after === null ? null : JSON.stringify(change.after),
           change.reverts,
           change.approved === true ? 1 : 0,
+          change.beforeInherited === true ? 1 : null,
+          change.afterInherited === true ? 1 : null,
         )
         .toArray();
 
@@ -362,17 +410,17 @@ export const wantsNewBuild = async (
   return wanted !== null && wanted !== (await key(previous));
 };
 
-/** An Environment as an Agent change to the variables kept Global sees it. */
+/** An Environment as an Agent change to a Container setting at Global sees it: its Repos and its Overrides. */
 export type ReachedEnvironment = {
   readonly id: string;
   readonly name: string;
   readonly repos: ReadonlyArray<EnvironmentRepo>;
-  readonly settings: ContainerSettings;
+  readonly overrides: ContainerSettingsOverrides;
 };
 
-/** Where an Agent change to a variable kept Global goes. */
+/** Where an Agent change to a Container setting at Global goes. */
 export type GlobalChangeReach = {
-  /** The Environments whose own variable of the name wins, so the change does not reach them. */
+  /** The Environments that override the field (a variable: their own of the name wins), so the change does not reach them. */
   readonly overriddenIn: ReadonlyArray<{ readonly id: string; readonly name: string }>;
   /** The Environments it reaches that want a Build of another key (`wantsNewBuild`). */
   readonly newBuilds: ReadonlyArray<{ readonly id: string; readonly name: string }>;
@@ -381,29 +429,29 @@ export type GlobalChangeReach = {
 };
 
 /**
- * Where a change of variable `name` kept Global, from the variables `previous` to `variables`, goes: an
- * Environment with its own variable of the name is not reached, and one that is reached wants a new Build when its
- * Build key changes with the merged variables.
+ * Where a change of `field` at Global, from the Container settings `previous` to `settings`, goes: an Environment that
+ * overrides the field is not reached, and one that is reached wants a new Build when its Build key changes with its
+ * Overrides over the new settings.
  */
 export const globalChangeReach = async (
   environments: ReadonlyArray<ReachedEnvironment>,
-  name: string,
-  previous: Readonly<Record<string, string>>,
-  variables: Readonly<Record<string, string>>,
+  field: string,
+  previous: ContainerSettings,
+  settings: ContainerSettings,
   caller: string | undefined,
 ): Promise<GlobalChangeReach> => {
-  const overriding = Arr.filter(environments, ({ settings }) =>
-    Record.has(settings.variables, name),
-  );
+  const overrides = ({ overrides: own }: ReachedEnvironment) =>
+    overrideOf(own, field) !== undefined;
 
-  const reached = Arr.filter(environments, ({ settings }) => !Record.has(settings.variables, name));
+  const overriding = Arr.filter(environments, overrides);
+  const reached = Arr.filter(environments, (environment) => !overrides(environment));
 
   const wantsBuild = await Promise.all(
-    Arr.map(reached, ({ repos, settings }) =>
+    Arr.map(reached, ({ repos, overrides: own }) =>
       wantsNewBuild(
         repos,
-        withGlobalVariables(settings, previous),
-        withGlobalVariables(settings, variables),
+        resolveEnvironmentContainerSettings(previous, own),
+        resolveEnvironmentContainerSettings(settings, own),
       ),
     ),
   );
@@ -420,21 +468,35 @@ export const globalChangeReach = async (
   };
 };
 
-/** The settings in force for `environment`, and its record; null when it is not registered. */
+/** The Container settings state of `environment`, and its record; null when it is not registered. */
 const current = (store: RegistryStore, environment: string) => {
   const record = store.getEnvironment(environment);
-  const overrides = store.getEnvironmentSettings(environment);
+  const state = environmentSettingsOf(store, environment);
 
-  return record === null || overrides === null
-    ? null
-    : { record, settings: readEnvironmentSettings(overrides).settings };
+  return record === null || state === null ? null : { record, state };
+};
+
+/** Save `patch` of `environment`'s Overrides as the owner's save does, or say why not. */
+const patchEnvironment = (
+  store: RegistryStore,
+  environment: string,
+  state: EnvironmentSettingsState,
+  patch: ContainerPatch,
+): Result.Result<EnvironmentSettingsState, string> => {
+  const saved = patchEnvironmentSettings(state.overrides, patch, state.global);
+
+  if (Result.isSuccess(saved)) store.putEnvironmentSettings(environment, saved.success.overrides);
+
+  return saved;
 };
 
 /**
- * Apply the agent's `change` to `environment`'s Container settings as the owner's save does (`writeEnvironmentSettings`:
- * the same rules, one problem per line), and record it as an Agent change by `author`. A field that already has the
- * value records nothing. With `expected`, the change is made only while the field has that value: the one the owner
- * saw when they approved it.
+ * Apply the agent's `change` to `environment`'s Container Overrides as the owner's save does (`patchEnvironmentSettings`:
+ * the same rules, one problem per line), and record it as an Agent change by `author`, with the field's value in force
+ * before and after and whether each was inherited from Global. A value the field has as its Override already, or a
+ * reset of a field that is inherited, records nothing; a value equal to the inherited one makes it an Override. With
+ * `expected`, the change is made only while the field has that value in force: the one the owner saw when they
+ * approved it.
  */
 export const changeEnvironment = (
   storage: RegistryStorage,
@@ -462,11 +524,91 @@ export const changeEnvironment = (
       return { status: "rejected", message: `${change.field}: not a Container setting` };
     }
 
-    const before = fieldValue(known.settings, change.field);
-
+    const before = fieldState(known.state, change.field);
+    const override = overrideOf(known.state.overrides, change.field);
     // An Approval asked for before the sizes were renamed may name an old one (`currentFieldValue`).
-    if (sameJson(before, currentFieldValue(change.field, change.value))) {
-      return { status: "unchanged", environment: known.record, value: before };
+    const value = currentFieldValue(change.field, change.value);
+
+    if (value === null ? override === undefined : sameOverride(override, value)) {
+      return { status: "unchanged", environment: known.record, value: before.value };
+    }
+
+    if (
+      expected !== undefined &&
+      !sameJson(before.value, currentFieldValue(change.field, expected.value))
+    ) {
+      return { status: "changed-since", current: before.value };
+    }
+
+    const saved = patchEnvironment(
+      store,
+      environment,
+      known.state,
+      patchOf({ field: change.field, value }),
+    );
+
+    if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
+
+    const after = fieldState(saved.success, change.field);
+
+    const recorded = changes.record({
+      scope: environment,
+      at: now,
+      actor: "agent",
+      session: author.session,
+      conversation: author.conversation,
+      tool: author.tool,
+      reason: author.reason,
+      field: change.field,
+      before: before.value,
+      after: after.value,
+      reverts: null,
+      approved: author.approved,
+      beforeInherited: before.inherited,
+      afterInherited: after.inherited,
+    });
+
+    return {
+      status: "changed",
+      environment: known.record,
+      change: recorded,
+      previous: known.state.settings,
+      state: saved.success,
+    };
+  });
+
+/**
+ * Apply the agent's `change` of one Container setting at Global as the owner's save does (`patchGlobal`: the same
+ * rules, and no Environment that inherits it may be left above its size limit or with too many variables), and record
+ * it as an Agent change by `author` under the scope `*`. A field that already has the value records nothing. With
+ * `expected`, the change is made only while the field has that value: the one the owner saw when they approved it.
+ */
+export const changeGlobal = (
+  storage: RegistryStorage,
+  store: RegistryStore,
+  changes: AgentChanges,
+  {
+    change,
+    expected,
+    author,
+  }: {
+    readonly change: ContainerFieldChange;
+    readonly expected?: { readonly value: Schema.Json | null } | undefined;
+    readonly author: AgentChangeAuthor;
+  },
+  now: number,
+): GlobalChange =>
+  storage.transactionSync((): GlobalChange => {
+    if (!isContainerField(change.field)) {
+      return { status: "rejected", message: `${change.field}: not a Container setting` };
+    }
+
+    const previous = globalSettingsOf(store);
+    const before = fieldValue(previous, change.field);
+    const value = currentFieldValue(change.field, change.value);
+
+    if (sameJson(before, value ?? defaultValue(change.field))) {
+      return { status: "unchanged", value: before };
     }
 
     if (
@@ -476,17 +618,12 @@ export const changeEnvironment = (
       return { status: "changed-since", current: before };
     }
 
-    const saved = writeEnvironmentSettings(
-      overridesWith(known.settings, change),
-      globalVariablesOf(store),
-    );
+    const saved = patchGlobal(store, patchOf({ field: change.field, value }), now);
 
     if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
 
-    store.putEnvironmentSettings(environment, saved.success.overrides);
-
     const recorded = changes.record({
-      scope: environment,
+      scope: GLOBAL_SCOPE,
       at: now,
       actor: "agent",
       session: author.session,
@@ -500,68 +637,7 @@ export const changeEnvironment = (
       approved: author.approved,
     });
 
-    return {
-      status: "changed",
-      environment: known.record,
-      change: recorded,
-      previous: known.settings,
-      state: saved.success,
-    };
-  });
-
-/**
- * Apply the agent's `change` of one variable kept Global as the owner's save does
- * (`writeGlobal`: the same rules, and no Environment may be left with too many variables), and record it as
- * an Agent change by `author` under the scope `*`. A variable that already has the value records nothing.
- */
-export const changeGlobal = (
-  storage: RegistryStorage,
-  store: RegistryStore,
-  changes: AgentChanges,
-  { change, author }: { readonly change: ContainerFieldChange; readonly author: AgentChangeAuthor },
-  now: number,
-): GlobalChange =>
-  storage.transactionSync((): GlobalChange => {
-    const name = fieldVariable(change.field);
-
-    if (name === null) {
-      return {
-        status: "rejected",
-        message: `${change.field}: only variables are kept Global`,
-      };
-    }
-
-    const previous = globalVariablesOf(store);
-    const before = previous[name] ?? null;
-
-    if (sameJson(before, change.value)) return { status: "unchanged", value: before };
-
-    const saved = writeGlobal(
-      store,
-      { variables: withVariable(previous, name, change.value) },
-      now,
-    );
-
-    if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
-
-    const variables = saved.success.settings.variables;
-
-    const recorded = changes.record({
-      scope: GLOBAL_SCOPE,
-      at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
-      reason: author.reason,
-      field: change.field,
-      before,
-      after: variables[name] ?? null,
-      reverts: null,
-      approved: author.approved,
-    });
-
-    return { status: "changed", change: recorded, name, previous, variables };
+    return { status: "changed", change: recorded, previous, settings: saved.success.settings };
   });
 
 /** What an owner's revert of `change` says it undid. */
@@ -569,28 +645,22 @@ const revertReason = (change: AgentChange): string =>
   `Reverted change ${change.id}${Predicate.isNotNull(change.tool) ? ` (${change.tool})` : ""}`;
 
 /**
- * The owner's revert of Agent change `change` of the variable `name` kept Global: its `before` value
- * written back, if the variable still has the change's `after` value.
+ * The owner's revert of Agent change `change` of a Container setting at Global: its `before` value written back, if
+ * the field still has the change's `after` value.
  */
-const revertGlobalVariable = (
+const revertGlobalField = (
   store: RegistryStore,
   changes: AgentChanges,
   change: AgentChange,
-  name: string,
   now: number,
 ): AgentChangeRevert => {
-  const variables = globalVariablesOf(store);
-  const value = variables[name] ?? null;
+  const value = fieldValue(globalSettingsOf(store), change.field);
 
   if (!sameJson(value, change.after)) {
     return { status: "changed-since", field: change.field, current: value };
   }
 
-  const saved = writeGlobal(
-    store,
-    { variables: withVariable(variables, name, change.before) },
-    now,
-  );
+  const saved = patchGlobal(store, patchOf({ field: change.field, value: change.before }), now);
 
   if (Result.isFailure(saved)) return { status: "refused", message: saved.failure };
 
@@ -604,7 +674,7 @@ const revertGlobalVariable = (
     reason: revertReason(change),
     field: change.field,
     before: value,
-    after: saved.success.settings.variables[name] ?? null,
+    after: fieldValue(saved.success.settings, change.field),
     reverts: change.id,
   });
 
@@ -626,7 +696,7 @@ export const revertAgentChange = (
   skills: Skills,
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {
-    // The Secrets and variables kept Global have a history of their own, in the scope `*`.
+    // What is kept Global (Secrets, Container settings, Skills) has a history of its own, in the scope `*`.
     const isGlobal = environment === GLOBAL_SCOPE;
     const known = isGlobal ? null : current(store, environment);
     const change = changes.get(environment, id);
@@ -656,10 +726,9 @@ export const revertAgentChange = (
       return revertSecretBuild(store, changes, environment, change, now);
     }
 
-    const variable = fieldVariable(change.field);
-
-    if (isGlobal && variable !== null)
-      return revertGlobalVariable(store, changes, change, variable, now);
+    if (isGlobal && isContainerField(change.field)) {
+      return revertGlobalField(store, changes, change, now);
+    }
 
     // A Skill's change reverts in either scope: an Environment's own Skills, and those kept Global.
     if (fieldSkill(change.field) !== null) {
@@ -676,20 +745,33 @@ export const revertAgentChange = (
         : reverted;
     }
 
-    const value = fieldValue(known.settings, change.field);
+    if (!isContainerField(change.field)) return { status: "missing" };
 
-    if (!sameJson(value, change.after)) {
-      return { status: "changed-since", field: change.field, current: value };
+    const present = fieldState(known.state, change.field);
+
+    // The field must still be as the change left it: the same Override, or still inherited.
+    if (
+      !sameOverride(
+        overrideOf(known.state.overrides, change.field),
+        recordedOverride(change.after, change.afterInherited),
+      )
+    ) {
+      return { status: "changed-since", field: change.field, current: present.value };
     }
 
-    const saved = writeEnvironmentSettings(
-      overridesWith(known.settings, { field: change.field, value: change.before }),
-      globalVariablesOf(store),
+    // A value before that was inherited is a reset: the field inherits Global's again, whatever it is now.
+    const back = recordedOverride(change.before, change.beforeInherited);
+
+    const saved = patchEnvironment(
+      store,
+      environment,
+      known.state,
+      patchOf({ field: change.field, value: back ?? null }),
     );
 
     if (Result.isFailure(saved)) return { status: "refused", message: saved.failure };
 
-    store.putEnvironmentSettings(environment, saved.success.overrides);
+    const after = fieldState(saved.success, change.field);
 
     const recorded = changes.record({
       scope: environment,
@@ -700,9 +782,11 @@ export const revertAgentChange = (
       tool: null,
       reason: revertReason(change),
       field: change.field,
-      before: value,
-      after: fieldValue(saved.success.settings, change.field),
+      before: present.value,
+      after: after.value,
       reverts: change.id,
+      beforeInherited: present.inherited,
+      afterInherited: after.inherited,
     });
 
     return { status: "reverted", change: recorded, state: saved.success };

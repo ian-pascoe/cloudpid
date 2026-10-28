@@ -1,4 +1,8 @@
-import { resolveContainerSettingsLeniently } from "@cloudpid/config";
+import {
+  type ContainerSettings,
+  resolveContainerOverridesLeniently,
+  resolveEnvironmentContainerSettings,
+} from "@cloudpid/config";
 import type { SealedValue } from "@cloudpid/extensions/secrets/core";
 import {
   DEFAULT_ENVIRONMENT,
@@ -287,6 +291,8 @@ export type RegistryStore = {
     environments: ReadonlyArray<string> | undefined,
     newId: () => string,
     now: number,
+    /** The Container settings at Global, whose Spare Workspace setting an Environment without an Override inherits. */
+    global: ContainerSettings,
   ) => SpareUpkeep;
   /** The id of an Environment's spare, current or stale, or null. */
   readonly getSpare: (environment: string) => string | null;
@@ -793,6 +799,41 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("ALTER TABLE skills ADD COLUMN folder_hash TEXT");
     sql.exec("ALTER TABLE skills ADD COLUMN update_available INTEGER NOT NULL DEFAULT 0");
   },
+  // 25: whether an Agent change's value before or after was inherited from Global rather than an Environment's own
+  // Override (ADR-0027): 1 when it was, null for every other, all of those stored before.
+  (sql) => {
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN before_inherited INTEGER");
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN after_inherited INTEGER");
+  },
+  // 26: Container settings at Global (ADR-0027). An Environment stored then only what differed from the defaults, so an
+  // Agent change to one of its Container settings that recorded the default (a size by its name then or now) recorded
+  // a field it did not override: it is marked inherited, which is what that field is now while Global is at the
+  // defaults. The variables recorded null for one not set, which already reads as no Override.
+  (sql) => {
+    const defaults: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+      ["instance", ['"cpu-1"', '"custom-1"']],
+      ["maxInstance", ['"cpu-2"', '"custom-2"']],
+      ["idleMinutes", ["2"]],
+      ["ignore", ["[]"]],
+      ["setupScript", ['""']],
+      ["startScript", ['""']],
+      ["toolchains", ['""']],
+      ["spareWorkspace", ["true"]],
+    ];
+
+    for (const [field, values] of defaults) {
+      for (const value of values) {
+        for (const side of ["before", "after"] as const) {
+          sql.exec(
+            `UPDATE agent_changes SET ${side}_inherited = 1
+             WHERE scope NOT IN ('*', 'settings') AND field = ? AND ${side} = ?`,
+            field,
+            value,
+          );
+        }
+      }
+    }
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -1243,7 +1284,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         toWorkspace,
       ),
 
-    upkeepSpares: (environments, newId, now) =>
+    upkeepSpares: (environments, newId, now, global) =>
       storage.transactionSync((): SpareUpkeep => {
         const stale: string[] = [];
         const made: SpareSetup[] = [];
@@ -1272,9 +1313,11 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           const hadRecentSession =
             lastSessionAt !== null && now - lastSessionAt <= SPARE_REFILL_WINDOW_MS;
 
-          // Read leniently, as every reader of the settings does: a value that does not resolve leaves the spare on.
-          const spareOn = resolveContainerSettingsLeniently(settingsOverrides(row.settings))
-            .settings.spareWorkspace;
+          // Read leniently, as every reader of the settings does: an Override that does not resolve inherits Global's.
+          const spareOn = resolveEnvironmentContainerSettings(
+            global,
+            resolveContainerOverridesLeniently(settingsOverrides(row.settings)).overrides,
+          ).spareWorkspace;
 
           // Turned off: the spare it has is removed, however current, and none is made.
           if (!spareOn) {

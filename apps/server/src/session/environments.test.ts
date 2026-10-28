@@ -52,6 +52,9 @@ type MarkAnswers = { mark: SecretBuildMark };
 /** The variables kept Global in the fake Registry. */
 const GLOBAL_VARIABLES = { SHARED: "all" };
 
+/** The Container settings at Global the fake Registry answers. */
+const GLOBAL_SETTINGS = { ...DEFAULT_CONTAINER_SETTINGS, variables: GLOBAL_VARIABLES };
+
 /**
  * What the Workspace of the Session's Environment is handed: its own `A`, and the variables kept Global.
  */
@@ -105,13 +108,18 @@ const open = (
     getEnvironmentSettings: ({ environment }: { readonly environment: string }) =>
       Effect.succeed(
         environment === "default" || environment === "0000abcd"
-          ? { settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} }
+          ? {
+              settings: { ...GLOBAL_SETTINGS, idleMinutes: 30 },
+              global: GLOBAL_SETTINGS,
+              overrides: { idleMinutes: 30 },
+            }
           : null,
       ),
-    getGlobalSettings: () =>
+    getGlobalContainerSettings: () =>
       Effect.succeed({
-        settings: { variables: GLOBAL_VARIABLES },
+        settings: GLOBAL_SETTINGS,
         overrides: { variables: GLOBAL_VARIABLES },
+        overriddenIn: { idleMinutes: [{ id: "default", name: "Default" }] },
       }),
     workspaceOverrides: ({ environment }: { readonly environment: string }) =>
       overridesUnreadable
@@ -126,7 +134,7 @@ const open = (
             return {
               status: "changed" as const,
               change: { ...CHANGE, scope: "*", field: "variables.SHARED" },
-              variables: GLOBAL_VARIABLES,
+              settings: GLOBAL_SETTINGS,
               overriddenIn: overridesHere ? [{ id: "default", name: "Default" }] : [],
               newBuilds: [{ id: "0000abcd", name: "Other" }],
               own: input.environment === undefined ? undefined : !overridesHere,
@@ -700,19 +708,22 @@ describe("the Session's Environments", () => {
     expect(skillSetsHanded).toEqual([]);
   });
 
-  it("carry the variables kept Global in an Environment's details", async () => {
+  it("carry an Environment's Overrides and the Container settings at Global in its details", async () => {
     const { environments } = open();
 
-    expect((await Effect.runPromise(environments.get("default")))?.globalVariables).toEqual(
-      GLOBAL_VARIABLES,
-    );
+    expect(await Effect.runPromise(environments.get("default"))).toMatchObject({
+      settings: { idleMinutes: 30, variables: GLOBAL_VARIABLES },
+      overrides: { idleMinutes: 30 },
+      global: GLOBAL_SETTINGS,
+    });
   });
 
-  it("show what is kept Global: its variables, and its Secrets by name", async () => {
+  it("show what is kept Global: its Container settings with where each is overridden, and its Secrets by name", async () => {
     const { environments } = open();
 
     expect(await Effect.runPromise(environments.global)).toEqual({
-      variables: GLOBAL_VARIABLES,
+      settings: GLOBAL_SETTINGS,
+      overriddenIn: { idleMinutes: [{ id: "default", name: "Default" }] },
       secrets: [
         { name: "API_KEY", scope: "every", build: false },
         { name: "NPM_TOKEN", scope: "every", build: false },
@@ -823,6 +834,22 @@ describe("the Session's Environments", () => {
     );
     expect(sparesKept).toEqual(["0000abcd"]);
     expect(upkept).toEqual(["default", "0000abcd"]);
+  });
+
+  it("keep each Environment's spare Workspace current after a change of the Spare Workspace setting at Global", async () => {
+    const { environments, sparesKept } = open();
+
+    await Effect.runPromise(environments.change({ environment: "*", change, author }));
+    expect(sparesKept).toEqual([]);
+
+    await Effect.runPromise(
+      environments.change({
+        environment: "*",
+        change: { field: "spareWorkspace", value: false },
+        author: { ...author, tool: "environment_spare_workspace_set" },
+      }),
+    );
+    expect(sparesKept).toEqual(["default", "0000abcd"]);
   });
 
   it("leave the Session's Workspace as it is for a change of another Environment", async () => {

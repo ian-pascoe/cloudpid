@@ -2,7 +2,12 @@
 // before and after and the agent's reason, applies the change on Approve against what the owner saw, changes nothing on
 // Decline, and refuses without asking what it would refuse anyway.
 // @effect-diagnostics asyncFunction:off strictEffectProvide:off preferEffectArray:off newPromise:off globalTimers:off
-import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, type Settings } from "@cloudpid/config";
+import {
+  type ContainerSettingsOverrides,
+  DEFAULT_CONTAINER_SETTINGS,
+  DEFAULT_SETTINGS,
+  type Settings,
+} from "@cloudpid/config";
 import type { AgentChange } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -14,6 +19,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -60,15 +66,20 @@ const change = (fields: Partial<AgentChange>): AgentChange => ({
   ...fields,
 });
 
-/** An Environment as the fake holds it. */
-const details = (id: string, name: string, settings = {}): EnvironmentDetails => ({
+/** An Environment as the fake holds it: `overrides` over the defaults Global has. */
+const details = (
+  id: string,
+  name: string,
+  overrides: ContainerSettingsOverrides = {},
+): EnvironmentDetails => ({
   id,
   name,
   repos: [],
   build: { status: "none" },
-  settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
+  settings: { ...DEFAULT_CONTAINER_SETTINGS, ...overrides },
+  overrides,
+  global: DEFAULT_CONTAINER_SETTINGS,
   secrets: [],
-  globalVariables: {},
   skills: [],
   globalSkills: [],
 });
@@ -168,9 +179,21 @@ const setUp = async ({
         ...unusedSecretMarks,
         ...unusedSkills,
         current: Effect.succeed(current),
-        list: Effect.succeed([]),
+        list: Effect.succeed(
+          Arr.map(Record.values(held), ({ id, name, repos, build }) => ({
+            id,
+            name,
+            repos,
+            build,
+          })),
+        ),
         get: (id) => Effect.succeed(held[id] ?? null),
-        global: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
+        global: Effect.succeed({
+          settings: DEFAULT_CONTAINER_SETTINGS,
+          overriddenIn: {},
+          secrets: [],
+          skills: [],
+        }),
         change: ({ environment, change: { field, value }, expected, author }) =>
           Effect.sync(() => {
             calls.environments.push({
@@ -181,7 +204,11 @@ const setUp = async ({
               author,
             });
 
-            const known = held[environment];
+            // Global's size limit is the default's; any other id is an Environment.
+            const known =
+              environment === "*"
+                ? { ...details("*", "Global"), settings: DEFAULT_CONTAINER_SETTINGS }
+                : held[environment];
 
             if (known === undefined) return { status: "missing" as const };
 
@@ -191,12 +218,24 @@ const setUp = async ({
               return { status: "changed-since" as const, current: before };
             }
 
-            return {
+            const changed = {
               status: "changed" as const,
               environment: { id: known.id, name: known.name },
               change: change({ scope: environment, field, before, after: value, approved: true }),
               newBuild: false,
             };
+
+            // At Global, one Environment overrides the limit and one inherits it, wanting a Build.
+            return environment === "*"
+              ? {
+                  ...changed,
+                  global: {
+                    overriddenIn: [{ id: "0000abcd", name: "Web" }],
+                    newBuilds: [{ id: "default", name: "Default" }],
+                    own: true,
+                  },
+                }
+              : changed;
           }),
       }),
       Effect.provideService(EnvironmentRemoval, {
@@ -614,17 +653,116 @@ describe("settings_subagent_workspaces_set", () => {
 });
 
 describe("environment_container_size_limit_set", () => {
-  it("refuses, asking nothing, the id * of the variables and Secrets kept Global", async () => {
-    const { call, asked } = await setUp();
+  it("with id * asks for the size limit at Global, on a card for Global, and sets it there as approved", async () => {
+    const { call, calls, asked, logged } = await setUp();
 
     const { result, text } = await call("environment_container_size_limit_set", {
       id: "*",
       size: "cpu-3",
-      reason: "More",
+      reason: "Every build needs 9 GiB",
+    });
+
+    expect(result.isError).not.toBe(true);
+
+    expect(asked[0]).toMatchObject({
+      tool: "environment_container_size_limit_set",
+      target: "Global",
+      change: "Size limit",
+      before: "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+      after: "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+      expected: "cpu-2",
+    });
+    expect(calls.environments).toMatchObject([
+      {
+        environment: "*",
+        field: "maxInstance",
+        value: "cpu-3",
+        expected: "cpu-2",
+        author: { approved: true },
+      },
+    ]);
+    expect(text).toContain(
+      "The user approved: the size limit of Global was cpu-2, and is cpu-3 now",
+    );
+    expect(text).toContain('it does not reach Environment "Web" (0000abcd), which override it');
+    expect(text).toContain('a new Build was asked for in Environment "Default" (default)');
+    expect(logged).toEqual([
+      {
+        tool: "environment_container_size_limit_set",
+        environmentName: "Global",
+        field: "maxInstance",
+      },
+    ]);
+  });
+
+  it("with id * refuses, asking nothing, a limit below the own size of an Environment that inherits it, naming it", async () => {
+    const { call, asked, calls } = await setUp({
+      held: {
+        default: details("default", "Default", { instance: "cpu-2" }),
+        "0000abcd": details("0000abcd", "Other", { instance: "cpu-2", maxInstance: "cpu-2" }),
+      },
+    });
+
+    const { result, text } = await call("environment_container_size_limit_set", {
+      id: "*",
+      size: "cpu-1",
+      reason: "Cheaper",
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toContain('The id "*" names the variables, Secrets and Skills kept Global');
+    expect(text).toContain('Environment "Default" (default), cpu-2');
+    expect(text).not.toContain("Other");
+    expect(asked).toEqual([]);
+    expect(calls.environments).toEqual([]);
+  });
+
+  it("with id * refuses, asking nothing, a limit below Global's size", async () => {
+    const { call, asked, calls } = await setUp();
+
+    const { result, text } = await call("environment_container_size_limit_set", {
+      id: "*",
+      size: "basic",
+      reason: "Cheaper",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain("below the size of Global");
+    expect(asked).toEqual([]);
+    expect(calls.environments).toEqual([]);
+  });
+
+  it("with id * says the limit is Global's already, asking nothing", async () => {
+    const { call, asked } = await setUp();
+
+    const { text } = await call("environment_container_size_limit_set", {
+      id: "*",
+      size: "cpu-2",
+      reason: "Same",
+    });
+
+    expect(text).toContain("The size limit of Global is cpu-2 already");
+    expect(asked).toEqual([]);
+  });
+
+  it("asks to make an inherited limit the Environment's own, even at the size it inherits", async () => {
+    const { call, asked } = await setUp();
+
+    await call("environment_container_size_limit_set", { size: "cpu-2", reason: "Pin it" });
+
+    expect(asked[0]).toMatchObject({ change: "Size limit", expected: "cpu-2" });
+  });
+
+  it("asks nothing when the Environment's own limit already has the value", async () => {
+    const { call, asked } = await setUp({
+      held: { default: details("default", "Default", { maxInstance: "cpu-3" }) },
+    });
+
+    const { text } = await call("environment_container_size_limit_set", {
+      size: "cpu-3",
+      reason: "Same",
+    });
+
+    expect(text).toContain("is cpu-3 already");
     expect(asked).toEqual([]);
   });
 

@@ -1,6 +1,6 @@
 // The Registry operations (`docs/architecture/client-and-protocol.md`): listing and creating Sessions, Environments and
 // Workspaces. They hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import { Settings, SettingsError, ContainerSettings, GlobalSettings } from "@cloudpid/config";
+import { Settings, SettingsError, ContainerOverrides, ContainerSettings } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -334,30 +334,58 @@ export const SettingsState = Schema.Struct({
 export type SettingsState = typeof SettingsState.Type;
 
 /**
- * An Environment's Container settings in force (`docs/architecture/container.md` → Container settings), and the
- * overrides they come from. Each of its Workspaces applies them at its next Container launch.
+ * An Environment's Container settings in force (`docs/architecture/container.md` → Container settings, ADR-0027): its
+ * Overrides over Global's. Each of its Workspaces applies them at its next Container launch.
  */
 export const ContainerSettingsState = Schema.Struct({
+  /** The settings in force: the Overrides over `global`, the variables merged by name. */
   settings: ContainerSettings,
-  overrides: Schema.Json,
-  /** Why the saved overrides were only partly used, when some no longer resolve: the rest still apply. */
+  /** Global's Container settings in force: what a field without an Override inherits. */
+  global: ContainerSettings,
+  /**
+   * The Environment's Overrides: exactly the fields set on purpose (a field here is Overridden, any other Inherited),
+   * the variables name by name.
+   */
+  overrides: ContainerOverrides,
+  /** Why the saved Overrides were only partly used, when some no longer resolve: those fields inherit Global's. */
   problem: Schema.optionalKey(Schema.String),
 });
 
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
 
+/** An Environment as a Global setting's "overridden in" names it. */
+export const OverridingEnvironment = Schema.Struct({ id: Schema.String, name: Schema.String });
+
+export type OverridingEnvironment = typeof OverridingEnvironment.Type;
+
 /**
- * The settings kept Global in force (`docs/architecture/container.md` → Container settings),
- * and the overrides they come from. Every Workspace applies them at its next Container launch.
+ * The Container settings at Global in force (`docs/architecture/container.md` → Container settings, ADR-0027), and what is
+ * saved of them: what differs from the defaults. Every Workspace of an Environment that does not override a field
+ * applies it at its next Container launch.
  */
-export const GlobalSettingsState = Schema.Struct({
-  settings: GlobalSettings,
-  overrides: Schema.Json,
+export const GlobalContainerSettingsState = Schema.Struct({
+  settings: ContainerSettings,
+  overrides: ContainerOverrides,
+  /**
+   * The Environments that override each field, by the field's path as an Agent change names it (`idleMinutes`, and
+   * `variables.<NAME>` for each variable): a field none overrides is left out.
+   */
+  overriddenIn: Schema.Record(Schema.String, Schema.Array(OverridingEnvironment)),
   /** Why the saved overrides were only partly used, when some no longer resolve: the rest still apply. */
   problem: Schema.optionalKey(Schema.String),
 });
 
-export type GlobalSettingsState = typeof GlobalSettingsState.Type;
+export type GlobalContainerSettingsState = typeof GlobalContainerSettingsState.Type;
+
+/**
+ * A change to a Scope's Container settings (ADR-0027): `set` merges into what is saved field by field, the variables
+ * name by name; `reset` takes fields out by their path (`idleMinutes`, `variables.<NAME>`), which an Environment then
+ * inherits from Global, and Global takes from the defaults. Fields neither names keep what they are.
+ */
+const ContainerPatchPayload = {
+  set: Schema.optionalKey(Schema.Json),
+  reset: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+};
 
 const VARIABLE_FIELD = "variables.";
 
@@ -401,6 +429,13 @@ export const AgentChange = Schema.Struct({
   field: Schema.String,
   before: Schema.NullOr(Schema.Json),
   after: Schema.NullOr(Schema.Json),
+  /**
+   * Set on a change to an Environment's setting whose value before was inherited from Global, not an Override of its
+   * own (`before` is then the value it inherited). Left out otherwise.
+   */
+  beforeInherited: Schema.optionalKey(Schema.Boolean),
+  /** Set on a change that left an Environment's setting inherited from Global (a reset): `after` is what it inherits. */
+  afterInherited: Schema.optionalKey(Schema.Boolean),
   /** The change this one reverted, for the owner's revert. */
   reverts: Schema.NullOr(Schema.Finite),
   /** The owner's revert of this change, once there is one. */
@@ -612,7 +647,7 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * An Environment's Container settings in force (size, idle time, Container-only paths, variables, Setup and Start
-   * Scripts, Toolchains), and their overrides.
+   * Scripts, Toolchains, Spare Workspace), its Overrides, and Global's settings it inherits the rest from.
    */
   Rpc.make("getEnvironmentSettings", {
     payload: { environment: EnvironmentId },
@@ -620,26 +655,29 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Replace an Environment's saved Container overrides, a partial of its settings that differs from the defaults.
-   * Overrides that do not resolve fail with an `EnvironmentError` whose message lists each problem, and nothing is
+   * Set or reset an Environment's Container Overrides (`set`, `reset`: a field set is kept even when it equals
+   * Global's; one reset inherits Global's again). Overrides that do not resolve, a size above the size limit, or more
+   * than 50 variables with Global's fail with an `EnvironmentError` whose message lists each problem, and nothing is
    * saved. Each Workspace applies them at its next Container launch: a running Container keeps the settings it
    * started with.
    */
   Rpc.make("updateEnvironmentSettings", {
-    payload: { environment: EnvironmentId, overrides: Schema.Json },
+    payload: { environment: EnvironmentId, ...ContainerPatchPayload },
     success: ContainerSettingsState,
     error: EnvironmentError,
   }),
-  /** The settings kept Global in force (the variables), and their overrides. */
-  Rpc.make("getGlobalSettings", { success: GlobalSettingsState }),
+  /** The Container settings at Global in force, what is saved of them, and the Environments that override each field. */
+  Rpc.make("getGlobalContainerSettings", { success: GlobalContainerSettingsState }),
   /**
-   * Replace the saved overrides of the settings kept Global. Overrides that do not resolve, or that
-   * would give any Environment more than 50 variables with its own, fail with an `EnvironmentError` whose message lists
-   * each problem, and nothing is saved. Each Workspace applies them at its next Container start.
+   * Set or reset Container settings at Global (`set`, `reset`: a field reset takes the default again). Values that do
+   * not resolve, a size above the size limit, or a change that would put an Environment that inherits it above its
+   * size limit or past 50 variables fail with an `EnvironmentError` whose message lists each problem (naming those
+   * Environments), and nothing is saved. Each Workspace of an Environment that inherits a field applies it at its next
+   * Container start.
    */
-  Rpc.make("updateGlobalSettings", {
-    payload: { overrides: Schema.Json },
-    success: GlobalSettingsState,
+  Rpc.make("updateGlobalContainerSettings", {
+    payload: ContainerPatchPayload,
+    success: GlobalContainerSettingsState,
     error: EnvironmentError,
   }),
   /**

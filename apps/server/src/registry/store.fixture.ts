@@ -20,6 +20,7 @@ import * as Result from "effect/Result";
 import { keepSecret, openEnvironmentSecrets, type SecretWrite } from "./environment-secrets.ts";
 import type * as Schema from "effect/Schema";
 import { type AgentChangeAuthor, type AgentChanges, openAgentChanges } from "./agent-changes.ts";
+import { globalSettingsOf } from "./global.ts";
 import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
 import { openSkills, type Skills } from "./skills.ts";
 import {
@@ -191,11 +192,19 @@ export class TestRegistry extends DurableObject {
     return this.#store.deleteWorkspace(id);
   }
 
-  /** `RegistryStore.upkeepSpares`, drawing fresh ids from `ids` in order (a function cannot cross RPC). */
+  /**
+   * `RegistryStore.upkeepSpares` with the Container settings at Global, as the Registry runs it, drawing fresh ids from
+   * `ids` in order (a function cannot cross RPC).
+   */
   upkeepSpares(environments: string[] | undefined, ids: string[], now: number): SpareUpkeep {
     const left = [...ids];
 
-    return this.#store.upkeepSpares(environments, () => left.shift() ?? "ffffffff", now);
+    return this.#store.upkeepSpares(
+      environments,
+      () => left.shift() ?? "ffffffff",
+      now,
+      globalSettingsOf(this.#store),
+    );
   }
 
   getSpare(environment: string): string | null {

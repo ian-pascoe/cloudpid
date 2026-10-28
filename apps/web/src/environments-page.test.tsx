@@ -1,17 +1,18 @@
 // The Environments page's Edit dialog (`docs/architecture/container.md` → Container settings), rendered with
 // `react-dom/server` over the fake Registry: its Container fields show the Spare Workspace setting as saved, with the
-// trade-off it makes.
+// trade-off it makes, and the variables are the Environment's own, those at Global named apart.
 
 import {
   type ContainerSettings,
-  containerOverridesFrom,
+  type ContainerSettingsOverrides,
   DEFAULT_CONTAINER_SETTINGS,
+  resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { renderToStaticMarkup } from "react-dom/server";
-import { EditEnvironmentDialog } from "./environments-page.tsx";
+import { EditEnvironmentDialog, VariablesSummary } from "./environments-page.tsx";
 import {
   environmentDraftAtom,
   environmentsAtom,
@@ -22,15 +23,41 @@ import { registryWith, settled } from "./registry.testing.ts";
 
 const WORK = { id: "work", name: "Work", repos: [], createdAt: 1 };
 
-/** The Edit dialog of Environment `work`, whose saved settings are `settings`, once they have answered. */
-const render = (settings: ContainerSettings, draft?: { readonly spareWorkspace: boolean }) =>
+/** Global's settings and Environment `work`'s Overrides of them, when a test has some. */
+type Scopes = {
+  readonly global: ContainerSettings;
+  readonly overrides: ContainerSettingsOverrides;
+};
+
+/** Global with the variable `SHARED`, and `work` with its own `OWN` over it. */
+const WITH_GLOBAL_VARIABLES: Scopes = {
+  global: { ...DEFAULT_CONTAINER_SETTINGS, variables: { SHARED: "global" } },
+  overrides: { variables: { OWN: "work" } },
+};
+
+/** A fake Registry answering `work`'s settings in force `settings`, over `scopes`. */
+const registryOf = (
+  settings: ContainerSettings,
+  { global, overrides }: Scopes = { global: DEFAULT_CONTAINER_SETTINGS, overrides: {} },
+) =>
+  registryWith({
+    listEnvironments: () => Effect.succeed([WORK]),
+    getEnvironmentSettings: () => Effect.succeed({ settings, global, overrides }),
+    getGlobalContainerSettings: () =>
+      Effect.succeed({ settings: global, overrides: {}, overriddenIn: {} }),
+  });
+
+/**
+ * The Edit dialog of Environment `work`, whose settings in force are `settings` (over `scopes`), once they have
+ * answered.
+ */
+const render = (
+  settings: ContainerSettings,
+  draft?: { readonly spareWorkspace: boolean },
+  scopes?: Scopes,
+) =>
   Effect.gen(function* () {
-    const registry = registryWith({
-      listEnvironments: () => Effect.succeed([WORK]),
-      getEnvironmentSettings: () =>
-        Effect.succeed({ settings, overrides: containerOverridesFrom(settings) }),
-      getGlobalSettings: () => Effect.succeed({ settings: { variables: {} }, overrides: {} }),
-    });
+    const registry = registryOf(settings, scopes);
 
     registry.mount(environmentsAtom);
     registry.mount(environmentSettingsAtom(WORK.id));
@@ -98,6 +125,55 @@ describe("the Edit dialog", () => {
       expect(spareBox(switched)).not.toContain("checked");
       expect(saveButton(switched)).not.toBe("");
       expect(saveButton(switched)).not.toContain(' disabled=""');
+    }),
+  );
+
+  it.effect(
+    "shows only the Environment's own variables, and nothing to save while they are untouched",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render(
+          resolveEnvironmentContainerSettings(
+            WITH_GLOBAL_VARIABLES.global,
+            WITH_GLOBAL_VARIABLES.overrides,
+          ),
+          undefined,
+          WITH_GLOBAL_VARIABLES,
+        );
+
+        expect(markup).toContain("OWN=work");
+        expect(markup).not.toContain("SHARED=global");
+        expect(saveButton(markup)).toContain(' disabled=""');
+      }),
+  );
+});
+
+describe("the variables of an Environment's card", () => {
+  it.effect("names its own, then those it gets from Global", () =>
+    Effect.gen(function* () {
+      const registry = registryOf(
+        resolveEnvironmentContainerSettings(
+          WITH_GLOBAL_VARIABLES.global,
+          WITH_GLOBAL_VARIABLES.overrides,
+        ),
+        WITH_GLOBAL_VARIABLES,
+      );
+
+      registry.mount(environmentSettingsAtom(WORK.id));
+      registry.mount(globalSettingsAtom);
+      yield* settled(registry, environmentSettingsAtom(WORK.id));
+      yield* settled(registry, globalSettingsAtom);
+
+      const markup = renderToStaticMarkup(
+        <RegistryContext.Provider value={registry}>
+          <VariablesSummary id={WORK.id} />
+        </RegistryContext.Provider>,
+      );
+
+      registry.dispose();
+
+      expect(markup).toContain('<p class="font-mono text-xs">OWN</p>');
+      expect(markup).toContain('Also from Global: <span class="font-mono">SHARED</span>');
     }),
   );
 });

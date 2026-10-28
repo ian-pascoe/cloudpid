@@ -1,6 +1,7 @@
 // The `environment` extension's tools for an Environment's record (docs/architecture/agent-changes.md): making an Environment,
 // renaming it, adding and removing Repos, asking for a Build. Over fake Environments that apply each as the Registry does.
 // @effect-diagnostics asyncFunction:off
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
   ROOT_CONVERSATION_ID,
@@ -52,7 +53,12 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
-    global: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
+    global: Effect.succeed({
+      settings: DEFAULT_CONTAINER_SETTINGS,
+      overriddenIn: {},
+      secrets: [],
+      skills: [],
+    }),
     change: () => Effect.die("not used here"),
   };
 

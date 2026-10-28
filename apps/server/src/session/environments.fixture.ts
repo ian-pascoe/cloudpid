@@ -59,14 +59,20 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
           ? {
               ...listing,
               settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: variables() },
+              overrides: { variables: variables() },
+              global: DEFAULT_CONTAINER_SETTINGS,
               secrets: [],
-              globalVariables: {},
               skills: [],
               globalSkills: [],
             }
           : null,
       ),
-    global: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
+    global: Effect.succeed({
+      settings: DEFAULT_CONTAINER_SETTINGS,
+      overriddenIn: {},
+      secrets: [],
+      skills: [],
+    }),
     change: ({ environment, change, author }) =>
       Effect.sync(() => {
         if (environment !== DEFAULT.id) return { status: "missing" as const };

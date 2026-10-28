@@ -1,9 +1,9 @@
-// The `environment` extension (`docs/architecture/agent-changes.md`, ADR-0019): the agent's tools for its Environments,
-// `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset` (which also keep
-// variables at Global, with the id `*`), and one tool for each of the other Container settings
-// (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,
-// `environment_start_script_set`, `environment_toolchains_set`, `environment_ignore_set` and
-// `environment_spare_workspace_set`), and `environment_secret_build` for the Build mark of a kept Secret, and
+// The `environment` extension (`docs/architecture/agent-changes.md`, ADR-0019, ADR-0027): the agent's tools for its
+// Environments, `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset`, and
+// one tool for each of the other Container settings (`environment_container_resize`, `environment_idle_time_set`,
+// `environment_setup_script_set`, `environment_start_script_set`, `environment_toolchains_set`,
+// `environment_ignore_set` and `environment_spare_workspace_set`), each of which sets an Environment's Override or,
+// with the id `*`, the setting at Global, and `environment_setting_reset`, which takes an Override back, and `environment_secret_build` for the Build mark of a kept Secret, and
 // `environment_skill_save`, `environment_skill_install`, `environment_skill_update` and `environment_skill_remove` for
 // its own Skills and, saved, installed, updated or removed, those kept Global (`environment-skills.ts`; a
 // change to the latter waits for the owner's Approval, so this extension needs the Session's `Approvals`). Each change is an Agent change: the Registry applies it as the owner's save
@@ -15,6 +15,7 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   type ContainerSettings,
+  type ContainerSettingsOverrides,
   compareInstances,
   containerRates,
   INSTANCE_DESCRIPTIONS,
@@ -49,6 +50,7 @@ import * as Schema from "effect/Schema";
 import { Approvals } from "./approvals.ts";
 import { SIZE_LINES } from "./container.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
+import { resetTool } from "./environment-reset.ts";
 import {
   GLOBAL_ID,
   GLOBAL_NAME,
@@ -96,12 +98,15 @@ export type KeptSecretListing = {
  * own Skills.
  */
 export type EnvironmentDetails = EnvironmentListing & {
+  /** Its Container settings in force: its Overrides over Global's, the variables merged by name. */
   readonly settings: ContainerSettings;
+  /** Its Overrides of Global's Container settings: a field here is its own, any other inherited. */
+  readonly overrides: ContainerSettingsOverrides;
+  /** The Container settings at Global, which a field without an Override inherits. */
+  readonly global: ContainerSettings;
   /** Why only some of the saved settings apply, when a later release no longer accepts one. */
   readonly problem?: string | undefined;
   readonly secrets: ReadonlyArray<KeptSecretListing>;
-  /** The variables kept Global, which the Environment's own of the same name override. */
-  readonly globalVariables: Readonly<Record<string, string>>;
   /** The Skills it keeps of its own, as `environment_get` lists them. */
   readonly skills: ReadonlyArray<EnvironmentSkill>;
   /** The Skills kept Global, which the Environment's own of the same name hide. */
@@ -109,11 +114,13 @@ export type EnvironmentDetails = EnvironmentListing & {
 };
 
 /**
- * What is kept Global, as `environment_get` shows it for the id `*`: the variables, the Secrets'
- * names and the Skills.
+ * What is kept Global, as `environment_get` shows it for the id `*`: the Container settings (the variables among them)
+ * with the Environments that override each, the Secrets' names and the Skills.
  */
 export type GlobalDetails = {
-  readonly variables: Readonly<Record<string, string>>;
+  readonly settings: ContainerSettings;
+  /** The Environments that override each field, by its path (`idleMinutes`, `variables.<NAME>`). */
+  readonly overriddenIn: Readonly<Record<string, ReadonlyArray<ChangedEnvironment>>>;
   readonly secrets: ReadonlyArray<KeptSecretListing>;
   readonly skills: ReadonlyArray<EnvironmentSkill>;
 };
@@ -136,13 +143,13 @@ export type ChangeAuthor = {
 /** The Environment a change was made to, by id and name. */
 export type ChangedEnvironment = { readonly id: string; readonly name: string };
 
-/** How a change of a variable kept Global reached the Environments. */
+/** How a change of a Container setting at Global reached the Environments. */
 export type GlobalChanged = {
-  /** The Environments whose own variable of the name wins over it, so it does not reach them. */
+  /** The Environments that override the field (a variable: their own of the name wins), so it does not reach them. */
   readonly overriddenIn: ReadonlyArray<ChangedEnvironment>;
   /** The Environments for which the Build upkeep after it asked for a new Build. */
   readonly newBuilds: ReadonlyArray<ChangedEnvironment>;
-  /** Whether it reaches this Session's own Workspace: its Environment does not override the name. */
+  /** Whether it reaches this Session's own Workspace: its Environment does not override the field. */
   readonly own: boolean;
 };
 
@@ -155,7 +162,7 @@ export type AppliedChange =
       readonly change: AgentChange;
       /** Whether the Build upkeep after it asked for a new Build. */
       readonly newBuild: boolean;
-      /** Set for a variable kept Global (the environment is then `GLOBAL_ID`). */
+      /** Set for a change at Global (the environment is then `GLOBAL_ID`). */
       readonly global?: GlobalChanged;
     }
   /** The setting already had the value: nothing was saved or recorded. */
@@ -322,17 +329,14 @@ const skillLines = (skills: ReadonlyArray<EnvironmentSkill>): string =>
 
 /** What `environment_get` says of an Environment. */
 export const describeEnvironment = (details: EnvironmentDetails, current: boolean): string => {
-  const { settings, globalVariables } = details;
-  const variables = Record.toEntries(settings.variables);
+  const { settings, overrides, global } = details;
+  const own = overrides.variables ?? {};
+  const inherited = Record.filter(global.variables, (_, name) => !Record.has(own, name));
+  const overridden = Arr.filter(Record.keys(global.variables), (name) => Record.has(own, name));
 
-  const inherited = Record.filter(
-    globalVariables,
-    (_, name) => !Record.has(settings.variables, name),
-  );
-
-  const overridden = Arr.filter(Record.keys(globalVariables), (name) =>
-    Record.has(settings.variables, name),
-  );
+  /** Where a setting comes from: the Environment's own Override, or Global's. */
+  const from = (field: Exclude<keyof ContainerSettings, "variables">): string =>
+    overrides[field] === undefined ? "inherited from Global" : "overridden here";
 
   const ownSkills = new Set(Arr.map(details.skills, (skill) => skill.name));
   const inheritedSkills = Arr.filter(details.globalSkills, (skill) => !ownSkills.has(skill.name));
@@ -345,22 +349,23 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
     [
       `Environment ${JSON.stringify(details.name)} (id ${details.id}${current ? ", the Environment of this Session" : ""})`,
       `Repos: ${reposLine(details.repos)}`,
-      `Container size: ${settings.instance}`,
-      `Size limit (the largest size, container_resize's too; the user sets it on the Environments page): ${settings.maxInstance}`,
-      `Idle time: ${settings.idleMinutes} minute${settings.idleMinutes === 1 ? "" : "s"}`,
-      `Container-only paths (ignore): ${settings.ignore.length === 0 ? "none" : Arr.join(settings.ignore, ", ")}`,
-      `Variables (plain, in every command's environment): ${
-        variables.length === 0 ? "none" : variableLines(settings.variables)
+      `Container settings: each is the Environment's own (overridden here) or Global's (inherited from Global, environment_get with id "${GLOBAL_ID}"). A set tool makes a field its own; environment_setting_reset makes it inherit Global's again.`,
+      `Container size (${from("instance")}): ${settings.instance}`,
+      `Size limit (the largest size, container_resize's too; the user sets it on the Environments page; ${from("maxInstance")}): ${settings.maxInstance}`,
+      `Idle time (${from("idleMinutes")}): ${settings.idleMinutes} minute${settings.idleMinutes === 1 ? "" : "s"}`,
+      `Container-only paths (ignore; ${from("ignore")}): ${settings.ignore.length === 0 ? "none" : Arr.join(settings.ignore, ", ")}`,
+      `Variables of its own (plain, in every command's environment): ${
+        Record.isEmptyRecord(own) ? "none" : variableLines(own)
       }`,
       `Variables at Global (id "${GLOBAL_ID}"; the Environment's own of the same name win): ${
-        Record.isEmptyRecord(globalVariables)
+        Record.isEmptyRecord(global.variables)
           ? "none"
           : `${variableLines(inherited)}${overridden.length === 0 ? "" : `\n  overridden here: ${Arr.join(overridden, ", ")}`}`
       }`,
-      `Setup Script: ${block(settings.setupScript, "bash")}`,
-      `Start Script: ${block(settings.startScript, "bash")}`,
-      `Toolchains (mise.toml): ${settings.toolchains === "" ? "none: the image's base Toolchains" : block(settings.toolchains, "toml")}`,
-      `Spare Workspace: ${settings.spareWorkspace ? "on (a Workspace kept made ahead, so a new Session starts without waiting for the clones and the Setup Scripts)" : "off (a new Session's Workspace is made when the Session starts)"}`,
+      `Setup Script (${from("setupScript")}): ${block(settings.setupScript, "bash")}`,
+      `Start Script (${from("startScript")}): ${block(settings.startScript, "bash")}`,
+      `Toolchains (mise.toml; ${from("toolchains")}): ${settings.toolchains === "" ? "none: the image's base Toolchains" : block(settings.toolchains, "toml")}`,
+      `Spare Workspace (${from("spareWorkspace")}): ${settings.spareWorkspace ? "on (a Workspace kept made ahead, so a new Session starts without waiting for the clones and the Setup Scripts)" : "off (a new Session's Workspace is made when the Session starts)"}`,
       `Kept Secrets (values never shown): ${
         details.secrets.length === 0
           ? "none"
@@ -382,13 +387,40 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
 };
 
 /** What `environment_get` says of what is kept Global (id `*`). */
-const describeGlobal = (details: GlobalDetails): string =>
-  Arr.join(
+const describeGlobal = (details: GlobalDetails): string => {
+  const { settings, overriddenIn } = details;
+
+  /** The Environments that override the field at `path`, if any, so a change here does not reach them. */
+  const overriding = (path: string): string => {
+    const environments = overriddenIn[path] ?? [];
+
+    return environments.length === 0
+      ? ""
+      : ` (overridden in ${Arr.join(Arr.map(environments, namedEnvironment), ", ")})`;
+  };
+
+  const variables = Arr.join(
+    Arr.map(
+      Record.toEntries(settings.variables),
+      ([name, value]) => `\n  ${name}=${value}${overriding(variableField(name))}`,
+    ),
+    "",
+  );
+
+  return Arr.join(
     [
-      `Kept at Global (id "${GLOBAL_ID}")`,
+      `Kept at Global (id "${GLOBAL_ID}"): what every Environment inherits where it has no Override of its own. The set tools change them with id "${GLOBAL_ID}".`,
+      `Container size${overriding("instance")}: ${settings.instance}`,
+      `Size limit (the largest size, container_resize's too)${overriding("maxInstance")}: ${settings.maxInstance}`,
+      `Idle time${overriding("idleMinutes")}: ${settings.idleMinutes} minute${settings.idleMinutes === 1 ? "" : "s"}`,
+      `Container-only paths (ignore)${overriding("ignore")}: ${settings.ignore.length === 0 ? "none" : Arr.join(settings.ignore, ", ")}`,
       `Variables (plain, in every command's environment, in any Environment; an Environment's own of the same name wins): ${
-        Record.isEmptyRecord(details.variables) ? "none" : variableLines(details.variables)
+        Record.isEmptyRecord(settings.variables) ? "none" : variables
       }`,
+      `Setup Script${overriding("setupScript")}: ${block(settings.setupScript, "bash")}`,
+      `Start Script${overriding("startScript")}: ${block(settings.startScript, "bash")}`,
+      `Toolchains (mise.toml)${overriding("toolchains")}: ${settings.toolchains === "" ? "none: the image's base Toolchains" : block(settings.toolchains, "toml")}`,
+      `Spare Workspace${overriding("spareWorkspace")}: ${settings.spareWorkspace ? "on" : "off"}`,
       `Kept Secrets (values never shown): ${
         details.secrets.length === 0
           ? "none"
@@ -398,6 +430,7 @@ const describeGlobal = (details: GlobalDetails): string =>
     ],
     "\n",
   );
+};
 
 /** What `environment_list` says of an Environment. */
 const listingLine = (environment: EnvironmentListing, current: boolean): string =>
@@ -431,17 +464,24 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
   );
 
 /**
- * When a change of a variable kept Global applies, whom it does not reach, and whose Build was asked
+ * When a change of a Container setting at Global (`field`) applies, whom it does not reach, and whose Build was asked
  * for.
  */
-const describeAppliedGlobal = ({ overriddenIn, newBuilds, own }: GlobalChanged): string =>
+export const describeAppliedGlobal = (
+  field: string,
+  { overriddenIn, newBuilds, own }: GlobalChanged,
+): string =>
   Arr.join(
     [
       overriddenIn.length === 0
-        ? "No Environment has a variable of its own with that name, so it reaches them all."
-        : `Each Environment's own variable of the same name wins; it does not reach ${Arr.join(Arr.map(overriddenIn, namedEnvironment), ", ")}.`,
-      "It applies at the next Container start of every Workspace: a Container that runs keeps what it started with.",
-      ...(own
+        ? "No Environment overrides it, so it reaches them all."
+        : `An Environment's own value wins; it does not reach ${Arr.join(Arr.map(overriddenIn, namedEnvironment), ", ")}, which override it.`,
+      ...(field === SPARE_WORKSPACE_FIELD
+        ? ["It applies at once: no Container restarts."]
+        : [
+            "It applies at the next Container start of every Workspace that inherits it: a Container that runs keeps what it started with.",
+          ]),
+      ...(own && field !== SPARE_WORKSPACE_FIELD
         ? [
             "This Session's Workspace has the change already: container_restart applies it to its Container now.",
           ]
@@ -449,15 +489,15 @@ const describeAppliedGlobal = ({ overriddenIn, newBuilds, own }: GlobalChanged):
       ...(newBuilds.length === 0
         ? []
         : [
-            `The Builds are made with the variables, so a new Build was asked for in ${Arr.join(Arr.map(newBuilds, namedEnvironment), ", ")} (environment_get shows how each goes).`,
+            `The Builds are made with it, so a new Build was asked for in ${Arr.join(Arr.map(newBuilds, namedEnvironment), ", ")} (environment_get shows how each goes).`,
           ]),
     ],
     " ",
   );
 
 /** What a result says of a Container-setting change's recording, after the setting itself. */
-const RECORDED =
-  "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.";
+// The id is written out: `GLOBAL_ID` is not there yet when this module loads first (`idOrGlobal`).
+const RECORDED = `With id "*" the setting is changed at Global: every Environment that does not override it inherits it, and a new Build is asked for in each whose Build is made with it. Setting an Environment's value makes it the Environment's own (an Override), which a later change at Global does not reach; environment_setting_reset makes it inherit Global's again. The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.`;
 
 /** US dollars, to two significant digits. */
 const money = (dollars: number): string => `$${dollars.toPrecision(2)}`;
@@ -470,8 +510,11 @@ export const describeIdleCost = (minutes: number, instance: InstanceType): strin
   return `A Container that sits unused is billed for its memory until the idle stop: at ${instance} (${memoryMib / 1024} GiB) about ${money(perMinute)} a minute, so up to ${money(perMinute * minutes)} for each idle stretch of ${minutes} minute${minutes === 1 ? "" : "s"}, per Workspace. A shorter idle time costs less but loses the warm Container (the next command starts a new one from the snapshot, several seconds).`;
 };
 
+/** A size as the owner reads it on an Approval card: its name, with its resources. */
+export const sizeWords = (size: InstanceType): string => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
+
 /** A script or Toolchains value as a result sizes it: the card shows the user the difference. */
-const textSize = (value: Schema.Json | null): string => {
+export const textSize = (value: Schema.Json | null): string => {
   const text = Predicate.isString(value) ? value : "";
   const lines = text.replace(/\n$/, "").split("\n").length;
 
@@ -481,11 +524,11 @@ const textSize = (value: Schema.Json | null): string => {
 };
 
 /** A size or a number of minutes as a result says it: a text bare, a number as it is. */
-const plainValue = (value: Schema.Json | null): string =>
+export const plainValue = (value: Schema.Json | null): string =>
   Predicate.isString(value) ? value : JSON.stringify(value);
 
 /** A list of Container-only paths as a result says it. */
-const pathsLine = (value: Schema.Json | null): string =>
+export const pathsLine = (value: Schema.Json | null): string =>
   Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
 /** A tool's `id`: one Environment, the Session's own by default. */
@@ -505,12 +548,12 @@ export const idOrGlobal = (kept: string) =>
 
 /**
  * Fails when `id` is `*`, which only the tools that keep something at Global take: the others change one
- * Environment's own record or settings.
+ * Environment's own record, or (`environment_setting_reset`) make one Environment's field inherit Global's.
  */
 export const refuseGlobal = (id: string | undefined) =>
   id === GLOBAL_ID
     ? EnvironmentsError.make({
-        message: `The id "${GLOBAL_ID}" names the variables, Secrets and Skills kept Global: only environment_variable_set, environment_variable_unset, environment_get, environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
+        message: `The id "${GLOBAL_ID}" names what is kept Global (the Container settings, Secrets and Skills): only environment_get, the Container setting tools (environment_variable_set, environment_variable_unset, environment_container_resize, environment_container_size_limit_set, environment_idle_time_set, environment_ignore_set, environment_setup_script_set, environment_start_script_set, environment_toolchains_set, environment_spare_workspace_set), environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
       })
     : Effect.void;
 
@@ -557,6 +600,11 @@ export const EnvironmentTools: Effect.Effect<
 
   const holdsCredential = yield* credentialCheck;
 
+  /** The `id` of a Container setting tool: one Environment, or `*` for Global's. */
+  const SettingId = idOrGlobal(
+    "the Container setting at Global, which each Environment that does not override it inherits",
+  );
+
   /**
    * Whether `value` holds a Secret's value or a credential, as written or in an encoding redaction knows: checked once
    * the Secrets are fresh, so one the owner has just kept for the Environment counts. A text these tools keep that holds
@@ -592,13 +640,12 @@ export const EnvironmentTools: Effect.Effect<
   /**
    * Apply the change of `field` to `value` as `tool`, and say how it went: refused when any of `texts` holds a Secret
    * (`refusal` says it) or the reason does, then `prepare`d with the Environment found (which may refuse it too, or hand
-   * `changed` what it read), then made by the Registry. With `every`, `id` may be `*`: the change is then to the
-   * variables kept Global.
+   * `changed` what it read), then made by the Registry. `id` may be `*`: the change is then to the Container settings
+   * at Global; a `value` of null resets the field (an Environment's then inherits Global's).
    */
   const applyChange = <Prepared>({
     tool,
     id,
-    takesGlobal = false,
     field,
     value,
     texts = [],
@@ -611,7 +658,6 @@ export const EnvironmentTools: Effect.Effect<
   }: {
     readonly tool: string;
     readonly id: string | undefined;
-    readonly takesGlobal?: boolean;
     readonly field: string;
     readonly value: Schema.Json | null;
     /** The text the value is made of, kept as written: none holds a Secret's value or a credential. */
@@ -629,8 +675,10 @@ export const EnvironmentTools: Effect.Effect<
       readonly change: AgentChange;
       readonly own: boolean;
       readonly newBuild: boolean;
-      /** Set for a change to the variables kept Global. */
+      /** Set for a change at Global. */
       readonly global: GlobalChanged | undefined;
+      /** When the change applies, whom it reaches, and whose Build was asked for. */
+      readonly applies: string;
       readonly prepared: Prepared;
     }) => string;
   }) =>
@@ -648,9 +696,7 @@ export const EnvironmentTools: Effect.Effect<
       }
 
       const { environment, own } =
-        takesGlobal && id === GLOBAL_ID
-          ? { environment: GLOBAL_ID, own: false }
-          : yield* target(id);
+        id === GLOBAL_ID ? { environment: GLOBAL_ID, own: false } : yield* target(id);
 
       const prepared = yield* prepare(environment);
 
@@ -703,6 +749,10 @@ export const EnvironmentTools: Effect.Effect<
                   own: reaches,
                   newBuild: applied.newBuild,
                   global: applied.global,
+                  applies:
+                    applied.global === undefined
+                      ? describeApplied(own, applied.newBuild)
+                      : describeAppliedGlobal(field, applied.global),
                   prepared,
                 }),
               },
@@ -721,6 +771,23 @@ export const EnvironmentTools: Effect.Effect<
           };
         }
       }
+    });
+
+  /**
+   * The Container settings in force where a change is made, with how a result names the place: Environment
+   * `environment`'s, or Global's (`GLOBAL_ID`).
+   */
+  const settingsAt = (environment: string) =>
+    Effect.gen(function* () {
+      if (environment === GLOBAL_ID) {
+        return { where: GLOBAL_NAME, settings: (yield* environments.global).settings };
+      }
+
+      const details = yield* environments.get(environment);
+
+      if (details === null) return yield* notFound(environment);
+
+      return { where: namedEnvironment(details), settings: details.settings };
     });
 
   /** Apply `change` of variable `name` as `tool`, and say how it went. */
@@ -745,7 +812,6 @@ export const EnvironmentTools: Effect.Effect<
     return applyChange({
       tool,
       id,
-      takesGlobal: true,
       field: variableField(name),
       value,
       texts: value === null ? [] : [value],
@@ -757,8 +823,8 @@ export const EnvironmentTools: Effect.Effect<
         value === null
           ? `${name} is not set ${preposition} ${where}: nothing changed, and nothing was recorded.`
           : `${name} already has that value ${preposition} ${where}: nothing changed, and nothing was recorded.`,
-      changed: ({ where, change, own, newBuild, global }) =>
-        `${value === null ? `Unset ${name}` : `Set ${name}`} ${preposition} ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${global === undefined ? describeApplied(own, newBuild) : describeAppliedGlobal(global)}`,
+      changed: ({ where, change, applies }) =>
+        `${value === null ? `Unset ${name}` : `Set ${name}`} ${preposition} ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${applies}`,
     });
   };
 
@@ -800,8 +866,8 @@ export const EnvironmentTools: Effect.Effect<
       prepare: () => Effect.void,
       unchanged: (where) =>
         `The ${what} of ${where} is that text already: nothing changed, and nothing was recorded.`,
-      changed: ({ where, change, own, newBuild }) =>
-        `${text === "" ? `Removed the ${what}` : `Set the ${what}`} of ${where}: it was ${textSize(change.before)}, and is ${textSize(change.after)} now (the user sees the difference on the Environments page). ${note} ${describeApplied(own, newBuild)}${newBuild ? "" : " No new Build was asked for."}`,
+      changed: ({ where, change, newBuild, global, applies }) =>
+        `${text === "" ? `Removed the ${what}` : `Set the ${what}`} of ${where}: it was ${textSize(change.before)}, and is ${textSize(change.after)} now (the user sees the difference on the Environments page). ${note} ${applies}${newBuild || global !== undefined ? "" : " No new Build was asked for."}`,
     });
 
   const list = yield* defineEffectTool({
@@ -828,7 +894,7 @@ export const EnvironmentTools: Effect.Effect<
                         listingLine(environment, environment.id === current),
                       ),
                       "\n",
-                    )}\nVariables at Global: ${Record.size(globalDetails.variables)} (environment_get with id "${GLOBAL_ID}")`,
+                    )}\nVariables at Global: ${Record.size(globalDetails.settings.variables)} (environment_get with id "${GLOBAL_ID}" shows them and the other Container settings at Global)`,
             },
           ],
           details: { current, environments: Arr.map(listed, ({ id, name }) => ({ id, name })) },
@@ -838,9 +904,9 @@ export const EnvironmentTools: Effect.Effect<
 
   const get = yield* defineEffectTool({
     name: "environment_get",
-    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace), the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its variables, the names of its Secrets and its Skills.`,
+    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace) in force, each marked as its own (overridden here) or inherited from Global, the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its Container settings with the Environments that override each, the names of its Secrets and its Skills.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrGlobal("the variables, Secrets and Skills kept Global")),
+      id: Schema.optionalKey(idOrGlobal("the Container settings, Secrets and Skills kept Global")),
     }),
     replay: "safe",
     execute: ({ id }) =>
@@ -917,7 +983,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(SettingId),
       size: InstanceType.annotate({ description: "The size of the Environment's next Containers" }),
       reason: Reason,
     }),
@@ -933,22 +999,19 @@ export const EnvironmentTools: Effect.Effect<
         conversation: api.conversationId,
         prepare: (environment) =>
           Effect.gen(function* () {
-            const details = yield* environments.get(environment);
-
-            if (details === null) return yield* notFound(environment);
-
-            const limit = details.settings.maxInstance;
+            const { where, settings } = yield* settingsAt(environment);
+            const limit = settings.maxInstance;
 
             if (compareInstances(size, limit) > 0) {
               return yield* EnvironmentsError.make({
-                message: `Nothing was saved: ${size} is above the size limit of ${namedEnvironment(details)}, ${limit}. Pick a size up to ${limit}, or ask the user to raise the limit: environment_container_size_limit_set asks for their Approval to raise it.`,
+                message: `Nothing was saved: ${size} is above the size limit of ${where}, ${limit}. Pick a size up to ${limit}, or ask the user to raise the limit: environment_container_size_limit_set asks for their Approval to raise it.`,
               });
             }
           }),
         unchanged: (where) =>
           `The Container size of ${where} is ${size} already: nothing changed, and nothing was recorded.`,
-        changed: ({ where, change, own, newBuild }) =>
-          `Set the Container size of ${where}: it was ${plainValue(change.before)}, and is ${plainValue(change.after)} now (${INSTANCE_DESCRIPTIONS[size]}). It is the size of the next Container of every Workspace of the Environment, and of those after each idle stop; Containers that run keep their size, and container_resize changes only this Workspace's current Container, until its idle stop, and no Environment. ${describeApplied(own, newBuild)}${own ? " If container_resize gave this Workspace's Container another size, that size holds through container_restart until the idle stop." : ""}`,
+        changed: ({ where, change, own, applies }) =>
+          `Set the Container size of ${where}: it was ${plainValue(change.before)}, and is ${plainValue(change.after)} now (${INSTANCE_DESCRIPTIONS[size]}). It is the size of the next Container of every Workspace it reaches, and of those after each idle stop; Containers that run keep their size, and container_resize changes only this Workspace's current Container, until its idle stop, and no Environment. ${applies}${own ? " If container_resize gave this Workspace's Container another size, that size holds through container_restart until the idle stop." : ""}`,
       }),
   });
 
@@ -963,7 +1026,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(SettingId),
       minutes: Schema.Finite.annotate({
         description: `Minutes of idle time, a whole number from 1 to ${MAX_IDLE_MINUTES}`,
       }),
@@ -979,11 +1042,11 @@ export const EnvironmentTools: Effect.Effect<
         value: minutes,
         reason,
         conversation: api.conversationId,
-        prepare: (environment) => environments.get(environment),
+        prepare: settingsAt,
         unchanged: (where) =>
           `The idle time of ${where} is ${minutes} already: nothing changed, and nothing was recorded.`,
-        changed: ({ where, change, own, newBuild, prepared }) =>
-          `Set the idle time of ${where}: it was ${plainValue(change.before)} minutes, and is ${plainValue(change.after)} now. ${prepared === null ? "" : `${describeIdleCost(minutes, prepared.settings.instance)} `}${describeApplied(own, newBuild)}`,
+        changed: ({ where, change, applies, prepared }) =>
+          `Set the idle time of ${where}: it was ${plainValue(change.before)} minutes, and is ${plainValue(change.after)} now. ${describeIdleCost(minutes, prepared.settings.instance)} ${applies}`,
       }),
   });
 
@@ -1000,7 +1063,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(SettingId),
       script: Schema.String.annotate({
         description: "The whole script, replacing the one there is; empty removes it",
       }),
@@ -1036,7 +1099,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(SettingId),
       script: Schema.String.annotate({
         description: "The whole script, replacing the one there is; empty removes it",
       }),
@@ -1071,7 +1134,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(SettingId),
       mise_toml: Schema.String.annotate({
         description:
           "The whole mise.toml, replacing the one there is; empty means the base Toolchains",
@@ -1108,7 +1171,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(SettingId),
       patterns: Schema.Array(Schema.String).annotate({
         description: "The whole list of extra Container-only paths; empty removes them all",
       }),
@@ -1129,8 +1192,8 @@ export const EnvironmentTools: Effect.Effect<
         prepare: () => Effect.void,
         unchanged: (where) =>
           `The extra Container-only paths of ${where} are that list already: nothing changed, and nothing was recorded.`,
-        changed: ({ where, change, own, newBuild }) =>
-          `Set the extra Container-only paths of ${where}: they were ${pathsLine(change.before)}, and are ${pathsLine(change.after)} now. Warning: the next Container of each Workspace starts without the Workspace's snapshot, from the Environment's Build once there is one for this list, else from the image: dependency directories, build output and caches are made again, and the Setup Scripts run again (minutes). ${describeApplied(own, newBuild)}`,
+        changed: ({ where, change, applies }) =>
+          `Set the extra Container-only paths of ${where}: they were ${pathsLine(change.before)}, and are ${pathsLine(change.after)} now. Warning: the next Container of each Workspace it reaches starts without the Workspace's snapshot, from the Environment's Build once there is one for this list, else from the image: dependency directories, build output and caches are made again, and the Setup Scripts run again (minutes). ${applies}`,
       }),
   });
 
@@ -1140,12 +1203,13 @@ export const EnvironmentTools: Effect.Effect<
       [
         "Turn an Environment's Spare Workspace on or off (this Session's unless id names another). On (the default), the Environment keeps one Workspace made ahead from its last good Build while it had a Session in the last 3 days: cloned, its Setup Scripts run, its Container snapshotted and stopped, so a new Session takes it and starts without waiting for the clones and the Setup Scripts. Each spare prepared runs a Container for a minute or two and keeps a Snapshot, after every Session that takes one and every new Build.",
         "Off: no spare is prepared, the one there is is removed with its Snapshot, and a new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts as the first Workspace after a Build does. Off saves that Container time for an Environment whose new Sessions can wait; on suits one whose new Sessions should start fast.",
+        `With id "${GLOBAL_ID}" the setting is changed at Global: every Environment that does not override it inherits it. Setting an Environment's value makes it the Environment's own, which a later change at Global does not reach; environment_setting_reset makes it inherit Global's again.`,
         "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at once: no Container restarts, and no new Build is made.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(SettingId),
       enabled: Schema.Boolean.annotate({
         description: "true keeps a spare made ahead; false removes it and prepares none",
       }),
@@ -1164,10 +1228,12 @@ export const EnvironmentTools: Effect.Effect<
         prepare: () => Effect.void,
         unchanged: (where) =>
           `The Spare Workspace of ${where} is ${enabled ? "on" : "off"} already: nothing changed, and nothing was recorded.`,
-        changed: ({ where }) =>
-          enabled
-            ? `Turned the Spare Workspace of ${where} on: a spare is prepared now if the Environment had a Session in the last 3 days, else after its next Session, and a new Session that takes it starts without waiting for the clones and the Setup Scripts.`
-            : `Turned the Spare Workspace of ${where} off: its spare, if it had one, is removed with its Snapshot, and none is prepared. A new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts.`,
+        changed: ({ where, global }) =>
+          `${
+            enabled
+              ? `Turned the Spare Workspace of ${where} on: a spare is prepared now for each Environment it reaches that had a Session in the last 3 days, else after its next Session, and a new Session that takes it starts without waiting for the clones and the Setup Scripts.`
+              : `Turned the Spare Workspace of ${where} off: the spare of each Environment it reaches, if it had one, is removed with its Snapshot, and none is prepared. A new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts.`
+          }${global === undefined ? "" : ` ${describeAppliedGlobal(SPARE_WORKSPACE_FIELD, global)}`}`,
       }),
   });
 
@@ -1190,6 +1256,16 @@ export const EnvironmentTools: Effect.Effect<
     });
 
   const lifecycle = yield* lifecycleTools({ environments, log, refuseSecrets, target, notFound });
+
+  const settingReset = yield* resetTool({
+    environments,
+    approvals,
+    log,
+    refuseSecrets,
+    target,
+    notFound,
+  });
+
   const secretMarks = yield* secretMarkTools({ environments, log, refuseSecrets, target });
 
   const skills = yield* skillTools({
@@ -1215,6 +1291,7 @@ export const EnvironmentTools: Effect.Effect<
       toolchains,
       ignore,
       spareWorkspace,
+      settingReset,
       ...lifecycle,
       ...secretMarks,
       ...skills,

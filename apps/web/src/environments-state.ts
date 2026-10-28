@@ -3,8 +3,8 @@
 // variables and Secrets kept Global, and the state of the Environments page's forms and dialogs.
 
 import {
-  containerOverridesFrom,
-  globalOverridesFrom,
+  containerPatchBetween,
+  DEFAULT_CONTAINER_SETTINGS,
   type InstanceType,
   type ContainerSettings,
 } from "@cloudpid/config";
@@ -116,15 +116,29 @@ export const environmentDialogAtom = Atom.family((_id: string) =>
   Atom.make<EnvironmentDialog | null>(null),
 );
 
-/** What changes in Environment `id` when its Edit dialog is saved: a new name, new Container settings, or both. */
+/**
+ * What changes in Environment `id` when its Edit dialog is saved: a new name, new Container settings, or both. The
+ * settings come with the ones the dialog was opened with (`loadedSettingsOf`), so only what the owner changed is sent.
+ */
 export interface EnvironmentEdit {
   readonly name: string | undefined;
-  readonly settings: ContainerSettings | undefined;
+  readonly settings:
+    | { readonly loaded: ContainerSettings; readonly edited: ContainerSettings }
+    | undefined;
 }
 
 /**
- * Save an edit of Environment `id`: rename it, then save its Container settings as overrides of the defaults, and load
- * both again. The first the Registry refuses ends it with its own message. It answers with the new settings state when
+ * The settings the Edit dialog shows: every field as in force, but the variables are the Environment's own, not the ones
+ * it gets from Global, so saving them never copies a Global variable into the Environment.
+ */
+export const loadedSettingsOf = (state: ContainerSettingsState): ContainerSettings => ({
+  ...state.settings,
+  variables: state.overrides.variables ?? {},
+});
+
+/**
+ * Save an edit of Environment `id`: rename it, then save what changed in its Container settings (the fields set, the
+ * removed variables reset so they inherit Global again), and load both again. The first the Registry refuses ends it with its own message. It answers with the new settings state when
  * settings were saved. Once saved, the Edit dialog closes. Each Environment has its own, so one's save does not show on
  * another's dialog.
  */
@@ -139,14 +153,14 @@ export const saveEnvironmentAtom = Atom.family((id: string) =>
             registry("renameEnvironment", { environment: id, name }),
           );
 
-        return settings === undefined
-          ? undefined
-          : yield* RegistryClient.use((registry) =>
-              registry("updateEnvironmentSettings", {
-                environment: id,
-                overrides: containerOverridesFrom(settings),
-              }),
-            );
+        if (settings === undefined) return undefined;
+
+        return yield* RegistryClient.use((registry) =>
+          registry("updateEnvironmentSettings", {
+            environment: id,
+            ...containerPatchBetween(settings.loaded, settings.edited),
+          }),
+        );
       }).pipe(
         changing(["environments", `environment-settings:${id}`]),
         Effect.tap(() =>
@@ -461,22 +475,24 @@ export interface EnvironmentDraft {
 /** `draft`, with the settings it has not got yet taken from `saved`, the settings in force once they answer. */
 const filledFrom = (
   draft: EnvironmentDraft,
-  saved: ContainerSettingsState | null,
-): EnvironmentDraft =>
-  saved === null
-    ? draft
-    : {
-        ...draft,
-        instance: draft.instance ?? saved.settings.instance,
-        maxInstance: draft.maxInstance ?? saved.settings.maxInstance,
-        idle: draft.idle ?? String(saved.settings.idleMinutes),
-        ignore: draft.ignore ?? Arr.join(saved.settings.ignore, "\n"),
-        variables: draft.variables ?? variablesText(saved.settings.variables),
-        setupScript: draft.setupScript ?? saved.settings.setupScript,
-        startScript: draft.startScript ?? saved.settings.startScript,
-        toolchains: draft.toolchains ?? saved.settings.toolchains,
-        spareWorkspace: draft.spareWorkspace ?? saved.settings.spareWorkspace,
-      };
+  state: ContainerSettingsState | null,
+): EnvironmentDraft => {
+  if (state === null) return draft;
+  const saved = loadedSettingsOf(state);
+
+  return {
+    ...draft,
+    instance: draft.instance ?? saved.instance,
+    maxInstance: draft.maxInstance ?? saved.maxInstance,
+    idle: draft.idle ?? String(saved.idleMinutes),
+    ignore: draft.ignore ?? Arr.join(saved.ignore, "\n"),
+    variables: draft.variables ?? variablesText(saved.variables),
+    setupScript: draft.setupScript ?? saved.setupScript,
+    startScript: draft.startScript ?? saved.startScript,
+    toolchains: draft.toolchains ?? saved.toolchains,
+    spareWorkspace: draft.spareWorkspace ?? saved.spareWorkspace,
+  };
+};
 
 /**
  * The Edit dialog's form of Environment `id`: its name and the Container settings in force, to change. The settings may
@@ -514,7 +530,7 @@ export const environmentDraftAtom = Atom.family((id: string) =>
  * at its next Container start. Asked again every few seconds while the page is visible: a Session's agent changes them,
  * which the page hears of no other way.
  */
-export const globalSettingsAtom = RegistryClient.query("getGlobalSettings", undefined, {
+export const globalSettingsAtom = RegistryClient.query("getGlobalContainerSettings", undefined, {
   reactivityKeys: ["global"],
 }).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
 
@@ -540,16 +556,23 @@ export const globalVariablesAtom = Atom.map(
 export const globalVariablesDraftAtom = Atom.make<string | undefined>(undefined);
 
 /**
- * Save the variables kept Global, as the whole map, and load them again. Each Environment's Build is
- * made with them, so the Builds ask again too. Once they are saved the form fills in from them again.
+ * Save the variables kept Global: those added or changed are set and those removed are reset, against the ones last
+ * loaded, so a variable another save or an agent changed meanwhile is left alone. Each Environment's Build is made with
+ * them, so the Builds ask again too. Once they are saved the form fills in from them again.
  */
 export const saveGlobalVariablesAtom = appRuntime.fn(
   (variables: Readonly<Record<string, string>>, get) =>
-    RegistryClient.use((registry) =>
-      registry("updateGlobalSettings", {
-        overrides: globalOverridesFrom({ variables }),
-      }),
-    ).pipe(
+    RegistryClient.use((registry) => {
+      const loaded = get(globalVariablesAtom);
+
+      return registry(
+        "updateGlobalContainerSettings",
+        containerPatchBetween(
+          { ...DEFAULT_CONTAINER_SETTINGS, variables: loaded },
+          { ...DEFAULT_CONTAINER_SETTINGS, variables },
+        ),
+      );
+    }).pipe(
       Effect.asVoid,
       changing(["global", "builds"]),
       Effect.tap(() =>

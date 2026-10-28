@@ -74,6 +74,7 @@ import {
   globalSettingsErrorAtom,
   globalVariablesAtom,
   globalVariablesDraftAtom,
+  loadedSettingsOf,
   saveGlobalVariablesAtom,
   newEnvironmentNameAtom,
   rebuildEnvironmentAtom,
@@ -444,13 +445,13 @@ const SecretRow = ({
  * The names of Environment `id`'s own variables, then those it gets from Global, as `SecretsSection` names
  * the Secrets it gets: the values are in the Edit dialog.
  */
-const VariablesSummary = ({ id }: { id: string }) => {
+export const VariablesSummary = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSettingsAtom(id));
   const globalVars = useAtomValue(globalVariablesAtom);
 
   const own = loaded.pipe(
     AsyncResult.value,
-    Option.map((state) => state.settings.variables),
+    Option.map((state) => state.overrides.variables ?? {}),
   );
 
   const loadError = settledFailureOf(loaded);
@@ -956,11 +957,8 @@ export const EditEnvironmentDialog = ({
     spareWorkspace,
   } = draft;
 
-  const saved = loaded.pipe(
-    AsyncResult.value,
-    Option.map((state) => state.settings),
-    Option.getOrUndefined,
-  );
+  // The settings in force with the Environment's own variables only: what the dialog edits and diffs against.
+  const saved = loaded.pipe(AsyncResult.value, Option.map(loadedSettingsOf), Option.getOrUndefined);
 
   const saving = edited.waiting;
   // A refused save shows until the next save starts; a failed load until it is asked for again.
@@ -1017,17 +1015,23 @@ export const EditEnvironmentDialog = ({
     save({
       name: renamed ? name.trim() : undefined,
       settings:
-        settingsChanged && instance !== undefined && maxInstance !== undefined
+        settingsChanged &&
+        saved !== undefined &&
+        instance !== undefined &&
+        maxInstance !== undefined
           ? {
-              instance,
-              maxInstance,
-              idleMinutes: Number(idle),
-              ignore: patterns,
-              variables: typedVariables,
-              setupScript: setupScript ?? saved.setupScript,
-              startScript: startScript ?? saved.startScript,
-              toolchains: toolchains ?? saved.toolchains,
-              spareWorkspace: spareWorkspace ?? saved.spareWorkspace,
+              loaded: saved,
+              edited: {
+                instance,
+                maxInstance,
+                idleMinutes: Number(idle),
+                ignore: patterns,
+                variables: typedVariables,
+                setupScript: setupScript ?? saved.setupScript,
+                startScript: startScript ?? saved.startScript,
+                toolchains: toolchains ?? saved.toolchains,
+                spareWorkspace: spareWorkspace ?? saved.spareWorkspace,
+              },
             }
           : undefined,
     });

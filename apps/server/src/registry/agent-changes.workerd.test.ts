@@ -3,6 +3,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { runInDurableObject } from "cloudflare:test";
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import {
   DEFAULT_ENVIRONMENT,
   GLOBAL_SCOPE,
@@ -20,9 +21,12 @@ import {
   openAgentChanges,
   revertAgentChange,
 } from "./agent-changes.ts";
-import { globalVariablesOf, readGlobal } from "./global.ts";
+import { environmentSettingsOf, globalSettingsOf, readGlobal } from "./global.ts";
 import { noSkills, type TestRegistry } from "./store.fixture.ts";
-import { openRegistryStore } from "./store.ts";
+import { openRegistryStore, type RegistryStore } from "./store.ts";
+
+/** The variables at Global in force. */
+const globalVariablesOf = (store: RegistryStore) => globalSettingsOf(store).variables;
 
 const author: AgentChangeAuthor = {
   session: "s-1",
@@ -186,6 +190,8 @@ describe("an Agent change recorded before the sizes were renamed", () => {
         before: "custom-2",
         after: "custom-3",
         reverts: null,
+        // Migration 26 marks a value before that was the default then as inherited.
+        beforeInherited: true,
       });
 
       return [
@@ -200,7 +206,7 @@ describe("an Agent change recorded before the sizes were renamed", () => {
       status: "reverted",
       change: { field: "maxInstance", before: "cpu-3", after: "cpu-2" },
     });
-    // cpu-2 is the default limit, so nothing is kept for it.
+    // The limit before was the default, which it did not override: the revert resets it, and nothing is kept for it.
     expect(saved).toEqual({});
   });
 });
@@ -232,6 +238,8 @@ describe("an Agent change to an Environment", () => {
         reason: "The tests need the API's address",
         field: "variables.API_URL",
         before: null,
+        // It had no variable of its own by the name: what it had was Global's (none).
+        beforeInherited: true,
         after: "https://api.test",
         reverts: null,
         revertedBy: null,
@@ -354,9 +362,8 @@ describe("an Agent change to the variables kept Global", () => {
 
     expect(set).toMatchObject({
       status: "changed",
-      name: "EMAIL",
-      previous: {},
-      variables: { EMAIL: "me@test" },
+      previous: { variables: {} },
+      settings: { variables: { EMAIL: "me@test" } },
       change: {
         scope: "*",
         actor: "agent",
@@ -369,11 +376,11 @@ describe("an Agent change to the variables kept Global", () => {
     });
     expect(unset).toMatchObject({
       status: "changed",
-      previous: { EMAIL: "me@test" },
-      variables: {},
+      previous: { variables: { EMAIL: "me@test" } },
+      settings: { variables: {} },
       change: { before: "me@test", after: null },
     });
-    expect(kept).toEqual({ settings: { variables: {} }, overrides: {} });
+    expect(kept).toEqual({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} });
     expect(listed.map(({ id, field }) => ({ id, field }))).toEqual([
       { id: 2, field: "variables.EMAIL" },
       { id: 1, field: "variables.EMAIL" },
@@ -394,10 +401,10 @@ describe("an Agent change to the variables kept Global", () => {
     expect(listed).toHaveLength(1);
   });
 
-  it("refuses a field that is not a variable, and what the owner's save refuses, saving and recording nothing", async () => {
+  it("refuses a field that is not a Container setting, and what the owner's save refuses, saving and recording nothing", async () => {
     const [setting, reserved, listed, kept] = await inRegistry(
       ({ changeAtGlobal, changes, store }) => [
-        changeAtGlobal({ field: "idleMinutes", value: 5 }),
+        changeAtGlobal({ field: "model", value: "x" }),
         changeAtGlobal(setVariable("PATH", "/bin")),
         changes.list(GLOBAL_SCOPE),
         readGlobal(store),
@@ -406,7 +413,7 @@ describe("an Agent change to the variables kept Global", () => {
 
     expect(setting).toEqual({
       status: "rejected",
-      message: "idleMinutes: only variables are kept Global",
+      message: "model: not a Container setting",
     });
     expect(reserved).toEqual({
       status: "rejected",
@@ -520,7 +527,7 @@ describe("the owner's revert of an Agent change to a variable kept Global", () =
       return readGlobal(store);
     });
 
-    expect(kept).toEqual({ settings: { variables: {} }, overrides: {} });
+    expect(kept).toEqual({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} });
   });
 
   it("is refused, showing the value now, when the variable has changed since, and a second time", async () => {
@@ -746,10 +753,208 @@ describe("an Agent change to each of the other Container settings", () => {
     expect(stored).toEqual({});
   });
 
-  it("records nothing for the value a setting has", async () => {
-    const outcome = await inRegistry(({ change }) => change({ field: "idleMinutes", value: 2 }));
+  it("records nothing for the value a setting has as its Override", async () => {
+    const [listed, outcome] = await inRegistry(({ change, changes }) => {
+      change({ field: "idleMinutes", value: 5 });
+
+      const again = change({ field: "idleMinutes", value: 5 }, 2_000);
+
+      return [changes.list(DEFAULT_ENVIRONMENT), again];
+    });
+
+    expect(outcome).toMatchObject({ status: "unchanged", value: 5 });
+    expect(listed).toHaveLength(1);
+  });
+});
+
+describe("an Agent change to an Environment's Override of Global's Container settings", () => {
+  it("makes the value inherited from Global its own, recorded with the value before marked inherited", async () => {
+    const [outcome, saved] = await inRegistry(({ change, store }) => [
+      change({ field: "idleMinutes", value: 2 }),
+      store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+    ]);
+
+    expect(outcome).toMatchObject({
+      status: "changed",
+      change: { field: "idleMinutes", before: 2, beforeInherited: true, after: 2 },
+    });
+    expect(outcome).not.toHaveProperty("change.afterInherited");
+    expect(saved).toEqual({ idleMinutes: 2 });
+  });
+
+  it("keeps its own value when Global's changes, and a reset takes Global's again", async () => {
+    const [pinned, reset, after, listed] = await inRegistry(
+      ({ change, changeAtGlobal, store, changes }) => {
+        change({ field: "setupScript", value: "make own" });
+        changeAtGlobal({ field: "setupScript", value: "make all" }, 2_000);
+
+        const pinned = environmentSettingsOf(store, DEFAULT_ENVIRONMENT)?.settings.setupScript;
+        const reset = change({ field: "setupScript", value: null }, 3_000);
+
+        return [
+          pinned,
+          reset,
+          environmentSettingsOf(store, DEFAULT_ENVIRONMENT),
+          changes.list(DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(pinned).toBe("make own");
+    expect(reset).toMatchObject({
+      status: "changed",
+      change: { before: "make own", after: "make all", afterInherited: true },
+    });
+    expect(after?.overrides).toEqual({});
+    expect(after?.settings.setupScript).toBe("make all");
+    expect(listed).toHaveLength(2);
+  });
+
+  it("records nothing for a reset of a field that is inherited already", async () => {
+    const [outcome, listed] = await inRegistry(({ change, changes }) => [
+      change({ field: "idleMinutes", value: null }),
+      changes.list(DEFAULT_ENVIRONMENT),
+    ]);
 
     expect(outcome).toMatchObject({ status: "unchanged", value: 2 });
+    expect(listed).toEqual([]);
+  });
+
+  it("is reverted to inherited when its value before was, whatever Global's is now", async () => {
+    const [reverted, after] = await inRegistry(({ change, changeAtGlobal, revert, store }) => {
+      change({ field: "idleMinutes", value: 30 });
+      changeAtGlobal({ field: "idleMinutes", value: 9 }, 2_000);
+
+      return [revert(1, 3_000), environmentSettingsOf(store, DEFAULT_ENVIRONMENT)];
+    });
+
+    expect(reverted).toMatchObject({
+      status: "reverted",
+      change: { before: 30, after: 9, afterInherited: true, reverts: 1 },
+    });
+    expect(after?.overrides).toEqual({});
+    expect(after?.settings.idleMinutes).toBe(9);
+  });
+
+  it("is not reverted when the field changed since, showing what it is now", async () => {
+    const reverted = await inRegistry(({ change, revert }) => {
+      change({ field: "idleMinutes", value: 30 });
+      change({ field: "idleMinutes", value: 40 }, 2_000);
+
+      return revert(1, 3_000);
+    });
+
+    expect(reverted).toEqual({ status: "changed-since", field: "idleMinutes", current: 40 });
+  });
+
+  it("puts an Override back when a reset is reverted", async () => {
+    const [reverted, after] = await inRegistry(({ change, revert, store }) => {
+      change({ field: "idleMinutes", value: 30 });
+      change({ field: "idleMinutes", value: null }, 2_000);
+
+      return [revert(2, 3_000), environmentSettingsOf(store, DEFAULT_ENVIRONMENT)];
+    });
+
+    expect(reverted).toMatchObject({ status: "reverted", change: { before: 2, after: 30 } });
+    expect(after?.overrides).toEqual({ idleMinutes: 30 });
+  });
+
+  it("refuses a reset of the size that would leave it above its own size limit", async () => {
+    const outcome = await inRegistry(({ change, changeAtGlobal }) => {
+      changeAtGlobal({ field: "maxInstance", value: "standard-3" });
+      changeAtGlobal({ field: "instance", value: "standard-3" }, 2_000);
+      change({ field: "instance", value: "cpu-1" }, 3_000);
+      change({ field: "maxInstance", value: "cpu-2" }, 4_000);
+
+      return change({ field: "instance", value: null }, 5_000);
+    });
+
+    expect(outcome).toMatchObject({
+      status: "rejected",
+      message: expect.stringMatching(/standard-3 is larger than the size limit cpu-2/),
+    });
+  });
+});
+
+describe("an Agent change to a Container setting at Global", () => {
+  it("is recorded under the scope * with the setting's name, and reaches the Environments that inherit it", async () => {
+    const [outcome, listed, inheriting, overriding] = await inRegistry(
+      ({ change, changeAtGlobal, store, changes }) => {
+        store.createEnvironment("0000abcd", "Own", 1_000);
+        change({ field: "idleMinutes", value: 30 }, 1_000, "0000abcd");
+
+        return [
+          changeAtGlobal({ field: "idleMinutes", value: 9 }, 2_000),
+          changes.list(GLOBAL_SCOPE),
+          environmentSettingsOf(store, DEFAULT_ENVIRONMENT)?.settings.idleMinutes,
+          environmentSettingsOf(store, "0000abcd")?.settings.idleMinutes,
+        ];
+      },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "changed",
+      previous: { idleMinutes: 2 },
+      settings: { idleMinutes: 9 },
+      change: { scope: "*", field: "idleMinutes", before: 2, after: 9 },
+    });
+    expect(listed).toHaveLength(1);
+    expect(inheriting).toBe(9);
+    expect(overriding).toBe(30);
+  });
+
+  it("refuses a size that would leave an Environment that inherits it above its own limit, naming it", async () => {
+    const [outcome, listed] = await inRegistry(({ change, changeAtGlobal, changes }) => {
+      changeAtGlobal({ field: "maxInstance", value: "cpu-3" });
+      change({ field: "maxInstance", value: "cpu-2" }, 2_000);
+
+      return [
+        changeAtGlobal({ field: "instance", value: "cpu-3" }, 3_000),
+        changes.list(GLOBAL_SCOPE),
+      ];
+    });
+
+    expect(outcome).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining('environment "Default" (default)'),
+    });
+    expect(listed).toHaveLength(1);
+  });
+
+  it("refuses a limit under the own size of an Environment that inherits it, naming it", async () => {
+    // The limit at Global was the Environment's own size, cpu-2: a lower one would leave its size above it.
+    const [outcome, listed, after] = await inRegistry(
+      ({ change, changeAtGlobal, changes, store }) => {
+        change({ field: "instance", value: "cpu-2" });
+
+        return [
+          changeAtGlobal({ field: "maxInstance", value: "cpu-1" }, 2_000),
+          changes.list(GLOBAL_SCOPE),
+          environmentSettingsOf(store, DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining('environment "Default" (default)'),
+    });
+    expect(listed).toEqual([]);
+    expect(after?.settings).toMatchObject({ instance: "cpu-2", maxInstance: "cpu-2" });
+  });
+
+  it("is reverted to the value before, recorded as the owner's change under the scope *", async () => {
+    const [reverted, after] = await inRegistry(({ changeAtGlobal, revert, store }) => {
+      changeAtGlobal({ field: "toolchains", value: '[tools]\nnode = "22"' });
+
+      return [revert(1, 2_000, GLOBAL_SCOPE), readGlobal(store)];
+    });
+
+    expect(reverted).toMatchObject({
+      status: "reverted",
+      change: { scope: "*", actor: "owner", field: "toolchains", after: "", reverts: 1 },
+    });
+    expect(after.overrides).toEqual({});
   });
 });
 
