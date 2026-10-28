@@ -23,6 +23,7 @@ import { InAppLink } from "./in-app-link.tsx";
 import { failureOf } from "./registry.ts";
 import {
   replaceSearch,
+  skillOwnerPath,
   skillPagePath,
   skillRepoPath,
   SKILLS_PATH,
@@ -147,12 +148,21 @@ const DirectoryRow = ({ skill, rank }: { skill: DirectorySkill; rank: number | n
         {github === null ? (
           <span className="truncate font-mono text-xs text-muted-foreground">{skill.source}</span>
         ) : (
-          <InAppLink
-            href={skillRepoPath(github.owner, github.repo)}
-            className="truncate font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
-          >
-            {skill.source}
-          </InAppLink>
+          <span className="truncate font-mono text-xs text-muted-foreground">
+            <InAppLink
+              href={skillOwnerPath(github.owner)}
+              className="hover:text-foreground hover:underline"
+            >
+              {github.owner}
+            </InAppLink>
+            /
+            <InAppLink
+              href={skillRepoPath(github.owner, github.repo)}
+              className="hover:text-foreground hover:underline"
+            >
+              {github.repo}
+            </InAppLink>
+          </span>
         )}
         {badges.length > 0 && (
           <ul aria-label="Installed here" className="flex flex-wrap gap-x-2 text-xs">
@@ -204,7 +214,7 @@ const DirectoryRow = ({ skill, rank }: { skill: DirectorySkill; rank: number | n
 };
 
 /** Why a list or a search could not load, said plainly, with a way to ask again; the Installed tab is not affected. */
-const DirectoryError = ({ message, retry }: { message: string; retry: () => void }) => (
+export const DirectoryError = ({ message, retry }: { message: string; retry: () => void }) => (
   <div role="alert" className="flex flex-col items-start gap-2 text-sm">
     <p className="text-destructive">{message}</p>
     <p className="text-muted-foreground">

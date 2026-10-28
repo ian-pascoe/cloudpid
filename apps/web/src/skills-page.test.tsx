@@ -319,7 +319,9 @@ describe("the Skill directory's tabs", () => {
       expect(markup).toContain(">950<");
       expect(links(grill)).toEqual([
         { href: "/skills/mattpocock/skills/grill-me", text: "grill-me", current: false },
-        { href: "/skills/mattpocock/skills", text: "mattpocock/skills", current: false },
+        // The owner links to the owner's page, the repo to its own.
+        { href: "/skills/mattpocock", text: "mattpocock", current: false },
+        { href: "/skills/mattpocock/skills", text: "skills", current: false },
       ]);
       expect(grill).toContain('aria-label="Install grill-me from mattpocock/skills"');
       // The Hot tab's change is not on this list.

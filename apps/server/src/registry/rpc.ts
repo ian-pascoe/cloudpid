@@ -43,6 +43,7 @@ import type { Builds } from "./builds.ts";
 import type { DraftBranches } from "./draft-branches.ts";
 import { withInstalled } from "./skill-badges.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
+import { skillOwnersOver } from "./skill-owner.ts";
 import { joinRepoSkills, repoSearchQuery, type SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
@@ -994,6 +995,8 @@ export const serveRegistryRpc = <R = never>(
 
           return joinRepoSkills(rows, installed, found);
         }),
+      // From the Skill directory's search alone (it has no owner listing): no GitHub, so nothing installed to join.
+      listOwnerRepos: ({ owner }) => skillOwnersOver(skillDirectory).list(owner),
       listBuilds: () =>
         registry.listBuilds().pipe(
           // The Environments page asks again while a Build is under way, which records it once it ends.

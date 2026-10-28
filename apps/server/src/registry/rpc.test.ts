@@ -3346,6 +3346,27 @@ it("searches the Skill directory with the same badges, and reports why a list or
   expect(listFailed.message).toBe("skills.sh answered 503");
 });
 
+it("lists an owner's repos from the Skill directory's search, and fails when it does not answer", async () => {
+  const fake = fakeRegistries();
+
+  // The fake directory finds `mattpocock/skills/tdd` for any search; an owner named `down` has it fail.
+  const listing = await call(fake, (registry) => registry.listOwnerRepos({ owner: "MattPocock" }));
+  const other = await call(fake, (registry) => registry.listOwnerRepos({ owner: "vercel-labs" }));
+
+  const failed = await call(fake, (registry) =>
+    Effect.flip(registry.listOwnerRepos({ owner: "down-owner" })),
+  );
+
+  expect(listing).toEqual({
+    owner: "MattPocock",
+    repos: [{ repo: "skills", skills: 1, installs: 900_000 }],
+    capped: false,
+  });
+  expect(other).toEqual({ owner: "vercel-labs", repos: [], capped: false });
+  expect(failed).toBeInstanceOf(SkillDirectoryError);
+  expect(failed.message).toBe("skills.sh did not answer");
+});
+
 it("lists a repo's Skills with installs from the Skill directory and badges matched by repo and folder", async () => {
   const fake = fakeRegistries();
   const commit = "c0ffee0000000000000000000000000000000001";
