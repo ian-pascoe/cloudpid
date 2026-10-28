@@ -11,6 +11,7 @@ import {
 } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
 import type { EnvironmentBuild } from "./build-record.ts";
+import type { ScanCoverage } from "./snapshots.ts";
 import {
   ContainerLaunch,
   containerIgnore,
@@ -39,7 +40,7 @@ type Fake = {
   running: boolean;
   /** What the platform answers `start` with. */
   outcome: "launched" | "adopted" | "relaunched";
-  restorable: { id: string; image: string | undefined } | undefined;
+  restorable: { id: string; image: string | undefined; covered?: ScanCoverage } | undefined;
   /** The image a launch would run now. */
   image: string | undefined;
   /** What `exitInfo` answers: the Container died, or null. */
@@ -50,6 +51,10 @@ type Fake = {
   takeImages: Array<string | undefined>;
   /** The Container-only paths each snapshot was labelled with. */
   takeIgnores: Array<readonly string[] | undefined>;
+  /** What each snapshot's scan was told the unchanged files were shown clean of. */
+  takeScanned: Array<ScanCoverage | undefined>;
+  /** What a snapshot taken records its scan covered. */
+  takeCovers: ScanCoverage | undefined;
   /** The Container-only paths each launch asked for a snapshot of. */
   restorableIgnores: Array<readonly string[] | undefined>;
   record: LaunchRecord | undefined;
@@ -85,6 +90,8 @@ const open = (
     restores: 0,
     takeImages: [],
     takeIgnores: [],
+    takeScanned: [],
+    takeCovers: undefined,
     restorableIgnores: [],
     record: undefined,
     starts: [],
@@ -146,19 +153,28 @@ const open = (
         restored: async () => {
           state.restores++;
         },
-        take: async (reason, image, ignore) => {
+        take: async (reason, image, ignore, scanned) => {
           state.takes.push(reason);
           state.takeImages.push(image);
           state.takeIgnores.push(ignore);
+          state.takeScanned.push(scanned);
 
           return state.takeOutcome;
         },
+        coverage: async () => state.takeCovers,
         capture: async (reason, image) => {
           state.takes.push(reason);
           state.takeImages.push(image);
 
           return state.takeOutcome === "taken"
-            ? { outcome: "taken", id: "build-snap", size: 5, tookMs: 1 }
+            ? {
+                outcome: "taken",
+                id: "build-snap",
+                size: 5,
+                tookMs: 1,
+                scanned: "whole",
+                covered: undefined,
+              }
             : { outcome: state.takeOutcome, reason: "the platform refused" };
         },
       },
@@ -341,6 +357,97 @@ describe("a launch", () => {
     expect(state.starts[0]?.containerSnapshot).toEqual({ id: "snap-7" });
     expect(state.record?.needsSnapshot).toBe(false);
     expect(state.record?.restoredFrom).toBe("snap-7");
+  });
+
+  describe("what the files it has not changed since it started were shown clean of", () => {
+    const COVERED: ScanCoverage = { at: 1_000, searched: ["digest-a"] };
+    const OWN: ScanCoverage = { at: 2_000, searched: ["digest-b"] };
+
+    it("is the restored snapshot's, which the scan before its next snapshot is given", async () => {
+      const { state, container, launch } = open();
+
+      state.restorable = { id: "snap-7", image: "img-1", covered: COVERED };
+      await container.start(SPEC);
+
+      expect(state.record?.scanned).toEqual(COVERED);
+
+      state.running = true;
+      state.takeCovers = OWN;
+      await launch.snapshot("idle");
+
+      expect(state.takeScanned).toEqual([COVERED]);
+      // Then that snapshot's, for one after it.
+      expect(state.record?.scanned).toEqual(OWN);
+    });
+
+    it("is nothing for a Container started from the image, until its first snapshot", async () => {
+      const { state, container, launch } = open();
+
+      await container.start(SPEC);
+      state.running = true;
+      state.takeCovers = OWN;
+      await launch.afterInstall(true);
+
+      expect(state.takeScanned).toEqual([undefined]);
+      expect(state.record).toMatchObject({ scanned: OWN, needsSnapshot: false });
+
+      await launch.snapshot("idle");
+
+      expect(state.takeScanned).toEqual([undefined, OWN]);
+    });
+
+    it("is nothing for a Container started from the Environment's Build", async () => {
+      const { state, container, launch } = open();
+
+      state.build = build();
+      await container.start(specFor(BUILT_IN));
+
+      expect(state.record?.restoredFrom).toBe("build-1");
+      expect(state.record?.scanned).toBeUndefined();
+
+      state.running = true;
+      await launch.afterInstall(true);
+
+      expect(state.takeScanned).toEqual([undefined]);
+    });
+
+    it("is kept no longer than a snapshot that was not taken leaves it", async () => {
+      const { state, container, launch } = open();
+
+      state.restorable = { id: "snap-7", image: "img-1", covered: COVERED };
+      await container.start(SPEC);
+      state.running = true;
+      state.takeOutcome = "skipped";
+      state.takeCovers = OWN;
+      await launch.snapshot("idle");
+
+      expect(state.record?.scanned).toEqual(COVERED);
+    });
+
+    it("is forgotten when computer restarts the Container from the image", async () => {
+      const { state, container, launch } = open();
+
+      await container.start(SPEC);
+      state.running = true;
+      state.takeCovers = OWN;
+      await launch.afterInstall(true);
+
+      expect(state.record?.scanned).toEqual(OWN);
+
+      // A later restart (a health probe that failed) starts it from the image again.
+      await container.restart(SPEC);
+
+      expect(state.record?.scanned).toBeUndefined();
+
+      // And so does one after a restore that did not come up.
+      const restored = open();
+
+      restored.state.restorable = { id: "snap-7", image: "img-1", covered: COVERED };
+      await restored.container.start(SPEC);
+      await restored.container.restart(SPEC);
+
+      expect(restored.state.record?.scanned).toBeUndefined();
+    });
   });
 
   it("starts from the image without a snapshot, and wants one after the install", async () => {
@@ -760,6 +867,7 @@ describe("a start the platform rejects for the snapshot", () => {
         snapshots: {
           restorable: async () => undefined,
           restored: async () => undefined,
+          coverage: async () => undefined,
           forget: async () => undefined,
           take: async () => "taken",
           capture: async () => ({ outcome: "skipped", reason: "not used" }),

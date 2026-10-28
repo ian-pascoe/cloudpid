@@ -17,14 +17,18 @@
 # with no swap to use, evicts computerd's own pages long before its OOM killer acts, and every command stalls, `echo`
 # included. Its lines go where computerd's do, so an exit report carries them too.
 #
-# The host, the path and the number of lines are those of `@cloudpid/sandbox-image/supervisor`; CLOUDPID_COMPUTERD,
-# CLOUDPID_MEMORY_GUARD, CLOUDPID_MEMORY_NOTES and CLOUDPID_REPORT_* exist for its tests, and the image sets none of
-# them.
+# Before anything else runs, it makes the Container's start marker anew (docs/architecture/container.md → Snapshots): the
+# scan before a snapshot searches only the files whose status changed after it, unless the Workspace DO asks for all.
+#
+# The host, the path and the number of lines, and the marker, are those of `@cloudpid/sandbox-image/supervisor`;
+# CLOUDPID_COMPUTERD, CLOUDPID_MEMORY_GUARD, CLOUDPID_MEMORY_NOTES, CLOUDPID_START_MARKER and CLOUDPID_REPORT_* exist for
+# its tests, and the image sets none of them.
 set -u
 
 computerd=${CLOUDPID_COMPUTERD:-/usr/local/bin/computerd}
 memory_guard=${CLOUDPID_MEMORY_GUARD:-/usr/local/bin/cloudpid-memory-guard}
 memory_notes=${CLOUDPID_MEMORY_NOTES:-/run/cloudpid-memory-guard}
+start_marker=${CLOUDPID_START_MARKER:-/run/cloudpid-started}
 report_host=${CLOUDPID_REPORT_HOST:-cloudpid.internal}
 report_port=${CLOUDPID_REPORT_PORT:-80}
 report_path=/container-exit
@@ -35,6 +39,12 @@ keep_bytes=32768
 base64_min=64
 base64_marker='[base64 dropped]'
 collapse_base64="s#(data:[-A-Za-z0-9.+/;=_]*;base64,)[-A-Za-z0-9+/=_]{${base64_min},}#\\1${base64_marker}#g"
+
+# A new file, whatever a snapshot kept of an older start's: its status changes now, before computerd, the memory guard
+# or a command can write anything. A marker that cannot be made leaves the scan none (it then searches everything), or
+# an older one (it then searches more).
+rm -f -- "$start_marker"
+{ : >"$start_marker"; } 2>/dev/null
 
 scratch=$(mktemp -d /dev/shm/cloudpid-supervise.XXXXXX 2>/dev/null || mktemp -d)
 mkfifo "$scratch/out" "$scratch/keep"

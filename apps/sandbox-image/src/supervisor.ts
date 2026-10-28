@@ -22,3 +22,11 @@ export const EXIT_REPORT_BASE64_MIN = 64;
 
 /** What replaces such a payload in the kept lines. */
 export const EXIT_REPORT_BASE64_MARKER = "[base64 dropped]";
+
+/**
+ * The file the supervisor makes anew at each Container start, before computerd starts, whose status-change time (ctime)
+ * the scan before a snapshot takes as its lower bound (docs/architecture/container.md → Snapshots): a file whose status
+ * did not change after it was restored from the snapshot the Container started from, or came with the image. It is in
+ * `/run`, which the scan does not search.
+ */
+export const CONTAINER_START_MARKER = "/run/cloudpid-started";

@@ -19,7 +19,11 @@
 //   is of the image a launch would run now, has the launch's Container-only paths and is within its lifetime. Such a
 //   launch has computerd's store reset (`RESET_STORE_VARIABLE` in its environment), and asks for it again whenever it
 //   reconnects to that Container, since computer relaunches a running Container whose environment differs. A Build
-//   that does not come up falls back to the image as a snapshot does, and this Workspace does not try it again.
+//   that does not come up falls back to the image as a snapshot does, and this Workspace does not try it again;
+// - what the files a Container has not changed since it started were shown clean of (`scanned`: the restored snapshot's
+//   scan, then each of its own snapshots') is kept with it, so the scan before its next snapshot searches only the files
+//   changed since (docs/architecture/container.md → Snapshots). One started from the image or a Build has none until
+//   its first snapshot, whose scan searches the whole disk.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import type {
   ContainerLaunchSpec,
@@ -38,6 +42,7 @@ import { launchSize } from "./resize.ts";
 import {
   type ContainerSnapshots,
   samePaths,
+  type ScanCoverage,
   SNAPSHOT_MAX_AGE_MS,
   type SnapshotOutcome,
   type SnapshotReason,
@@ -60,6 +65,11 @@ export type LaunchRecord = {
   readonly ignore?: readonly string[] | undefined;
   /** Whether it started from its Environment's Build, with computerd's store reset (`RESET_STORE_VARIABLE`). */
   readonly resetStore?: boolean | undefined;
+  /**
+   * What the files it has not changed since it started were shown clean of: the scan of the snapshot it was restored
+   * from, then of each snapshot taken of it. None for one started from the image or a Build until its first snapshot.
+   */
+  readonly scanned?: ScanCoverage | undefined;
   /** Epoch milliseconds. */
   readonly launchedAt: number;
 };
@@ -91,7 +101,7 @@ export type ContainerLaunchDeps = {
   readonly ignore: (settings: ContainerSettings) => readonly string[] | undefined;
   readonly snapshots: Pick<
     ContainerSnapshots,
-    "restorable" | "restored" | "forget" | "take" | "capture"
+    "restorable" | "restored" | "forget" | "take" | "capture" | "coverage"
   >;
   /** The Environment's Build the Workspace holds, which a launch with no snapshot of its own may start from. */
   readonly builds?: {
@@ -222,10 +232,14 @@ export class ContainerLaunch {
       return;
     }
 
-    if ((await this.snapshot("install")) === "taken") {
-      await this.#remember({ ...record, needsSnapshot: false, installPending: false });
-    } else if (changed && record.installPending !== true) {
-      await this.#remember({ ...record, installPending: true });
+    const outcome = await this.snapshot("install");
+    // As the snapshot left it, with what its scan covered.
+    const current = (await this.#current()) ?? record;
+
+    if (outcome === "taken") {
+      await this.#remember({ ...current, needsSnapshot: false, installPending: false });
+    } else if (changed && current.installPending !== true) {
+      await this.#remember({ ...current, installPending: true });
     }
   }
 
@@ -236,9 +250,24 @@ export class ContainerLaunch {
   async snapshot(reason: SnapshotReason): Promise<SnapshotOutcome> {
     const record = await this.#current();
 
-    return record?.image === undefined
-      ? "skipped"
-      : this.#deps.snapshots.take(reason, record.image, record.ignore);
+    if (record?.image === undefined) return "skipped";
+
+    const outcome = await this.#deps.snapshots.take(
+      reason,
+      record.image,
+      record.ignore,
+      record.scanned,
+    );
+
+    // The files this Container has not changed since it started are now shown clean of what that scan searched for.
+    if (outcome === "taken") {
+      const scanned = await this.#deps.snapshots.coverage();
+      const current = await this.#current();
+
+      if (current !== undefined) await this.#remember({ ...current, scanned });
+    }
+
+    return outcome;
   }
 
   /**
@@ -427,6 +456,8 @@ export class ContainerLaunch {
       image: snapshot?.image ?? build?.image ?? this.#deps.image(),
       ignore,
       resetStore: build !== undefined,
+      // A Build's files were searched for another object's tokens: its first snapshot here searches the whole disk.
+      scanned: snapshot?.covered,
       launchedAt: this.#deps.now(),
     });
 
@@ -474,9 +505,13 @@ export class ContainerLaunch {
       };
     }
 
-    // computer's restart launches from the image with its own environment: no store to reset.
-    if (record !== undefined && (restoring !== undefined || record.resetStore === true)) {
-      const { resetStore: _reset, ...rest } = record;
+    // computer's restart launches from the image with its own environment: no store to reset, and no file its scans
+    // covered.
+    if (
+      record !== undefined &&
+      (restoring !== undefined || record.resetStore === true || record.scanned !== undefined)
+    ) {
+      const { resetStore: _reset, scanned: _scanned, ...rest } = record;
 
       await this.#remember(rest);
     }

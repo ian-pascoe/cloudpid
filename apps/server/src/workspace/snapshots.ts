@@ -14,12 +14,16 @@
 // - The disk is searched for the GitHub token and the Environment's kept Secrets before a snapshot
 //   (`scanContainerDisk`: everything but the pseudo file systems, the Workspace mount and pnpm's stores, for each as it
 //   is and in base64: `scanGroups`), and a snapshot that cannot be shown clean is not taken, nor one of a Workspace
-//   that cannot show which Secrets to search for. The bootstrap keeps the token off disk (git reads it from the
+//   that cannot show which Secrets to search for. A Container restored from a snapshot whose scan searched for all of
+//   them (`ScanCoverage`) has only the files whose status changed since it started searched (`covers`); a Build, and
+//   the first snapshot of a Container started from the image or a Build, have the whole disk searched. The bootstrap keeps the token off disk (git reads it from the
 //   environment), so this is for what a command wrote; a value encoded some other way is not found. The warning for a
 //   refused snapshot names, per file, what it holds: "a GitHub token" or "the Secret `NAME`", never a value.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
+import { CONTAINER_START_MARKER } from "@cloudpid/sandbox-image/supervisor";
 import { base64, PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
+import type { LiveToken } from "../github/app.ts";
 import type { HeldSecrets } from "./environment-secrets.ts";
 
 /**
@@ -56,16 +60,38 @@ export type SnapshotRecord = {
   /** The Container-only paths the Container launched with; none where it had none. Absent from older records. */
   readonly ignore?: readonly string[] | undefined;
   readonly reason: SnapshotReason;
+  /** What its whole disk was shown clean of; absent where that is not known (an older record, or no `fingerprint`). */
+  readonly covered?: ScanCoverage | undefined;
 };
+
+/**
+ * What the scans before a snapshot showed its whole disk clean of, which a Container restored from it needs not search
+ * the files it has not changed for again (`covers`). Holds no value: digests under the Workspace's key only.
+ */
+export type ScanCoverage = {
+  /** When the snapshot was taken, after its scan, by the Workspace DO's clock (epoch milliseconds). */
+  readonly at: number;
+  /** The keyed digests (`fingerprint`) of what was searched for: each GitHub token's forms, each kept Secret's patterns. */
+  readonly searched: ReadonlyArray<string>;
+};
+
+/** Whether the scan searches only the files whose status changed since the Container started, or the whole disk. */
+export type ScanOptions = { readonly sinceStart: boolean };
+
+/**
+ * The files the scan found, and whether it searched only those changed since the Container started (it searches the
+ * whole disk when asked to, or when it finds no marker of the start).
+ */
+export type ScanResult = { readonly hits: ReadonlyArray<ScanHit>; readonly sinceStart: boolean };
 
 export type ContainerSnapshotDeps = {
   /** Off where the Container is not the real thing (`alchemy dev`), which has no snapshots. */
   readonly enabled: boolean;
   /**
    * The GitHub tokens handed to commands that have not expired, to keep off the snapshot (one that has expired is
-   * harmless); none means no token to scan for.
+   * harmless), with when each was minted; none means no token to scan for.
    */
-  readonly tokens: () => ReadonlyArray<string>;
+  readonly tokens: () => ReadonlyArray<LiveToken>;
   /**
    * The Environment's kept Secrets the Workspace holds, to keep off the snapshot too; when it cannot show them, no
    * snapshot is taken. Without it, there are none.
@@ -78,8 +104,16 @@ export type ContainerSnapshotDeps = {
   readonly running: () => boolean;
   /** The platform's `snapshotContainer`. */
   readonly snapshot: (name: string) => Promise<{ readonly id: string; readonly size: number }>;
-  /** The files on the Container's disk whose content holds any of `groups` (`scanGroups`), and which. */
-  readonly scan: (groups: ReadonlyArray<ScanGroup>) => Promise<ReadonlyArray<ScanHit>>;
+  /**
+   * A keyed digest of `text` (the Workspace's vault's HMAC), which says nothing of it: what a snapshot records of what
+   * its scan searched for. Without it, or when it fails, every scan searches the whole disk.
+   */
+  readonly fingerprint?: ((text: string) => Promise<string>) | undefined;
+  /**
+   * The files on the Container's disk whose content holds any of `groups` (`scanGroups`), and which: of those whose
+   * status changed since the Container started only, with `sinceStart`.
+   */
+  readonly scan: (groups: ReadonlyArray<ScanGroup>, options: ScanOptions) => Promise<ScanResult>;
   readonly load: () => Promise<SnapshotRecord | undefined>;
   readonly save: (record: SnapshotRecord) => Promise<void>;
   readonly clear: () => Promise<void>;
@@ -93,13 +127,24 @@ export type ContainerSnapshotDeps = {
 /** `taken`, `skipped` (nothing to snapshot, or one that would hold the token), or `failed` (it could not be taken). */
 export type SnapshotOutcome = "taken" | "skipped" | "failed";
 
-/** A snapshot taken (the platform's handle, its size in bytes, and how long it took), or why it was not. */
+/**
+ * How much of the disk the scan before a snapshot searched: the files changed since the Container started, all of it,
+ * or none (nothing to search for).
+ */
+export type ScanScope = "since-start" | "whole" | "none";
+
+/**
+ * A snapshot taken (the platform's handle, its size in bytes, how long it took, how much its scan searched, and what
+ * the disk is shown clean of), or why it was not.
+ */
 export type SnapshotCapture =
   | {
       readonly outcome: "taken";
       readonly id: string;
       readonly size: number;
       readonly tookMs: number;
+      readonly scanned: ScanScope;
+      readonly covered: ScanCoverage | undefined;
     }
   | { readonly outcome: "skipped" | "failed"; readonly reason: string };
 
@@ -113,16 +158,18 @@ export class ContainerSnapshots {
 
   /**
    * Snapshot the running Container, which runs `image`. Never rejects: a snapshot is an optimisation, and what failed is
-   * reported. A Container on an image other than the deployed one is not snapshotted.
+   * reported. A Container on an image other than the deployed one is not snapshotted. `scanned` is what the files the
+   * Container has not changed since it started were shown clean of (`capture`).
    */
   take(
     reason: SnapshotReason,
     image: string | undefined,
     ignore?: readonly string[],
+    scanned?: ScanCoverage,
   ): Promise<SnapshotOutcome> {
     if (this.#inflight !== undefined) return this.#inflight;
 
-    const inflight = this.#take(reason, image, ignore).finally(() => {
+    const inflight = this.#take(reason, image, ignore, scanned).finally(() => {
       this.#inflight = undefined;
     });
 
@@ -135,9 +182,14 @@ export class ContainerSnapshots {
    * The snapshot to start the next Container from, if there is a live one of the image it would run, taken with the
    * Container-only paths it launches with (`ignore`).
    */
-  async restorable(
-    ignore?: readonly string[],
-  ): Promise<{ readonly id: string; readonly image: string | undefined } | undefined> {
+  async restorable(ignore?: readonly string[]): Promise<
+    | {
+        readonly id: string;
+        readonly image: string | undefined;
+        readonly covered?: ScanCoverage | undefined;
+      }
+    | undefined
+  > {
     if (!this.#deps.enabled) return undefined;
 
     const record = await this.#deps.load();
@@ -156,7 +208,12 @@ export class ContainerSnapshots {
       return undefined;
     }
 
-    return { id: record.id, image: record.image };
+    return { id: record.id, image: record.image, covered: record.covered };
+  }
+
+  /** What the kept snapshot's disk was shown clean of: of the latest one taken, after `take`. */
+  async coverage(): Promise<ScanCoverage | undefined> {
+    return (await this.#deps.load())?.covered;
   }
 
   /** A Container started from the kept snapshot, which begins its lifetime again. */
@@ -174,8 +231,17 @@ export class ContainerSnapshots {
   /**
    * Snapshot the running Container, which runs `image`, after the scan for the token, without keeping it: what an
    * Environment's Build keeps itself. Never rejects: what stopped it is the answer's `reason` (never with the token).
+   *
+   * The scan searches only the files whose status changed since the Container started when `scanned`, what the others
+   * were shown clean of (the snapshot the Container was restored from, or an earlier snapshot of it), covers what it
+   * searches for now (`covers`); the whole disk for a Build, or when there is no `scanned` (a Container started from
+   * the image or a Build, until its first snapshot).
    */
-  async capture(reason: SnapshotReason, image: string | undefined): Promise<SnapshotCapture> {
+  async capture(
+    reason: SnapshotReason,
+    image: string | undefined,
+    scanned?: ScanCoverage,
+  ): Promise<SnapshotCapture> {
     const deps = this.#deps;
 
     if (!deps.enabled) return { outcome: "skipped", reason: "snapshots are off here" };
@@ -198,24 +264,95 @@ export class ContainerSnapshots {
 
         if (!held.ok) return { leaked: true, reason: held.reason } as const;
 
-        const groups = scanGroups(deps.tokens(), held.secrets);
+        const tokens = deps.tokens();
+
+        const groups = scanGroups(
+          tokens.map(({ token }) => token),
+          held.secrets,
+        );
+
+        const searching = await this.#fingerprints(tokens, held.secrets);
+
+        const sinceStart =
+          reason !== "build" &&
+          scanned !== undefined &&
+          searching !== undefined &&
+          covers(scanned, searching);
+
+        let scope: ScanScope = "none";
 
         if (groups.length > 0) {
-          const hits = await deps.scan(groups);
+          const { hits, sinceStart: searchedSinceStart } = await deps.scan(groups, { sinceStart });
 
           if (hits.length > 0) return { leaked: true, reason: leakReason(hits) } as const;
+
+          scope = searchedSinceStart ? "since-start" : "whole";
         }
 
-        return { leaked: false, snapshot: await deps.snapshot(`workspace-${reason}`) } as const;
+        const snapshot = await deps.snapshot(`workspace-${reason}`);
+
+        return { leaked: false, snapshot, scope, searching } as const;
       });
 
       if (taken.leaked) return { outcome: "skipped", reason: taken.reason };
 
-      const { id, size } = taken.snapshot;
+      const { snapshot, scope, searching } = taken;
+      const { id, size } = snapshot;
 
-      return { outcome: "taken", id, size, tookMs: deps.now() - started };
+      // Taken after the scan: a token minted since may have been written meanwhile, and is searched for next time.
+      const covered =
+        searching === undefined
+          ? undefined
+          : {
+              at: deps.now(),
+              searched: [...searching.secrets, ...searching.tokens.map(({ digest }) => digest)],
+            };
+
+      return {
+        outcome: "taken",
+        id,
+        size,
+        tookMs: deps.now() - started,
+        scanned: scope,
+        covered,
+      };
     } catch (cause) {
       return { outcome: "failed", reason: cause instanceof Error ? cause.message : String(cause) };
+    }
+  }
+
+  /**
+   * The keyed digests of what a scan searches for now: each kept Secret's patterns, and each GitHub token's forms with
+   * when it was minted. Undefined without `fingerprint`, or when it fails: the scan then searches the whole disk.
+   */
+  async #fingerprints(
+    tokens: ReadonlyArray<LiveToken>,
+    secrets: ReadonlyArray<KeptSecret>,
+  ): Promise<Searching | undefined> {
+    const { fingerprint } = this.#deps;
+
+    if (fingerprint === undefined) return undefined;
+
+    try {
+      return {
+        secrets: await Promise.all(
+          scanGroups([], secrets).map(({ patterns }) => fingerprint(JSON.stringify(patterns))),
+        ),
+        tokens: await Promise.all(
+          tokens.flatMap(({ token, mintedAt }) =>
+            token === ""
+              ? []
+              : [
+                  fingerprint(JSON.stringify(secretForms(token))).then((digest) => ({
+                    digest,
+                    mintedAt,
+                  })),
+                ],
+          ),
+        ),
+      };
+    } catch {
+      return undefined;
     }
   }
 
@@ -223,9 +360,10 @@ export class ContainerSnapshots {
     reason: SnapshotReason,
     image: string | undefined,
     ignore: readonly string[] | undefined,
+    scanned: ScanCoverage | undefined,
   ): Promise<SnapshotOutcome> {
     const deps = this.#deps;
-    const captured = await this.capture(reason, image);
+    const captured = await this.capture(reason, image, scanned);
 
     if (captured.outcome !== "taken") {
       // Nothing to snapshot (off here, or no Container) is not worth a warning.
@@ -250,6 +388,7 @@ export class ContainerSnapshots {
         image,
         ignore,
         reason,
+        covered: captured.covered,
       });
     } catch (cause) {
       deps.warn(
@@ -260,7 +399,7 @@ export class ContainerSnapshots {
     }
 
     deps.info(
-      `Container snapshot (${reason}) taken: ${Math.round(captured.size / 1e6)} MB in ${captured.tookMs} ms`,
+      `Container snapshot (${reason}) taken: ${Math.round(captured.size / 1e6)} MB in ${captured.tookMs} ms, ${SCOPE_NOTES[captured.scanned]}`,
     );
 
     return "taken";
@@ -283,6 +422,41 @@ export class ContainerSnapshots {
   }
 }
 
+/** How the note of a snapshot taken says how much its scan searched. */
+const SCOPE_NOTES: Readonly<Record<ScanScope, string>> = {
+  "since-start": "the scan searched the files changed since the Container started",
+  whole: "the scan searched the whole disk",
+  none: "with nothing to scan for",
+};
+
+/** What a scan searches for now, as digests (`ScanCoverage`): each kept Secret's, and each token's with its minting. */
+type Searching = {
+  readonly secrets: ReadonlyArray<string>;
+  readonly tokens: ReadonlyArray<{
+    readonly digest: string;
+    readonly mintedAt: number | undefined;
+  }>;
+};
+
+/**
+ * Whether the files a Container has not changed since it started, shown clean of what `scanned` records, need not be
+ * searched for what is searched for now: every kept Secret's patterns were searched for then (one added or changed
+ * since may have been on the disk already, under no name), and so was every GitHub token, but one minted after
+ * `scanned`'s snapshot was taken, which no file of that snapshot can hold. A token of unknown minting must have been
+ * searched for.
+ */
+const covers = (scanned: ScanCoverage, searching: Searching): boolean => {
+  const searched = new Set(scanned.searched);
+
+  return (
+    searching.secrets.every((digest) => searched.has(digest)) &&
+    searching.tokens.every(
+      ({ digest, mintedAt }) =>
+        searched.has(digest) || (mintedAt !== undefined && mintedAt > scanned.at),
+    )
+  );
+};
+
 /**
  * Whether two lists of Container-only paths are the same, in the same order (the last match wins). No list (an older
  * record, or a Container that has none) is the same only as no list.
@@ -304,12 +478,24 @@ const SCAN_COUNT_VARIABLE = "CLOUDPID_SCAN_COUNT";
 /** How many files the scan attributes to the groups that hold them; the warning names five. */
 const ATTRIBUTED_FILES = 20;
 
+/** The variable that asks the scan for the files changed since the Container started only (`1`; no secret). */
+const SCAN_SINCE_START_VARIABLE = "CLOUDPID_SCAN_SINCE_START";
+
 /**
  * Lists the files that hold any of the patterns in the variables named `CLOUDPID_SCAN_SECRET_<group>_<part>` (one
  * pattern per line, a group's patterns split over parts so no variable is near the kernel's limit on one), anywhere on
  * the Container's disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount
  * (`/workspace`, whose files are searched in computerd's store); the directories given as arguments instead, if any
  * (for the tests).
+ *
+ * With `CLOUDPID_SCAN_SINCE_START=1`, only the regular files whose status changed (ctime) after the Container's start
+ * marker (`CONTAINER_START_MARKER`, which the image's supervisor makes anew at each start before computerd starts;
+ * `CLOUDPID_START_MARKER` names another for the tests): any write, `chmod`, rename, link or restore of a file changes
+ * it, and nothing but the clock sets it, unlike the mtime a `touch -d`, `cp -p` or `tar` sets back. `find` lists them
+ * and grep searches them in batches (`xargs`), each reading the patterns from the environment again. A marker that is
+ * missing, ahead of the clock (set back since the start, which would hide the files changed meanwhile), or whose
+ * modification time differs from its status-change time (its times were set since it was made, as nothing that makes
+ * it does) has the whole disk searched instead. The first line of the output says which: `#since-start` or `#whole`.
  *
  * Directories named `.pnpm-store` or `.pnpm` are not searched: pnpm's store (`/root/.pnpm-store`, which the Container's
  * global pnpm configuration names, `PNPM_STORE_DIRECTORY_NAME`, with the global virtual store in it, `v11/links`) and
@@ -324,6 +510,7 @@ const ATTRIBUTED_FILES = 20;
  * file beyond those), a tab, and the path.
  */
 const SCAN_SCRIPT = [
+  `marker=\${CLOUDPID_START_MARKER:-${CONTAINER_START_MARKER}}`,
   'if [ "$#" -eq 0 ]; then',
   "  for d in /*; do",
   '    case "$d" in /proc|/sys|/dev|/run|/workspace) continue ;; esac',
@@ -331,9 +518,24 @@ const SCAN_SCRIPT = [
   '    [ -d "$d" ] && set -- "$@" "$d"',
   "  done",
   "fi",
-  `found=$(for name in "\${!${SCAN_VARIABLE}@}"; do printf '%s\\n' "\${!name}"; done | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@")`,
-  "status=$?",
-  '[ "$status" -gt 1 ] && exit "$status"',
+  `patterns() { for name in "\${!${SCAN_VARIABLE}@}"; do printf '%s\\n' "\${!name}"; done; }`,
+  "since=",
+  `if [ "\${${SCAN_SINCE_START_VARIABLE}:-}" = 1 ] && [ -f "$marker" ] && odd=$(find "$marker" \\( -newerct now -o -newermc "$marker" -o -newercm "$marker" \\)) && [ -z "$odd" ]; then`,
+  "  since=1",
+  "fi",
+  'if [ -n "$since" ]; then',
+  "  echo '#since-start'",
+  '  search() { grep -lF -f <(patterns) -- "$@"; [ "$?" -le 1 ]; }',
+  "  export -f patterns search",
+  `  found=$(set -o pipefail; find "$@" -type d \\( -name ${PNPM_STORE_DIRECTORY_NAME} -o -name .pnpm \\) -prune -o -type f -newercc "$marker" -print0 | xargs -0 -r bash -c 'search "$@"' _)`,
+  '  [ "$?" -ne 0 ] && exit 2',
+  "  status=0",
+  "else",
+  "  echo '#whole'",
+  `  found=$(patterns | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@")`,
+  "  status=$?",
+  '  [ "$status" -gt 1 ] && exit "$status"',
+  "fi",
   "count=0",
   "while IFS= read -r file; do",
   '  [ -z "$file" ] && continue',
@@ -503,15 +705,20 @@ const scanEnvironment = (groups: ReadonlyArray<ScanGroup>) =>
  * The files on the Container's disk whose content holds any of the patterns of `groups` (`scanGroups`), and the labels
  * of the groups that hold each, found by a process of its
  * own in the Container (`ctx.container.exec`), so it needs no connection to computerd, which the idle stop's alarm may
- * not have. Rejects when the search could not be run to the end, or took longer than `timeoutMs` (the process is then
- * killed): a disk that could not be searched is not shown to be clean. No patterns, nothing to search for. Only the
- * patterns are sent to the Container, the labels are matched to the groups here.
+ * not have: with `sinceStart`, of the files whose status changed since the Container started only, unless it has no
+ * marker of its start (`SCAN_SCRIPT`), and the answer says which it searched. Rejects when the search could not be run
+ * to the end, or took longer than `timeoutMs` (the process is then killed): a disk that could not be searched is not
+ * shown to be clean. No patterns, nothing to search for. Only the patterns are sent to the Container, the labels are
+ * matched to the groups here.
  */
 export const scanContainerDisk = async (
   container: ContainerExec,
   groups: ReadonlyArray<ScanGroup>,
-  timeoutMs = 30_000,
-): Promise<ReadonlyArray<ScanHit>> => {
+  {
+    sinceStart = false,
+    timeoutMs = 30_000,
+  }: Partial<ScanOptions> & { readonly timeoutMs?: number } = {},
+): Promise<ScanResult> => {
   // An empty pattern would match every file.
   const searched = groups.flatMap(({ label, patterns }) => {
     const kept = patterns.filter((pattern) => pattern !== "");
@@ -519,12 +726,15 @@ export const scanContainerDisk = async (
     return kept.length > 0 ? [{ label, patterns: kept }] : [];
   });
 
-  if (searched.length === 0) return [];
+  if (searched.length === 0) return { hits: [], sinceStart };
 
   const controller = new AbortController();
+  const env: Record<string, string> = scanEnvironment(searched);
+
+  if (sinceStart) env[SCAN_SINCE_START_VARIABLE] = "1";
 
   const process = await container.exec(["bash", "-c", SCAN_SCRIPT], {
-    env: scanEnvironment(searched),
+    env,
     signal: controller.signal,
   });
 
@@ -545,10 +755,14 @@ export const scanContainerDisk = async (
   // grep: 0 a file matched, 1 none did, 2 or more it could not read something.
   if (exitCode > 1) throw new Error(`the scan for Secrets ended with exit status ${exitCode}`);
 
-  return new TextDecoder()
+  const lines = new TextDecoder()
     .decode(stdout)
     .split("\n")
-    .filter((line) => line !== "")
+    .filter((line) => line !== "");
+
+  // The first line says how much it searched; a path never begins with `#`.
+  const hits = lines
+    .filter((line) => !line.startsWith("#"))
     .map((line) => {
       const tab = line.indexOf("\t");
       const numbers = tab < 0 ? "" : line.slice(0, tab);
@@ -559,4 +773,6 @@ export const scanContainerDisk = async (
           numbers === "" ? [] : numbers.split(",").flatMap((n) => searched[Number(n)]?.label ?? []),
       };
     });
+
+  return { hits, sinceStart: lines.includes("#since-start") };
 };

@@ -1,14 +1,15 @@
 // The Container's disk snapshots (docs/architecture/container.md → Snapshots): when one is taken, what
 // stops it, and when a taken one is offered back. The Container, its storage and the clock are fakes; the disk scan's
 // script runs in a local bash over a temporary directory.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off
+// @effect-diagnostics asyncFunction:off globalDate:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PNPM_STORE_DIRECTORY_NAME, TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
+import type { LiveToken } from "../github/app.ts";
 import type { HeldSecrets } from "./environment-secrets.ts";
 import {
   ContainerSnapshots,
@@ -28,6 +29,10 @@ type Fake = {
   stored: SnapshotRecord | undefined;
   taken: string[];
   scans: ScanGroup[][];
+  /** Whether each scan was asked for the files changed since the Container started only. */
+  sinceStart: boolean[];
+  /** The Container has no marker of its start: a scan asked for the files changed since searches everything. */
+  noMarker: boolean;
   /** The Environment's Secrets the Workspace holds. */
   held: HeldSecrets;
   warnings: string[];
@@ -50,11 +55,31 @@ const hit = (path: string, ...found: string[]): ScanHit => ({ path, found });
 
 const IMAGE = "registry/image@sha256:one";
 
+/** A digest standing in for the Workspace's keyed one: SHA-256, hex. */
+const digest = async (text: string) =>
+  Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+
+/** What a scan of `tokens` and `secrets` records it searched for. */
+const searchedFor = async (tokens: ReadonlyArray<string>, secrets: ReadonlyArray<KeptSecret>) => [
+  ...(await Promise.all(
+    scanGroups([], secrets).map(({ patterns }) => digest(JSON.stringify(patterns))),
+  )),
+  ...(await Promise.all(
+    tokens.map((token) =>
+      digest(JSON.stringify([token, btoa(token), btoa(`x-access-token:${token}`)])),
+    ),
+  )),
+];
+
 const open = (
   overrides: {
     enabled?: boolean;
-    tokens?: () => ReadonlyArray<string>;
+    tokens?: () => ReadonlyArray<LiveToken>;
     timeoutMs?: number;
+    fingerprint?: ((text: string) => Promise<string>) | null;
   } = {},
 ) => {
   const state: Fake = {
@@ -63,6 +88,8 @@ const open = (
     stored: undefined,
     taken: [],
     scans: [],
+    sinceStart: [],
+    noMarker: false,
     held: { ok: true, secrets: [] },
     warnings: [],
     notes: [],
@@ -76,7 +103,8 @@ const open = (
 
   const snapshots = new ContainerSnapshots({
     enabled: overrides.enabled ?? true,
-    tokens: overrides.tokens ?? (() => [SECRET]),
+    tokens: overrides.tokens ?? (() => [{ token: SECRET }]),
+    fingerprint: overrides.fingerprint === null ? undefined : (overrides.fingerprint ?? digest),
     timeoutMs: overrides.timeoutMs ?? 1_000,
     image: () => state.image,
     running: () => state.running,
@@ -90,13 +118,14 @@ const open = (
       return { id: `snap-${state.taken.length}`, size: 1234 };
     },
     secrets: async () => state.held,
-    scan: async (groups) => {
+    scan: async (groups, { sinceStart }) => {
       state.scans.push([...groups]);
+      state.sinceStart.push(sinceStart);
       await state.scanGate;
 
       if (state.scanFails) throw new Error("exec is not available");
 
-      return state.leaks;
+      return { hits: state.leaks, sinceStart: sinceStart && !state.noMarker };
     },
     load: async () => state.stored,
     save: async (record) => {
@@ -122,6 +151,8 @@ describe("ContainerSnapshots.capture", () => {
       id: "snap-1",
       size: 1234,
       tookMs: 0,
+      scanned: "whole",
+      covered: { at: 5_000, searched: await searchedFor([SECRET], []) },
     });
     expect(state.taken).toEqual(["workspace-build"]);
     expect(state.stored).toBeUndefined();
@@ -326,7 +357,11 @@ describe("ContainerSnapshots.take", () => {
       tookMs: 0,
       image: "registry/image@sha256:one",
       reason: "install",
+      covered: { at: 5_000, searched: await searchedFor([SECRET], []) },
     });
+    expect(state.notes).toEqual([
+      "Container snapshot (install) taken: 0 MB in 0 ms, the scan searched the whole disk",
+    ]);
   });
 
   it("replaces the previous snapshot: only the latest is restored", async () => {
@@ -391,11 +426,11 @@ describe("ContainerSnapshots.take", () => {
   });
 
   it("searches for every GitHub token that has not expired as the snapshot is taken", async () => {
-    const live = ["ghs_first"];
+    const live: LiveToken[] = [{ token: "ghs_first" }];
     const { state, snapshots } = open({ tokens: () => live });
 
     await snapshots.take("install", IMAGE);
-    live.push("ghs_second");
+    live.push({ token: "ghs_second" });
     await snapshots.take("idle", IMAGE);
 
     expect(state.scans).toEqual([
@@ -447,6 +482,155 @@ describe("ContainerSnapshots.take", () => {
 
     expect(await Promise.all([first, second])).toEqual(["taken", "taken"]);
     expect(state.taken).toHaveLength(1);
+  });
+});
+
+describe("ContainerSnapshots: the scan of the files changed since the Container started", () => {
+  const API: KeptSecret = {
+    name: "API_KEY",
+    value: "sk-live-0123456789abcdef",
+    scope: "environment",
+    build: false,
+  };
+
+  /** A snapshot taken from the image (its scan searches the whole disk), and what it records its scan covered. */
+  const first = async (snapshots: ContainerSnapshots) => {
+    expect(await snapshots.take("install", IMAGE)).toBe("taken");
+
+    const covered = await snapshots.coverage();
+
+    if (covered === undefined) throw new Error("the snapshot recorded nothing its scan covered");
+
+    return covered;
+  };
+
+  it("searches only those once the files the Container has not changed were shown clean of all it searches for", async () => {
+    const { state, snapshots } = open();
+
+    state.held = { ok: true, secrets: [API] };
+
+    const covered = await first(snapshots);
+
+    expect(await snapshots.take("idle", IMAGE, undefined, covered)).toBe("taken");
+    expect(state.sinceStart).toEqual([false, true]);
+    // It searches for the same, and says how much it searched.
+    expect(state.scans[1]).toEqual(scanGroups([SECRET], [API]));
+    expect(state.notes.at(-1)).toBe(
+      "Container snapshot (idle) taken: 0 MB in 0 ms, the scan searched the files changed since the Container started",
+    );
+  });
+
+  it("searches the whole disk for a Build, and for a Container's first snapshot from the image or a Build", async () => {
+    const { state, snapshots } = open();
+    const covered = await first(snapshots);
+
+    await snapshots.capture("build", IMAGE, covered);
+    await snapshots.take("idle", IMAGE);
+
+    expect(state.sinceStart).toEqual([false, false, false]);
+  });
+
+  it("searches the whole disk once after a kept Secret was added or changed since, which may have been on it already", async () => {
+    const { state, snapshots } = open();
+    const covered = await first(snapshots);
+
+    state.held = { ok: true, secrets: [API] };
+    await snapshots.take("idle", IMAGE, undefined, covered);
+
+    // Then what that scan covered holds the Secret.
+    const after = await snapshots.coverage();
+
+    await snapshots.take("idle", IMAGE, undefined, after);
+
+    state.held = { ok: true, secrets: [{ ...API, value: "sk-live-another-value-0000" }] };
+    await snapshots.take("idle", IMAGE, undefined, await snapshots.coverage());
+
+    expect(state.sinceStart).toEqual([false, false, true, false]);
+  });
+
+  it("needs no search of the whole disk for a kept Secret removed since", async () => {
+    const { state, snapshots } = open();
+
+    state.held = { ok: true, secrets: [API] };
+
+    const covered = await first(snapshots);
+
+    state.held = { ok: true, secrets: [] };
+    await snapshots.take("idle", IMAGE, undefined, covered);
+
+    expect(state.sinceStart).toEqual([false, true]);
+  });
+
+  it("needs no search of the whole disk for a token minted after the snapshot was taken, but for one minted before it that its scan did not search for", async () => {
+    const live: LiveToken[] = [{ token: SECRET, mintedAt: 1_000 }];
+    const { state, snapshots } = open({ tokens: () => live });
+    const covered = await first(snapshots);
+
+    // Minted after it: no file of that snapshot can hold it.
+    live.push({ token: "ghs_after", mintedAt: covered.at + 1 });
+    await snapshots.take("idle", IMAGE, undefined, covered);
+
+    // Minted before it, yet not searched for (a token the list did not have then), or of unknown minting.
+    live.push({ token: "ghs_before", mintedAt: covered.at - 1 });
+    await snapshots.take("idle", IMAGE, undefined, covered);
+    live.pop();
+    live.push({ token: "ghs_unknown" });
+    await snapshots.take("idle", IMAGE, undefined, covered);
+
+    expect(state.sinceStart).toEqual([false, true, false, false]);
+  });
+
+  it("records what it searched for, by digest, never a value, and when the snapshot was taken, after the scan", async () => {
+    const { state, snapshots } = open();
+
+    state.held = { ok: true, secrets: [API] };
+    state.now = 7_000;
+
+    let release: () => void = () => undefined;
+
+    state.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const taking = snapshots.take("install", IMAGE);
+
+    await Promise.resolve();
+    state.now = 8_000;
+    release();
+    await taking;
+
+    expect(state.stored?.covered).toEqual({
+      at: 8_000,
+      searched: await searchedFor([SECRET], [API]),
+    });
+    expect(JSON.stringify(state.stored)).not.toContain(SECRET);
+    expect(JSON.stringify(state.stored)).not.toContain(API.value);
+  });
+
+  it("searches the whole disk, and records nothing it covered, where nothing can be fingerprinted", async () => {
+    const { state, snapshots } = open({ fingerprint: null });
+
+    await snapshots.take("install", IMAGE);
+
+    expect(state.stored?.covered).toBeUndefined();
+
+    const failing = open({ fingerprint: async () => Promise.reject(new Error("no key")) });
+
+    await failing.snapshots.take("idle", IMAGE, undefined, { at: 1, searched: [] });
+
+    expect(failing.state.sinceStart).toEqual([false]);
+    expect(failing.state.stored).toMatchObject({ id: "snap-1", covered: undefined });
+  });
+
+  it("says it searched the whole disk when the Container had no marker of its start", async () => {
+    const { state, snapshots } = open();
+    const covered = await first(snapshots);
+
+    state.noMarker = true;
+    await snapshots.take("idle", IMAGE, undefined, covered);
+
+    expect(state.sinceStart).toEqual([false, true]);
+    expect(state.notes.at(-1)).toContain("the scan searched the whole disk");
   });
 });
 
@@ -533,7 +717,12 @@ describe("ContainerSnapshots.restorable", () => {
 
     await snapshots.take("install", IMAGE);
 
-    expect(await snapshots.restorable()).toEqual({ id: "snap-1", image: IMAGE });
+    // With what its scan searched for, which a Container restored from it needs not search its files for again.
+    expect(await snapshots.restorable()).toEqual({
+      id: "snap-1",
+      image: IMAGE,
+      covered: { at: 5_000, searched: await searchedFor([SECRET], []) },
+    });
   });
 
   it("offers a snapshot only to a launch with the Container-only paths it was taken with", async () => {
@@ -542,7 +731,7 @@ describe("ContainerSnapshots.restorable", () => {
     await snapshots.take("idle", IMAGE, ["**/node_modules", "/data"]);
 
     expect(state.stored?.ignore).toEqual(["**/node_modules", "/data"]);
-    expect(await snapshots.restorable(["**/node_modules", "/data"])).toEqual({
+    expect(await snapshots.restorable(["**/node_modules", "/data"])).toMatchObject({
       id: "snap-1",
       image: IMAGE,
     });
@@ -564,7 +753,10 @@ describe("ContainerSnapshots.restorable", () => {
     // The next snapshot, of a Container launched with the new list, restores as usual.
     await snapshots.take("install", IMAGE, TOOLCHAIN_IGNORE);
 
-    expect(await snapshots.restorable(TOOLCHAIN_IGNORE)).toEqual({ id: "snap-2", image: IMAGE });
+    expect(await snapshots.restorable(TOOLCHAIN_IGNORE)).toMatchObject({
+      id: "snap-2",
+      image: IMAGE,
+    });
   });
 
   it("forgets a snapshot of another image: a deploy that changed it makes the snapshot useless", async () => {
@@ -611,7 +803,7 @@ describe("ContainerSnapshots.restorable", () => {
     await snapshots.restored();
     state.now += 20 * 24 * 60 * 60_000;
 
-    expect(await snapshots.restorable()).toEqual({ id: "snap-1", image: IMAGE });
+    expect(await snapshots.restorable()).toMatchObject({ id: "snap-1", image: IMAGE });
   });
 
   it("forget drops the record, for a restore that did not come up", async () => {
@@ -649,7 +841,7 @@ describe("scanContainerDisk", () => {
       scanGroups([SECRET], []),
     );
 
-    expect(found).toEqual([]);
+    expect(found).toEqual({ hits: [], sinceStart: false });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.cmd.join(" ")).not.toContain(SECRET);
 
@@ -695,7 +887,7 @@ describe("scanContainerDisk", () => {
           },
         },
         scanGroups([SECRET], []),
-        20,
+        { timeoutMs: 20 },
       ),
     ).rejects.toThrow(/did not finish/);
 
@@ -715,7 +907,7 @@ describe("scanContainerDisk", () => {
       scanGroups([SECRET], [kept]),
     );
 
-    expect(found).toEqual([
+    expect(found.hits).toEqual([
       { path: "/root/.netrc", found: [TOKEN_LABEL] },
       { path: "/tmp/x", found: [TOKEN_LABEL, secretLabel("API_KEY")] },
       { path: "/tmp/beyond", found: [] },
@@ -754,8 +946,12 @@ describe("scanContainerDisk", () => {
   });
 
   describe("run by bash over a directory tree", () => {
+    let root = "";
+    /** The Container's start marker, outside the tree searched, as `/run` is outside the disk's. */
+    let marker = "";
+
     // The real script, run here by bash and given a root to search as its first argument, in place of the disk.
-    const scan = (dir: string, patterns: ScanGroup[] = scanGroups([SECRET], [])) =>
+    const run = (dir: string, patterns: ScanGroup[], sinceStart: boolean) =>
       scanContainerDisk(
         {
           exec: async (cmd, options) => {
@@ -763,19 +959,21 @@ describe("scanContainerDisk", () => {
 
             expect(command).toBe("bash");
 
-            const run = spawnSync("bash", [...args, "scan", dir], {
-              env: { ...process.env, ...options?.env },
+            const ran = spawnSync("bash", [...args, "scan", dir], {
+              env: { ...process.env, CLOUDPID_START_MARKER: marker, ...options?.env },
             });
 
-            if (run.error !== undefined) throw run.error;
+            if (ran.error !== undefined) throw ran.error;
 
-            return output(run.stdout.toString(), run.status ?? 2);
+            return output(ran.stdout.toString(), ran.status ?? 2);
           },
         },
         patterns,
+        { sinceStart },
       );
 
-    let root = "";
+    const scan = async (dir: string, patterns: ScanGroup[] = scanGroups([SECRET], [])) =>
+      (await run(dir, patterns, false)).hits;
 
     const paths = (hits: ReadonlyArray<ScanHit>) => hits.map((found) => found.path).sort();
 
@@ -786,10 +984,133 @@ describe("scanContainerDisk", () => {
 
     beforeEach(() => {
       root = mkdtempSync(join(tmpdir(), "scan-"));
+      marker = join(mkdtempSync(join(tmpdir(), "scan-marker-")), "started");
     });
 
     afterEach(() => {
       rmSync(root, { recursive: true, force: true });
+      rmSync(dirname(marker), { recursive: true, force: true });
+    });
+
+    describe("of the files changed since the Container started", () => {
+      /** Long enough for the file system's clock to tell before from after, coarse as Linux's is. */
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+      /** The Container starts: the supervisor makes its marker, after what the snapshot or the image holds. */
+      const start = async () => {
+        await tick();
+        writeFileSync(marker, "");
+        await tick();
+      };
+
+      const since = (patterns: ScanGroup[] = scanGroups([SECRET], [])) => run(root, patterns, true);
+
+      it("skips the files restored from the snapshot, which its own scan searched", async () => {
+        write("root/restored", SECRET);
+        await start();
+        write("root/new", "nothing here");
+
+        expect(await since()).toEqual({ hits: [], sinceStart: true });
+        // The whole disk would have found it.
+        expect(paths(await scan(root))).toEqual([join(root, "root/restored")]);
+      });
+
+      it("finds what a command writes after the start, anywhere on the disk, computerd's store included", async () => {
+        write("var/lib/computerd/state.db", "sync state");
+        write("root/.config/old", "nothing here");
+        await start();
+        write("root/.netrc", `machine github.com password ${SECRET}`);
+        // A file of the Workspace: computerd's store holds it.
+        writeFileSync(join(root, "var/lib/computerd/state.db"), `sync state ${btoa(SECRET)}`, {
+          flag: "a",
+        });
+        write("tmp/deep/down/in/a/cache", `x-access-token:${SECRET}`);
+        write("workspace/repo/node_modules/.cache/build.js", SECRET);
+
+        const found = await since();
+
+        expect(found.sinceStart).toBe(true);
+        expect(paths(found.hits)).toEqual(
+          [
+            "root/.netrc",
+            "tmp/deep/down/in/a/cache",
+            "var/lib/computerd/state.db",
+            "workspace/repo/node_modules/.cache/build.js",
+          ].map((path) => join(root, path)),
+        );
+      });
+
+      it("finds a file written after the start with its modification time set back, as `cp -p` or `tar` does", async () => {
+        await start();
+        write("root/copied", SECRET);
+        utimesSync(join(root, "root/copied"), new Date("2001-01-01"), new Date("2001-01-01"));
+
+        expect(paths((await since()).hits)).toEqual([join(root, "root/copied")]);
+      });
+
+      it("still skips pnpm's stores", async () => {
+        await start();
+        write(`root/${PNPM_STORE_DIRECTORY_NAME}/v11/files/ab/cdef`, SECRET);
+        write("workspace/repo/node_modules/.pnpm/pkg@1.0.0/node_modules/pkg/index.js", SECRET);
+
+        expect((await since()).hits).toEqual([]);
+      });
+
+      it("names what each file holds, as the whole disk's search does", async () => {
+        const API: KeptSecret = {
+          name: "API_KEY",
+          value: "sk-live-0123456789abcdef",
+          scope: "environment",
+          build: false,
+        };
+
+        await start();
+        write("app/.env", `API_KEY=${API.value}\n${SECRET}`);
+
+        expect((await since(scanGroups([SECRET], [API]))).hits).toEqual([
+          { path: join(root, "app/.env"), found: [TOKEN_LABEL, secretLabel("API_KEY")] },
+        ]);
+      });
+
+      it("searches many files, in batches", async () => {
+        await start();
+
+        for (let index = 0; index < 3000; index++) write(`many/${index}`, "nothing here");
+
+        write("many/last", SECRET);
+
+        expect(paths((await since()).hits)).toEqual([join(root, "many/last")]);
+      });
+
+      it("searches the whole disk when the Container has no marker of its start", async () => {
+        write("root/restored", SECRET);
+        await start();
+        rmSync(marker);
+
+        expect(await since()).toEqual({
+          hits: [{ path: join(root, "root/restored"), found: [TOKEN_LABEL] }],
+          sinceStart: false,
+        });
+      });
+
+      it("searches the whole disk when the marker's times were set since it was made", async () => {
+        write("root/restored", SECRET);
+        await start();
+        utimesSync(marker, new Date("2001-01-01"), new Date("2001-01-01"));
+
+        expect(await since()).toEqual({
+          hits: [{ path: join(root, "root/restored"), found: [TOKEN_LABEL] }],
+          sinceStart: false,
+        });
+      });
+
+      it("fails when the tree cannot be walked, which is not the same as finding nothing", async () => {
+        await start();
+
+        await expect(run(join(root, "missing"), scanGroups([SECRET], []), true)).rejects.toThrow(
+          /exit/,
+        );
+      });
     });
 
     it("finds the token and its base64 forms, and nothing in clean files", async () => {
