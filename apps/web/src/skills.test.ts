@@ -3,8 +3,12 @@
 import { type EnvironmentRecord, skillSourceText } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  changeText,
+  directoryBadges,
+  githubSource,
   inheritedSkills,
   installedScopes,
+  installSource,
   installOutcomeLines,
   skillCountText,
   updateOutcomeLines,
@@ -121,5 +125,50 @@ describe("the sections the Installed tab shows", () => {
 
   it("are none for an Environment that is not listed", () => {
     expect(installedScopes(known, "gone")).toEqual([]);
+  });
+});
+
+describe("githubSource", () => {
+  it("splits an owner/repo, and is null for a source that is not one", () => {
+    expect(githubSource("mattpocock/skills")).toEqual({ owner: "mattpocock", repo: "skills" });
+    expect(githubSource("uizze.sh")).toBeNull();
+    expect(githubSource("a/b/c")).toBeNull();
+    expect(githubSource("a/ b")).toBeNull();
+  });
+});
+
+describe("directoryBadges", () => {
+  it("says nothing for a Skill installed nowhere", () => {
+    expect(directoryBadges(undefined)).toEqual([]);
+  });
+
+  it("says every environment, or in how many Environments, and update available", () => {
+    expect(
+      directoryBadges({ everyEnvironment: true, environments: ["work"], updateAvailable: false }),
+    ).toEqual(["Installed · every environment"]);
+    expect(
+      directoryBadges({ everyEnvironment: false, environments: ["a"], updateAvailable: false }),
+    ).toEqual(["Installed · in 1 environment"]);
+    expect(
+      directoryBadges({ everyEnvironment: false, environments: ["a", "b"], updateAvailable: true }),
+    ).toEqual(["Installed · in 2 environments", "update available"]);
+  });
+});
+
+describe("changeText", () => {
+  it("signs the Hot tab's change", () => {
+    expect(changeText(4)).toBe("+4");
+    expect(changeText(-3)).toBe("\u22123");
+  });
+});
+
+describe("installSource", () => {
+  it("is the source itself without a ref, and a tree URL with one, the ref kept as one segment", () => {
+    expect(installSource("o/skills")).toBe("o/skills");
+    expect(installSource("o/skills", "")).toBe("o/skills");
+    expect(installSource("o/skills", "v2")).toBe("https://github.com/o/skills/tree/v2");
+    expect(installSource("o/skills", "feature/x")).toBe(
+      "https://github.com/o/skills/tree/feature%2Fx",
+    );
   });
 });

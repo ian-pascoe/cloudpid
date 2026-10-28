@@ -56,14 +56,17 @@ export const dollars = (amount: number): string => {
   return `$${amount.toFixed(2)}`;
 };
 
-/** "950", "12.3k", "1.2M": a token count, for a header. */
-export const tokenCount = (tokens: number): string => {
-  if (tokens < 1_000) return String(Math.round(tokens));
+/** "950", "12.3k", "1.2M": a count in a few characters, such as a token count in a header or a Skill's installs. */
+export const compactCount = (count: number): string => {
+  if (count < 1_000) return String(Math.round(count));
 
-  if (tokens < 1_000_000) return `${Math.round(tokens / 100) / 10}k`;
+  if (count < 1_000_000) return `${Math.round(count / 100) / 10}k`;
 
-  return `${Math.round(tokens / 100_000) / 10}M`;
+  return `${Math.round(count / 100_000) / 10}M`;
 };
+
+/** "950", "12.3k", "1.2M": a token count, for a header. */
+export const tokenCount = compactCount;
 
 /** How near a Session is to its limit: `none` without one, `over` at or past it, `near` from four fifths. */
 export const spendLevel = (cost: number, limit: number | null): "none" | "ok" | "near" | "over" => {

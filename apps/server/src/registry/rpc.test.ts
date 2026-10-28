@@ -23,6 +23,7 @@ import {
   SessionActionError,
   SessionNotFound,
   SETTINGS_SCOPE,
+  SkillDirectoryError,
   type SkillChangeFiles,
   type SkillFile,
   type SkillInstallation,
@@ -56,6 +57,7 @@ import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
 import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
 import type { RegistryMethods } from "./Registry.ts";
+import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -867,6 +869,24 @@ const fakeRegistries = () => {
       }),
     skillChangeFiles: ({ environment, change }) =>
       Effect.sync(() => skillFiles.get(`${environment}:${change}`) ?? null),
+    installedSkills: () =>
+      Effect.sync(() =>
+        [...skillsKept].flatMap(([scope, kept]) =>
+          kept.flatMap(({ name, source, updateAvailable }) =>
+            source === undefined
+              ? []
+              : [
+                  {
+                    scope,
+                    name,
+                    repo: source.repo,
+                    path: source.path,
+                    updateAvailable: updateAvailable === true,
+                  },
+                ],
+          ),
+        ),
+      ),
     skillFiles: ({ environment, name }) =>
       Effect.sync(() => keptFiles.get(`${environment}:${name}`) ?? null),
     workspaceSkillSet: () => Effect.die("The endpoint hands no Skill set"),
@@ -1362,6 +1382,39 @@ const fakeRegistries = () => {
               ],
             } as const),
       )) satisfies SkillSearcher,
+    /** The Skill directory: its leaderboards (the all-time one has two pages, `hot` fails) and its search. */
+    skillDirectory: {
+      leaderboard: (view, page) =>
+        view === "hot"
+          ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh answered 503" }))
+          : Effect.succeed({
+              total: 3,
+              hasMore: page === 0,
+              skills:
+                page === 0
+                  ? [
+                      {
+                        source: "mattpocock/skills",
+                        skillId: "grill-me",
+                        name: "grill-me",
+                        installs: 1_450_000,
+                      },
+                      {
+                        source: "vercel-labs/skills",
+                        skillId: "find-skills",
+                        name: "find-skills",
+                        installs: 4_088_520,
+                      },
+                    ]
+                  : [{ source: "o/other", skillId: "other", name: "other", installs: 3 }],
+            }),
+      search: (query) =>
+        query === "down"
+          ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh did not answer" }))
+          : Effect.succeed([
+              { source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 },
+            ]),
+    } satisfies SkillDirectory,
     registries,
     /** The Registry's methods, as the Session DO calls them. */
     registry,
@@ -1406,6 +1459,7 @@ const worker =
       lookups: fake.lookups,
       branches: fake.branches,
       skillSearch: fake.skillSearch,
+      skillDirectory: fake.skillDirectory,
       background: fake.background,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
@@ -3091,6 +3145,122 @@ it("searches skills.sh for the page and reports why a search failed", async () =
   ]);
   expect(failed).toBeInstanceOf(EnvironmentError);
   expect(failed.message).toBe("skills.sh did not answer");
+});
+
+it("lists a Skill directory page with where each Skill is installed, matched by source repo and path", async () => {
+  const fake = fakeRegistries();
+  const commit = "c0ffee0000000000000000000000000000000001";
+
+  // Kept for every Environment from a folder of the repo whose name is the row's Skill ID; the name in it is another.
+  fake.skillsKept.set("*", [
+    {
+      name: "Grill Me",
+      description: "Interview me.",
+      savedAt: 1,
+      source: {
+        repo: "mattpocock/skills",
+        path: "skills/productivity/grill-me",
+        ref: null,
+        commit,
+      },
+      updateAvailable: true,
+    },
+    // The same name from another repo: not the row's Skill.
+    {
+      name: "find-skills",
+      description: "Find skills.",
+      savedAt: 1,
+      source: { repo: "someone/else", path: "skills/find-skills", ref: null, commit },
+    },
+  ]);
+
+  fake.skillsKept.set(DEFAULT_ENVIRONMENT, [
+    {
+      name: "find-skills",
+      description: "Find skills.",
+      savedAt: 1,
+      source: { repo: "Vercel-Labs/skills", path: "skills/find-skills", ref: null, commit },
+    },
+  ]);
+
+  const first = await call(fake, (registry) =>
+    registry.listSkillDirectory({ view: "all-time", page: 0 }),
+  );
+
+  const second = await call(fake, (registry) =>
+    registry.listSkillDirectory({ view: "trending", page: 1 }),
+  );
+
+  expect(first).toEqual({
+    total: 3,
+    hasMore: true,
+    skills: [
+      {
+        source: "mattpocock/skills",
+        skillId: "grill-me",
+        name: "grill-me",
+        installs: 1_450_000,
+        installed: { everyEnvironment: true, environments: [], updateAvailable: true },
+      },
+      {
+        source: "vercel-labs/skills",
+        skillId: "find-skills",
+        name: "find-skills",
+        installs: 4_088_520,
+        installed: {
+          everyEnvironment: false,
+          environments: [DEFAULT_ENVIRONMENT],
+          updateAvailable: false,
+        },
+      },
+    ],
+  });
+  expect(second.hasMore).toBe(false);
+  expect(second.skills).toEqual([
+    { source: "o/other", skillId: "other", name: "other", installs: 3 },
+  ]);
+});
+
+it("searches the Skill directory with the same badges, and reports why a list or a search failed", async () => {
+  const fake = fakeRegistries();
+
+  fake.skillsKept.set("work", [
+    {
+      name: "tdd",
+      description: "Test first.",
+      savedAt: 1,
+      source: {
+        repo: "mattpocock/skills",
+        path: "skills/tdd",
+        ref: null,
+        commit: "c0ffee0000000000000000000000000000000001",
+      },
+    },
+  ]);
+
+  const found = await call(fake, (registry) => registry.searchSkillDirectory({ query: "tdd" }));
+
+  const searchFailed = await call(fake, (registry) =>
+    Effect.flip(registry.searchSkillDirectory({ query: "down" })),
+  );
+
+  const listFailed = await call(fake, (registry) =>
+    Effect.flip(registry.listSkillDirectory({ view: "hot", page: 0 })),
+  );
+
+  expect(found).toEqual([
+    {
+      source: "mattpocock/skills",
+      skillId: "tdd",
+      name: "tdd",
+      installs: 900_000,
+      installed: { everyEnvironment: false, environments: ["work"], updateAvailable: false },
+    },
+  ]);
+  expect(searchFailed).toBeInstanceOf(SkillDirectoryError);
+  expect(searchFailed.message).toBe("skills.sh did not answer");
+  expect(listFailed).toBeInstanceOf(SkillDirectoryError);
+  expect(listFailed.message).toBe("skills.sh answered 503");
 });
 
 it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {

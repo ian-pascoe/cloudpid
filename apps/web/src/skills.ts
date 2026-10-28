@@ -9,6 +9,7 @@ import {
   type EnvironmentRecord,
   type EnvironmentSkill,
   type SkillInstall,
+  type SkillInstalledIn,
   type SkillUpdate,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -99,3 +100,52 @@ export const updateOutcomeLines = (skills: SkillUpdate["skills"]): ReadonlyArray
         return `${name}: not updated${message === undefined ? "" : `: ${message}`}`;
     }
   });
+
+/**
+ * The owner and repo of a Skill directory row's `source`, or null when it is not a GitHub `owner/repo` (skills.sh also
+ * lists sources such as a domain): such a row has no repo page and cannot be installed.
+ */
+export const githubSource = (
+  source: string,
+): { readonly owner: string; readonly repo: string } | null => {
+  const found = /^([^/\s]+)\/([^/\s]+)$/.exec(source);
+  const [, owner, repo] = found ?? [];
+
+  return owner === undefined || repo === undefined ? null : { owner, repo };
+};
+
+/**
+ * The badges a Skill directory row shows of where its Skill is installed here, in order: for every Environment, or in N
+ * Environments that keep their own; and update available. None for a Skill installed nowhere.
+ */
+export const directoryBadges = (installed: SkillInstalledIn | undefined): ReadonlyArray<string> => {
+  if (installed === undefined) return [];
+
+  const { everyEnvironment, environments, updateAvailable } = installed;
+  const where = [];
+
+  if (everyEnvironment) where.push("Installed · every environment");
+  else if (environments.length > 0) {
+    where.push(
+      `Installed · in ${environments.length} ${environments.length === 1 ? "environment" : "environments"}`,
+    );
+  }
+
+  if (updateAvailable) where.push("update available");
+
+  return where;
+};
+
+/** The Hot tab's change figure: "+4", or "−3" for a fall. */
+export const changeText = (change: number): string =>
+  change < 0 ? `\u2212${-change}` : `+${change}`;
+
+/**
+ * The source an install takes for `source` (`owner/repo`) at `ref` (a branch, tag or commit): a GitHub tree URL, which is
+ * how an install names a ref, with the ref encoded so a branch such as `feature/x` stays one segment. Without a ref, the
+ * source as it is, which installs from the repo's default branch.
+ */
+export const installSource = (source: string, ref?: string): string =>
+  ref === undefined || ref === ""
+    ? source
+    : `https://github.com/${source}/tree/${encodeURIComponent(ref)}`;

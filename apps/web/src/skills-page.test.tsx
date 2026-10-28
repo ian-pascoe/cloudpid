@@ -3,7 +3,14 @@
 // The Skills page and the Environments page's Skills line, rendered with `react-dom/server` over the fake Registry: the
 // queries a page reads are settled first, so the markup shows what they answered.
 
-import type { AgentChange, EnvironmentRecord, EnvironmentSkill } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  type DirectorySkill,
+  type EnvironmentRecord,
+  type EnvironmentSkill,
+  SkillDirectoryError,
+  type SkillDirectoryView,
+} from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -19,8 +26,12 @@ import { searchAtom } from "./router.ts";
 import { sessionsAtom } from "./sessions.ts";
 import { SkillsPage } from "./skills-page.tsx";
 import {
+  anySkillInstalledAtom,
   environmentSkillsAtom,
   keptSkillFilesAtom,
+  skillDirectoryPageAtom,
+  skillDirectoryPageKey,
+  skillDirectorySearchAtom,
   skillFilesDialogAtom,
   skillKey,
 } from "./skills-state.ts";
@@ -79,6 +90,50 @@ const change = (id: number, field: string, scope = "work"): AgentChange => ({
 
 const CHANGES = new Map([["work", [change(2, "skills.notes"), change(1, "variables.API_URL")]]]);
 
+/** The Skill directory's rows, as the Registry answers them. */
+const DIRECTORY: Record<SkillDirectoryView, ReadonlyArray<DirectorySkill>> = {
+  "all-time": [
+    {
+      source: "vercel-labs/skills",
+      skillId: "find-skills",
+      name: "find-skills",
+      installs: 4_088_520,
+    },
+    {
+      source: "mattpocock/skills",
+      skillId: "grill-me",
+      name: "grill-me",
+      installs: 1_451_450,
+      installed: { everyEnvironment: true, environments: [], updateAvailable: true },
+    },
+    {
+      source: "mattpocock/skills",
+      skillId: "tdd",
+      name: "tdd",
+      installs: 950,
+      installed: {
+        everyEnvironment: false,
+        environments: ["work", "default"],
+        updateAvailable: false,
+      },
+    },
+    { source: "uizze.sh", skillId: "ui-taste", name: "ui-taste", installs: 21_547 },
+  ],
+  trending: [
+    { source: "designed-by-ai/skills", skillId: "design", name: "design", installs: 22_670 },
+  ],
+  hot: [
+    {
+      source: "okx/onchainos-skills",
+      skillId: "okx-guide",
+      name: "okx-guide",
+      installs: 5,
+      installsYesterday: 1,
+      change: 4,
+    },
+  ],
+};
+
 const HANDLERS: Partial<RegistryHandlers> = {
   listSessions: () => Effect.succeed([]),
   listEnvironments: () => Effect.succeed(ENVIRONMENTS),
@@ -93,6 +148,18 @@ const HANDLERS: Partial<RegistryHandlers> = {
   listEnvironmentSecrets: () => Effect.succeed([]),
   listWorkspaces: () => Effect.succeed([]),
   listBuilds: () => Effect.succeed([]),
+  listSkillDirectory: ({ view, page }) =>
+    Effect.succeed(
+      page === 0
+        ? { total: 201, hasMore: true, skills: DIRECTORY[view] }
+        : { total: 201, hasMore: false, skills: [] },
+    ),
+  searchSkillDirectory: ({ query }) =>
+    query === "down"
+      ? Effect.fail(
+          SkillDirectoryError.make({ message: "skills.sh could not be reached: offline" }),
+        )
+      : Effect.succeed(DIRECTORY["all-time"].filter((skill) => skill.name.includes(query))),
 };
 
 /** Settle each of `atoms` in `registry`, keeping it mounted so the render reads its answer. */
@@ -136,6 +203,8 @@ const render = (
     registry.set(searchAtom, search);
     before?.(registry);
     yield* settle(registry, [
+      // The Skills page chooses its default tab from every scope's Skills; the Environments page has no tab.
+      ...(page.type === SkillsPage ? [anySkillInstalledAtom] : []),
       environmentsAtom,
       sessionsAtom,
       ...loaded.map((scope) => environmentSkillsAtom(scope)),
@@ -196,13 +265,206 @@ describe("the Skills page's tabs", () => {
     }),
   );
 
-  it.effect("say the Skill directory's lists are coming soon", () =>
+  it.effect("open on All time when no Skill is installed, and on Installed when any is", () =>
     Effect.gen(function* () {
-      const markup = yield* renderSkills("?tab=trending");
+      const nothing = yield* render(<SkillsPage />, {
+        more: [skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0))],
+        handlers: { listEnvironmentSkills: () => Effect.succeed([]) },
+      });
 
-      expect(links(markup).find(({ current }) => current)?.text).toBe("Trending (24h)");
-      expect(markup).toContain("The Trending (24h) list is coming soon.");
-      expect(section(markup, "For every environment")).toBeUndefined();
+      expect(links(nothing).find(({ current }) => current)?.text).toBe("All time");
+      expect(nothing).toContain("find-skills");
+
+      const some = yield* renderSkills("");
+
+      expect(links(some).find(({ current }) => current)?.text).toBe("Installed");
+      expect(some).not.toContain("find-skills");
+    }),
+  );
+});
+
+/** The directory tab at `search`, once its first page (and any `more`) has loaded. */
+const renderDirectory = (
+  search: string,
+  view: SkillDirectoryView,
+  options: Parameters<typeof render>[1] = {},
+) =>
+  render(<SkillsPage />, {
+    ...options,
+    search,
+    more: [skillDirectoryPageAtom(skillDirectoryPageKey(view, 0)), ...(options.more ?? [])],
+  });
+
+/** The row of the Skill named `name` in `markup`: from its `<li>` to the next row's. */
+const rowOf = (markup: string, name: string): string => {
+  const row = '<li class="flex items-center';
+  const start = markup.lastIndexOf(row, markup.indexOf(`>${name}</`));
+  const next = markup.indexOf(row, start + 1);
+
+  return markup.slice(start, next === -1 ? markup.indexOf("</li></ul>", start) + 5 : next);
+};
+
+describe("the Skill directory's tabs", () => {
+  it.effect("list each Skill with its rank, name, source and compact installs", () =>
+    Effect.gen(function* () {
+      const markup = yield* renderDirectory("?tab=all-time", "all-time");
+      const grill = rowOf(markup, "grill-me");
+
+      expect(links(markup).find(({ current }) => current)?.text).toBe("All time");
+      // Ranked in the order skills.sh answers.
+      expect(markup.indexOf("find-skills")).toBeLessThan(markup.indexOf("grill-me"));
+      expect(markup).toMatch(/>1<\/span>[\s\S]*find-skills[\s\S]*>2<\/span>[\s\S]*grill-me/);
+      expect(markup).toContain(">4.1M<");
+      expect(markup).toContain(">1.5M<");
+      expect(markup).toContain(">950<");
+      expect(links(grill)).toEqual([
+        { href: "/skills/mattpocock/skills/grill-me", text: "grill-me", current: false },
+        { href: "/skills/mattpocock/skills", text: "mattpocock/skills", current: false },
+      ]);
+      expect(grill).toContain('aria-label="Install grill-me from mattpocock/skills"');
+      // The Hot tab's change is not on this list.
+      expect(markup).not.toContain("Change");
+    }),
+  );
+
+  it.effect(
+    "show where a Skill is installed: every environment, N environments, update available",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* renderDirectory("?tab=all-time", "all-time");
+
+        expect(rowOf(markup, "find-skills")).not.toContain("Installed");
+        expect(rowOf(markup, "grill-me")).toContain("Installed · every environment");
+        expect(rowOf(markup, "grill-me")).toContain("update available");
+        expect(rowOf(markup, "tdd")).toContain("Installed · in 2 environments");
+        expect(rowOf(markup, "tdd")).not.toContain("update available");
+      }),
+  );
+
+  it.effect("show the Hot tab's change, and the Trending tab its own list", () =>
+    Effect.gen(function* () {
+      const hot = yield* renderDirectory("?tab=hot", "hot");
+      const trending = yield* renderDirectory("?tab=trending", "trending");
+
+      expect(links(hot).find(({ current }) => current)?.text).toBe("Hot");
+      expect(hot).toContain("Change");
+      expect(rowOf(hot, "okx-guide")).toContain(">+4<");
+      expect(trending).toContain("design");
+      expect(trending).not.toContain("okx-guide");
+    }),
+  );
+
+  it.effect("offer Load more while the page says more follow, and credit skills.sh", () =>
+    Effect.gen(function* () {
+      const markup = yield* renderDirectory("?tab=all-time", "all-time");
+
+      expect(markup).toContain("Load more");
+      expect(links(markup)).toContainEqual({
+        href: "https://skills.sh",
+        text: "Data from skills.sh",
+        current: false,
+      });
+      expect(markup).not.toContain("Vercel");
+    }),
+  );
+
+  it.effect("show a source that is not a GitHub repo as text with Install disabled", () =>
+    Effect.gen(function* () {
+      const markup = yield* renderDirectory("?tab=all-time", "all-time");
+      const row = rowOf(markup, "ui-taste");
+
+      expect(row).toContain("uizze.sh");
+      expect(links(row)).toEqual([]);
+      expect(row).toMatch(/<button[^>]*disabled/);
+    }),
+  );
+
+  it.effect("say plainly when skills.sh cannot be reached, and Installed still works", () =>
+    Effect.gen(function* () {
+      const down: Partial<RegistryHandlers> = {
+        listSkillDirectory: () =>
+          Effect.fail(SkillDirectoryError.make({ message: "skills.sh answered 503" })),
+      };
+
+      const hot = yield* renderDirectory("?tab=hot", "hot", { handlers: down });
+      const installed = yield* renderSkills("?tab=installed");
+
+      expect(hot).toContain("skills.sh answered 503");
+      expect(hot).toContain("Try again");
+      expect(hot).toContain("Skills you have installed are not affected.");
+      expect(hot).not.toContain("okx-guide");
+      expect(links(hot).map(({ text }) => text)).toContain("Installed");
+      expect(installed).toContain("grill-me");
+      expect(installed).toContain('aria-label="Update tdd"');
+    }),
+  );
+});
+
+describe("the search", () => {
+  it.effect("replaces the tab's list with skills.sh's results, without ranks", () =>
+    Effect.gen(function* () {
+      const markup = yield* render(<SkillsPage />, {
+        search: "?tab=hot&q=grill",
+        more: [skillDirectorySearchAtom("grill")],
+      });
+
+      expect(markup).toContain('value="grill"');
+      expect(markup).toContain('aria-label="Results for grill"');
+      expect(markup).toContain("grill-me");
+      expect(markup).not.toContain("okx-guide");
+      expect(markup).not.toContain("find-skills");
+      // It is a list of results, not a ranking.
+      expect(markup).not.toMatch(/>1<\/span>/);
+      expect(rowOf(markup, "grill-me")).toContain("Installed · every environment");
+      // The tab is still the one the query names.
+      expect(links(markup).find(({ current }) => current)?.text).toBe("Hot");
+    }),
+  );
+
+  it.effect("replaces the Installed tab too, and clearing it brings the list back", () =>
+    Effect.gen(function* () {
+      const searching = yield* render(<SkillsPage />, {
+        search: "?tab=installed&q=tdd",
+        more: [skillDirectorySearchAtom("tdd")],
+      });
+
+      const cleared = yield* renderSkills("?tab=installed");
+
+      expect(searching).toContain('aria-label="Results for tdd"');
+      expect(searching).not.toContain("Add skills from GitHub");
+      expect(cleared).toContain("Add skills from GitHub");
+    }),
+  );
+
+  it.effect("says what a search that finds nothing, is too short, or fails comes to", () =>
+    Effect.gen(function* () {
+      const nothing = yield* render(<SkillsPage />, {
+        search: "?tab=all-time&q=zzz",
+        more: [skillDirectorySearchAtom("zzz")],
+      });
+
+      const short = yield* renderSkills("?tab=all-time&q=g");
+
+      const down = yield* render(<SkillsPage />, {
+        search: "?tab=all-time&q=down",
+        more: [skillDirectorySearchAtom("down")],
+      });
+
+      expect(nothing).toContain("Nothing found for “zzz”.");
+      expect(short).toContain("Type at least 2 characters to search skills.sh.");
+      expect(down).toContain("skills.sh could not be reached: offline");
+      expect(down).toContain("Try again");
+    }),
+  );
+
+  it.effect("keeps the search in the bar above the tabs", () =>
+    Effect.gen(function* () {
+      const markup = yield* renderSkills("?tab=installed&q=tdd");
+
+      expect(markup.indexOf('role="search"')).toBeLessThan(
+        markup.indexOf('aria-label="Skills lists"'),
+      );
+      expect(markup).toContain('placeholder="Search skills on skills.sh"');
     }),
   );
 });

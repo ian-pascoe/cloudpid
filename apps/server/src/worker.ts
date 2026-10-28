@@ -18,6 +18,7 @@ import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { buildUpkeep } from "./registry/builds.ts";
 import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
+import { skillDirectoryOver } from "./registry/skill-directory.ts";
 import { searchSkillsSh } from "./registry/skill-search.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import {
@@ -234,6 +235,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
             lookups,
             branches,
             skillSearch: searchSkillsSh,
+            // The Worker's own cache: a Durable Object has none.
+            skillDirectory: skillDirectoryOver({ cache: caches.default }),
             background: (effect) => execution.waitUntil(effect),
           });
 

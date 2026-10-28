@@ -2,20 +2,57 @@
 // each Environment keeps and those kept for every Environment, what the owner does to them on the Installed tab
 // (install from GitHub or a skills.sh search, update, remove), the files of a Skill's Agent change and of a Skill with no
 // Skill source, and the state of the tab's forms and dialogs. Each family is keyed by scope: an Environment's id, or
-// `EVERY_ENVIRONMENT` for the Skills kept for every Environment.
+// `EVERY_ENVIRONMENT` for the Skills kept for every Environment. The Skill directory's lists and search, and the install
+// target picker the rows (and, later, a repo's and a Skill's page) open, are here too.
 
+import type { SkillDirectoryView } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import { EVERY_ENVIRONMENT } from "./environments.ts";
 import { changing, RegistryClient } from "./registry.ts";
 import { skillsParamsAtom, type SkillsTab } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { visibleTickAtom } from "./sessions.ts";
+import { installSource } from "./skills.ts";
 
-/** The tab the Skills page shows: the one `?tab=` names, else Installed. */
-export const skillsTabAtom = Atom.map(
-  skillsParamsAtom,
-  (params): SkillsTab => params.tab ?? "installed",
+/**
+ * Whether any Environment, or every Environment, keeps a Skill: asked once while the Skills page is open, never again,
+ * so that an install made from the page does not change which tab is the default under the owner. A failure is an answer
+ * too: the Installed tab is where the page says what went wrong.
+ */
+export const anySkillInstalledAtom = appRuntime.atom(
+  RegistryClient.use((registry) =>
+    Effect.gen(function* () {
+      const environments = yield* registry("listEnvironments", undefined);
+
+      const kept = yield* Effect.forEach(
+        [EVERY_ENVIRONMENT, ...Arr.map(environments, ({ id }) => id)],
+        (environment) => registry("listEnvironmentSkills", { environment }),
+        { concurrency: "unbounded" },
+      );
+
+      return Arr.some(kept, (skills) => skills.length > 0);
+    }),
+  ),
 );
+
+/**
+ * The tab the Skills page shows: the one `?tab=` names, else Installed when any Skill is installed and All time when
+ * none is. Null while that is being asked (nothing is current yet), so that the page does not flash the wrong tab.
+ */
+export const skillsTabAtom = Atom.readable((get): SkillsTab | null => {
+  const named = get(skillsParamsAtom).tab;
+
+  if (named !== undefined) return named;
+
+  const any = get(anySkillInstalledAtom);
+
+  if (AsyncResult.isSuccess(any)) return any.value ? "installed" : "all-time";
+
+  return AsyncResult.isFailure(any) ? "installed" : null;
+});
 
 /**
  * The Skills Environment `id` keeps (ADR-0026), by name, asked again every few seconds while the page is visible: a
@@ -168,3 +205,71 @@ export const keptSkillFilesAtom = Atom.family(({ environment, name }: SkillKey) 
 
 /** The Skill of Environment `id` whose files viewer is open, by name: null when none is. */
 export const skillFilesDialogAtom = Atom.family((_id: string) => Atom.make<string | null>(null));
+
+/** A page of a Skill directory list, as `skillDirectoryPageAtom` is keyed. */
+export interface SkillDirectoryPageKey {
+  readonly view: SkillDirectoryView;
+  readonly page: number;
+}
+
+/** The key of page `page` (from 0) of list `view`, so equal keys are equal values, as a family compares them. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain constructor of a key, called from React.
+export const skillDirectoryPageKey = (
+  view: SkillDirectoryView,
+  page: number,
+): SkillDirectoryPageKey => ({ view, page });
+
+/**
+ * One page (200 rows) of a Skill directory list, each row saying where its Skill is installed. The main Worker keeps what
+ * skills.sh answered about an hour, so asking again after an install or an update costs nothing there: the page does,
+ * to show the new badge.
+ */
+export const skillDirectoryPageAtom = Atom.family(({ view, page }: SkillDirectoryPageKey) =>
+  RegistryClient.query("listSkillDirectory", { view, page }, { reactivityKeys: ["skill-badges"] }),
+);
+
+/** How many pages of list `view` the page shows: one, and one more for each Load more. */
+export const skillDirectoryPagesAtom = Atom.family((_view: SkillDirectoryView) => Atom.make(1));
+
+/** What skills.sh finds for `query` (at most 200, fuzzy), each result saying where its Skill is installed. */
+export const skillDirectorySearchAtom = Atom.family((query: string) =>
+  RegistryClient.query("searchSkillDirectory", { query }, { reactivityKeys: ["skill-badges"] }),
+);
+
+/** The Skills an install is being picked a target for: their source, and the IDs in it to install (never the whole repo). */
+export interface SkillsToInstall {
+  /** `owner/repo`, or another source an install takes. */
+  readonly source: string;
+  /** The Skills of the source to install, by ID; only these are installed, whatever else the source holds. */
+  readonly skills: ReadonlyArray<string>;
+  /** The branch, tag or commit to install at (a repo's or a Skill's page `?ref=`); absent: the repo's default branch. */
+  readonly ref?: string | undefined;
+}
+
+/**
+ * What the install target picker (`InstallSkillsDialog`) is open for, or null when it is closed. A page that offers
+ * Install sets it: a row of a list, a repo's selected Skills, a Skill's page.
+ */
+export const skillsToInstallAtom = Atom.make<SkillsToInstall | null>(null);
+
+/** An install the target picker makes: `skills` of `source`, into Environment `target` or, for `EVERY_ENVIRONMENT`, every Environment. */
+export interface SkillInstallToTarget extends SkillsToInstall {
+  readonly target: string;
+}
+
+/**
+ * Install the picked Skills of a source into `target`, on the owner's word (no Approval, and no Agent change), through the
+ * same RPC as the Installed tab's form, at `ref` when one is named. It names the Skills, so a source that holds several
+ * installs only those. The target's Skills and every query that reads the `skill-badges` key (the Skill directory's rows,
+ * and a repo's or a Skill's page, which put their badge queries on that key) ask again, so the badges update.
+ */
+export const installToTargetAtom = appRuntime.fn(
+  ({ target, source, skills, ref }: SkillInstallToTarget) =>
+    RegistryClient.use((registry) =>
+      registry("installEnvironmentSkills", {
+        environment: target,
+        source: installSource(source, ref),
+        skills,
+      }),
+    ).pipe(changing([`environment-skills:${target}`, "skill-badges"])),
+);

@@ -140,7 +140,7 @@ const blobReader = (reader: RepoReader, repo: SkillRepo) => {
 const CONCURRENCY = 6;
 
 /** How `skills` names a Skill: lower case, words joined by hyphens. */
-const slug = (name: string): string =>
+export const slug = (name: string): string =>
   name
     .toLowerCase()
     .replace(/[\s_]+/g, "-")

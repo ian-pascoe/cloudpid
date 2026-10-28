@@ -252,6 +252,72 @@ export const SkillSearchResult = Schema.Struct({
 
 export type SkillSearchResult = typeof SkillSearchResult.Type;
 
+/** The Skill directory's lists (GLOSSARY.md → Skill directory), as skills.sh names them in its leaderboard API. */
+export const SkillDirectoryView = Schema.Literals(["all-time", "trending", "hot"]);
+
+export type SkillDirectoryView = typeof SkillDirectoryView.Type;
+
+/** The page number of a leaderboard: from 0, 200 rows each (`SKILL_DIRECTORY_PAGE_SIZE`). */
+export const SkillDirectoryPageNumber = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: 1_000 }),
+);
+
+/** How many rows skills.sh answers for a leaderboard page, and the most a search finds. */
+export const SKILL_DIRECTORY_PAGE_SIZE = 200;
+
+/** The skills.sh failure the Skills page shows plainly: it could not be reached or answered otherwise. */
+export class SkillDirectoryError extends Schema.TaggedError<
+  SkillDirectoryError,
+  { readonly brand: unique symbol }
+>()("SkillDirectoryError", {
+  message: Schema.String,
+}) {}
+
+/**
+ * Where a Skill of the Skill directory is installed, as the Registry works it out from the Skills it keeps, matched by
+ * Skill source repo and path (not by name alone): for every Environment, or as an Environment's own Skill.
+ */
+export const SkillInstalledIn = Schema.Struct({
+  /** The Skills kept for every Environment hold it. */
+  everyEnvironment: Schema.Boolean,
+  /** The ids of the Environments that keep it as their own. */
+  environments: Schema.Array(Schema.String),
+  /** An installed copy is marked update available (GLOSSARY.md → Skill source). */
+  updateAvailable: Schema.Boolean,
+});
+
+export type SkillInstalledIn = typeof SkillInstalledIn.Type;
+
+/** A Skill the Skill directory lists: its source repo and ID in it, its installs, and where it is installed here. */
+export const DirectorySkill = Schema.Struct({
+  /** `owner/repo`: what an install takes as its source. */
+  source: Schema.String,
+  /** Its ID in the source: what an install names to take only this Skill. */
+  skillId: Schema.String,
+  name: Schema.String,
+  /**
+   * Its installs as skills.sh counts them for the list it is in: all time (All time), the last 24 hours (Trending), or today
+   * (Hot, with `installsYesterday` and `change`); a search answers all time.
+   */
+  installs: Schema.Finite,
+  /** Hot only: its installs yesterday, and the change from the day before. */
+  installsYesterday: Schema.optionalKey(Schema.Finite),
+  change: Schema.optionalKey(Schema.Finite),
+  /** Where it is installed here; absent when it is nowhere. */
+  installed: Schema.optionalKey(SkillInstalledIn),
+});
+
+export type DirectorySkill = typeof DirectorySkill.Type;
+
+/** One page of a leaderboard: its rows in rank order, how many rows the list has, and whether a later page has more. */
+export const SkillDirectoryPage = Schema.Struct({
+  skills: Schema.Array(DirectorySkill),
+  total: Schema.Finite,
+  hasMore: Schema.Boolean,
+});
+
+export type SkillDirectoryPage = typeof SkillDirectoryPage.Type;
+
 /** How the owner's update of one Skill went. */
 export const SkillUpdated = Schema.Struct({
   name: Schema.String,

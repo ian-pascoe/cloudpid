@@ -41,6 +41,8 @@ import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
 import type { DraftBranches } from "./draft-branches.ts";
+import { withInstalled } from "./skill-badges.ts";
+import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
 import { removals } from "./removal.ts";
@@ -108,6 +110,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly branches: DraftBranches;
   /** The Skills page's search of skills.sh for Skills to install. */
   readonly skillSearch: SkillSearcher;
+  /** The Skills page's lists and search of the Skill directory (skills.sh), the lists kept about an hour. */
+  readonly skillDirectory: SkillDirectory;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
@@ -299,6 +303,7 @@ export const serveRegistryRpc = <R = never>(
     lookups,
     branches,
     skillSearch,
+    skillDirectory,
     background,
   }: RegistryRpcObjects<R>,
 ) =>
@@ -937,6 +942,22 @@ export const serveRegistryRpc = <R = never>(
           const found = yield* skillSearch(query);
 
           return found.ok ? found.results : yield* failed(found.message);
+        }),
+      // The rows are what skills.sh answered (kept about an hour); where each Skill is installed is worked out for every
+      // request from the Skills the Registry keeps now, so an install shows at once.
+      listSkillDirectory: ({ view, page }) =>
+        Effect.gen(function* () {
+          const rows = yield* skillDirectory.leaderboard(view, page);
+          const installed = yield* registry.installedSkills();
+
+          return { ...rows, skills: withInstalled(rows.skills, installed) };
+        }),
+      searchSkillDirectory: ({ query }) =>
+        Effect.gen(function* () {
+          const found = yield* skillDirectory.search(query);
+          const installed = yield* registry.installedSkills();
+
+          return withInstalled(found, installed);
         }),
       listBuilds: () =>
         registry.listBuilds().pipe(
