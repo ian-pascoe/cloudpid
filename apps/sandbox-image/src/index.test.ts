@@ -65,8 +65,8 @@ const installed = (): string[] => {
   return install.split(/\s+/).filter((word) => /^[a-z0-9][a-z0-9.+-]*$/.test(word));
 };
 
-it("runs Ubuntu 24.04 LTS", () => {
-  expect(dockerfile).toMatch(/^FROM --platform=linux\/amd64 ubuntu:24\.04@sha256:[0-9a-f]{64}$/m);
+it("runs Ubuntu 26.04 LTS", () => {
+  expect(dockerfile).toMatch(/^FROM --platform=linux\/amd64 ubuntu:26\.04@sha256:[0-9a-f]{64}$/m);
   expect(dockerfile).not.toMatch(/^FROM .*debian/m);
 });
 
@@ -86,7 +86,6 @@ it("carries the everyday command-line tools agents and scripts expect (#169)", (
   expect(installed()).toEqual(
     expect.arrayContaining([
       "fuse3",
-      "libfuse2t64",
       "ca-certificates",
       "curl",
       "wget",
