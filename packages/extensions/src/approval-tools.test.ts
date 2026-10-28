@@ -581,7 +581,7 @@ describe("settings_subagent_workspaces_set", () => {
     expect(asked[0]).toMatchObject({
       tool: "settings_subagent_workspaces_set",
       change: "Subagent Workspace limit",
-      before: "3 Subagent Workspaces per Session (the default)",
+      before: "1 Subagent Workspace per Session (the default)",
       after: "5 Subagent Workspaces per Session",
       expected: null,
     });
@@ -606,7 +606,7 @@ describe("settings_subagent_workspaces_set", () => {
   it("asks nothing when the limit already has the value", async () => {
     const { call, asked } = await setUp();
 
-    const { text } = await call("settings_subagent_workspaces_set", { limit: 3, reason: "Same" });
+    const { text } = await call("settings_subagent_workspaces_set", { limit: 1, reason: "Same" });
 
     expect(text).toContain("already");
     expect(asked).toEqual([]);
