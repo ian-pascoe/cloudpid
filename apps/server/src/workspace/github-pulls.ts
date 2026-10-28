@@ -18,6 +18,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { GitHubTokens } from "../github/app.ts";
+import { askAsApp, askGithub, rateLimitOf } from "../github/request.ts";
 
 /** How long a repo's list is kept before the next picker opening asks GitHub again. */
 export const PULLS_CACHE_MS = 60_000;
@@ -267,21 +268,7 @@ type Failure = GithubProblem & { readonly limitMs?: number };
 
 type Request = { readonly method?: "POST"; readonly body?: string };
 
-/** A token for the installation on `owner`, else the app owner's; the first failure when neither can be had. */
-const ownerToken = async (
-  github: NonNullable<GithubOptions["github"]>,
-  owner: string,
-): Promise<string> => {
-  try {
-    return await github.token(owner);
-  } catch (cause) {
-    try {
-      return await github.token();
-    } catch {
-      throw cause;
-    }
-  }
-};
+const unreachable = (message: string): string => `GitHub could not be reached: ${message}`;
 
 export class GithubPulls {
   readonly #options: GithubOptions;
@@ -305,91 +292,57 @@ export class GithubPulls {
   }
 
   /**
-   * `url`, about `repo`, asked with a GitHub token for its owner, else the app owner's (which reads any public repo):
-   * when GitHub refuses it with a 401, the token is invalidated and the request made once more with a new one.
+   * `url`, about `repo`, asked as the GitHub App (`askAsApp`: a token for its owner, else the app owner's, and once more
+   * with a new one after a 401), or without a token when there is no app.
    */
   async #request(
     repo: GitHubRepo,
     url: string,
     request: Request,
   ): Promise<GithubResult<unknown> | Failure> {
-    const github = this.#options.github;
+    const { github, fetch } = this.#options;
 
-    if (github === undefined) return this.#askOnce(url, request, undefined);
-
-    for (let attempt = 1; ; attempt++) {
-      let token: string;
-
-      try {
-        token = await ownerToken(github, repo.owner);
-      } catch (cause) {
-        return {
-          kind: "failed",
-          message: `No GitHub token: ${cause instanceof Error ? cause.message : String(cause)}`,
-        };
-      }
-
-      const answer = await this.#askOnce(url, request, token);
-
-      if (!("unauthorized" in answer) || attempt > 1) return answer;
-
-      github.invalidate(token);
+    if (github === undefined) {
+      return this.#read(await askGithub(fetch, url, request, undefined, REQUEST_TIMEOUT_MS));
     }
+
+    const answer = await askAsApp(
+      { fetch, github, timeoutMs: REQUEST_TIMEOUT_MS },
+      repo.owner,
+      url,
+      request,
+    );
+
+    return answer.status === "answered"
+      ? this.#read({ response: answer.response })
+      : {
+          kind: "failed",
+          message: answer.status === "no_token" ? answer.message : unreachable(answer.message),
+        };
   }
 
-  async #askOnce(
-    url: string,
-    request: Request,
-    token: string | undefined,
-  ): Promise<GithubResult<unknown> | (Failure & { readonly unauthorized?: true })> {
-    const headers = new Headers({
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": "cloudpid",
-    });
+  /** What GitHub's response to a request says: its JSON, or why there is none. */
+  async #read(
+    asked: { readonly response: Response } | { readonly unreachable: string },
+  ): Promise<GithubResult<unknown> | Failure> {
+    if ("unreachable" in asked) return { kind: "failed", message: unreachable(asked.unreachable) };
 
-    if (token !== undefined && token !== "") headers.set("authorization", `Bearer ${token}`);
-
-    if (request.body !== undefined) headers.set("content-type", "application/json");
-
-    const init: RequestInit = {
-      method: request.method ?? "GET",
-      headers,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    };
-
-    if (request.body !== undefined) init.body = request.body;
-
-    let response: Response;
-
-    try {
-      response = await this.#options.fetch(url, init);
-    } catch (cause) {
-      return {
-        kind: "failed",
-        message: `GitHub could not be reached: ${cause instanceof Error ? cause.message : String(cause)}`,
-      };
-    }
+    const { response } = asked;
 
     if (!response.ok) {
-      const retryAfter = Number(response.headers.get("retry-after"));
-      const waits = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1_000 : undefined;
+      const limit = rateLimitOf(response);
 
-      // The primary limit (no requests left) and the secondary one (a wait is asked, on a 403 or a 429) are not a refusal
-      // of the token.
-      if (
-        response.status === 429 ||
-        (response.status === 403 &&
-          (response.headers.get("x-ratelimit-remaining") === "0" || waits !== undefined))
-      ) {
+      // The primary limit (no requests left) and the secondary one (a wait is asked) are not a refusal of the token.
+      if (limit !== undefined) {
+        const waits =
+          limit.retryAfterSeconds === undefined ? undefined : limit.retryAfterSeconds * 1_000;
+
         return { kind: "failed", message: RATE_LIMITED_MESSAGE, limitMs: waits ?? 60_000 };
       }
 
-      if (response.status === 401) {
-        return { kind: "refused", message: REFUSED_MESSAGE, unauthorized: true };
+      if (response.status === 401 || response.status === 403) {
+        return { kind: "refused", message: REFUSED_MESSAGE };
       }
-
-      if (response.status === 403) return { kind: "refused", message: REFUSED_MESSAGE };
 
       return response.status === 404
         ? { kind: "failed", message: NOT_FOUND_MESSAGE }

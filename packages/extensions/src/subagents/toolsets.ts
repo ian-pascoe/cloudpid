@@ -6,6 +6,7 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { matchesPattern } from "../patterns.ts";
 import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
+import { SKILL_SEARCH_TOOL } from "../skill-search-tool.ts";
 import { SETTINGS_TOOL_PREFIX } from "../settings.ts";
 import { PARENT_ONLY_SECRET_TOOLS } from "../secrets/extension.ts";
 import type { Toolsets } from "./options.ts";
@@ -25,9 +26,14 @@ const COORDINATOR: ReadonlySet<string> = new Set(COORDINATOR_TOOLS);
 /**
  * Tools a child is never granted, whatever its selection. `context_rollover` hands off by ending the child's run, whose
  * answer is then the Rollover call rather than the turn's result, so a child keeps pi-durable's own compaction. A child
- * uses the Secrets its root holds but cannot ask for or forget them.
+ * uses the Secrets its root holds but cannot ask for or forget them. `skill_search` is the root's with the
+ * `environment_skill_*` tools it finds Skills for (ADR-0026).
  */
-export const PARENT_ONLY_TOOLS = ["context_rollover", ...PARENT_ONLY_SECRET_TOOLS] as const;
+export const PARENT_ONLY_TOOLS = [
+  "context_rollover",
+  SKILL_SEARCH_TOOL,
+  ...PARENT_ONLY_SECRET_TOOLS,
+] as const;
 
 /**
  * The prefixes of the families of tools a child is never granted: the `environment_*` and `settings_*` tools change the

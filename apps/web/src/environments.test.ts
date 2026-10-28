@@ -14,6 +14,7 @@ import {
   type AgentChange,
   DELETED_FIELD,
   type EnvironmentSecretRecord,
+  skillSourceText,
   type SessionRecord,
 } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
@@ -34,6 +35,7 @@ import {
   changeFieldText,
   changeTitleText,
   changeValueText,
+  installOutcomeLines,
   fieldValueText,
   revertible,
   deleteConfirmed,
@@ -431,6 +433,13 @@ describe("an Agent change", () => {
 
   it("shows its values in full, a variable's as written and none as not set", () => {
     expect(changeValueText(null)).toBe("not set");
+    expect(
+      changeValueText({
+        files: { "SKILL.md": "h1", "references/a.md": "h2" },
+        source: { repo: "o/r", path: "skills/x", ref: "v2", commit: "c0ffee0000000000" },
+      }),
+    ).toBe("SKILL.md\nreferences/a.md\nfrom o/r/skills/x at v2, c0ffee0");
+    expect(changeValueText({ files: { "SKILL.md": "h1" } })).toBe("SKILL.md");
     expect(changeValueText("a\nb")).toBe("a\nb");
     expect(changeValueText(30)).toBe("30");
     expect(changeValueText("")).toBe("empty");
@@ -583,5 +592,34 @@ describe("the Skills an Environment gets from every Environment", () => {
       overridden: [],
     });
     expect(inheritedSkills([skill("mine")], [])).toEqual({ inherited: [], overridden: [] });
+  });
+});
+
+describe("a Skill's source and the outcome of an install", () => {
+  it("says where a Skill came from: its folder, the ref named, and the short commit", () => {
+    const commit = "c0ffee0000000000000000000000000000000001";
+
+    expect(
+      skillSourceText({ repo: "mattpocock/skills", path: "skills/grill-me", ref: null, commit }),
+    ).toBe("mattpocock/skills/skills/grill-me at c0ffee0");
+    expect(skillSourceText({ repo: "o/one", path: "", ref: "v2", commit })).toBe(
+      "o/one at v2, c0ffee0",
+    );
+  });
+
+  it("says what each Skill of an install came to", () => {
+    expect(
+      installOutcomeLines([
+        { name: "a", outcome: "installed" },
+        { name: "b", outcome: "unchanged" },
+        { name: "c", outcome: "rejected", message: "notes.md: a binary file" },
+        { name: "d", outcome: "rejected" },
+      ]),
+    ).toEqual([
+      "a: installed",
+      "b: already installed from this commit, nothing changed",
+      "c: refused: notes.md: a binary file",
+      "d: refused",
+    ]);
   });
 });

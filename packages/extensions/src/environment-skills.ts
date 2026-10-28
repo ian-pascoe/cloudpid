@@ -1,7 +1,8 @@
 // The `environment` extension's tools for an Environment's own Skills, and those kept for every Environment (ADR-0026,
 // `docs/spec.md` → Agent changes, and → The Environment's own Skills): `environment_skill_save` reads a Skill's folder
 // from the Workspace (one the agent wrote, or one `npx skills add --copy` made) and saves it for the Environment, in
-// place of one of its name, and `environment_skill_remove` removes one. The Registry checks a save (the Agent Skills name
+// place of one of its name, `environment_skill_install` installs Skills from GitHub (fetched by the Registry, never by the
+// Session or a Container; only for an Environment, not for `*` yet), and `environment_skill_remove` removes one. The Registry checks a save (the Agent Skills name
 // rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path, at most 100
 // Skills and 8 MB in the merged set) and records each as an Agent change with the files before and after, so the owner
 // sees the diffs and can revert it. The Session hands its own Workspace the new Skill set at once; the Environment's
@@ -11,16 +12,20 @@
 // Skill of the same name wins in that Environment, with no Approval.
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import { SKILLS_ROOT } from "@cloudpid/protocol";
+import { SKILLS_ROOT, shortSha, skillSourceText } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExecutionEnv, FileError, Result } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import { EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
+import { EnvironmentsError, Id, idOrEvery, Reason } from "./environment.ts";
 import { EVERY_ENVIRONMENT_ID } from "./environment-secret-marks.ts";
 import {
+  asJsonValue,
+  named,
+  PROMPT_NOTE,
+  reach,
   refused,
   removedOutcome,
   savedOutcome,
@@ -32,24 +37,22 @@ import {
   saveEverywhere,
   SKILL_APPROVAL,
 } from "./environment-skills-every.ts";
-import { MAX_FILE_BYTES, MAX_SKILL_BYTES, problemsIn } from "./skill-checks.ts";
+import { MAX_FILE_BYTES, MAX_SKILL_BYTES, MAX_SKILL_FILES, problemsIn } from "./skill-checks.ts";
 
 export type {
   EnvironmentSkills,
   SkillPreview,
   SkillRemoved,
   SkillSaved,
+  SkillsInstalled,
   SkillToolDeps,
 } from "./environment-skill-results.ts";
 
 /** The Workspace's files: a folder elsewhere is the Container's only, and is not read. */
 const WORKSPACE_ROOT = "/workspace";
 
-/** The most files a Skill's folder may hold, far above any real one. */
-const MAX_FILES = 500;
-
 /** The most files and folders a listing of a Skill's folder takes. */
-const MAX_ENTRIES = MAX_FILES * 4;
+const MAX_ENTRIES = MAX_SKILL_FILES * 4;
 
 /** What the save reads of the call's environment: the Workspace's files, never a command. */
 type FolderEnv = Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile">;
@@ -110,7 +113,7 @@ const refuseContainerOnly = (
 /**
  * The Skill folder at `path` in the Workspace: its own name and each file's text by its path in it (`.git` and
  * `node_modules` left out). Refused when it is not a folder of the Workspace's files, holds a symbolic link or more than
- * `MAX_FILES` files, or a file that is not text or is too large, each problem a line.
+ * `MAX_SKILL_FILES` files, or a file that is not text or is too large, each problem a line.
  */
 export const readSkillFolder = (
   env: FolderEnv,
@@ -182,9 +185,9 @@ export const readSkillFolder = (
 
     const entries = Arr.filter(listing.value.entries, (entry) => entry.kind === "file");
 
-    if (listing.value.truncated || entries.length > MAX_FILES) {
+    if (listing.value.truncated || entries.length > MAX_SKILL_FILES) {
       return yield* refused(
-        `the folder holds more than ${MAX_FILES} files, or ${MAX_ENTRIES} files and folders`,
+        `the folder holds more than ${MAX_SKILL_FILES} files, or ${MAX_ENTRIES} files and folders`,
       );
     }
 
@@ -268,7 +271,7 @@ export const skillTools = ({
 }: SkillToolDeps) => {
   const SkillReason = Reason.annotate({
     description:
-      "Why you save or remove the Skill, for the user to read in the Environment's Agent changes, such as 'the release steps are the same every time'",
+      "Why you save, install or remove the Skill, for the user to read in the Environment's Agent changes, such as 'the release steps are the same every time'",
   });
 
   const every = { environments, approvals, log, notFound };
@@ -375,5 +378,183 @@ export const skillTools = ({
       }),
   });
 
-  return Effect.all([save, remove]);
+  const install = defineEffectTool({
+    name: "environment_skill_install",
+    description: Arr.join(
+      [
+        `Install Skills from GitHub for an Environment (this Session's unless id names another): fetched by cloudpid, not by you (no Container, no \`npx skills\`), pinned to the commit the source's ref resolves to, and kept with their Skill source (repo, path, ref, commit). Every Workspace of the Environment then serves each at ${SKILLS_ROOT}/<name>, read-only, over the bundle's Skill of the same name; a Skill of the same name the Environment keeps is replaced.`,
+        "source is owner/repo, owner/repo@skill, or a GitHub URL such as https://github.com/owner/repo/tree/<ref>/<path> (the first segment after tree/ is the ref, so write a branch name with a slash as feature%2Ffoo; without one, the default branch is used). Public repos work, and so do private ones in an account the GitHub App is installed on. Other sources (GitLab, other hosts, well-known indexes) are not fetched here: run `npx skills add <source> --copy` in a Container and save the folder with environment_skill_save.",
+        'skills names the Skills to install (by name): ["*"] installs every Skill the repo holds. When the repo holds several and you name none, nothing is installed and its Skills are listed; ask the user which they want, or call again with skills. skill_search finds a source on skills.sh.',
+        "Each Skill passes the checks of environment_skill_save (the Agent Skills name rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path; a set holds at most 100 Skills and 8 MB). One that fails is reported and the others are still installed. Each is recorded with your reason and the files before and after, and the user can revert it on the Environments page.",
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      source: Schema.String.check(Schema.isMinLength(1)).annotate({
+        description:
+          "Where to install from: owner/repo, owner/repo@skill, or a GitHub URL (https://github.com/owner/repo/tree/<ref>/<path>)",
+      }),
+      skills: Schema.optionalKey(
+        Schema.Array(Schema.String.check(Schema.isMinLength(1))).annotate({
+          description:
+            'The names of the Skills to install from the source; ["*"] for all of them. Left out: the repo\'s only Skill, or a list of its Skills when it holds several',
+        }),
+      ),
+      reason: SkillReason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, source, skills: names, reason }, api) =>
+      Effect.gen(function* () {
+        yield* refuseSecrets([
+          { what: "the reason", text: reason },
+          { what: "the source", text: source },
+          ...Arr.map(names ?? [], (name) => ({ what: "a Skill name", text: name })),
+        ]);
+
+        const { environment, own } = yield* target(id);
+
+        const installed = yield* environments.installSkills({
+          environment,
+          source,
+          skills: names,
+          author: { conversation: api.conversationId, tool: "environment_skill_install", reason },
+        });
+
+        switch (installed.status) {
+          case "missing":
+            return yield* notFound(environment);
+          case "refused":
+            return yield* EnvironmentsError.make({
+              message: `Nothing was installed: ${installed.message}`,
+            });
+          case "listed": {
+            const { available, repo, commit } = installed;
+
+            return {
+              output: [
+                {
+                  type: "text" as const,
+                  text: Arr.join(
+                    [
+                      `Installed nothing: ${repo} (at ${shortSha(commit)}) holds ${available.length} Skills and none was named:`,
+                      ...Arr.map(
+                        available,
+                        (skill) =>
+                          `- ${skill.name}${skill.path === "" ? "" : ` (${skill.path})`}: ${skill.description}`,
+                      ),
+                      'Ask the user which they want, then call environment_skill_install again with the same source and skills set to their names (["*"] for all of them).',
+                    ],
+                    "\n",
+                  ),
+                },
+              ],
+              details: {
+                listed: { repo, commit, skills: Arr.map(available, (skill) => skill.name) },
+              },
+            };
+          }
+
+          case "installed": {
+            const { results, repo, ref, commit } = installed;
+            const saved = Arr.filter(results, (result) => result.outcome === "installed");
+            const unchanged = Arr.filter(results, (result) => result.outcome === "unchanged");
+            const rejected = Arr.filter(results, (result) => result.outcome === "rejected");
+
+            const problems = Arr.map(
+              rejected,
+              (result) =>
+                `- ${result.name}${result.path === "" ? "" : ` (${result.path})`}: ${result.message ?? "refused"}`,
+            );
+
+            if (saved.length === 0 && unchanged.length === 0) {
+              return yield* EnvironmentsError.make({
+                message: Arr.join(
+                  [`Nothing was installed from ${repo}; each Skill was refused:`, ...problems],
+                  "\n",
+                ),
+              });
+            }
+
+            const changes = Arr.flatMap(saved, (result) =>
+              result.change === undefined ? [] : [result.change],
+            );
+
+            for (const change of changes) {
+              yield* log.record({
+                tool: "environment_skill_install",
+                environmentName: installed.environment.name,
+                field: change.field,
+              });
+            }
+
+            const pinned = skillSourceText({ repo, path: "", ref, commit });
+
+            const listOf = (list: typeof results) =>
+              Arr.join(
+                Arr.map(list, (result) => result.name),
+                ", ",
+              );
+
+            const first = (saved[0] ?? unchanged[0])?.name ?? "<name>";
+
+            return {
+              output: [
+                {
+                  type: "text" as const,
+                  text: Arr.join(
+                    [
+                      ...(saved.length === 0
+                        ? []
+                        : [
+                            `Installed ${Arr.join(
+                              Arr.map(
+                                saved,
+                                (result) =>
+                                  `${result.name}${result.shadows === true ? " (over the bundle's Skill of that name)" : ""}`,
+                              ),
+                              ", ",
+                            )} for ${named(installed.environment)} from ${pinned}.`,
+                          ]),
+                      ...(unchanged.length === 0
+                        ? []
+                        : [
+                            `${listOf(unchanged)} ${unchanged.length === 1 ? "was" : "were"} installed from ${pinned} already: nothing changed, and nothing was recorded for ${unchanged.length === 1 ? "it" : "them"}.`,
+                          ]),
+                      ...(problems.length === 0
+                        ? []
+                        : ["Refused (the others were installed):", ...problems]),
+                      installed.handed
+                        ? `They are served now at ${SKILLS_ROOT}/<name> (read-only): read ${SKILLS_ROOT}/${first}/SKILL.md to use one.`
+                        : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace of the Environment.`,
+                      reach(installed.environment, installed.handed, own),
+                      PROMPT_NOTE,
+                      ...(saved.length === 0
+                        ? []
+                        : [
+                            "Each change is recorded with your reason and the files before and after, and the user can revert it on the Environments page.",
+                          ]),
+                    ],
+                    " ",
+                  ),
+                },
+              ],
+              details: {
+                agentChanges: Arr.map(changes, (change) => ({
+                  id: change.id,
+                  environment: installed.environment,
+                  field: change.field,
+                  before: asJsonValue(change.before),
+                  after: asJsonValue(change.after),
+                })),
+                own,
+              },
+            };
+          }
+        }
+      }),
+  });
+
+  return Effect.all([save, remove, install]);
 };

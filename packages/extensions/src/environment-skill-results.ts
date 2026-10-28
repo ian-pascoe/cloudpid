@@ -8,6 +8,7 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   type AgentChange,
+  type ListedSkill,
   type SkillExpectation,
   SKILLS_ROOT,
   skillField,
@@ -60,6 +61,42 @@ export type SkillSaved =
   | { readonly status: "changed-since"; readonly environment: ChangedEnvironment }
   /** The Skill is not one a save keeps, each problem a line: nothing was saved. */
   | { readonly status: "rejected"; readonly message: string }
+  | { readonly status: "missing" };
+
+/** How an install of Skills from GitHub went. */
+export type SkillsInstalled =
+  | {
+      readonly status: "installed";
+      readonly environment: ChangedEnvironment;
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      /** Each Skill the source gave, in the order the Registry answered. */
+      readonly results: ReadonlyArray<{
+        readonly name: string;
+        /** Its folder in the repo. */
+        readonly path: string;
+        readonly outcome: "installed" | "unchanged" | "rejected";
+        /** Why it was refused: each problem a line. */
+        readonly message?: string | undefined;
+        readonly change?: AgentChange | undefined;
+        /** Whether it hides the bundle's Skill of the name. */
+        readonly shadows?: boolean | undefined;
+      }>;
+      /** Whether this Session's own Workspace serves them now: it is the Environment's, and took the new Skill set. */
+      readonly handed: boolean;
+    }
+  /** The source holds several Skills and none was named: nothing was installed. */
+  | {
+      readonly status: "listed";
+      readonly environment: ChangedEnvironment;
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      readonly available: ReadonlyArray<ListedSkill>;
+    }
+  /** Nothing was installed: the source is not one, GitHub gave no answer, or the repo holds no such Skill. */
+  | { readonly status: "refused"; readonly message: string }
   | { readonly status: "missing" };
 
 /** How the removal of a Skill went. */
@@ -135,6 +172,16 @@ export type EnvironmentSkills = {
     readonly expected?: SkillExpectation | undefined;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<SkillRemoved, EnvironmentsError>;
+  /**
+   * Install from the GitHub `source` the Skills `skills` names (`["*"]` for all; absent: the only one, else the list),
+   * fetched by the Registry as the GitHub App, never by the Session.
+   */
+  readonly installSkills: (input: {
+    readonly environment: string;
+    readonly source: string;
+    readonly skills?: ReadonlyArray<string> | undefined;
+    readonly author: ChangeAuthor;
+  }) => Effect.Effect<SkillsInstalled, EnvironmentsError>;
 };
 
 /** What the tools need of `EnvironmentTools`: what they build over, and its refusals. */
@@ -160,7 +207,8 @@ export const EVERY = { id: EVERY_ENVIRONMENT_ID, name: EVERY_ENVIRONMENT_NAME };
 
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
 // SAFETY: the two types describe the same values; the details are never mutated.
-const asJsonValue = (value: AgentChange["before"]): JsonValue | null => value as JsonValue | null;
+export const asJsonValue = (value: AgentChange["before"]): JsonValue | null =>
+  value as JsonValue | null;
 
 /** The refusal of a save: nothing was saved. */
 export const refused = (message: string) =>
@@ -176,7 +224,7 @@ export const named = ({ id, name }: ChangedEnvironment): string =>
     : `Environment ${JSON.stringify(name)} (${id})`;
 
 /** What a result says of where a change to an Environment's own Skills reaches. */
-const reach = (environment: ChangedEnvironment, handed: boolean, own: boolean): string =>
+export const reach = (environment: ChangedEnvironment, handed: boolean, own: boolean): string =>
   handed
     ? `This Session's Workspace has the change now; the other Workspaces of ${named(environment)} and its spare get it at their next readying, and those of other Environments never do.`
     : own
@@ -214,7 +262,7 @@ const reachEvery = (
   );
 };
 
-const PROMPT_NOTE =
+export const PROMPT_NOTE =
   "The skills list in your system prompt changes at the next Context Window (after a Handoff, or in a new Session).";
 
 /** The agent change a result carries as its details, with the files before and after by hash. */

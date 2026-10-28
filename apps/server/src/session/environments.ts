@@ -4,11 +4,12 @@
 // after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),
 // and a change that reaches the Session's own Environment is handed to its Workspace at once
 // (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
-// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved
-// or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentRemoveSkill`, `agentPreviewSkill`), for an
-// Environment or for every Environment (`*`); the Session's own Workspace is handed its Environment's new Skill set at
-// once (`updateSkills`), unless the change is to those kept for every Environment and its Environment keeps its own Skill
-// of the name, and no Build's upkeep runs: Skills are not part of a Build.
+// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
+// installed or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentInstallSkills`, `agentRemoveSkill`,
+// `agentPreviewSkill`), for an Environment or, saved or removed, for every Environment (`*`); the Session's own Workspace
+// is handed its Environment's new Skill set at once (`updateSkills`), unless the change is to those kept for every
+// Environment and its Environment keeps its own Skill of the name, and no Build's upkeep runs: Skills are not part of a
+// Build.
 import type {
   AppliedChange,
   EnvironmentDetails,
@@ -48,6 +49,7 @@ export type EnvironmentsRegistry = Pick<
   | "agentSaveSkill"
   | "agentPreviewSkill"
   | "agentRemoveSkill"
+  | "agentInstallSkills"
   | "listSkills"
   | "workspaceSkillSet"
   | "getWorkspace"
@@ -370,6 +372,40 @@ export const sessionEnvironments = ({
               overriddenIn: removed.overriddenIn,
               handed: yield* handSkillsAfter(environment, removed.overriddenIn),
             };
+        }
+      }),
+    installSkills: ({ environment, source, skills, author }) =>
+      Effect.gen(function* () {
+        if (session === undefined) return yield* unlisted;
+
+        // The Registry fetches as the GitHub App: no token comes here.
+        const installed = yield* registry.agentInstallSkills({
+          environment,
+          source,
+          skills,
+          author: { session, ...author },
+        });
+
+        switch (installed.status) {
+          case "missing":
+          case "refused":
+            return installed;
+          case "listed":
+            return { ...installed, environment: changedEnvironment(installed.environment) };
+          case "installed": {
+            const { results, repo, ref, commit } = installed;
+
+            return {
+              status: "installed",
+              environment: changedEnvironment(installed.environment),
+              repo,
+              ref,
+              commit,
+              results,
+              // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves them now.
+              handed: yield* handSkillsIfOwn(environment),
+            };
+          }
         }
       }),
     markSecret: ({ environment, name, build, author }) =>

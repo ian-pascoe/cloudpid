@@ -454,6 +454,56 @@ export const removeSkillAtom = Atom.family((id: string) =>
   ),
 );
 
+/** What is typed in the add-Skills form of Environment `id` as the GitHub source: `owner/repo`, `owner/repo@skill` or a URL. */
+export const skillSourceAtom = Atom.family((_id: string) => Atom.make(""));
+
+/** What is typed in the add-Skills form of Environment `id` as the search of skills.sh. */
+export const skillSearchQueryAtom = Atom.family((_id: string) => Atom.make(""));
+
+/**
+ * Search skills.sh for `query`. The main Worker asks (skills.sh answers no browser's cross-origin request), and a
+ * failure comes back with its reason. Nothing is recorded: the owner picks a result to install from.
+ */
+export const searchSkillsAtom = Atom.family((_id: string) =>
+  appRuntime.fn((query: string) =>
+    RegistryClient.use((registry) => registry("searchSkills", { query: query.trim() })),
+  ),
+);
+
+/** What the add-Skills form of Environment `id` installs: the source, and the Skills of it to take (absent: its only one). */
+export interface SkillInstallRequest {
+  readonly source: string;
+  readonly skills?: ReadonlyArray<string>;
+}
+
+/**
+ * Install Skills from a GitHub source into Environment `id`, on the owner's word (an install that is no Agent change).
+ * It answers with what was kept, each pinned to the commit, or, for a source that holds several Skills and none was
+ * named, the list of them to tick and nothing kept. The Skills list asks again either way; the form's source empties
+ * once Skills were kept.
+ */
+export const installSkillsAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    ({ source, skills }: SkillInstallRequest, get) =>
+      RegistryClient.use((registry) =>
+        registry(
+          "installEnvironmentSkills",
+          skills === undefined
+            ? { environment: id, source: source.trim() }
+            : { environment: id, source: source.trim(), skills },
+        ),
+      ).pipe(
+        changing([`environment-skills:${id}`]),
+        Effect.tap((installed) =>
+          Effect.sync(() => {
+            if (installed.status === "installed") get.set(skillSourceAtom(id), "");
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
 /** One Agent change of an Environment, as `skillChangeFilesAtom` is keyed. */
 export interface SkillChangeKey {
   readonly environment: string;

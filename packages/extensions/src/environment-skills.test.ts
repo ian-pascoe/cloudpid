@@ -4,6 +4,7 @@
 // each waits for the owner's Approval.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { type AgentChange, skillField } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   ROOT_CONVERSATION_ID,
@@ -507,6 +508,241 @@ describe("environment_skill_remove", () => {
   });
 });
 
+const GRILL_COMMIT = "c0ffee0000000000000000000000000000000001";
+
+/** The Agent change an install of `name` recorded. */
+const installChange = (id: number, name: string): AgentChange => ({
+  id,
+  scope: "default",
+  at: 1_000,
+  actor: "agent",
+  session: "s-1",
+  conversation: 0,
+  tool: "environment_skill_install",
+  reason: "The user asked for it",
+  field: skillField(name),
+  before: null,
+  after: {
+    files: { "SKILL.md": "hash" },
+    source: { repo: "mattpocock/skills", path: `skills/${name}`, ref: null, commit: GRILL_COMMIT },
+  },
+  reverts: null,
+  revertedBy: null,
+});
+
+const DEFAULT = { id: "default", name: "Default" };
+
+describe("environment_skill_install", () => {
+  it("runs alone, is kept from a rerun, and is the root conversation's only", async () => {
+    const { tool } = await setUp();
+
+    expect(tool("environment_skill_install").replay).toBe("unsafe");
+    expect(tool("environment_skill_install").executionMode).toBe("sequential");
+
+    expect(
+      resolveTools(undefined, ["bash", "environment_skill_install"], DEFAULT_TOOLSETS),
+    ).toMatchObject({ success: { tools: ["bash"] } });
+  });
+
+  it("installs the Skill a source names, saying where it came from and where it is served", async () => {
+    const { tool, logged, installs, answerInstall } = await setUp();
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      results: [
+        {
+          name: "grill-me",
+          path: "skills/grill-me",
+          outcome: "installed",
+          change: installChange(7, "grill-me"),
+          shadows: false,
+        },
+      ],
+      handed: true,
+    });
+
+    const result = await run(tool("environment_skill_install"), {
+      source: "mattpocock/skills@grill-me",
+      reason: "The user asked for grill-me",
+    });
+
+    expect(installs).toEqual([
+      {
+        environment: "default",
+        source: "mattpocock/skills@grill-me",
+        skills: undefined,
+        reason: "The user asked for grill-me",
+      },
+    ]);
+
+    const said = text(result);
+
+    expect(said).toContain(
+      'Installed grill-me for Environment "Default" (default) from mattpocock/skills at c0ffee0.',
+    );
+    expect(said).toContain("served now at /workspace/.agents/skills/<name> (read-only)");
+    expect(said).toContain("read /workspace/.agents/skills/grill-me/SKILL.md to use one");
+    expect(said).toContain("next Context Window");
+    expect(result.isError).not.toBe(true);
+
+    expect(result.details).toMatchObject({
+      agentChanges: [
+        {
+          id: 7,
+          environment: DEFAULT,
+          field: "skills.grill-me",
+          after: { source: { repo: "mattpocock/skills", commit: GRILL_COMMIT } },
+        },
+      ],
+    });
+
+    expect(logged).toEqual([
+      { tool: "environment_skill_install", environmentName: "Default", field: "skills.grill-me" },
+    ]);
+  });
+
+  it("names the ref and the Skills it left unchanged or refused, installing the rest", async () => {
+    const { tool, answerInstall } = await setUp();
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "o/skills",
+      ref: "v2",
+      commit: GRILL_COMMIT,
+      results: [
+        {
+          name: "a",
+          path: "skills/a",
+          outcome: "installed",
+          change: installChange(1, "a"),
+          shadows: true,
+        },
+        { name: "b", path: "skills/b", outcome: "unchanged" },
+        { name: "c", path: "skills/c", outcome: "rejected", message: "notes.md: a binary file" },
+      ],
+      handed: false,
+    });
+
+    const said = text(
+      await run(tool("environment_skill_install"), {
+        source: "o/skills",
+        skills: ["*"],
+        reason: "r",
+      }),
+    );
+
+    expect(said).toContain("Installed a (over the bundle's Skill of that name)");
+    expect(said).toContain("from o/skills at v2, c0ffee0");
+    expect(said).toContain("b was installed from o/skills at v2, c0ffee0 already: nothing changed");
+    expect(said).toContain(
+      "Refused (the others were installed): - c (skills/c): notes.md: a binary file",
+    );
+    expect(said).toContain("gets it at its next readying");
+  });
+
+  it("installs nothing and lists the Skills when the repo holds several and none was named", async () => {
+    const { tool, logged, answerInstall } = await setUp();
+
+    answerInstall({
+      status: "listed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      available: [
+        { name: "grill-me", description: "Interview me", path: "skills/grill-me" },
+        { name: "tdd", description: "Test first", path: "skills/tdd" },
+      ],
+    });
+
+    const result = await run(tool("environment_skill_install"), {
+      source: "mattpocock/skills",
+      reason: "r",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(text(result)).toContain(
+      "Installed nothing: mattpocock/skills (at c0ffee0) holds 2 Skills",
+    );
+    expect(text(result)).toContain("- grill-me (skills/grill-me): Interview me");
+    expect(text(result)).toContain("- tdd (skills/tdd): Test first");
+    expect(text(result)).toContain('skills set to their names (["*"] for all of them)');
+    expect(logged).toEqual([]);
+  });
+
+  it("passes on why nothing was installed: a refused source, GitHub's failure, every Skill refused", async () => {
+    const { tool, logged, answerInstall } = await setUp();
+
+    answerInstall({ status: "refused", message: "GitHub has no repo o/gone" });
+
+    expect(
+      await failure(run(tool("environment_skill_install"), { source: "o/gone", reason: "r" })),
+    ).toBe("Nothing was installed: GitHub has no repo o/gone");
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "o/r",
+      ref: null,
+      commit: GRILL_COMMIT,
+      results: [{ name: "x", path: "x", outcome: "rejected", message: "no SKILL.md" }],
+      handed: false,
+    });
+
+    const message = await failure(
+      run(tool("environment_skill_install"), { source: "o/r", reason: "r" }),
+    );
+
+    expect(message).toContain("Nothing was installed from o/r; each Skill was refused:");
+    expect(message).toContain("- x (x): no SKILL.md");
+    expect(logged).toEqual([]);
+  });
+
+  it("refuses the id *, an Environment that is not there, and a Secret in the reason or the source", async () => {
+    const { tool, installs, answerInstall } = await setUp({ API_KEY: "s3cr3t-value-123456" });
+
+    expect(
+      await failure(
+        run(tool("environment_skill_install"), { id: "*", source: "o/r", reason: "r" }),
+      ),
+    ).toContain('The id "*"');
+
+    answerInstall({ status: "missing" });
+
+    expect(
+      await failure(
+        run(tool("environment_skill_install"), { id: "0000dead", source: "o/r", reason: "r" }),
+      ),
+    ).toContain("0000dead");
+
+    expect(
+      await failure(
+        run(tool("environment_skill_install"), {
+          source: "o/r",
+          reason: "using s3cr3t-value-123456",
+        }),
+      ),
+    ).toContain("holds the value of a Secret");
+
+    expect(
+      await failure(
+        run(tool("environment_skill_install"), {
+          source: `https://${GITHUB_TOKEN}@github.com/o/r`,
+          reason: "r",
+        }),
+      ),
+    ).toContain("the source holds");
+
+    // Only the Environment that is not there reached the Registry.
+    expect(installs).toHaveLength(1);
+  });
+});
+
 describe("environment_get", () => {
   it("lists the Environment's own Skills with when each was saved", () => {
     const shown = describeEnvironment(
@@ -528,6 +764,39 @@ describe("environment_get", () => {
       "Skills (its own, served read-only at /workspace/.agents/skills/<name>",
     );
     expect(shown).toContain("\n  release (saved 1970-01-01T00:00:00.000Z): Cut a release.");
+  });
+
+  it("says where an installed Skill came from", () => {
+    const shown = describeEnvironment(
+      {
+        id: "default",
+        name: "Default",
+        repos: [],
+        build: { status: "none" },
+        settings: DEFAULT_CONTAINER_SETTINGS,
+        secrets: [],
+        everyVariables: {},
+        skills: [
+          {
+            name: "grill-me",
+            description: "Interview me.",
+            savedAt: 0,
+            source: {
+              repo: "mattpocock/skills",
+              path: "skills/grill-me",
+              ref: null,
+              commit: GRILL_COMMIT,
+            },
+          },
+        ],
+        everySkills: [],
+      },
+      true,
+    );
+
+    expect(shown).toContain(
+      "\n  grill-me (saved 1970-01-01T00:00:00.000Z, installed from mattpocock/skills/skills/grill-me at c0ffee0): Interview me.",
+    );
   });
 });
 

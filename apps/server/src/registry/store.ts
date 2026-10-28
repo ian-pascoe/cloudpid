@@ -762,6 +762,12 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
       PRIMARY KEY (scope, name)
     ) STRICT`);
   },
+  // 23: where a Skill was installed from (ADR-0026, GLOSSARY.md → Skill source): JSON `SkillSource` (the GitHub repo, the
+  // Skill's path in it, the ref named and the commit it resolved to). Null for every Skill kept before, and for one the
+  // agent wrote that was never installed; a save from a Workspace keeps the source the Skill had.
+  (sql) => {
+    sql.exec("ALTER TABLE skills ADD COLUMN source TEXT");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */

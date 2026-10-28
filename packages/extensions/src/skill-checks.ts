@@ -11,6 +11,9 @@ export const MAX_FILE_BYTES = 128 * 1024;
 /** A Skill, all its files together, may be this large. */
 export const MAX_SKILL_BYTES = 1024 * 1024;
 
+/** The most files a Skill's folder may hold, far above any real one. */
+export const MAX_SKILL_FILES = 500;
+
 /** The bundle in `skills/` as a whole may be this large: the files ship inside the Workspaces Worker's upload. */
 export const MAX_TOTAL_BYTES = 1024 * 1024;
 

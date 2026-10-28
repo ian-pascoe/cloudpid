@@ -37,6 +37,9 @@ import {
   createEnvironmentAtom,
   deleteSecretAtom,
   environmentSecretsAtom,
+  installSkillsAtom,
+  searchSkillsAtom,
+  skillSourceAtom,
   environmentSecretsErrorAtom,
   saveSecretAtom,
   setSecretBuildAtom,
@@ -1811,6 +1814,180 @@ describe("the kept Secrets", () => {
         settledFailureOf(yield* settled(registry, deleteSecretAtom(EVERY_ENVIRONMENT))),
       ).toMatch(/No Secret STUCK/);
       expect(registry.get(secretDialogAtom(EVERY_ENVIRONMENT))).toBe("STUCK");
+    }),
+  );
+});
+
+describe("the Skills an Environment installs from GitHub", () => {
+  const COMMIT = "c0ffee0000000000000000000000000000000001";
+
+  it.effect("list a source that holds several, keeping nothing and the form as typed", () =>
+    Effect.gen(function* () {
+      const asked: unknown[] = [];
+
+      const registry = registryWith({
+        installEnvironmentSkills: (input) =>
+          Effect.sync(() => {
+            asked.push(input);
+
+            return {
+              status: "listed" as const,
+              repo: "mattpocock/skills",
+              ref: null,
+              commit: COMMIT,
+              available: [
+                { name: "grill-me", description: "Interview me.", path: "skills/grill-me" },
+              ],
+            };
+          }),
+      });
+
+      registry.mount(skillSourceAtom("work"));
+      registry.set(skillSourceAtom("work"), " mattpocock/skills ");
+      registry.set(installSkillsAtom("work"), { source: " mattpocock/skills " });
+
+      expect(AsyncResult.getOrThrow(yield* settled(registry, installSkillsAtom("work")))).toEqual({
+        status: "listed",
+        repo: "mattpocock/skills",
+        ref: null,
+        commit: COMMIT,
+        available: [{ name: "grill-me", description: "Interview me.", path: "skills/grill-me" }],
+      });
+      // The source goes as typed but trimmed, with no Skills named.
+      expect(asked).toEqual([{ environment: "work", source: "mattpocock/skills" }]);
+      expect(registry.get(skillSourceAtom("work"))).toBe(" mattpocock/skills ");
+    }),
+  );
+
+  it.effect(
+    "install the Skills ticked, empty the form and list the Environment's Skills again",
+    () =>
+      Effect.gen(function* () {
+        let installed = false;
+        const asked: unknown[] = [];
+
+        const registry = registryWith({
+          listEnvironmentSkills: () =>
+            Effect.succeed(
+              installed
+                ? [
+                    {
+                      name: "grill-me",
+                      description: "Interview me.",
+                      savedAt: 5,
+                      source: {
+                        repo: "mattpocock/skills",
+                        path: "skills/grill-me",
+                        ref: null,
+                        commit: COMMIT,
+                      },
+                    },
+                  ]
+                : [],
+            ),
+          installEnvironmentSkills: (input) =>
+            Effect.sync(() => {
+              asked.push(input);
+              installed = true;
+
+              return {
+                status: "installed" as const,
+                repo: "mattpocock/skills",
+                ref: null,
+                commit: COMMIT,
+                skills: [{ name: "grill-me", outcome: "installed" as const }],
+              };
+            }),
+        });
+
+        registry.mount(environmentSkillsAtom("work"));
+        registry.mount(skillSourceAtom("work"));
+        expect(
+          AsyncResult.getOrThrow(yield* settled(registry, environmentSkillsAtom("work"))),
+        ).toEqual([]);
+
+        registry.set(skillSourceAtom("work"), "mattpocock/skills");
+        registry.set(installSkillsAtom("work"), {
+          source: "mattpocock/skills",
+          skills: ["grill-me"],
+        });
+
+        expect(
+          AsyncResult.getOrThrow(yield* settled(registry, installSkillsAtom("work"))),
+        ).toMatchObject({ status: "installed", commit: COMMIT });
+        expect(asked).toEqual([
+          { environment: "work", source: "mattpocock/skills", skills: ["grill-me"] },
+        ]);
+        expect(registry.get(skillSourceAtom("work"))).toBe("");
+        expect(
+          AsyncResult.getOrThrow(yield* settled(registry, environmentSkillsAtom("work")))[0]
+            ?.source,
+        ).toEqual({
+          repo: "mattpocock/skills",
+          path: "skills/grill-me",
+          ref: null,
+          commit: COMMIT,
+        });
+      }),
+  );
+
+  it.effect("say why an install failed, keeping what was typed", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        installEnvironmentSkills: () =>
+          Effect.fail(
+            new EnvironmentError({
+              message: "GitHub has no repo gone/gone, or the App cannot read it",
+            }),
+          ),
+      });
+
+      registry.mount(skillSourceAtom("work"));
+      registry.set(skillSourceAtom("work"), "gone/gone");
+      registry.set(installSkillsAtom("work"), { source: "gone/gone" });
+
+      expect(settledFailureOf(yield* settled(registry, installSkillsAtom("work")))).toBe(
+        "GitHub has no repo gone/gone, or the App cannot read it",
+      );
+      expect(registry.get(skillSourceAtom("work"))).toBe("gone/gone");
+    }),
+  );
+
+  it.effect("search skills.sh with the query trimmed, and say why a search failed", () =>
+    Effect.gen(function* () {
+      const asked: string[] = [];
+
+      const registry = registryWith({
+        searchSkills: ({ query }) =>
+          query === "down"
+            ? Effect.fail(new EnvironmentError({ message: "skills.sh did not answer" }))
+            : Effect.sync(() => {
+                asked.push(query);
+
+                return [
+                  {
+                    id: "mattpocock/skills/grill-me",
+                    source: "mattpocock/skills",
+                    skillId: "grill-me",
+                    name: "grill-me",
+                    installs: 12,
+                  },
+                ];
+              }),
+      });
+
+      registry.set(searchSkillsAtom("work"), "  grill ");
+
+      expect(
+        AsyncResult.getOrThrow(yield* settled(registry, searchSkillsAtom("work")))[0]?.source,
+      ).toBe("mattpocock/skills");
+      expect(asked).toEqual(["grill"]);
+
+      registry.set(searchSkillsAtom("work"), "down");
+
+      expect(settledFailureOf(yield* settled(registry, searchSkillsAtom("work")))).toBe(
+        "skills.sh did not answer",
+      );
     }),
   );
 });

@@ -158,7 +158,13 @@ const open = (
           status: "saved" as const,
           environment: SCOPES.get(input.environment) ?? OTHER,
           change: { ...CHANGE, field: "skills.release", tool: "environment_skill_save" },
-          skill: { name: "release", description: "Cut a release.", files: {}, savedAt: 1 },
+          skill: {
+            name: "release",
+            description: "Cut a release.",
+            files: {},
+            source: null,
+            savedAt: 1,
+          },
           bundled: false,
           inherited: false,
           // The Session's Environment keeps its own Skill of the name, which hides one kept for every Environment.
@@ -195,6 +201,33 @@ const open = (
                   : [],
             }
           : { status: "absent" as const, environment: DEFAULT_SCOPE };
+      }),
+    agentInstallSkills: (input: Parameters<EnvironmentsRegistry["agentInstallSkills"]>[0]) =>
+      Effect.sync(() => {
+        skillsAsked.push(input);
+
+        return input.environment === "ghost"
+          ? ({ status: "missing" } as const)
+          : ({
+              status: "installed" as const,
+              environment: input.environment === "default" ? DEFAULT : OTHER,
+              repo: "mattpocock/skills",
+              ref: null,
+              commit: "c0ffee0000000000000000000000000000000001",
+              results: [
+                {
+                  name: "grill-me",
+                  path: "skills/grill-me",
+                  outcome: "installed" as const,
+                  change: {
+                    ...CHANGE,
+                    field: "skills.grill-me",
+                    tool: "environment_skill_install",
+                  },
+                  shadows: false,
+                },
+              ],
+            } as const);
       }),
     agentMarkSecretBuild: (input: Parameters<EnvironmentsRegistry["agentMarkSecretBuild"]>[0]) =>
       Effect.sync(() => {
@@ -362,6 +395,31 @@ describe("the Session's Environments", () => {
     expect(upkept).toEqual([]);
   });
 
+  it("hand the Session's own Workspace the Skill set after an install, asking the Registry to fetch as the App", async () => {
+    const { environments, skillSetsHanded, skillsAsked, upkept } = open();
+    const input = { environment: "default", source: "mattpocock/skills@grill-me", author };
+
+    const installed = await Effect.runPromise(environments.installSkills(input));
+
+    // The Session passes the source on; it holds no token and fetches nothing.
+    expect(skillsAsked).toEqual([
+      {
+        environment: "default",
+        source: "mattpocock/skills@grill-me",
+        author: { session: "s-1", ...author },
+      },
+    ]);
+    expect(installed).toMatchObject({
+      status: "installed",
+      environment: { id: "default", name: "Default" },
+      commit: "c0ffee0000000000000000000000000000000001",
+      results: [{ name: "grill-me", outcome: "installed" }],
+      handed: true,
+    });
+    expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
+    expect(upkept).toEqual([]);
+  });
+
   it("hand nothing when the Session's Environment keeps its own Skill of the name kept for every Environment", async () => {
     const { environments, skillSetsHanded } = open("changed", "changed", true);
 
@@ -407,6 +465,22 @@ describe("the Session's Environments", () => {
 
     expect(checked).toMatchObject({ status: "ready", name: "release", current: null });
     expect(skillsAsked).toEqual([{ environment: "*", folder: "release", files }]);
+  });
+
+  it("leave the Session's Workspace as it is after an install for another Environment, or for none", async () => {
+    const { environments, skillSetsHanded } = open();
+
+    const other = await Effect.runPromise(
+      environments.installSkills({ environment: "0000abcd", source: "o/r", author }),
+    );
+
+    const missing = await Effect.runPromise(
+      environments.installSkills({ environment: "ghost", source: "o/r", author }),
+    );
+
+    expect(other).toMatchObject({ status: "installed", handed: false });
+    expect(missing).toEqual({ status: "missing" });
+    expect(skillSetsHanded).toEqual([]);
   });
 
   it("hand nothing after removing a Skill the Environment does not keep", async () => {

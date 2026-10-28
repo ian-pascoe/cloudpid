@@ -71,6 +71,14 @@ describe("toolSummary", () => {
         reason: "r",
       }),
     ).toBe("/workspace/.cloudpid/tmp/release");
+    expect(
+      toolSummary("environment_skill_install", {
+        id: "0000abcd",
+        source: "mattpocock/skills@grill-me",
+        reason: "r",
+      }),
+    ).toBe("0000abcd: mattpocock/skills@grill-me");
+    expect(toolSummary("skill_search", { query: "grill" })).toBe("grill");
     expect(toolSummary("environment_skill_remove", { id: "0000abcd", name: "release" })).toBe(
       "release in 0000abcd",
     );

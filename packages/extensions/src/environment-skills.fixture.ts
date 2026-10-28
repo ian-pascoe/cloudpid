@@ -14,13 +14,14 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { ChangeAuthor } from "./environment.ts";
-import type { EnvironmentSkills, SkillPreview } from "./environment-skills.ts";
+import type { EnvironmentSkills, SkillPreview, SkillsInstalled } from "./environment-skills.ts";
 
 /** Skills that fail when called, for a fake that serves the other tools only. */
 export const unusedSkills: EnvironmentSkills = {
   saveSkill: () => Effect.die("saveSkill is not used here"),
   previewSkill: () => Effect.die("previewSkill is not used here"),
   removeSkill: () => Effect.die("removeSkill is not used here"),
+  installSkills: () => Effect.die("installSkills is not used here"),
 };
 
 /** The description a `SKILL.md`'s frontmatter gives, for a fake that does not parse YAML. */
@@ -60,6 +61,16 @@ export const fakeSkills = () => {
   let removalRefusal: string | undefined;
   let next = 1;
   let clock = 1_000;
+
+  /** What the Registry answers an install with, and what it was asked. */
+  let installation: SkillsInstalled | undefined;
+
+  const installs: Array<{
+    environment: string;
+    source: string;
+    skills: ReadonlyArray<string> | undefined;
+    reason: string;
+  }> = [];
 
   const changeOf = (
     environment: string,
@@ -224,6 +235,17 @@ export const fakeSkills = () => {
             : environment === "default",
         };
       }),
+    installSkills: ({ environment, source, skills, author }) =>
+      Effect.sync(() => {
+        installs.push({ environment, source, skills, reason: author.reason });
+
+        return (
+          installation ?? {
+            status: "refused" as const,
+            message: "the fake Registry was given no answer",
+          }
+        );
+      }),
   };
 
   /** The Skills kept for a scope, as the Registry lists them. */
@@ -245,6 +267,11 @@ export const fakeSkills = () => {
     removals,
     listed,
     recorded,
+    installs,
+    /** Answer the next installs with `answer`. */
+    answerInstall: (answer: SkillsInstalled) => {
+      installation = answer;
+    },
     refuse: (message: string) => {
       refusal = message;
     },

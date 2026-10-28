@@ -18,6 +18,7 @@ import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { buildUpkeep } from "./registry/builds.ts";
 import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
+import { searchSkillsSh } from "./registry/skill-search.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import {
   legacyCleanup,
@@ -232,6 +233,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
             builds,
             lookups,
             branches,
+            skillSearch: searchSkillsSh,
             background: (effect) => execution.waitUntil(effect),
           });
 
@@ -247,7 +249,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
         // The Session DOs refuse the app's key in a variable; the Worker asks GitHub for the draft's branches as the app.
         Layer.provideMerge(GitHubAppConfigLive),
         Layer.provideMerge(
-          RegistryLive.pipe(Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive))),
+          RegistryLive.pipe(
+            Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive, GitHubAppConfigLive)),
+          ),
         ),
       ),
     ),
