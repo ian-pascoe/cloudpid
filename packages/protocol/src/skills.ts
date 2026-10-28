@@ -1,4 +1,4 @@
-// An Environment's own Skills (ADR-0026, `docs/architecture/workspace.md` → The Environment's own Skills): what the Environments page lists of
+// An Environment's own Skills (ADR-0026, `docs/architecture/workspace.md` → The Environment's own Skills): what the Skills page lists of
 // them, and how an Agent change records one. Shared by the server (which keeps and changes them) and the web app (which
 // lists them and shows a change's files as diffs).
 import * as Arr from "effect/Array";
@@ -44,7 +44,7 @@ export const skillSourceUrl = ({ repo, path, commit }: SkillSource): string =>
 export const skillSourceText = ({ repo, path, ref, commit }: SkillSource): string =>
   `${repo}${path === "" ? "" : `/${path}`} at ${ref === null ? "" : `${ref}, `}${shortSha(commit)}`;
 
-/** A Skill kept for an Environment, as the Environments page lists it. Times are epoch milliseconds. */
+/** A Skill kept for an Environment, as the Skills page lists it. Times are epoch milliseconds. */
 export const EnvironmentSkill = Schema.Struct({
   /** Its name, from its `SKILL.md` frontmatter: also its folder's under `SKILLS_ROOT`. */
   name: Schema.String,
@@ -100,7 +100,7 @@ export const SkillChangeFiles = Schema.Struct({
 
 export type SkillChangeFiles = typeof SkillChangeFiles.Type;
 
-/** A Skill a repo holds, as the Environments page lists it for the owner to tick. */
+/** A Skill a repo holds, as the Skills page lists it for the owner to tick. */
 export const ListedSkill = Schema.Struct({
   name: Schema.String,
   description: Schema.String,
