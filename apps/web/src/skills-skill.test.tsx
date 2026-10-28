@@ -56,6 +56,7 @@ const unknown = (over: Partial<SkillView> = {}): SkillView => ({
   path: "skills/engineering/tdd",
   skillId: "tdd",
   skillMd: SKILL_MD,
+  skillMdFile: "SKILL.md",
   files: [
     { path: "SKILL.md", size: 400 },
     { path: "references/red-green.md", size: 2048 },
@@ -170,19 +171,37 @@ describe("a Skill's page", () => {
   );
 
   it.effect(
-    "leaves out what a repo's markdown would load or run, and sends a relative link to the file on GitHub",
+    "leaves out what a repo's markdown would load or run, and keeps a relative link a link rather than blocking it",
     () =>
       Effect.gen(function* () {
         const markup = yield* render(() => Effect.succeed(found(view())));
+        const skillMd = /<section aria-label="SKILL.md".*?<\/section>/s.exec(markup)?.[0] ?? "";
 
         expect(markup).not.toContain("<img");
         expect(markup).not.toContain("tracker.test");
         expect(markup).not.toContain("<script");
         expect(text(markup)).toContain("a diagram");
-        expect(links(markup).map(({ href }) => href)).toContain(
-          `https://github.com/mattpocock/skills/blob/${COMMIT}/skills/engineering/tdd/references/red-green.md`,
-        );
+        // The link is Streamdown's (its address shows when it is clicked): it is not the blocked text a relative URL
+        // would be without the rewrite (`relativeLinksTo`, tested in markdown.test.tsx).
+        expect(skillMd).toContain('data-streamdown="link"');
+        expect(skillMd).toContain("the reference");
+        expect(skillMd).not.toContain("[blocked]");
       }),
+  );
+
+  it.effect("links the SKILL.md of the Files by the name the file has on GitHub", () =>
+    Effect.gen(function* () {
+      const markup = yield* render(() => Effect.succeed(found(view({ skillMdFile: "skill.md" }))));
+
+      const hrefs = links(markup).map(({ href }) => href);
+
+      expect(hrefs).toContain(
+        `https://github.com/mattpocock/skills/blob/${COMMIT}/skills/engineering/tdd/skill.md`,
+      );
+      expect(hrefs).not.toContain(
+        `https://github.com/mattpocock/skills/blob/${COMMIT}/skills/engineering/tdd/SKILL.md`,
+      );
+    }),
   );
 
   it.effect(
@@ -374,6 +393,34 @@ describe("a Skill's page that has no Skill to show", () => {
       });
       expect(markup).not.toContain("Install</button>");
     }),
+  );
+
+  it.effect(
+    "says a repo has too many skills to find one by its name, and links the repo's Skills",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render(
+          () =>
+            Effect.fail(
+              SkillRepoError.make({
+                kind: "too_many",
+                message: "The repo has more than 200 skills.",
+              }),
+            ),
+          { search: "?ref=v1" },
+        );
+
+        expect(markup).toContain('role="alert"');
+        expect(text(markup)).toContain(
+          "mattpocock/skills has too many skills to find “tdd” by its name.",
+        );
+        expect(text(markup)).toContain("The repo has more than 200 skills.");
+        expect(links(markup)).toContainEqual({
+          href: "/skills/mattpocock/skills?ref=v1",
+          text: "Pick it from the skills in mattpocock/skills",
+        });
+        expect(markup).not.toContain("Install</button>");
+      }),
   );
 
   it.effect("says a repo is not found, or not readable by the GitHub App, in one state", () =>

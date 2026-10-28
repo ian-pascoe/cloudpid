@@ -1,5 +1,5 @@
-// Markdown as the web app draws it (the transcript's messages and a Skill's SKILL.md): which URLs it loads, how its blocks
-// look, and the renderer of a text that is not a message.
+// Markdown as the web app draws it (the transcript's messages and a Skill's SKILL.md; docs/architecture/client-and-protocol.md
+// → Skill page): which URLs it loads, how its blocks look, and the renderer of a text that is not a message.
 
 import { type Components, defaultRemarkPlugins, Streamdown } from "streamdown";
 import * as Record from "effect/Record";
@@ -29,9 +29,11 @@ interface MarkdownNode {
 /**
  * A remark plugin that makes the links of a markdown text that lives in a repo absolute against `base` (where the text is
  * on GitHub), as a SKILL.md writes them relative to itself. An anchor in the text stays one, and so does a URL that is
- * complete. It runs before the sanitizing, which blocks a relative URL.
+ * complete. It runs before the sanitizing, which blocks a relative URL. It rewrites markdown links and definitions only:
+ * a link written as raw HTML (`<a href="docs/x.md">`) is not in the markdown tree, and the sanitizing shows it as plain
+ * text, "[blocked]", rather than as a link.
  */
-const relativeLinksTo = (base: string) => () => {
+export const relativeLinksTo = (base: string) => () => {
   const visit = (node: MarkdownNode) => {
     if ((node.type === "link" || node.type === "definition") && node.url !== undefined) {
       if (!node.url.startsWith("#")) {

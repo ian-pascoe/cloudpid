@@ -78,12 +78,6 @@ export type SkillRepos = {
   ) => Effect.Effect<SkillViewed, SkillRepoError>;
 };
 
-/**
- * What a Skill's page (`/skills/:owner/:repo/:skill`) calls it: its folder's name, or its own name for a Skill at the
- * repo's root, which has no folder. It is how a link names a Skill, so a page that finds the Skill again uses this.
- */
-export { skillIdOf };
-
 /** How long the answer for a blob is kept: the max-age of what is put. The blob's content does not change; the cache may forget. */
 export const SKILL_MD_TTL_SECONDS = 30 * 24 * 3_600;
 
@@ -131,6 +125,7 @@ const errorKind = (kind: string): SkillRepoErrorKind => {
   switch (kind) {
     case "no_match":
       return "no_skill";
+    case "too_many":
     case "not_found":
     case "bad_ref":
     case "rate_limited":
@@ -186,6 +181,7 @@ const viewedRows = (viewing: Exclude<SkillViewing, { readonly status: "failed" }
     path: viewing.skill.path,
     skillId: skillIdOf(viewing.skill),
     skillMd: viewing.skillMd,
+    skillMdFile: viewing.skillMdFile,
     files: viewing.files,
   };
 
@@ -259,6 +255,28 @@ export const repoSearchQuery = (repo: string): string | undefined =>
   queryProblem(repo) === undefined ? repo : undefined;
 
 /**
+ * What the Skill directory's `found` rows of `repo` (GitHub's names ignore case) say of a Skill's installs, matched by the
+ * Skill's ID in the directory against the folder's name, else the Skill's name (how an install names a Skill); undefined
+ * when the directory does not know it.
+ */
+const installsIn = (
+  repo: string,
+  found: ReadonlyArray<DirectoryRow>,
+): ((skill: { readonly name: string; readonly skillId: string }) => number | undefined) => {
+  const installsOf = new Map<string, number>();
+
+  for (const row of found) {
+    if (row.source.toLowerCase() !== repo.toLowerCase()) continue;
+
+    const id = slug(row.skillId);
+
+    installsOf.set(id, Math.max(installsOf.get(id) ?? 0, row.installs));
+  }
+
+  return ({ name, skillId }) => installsOf.get(slug(skillId)) ?? installsOf.get(slug(name));
+};
+
+/**
  * `rows` with each Skill's installs and where it is installed. Installs come from the Skill directory's `found` rows of the
  * same repo (GitHub's names ignore case), matched by the Skill's ID in the directory against the folder's name, else
  * the Skill's name (how an install names a Skill); a Skill whose ID another Skill of the repo shares is left blank, as the
@@ -270,16 +288,7 @@ export const joinRepoSkills = (
   installed: ReadonlyArray<InstalledSkillRef>,
   found: ReadonlyArray<DirectoryRow>,
 ): SkillRepoListing => {
-  const installsOf = new Map<string, number>();
-
-  for (const row of found) {
-    if (row.source.toLowerCase() !== rows.repo.toLowerCase()) continue;
-
-    const id = slug(row.skillId);
-
-    installsOf.set(id, Math.max(installsOf.get(id) ?? 0, row.installs));
-  }
-
+  const installsOf = installsIn(rows.repo, found);
   const idCounts = new Map<string, number>();
 
   for (const { skillId } of rows.skills) {
@@ -289,9 +298,7 @@ export const joinRepoSkills = (
   const skills = rows.skills.map(({ name, description, path, skillId }): RepoSkill => {
     const unique = (idCounts.get(slug(skillId)) ?? 0) === 1;
 
-    const installs = unique
-      ? (installsOf.get(slug(skillId)) ?? installsOf.get(slug(name)))
-      : undefined;
+    const installs = unique ? installsOf({ name, skillId }) : undefined;
 
     const where = installedIn(installed, { repo: rows.repo, path });
 
@@ -325,27 +332,13 @@ export const joinSkillView = (
   installed: ReadonlyArray<InstalledSkillRef>,
   found: ReadonlyArray<DirectoryRow>,
 ): SkillView => {
-  const [skill] = joinRepoSkills(
-    {
-      repo: rows.repo,
-      ref: rows.ref,
-      commit: rows.commit,
-      skills: [
-        { name: rows.name, description: rows.description, path: rows.path, skillId: rows.skillId },
-      ],
-      unreadable: [],
-      internal: 0,
-      omitted: 0,
-    },
-    installed,
-    found,
-  ).skills;
-
   const view: Types.Mutable<SkillView> = { ...rows };
+  const installs = installsIn(rows.repo, found)(rows);
+  const where = installedIn(installed, { repo: rows.repo, path: rows.path });
 
-  if (skill?.installs !== undefined) view.installs = skill.installs;
+  if (installs !== undefined) view.installs = installs;
 
-  if (skill?.installed !== undefined) view.installed = skill.installed;
+  if (where !== undefined) view.installed = where;
 
   return view;
 };

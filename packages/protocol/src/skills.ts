@@ -335,6 +335,11 @@ export const SkillRepoErrorKind = Schema.Literals([
   "bad_ref",
   /** A Skill's page only: the repo is readable at the ref, but holds no such Skill. */
   "no_skill",
+  /**
+   * A Skill's page only: the repo has more SKILL.md files than can be read to find a Skill by its name, and none is in a
+   * folder of that name. The Skill is opened from the repo page, or by its folder (`?path=`).
+   */
+  "too_many",
   /** The owner, repo or ref cannot be one GitHub has. */
   "invalid",
   "rate_limited",
@@ -414,6 +419,8 @@ export const SkillView = Schema.Struct({
   skillId: Schema.String,
   /** Its SKILL.md as it is at the commit, frontmatter included. */
   skillMd: Schema.String,
+  /** That file's name in the Skill's folder, in the case the repo has it (`skill.md` is as good a name as `SKILL.md`). */
+  skillMdFile: Schema.String,
   /** The files an install takes of its folder, `SKILL.md` first, then by path. */
   files: Schema.Array(SkillViewFile),
   /** Why an install would refuse it for its size (too many files or bytes); absent when it fits. */

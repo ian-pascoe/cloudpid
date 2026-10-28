@@ -5,8 +5,8 @@
 // Worker as the GitHub App (so a private repo the app can read works): its SKILL.md rendered and the files an install
 // would take, the commit it was read at, its installs when skills.sh knows them, an Install button that opens the target
 // picker, and where it is installed here with the marks, Update and Remove of the Installed tab (`skills-installed.tsx`).
-// A repo that is not there, that the app cannot read, that has no such ref or Skill, or a name that means several Skills,
-// says so plainly.
+// A repo that is not there, that the app cannot read, that has no such ref or Skill, that has too many skills to find one
+// by its name, or a name that means several Skills, says so plainly.
 
 import { type SkillView } from "@cloudpid/protocol";
 import { skillSourceText } from "@cloudpid/protocol";
@@ -100,6 +100,24 @@ const SkillProblem = ({
               className="underline underline-offset-2 hover:text-foreground"
             >
               See the skills in {where}
+            </InAppLink>
+            .
+          </p>
+        </div>
+      );
+    case "too_many":
+      return (
+        <div role="alert" className="flex flex-col gap-1 text-sm">
+          <p className="font-medium">
+            {where} has too many skills to find “{page.skill}” by its name.
+          </p>
+          <p className="text-muted-foreground">
+            {failure.message}{" "}
+            <InAppLink
+              href={skillRepoPath(page.owner, page.repo, page.ref)}
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Pick it from the skills in {where}
             </InAppLink>
             .
           </p>
@@ -216,28 +234,33 @@ const Files = ({ skill }: { skill: SkillView }) => (
       {skill.files.length === 1 ? "1 file" : `${skill.files.length} files`}
     </h2>
     <ul className="flex flex-col gap-0.5">
-      {skill.files.map((file) => (
-        <li key={file.path} className="flex items-baseline justify-between gap-3 text-sm">
-          <a
-            href={githubFileUrl(
-              skill.repo,
-              skill.commit,
-              skill.path === "" ? file.path : `${skill.path}/${file.path}`,
+      {skill.files.map((file) => {
+        // The SKILL.md of the folder may be written `skill.md`; the link is to the file as GitHub has it.
+        const onGithub = file.path === "SKILL.md" ? skill.skillMdFile : file.path;
+
+        return (
+          <li key={file.path} className="flex items-baseline justify-between gap-3 text-sm">
+            <a
+              href={githubFileUrl(
+                skill.repo,
+                skill.commit,
+                skill.path === "" ? onGithub : `${skill.path}/${onGithub}`,
+              )}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="min-w-0 truncate font-mono text-xs hover:underline"
+              title={`${file.path} on GitHub`}
+            >
+              {file.path}
+            </a>
+            {file.size !== undefined && (
+              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                {byteSize(file.size)}
+              </span>
             )}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="min-w-0 truncate font-mono text-xs hover:underline"
-            title={`${file.path} on GitHub`}
-          >
-            {file.path}
-          </a>
-          {file.size !== undefined && (
-            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-              {byteSize(file.size)}
-            </span>
-          )}
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
     {skill.refused !== undefined && (
       <p role="status" className="text-xs text-amber-600 dark:text-amber-400">

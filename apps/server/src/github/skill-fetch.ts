@@ -314,6 +314,19 @@ const readSkill = async (
   return { ok: true, files, folderHash: await folderHashOf({ tree: tree.entries }, skillMdPath) };
 };
 
+/** Whether the folder of the `SKILL.md` at `skillMdPath` is named `name` (as `slug` writes both): how an install finds a Skill by its folder. */
+const folderIsNamed = (skillMdPath: string, name: string): boolean =>
+  slug(basename(skillFolderOf(skillMdPath))) === slug(name);
+
+/**
+ * Whether the Skill `skill` is the one `name` asks for, as an install reads a name: the name its `SKILL.md` gives (in any
+ * case, or as `slug` writes it), or its folder's name. An install takes the first Skill of the walk that is.
+ */
+export const isNamedSkill = (skill: Pick<ListedSkill, "name" | "path">, name: string): boolean =>
+  skill.name.toLowerCase() === name.toLowerCase() ||
+  slug(skill.name) === slug(name) ||
+  slug(basename(skill.path)) === slug(name);
+
 /**
  * Fetch from `source` the Skills `skills` names (by name, or `["*"]` for all of them), else the one the repo holds, else
  * a listing of those it holds. Reads the tree at the commit the source's ref resolves to (or at `commit`, when one
@@ -379,13 +392,9 @@ export const fetchSkills = async (
     const names = wanted.filter((name) => name !== "*");
 
     // Named Skills whose folder is named the same are found without reading the others' `SKILL.md`.
-    const byFolder = skillMds.filter((path) =>
-      names.some((name) => slug(basename(skillFolderOf(path))) === slug(name)),
-    );
+    const byFolder = skillMds.filter((path) => names.some((name) => folderIsNamed(path, name)));
 
-    const folderAnswers = names.every((name) =>
-      byFolder.some((path) => slug(basename(skillFolderOf(path))) === slug(name)),
-    );
+    const folderAnswers = names.every((name) => byFolder.some((path) => folderIsNamed(path, name)));
 
     const toRead =
       folders === undefined && !all && names.length > 0 && folderAnswers ? byFolder : skillMds;
@@ -474,14 +483,7 @@ export const fetchSkills = async (
       const missing: string[] = [];
 
       for (const name of names) {
-        const lower = name.toLowerCase();
-
-        const match = candidates.find(
-          (candidate) =>
-            candidate.name.toLowerCase() === lower ||
-            slug(candidate.name) === slug(name) ||
-            slug(basename(candidate.path)) === slug(name),
-        );
+        const match = candidates.find((candidate) => isNamedSkill(candidate, name));
 
         if (match === undefined) missing.push(name);
         else if (!found.includes(match)) found.push(match);
@@ -883,6 +885,8 @@ export type SkillViewing =
       readonly skill: ListedSkill;
       /** Its `SKILL.md` as it is at the commit. */
       readonly skillMd: string;
+      /** The name of that file in the Skill's folder, in the case the repo has it (`skill.md` is as good a name as `SKILL.md`). */
+      readonly skillMdFile: string;
       /** The files an install takes (`skillFilesIn`), `SKILL.md` first, then by path. */
       readonly files: ReadonlyArray<SkillFileEntry>;
       /** Why an install would refuse the Skill for its size, or undefined. What a file holds is only checked by the install. */
@@ -899,12 +903,13 @@ export type SkillViewing =
   | { readonly status: "failed"; readonly kind: FetchFailureKind; readonly message: string };
 
 /**
- * The Skill `skill` of `repo` at `ref`, found as an install finds a named Skill (by the name its `SKILL.md` gives, in
- * any case or as `slug` writes it, else by its folder's name), the `SKILL.md` files read as a listing reads them (and
- * kept by blob in `cache`); one that is `metadata.internal` is found too, as an install by name takes it. When several
- * Skills answer to the name, they are told (`ambiguous`) and none is read, unless `path` names the Skill's folder
- * (`""`: the repo's root), which is read whatever it is called. Then its `SKILL.md` and the files an install takes of
- * its folder, at one commit. A Skill the repo does not hold is a `no_match` failure.
+ * The Skill `skill` of `repo` at `ref`, found by the rules an install finds a named Skill by: the same `SKILL.md` files
+ * are read (the folders named so alone when there are any, else the walk's, refused as `too_many` past
+ * `MAX_SKILL_CANDIDATES`; kept by blob in `cache`) and the same test picks it (`isNamedSkill`); one that is
+ * `metadata.internal` is found too, as an install by name takes it. Where an install takes the first Skill that
+ * answers to the name, the page tells them all (`ambiguous`), unless `path` names the Skill's folder (`""`: the repo's
+ * root), which is read whatever it is called. Then its `SKILL.md` and the files an install takes of its folder, at one
+ * commit. A Skill the repo does not hold is a `no_match` failure.
  */
 export const viewSkill = async (
   reader: RepoReader,
@@ -964,9 +969,24 @@ export const viewSkill = async (
         skill: { name: info.name, description: info.description, path },
       };
     } else {
-      const wanted = skillName.toLowerCase();
+      // As an install reads a name: the folders named so are read alone when there are any, else every `SKILL.md` of the
+      // walk, and an install refuses (`too_many`) when that is more than it may read.
+      const skillMds = findSkillMdPaths({ tree: tree.entries }).filter(
+        (path) => basename(path).toLowerCase() === "skill.md",
+      );
 
-      const read = await mapLimited(walkSkillMds(tree).toRead, async (skillMdPath) => ({
+      const byFolder = skillMds.filter((path) => folderIsNamed(path, skillName));
+      const toRead = byFolder.length > 0 ? byFolder : skillMds;
+
+      if (toRead.length > MAX_SKILL_CANDIDATES) {
+        return {
+          status: "failed",
+          kind: "too_many",
+          message: `${name}${at} holds ${toRead.length} SKILL.md files, more than the ${MAX_SKILL_CANDIDATES} that can be read to find a Skill by name, and none is in a folder named ${JSON.stringify(skillName)}.`,
+        };
+      }
+
+      const read = await mapLimited(toRead, async (skillMdPath) => ({
         skillMdPath,
         info: await infoOf(skillMdPath),
       }));
@@ -986,15 +1006,8 @@ export const viewSkill = async (
           : [],
       );
 
-      // The name a SKILL.md gives wins over the name of its folder, as it does for an install.
-      const byName = candidates.filter(
-        ({ skill }) => skill.name.toLowerCase() === wanted || slug(skill.name) === slug(skillName),
-      );
-
-      const matches =
-        byName.length > 0
-          ? byName
-          : candidates.filter(({ skill }) => slug(basename(skill.path)) === slug(skillName));
+      // Every Skill an install would take for the name, in the walk's order: it takes the first, the page lists them.
+      const matches = candidates.filter(({ skill }) => isNamedSkill(skill, skillName));
 
       if (matches.length > 1) {
         return {
@@ -1048,6 +1061,7 @@ export const viewSkill = async (
       commit,
       skill,
       skillMd,
+      skillMdFile: basename(skillMdPath),
       files,
       refused: problems.length === 0 ? undefined : problems.join("; "),
     };

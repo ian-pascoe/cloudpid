@@ -827,13 +827,14 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * One Skill of a GitHub repo as a Skill's page shows it: Skill `skill` of `owner`/`repo` at `ref` (a branch, tag or
-   * commit; absent: the default branch's head), found as an install finds a named Skill (the name its SKILL.md gives, else
-   * its folder's name), or, with `path`, exactly the Skill in that folder of the repo (`""`: its root), whatever it is
-   * called. It answers the SKILL.md and the files an install would take, read at one commit by the main Worker as the
+   * commit; absent: the default branch's head), found by the rules an install by name uses (the same
+   * SKILL.md files are read and the same test picks it: the name its SKILL.md gives, or its folder's name), or, with `path`, exactly the Skill in that folder of the repo (`""`: its root), whatever it is
+   * called. It answers the SKILL.md (and the name the file has on GitHub) and the files an install would take, read at one commit by the main Worker as the
    * GitHub App with a read-only token (so a private repo the app can read works), with the Skill's installs when skills.sh
-   * knows them and where it is installed here; or, when the name means several Skills and no `path` was given, those
-   * Skills, with nothing read of them. Fails with a `SkillRepoError` as `listRepoSkills` does, and with kind `no_skill`
-   * when the repo has no such Skill.
+   * knows them and where it is installed here; or, when the name means several Skills and no `path` was given, every
+   * Skill that answers to the name, where an install takes the first. Fails with a `SkillRepoError` as `listRepoSkills`
+   * does, with kind `no_skill` when the repo has no such Skill, and with `too_many` when a name is asked of a repo with
+   * more SKILL.md files than an install reads, none in a folder named so.
    */
   Rpc.make("viewSkill", {
     payload: {

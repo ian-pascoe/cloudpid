@@ -1533,6 +1533,7 @@ const fakeRegistries = () => {
             path,
             skillId: skill,
             skillMd: `---\nname: ${skill}\n---\nSteps.\n`,
+            skillMdFile: "SKILL.md",
             files: [{ path: "SKILL.md", size: 30 }, { path: "references/q.md" }],
           },
         });
@@ -3639,6 +3640,7 @@ it("answers one Skill of a repo with its installs from the Skill directory and w
       path: "skills/engineering/tdd",
       skillId: "tdd",
       skillMd: "---\nname: tdd\n---\nSteps.\n",
+      skillMdFile: "SKILL.md",
       files: [{ path: "SKILL.md", size: 30 }, { path: "references/q.md" }],
       // From the directory's search of the repo.
       installs: 900_000,

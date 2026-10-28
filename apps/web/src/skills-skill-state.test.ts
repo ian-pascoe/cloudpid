@@ -41,6 +41,7 @@ const view = (over: Partial<SkillView> = {}): SkillView => ({
   path: "skills/tdd",
   skillId: "tdd",
   skillMd: "---\nname: tdd\ndescription: Test first.\n---\nSteps.\n",
+  skillMdFile: "SKILL.md",
   files: [{ path: "SKILL.md", size: 50 }],
   ...over,
 });

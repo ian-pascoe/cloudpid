@@ -492,6 +492,7 @@ describe("a Skill's page", () => {
       path: "skills/grill-me",
       skillId: "grill-me",
       skillMd: skillMd("grill-me"),
+      skillMdFile: "SKILL.md",
       files: [
         { path: "SKILL.md", size: skillMd("grill-me").length },
         { path: "references/questions.md", size: 7 },
@@ -533,7 +534,13 @@ describe("a Skill's page", () => {
 
     const { skill } = found(await viewIn(github, { repo: "one", skill: "only-one" }));
 
-    expect(skill).toMatchObject({ name: "only-one", path: "", skillId: "only-one" });
+    expect(skill).toMatchObject({
+      name: "only-one",
+      path: "",
+      skillId: "only-one",
+      // The file is `skill.md` on GitHub, and the page links it by that name.
+      skillMdFile: "skill.md",
+    });
     expect(skill.files).toEqual([{ path: "SKILL.md", size: skillMd("only-one").length }]);
   });
 
@@ -610,7 +617,7 @@ describe("a Skill's page", () => {
     expect((await read(first)).skillMd).toContain("Old.");
   });
 
-  it("reads each SKILL.md once to tell what it says, and none of the Skill's other files", async () => {
+  it("reads, as an install does, the SKILL.md of the folders named so alone when there are any, and none of the Skill's other files", async () => {
     const github = fakeGithub();
 
     github.push("o/skills", REPO);
@@ -621,15 +628,119 @@ describe("a Skill's page", () => {
 
     await run(repos.view({ owner: "o", repo: "skills", skill: "tdd" }));
 
-    // Each SKILL.md is read once to tell what it says (kept by blob); the text shown is the Skill's own, the same blob.
-    expect(blobsAsked(github.requests)).toHaveLength(4);
-    expect(puts).toHaveLength(4);
+    // Only the SKILL.md of the folder named tdd: it is read to tell what it says (kept by blob), and is the text shown.
+    expect(blobsAsked(github.requests)).toHaveLength(1);
+    expect(puts).toHaveLength(1);
 
     github.reset();
     await run(repos.view({ owner: "o", repo: "skills", skill: "tdd" }));
 
     // Only the text of the SKILL.md shown is read again.
     expect(blobsAsked(github.requests)).toHaveLength(1);
+  });
+
+  it("reads each SKILL.md once to tell what it says when no folder is named as the Skill is", async () => {
+    const github = fakeGithub();
+
+    github.push("o/skills", { ...REPO, "skills/zz/SKILL.md": skillMd("Zed") });
+    github.reset();
+
+    const { store, puts } = await realCache();
+    const repos = skillReposOver({ reader: github.reader, cache: store });
+
+    await run(repos.view({ owner: "o", repo: "skills", skill: "zed" }));
+
+    // Five SKILL.md files, each read once (kept by blob); the one shown is among them.
+    expect(blobsAsked(github.requests)).toHaveLength(5);
+    expect(puts).toHaveLength(5);
+  });
+
+  it("is the Skill an install by the same name takes, whichever of several answers: the folder named so first", async () => {
+    const github = fakeGithub();
+
+    // `tdd` is the folder of one Skill and the name of another.
+    github.push("o/skills", {
+      "a/tdd/SKILL.md": skillMd("test-driven"),
+      "b/x/SKILL.md": skillMd("tdd"),
+    });
+
+    const fetched = await fetchSkills(github.reader, {
+      source: { owner: "o", name: "skills", repo: "o/skills", ref: null, path: "", skill: null },
+      skills: ["tdd"],
+    });
+
+    const viewed = found(await viewIn(github, { skill: "tdd" })).skill;
+
+    if (fetched.status !== "fetched") throw new Error("not fetched");
+
+    expect(fetched.skills.map(({ path }) => path)).toEqual(["a/tdd"]);
+    expect(viewed.path).toBe("a/tdd");
+    expect(viewed.name).toBe("test-driven");
+  });
+
+  it("is told apart from the others of its name by the page where an install takes the first", async () => {
+    const github = fakeGithub();
+
+    // No folder is called `dup`, so the walk is read, and two Skills are named so.
+    github.push("o/skills", {
+      "a/one/SKILL.md": skillMd("dup"),
+      "b/two/SKILL.md": skillMd("Dup"),
+    });
+
+    const fetched = await fetchSkills(github.reader, {
+      source: { owner: "o", name: "skills", repo: "o/skills", ref: null, path: "", skill: null },
+      skills: ["dup"],
+    });
+
+    if (fetched.status !== "fetched") throw new Error("not fetched");
+
+    expect(fetched.skills.map(({ path }) => path)).toEqual(["a/one"]);
+    expect(await viewIn(github, { skill: "dup" })).toMatchObject({
+      status: "ambiguous",
+      candidates: [{ path: "a/one" }, { path: "b/two" }],
+    });
+  });
+
+  it("is refused as too many when a name could be any of more than 200 SKILL.md files and no folder is named so, as an install is", async () => {
+    const github = fakeGithub();
+
+    github.push(
+      "o/many",
+      Object.fromEntries(
+        Array.from({ length: 201 }, (_, at) => [`skills/s${at}/SKILL.md`, skillMd(`s${at}`)]),
+      ),
+    );
+    github.reset();
+
+    const { store } = await realCache();
+    const repos = skillReposOver({ reader: github.reader, cache: store });
+    const refused = await failure(repos.view({ owner: "o", repo: "many", skill: "other" }));
+
+    expect(refused.kind).toBe("too_many");
+    expect(refused.message).toContain("201 SKILL.md files");
+    // Nothing was read to say so.
+    expect(blobsAsked(github.requests)).toHaveLength(0);
+  });
+
+  it("is found in a repo of more than 200 SKILL.md files when its folder is named so, or when a folder says which", async () => {
+    const github = fakeGithub();
+
+    github.push("o/many", {
+      ...Object.fromEntries(
+        Array.from({ length: 250 }, (_, at) => [`skills/s${at}/SKILL.md`, skillMd(`s${at}`)]),
+      ),
+      // Past the first 200 of the walk.
+      "skills/zlast/SKILL.md": skillMd("last-one"),
+    });
+
+    expect(found(await viewIn(github, { repo: "many", skill: "zlast" })).skill.name).toBe(
+      "last-one",
+    );
+
+    expect(
+      found(await viewIn(github, { repo: "many", skill: "anything", path: "skills/s240" })).skill
+        .name,
+    ).toBe("s240");
   });
 
   it("is told when an install would refuse it for its size, with its files still listed", async () => {
