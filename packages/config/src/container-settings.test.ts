@@ -41,6 +41,7 @@ const NONE = {
   setupScript: "",
   startScript: "",
   toolchains: "",
+  spareWorkspace: true,
 } as const;
 
 const resolved = (overrides: Schema.Json): ContainerSettings => {
@@ -70,6 +71,7 @@ describe("the defaults", () => {
       setupScript: "",
       startScript: "",
       toolchains: "",
+      spareWorkspace: true,
     });
   });
 
@@ -396,6 +398,12 @@ describe("resolveContainerSettings", () => {
     expect(rejected({ setupScript: "a\u0000b" })).toContain("setupScript");
   });
 
+  it("takes the Spare Workspace on or off, and nothing but a boolean", () => {
+    expect(resolved({ spareWorkspace: false }).spareWorkspace).toBe(false);
+    expect(resolved({ spareWorkspace: true }).spareWorkspace).toBe(true);
+    expect(rejected({ spareWorkspace: "off" })).toContain("spareWorkspace");
+  });
+
   it("rejects a key it does not know, so a typo is not silently ignored", () => {
     expect(rejected({ idleMinute: 5 })).toContain("idleMinute");
   });
@@ -441,6 +449,9 @@ describe("containerOverridesFrom", () => {
     expect(
       containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, maxInstance: "standard-4" }),
     ).toEqual({ maxInstance: "standard-4" });
+    expect(
+      containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, spareWorkspace: false }),
+    ).toEqual({ spareWorkspace: false });
   });
 });
 
@@ -473,6 +484,17 @@ describe("resolveContainerSettingsLeniently", () => {
     expect(settings).toEqual({ instance: "cpu-1", idleMinutes: 30, ignore: [], ...NONE });
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("instance");
+  });
+
+  it("drops a Spare Workspace switch that is not a boolean, which leaves the spare on", () => {
+    const { settings, dropped } = resolveContainerSettingsLeniently({
+      spareWorkspace: "no",
+      idleMinutes: 30,
+    });
+
+    expect(settings).toMatchObject({ spareWorkspace: true, idleMinutes: 30 });
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("spareWorkspace");
   });
 
   it("drops every stale override, however many, and keeps the rest", () => {

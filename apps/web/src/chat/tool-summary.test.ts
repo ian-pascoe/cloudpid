@@ -105,6 +105,13 @@ describe("toolSummary", () => {
       toolSummary("environment_setup_script_set", { script: "echo", reason: "jq\nmore" }),
     ).toBe("jq");
     expect(toolSummary("environment_ignore_set", { patterns: ["/a"], reason: "big" })).toBe("big");
+    expect(
+      toolSummary("environment_spare_workspace_set", {
+        id: "0000abcd",
+        enabled: false,
+        reason: "rarely used",
+      }),
+    ).toBe("0000abcd: rarely used (spare off)");
     expect(toolSummary("environment_create", { name: "Billing", reason: "r" })).toBe("Billing");
     expect(toolSummary("environment_rename", { id: "0000abcd", name: "Main" })).toBe(
       "Main in 0000abcd",

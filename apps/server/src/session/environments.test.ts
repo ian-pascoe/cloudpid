@@ -79,6 +79,7 @@ const open = (
   const skillSetsHanded: Array<{ object: string; hash: string }> = [];
   const skillsAsked: unknown[] = [];
   const upkept: string[] = [];
+  const sparesKept: string[] = [];
   const asked: unknown[] = [];
   const everyAsked: unknown[] = [];
   const markAsked: unknown[] = [];
@@ -357,6 +358,12 @@ const open = (
           upkept.push(environment);
         }),
     },
+    spares: {
+      of: (environment) =>
+        Effect.sync(() => {
+          sparesKept.push(environment);
+        }),
+    },
     lifecycle: unusedLifecycle,
   });
 
@@ -366,6 +373,7 @@ const open = (
     skillSetsHanded,
     skillsAsked,
     upkept,
+    sparesKept,
     asked,
     everyAsked,
     markAsked,
@@ -795,6 +803,23 @@ describe("the Session's Environments", () => {
       expect(handedOver).toEqual([]);
       expect(upkept).toEqual([]);
     }
+  });
+
+  it("keep the Environment's spare Workspace current after a change of its Spare Workspace setting only", async () => {
+    const { environments, sparesKept, upkept } = open();
+
+    await Effect.runPromise(environments.change({ environment: "default", change, author }));
+    expect(sparesKept).toEqual([]);
+
+    await Effect.runPromise(
+      environments.change({
+        environment: "0000abcd",
+        change: { field: "spareWorkspace", value: false },
+        author: { ...author, tool: "environment_spare_workspace_set" },
+      }),
+    );
+    expect(sparesKept).toEqual(["0000abcd"]);
+    expect(upkept).toEqual(["default", "0000abcd"]);
   });
 
   it("leave the Session's Workspace as it is for a change of another Environment", async () => {

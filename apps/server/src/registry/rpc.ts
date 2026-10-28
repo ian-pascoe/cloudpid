@@ -1,4 +1,4 @@
-import { SettingsError } from "@cloudpid/config";
+import { SettingsError, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
@@ -170,7 +170,10 @@ export type Spares = {
    * `of` fails.
    */
   readonly all: Effect.Effect<void>;
-  /** Keep `environment`'s spare current, as after a Session took it, its Repos changed or it has a new Build. */
+  /**
+   * Keep `environment`'s spare current, as after a Session took it, its Repos changed, it has a new Build or its
+   * Container settings were saved (the Spare Workspace setting turns the spare off or on).
+   */
   readonly of: (environment: string) => Effect.Effect<void>;
 };
 
@@ -752,8 +755,13 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((update) => {
             switch (update.status) {
               case "saved":
-                // The variables, the Setup Script and the Container-only paths are what a Build is made with.
-                return background(builds.of(environment)).pipe(Effect.as(update.state));
+                // The Spare Workspace setting says whether the Environment keeps a spare: one turned off is removed,
+                // one turned on made. The variables, the Setup Script and the Container-only paths are what a Build
+                // is made with.
+                return background(spares.of(environment)).pipe(
+                  Effect.andThen(background(builds.of(environment))),
+                  Effect.as(update.state),
+                );
               // Overrides that do not resolve say why, one problem per line, and nothing was saved.
               case "rejected":
                 return failed(update.message);
@@ -805,9 +813,11 @@ export const serveRegistryRpc = <R = never>(
                 }
 
                 // As after the owner's save: the variables are among what a Build is made with. A Repo put back or
-                // taken out also makes the spare stale, as the owner's \`addRepo\` and \`removeRepo\` do.
+                // taken out also makes the spare stale, as the owner's \`addRepo\` and \`removeRepo\` do, and the Spare
+                // Workspace setting put back keeps or removes the spare.
                 return (
-                  fieldRepo(revert.change.field) === null
+                  fieldRepo(revert.change.field) === null &&
+                  revert.change.field !== SPARE_WORKSPACE_FIELD
                     ? Effect.void
                     : background(spares.of(environment))
                 ).pipe(

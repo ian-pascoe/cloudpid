@@ -788,7 +788,10 @@ const SizeSelect = ({
   </NativeSelect>
 );
 
-/** The Container fields of the Edit dialog: size, size limit, idle time and extra paths, saved together with the name. */
+/**
+ * The Container fields of the Edit dialog: size, size limit, idle time, extra paths and the Spare Workspace, saved
+ * together with the name.
+ */
 const ContainerFields = ({
   id,
   instance,
@@ -798,10 +801,12 @@ const ContainerFields = ({
   idleProblem,
   paths,
   pathsProblem,
+  spareWorkspace,
   onInstance,
   onMaxInstance,
   onIdle,
   onPaths,
+  onSpareWorkspace,
 }: {
   id: string;
   instance: InstanceType;
@@ -811,10 +816,12 @@ const ContainerFields = ({
   idleProblem: string | null;
   paths: string;
   pathsProblem: string | null;
+  spareWorkspace: boolean;
   onInstance: (instance: InstanceType) => void;
   onMaxInstance: (maxInstance: InstanceType) => void;
   onIdle: (idle: string) => void;
   onPaths: (paths: string) => void;
+  onSpareWorkspace: (spareWorkspace: boolean) => void;
 }) => (
   <fieldset className="flex min-w-0 flex-col gap-3">
     <legend className="mb-2 text-xs font-medium text-muted-foreground">Container</legend>
@@ -893,19 +900,37 @@ const ContainerFields = ({
         <p className="text-xs text-destructive">{pathsProblem}</p>
       )}
     </div>
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={`spare-${id}`} className="flex items-center gap-2 text-sm font-medium">
+        <input
+          id={`spare-${id}`}
+          type="checkbox"
+          checked={spareWorkspace}
+          onChange={(event) => {
+            onSpareWorkspace(event.target.checked);
+          }}
+        />
+        Keep a Spare Workspace ready
+      </label>
+      <p className="text-xs text-muted-foreground">
+        A new session starts without waiting for the clones and Setup Scripts, at the cost of the
+        minute or two of Container time each spare takes to prepare.
+      </p>
+    </div>
     <p className="text-xs text-muted-foreground">
-      These apply the next time a Workspace's Container starts: a running one keeps what it started
-      with. A saved disk larger than a smaller size's disk cannot be restored there, and one saved
-      with other paths is not restored; the Container then starts from scratch.
+      The size, idle time and paths apply the next time a Workspace's Container starts: a running
+      one keeps what it started with. A saved disk larger than a smaller size's disk cannot be
+      restored there, and one saved with other paths is not restored; the Container then starts from
+      scratch.
     </p>
   </fieldset>
 );
 
 /**
- * Edit an Environment: its name, and its Container's size, idle time, extra paths, Toolchains, variables and scripts.
- * Its id never changes.
+ * Edit an Environment: its name, and its Container's size, idle time, extra paths, Spare Workspace, Toolchains,
+ * variables and scripts. Its id never changes.
  */
-const EditEnvironmentDialog = ({
+export const EditEnvironmentDialog = ({
   environment,
   otherNames,
 }: {
@@ -930,6 +955,7 @@ const EditEnvironmentDialog = ({
     setupScript,
     startScript,
     toolchains,
+    spareWorkspace,
   } = draft;
 
   const saved = loaded.pipe(
@@ -974,7 +1000,8 @@ const EditEnvironmentDialog = ({
       variablesText(typedVariables) !== variablesText(saved.variables) ||
       (setupScript ?? saved.setupScript) !== saved.setupScript ||
       (startScript ?? saved.startScript) !== saved.startScript ||
-      (toolchains ?? saved.toolchains) !== saved.toolchains);
+      (toolchains ?? saved.toolchains) !== saved.toolchains ||
+      (spareWorkspace ?? saved.spareWorkspace) !== saved.spareWorkspace);
 
   const invalid =
     nameProblem !== null ||
@@ -1002,6 +1029,7 @@ const EditEnvironmentDialog = ({
               setupScript: setupScript ?? saved.setupScript,
               startScript: startScript ?? saved.startScript,
               toolchains: toolchains ?? saved.toolchains,
+              spareWorkspace: spareWorkspace ?? saved.spareWorkspace,
             }
           : undefined,
     });
@@ -1039,8 +1067,12 @@ const EditEnvironmentDialog = ({
             idleProblem={idleProblem}
             paths={ignore ?? ""}
             pathsProblem={pathsProblem}
+            spareWorkspace={spareWorkspace ?? saved.spareWorkspace}
             onPaths={(typed) => {
               setDraft((current) => ({ ...current, ignore: typed }));
+            }}
+            onSpareWorkspace={(picked) => {
+              setDraft((current) => ({ ...current, spareWorkspace: picked }));
             }}
             onInstance={(picked) => {
               setDraft((current) => ({ ...current, instance: picked }));

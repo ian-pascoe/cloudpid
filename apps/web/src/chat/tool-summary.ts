@@ -107,6 +107,14 @@ const idleTime = (args: Args): Option.Option<string> =>
     Predicate.isNumber(args.minutes) ? `${reason} (${args.minutes} min)` : reason,
   );
 
+/** Why an `environment_spare_workspace_set` call turns the Spare Workspace on or off, and which. */
+const spareWorkspace = (args: Args): Option.Option<string> =>
+  Option.map(firstLine(args, "reason"), (reason) =>
+    Predicate.isBoolean(args.enabled)
+      ? `${reason} (spare ${args.enabled === true ? "on" : "off"})`
+      : reason,
+  );
+
 /** What an `environment_*` call changes in an Environment's record: its new name, or the Repo, in the Environment its `id` names when it names one. */
 const lifecycle = (toolName: string, args: Args): Option.Option<string> =>
   Option.map(text(args, toolName === "environment_repo_add" ? "url" : "name"), (what) =>
@@ -228,6 +236,8 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return inEnvironment(args, resize(args));
       case "environment_idle_time_set":
         return inEnvironment(args, idleTime(args));
+      case "environment_spare_workspace_set":
+        return inEnvironment(args, spareWorkspace(args));
       case "environment_container_size_limit_set":
         return inEnvironment(
           args,
