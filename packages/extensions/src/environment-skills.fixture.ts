@@ -14,7 +14,13 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { ChangeAuthor } from "./environment.ts";
-import type { EnvironmentSkills, SkillPreview, SkillsInstalled } from "./environment-skills.ts";
+import type {
+  EnvironmentSkills,
+  SkillPreview,
+  SkillsInstallPin,
+  SkillsInstallPreview,
+  SkillsInstalled,
+} from "./environment-skills.ts";
 
 /** Skills that fail when called, for a fake that serves the other tools only. */
 export const unusedSkills: EnvironmentSkills = {
@@ -22,6 +28,7 @@ export const unusedSkills: EnvironmentSkills = {
   previewSkill: () => Effect.die("previewSkill is not used here"),
   removeSkill: () => Effect.die("removeSkill is not used here"),
   installSkills: () => Effect.die("installSkills is not used here"),
+  previewInstall: () => Effect.die("previewInstall is not used here"),
 };
 
 /** The description a `SKILL.md`'s frontmatter gives, for a fake that does not parse YAML. */
@@ -70,6 +77,18 @@ export const fakeSkills = () => {
     source: string;
     skills: ReadonlyArray<string> | undefined;
     reason: string;
+    /** Whether the owner approved the install first (an Agent change made as approved). */
+    approved?: boolean | undefined;
+    pin?: SkillsInstallPin | undefined;
+  }> = [];
+
+  /** What the Registry answers a preview of an install with, and what it was asked. */
+  let preview: SkillsInstallPreview | undefined;
+
+  const previews: Array<{
+    environment: string;
+    source: string;
+    skills: ReadonlyArray<string> | undefined;
   }> = [];
 
   const changeOf = (
@@ -235,9 +254,27 @@ export const fakeSkills = () => {
             : environment === "default",
         };
       }),
-    installSkills: ({ environment, source, skills, author }) =>
+    previewInstall: ({ environment, source, skills }) =>
       Effect.sync(() => {
-        installs.push({ environment, source, skills, reason: author.reason });
+        previews.push({ environment, source, skills });
+
+        return (
+          preview ?? {
+            status: "refused" as const,
+            message: "the fake Registry was given no preview",
+          }
+        );
+      }),
+    installSkills: ({ environment, source, skills, author, pin }) =>
+      Effect.sync(() => {
+        installs.push({
+          environment,
+          source,
+          skills,
+          reason: author.reason,
+          approved: author.approved,
+          pin,
+        });
 
         return (
           installation ?? {
@@ -268,6 +305,11 @@ export const fakeSkills = () => {
     listed,
     recorded,
     installs,
+    previews,
+    /** Answer the next previews of an install with `answer`. */
+    answerPreview: (answer: SkillsInstallPreview) => {
+      preview = answer;
+    },
     /** Answer the next installs with `answer`. */
     answerInstall: (answer: SkillsInstalled) => {
       installation = answer;

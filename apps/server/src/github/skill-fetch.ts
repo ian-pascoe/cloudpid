@@ -178,20 +178,26 @@ const namesOf = (candidates: ReadonlyArray<ListedSkill>): string =>
 
 /**
  * Fetch from `source` the Skills `skills` names (by name, or `["*"]` for all of them), else the one the repo holds, else
- * a listing of those it holds. Reads the tree at the commit the source's ref resolves to, so what is fetched is one
- * commit's.
+ * a listing of those it holds. Reads the tree at the commit the source's ref resolves to (or at `commit`, when one
+ * is given), so what is fetched is one commit's.
  */
 export const fetchSkills = async (
   reader: RepoReader,
   {
     source,
     skills,
-  }: { readonly source: SkillSourceInput; readonly skills?: ReadonlyArray<string> | undefined },
+    commit: pinned,
+  }: {
+    readonly source: SkillSourceInput;
+    readonly skills?: ReadonlyArray<string> | undefined;
+    /** Read at this commit, not the one the source's ref resolves to now: what a user was shown and approved. */
+    readonly commit?: string | undefined;
+  },
 ): Promise<SkillFetch> => {
   const repo: SkillRepo = { owner: source.owner, name: source.name };
 
   try {
-    const commit = await reader.commit(repo, source.ref);
+    const commit = await reader.commit(repo, pinned ?? source.ref);
     const tree = await reader.tree(repo, commit);
 
     if (tree.truncated) {

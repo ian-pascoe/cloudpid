@@ -9,7 +9,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
-import { installSkills } from "./skill-install.ts";
+import { installSkills, previewSkillInstall, type SkillInstallPin } from "./skill-install.ts";
 import {
   contentHash,
   hashBundle,
@@ -77,9 +77,19 @@ const inRegistry = <A>(
   body: (registry: {
     readonly install: (
       reader: RepoReader,
-      input: { source: string; skills?: string[]; owner?: boolean; environment?: string },
+      input: {
+        source: string;
+        skills?: string[];
+        owner?: boolean;
+        environment?: string;
+        pin?: SkillInstallPin;
+      },
       at?: number,
     ) => ReturnType<typeof installSkills>;
+    readonly preview: (
+      reader: RepoReader,
+      input: { source: string; skills?: string[]; environment?: string },
+    ) => ReturnType<typeof previewSkillInstall>;
     readonly skills: ReturnType<typeof openSkills>;
     readonly changes: ReturnType<typeof openAgentChanges>;
     readonly revert: (id: number, at?: number) => ReturnType<typeof revertAgentChange>;
@@ -110,12 +120,19 @@ const inRegistry = <A>(
         changes,
         storage: state.storage,
         context,
-        install: (reader, { source, skills: names, owner = false, environment }, at = 1_000) =>
+        install: (reader, { source, skills: names, owner = false, environment, pin }, at = 1_000) =>
           installSkills(context(at), reader, {
             environment: environment ?? DEFAULT_ENVIRONMENT,
             source,
             skills: names,
-            author: owner ? null : author,
+            author: owner ? null : { ...author, approved: environment === "*" ? true : undefined },
+            pin,
+          }),
+        preview: (reader, { source, skills: names, environment }) =>
+          previewSkillInstall(context(1_000), reader, {
+            environment: environment ?? DEFAULT_ENVIRONMENT,
+            source,
+            skills: names,
           }),
         revert: (id, at = 3_000) =>
           revertAgentChange(
@@ -476,6 +493,168 @@ describe("installing Skills from GitHub", () => {
 
     expect(results.find((result) => result.name === "leaky")?.message).toContain("credential");
     expect(results.find((result) => result.name === "Bad_Name")?.message).toContain("lowercase");
+  });
+
+  it("keeps the Skills for every Environment as the owner approved, recording them under * and saying whose own Skill hides one", async () => {
+    const [installed, listed, changes, set] = await inRegistry(
+      async ({ install, skills, changes, context }) => {
+        const own = { "SKILL.md": skillMd("tdd", "Mine.") };
+
+        saveSkillAs(context(500), {
+          environment: DEFAULT_ENVIRONMENT,
+          folder: "tdd",
+          files: own,
+          hashed: await hashFiles(own),
+          author: { ...author, tool: "environment_skill_save" },
+        });
+
+        const done = await install(readerOf(REPO), {
+          environment: "*",
+          source: "o/skills",
+          skills: ["*"],
+        });
+
+        return [done, skills.list("*"), changes.list("*"), skills.list(DEFAULT_ENVIRONMENT)];
+      },
+    );
+
+    expect(installed).toMatchObject({
+      status: "installed",
+      environment: { id: "*", name: "every Environment" },
+      results: [
+        { name: "grill-me", outcome: "installed", overriddenIn: [] },
+        {
+          name: "tdd",
+          outcome: "installed",
+          overriddenIn: [expect.objectContaining({ id: DEFAULT_ENVIRONMENT })],
+        },
+      ],
+    });
+    expect(listed.map((skill) => skill.name)).toEqual(["grill-me", "tdd"]);
+    expect(listed[0]?.source).toEqual(GRILL_SOURCE);
+    // Newest first.
+    expect(changes.map((change) => [change.scope, change.field, change.approved])).toEqual([
+      ["*", "skills.tdd", true],
+      ["*", "skills.grill-me", true],
+    ]);
+    // The Environment's own tdd is untouched.
+    expect(set.map((skill) => skill.name)).toEqual(["tdd"]);
+  });
+
+  it("reads at the commit it was pinned to, keeping a Skill only while the Skill of its name is the one the owner was shown", async () => {
+    const asked: Array<string | null> = [];
+
+    const reader: RepoReader = {
+      ...readerOf(REPO, COMMIT),
+      commit: async (_repo, ref) => {
+        asked.push(ref);
+
+        return ref ?? COMMIT;
+      },
+    };
+
+    const [done, again, listed] = await inRegistry(async ({ install, skills, context }) => {
+      const first = await install(reader, {
+        environment: "*",
+        source: "o/skills@grill-me",
+        skills: ["grill-me"],
+        pin: { commit: LATER, expected: { "grill-me": null } },
+      });
+
+      // The Skill of the name was saved again since the owner was asked.
+      const edited = { "SKILL.md": skillMd("tdd", "Saved meanwhile.") };
+
+      saveSkillAs(context(1_500), {
+        environment: "*",
+        folder: "tdd",
+        files: edited,
+        hashed: await hashFiles(edited),
+        author: { ...author, tool: "environment_skill_save" },
+      });
+
+      const second = await install(reader, {
+        environment: "*",
+        source: "o/skills",
+        skills: ["tdd"],
+        pin: { commit: LATER, expected: { tdd: null } },
+      });
+
+      return [first, second, skills.list("*")];
+    });
+
+    // The ref was the commit the owner saw, not the branch's head now; the Skill source names the ref as written.
+    expect(asked).toEqual([LATER, LATER]);
+    expect(done).toMatchObject({
+      status: "installed",
+      commit: LATER,
+      ref: null,
+      results: [{ name: "grill-me", outcome: "installed" }],
+    });
+    expect(again).toMatchObject({
+      results: [
+        {
+          name: "tdd",
+          outcome: "rejected",
+          message: expect.stringContaining("saved again since the user was asked"),
+        },
+      ],
+    });
+    expect(listed.find((skill) => skill.name === "grill-me")?.source).toEqual({
+      ...GRILL_SOURCE,
+      commit: LATER,
+    });
+    expect(listed.find((skill) => skill.name === "tdd")?.description).toBe("What tdd does.");
+  });
+
+  it("previews what an install would keep, with the files, what is kept already and what the checks refuse, recording nothing", async () => {
+    const files = {
+      ...REPO,
+      "skills/Bad Name/SKILL.md": "---\nname: Bad Name\ndescription: x\n---\nBody.\n",
+    };
+
+    const [previewed, listedBefore, changes, several, nobody] = await inRegistry(
+      async ({ install, preview, skills, changes }) => {
+        await install(readerOf(REPO), { source: "o/skills@tdd", environment: "*" });
+
+        const result = await preview(readerOf(files), {
+          environment: "*",
+          source: "o/skills",
+          skills: ["*"],
+        });
+
+        return [
+          result,
+          skills.list("*").length,
+          changes.list("*").length,
+          await preview(readerOf(REPO), { environment: "*", source: "o/skills" }),
+          await preview(readerOf(REPO), { environment: "0000beef", source: "o/skills@tdd" }),
+        ];
+      },
+    );
+
+    expect(previewed).toMatchObject({
+      status: "previewed",
+      environment: { id: "*" },
+      repo: "o/skills",
+      commit: COMMIT,
+      skills: [
+        {
+          name: "grill-me",
+          path: "skills/grill-me",
+          description: "What grill-me does.",
+          unchanged: false,
+          current: null,
+          files: { "SKILL.md": skillMd("grill-me"), "references/questions.md": "- why?\n" },
+        },
+        { name: "tdd", unchanged: true, current: { description: "What tdd does." } },
+      ],
+      rejected: [expect.objectContaining({ name: "Bad Name" })],
+    });
+    // Only the install before it kept anything.
+    expect(listedBefore).toBe(1);
+    expect(changes).toBe(1);
+    expect(several).toMatchObject({ status: "listed" });
+    expect(nobody).toEqual({ status: "missing" });
   });
 
   it("refuses what is not a GitHub source, a repo that cannot be read, and an Environment that does not exist", async () => {

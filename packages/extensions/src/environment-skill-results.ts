@@ -10,8 +10,10 @@ import {
   type AgentChange,
   type ListedSkill,
   type SkillExpectation,
+  shortSha,
   SKILLS_ROOT,
   skillField,
+  skillSourceText,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
@@ -82,8 +84,13 @@ export type SkillsInstalled =
         readonly change?: AgentChange | undefined;
         /** Whether it hides the bundle's Skill of the name. */
         readonly shadows?: boolean | undefined;
+        /** For a Skill kept for every Environment: the Environments whose own Skill of the name hides it. */
+        readonly overriddenIn?: ReadonlyArray<ChangedEnvironment> | undefined;
       }>;
-      /** Whether this Session's own Workspace serves them now: it is the Environment's, and took the new Skill set. */
+      /**
+       * Whether this Session's own Workspace serves them now: it took the new Skill set (it is the Environment's, or the
+       * Skills are kept for every Environment and its Environment does not hide all of them).
+       */
       readonly handed: boolean;
     }
   /** The source holds several Skills and none was named: nothing was installed. */
@@ -98,6 +105,48 @@ export type SkillsInstalled =
   /** Nothing was installed: the source is not one, GitHub gave no answer, or the repo holds no such Skill. */
   | { readonly status: "refused"; readonly message: string }
   | { readonly status: "missing" };
+
+/** What an install of Skills would do, with nothing kept or recorded: what the owner is asked to approve. */
+export type SkillsInstallPreview =
+  | Extract<SkillsInstalled, { status: "missing" | "refused" | "listed" }>
+  | {
+      readonly status: "previewed";
+      readonly environment: ChangedEnvironment;
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      /** The Skills an install would keep, or that the scope keeps already. */
+      readonly skills: ReadonlyArray<{
+        readonly name: string;
+        /** Its folder in the repo. */
+        readonly path: string;
+        readonly description: string;
+        /** Its files' text by path in its folder. */
+        readonly files: Readonly<Record<string, string>>;
+        /** The scope keeps the Skill with these files and this Skill source already. */
+        readonly unchanged: boolean;
+        /** The Skill of the name the scope keeps now. Null for a new Skill. */
+        readonly current: {
+          readonly description: string;
+          readonly savedAt: number;
+          readonly files: ReadonlyArray<string>;
+        } | null;
+      }>;
+      /** The Skills the repo holds that an install would not keep, each with why. */
+      readonly rejected: ReadonlyArray<{
+        readonly name: string;
+        readonly path: string;
+        readonly message: string;
+      }>;
+    };
+
+/** What an Approval of an install was asked against, which the install must still find. */
+export type SkillsInstallPin = {
+  /** The commit the owner was shown. */
+  readonly commit: string;
+  /** When the Skill of each name shown was last saved (null: none kept). */
+  readonly expected: Readonly<Record<string, number | null>>;
+};
 
 /** How the removal of a Skill went. */
 export type SkillRemoved =
@@ -181,7 +230,15 @@ export type EnvironmentSkills = {
     readonly source: string;
     readonly skills?: ReadonlyArray<string> | undefined;
     readonly author: ChangeAuthor;
+    /** What the owner's Approval was asked against: read at its commit, and a Skill kept only while it still holds. */
+    readonly pin?: SkillsInstallPin | undefined;
   }) => Effect.Effect<SkillsInstalled, EnvironmentsError>;
+  /** What `installSkills` would do with the same source, nothing kept or recorded. */
+  readonly previewInstall: (input: {
+    readonly environment: string;
+    readonly source: string;
+    readonly skills?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<SkillsInstallPreview, EnvironmentsError>;
 };
 
 /** What the tools need of `EnvironmentTools`: what they build over, and its refusals. */
@@ -388,6 +445,174 @@ export const savedOutcome = (
                     : reach(saved.environment, saved.handed, own),
                   PROMPT_NOTE,
                   `The change is recorded${approved ? " as approved" : ""} with your reason and the files before and after, and the user can revert it on the Environments page.`,
+                  ...(approved && note !== undefined ? [note] : []),
+                ],
+                " ",
+              ),
+            },
+          ],
+          details: withApprovalMark(details, approved),
+        };
+      }
+    }
+  });
+
+/**
+ * The result of an install, whatever it came to: the tool's own result, or its refusal. `approved`: the owner approved the
+ * install first (one for every Environment), which the result and its record say.
+ */
+export const installedOutcome = (
+  installed: SkillsInstalled,
+  {
+    environments,
+    log,
+    notFound,
+    scope,
+    own,
+    approved,
+    note,
+  }: SkillCall & {
+    /** A sentence the agent is told after an install that was approved, such as what the owner could not review. */
+    readonly note?: string | undefined;
+  },
+) =>
+  Effect.gen(function* () {
+    const tool = "environment_skill_install";
+    const everywhere = scope === EVERY_ENVIRONMENT_ID;
+
+    switch (installed.status) {
+      case "missing":
+        return yield* notFound(scope);
+      case "refused":
+        return yield* EnvironmentsError.make({
+          message: `${approved ? "The user approved, but nothing" : "Nothing"} was installed: ${installed.message}`,
+        });
+      case "listed": {
+        const { available, repo, commit } = installed;
+
+        return {
+          output: [
+            {
+              type: "text" as const,
+              text: Arr.join(
+                [
+                  `Installed nothing: ${repo} (at ${shortSha(commit)}) holds ${available.length} Skills and none was named:`,
+                  ...Arr.map(
+                    available,
+                    (skill) =>
+                      `- ${skill.name}${skill.path === "" ? "" : ` (${skill.path})`}: ${skill.description}`,
+                  ),
+                  'Ask the user which they want, then call environment_skill_install again with the same source and skills set to their names (["*"] for all of them).',
+                ],
+                "\n",
+              ),
+            },
+          ],
+          details: {
+            listed: { repo, commit, skills: Arr.map(available, (skill) => skill.name) },
+          },
+        };
+      }
+
+      case "installed": {
+        const { results, repo, ref, commit } = installed;
+        const saved = Arr.filter(results, (result) => result.outcome === "installed");
+        const unchanged = Arr.filter(results, (result) => result.outcome === "unchanged");
+        const rejected = Arr.filter(results, (result) => result.outcome === "rejected");
+
+        const problems = Arr.map(
+          rejected,
+          (result) =>
+            `- ${result.name}${result.path === "" ? "" : ` (${result.path})`}: ${result.message ?? "refused"}`,
+        );
+
+        if (saved.length === 0 && unchanged.length === 0) {
+          return yield* EnvironmentsError.make({
+            message: Arr.join(
+              [
+                `${approved ? "The user approved, but nothing" : "Nothing"} was installed from ${repo}; each Skill was refused:`,
+                ...problems,
+              ],
+              "\n",
+            ),
+          });
+        }
+
+        const changes = Arr.flatMap(saved, (result) =>
+          result.change === undefined ? [] : [result.change],
+        );
+
+        for (const change of changes) {
+          yield* log.record({
+            tool,
+            environmentName: installed.environment.name,
+            field: change.field,
+          });
+        }
+
+        const pinned = skillSourceText({ repo, path: "", ref, commit });
+
+        const listOf = (list: typeof results) =>
+          Arr.join(
+            Arr.map(list, (result) => result.name),
+            ", ",
+          );
+
+        const first = (saved[0] ?? unchanged[0])?.name ?? "<name>";
+        const current = everywhere ? yield* environments.current : null;
+
+        // The Environments whose own Skill of a name installed hides it there.
+        const overriddenIn = Arr.dedupeWith(
+          Arr.flatMap(
+            saved,
+            (result): ReadonlyArray<ChangedEnvironment> => result.overriddenIn ?? [],
+          ),
+          (left: ChangedEnvironment, right: ChangedEnvironment) => left.id === right.id,
+        );
+
+        const details = {
+          agentChanges: Arr.map(changes, (change) => changeDetails(installed.environment, change)),
+          own: everywhere ? installed.handed : own,
+        };
+
+        return {
+          output: [
+            {
+              type: "text" as const,
+              text: Arr.join(
+                [
+                  ...(saved.length === 0
+                    ? []
+                    : [
+                        `${approved ? "The user approved: installed" : "Installed"} ${Arr.join(
+                          Arr.map(
+                            saved,
+                            (result) =>
+                              `${result.name}${result.shadows === true ? " (over the bundle's Skill of that name)" : ""}`,
+                          ),
+                          ", ",
+                        )} for ${named(installed.environment)} from ${pinned}.`,
+                      ]),
+                  ...(unchanged.length === 0
+                    ? []
+                    : [
+                        `${listOf(unchanged)} ${unchanged.length === 1 ? "was" : "were"} installed from ${pinned} already: nothing changed, and nothing was recorded for ${unchanged.length === 1 ? "it" : "them"}.`,
+                      ]),
+                  ...(problems.length === 0
+                    ? []
+                    : ["Refused (the others were installed):", ...problems]),
+                  installed.handed
+                    ? `They are served now at ${SKILLS_ROOT}/<name> (read-only): read ${SKILLS_ROOT}/${first}/SKILL.md to use one.`
+                    : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
+                  everywhere
+                    ? reachEvery(installed.handed, overriddenIn, current)
+                    : reach(installed.environment, installed.handed, own),
+                  PROMPT_NOTE,
+                  ...(saved.length === 0
+                    ? []
+                    : [
+                        `Each change is recorded${approved ? " as approved" : ""} with your reason and the files before and after, and the user can revert it on the Environments page.`,
+                      ]),
                   ...(approved && note !== undefined ? [note] : []),
                 ],
                 " ",

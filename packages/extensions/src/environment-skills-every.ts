@@ -1,5 +1,6 @@
 // The change to the Skills kept for every Environment that waits for the owner's Approval (ADR-0026, GLOSSARY.md →
-// Approval, `docs/spec.md` → Approval): `environment_skill_save` and `environment_skill_remove` with `id: "*"`. A Skill
+// Approval, `docs/spec.md` → Approval): `environment_skill_save`, `environment_skill_remove` and `environment_skill_install`
+// with `id: "*"`. A Skill
 // there steers every future Session, so it is where a prompt-injected agent would plant instructions: the owner reads
 // the Skill's files on the card (which says plainly what it could not show), and the change is made only against what
 // they were shown (the folder's digest, and when the Skill of the name was last saved).
@@ -7,7 +8,7 @@
 // `environment.ts` imports this module through `./environment-skills.ts`, so what it takes from `environment.ts` is used
 // inside functions only: its exports are not there yet when this module loads.
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferSchemaOverJson:off
-import { skillField } from "@cloudpid/protocol";
+import { skillField, skillSourceText } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -19,6 +20,7 @@ import { EnvironmentsError } from "./environment.ts";
 import { EVERY_ENVIRONMENT_ID } from "./environment-secret-marks.ts";
 import {
   EVERY,
+  installedOutcome,
   named,
   refused,
   removedOutcome,
@@ -328,6 +330,204 @@ export const removeEverywhere = (
             approved: true,
             name,
           });
+        }),
+    );
+  });
+
+/**
+ * The most Skills one Approval of an install for every Environment shows. Each is shown with up to `MAX_CARD_CHARS` of its
+ * files, so the card stays a size the owner can read and a request a Durable Object keeps; more are installed in batches,
+ * the agent naming them.
+ */
+export const MAX_APPROVED_SKILLS = 10;
+
+/** What an Approval of an install was asked against: the commit shown, when each Skill was last saved, what was cut. */
+const InstallAsked = Schema.Struct({
+  commit: Schema.String,
+  skills: Schema.Array(
+    Schema.Struct({ name: Schema.String, savedAt: Schema.NullOr(Schema.Finite) }),
+  ),
+  unseen: Schema.Struct({ files: Schema.Finite, characters: Schema.Finite }),
+});
+
+/**
+ * Install the Skills of GitHub `source` that `names` names (absent: the repo's only Skill) for every Environment once
+ * the owner approves them. The Registry reads them first (`previewInstall`), the card shows each Skill's files as a save's
+ * does, and on Approve they are read again at the commit the owner was shown, each kept only while the Skill of its name
+ * is the one that was shown (a Skill the owner saw is the one installed: the commit pins the files).
+ */
+export const installEverywhere = (
+  { environments, approvals, log, notFound }: EveryDeps,
+  {
+    source,
+    names,
+    reason,
+  }: {
+    readonly source: string;
+    readonly names: ReadonlyArray<string> | undefined;
+    readonly reason: string;
+  },
+  api: ApprovalCall,
+) =>
+  Effect.gen(function* () {
+    const tool = "environment_skill_install";
+    const call = { environments, log, notFound, scope: EVERY_ENVIRONMENT_ID, own: false };
+
+    const previewed = yield* environments.previewInstall({
+      environment: EVERY_ENVIRONMENT_ID,
+      source,
+      skills: names,
+    });
+
+    const rerun = yield* askedBefore(approvals, api);
+
+    if (previewed.status !== "previewed") {
+      // A rerun that finds no Skills to ask about asks nothing: its request, if still waiting, is withdrawn.
+      if (rerun) yield* approvals.settle(String(api.taskId));
+
+      return yield* installedOutcome(previewed, { ...call, approved: false });
+    }
+
+    const { repo, ref, commit, rejected } = previewed;
+    const ready = Arr.filter(previewed.skills, (skill) => !skill.unchanged);
+    const unchanged = Arr.filter(previewed.skills, (skill) => skill.unchanged);
+    const pinned = skillSourceText({ repo, path: "", ref, commit });
+
+    // What the preview found that the install will not keep: reported with the result, as an install's own are.
+    const notKept = [
+      ...Arr.map(unchanged, ({ name, path }) => ({
+        name,
+        path,
+        outcome: "unchanged" as const,
+      })),
+      ...Arr.map(rejected, ({ name, path, message }) => ({
+        name,
+        path,
+        outcome: "rejected" as const,
+        message,
+      })),
+    ];
+
+    if (ready.length === 0 && !rerun) {
+      // Nothing to approve: every Skill is kept already, or was refused.
+      return yield* installedOutcome(
+        {
+          status: "installed",
+          environment: previewed.environment,
+          repo,
+          ref,
+          commit,
+          results: notKept,
+          handed: false,
+        },
+        { ...call, approved: false },
+      );
+    }
+
+    if (ready.length > MAX_APPROVED_SKILLS) {
+      if (rerun) yield* approvals.settle(String(api.taskId));
+
+      return yield* EnvironmentsError.make({
+        message: `Nothing was asked or installed: ${ready.length} Skills from ${repo} would be installed for every Environment (${Arr.join(
+          Arr.map(ready, (skill) => skill.name),
+          ", ",
+        )}), and one request for the user's Approval shows at most ${MAX_APPROVED_SKILLS}, each with its files. Call again with skills naming up to ${MAX_APPROVED_SKILLS} of them, then again for the rest.`,
+      });
+    }
+
+    const cards = Arr.map(ready, (skill) => ({
+      skill,
+      card: cardOf(skill.description, skill.files),
+    }));
+
+    const unseen = Arr.reduce(cards, { files: 0, characters: 0 }, (total, { card }) => ({
+      files: total.files + (card.unseen?.files ?? 0),
+      characters: total.characters + (card.unseen?.characters ?? 0),
+    }));
+
+    return yield* withApproval(
+      approvals,
+      api,
+      {
+        tool,
+        target: "every Environment",
+        change: `Install ${ready.length === 1 ? "the Skill" : "the Skills"} ${Arr.join(
+          Arr.map(ready, ({ name }) => JSON.stringify(name)),
+          ", ",
+        )} from ${pinned}`,
+        before: Arr.join(
+          Arr.map(ready, ({ name, current }) =>
+            current === null
+              ? `${name}: not kept for every Environment`
+              : `${name}: kept for every Environment: ${current.description} (files: ${Arr.join(current.files, ", ")})`,
+          ),
+          "\n",
+        ),
+        after: Arr.join(
+          Arr.map(
+            cards,
+            ({ skill, card }) =>
+              `━━ ${skill.name} (${skill.path === "" ? "the repo's root" : skill.path}) ━━\n${card.after}`,
+          ),
+          "\n\n",
+        ),
+        reason,
+        // The Skills as the owner saw them: read again at this commit, and each kept only while the Skill of its name was
+        // last saved then.
+        expected: {
+          commit,
+          skills: Arr.map(ready, ({ name, current }) => ({
+            name,
+            savedAt: current?.savedAt ?? null,
+          })),
+          unseen,
+        },
+      },
+      (answer) =>
+        Effect.gen(function* () {
+          const what = `installing ${Arr.join(
+            Arr.map(ready, ({ name }) => name),
+            ", ",
+          )} from ${pinned} for every Environment`;
+
+          if (!answer.approved) return declined(answer, what);
+
+          const asked = Schema.decodeUnknownOption(InstallAsked)(answer.expected);
+
+          if (Option.isNone(asked)) {
+            return yield* EnvironmentsError.make({
+              message: `The user approved, but the request holds no record of the Skills they were shown: nothing was installed. Ask again.`,
+            });
+          }
+
+          const shown = asked.value;
+
+          const installed = yield* environments.installSkills({
+            environment: EVERY_ENVIRONMENT_ID,
+            source,
+            skills: Arr.map(shown.skills, ({ name }) => name),
+            author: { conversation: api.conversationId, tool, reason, approved: true },
+            pin: {
+              commit: shown.commit,
+              expected: Record.fromEntries(
+                Arr.map(shown.skills, ({ name, savedAt }) => [name, savedAt] as const),
+              ),
+            },
+          });
+
+          return yield* installedOutcome(
+            installed.status === "installed"
+              ? { ...installed, results: [...installed.results, ...notKept] }
+              : installed,
+            {
+              ...call,
+              approved: true,
+              note:
+                shown.unseen.files === 0
+                  ? undefined
+                  : `The card showed the user only the first ${MAX_CARD_CHARS} characters of each Skill's files: ${shown.unseen.characters} characters in ${shown.unseen.files} file${shown.unseen.files === 1 ? "" : "s"} were cut or left out, so that part was not reviewed. Keep a Skill for every Environment small enough to review in full.`,
+            },
+          );
         }),
     );
   });

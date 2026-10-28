@@ -38,7 +38,13 @@ import {
   type SkillSave,
   skillSetOf,
 } from "./skills.ts";
-import { installSkills, type SkillInstallation } from "./skill-install.ts";
+import {
+  installSkills,
+  previewSkillInstall,
+  type SkillInstallation,
+  type SkillInstallPin,
+  type SkillInstallPreview,
+} from "./skill-install.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import { SETTINGS_SCOPE, type SkillExpectation } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
@@ -481,7 +487,15 @@ export type RegistryMethods = {
     readonly source: string;
     readonly skills?: ReadonlyArray<string> | undefined;
     readonly author: AgentChangeAuthor;
+    /** What the owner's Approval was asked against: read at its commit, and a Skill kept only while it still holds. */
+    readonly pin?: SkillInstallPin | undefined;
   }) => Effect.Effect<SkillInstallation>;
+  /** What `agentInstallSkills` would do, with nothing kept or recorded: the Skills with their files, and what is refused. */
+  readonly agentPreviewSkillInstall: (input: {
+    readonly environment: string;
+    readonly source: string;
+    readonly skills?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<SkillInstallPreview>;
   /** The owner installs Skills from a GitHub `source` (as `agentInstallSkills`), recorded as no Agent change. */
   readonly installSkills: (input: {
     readonly environment: string;
@@ -704,6 +718,7 @@ export const RegistryLive = Registry.make(
           readonly source: string;
           readonly skills: ReadonlyArray<string> | undefined;
           readonly author: AgentChangeAuthor | null;
+          readonly pin?: SkillInstallPin | undefined;
         }) =>
           Effect.gen(function* () {
             const hashedBundle = yield* bundle;
@@ -1145,8 +1160,20 @@ export const RegistryLive = Registry.make(
                 { environment, name, author, expected },
               );
             }),
-          agentInstallSkills: ({ environment, source, skills: names, author }) =>
-            installFromGithub({ environment, source, skills: names, author }),
+          agentInstallSkills: ({ environment, source, skills: names, author, pin }) =>
+            installFromGithub({ environment, source, skills: names, author, pin }),
+          agentPreviewSkillInstall: ({ environment, source, skills: names }) =>
+            Effect.gen(function* () {
+              const hashedBundle = yield* bundle;
+
+              return yield* Effect.promise(() =>
+                previewSkillInstall({ store, skills, bundle: hashedBundle }, skillReader, {
+                  environment,
+                  source,
+                  skills: names,
+                }),
+              );
+            }),
           installSkills: ({ environment, source, skills: names }) =>
             installFromGithub({ environment, source, skills: names, author: null }),
           listSkills: ({ environment }) =>

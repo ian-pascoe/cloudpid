@@ -55,7 +55,7 @@ export const EVERY_ENVIRONMENT_SCOPE = "*";
 
 /**
  * Whose Agent changes `listAgentChanges` lists and `revertAgentChange` reverts, and whose Skills `listEnvironmentSkills`,
- * `removeEnvironmentSkill` and `skillChangeFiles` answer: an Environment's, or those of every Environment.
+ * `removeEnvironmentSkill` and `skillChangeFiles` answer: an Environment's, or those of every Environment; `installEnvironmentSkills` installs into either.
  */
 export const AgentChangeScope = Schema.Union([
   EnvironmentId,
@@ -693,7 +693,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Install Skills for an Environment from a GitHub `source` (`owner/repo`, `owner/repo@skill`, or a GitHub URL: ADR-0026),
+   * Install Skills for an Environment, or for every Environment (`*`), from a GitHub `source` (`owner/repo`, `owner/repo@skill`, or a GitHub URL: ADR-0026),
    * fetched by the Registry as the GitHub App and pinned to the commit the ref resolved to; each is kept with its Skill
    * source, in place of one of its name, if it passes a save's checks (not an Agent change, as an owner's save is not). `skills`
    * names the Skills to take (`["*"]` for all of them); a repo that holds several and is given none installs nothing and
@@ -702,7 +702,7 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("installEnvironmentSkills", {
     payload: {
-      environment: EnvironmentId,
+      environment: AgentChangeScope,
       source: Schema.String,
       skills: Schema.optionalKey(Schema.String.pipe(Schema.Array)),
     },

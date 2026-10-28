@@ -139,6 +139,19 @@ describe("fetchSkills", () => {
     expect(result).toMatchObject({ status: "fetched", skills: [{ name: "only" }] });
   });
 
+  it("reads at the commit it is given, not the one the source's ref resolves to, and keeps the ref as named", async () => {
+    const { reader, asked } = readerOf(REPO);
+
+    const pinned = await fetchSkills(reader, {
+      source: source("https://github.com/o/skills/tree/main"),
+      skills: ["tdd"],
+      commit: "feed0000000000000000000000000000000000f1",
+    });
+
+    expect(asked).toEqual(["feed0000000000000000000000000000000000f1"]);
+    expect(pinned).toMatchObject({ status: "fetched", ref: "main", skills: [{ name: "tdd" }] });
+  });
+
   it('installs every Skill for ["*"], and the ones named in skills and after @ together', async () => {
     const everything = await fetchSkills(readerOf(REPO).reader, {
       source: source("o/skills"),

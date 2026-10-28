@@ -1472,7 +1472,7 @@ const SkillSearchResults = ({ id, installing }: { id: string; installing: boolea
 };
 
 /**
- * The form that adds Skills to Environment `id` from GitHub, on the owner's word: a source (`owner/repo`,
+ * The form that adds Skills to Environment `id` (or, with `EVERY_ENVIRONMENT`, to every Environment) from GitHub, on the owner's word: a source (`owner/repo`,
  * `owner/repo@skill` or a GitHub URL), or a search of skills.sh. A source that holds several Skills lists them to tick.
  * The Registry fetches it as the GitHub App, pinned to a commit.
  */
@@ -1507,7 +1507,7 @@ const AddSkillsForm = ({ id }: { id: string }) => {
     <div className="flex flex-col gap-2">
       <form onSubmit={submit} className="flex flex-col gap-1.5">
         <label htmlFor={inputId} className="text-xs font-medium text-muted-foreground">
-          Add skills from GitHub
+          Add skills from GitHub{id === EVERY_ENVIRONMENT ? " for every environment" : ""}
         </label>
         <div className="flex flex-wrap gap-2">
           <Input
@@ -1611,7 +1611,7 @@ const SkillsSection = ({ id }: { id: string }) => {
       ) : skills.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           {everywhere
-            ? "None kept for every environment. The agent saves one with environment_skill_save and the id *, and you approve it in its session."
+            ? "None kept for every environment. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install and the id *, and you approve it in its session."
             : "None of its own: its workspaces serve those kept for every environment and the bundle's. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install."}
         </p>
       ) : (
@@ -1668,7 +1668,7 @@ const SkillsSection = ({ id }: { id: string }) => {
           <span className="font-mono">{overridden.join(", ")}</span>
         </p>
       )}
-      {!everywhere && <AddSkillsForm id={id} />}
+      <AddSkillsForm id={id} />
       <Dialog
         open={removing !== null}
         onClose={() => {

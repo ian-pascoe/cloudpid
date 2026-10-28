@@ -819,7 +819,7 @@ const keepPlanned = (
  */
 export const previewSkillSave = (
   context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
-  input: Omit<SkillToKeep, "source">,
+  input: SkillToKeep,
 ): SkillPreview => {
   const plan = planSave(context, input);
 
