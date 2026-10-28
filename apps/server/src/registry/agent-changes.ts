@@ -36,7 +36,7 @@ import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
 import { everyVariablesOf, writeEveryEnvironment } from "./every-environment.ts";
 import { revertSecretBuild } from "./secret-changes.ts";
-import { dropUnreferencedSkillFiles, type KeptSkills, revertSkillChange } from "./skills.ts";
+import { dropUnreferencedSkillFiles, revertSkillChange, type Skills } from "./skills.ts";
 import {
   type EnvironmentRecord,
   EVERY_ENVIRONMENT_SCOPE,
@@ -623,7 +623,7 @@ export const revertAgentChange = (
   { environment, id }: { readonly environment: string; readonly id: number },
   now: number,
   /** The Skills a Skill brought back must fit with, for the revert of a Skill's change. */
-  kept: KeptSkills,
+  skills: Skills,
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {
     // The Secrets and variables kept for every Environment have a history of their own, in the scope `*`.
@@ -663,7 +663,7 @@ export const revertAgentChange = (
 
     // A Skill's change reverts in either scope: an Environment's own Skills, and those kept for every Environment.
     if (fieldSkill(change.field) !== null) {
-      return revertSkillChange({ ...kept, store, changes, now }, environment, change);
+      return revertSkillChange({ skills, store, changes, now }, environment, change);
     }
 
     if (known === null) return { status: "missing" };

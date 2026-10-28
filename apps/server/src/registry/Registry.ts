@@ -161,7 +161,8 @@ export type WorkspaceChoice =
  * good Build (null for none yet) and kept Secrets, opened (docs/spec.md → Secrets): the Workspace keeps them sealed,
  * to search a snapshot for and to take out of output. When the Registry cannot open them, `secrets` is absent and
  * `secretsUnavailable` says so (`SECRETS_UNAVAILABLE`), and the Workspace refuses the snapshots that would need them.
- * `skills` is the Environment's Skill set (its own Skills over those kept for every Environment), absent when the Workspace holds it already.
+ * `skills` is the Environment's Skill set (its own Skills over those kept for every Environment), absent when the
+ * Workspace holds it already.
  */
 export type WorkspaceSetupWithSettings = WorkspaceSetup & {
   readonly settings: Schema.Json;
@@ -1175,7 +1176,7 @@ export const RegistryLive = Registry.make(
                 changes,
                 { environment, id: change },
                 now,
-                { skills },
+                skills,
               );
             }),
           dismissAgentChange: ({ environment, change }) =>

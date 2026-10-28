@@ -752,9 +752,6 @@ export type SkillStore = {
   readonly listEnvironments: () => ReadonlyArray<EnvironmentRecord>;
 };
 
-/** The Skills kept: what reverting a Skill's change needs besides the changes. */
-export type KeptSkills = { readonly skills: Skills };
-
 /**
  * What a change of a Skill reads and writes: the Registry's storage (for the transaction) and store, the Skills kept,
  * the Agent changes, and the time of the change.

@@ -116,7 +116,7 @@ const inRegistry = <A>(
             },
           ),
         revert: (id, at = 3_000, environment = DEFAULT_ENVIRONMENT) =>
-          revertAgentChange(state.storage, store, changes, { environment, id }, at, { skills }),
+          revertAgentChange(state.storage, store, changes, { environment, id }, at, skills),
         set: async (environment = DEFAULT_ENVIRONMENT) => {
           const merged = await mergeSkills(skillLayers(skills, environment));
 

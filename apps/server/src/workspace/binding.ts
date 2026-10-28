@@ -10,7 +10,10 @@ export const WORKSPACE_BINDING = "WORKSPACES";
  */
 export { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
 
-/** Where the Skill set is mounted, read-only, in every Workspace: the Workspace's own `.agents/skills` (docs/spec.md → Filesystem and tools). */
+/**
+ * Where the Skill set is mounted, read-only, in every Workspace: the Workspace's own `.agents/skills` (docs/spec.md →
+ * Filesystem and tools).
+ */
 export const SKILLS_MOUNT = "/workspace/.agents/skills";
 
 /**

@@ -523,8 +523,8 @@ export class Workspace extends ContainerHost {
 
     this.#workspace = new ComputerWorkspace({
       storage: ctx.storage,
-      // The Skill set the Workspace holds (empty until one is handed over) appears
-      // read-only: a write under the mount fails with EROFS, and a set of another hash replaces the copy.
+      // The Skill set the Workspace holds (empty until one is handed over) appears read-only: a write under the mount
+      // fails with EROFS, and a set of another hash replaces the copy.
       mounts: {
         [SKILLS_MOUNT]: skillSetMount(
           () => skills.current(),

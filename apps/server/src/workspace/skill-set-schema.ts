@@ -16,9 +16,9 @@ export const SkillSet = Schema.Struct({
 export type SkillSet = typeof SkillSet.Type;
 
 /**
- * The hash of a set with no file: SHA-256 of nothing, which is what the Registry's merge makes of no file (`mergeSkills`).
- * Never a version computer recorded for a mount that held Skills before, so a Workspace that mounted others is copied
- * again, empty, at its next index.
+ * The hash of a set with no file: SHA-256 of nothing, which is what the Registry's merge makes of no file
+ * (`mergeSkills`). Never a version computer recorded for a mount that held Skills before, so a Workspace that mounted
+ * others is copied again, empty, at its next index.
  */
 export const EMPTY_SKILL_SET_HASH =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

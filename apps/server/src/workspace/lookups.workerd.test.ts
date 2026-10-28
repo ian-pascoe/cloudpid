@@ -1,6 +1,6 @@
 // The draft composer's lookups (`session/lookups.ts`) on a Workspace's own DO, with no Session: the Prompt templates and
-// Skills of a repo's directory, the Environment's Skills with them, and the `@` menu's files, listed once for requests close
-// together.
+// Skills of a repo's directory, the Environment's Skills with them, and the `@` menu's files, listed once for
+// requests close together.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

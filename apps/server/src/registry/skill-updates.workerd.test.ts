@@ -130,7 +130,7 @@ const inRegistry = <A>(
           });
         },
         revert: (id, at = 3_000, environment = DEFAULT_ENVIRONMENT) =>
-          revertAgentChange(state.storage, store, changes, { environment, id }, at, { skills }),
+          revertAgentChange(state.storage, store, changes, { environment, id }, at, skills),
         check: () => checkSkillUpdates(skills, github.reader),
         daily: (at) => runDailySkillCheck({ skills, documents: store }, github.reader, at),
       });

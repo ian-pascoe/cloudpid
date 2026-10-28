@@ -1,5 +1,5 @@
-// The Skill set a Workspace holds (ADR-0026): the files its read-only mount at `/workspace/.agents/skills` serves and its
-// Skill discovery reads, with their content hash. It is kept in the Workspace DO's own storage, and is empty
+// The Skill set a Workspace holds (ADR-0026): the files its read-only mount at `/workspace/.agents/skills` serves and
+// its Skill discovery reads, with their content hash. It is kept in the Workspace DO's own storage, and is empty
 // (`EMPTY_SKILL_SET`, `skill-set-schema.ts`) until one is handed over (`Workspace.updateSkills`).
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { type EagerMount, type MountWriteAPI, WorkerBundle } from "@cloudflare/computer";

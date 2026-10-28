@@ -30,7 +30,7 @@ export const SKILLS_DIRECTORY = ".agents/skills";
 /** The Workspace root: discovery goes no further up. */
 const WORKSPACE_ROOT = "/workspace";
 
-/** Where the Environment's Skill set is mounted, read-only, in every Workspace: the Workspace root's own `.agents/skills`. */
+/** Where the Environment's Skill set is mounted, read-only, in every Workspace: the root's own `.agents/skills`. */
 export const SKILL_SET_DIRECTORY = `${WORKSPACE_ROOT}/${SKILLS_DIRECTORY}`;
 
 /** The longest description listed, the Agent Skills limit: a repo's skills are not trusted to size the prompt. */

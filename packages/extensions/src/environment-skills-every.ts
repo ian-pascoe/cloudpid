@@ -303,7 +303,6 @@ export const removeEverywhere = (
         before,
         after:
           "Removed for every Environment: each Environment serves its own Skill of the name if it has one",
-
         reason,
         expected: {
           savedAt: Option.match(kept, { onNone: () => null, onSome: (skill) => skill.savedAt }),

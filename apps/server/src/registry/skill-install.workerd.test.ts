@@ -160,7 +160,7 @@ const inRegistry = <A>(
             changes,
             { environment: DEFAULT_ENVIRONMENT, id },
             at,
-            { skills },
+            skills,
           ),
         set: async () => {
           const merged = await mergeSkills([skills.list(DEFAULT_ENVIRONMENT)]);

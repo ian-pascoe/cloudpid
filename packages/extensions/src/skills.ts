@@ -5,10 +5,11 @@
 // in the `.agents/skills` directory of the conversation's `cwd` and of each directory above it up to the Workspace root,
 // nearest first, so a repo's own skills come before the Workspace's, whose `.agents/skills` holds the Environment's
 // Skills (its own and those kept for every Environment, mounted read-only). Discovery (`skills-discovery.ts`) reads
-// only files, so it never starts the Container: an environment that discovers skills itself (`SkillSource`: the Workspace's, which does it next to the files) is asked
-// once, and any other is walked through its file operations. The section is read once per Context Window and then
-// shown as it was, as `project_context` is (`frozenSection`): a Skill can change during a Session, and a changed
-// section would rewrite the system prompt, the head of the provider's cache prefix.
+// only files, so it never starts the Container: an environment that discovers skills itself (`SkillSource`: the
+// Workspace's, which does it next to the files) is asked once, and any other is walked through its file operations.
+// The section is read once per Context Window and then shown as it was, as `project_context` is (`frozenSection`): a
+// Skill can change during a Session, and a changed section would rewrite the system prompt, the head of the provider's
+// cache prefix.
 import { frozenSection } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, type PromptInput } from "@earendil-works/pi-durable";
@@ -56,7 +57,7 @@ export const formatSkills = (
 
   const hidden = skills.length > visible.length;
 
-  const environments = Arr.some(visible, (skill) =>
+  const fromSkillSet = Arr.some(visible, (skill) =>
     skill.filePath.startsWith(`${SKILL_SET_DIRECTORY}/`),
   );
 
@@ -65,7 +66,7 @@ export const formatSkills = (
       "The following skills provide specialized instructions for specific tasks.",
       LOADING[fileReadTool],
       "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
-      ...(environments
+      ...(fromSkillSet
         ? [
             `The skills in ${SKILL_SET_DIRECTORY} are the Environment's (its own, and those kept for every Environment) and read-only: change them with environment_skill_save and the other environment_skill_* tools, not by writing there.`,
           ]
