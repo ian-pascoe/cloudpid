@@ -6,7 +6,11 @@ import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { withGlobalVariables } from "@cloudpid/config";
+import {
+  type ContainerPatch,
+  type ContainerSettings,
+  resolveContainerOverridesLeniently,
+} from "@cloudpid/config";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   AgentChange,
@@ -14,6 +18,7 @@ import type {
   EnvironmentRepo,
   EnvironmentSecretRecord,
   EnvironmentSkill,
+  OverridingEnvironment,
   PushState,
   PushSubscription,
   SessionOrigin,
@@ -115,17 +120,15 @@ import {
   type SettingsChangeRevert,
   type SettingsFieldChange,
 } from "./settings-changes.ts";
+import { type EnvironmentSettingsState, patchEnvironmentSettings } from "./environment-settings.ts";
 import {
-  readEnvironmentSettings,
-  type EnvironmentSettingsState,
-  writeEnvironmentSettings,
-} from "./environment-settings.ts";
-import {
+  environmentSettingsOf,
+  globalSettingsOf,
   type GlobalState,
-  globalVariablesOf,
+  overriddenIn,
+  patchGlobal,
   readGlobal,
   workspaceOverridesOf,
-  writeGlobal,
 } from "./global.ts";
 import {
   type Deletion,
@@ -199,26 +202,35 @@ export type EnvironmentChangeAnswer =
     }
   | Exclude<EnvironmentChange, { readonly status: "changed" }>;
 
-/** How saving the settings kept Global went. */
+/** The Container settings at Global, with the Environments that override each field (ADR-0027). */
+export type GlobalContainerState = GlobalState & {
+  readonly overriddenIn: Readonly<Record<string, ReadonlyArray<OverridingEnvironment>>>;
+};
+
+/** How saving the Container settings at Global went: once saved, also what they were before. */
 export type GlobalSettingsUpdate =
-  | { readonly status: "saved"; readonly state: GlobalState }
+  | {
+      readonly status: "saved";
+      readonly state: GlobalContainerState;
+      readonly previous: ContainerSettings;
+    }
   | { readonly status: "rejected"; readonly message: string };
 
 /**
- * How an Agent change to a variable kept Global went (`changeGlobal`): as
- * `GlobalChange` says, a change also saying which Environments override the variable, so it does not reach
- * them, and which want a new Build (`wantsNewBuild`).
+ * How an Agent change to a Container setting at Global went (`changeGlobal`): as `GlobalChange` says, a change also
+ * saying which Environments override the field, so it does not reach them, and which want a new Build
+ * (`wantsNewBuild`).
  */
 export type GlobalChangeAnswer =
   | {
       readonly status: "changed";
       readonly change: AgentChange;
-      /** The variables kept Global now. */
-      readonly variables: Readonly<Record<string, string>>;
+      /** The Container settings at Global now. */
+      readonly settings: ContainerSettings;
       readonly overriddenIn: ReadonlyArray<{ readonly id: string; readonly name: string }>;
       readonly newBuilds: ReadonlyArray<{ readonly id: string; readonly name: string }>;
       /**
-       * Whether it reaches the Workspaces of the Environment the caller named: it does not override the variable.
+       * Whether it reaches the Workspaces of the Environment the caller named: it does not override the field.
        * Undefined: none named.
        */
       readonly own: boolean | undefined;
@@ -324,19 +336,25 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly name: string;
   }) => Effect.Effect<RepoChange>;
-  /** An Environment's Container settings in force and their overrides, or null when it is not registered. */
+  /**
+   * An Environment's Container settings in force, its Overrides and Global's settings, or null when it is not
+   * registered.
+   */
   readonly getEnvironmentSettings: (input: {
     readonly environment: string;
   }) => Effect.Effect<EnvironmentSettingsState | null>;
-  /** Save an Environment's Container settings overrides if they resolve; otherwise say why not, and save nothing. */
-  readonly updateEnvironmentSettings: (input: {
-    readonly environment: string;
-    readonly overrides: Schema.Json;
-  }) => Effect.Effect<EnvironmentSettingsUpdate>;
   /**
-   * An Agent change (`docs/architecture/agent-changes.md`): give one of `environment`'s Container settings a new value, by the
-   * rules of `updateEnvironmentSettings`, and record it with its `author`. Says the values before and after and whether
-   * a new Build is wanted; a field that already has the value records nothing. The caller runs the Build upkeep after.
+   * Set or reset an Environment's Container Overrides (`ContainerPatch`) if the result resolves; otherwise say why not,
+   * and save nothing.
+   */
+  readonly updateEnvironmentSettings: (
+    input: { readonly environment: string } & ContainerPatch,
+  ) => Effect.Effect<EnvironmentSettingsUpdate>;
+  /**
+   * An Agent change (`docs/architecture/agent-changes.md`): give one of `environment`'s Container settings a new
+   * Override, or reset it to inherit Global's (`value` null), by the rules of `updateEnvironmentSettings`, and record
+   * it with its `author`. Says the values before and after and whether a new Build is wanted; a field that already has
+   * the value as its Override (or is inherited, for a reset) records nothing. The caller runs the Build upkeep after.
    */
   readonly changeEnvironment: (input: {
     readonly environment: string;
@@ -345,29 +363,32 @@ export type RegistryMethods = {
     readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<EnvironmentChangeAnswer>;
-  /** The settings kept Global in force (the variables) and their overrides. */
-  readonly getGlobalSettings: () => Effect.Effect<GlobalState>;
+  /** The Container settings at Global in force, what is saved of them, and the Environments that override each field. */
+  readonly getGlobalContainerSettings: () => Effect.Effect<GlobalContainerState>;
   /**
-   * Save the settings kept Global if they resolve and no Environment is left with more variables than it
-   * may have with its own; otherwise say why not, and save nothing.
+   * Set or reset Container settings at Global (`ContainerPatch`) if they resolve and no Environment that inherits a
+   * field changed is left above its size limit or with more variables than it may have; otherwise say why not, and
+   * save nothing.
    */
-  readonly updateGlobalSettings: (input: {
-    readonly overrides: Schema.Json;
-  }) => Effect.Effect<GlobalSettingsUpdate>;
+  readonly updateGlobalContainerSettings: (
+    input: ContainerPatch,
+  ) => Effect.Effect<GlobalSettingsUpdate>;
   /**
-   * An Agent change (`docs/architecture/agent-changes.md`): give one variable kept Global a new value, by the
-   * rules of `updateGlobalSettings`, and record it with its `author` under the scope `*`. Says which
-   * Environments override it and which want a new Build; a variable that already has the value records nothing. The
+   * An Agent change (`docs/architecture/agent-changes.md`): give one Container setting at Global a new value, by the
+   * rules of `updateGlobalContainerSettings`, and record it with its `author` under the scope `*`. Says which
+   * Environments override it and which want a new Build; a field that already has the value records nothing. The
    * caller runs the Build upkeep after. `environment` is the caller's own, to say whether the change reaches it.
    */
   readonly changeGlobal: (input: {
     readonly change: ContainerFieldChange;
+    /** The value the field must still have, for a change the owner approved against it. */
+    readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: AgentChangeAuthor;
     readonly environment?: string | undefined;
   }) => Effect.Effect<GlobalChangeAnswer>;
   /**
-   * The Container settings overrides a Workspace of `environment` is handed: its own with the variables kept
-   * Global under them. Null when the Environment is not registered.
+   * The Container settings overrides a Workspace of `environment` is handed: its settings in force (its Overrides over
+   * Global's) as overrides of the defaults. Null when the Environment is not registered.
    */
   readonly workspaceOverrides: (input: {
     readonly environment: string;
@@ -957,33 +978,49 @@ export const RegistryLive = Registry.make(
           removeRepo: ({ environment, name }) =>
             Effect.sync(() => store.removeRepo(environment, name)),
           getEnvironmentSettings: ({ environment }) =>
-            Effect.sync(() => {
-              const overrides = store.getEnvironmentSettings(environment);
+            Effect.sync(() => environmentSettingsOf(store, environment)),
+          updateEnvironmentSettings: ({ environment, set, reset }) =>
+            Effect.sync((): EnvironmentSettingsUpdate =>
+              state.raw.storage.transactionSync((): EnvironmentSettingsUpdate => {
+                const stored = store.getEnvironmentSettings(environment);
 
-              return overrides === null ? null : readEnvironmentSettings(overrides);
-            }),
-          updateEnvironmentSettings: ({ environment, overrides }) =>
-            Effect.sync((): EnvironmentSettingsUpdate => {
-              if (store.getEnvironment(environment) === null) return { status: "missing" };
+                if (store.getEnvironment(environment) === null || stored === null) {
+                  return { status: "missing" };
+                }
 
-              const saved = writeEnvironmentSettings(overrides, globalVariablesOf(store));
+                const saved = patchEnvironmentSettings(
+                  stored,
+                  { set, reset },
+                  globalSettingsOf(store),
+                );
 
-              if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
+                if (Result.isFailure(saved)) {
+                  return { status: "rejected", message: saved.failure };
+                }
 
-              store.putEnvironmentSettings(environment, saved.success.overrides);
+                store.putEnvironmentSettings(environment, saved.success.overrides);
 
-              return { status: "saved", state: saved.success };
-            }),
-          getGlobalSettings: () => Effect.sync(() => readGlobal(store)),
-          updateGlobalSettings: ({ overrides }) =>
-            Clock.currentTimeMillis.pipe(
-              Effect.map((now): GlobalSettingsUpdate => {
-                const saved = writeGlobal(store, overrides, now);
-
-                return Result.isSuccess(saved)
-                  ? { status: "saved", state: saved.success }
-                  : { status: "rejected", message: saved.failure };
+                return { status: "saved", state: saved.success };
               }),
+            ),
+          getGlobalContainerSettings: () =>
+            Effect.sync(() => ({ ...readGlobal(store), overriddenIn: overriddenIn(store) })),
+          updateGlobalContainerSettings: ({ set, reset }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now): GlobalSettingsUpdate =>
+                state.raw.storage.transactionSync((): GlobalSettingsUpdate => {
+                  const previous = globalSettingsOf(store);
+                  const saved = patchGlobal(store, { set, reset }, now);
+
+                  return Result.isSuccess(saved)
+                    ? {
+                        status: "saved",
+                        state: { ...saved.success, overriddenIn: overriddenIn(store) },
+                        previous,
+                      }
+                    : { status: "rejected", message: saved.failure };
+                }),
+              ),
             ),
           workspaceOverrides: ({ environment }) => workspaceOverrides(environment),
           changeEnvironment: ({ environment, change, expected, author }) =>
@@ -1002,19 +1039,13 @@ export const RegistryLive = Registry.make(
 
               const { previous, ...changed } = outcome;
 
-              const globalVars = globalVariablesOf(store);
-
               const newBuild = yield* Effect.promise(() =>
-                wantsNewBuild(
-                  outcome.environment.repos,
-                  withGlobalVariables(previous, globalVars),
-                  withGlobalVariables(outcome.state.settings, globalVars),
-                ),
+                wantsNewBuild(outcome.environment.repos, previous, outcome.state.settings),
               );
 
               return { ...changed, newBuild } satisfies EnvironmentChangeAnswer;
             }),
-          changeGlobal: ({ change, author, environment }) =>
+          changeGlobal: ({ change, expected, author, environment }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
 
@@ -1022,30 +1053,31 @@ export const RegistryLive = Registry.make(
                 state.raw.storage,
                 store,
                 changes,
-                { change, author },
+                { change, expected, author },
                 now,
               );
 
               if (outcome.status !== "changed") return outcome;
 
-              const { name, previous, variables } = outcome;
+              const { previous, settings } = outcome;
 
               const environments = Arr.map(store.listEnvironments(), (record) => ({
                 id: record.id,
                 name: record.name,
                 repos: record.repos,
-                settings: readEnvironmentSettings(store.getEnvironmentSettings(record.id) ?? {})
-                  .settings,
+                overrides: resolveContainerOverridesLeniently(
+                  store.getEnvironmentSettings(record.id) ?? {},
+                ).overrides,
               }));
 
               const reach = yield* Effect.promise(() =>
-                globalChangeReach(environments, name, previous, variables, environment),
+                globalChangeReach(environments, change.field, previous, settings, environment),
               );
 
               return {
                 status: "changed",
                 change: outcome.change,
-                variables,
+                settings,
                 ...reach,
               } satisfies GlobalChangeAnswer;
             }),
@@ -1331,7 +1363,13 @@ export const RegistryLive = Registry.make(
           upkeepSpares: ({ environments }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
-              const { stale, made } = store.upkeepSpares(environments, shortId, now);
+
+              const { stale, made } = store.upkeepSpares(
+                environments,
+                shortId,
+                now,
+                globalSettingsOf(store),
+              );
 
               // A spare is new, so it holds the empty Skill set: it is handed its Environment's when that differs.
               return {
@@ -1343,7 +1381,7 @@ export const RegistryLive = Registry.make(
             }),
           buildWork: ({ environments }) =>
             Effect.gen(function* () {
-              const globalVars = globalVariablesOf(store);
+              const global = globalSettingsOf(store);
 
               const wanted = Arr.filterMap(store.listEnvironments(), (environment) => {
                 const recorded = store.getBuild(environment.id);
@@ -1359,10 +1397,10 @@ export const RegistryLive = Registry.make(
                   Effect.map((digest): BuildWork => ({
                     environment: environment.id,
                     repos: environment.repos,
-                    settings: readEnvironmentSettings(
+                    overrides: resolveContainerOverridesLeniently(
                       store.getEnvironmentSettings(environment.id) ?? {},
                     ).overrides,
-                    globalVariables: globalVars,
+                    global,
                     recorded,
                     // The values a Build gets, as a keyed digest only: the key is stored and shown in the clear.
                     secrets: digest,

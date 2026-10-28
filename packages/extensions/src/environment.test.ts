@@ -2,11 +2,15 @@
 // the refusal of values that hold a Secret, and the Run's record of the changes.
 // @effect-diagnostics asyncFunction:off
 import {
+  compareInstances,
   type ContainerSettings,
+  type ContainerSettingsOverrides,
   containerOverridesFrom,
   DEFAULT_CONTAINER_SETTINGS,
   instanceLimitProblem,
+  resolveContainerOverrides,
   resolveContainerSettings,
+  resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
 import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -18,7 +22,6 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -50,22 +53,24 @@ const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 /** The variables kept Global at the start of a test. */
 const GLOBAL_VARIABLES = { SHARED: "all", NODE_ENV: "prod" };
 
-const DEFAULT: EnvironmentDetails = {
+/** An Environment as the fake keeps it: its Overrides, from which `get` resolves the settings over Global's. */
+type Kept = Omit<EnvironmentDetails, "settings" | "global">;
+
+const DEFAULT: Kept = {
   id: "default",
   name: "Default",
   repos: [{ name: "app", url: "https://github.com/o/app.git" }],
   build: { status: "ready", at: Date.UTC(2026, 9, 20) },
-  settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: { NODE_ENV: "test" } },
+  overrides: { variables: { NODE_ENV: "test" } },
   secrets: [
     { name: "API_KEY", scope: "environment", build: true },
     { name: "NPM_TOKEN", scope: "every", build: false },
   ],
-  globalVariables: GLOBAL_VARIABLES,
   skills: [],
   globalSkills: [],
 };
 
-const OTHER: EnvironmentDetails = {
+const OTHER: Kept = {
   id: "0000abcd",
   name: "Other",
   repos: [],
@@ -75,9 +80,8 @@ const OTHER: EnvironmentDetails = {
     at: 0,
     lastGoodAt: null,
   },
-  settings: DEFAULT_CONTAINER_SETTINGS,
+  overrides: {},
   secrets: [],
-  globalVariables: GLOBAL_VARIABLES,
   skills: [],
   globalSkills: [],
 };
@@ -96,9 +100,37 @@ const valueOf = (settings: ContainerSettings, field: string): Schema.Json | null
   return settings[field as keyof ContainerSettings];
 };
 
-/** Environments over a map of settings per Environment, applying each change as the Registry would. */
-const fakeEnvironments = (current: string | null = "default") => {
-  const details = new Map(Arr.map([DEFAULT, OTHER], (each) => [each.id, each] as const));
+/** The field paths an Environment's Overrides set: a setting's name, or `variables.<NAME>` for each variable. */
+const overriddenPaths = (overrides: ContainerSettingsOverrides): string[] => [
+  ...Arr.filter(
+    Arr.map(Record.toEntries<string, unknown>(overrides), ([key]) => key),
+    (key) => key !== "variables",
+  ),
+  ...Arr.map(Record.keys(overrides.variables ?? {}), (name) => `variables.${name}`),
+];
+
+/**
+ * Environments over Global's Container settings and each Environment's Overrides, applying each change as the Registry
+ * would. Global's settings are `startingGlobal` (the variables kept Global by default) with any change made to them.
+ */
+const fakeEnvironments = (
+  current: string | null = "default",
+  startingGlobal: ContainerSettings = {
+    ...DEFAULT_CONTAINER_SETTINGS,
+    variables: GLOBAL_VARIABLES,
+  },
+) => {
+  const kept = new Map(Arr.map([DEFAULT, OTHER], (each) => [each.id, each] as const));
+
+  /** Global's Container settings. */
+  let globalSettings = startingGlobal;
+
+  /** Environment `id` as `get` shows it: its Overrides resolved over Global's settings. */
+  const detailsOf = (each: Kept): EnvironmentDetails => ({
+    ...each,
+    settings: resolveEnvironmentContainerSettings(globalSettings, each.overrides),
+    global: globalSettings,
+  });
 
   const changes: Array<{
     environment: string;
@@ -109,49 +141,81 @@ const fakeEnvironments = (current: string | null = "default") => {
 
   let next = 1;
 
-  /** The variables kept Global. */
-  const globalVars: Record<string, string> = { ...GLOBAL_VARIABLES };
-
   const service: EnvironmentsService = {
     ...unusedLifecycle,
     ...unusedSecretMarks,
     ...unusedSkills,
     current: Effect.succeed(current),
-    list: Effect.sync(() => [...details.values()]),
+    list: Effect.sync(() => [...kept.values()]),
     get: (id) =>
       Effect.sync(() => {
-        const found = details.get(id);
+        const found = kept.get(id);
 
-        return found === undefined ? null : { ...found, globalVariables: { ...globalVars } };
+        return found === undefined ? null : detailsOf(found);
       }),
-    global: Effect.sync(() => ({
-      variables: { ...globalVars },
-      secrets: [{ name: "NPM_TOKEN", scope: "every" as const, build: false }],
-      skills: [],
-    })),
+    global: Effect.sync(() => {
+      const overriddenIn: Record<string, Array<{ id: string; name: string }>> = {};
+
+      for (const each of kept.values()) {
+        for (const path of overriddenPaths(each.overrides)) {
+          (overriddenIn[path] ??= []).push({ id: each.id, name: each.name });
+        }
+      }
+
+      return {
+        settings: globalSettings,
+        overriddenIn,
+        secrets: [{ name: "NPM_TOKEN", scope: "every" as const, build: false }],
+        skills: [],
+      };
+    }),
     change: ({ environment, change, author }) =>
       Effect.sync((): AppliedChange => {
-        // A variable kept Global: the Environments with one of their own by the name do not get it.
+        // A setting kept Global: the Environments with an Override of it do not get it.
         if (environment === GLOBAL.id) {
-          const name = fieldVariable(change.field) ?? change.field;
-          const before = globalVars[name] ?? null;
+          const variable = fieldVariable(change.field);
+          const before = valueOf(globalSettings, change.field);
 
           if (sameJson(before, change.value)) {
             return { status: "unchanged", environment: GLOBAL, value: before };
           }
 
-          if (!Predicate.isString(change.value)) delete globalVars[name];
-          else globalVars[name] = change.value;
+          const overrides: Record<string, Schema.Json> = {
+            ...containerOverridesFrom(globalSettings),
+          };
 
+          if (variable !== null) {
+            const { [variable]: _, ...others } = globalSettings.variables;
+
+            overrides.variables =
+              change.value === null ? others : { ...others, [variable]: change.value };
+          } else if (change.value === null) {
+            delete overrides[change.field];
+          } else {
+            overrides[change.field] = change.value;
+          }
+
+          const resolved = resolveContainerSettings(overrides);
+
+          if (Result.isFailure(resolved)) {
+            return { status: "rejected", message: resolved.failure.message };
+          }
+
+          const limit = instanceLimitProblem(resolved.success);
+
+          if (limit !== undefined) return { status: "rejected", message: limit };
+
+          globalSettings = resolved.success;
           changes.push({ environment, change, tool: author.tool, reason: author.reason });
 
-          const overriding = Arr.filter([...details.values()], (each) =>
-            Record.has(each.settings.variables, name),
-          );
+          const overridesIt = (each: Kept) =>
+            Arr.contains(overriddenPaths(each.overrides), change.field);
+
+          const overriding = Arr.filter([...kept.values()], overridesIt);
 
           const inheriting = Arr.filter(
-            [...details.values()],
-            (each) => !Record.has(each.settings.variables, name) && each.repos.length > 0,
+            [...kept.values()],
+            (each) => !overridesIt(each) && each.repos.length > 0,
           );
 
           return {
@@ -168,7 +232,7 @@ const fakeEnvironments = (current: string | null = "default") => {
               reason: author.reason,
               field: change.field,
               before,
-              after: globalVars[name] ?? null,
+              after: valueOf(globalSettings, change.field),
               reverts: null,
               revertedBy: null,
             },
@@ -181,45 +245,61 @@ const fakeEnvironments = (current: string | null = "default") => {
           };
         }
 
-        const found = details.get(environment);
+        const found = kept.get(environment);
 
         if (found === undefined) return { status: "missing" };
 
         const variable = fieldVariable(change.field);
-        const before = valueOf(found.settings, change.field);
+        const resolvedBefore = detailsOf(found).settings;
         const where = { id: found.id, name: found.name };
 
-        if (sameJson(before, change.value)) {
+        // A variable's own value is its Override; any other field is the value in force.
+        const own: Record<string, Schema.Json> = { ...found.overrides };
+
+        const before =
+          variable !== null
+            ? (found.overrides.variables?.[variable] ?? null)
+            : valueOf(resolvedBefore, change.field);
+
+        // Nothing to reset in a field that inherits.
+        const inherits = variable === null && own[change.field] === undefined;
+
+        if (sameJson(before, change.value) || (change.value === null && inherits)) {
           return { status: "unchanged", environment: where, value: before };
         }
 
         // As the Registry saves it: the owner's rules, then the size limit.
-        const overrides: Record<string, Schema.Json> = {
-          ...containerOverridesFrom(found.settings),
+        if (variable !== null) {
+          const { [variable]: _, ...others } = found.overrides.variables ?? {};
+
+          own.variables = change.value === null ? others : { ...others, [variable]: change.value };
+        } else if (change.value === null) {
+          delete own[change.field];
+        } else {
+          own[change.field] = change.value;
+        }
+
+        const overrides = resolveContainerOverrides(own);
+
+        if (Result.isFailure(overrides)) {
+          return { status: "rejected", message: overrides.failure.message };
+        }
+
+        const resolved = {
+          ...globalSettings,
+          ...overrides.success,
         };
 
-        if (variable !== null) {
-          const { [variable]: _, ...others } = found.settings.variables;
-
-          overrides.variables =
-            change.value === null ? others : { ...others, [variable]: change.value };
-        } else if (change.value === null) {
-          delete overrides[change.field];
-        } else {
-          overrides[change.field] = change.value;
-        }
-
-        const resolved = resolveContainerSettings(overrides);
-
-        if (Result.isFailure(resolved)) {
-          return { status: "rejected", message: resolved.failure.message };
-        }
-
-        const limit = instanceLimitProblem(resolved.success);
+        const limit =
+          compareInstances(resolved.instance, resolved.maxInstance) > 0
+            ? instanceLimitProblem(resolved)
+            : undefined;
 
         if (limit !== undefined) return { status: "rejected", message: limit };
 
-        details.set(environment, { ...found, settings: resolved.success });
+        const after = resolveEnvironmentContainerSettings(globalSettings, overrides.success);
+
+        kept.set(environment, { ...found, overrides: overrides.success });
         changes.push({ environment, change, tool: author.tool, reason: author.reason });
 
         const recorded: AgentChange = {
@@ -233,7 +313,7 @@ const fakeEnvironments = (current: string | null = "default") => {
           reason: author.reason,
           field: change.field,
           before,
-          after: valueOf(resolved.success, change.field),
+          after: variable !== null ? change.value : valueOf(after, change.field),
           reverts: null,
           revertedBy: null,
         };
@@ -373,10 +453,10 @@ describe("the environment tools", () => {
     const shown = text(await run(tool("environment_get"), {}));
 
     expect(shown).toContain('Environment "Default" (id default, the Environment of this Session)');
-    expect(shown).toContain("Container size: cpu-1");
+    expect(shown).toContain("Container size (inherited from Global): cpu-1");
     expect(shown).toMatch(/Size limit \(.*\): cpu-2/);
-    expect(shown).toContain("Idle time: 2 minutes");
-    expect(shown).toContain("Spare Workspace: on");
+    expect(shown).toContain("Idle time (inherited from Global): 2 minutes");
+    expect(shown).toContain("Spare Workspace (inherited from Global): on");
     expect(shown).toContain("NODE_ENV=test");
     expect(shown).toContain(
       `API_KEY (kept for this Environment, reaches the Build; commands get it as $${secretEnvName("API_KEY")})`,
@@ -390,7 +470,7 @@ describe("the environment tools", () => {
     const shown = text(await run(tool("environment_get"), { id: "0000abcd" }));
 
     expect(shown).toContain("npm ERR! missing script");
-    expect(shown.length).toBeLessThan(2_300);
+    expect(shown.length).toBeLessThan(2_600);
   });
 
   it("refuses an id no Environment has, pointing to environment_list", async () => {
@@ -590,7 +670,7 @@ describe("the variables kept Global", () => {
     const tool = await toolsOver(fakeEnvironments().service);
 
     expect(text(await run(tool("environment_list"), {}))).toContain(
-      'Variables at Global: 2 (environment_get with id "*")',
+      'Variables at Global: 2 (environment_get with id "*" shows them',
     );
   });
 
@@ -611,7 +691,7 @@ describe("the variables kept Global", () => {
 
     expect(other).toContain("SHARED=all");
     expect(other).toContain("NODE_ENV=prod");
-    expect(other).not.toContain("overridden here");
+    expect(other).not.toContain("\n  overridden here:");
   });
 
   it("are shown by environment_get with id *, with the names of the Secrets kept Global", async () => {
@@ -653,7 +733,7 @@ describe("the variables kept Global", () => {
     expect(said).toContain(
       'Set API_URL for Global: it was not set, and is "https://api.test" now.',
     );
-    expect(said).toContain("No Environment has a variable of its own with that name");
+    expect(said).toContain("No Environment overrides it, so it reaches them all");
     expect(said).toContain("next Container start of every Workspace");
     expect(said).toContain("This Session's Workspace has the change already: container_restart");
     expect(said).toContain('a new Build was asked for in Environment "Default" (default)');
@@ -743,35 +823,30 @@ describe("the variables kept Global", () => {
     expect(logged).toEqual([]);
   });
 
-  it("are the only thing id * names for a setting tool: every other one refuses it, saying which take it", async () => {
+  it("are not the only thing id * names: the tools that change one Environment's own record refuse it, saying which take it", async () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service);
 
     for (const [name, args] of [
-      ["environment_container_resize", { size: "cpu-2" }],
-      ["environment_idle_time_set", { minutes: 5 }],
-      ["environment_setup_script_set", { script: "make" }],
-      ["environment_start_script_set", { script: "make" }],
-      ["environment_toolchains_set", { mise_toml: "[tools]" }],
-      ["environment_ignore_set", { patterns: ["/data"] }],
-      ["environment_spare_workspace_set", { enabled: false }],
       ["environment_rename", { name: "New" }],
       ["environment_repo_add", { url: "acme/app" }],
       ["environment_repo_remove", { name: "app" }],
       ["environment_rebuild", { proposed: { variables: { A: "1" } } }],
     ] as const) {
       expect(await failure(run(tool(name), { id: "*", reason: "r", ...args })), name).toContain(
-        'The id "*" names the variables, Secrets and Skills kept Global',
+        'The id "*" names what is kept Global (the Container settings, Secrets and Skills)',
       );
     }
 
     expect(environments.changes).toEqual([]);
 
     const refusal = await failure(
-      run(tool("environment_container_resize"), { id: "*", reason: "r", size: "cpu-2" }),
+      run(tool("environment_rename"), { id: "*", reason: "r", name: "New" }),
     );
 
     for (const taker of [
+      "environment_container_resize",
+      "environment_idle_time_set",
       "environment_skill_save",
       "environment_skill_install",
       "environment_skill_update",
@@ -779,6 +854,118 @@ describe("the variables kept Global", () => {
     ]) {
       expect(refusal, taker).toContain(taker);
     }
+  });
+});
+
+describe("the Container settings kept Global", () => {
+  it("are changed by a setting tool with id *, which says the Environments that override the setting are not reached", async () => {
+    const environments = fakeEnvironments();
+    const logged: RunChange[] = [];
+    const tool = await toolsOver(environments.service, { logged });
+
+    await run(tool("environment_idle_time_set"), { id: "0000abcd", minutes: 10, reason: "r" });
+
+    const result = await run(tool("environment_idle_time_set"), {
+      id: "*",
+      minutes: 5,
+      reason: "Global default",
+    });
+
+    expect(environments.changes[1]).toEqual({
+      environment: "*",
+      change: { field: "idleMinutes", value: 5 },
+      tool: "environment_idle_time_set",
+      reason: "Global default",
+    });
+
+    const said = text(result);
+
+    expect(said).toContain("Set the idle time of Global: it was 2 minutes, and is 5 now.");
+    expect(said).toContain('it does not reach Environment "Other" (0000abcd), which override it');
+    expect(said).toContain("This Session's Workspace has the change already: container_restart");
+    expect(logged[1]).toEqual({
+      tool: "environment_idle_time_set",
+      environmentName: "Global",
+      field: "idleMinutes",
+    });
+
+    // The Environment without an Override inherits it; the one with its own keeps its own.
+    expect(text(await run(tool("environment_get"), {}))).toContain(
+      "Idle time (inherited from Global): 5 minutes",
+    );
+    expect(text(await run(tool("environment_get"), { id: "0000abcd" }))).toContain(
+      "Idle time (overridden here): 10 minutes",
+    );
+  });
+
+  it("are changed by environment_setup_script_set with id *, saying no Environment overrides it when none does", async () => {
+    const environments = fakeEnvironments();
+    const tool = await toolsOver(environments.service);
+
+    const said = text(
+      await run(tool("environment_setup_script_set"), { id: "*", script: SCRIPT, reason: "r" }),
+    );
+
+    expect(environments.changes[0]).toMatchObject({
+      environment: "*",
+      change: { field: "setupScript", value: SCRIPT },
+    });
+    expect(said).toContain("Set the Setup Script of Global");
+    expect(said).toContain("No Environment overrides it, so it reaches them all.");
+  });
+
+  it("refuse a size above Global's size limit with environment_container_resize and id *, saving nothing", async () => {
+    const environments = fakeEnvironments();
+    const logged: RunChange[] = [];
+    const tool = await toolsOver(environments.service, { logged });
+
+    const message = await failure(
+      run(tool("environment_container_resize"), { id: "*", size: "standard-3", reason: "r" }),
+    );
+
+    expect(message).toContain("standard-3 is above the size limit of Global, cpu-2");
+    expect(message).toContain("environment_container_size_limit_set");
+    expect(environments.changes).toEqual([]);
+    expect(logged).toEqual([]);
+
+    const result = await run(tool("environment_container_resize"), {
+      id: "*",
+      size: "cpu-2",
+      reason: "r",
+    });
+
+    expect(text(result)).toContain("Set the Container size of Global: it was cpu-1, and is cpu-2");
+    expect(environments.changes).toHaveLength(1);
+  });
+
+  it("are marked by environment_get as the Environment's own (overridden here) or inherited from Global", async () => {
+    const environments = fakeEnvironments();
+    const tool = await toolsOver(environments.service);
+
+    await run(tool("environment_container_resize"), { size: "cpu-2", reason: "r" });
+
+    const shown = text(await run(tool("environment_get"), {}));
+
+    expect(shown).toContain("Container size (overridden here): cpu-2");
+    expect(shown).toContain("Idle time (inherited from Global): 2 minutes");
+    expect(shown).toContain("Setup Script (inherited from Global): none");
+  });
+
+  it("are shown by environment_get with id *, noting the Environments that override each", async () => {
+    const environments = fakeEnvironments();
+    const tool = await toolsOver(environments.service);
+
+    await run(tool("environment_idle_time_set"), { id: "0000abcd", minutes: 10, reason: "r" });
+
+    const shown = text(await run(tool("environment_get"), { id: "*" }));
+
+    expect(shown).toContain('Idle time (overridden in Environment "Other" (0000abcd)): 2 minutes');
+    expect(shown).toContain("Container size: cpu-1");
+    expect(shown).toMatch(/Size limit \(.*\): cpu-2/);
+    expect(shown).not.toContain("Container size (overridden");
+    // The variable its own value hides in the Environment that sets it.
+    expect(shown).toContain('NODE_ENV=prod (overridden in Environment "Default" (default))');
+    expect(shown).toContain("SHARED=all\n");
   });
 });
 
@@ -843,7 +1030,7 @@ describe("environment_container_resize", () => {
       tool: "environment_container_resize",
     });
     expect(text(result)).toContain("it was cpu-1, and is cpu-2 now");
-    expect(text(result)).toContain("every Workspace of the Environment");
+    expect(text(result)).toContain("every Workspace it reaches");
     expect(text(result)).toContain(
       "container_resize changes only this Workspace's current Container",
     );
@@ -972,7 +1159,9 @@ describe("environment_spare_workspace_set", () => {
       },
     ]);
     expect(text(result)).toContain("Turned the Spare Workspace of");
-    expect(text(result)).toContain("off: its spare, if it had one, is removed");
+    expect(text(result)).toContain(
+      "off: the spare of each Environment it reaches, if it had one, is removed",
+    );
     expect(result.details).toMatchObject({
       agentChange: { field: "spareWorkspace", before: true, after: false },
     });

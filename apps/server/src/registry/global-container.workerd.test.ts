@@ -1,19 +1,23 @@
-// The Container settings at Global and each Environment's Overrides (ADR-0027; `docs/architecture/workspace.md` →
-// Environments), over real Durable Object SQLite: what Environments stored before Global held their Container settings
-// resolve exactly as they did, so a deploy hands every Workspace the same settings and asks for no Build.
+// The Container settings at Global and each Environment's Overrides (ADR-0027; `docs/architecture/container.md` →
+// Container settings), over real Durable Object SQLite: what Environments stored before Global held their Container
+// settings resolve exactly as they did, so a deploy hands every Workspace the same settings and asks for no Build, and
+// the Agent changes recorded before then are marked inherited where they recorded the default (migration 26).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { runInDurableObject } from "cloudflare:test";
-import { resolveContainerSettingsLeniently, withGlobalVariables } from "@cloudpid/config";
+import {
+  resolveContainerOverridesLeniently,
+  resolveEnvironmentContainerSettings,
+} from "@cloudpid/config";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { buildKey } from "../workspace/build-record.ts";
-import { readEnvironmentSettings } from "./environment-settings.ts";
-import { GLOBAL_DOCUMENT, globalVariablesOf, workspaceOverridesOf } from "./global.ts";
+import { GLOBAL_DOCUMENT, globalSettingsOf, workspaceOverridesOf } from "./global.ts";
+import { openAgentChanges } from "./agent-changes.ts";
 import type { TestRegistry } from "./store.fixture.ts";
-import { openRegistryStore, type RegistryStore } from "./store.ts";
+import { MIGRATIONS, migrate, openRegistryStore, type RegistryStore } from "./store.ts";
 
 /** What Environments stored before Global held Container settings: each a shape a release saved, as text. */
 const STORED: ReadonlyArray<{
@@ -59,13 +63,14 @@ type Resolved = {
   readonly spare: boolean;
 };
 
-/** The settings a Build of `environment` is made with, as the Build upkeep resolves them. */
+/**
+ * The settings a Build of `environment` is made with, as the Build upkeep resolves them: what `buildWork` hands it,
+ * resolved as `buildSettingsOf` does (`builds.ts` itself does not load here).
+ */
 const buildSettings = (store: RegistryStore, environment: string) =>
-  withGlobalVariables(
-    resolveContainerSettingsLeniently(
-      readEnvironmentSettings(store.getEnvironmentSettings(environment) ?? {}).overrides,
-    ).settings,
-    globalVariablesOf(store),
+  resolveEnvironmentContainerSettings(
+    globalSettingsOf(store),
+    resolveContainerOverridesLeniently(store.getEnvironmentSettings(environment) ?? {}).overrides,
   );
 
 const resolveStored = () =>
@@ -111,6 +116,7 @@ const resolveStored = () =>
             STORED.map(({ id }) => id),
             () => crypto.randomUUID().slice(0, 8),
             3_000,
+            globalSettingsOf(store),
           )
           .made.map((made) => made.environment),
       );
@@ -183,5 +189,109 @@ describe("Environments stored before Global held their Container settings", () =
         spare: true,
       },
     });
+  });
+});
+
+describe("Agent changes recorded before Global held Container settings", () => {
+  it("mark a Container setting's value that was the default then as inherited, keeping every value", async () => {
+    const listed = await runInDurableObject(
+      env.REGISTRIES.get(env.REGISTRIES.newUniqueId()),
+      async (_: TestRegistry, state) => {
+        const { storage } = state;
+        const { sql } = storage;
+
+        for (const { name } of sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
+          )
+          .toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+
+        // The tables as they were before migration 26, with what a release before it recorded.
+        migrate(storage, MIGRATIONS.slice(0, 25));
+
+        const rows: ReadonlyArray<readonly [string, string, string | null, string | null]> = [
+          ["default", "maxInstance", '"custom-2"', '"custom-3"'],
+          ["default", "idleMinutes", "2", "30"],
+          ["default", "setupScript", '"apt-get install -y jq"', '""'],
+          ["default", "spareWorkspace", "true", "false"],
+          ["default", "variables.A", null, '"x"'],
+          ["default", "instance", '"cpu-2"', '"standard-3"'],
+          ["*", "variables.B", null, '"y"'],
+        ];
+
+        for (const [scope, field, before, after] of rows) {
+          sql.exec(
+            `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved)
+             VALUES (?, 1, 'agent', 's-1', 1, 'tool', 'why', ?, ?, ?, NULL, 0)`,
+            scope,
+            field,
+            before,
+            after,
+          );
+        }
+
+        migrate(storage);
+
+        const changes = openAgentChanges(storage);
+
+        return [...changes.list("default"), ...changes.list("*")].map(
+          ({ field, before, after, beforeInherited, afterInherited }) => ({
+            field,
+            before,
+            after,
+            beforeInherited: beforeInherited === true,
+            afterInherited: afterInherited === true,
+          }),
+        );
+      },
+    );
+
+    expect(listed).toEqual([
+      {
+        field: "instance",
+        before: "cpu-2",
+        beforeInherited: false,
+        after: "standard-3",
+        afterInherited: false,
+      },
+      {
+        field: "variables.A",
+        before: null,
+        beforeInherited: false,
+        after: "x",
+        afterInherited: false,
+      },
+      {
+        field: "spareWorkspace",
+        before: true,
+        beforeInherited: true,
+        after: false,
+        afterInherited: false,
+      },
+      {
+        field: "setupScript",
+        before: "apt-get install -y jq",
+        beforeInherited: false,
+        after: "",
+        afterInherited: true,
+      },
+      { field: "idleMinutes", before: 2, beforeInherited: true, after: 30, afterInherited: false },
+      {
+        field: "maxInstance",
+        before: "cpu-2",
+        beforeInherited: true,
+        after: "cpu-3",
+        afterInherited: false,
+      },
+      {
+        field: "variables.B",
+        before: null,
+        beforeInherited: false,
+        after: "y",
+        afterInherited: false,
+      },
+    ]);
   });
 });

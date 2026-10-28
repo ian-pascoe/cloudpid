@@ -6,13 +6,13 @@ import {
   compareInstances,
   containerInstance,
   DEFAULT_CONTAINER_SETTINGS,
-  DEFAULT_GLOBAL_SETTINGS,
-  globalOverridesFrom,
+  containerPatchBetween,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
   INSTANCE_RESOURCES,
   INSTANCE_TYPES,
   instanceLimitProblem,
+  isContainerField,
   MAX_IGNORE_PATTERNS,
   MAX_SCRIPT_BYTES,
   MAX_TOOLCHAINS_BYTES,
@@ -20,8 +20,10 @@ import {
   mergedVariablesProblem,
   resolveContainerSettings,
   resolveContainerSettingsLeniently,
-  resolveGlobalSettings,
-  resolveGlobalSettingsLeniently,
+  patchContainerOverrides,
+  resolveContainerOverrides,
+  resolveContainerOverridesLeniently,
+  resolveEnvironmentContainerSettings,
   containerOverridesFrom,
   currentFieldValue,
   currentInstanceName,
@@ -30,7 +32,7 @@ import {
   scriptProblem,
   toolchainsProblem,
   type ContainerSettings,
-  type GlobalSettings,
+  type ContainerSettingsOverrides,
   variableNameProblem,
   withGlobalVariables,
 } from "./container-settings.ts";
@@ -535,61 +537,217 @@ describe("resolveContainerSettingsLeniently", () => {
 const variables = (count: number, prefix = "V"): Record<string, string> =>
   Record.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}`, "x"]));
 
-const resolvedGlobal = (overrides: Schema.Json): GlobalSettings => {
-  const result = resolveGlobalSettings(overrides);
+const overridesOf = (overrides: Schema.Json): ContainerSettingsOverrides => {
+  const result = resolveContainerOverrides(overrides);
 
   if (Result.isFailure(result)) throw new Error(result.failure.message);
 
   return result.success;
 };
 
-const rejectedGlobal = (overrides: Schema.Json): string => {
-  const result = resolveGlobalSettings(overrides);
-
-  if (Result.isSuccess(result)) throw new Error("Expected the overrides to be rejected");
-
-  return result.failure.message;
+const GLOBAL: ContainerSettings = {
+  ...DEFAULT_CONTAINER_SETTINGS,
+  instance: "standard-2",
+  maxInstance: "standard-3",
+  idleMinutes: 10,
+  ignore: ["/global"],
+  variables: { A: "global", C: "global" },
+  setupScript: "echo global",
+  toolchains: '[tools]\nnode = "22"',
 };
 
-describe("GlobalSettings", () => {
-  it("has no variables by default, which is what no overrides resolve to", () => {
-    expect(DEFAULT_GLOBAL_SETTINGS).toEqual({ variables: {} });
-    expect(resolvedGlobal({})).toEqual(DEFAULT_GLOBAL_SETTINGS);
+describe("an Environment's Container settings over Global", () => {
+  it("inherit every field the Environment does not override", () => {
+    expect(resolveEnvironmentContainerSettings(GLOBAL, {})).toEqual(GLOBAL);
   });
 
-  it("takes variables under an Environment's rules", () => {
-    expect(resolvedGlobal({ variables: { EMAIL: "a@b.c" } }).variables).toEqual({
-      EMAIL: "a@b.c",
+  it("take each field the Environment overrides whole: its list and its script replace Global's", () => {
+    expect(
+      resolveEnvironmentContainerSettings(GLOBAL, {
+        idleMinutes: 30,
+        ignore: ["/own"],
+        setupScript: "",
+        spareWorkspace: false,
+      }),
+    ).toEqual({
+      ...GLOBAL,
+      idleMinutes: 30,
+      ignore: ["/own"],
+      setupScript: "",
+      spareWorkspace: false,
     });
+  });
 
-    for (const name of ["PATH", "CLOUDPID_X", "1A"]) {
-      expect(rejectedGlobal({ variables: { [name]: "x" } }), name).toContain("variables");
+  it("keep an override equal to Global, so a change of Global does not reach it", () => {
+    const overrides = { idleMinutes: 10 };
+
+    expect(resolveEnvironmentContainerSettings(GLOBAL, overrides).idleMinutes).toBe(10);
+    expect(
+      resolveEnvironmentContainerSettings({ ...GLOBAL, idleMinutes: 60 }, overrides).idleMinutes,
+    ).toBe(10);
+  });
+
+  it("merge the variables by name, the Environment's own winning", () => {
+    expect(
+      resolveEnvironmentContainerSettings(GLOBAL, { variables: { A: "own", B: "own" } }).variables,
+    ).toEqual({ A: "own", B: "own", C: "global" });
+  });
+
+  it(`keep at most ${MAX_VARIABLES} variables, the Environment's own first`, () => {
+    const merged = resolveEnvironmentContainerSettings(
+      { ...GLOBAL, variables: { Z: "1", Y: "1", X: "1" } },
+      { variables: variables(48) },
+    );
+
+    expect(merged.variables).toEqual({ ...variables(48), X: "1", Y: "1" });
+  });
+
+  it("raise the size limit to the size once merged, for an Environment saved larger before it had a limit", () => {
+    expect(
+      resolveEnvironmentContainerSettings(DEFAULT_CONTAINER_SETTINGS, { instance: "standard-3" }),
+    ).toMatchObject({ instance: "standard-3", maxInstance: "standard-3" });
+    expect(
+      resolveEnvironmentContainerSettings(GLOBAL, { instance: "standard-3" }).maxInstance,
+    ).toBe("standard-3");
+    expect(
+      resolveEnvironmentContainerSettings(GLOBAL, { maxInstance: "standard-4" }),
+    ).toMatchObject({ instance: "standard-2", maxInstance: "standard-4" });
+  });
+
+  it("resolve as they did before Global held them while Global is at the defaults", () => {
+    const stored: ReadonlyArray<Schema.Json> = [
+      {},
+      { instance: "custom-2" },
+      { instance: "standard-4" },
+      { spareWorkspace: false, idleMinutes: 30 },
+      { ignore: ["/data"], setupScript: "x", startScript: "y", toolchains: "z" },
+      { variables: { A: "own" }, idleMinutes: "5m", retired: true },
+    ];
+
+    for (const overrides of stored) {
+      const { overrides: kept } = resolveContainerOverridesLeniently(overrides);
+
+      expect(
+        resolveEnvironmentContainerSettings(
+          { ...DEFAULT_CONTAINER_SETTINGS, variables: { A: "g", C: "g" } },
+          kept,
+        ),
+        JSON.stringify(overrides),
+      ).toEqual(
+        withGlobalVariables(resolveContainerSettingsLeniently(overrides).settings, {
+          A: "g",
+          C: "g",
+        }),
+      );
     }
+  });
+});
 
-    expect(rejectedGlobal({ variables: { A: "a".repeat(4097) } })).toContain("variables");
-    expect(rejectedGlobal({ variables: { A: "a\u0000b" } })).toContain("variables");
-    expect(rejectedGlobal({ variables: variables(MAX_VARIABLES + 1) })).toContain("variables");
-    expect(resolvedGlobal({ variables: variables(MAX_VARIABLES) }).variables).toEqual(
-      variables(MAX_VARIABLES),
+describe("an Environment's Overrides", () => {
+  it("keep exactly the fields saved, one equal to the default too", () => {
+    expect(overridesOf({ instance: "cpu-1", ignore: [], spareWorkspace: true })).toEqual({
+      instance: "cpu-1",
+      ignore: [],
+      spareWorkspace: true,
+    });
+  });
+
+  it("are checked by each setting's rules when saved, one problem per line", () => {
+    const refused = resolveContainerOverrides({ idleMinutes: 0, instance: "huge", other: 1 });
+
+    const lines = Result.isFailure(refused) ? refused.failure.message.split("\n") : [];
+
+    expect(lines).toHaveLength(3);
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("idleMinutes"),
+        expect.stringContaining("instance"),
+        expect.stringContaining("other"),
+      ]),
     );
   });
 
-  it("refuses a key it does not know when it is saved, and drops only that key when it is read", () => {
-    expect(rejectedGlobal({ idleMinutes: 5 })).toContain("idleMinutes");
-    expect(resolveGlobalSettingsLeniently({ idleMinutes: 5, variables: { A: "1" } })).toEqual({
-      settings: { variables: { A: "1" } },
+  it("drop only what no longer resolves when read, and keep a renamed size under its name now", () => {
+    expect(
+      resolveContainerOverridesLeniently({
+        instance: "custom-2",
+        idleMinutes: "5m",
+        startScript: "",
+      }),
+    ).toEqual({
+      overrides: { instance: "cpu-2", startScript: "" },
       dropped: [expect.stringContaining("idleMinutes")],
     });
-    expect(resolveGlobalSettingsLeniently({ variables: { PATH: "/bin" } }).settings).toEqual(
-      DEFAULT_GLOBAL_SETTINGS,
+    expect(resolveContainerOverridesLeniently("nonsense")).toEqual({
+      overrides: {},
+      dropped: ["not an object"],
+    });
+  });
+});
+
+describe("patching Overrides", () => {
+  const current = { idleMinutes: 30, variables: { A: "1", B: "2" } };
+
+  it("sets fields one by one, and variables name by name", () => {
+    expect(
+      patchContainerOverrides(current, { set: { ignore: ["/x"], variables: { B: "3", C: "4" } } }),
+    ).toEqual(
+      Result.succeed({ idleMinutes: 30, ignore: ["/x"], variables: { A: "1", B: "3", C: "4" } }),
     );
-    expect(resolveGlobalSettingsLeniently("nonsense").settings).toEqual(DEFAULT_GLOBAL_SETTINGS);
   });
 
-  it("keeps only what differs from the defaults, so no variables is {}", () => {
-    expect(globalOverridesFrom(DEFAULT_GLOBAL_SETTINGS)).toEqual({});
-    expect(globalOverridesFrom({ variables: { A: "1" } })).toEqual({
-      variables: { A: "1" },
+  it("resets a field, a variable by its field path, or every variable", () => {
+    expect(patchContainerOverrides(current, { reset: ["idleMinutes", "variables.A"] })).toEqual(
+      Result.succeed({ variables: { B: "2" } }),
+    );
+    expect(patchContainerOverrides(current, { reset: ["variables.A", "variables.B"] })).toEqual(
+      Result.succeed({ idleMinutes: 30 }),
+    );
+    expect(patchContainerOverrides(current, { reset: ["variables"] })).toEqual(
+      Result.succeed({ idleMinutes: 30 }),
+    );
+  });
+
+  it("refuses a reset of what is not a Container setting, and a field both set and reset", () => {
+    expect(patchContainerOverrides(current, { reset: ["model"] })).toEqual(
+      Result.fail('reset: "model" is not a Container setting'),
+    );
+    expect(
+      patchContainerOverrides(current, { set: { variables: { A: "x" } }, reset: ["variables.A"] }),
+    ).toEqual(Result.fail('reset: "variables.A" is also set'));
+    expect(
+      patchContainerOverrides(current, { set: { idleMinutes: 5 }, reset: ["idleMinutes"] }),
+    ).toEqual(Result.fail('reset: "idleMinutes" is also set'));
+  });
+});
+
+describe("isContainerField", () => {
+  it("names a Container setting or one variable, as an Agent change names them", () => {
+    expect(isContainerField("idleMinutes")).toBe(true);
+    expect(isContainerField("variables.API_URL")).toBe(true);
+    expect(isContainerField("variables.")).toBe(false);
+    // All the variables at once is a reset's path, not a field one change names.
+    expect(isContainerField("variables")).toBe(false);
+    expect(isContainerField("model")).toBe(false);
+    expect(isContainerField("repos.app")).toBe(false);
+  });
+});
+
+describe("the patch between two sets of settings", () => {
+  it("sets each field that differs and each variable added or changed, and resets each variable taken out", () => {
+    const before = { ...DEFAULT_CONTAINER_SETTINGS, ignore: ["/a"], variables: { A: "1", B: "2" } };
+
+    expect(containerPatchBetween(before, before)).toEqual({});
+    expect(
+      containerPatchBetween(before, {
+        ...before,
+        idleMinutes: 9,
+        ignore: ["/a", "/b"],
+        variables: { A: "1", B: "3", C: "4" },
+      }),
+    ).toEqual({ set: { idleMinutes: 9, ignore: ["/a", "/b"], variables: { B: "3", C: "4" } } });
+    expect(containerPatchBetween(before, { ...before, variables: { B: "2" } })).toEqual({
+      reset: ["variables.A"],
     });
   });
 });

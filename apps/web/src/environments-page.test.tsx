@@ -2,11 +2,7 @@
 // `react-dom/server` over the fake Registry: its Container fields show the Spare Workspace setting as saved, with the
 // trade-off it makes.
 
-import {
-  type ContainerSettings,
-  containerOverridesFrom,
-  DEFAULT_CONTAINER_SETTINGS,
-} from "@cloudpid/config";
+import { type ContainerSettings, DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -28,8 +24,13 @@ const render = (settings: ContainerSettings, draft?: { readonly spareWorkspace: 
     const registry = registryWith({
       listEnvironments: () => Effect.succeed([WORK]),
       getEnvironmentSettings: () =>
-        Effect.succeed({ settings, overrides: containerOverridesFrom(settings) }),
-      getGlobalSettings: () => Effect.succeed({ settings: { variables: {} }, overrides: {} }),
+        Effect.succeed({ settings, global: DEFAULT_CONTAINER_SETTINGS, overrides: {} }),
+      getGlobalContainerSettings: () =>
+        Effect.succeed({
+          settings: DEFAULT_CONTAINER_SETTINGS,
+          overrides: {},
+          overriddenIn: {},
+        }),
     });
 
     registry.mount(environmentsAtom);

@@ -1,6 +1,7 @@
 // The `environment` extension's tool for the Build mark of a kept Secret (docs/architecture/agent-changes.md):
 // `environment_secret_build`, over fake kept Secrets that apply a mark as the Registry does.
 // @effect-diagnostics asyncFunction:off
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   ROOT_CONVERSATION_ID,
@@ -53,7 +54,12 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
-    global: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
+    global: Effect.succeed({
+      settings: DEFAULT_CONTAINER_SETTINGS,
+      overriddenIn: {},
+      secrets: [],
+      skills: [],
+    }),
     change: () => Effect.die("not used here"),
   };
 

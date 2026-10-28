@@ -1017,17 +1017,23 @@ export const EditEnvironmentDialog = ({
     save({
       name: renamed ? name.trim() : undefined,
       settings:
-        settingsChanged && instance !== undefined && maxInstance !== undefined
+        settingsChanged &&
+        saved !== undefined &&
+        instance !== undefined &&
+        maxInstance !== undefined
           ? {
-              instance,
-              maxInstance,
-              idleMinutes: Number(idle),
-              ignore: patterns,
-              variables: typedVariables,
-              setupScript: setupScript ?? saved.setupScript,
-              startScript: startScript ?? saved.startScript,
-              toolchains: toolchains ?? saved.toolchains,
-              spareWorkspace: spareWorkspace ?? saved.spareWorkspace,
+              loaded: saved,
+              edited: {
+                instance,
+                maxInstance,
+                idleMinutes: Number(idle),
+                ignore: patterns,
+                variables: typedVariables,
+                setupScript: setupScript ?? saved.setupScript,
+                startScript: startScript ?? saved.startScript,
+                toolchains: toolchains ?? saved.toolchains,
+                spareWorkspace: spareWorkspace ?? saved.spareWorkspace,
+              },
             }
           : undefined,
     });

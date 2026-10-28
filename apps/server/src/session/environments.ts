@@ -40,7 +40,7 @@ export type EnvironmentsRegistry = Pick<
   | "listEnvironmentSecrets"
   | "changeEnvironment"
   | "changeGlobal"
-  | "getGlobalSettings"
+  | "getGlobalContainerSettings"
   | "workspaceOverrides"
   | "agentMarkSecretBuild"
   | "agentSaveSkill"
@@ -302,7 +302,6 @@ export const sessionEnvironments = ({
 
         const byId = yield* buildsById;
         const secrets = yield* registry.listEnvironmentSecrets();
-        const globalSettings = yield* registry.getGlobalSettings();
         const skills = yield* registry.listSkills({ environment: id });
         const globalSkills = yield* registry.listSkills({ environment: GLOBAL_ID });
 
@@ -312,20 +311,22 @@ export const sessionEnvironments = ({
           repos: environment.repos,
           build: byId.get(id) ?? NO_BUILD,
           settings: state.settings,
+          overrides: state.overrides,
+          global: state.global,
           problem: state.problem,
           secrets: keptFor(id, secrets),
-          globalVariables: globalSettings.settings.variables,
           skills: skills ?? [],
           globalSkills: globalSkills ?? [],
         } satisfies EnvironmentDetails;
       }),
     global: Effect.gen(function* () {
-      const { settings } = yield* registry.getGlobalSettings();
+      const { settings, overriddenIn } = yield* registry.getGlobalContainerSettings();
       const secrets = yield* registry.listEnvironmentSecrets();
       const skills = yield* registry.listSkills({ environment: GLOBAL_ID });
 
       return {
-        variables: settings.variables,
+        settings,
+        overriddenIn,
         skills: skills ?? [],
         secrets: Arr.map(
           Arr.filter(secrets, (record) => record.environment === null),
@@ -508,12 +509,14 @@ export const sessionEnvironments = ({
         if (environment === GLOBAL_ID) {
           const atGlobal = yield* registry.changeGlobal({
             change,
+            expected,
             author: { session, ...author },
             environment: own?.environment,
           });
 
           switch (atGlobal.status) {
             case "rejected":
+            case "changed-since":
               return atGlobal;
             case "unchanged":
               return {
@@ -525,7 +528,7 @@ export const sessionEnvironments = ({
               break;
           }
 
-          // The Session's own Workspace takes it now unless its Environment has a variable of its own by that name.
+          // The Session's own Workspace takes it now unless its Environment overrides the field.
           if (own !== null && atGlobal.own === true) {
             yield* handToWorkspace(
               own.object,
@@ -533,7 +536,14 @@ export const sessionEnvironments = ({
             );
           }
 
-          // As after the owner's save: each Environment's Build is made with the variables.
+          // The Spare Workspace setting keeps or removes the spare of each Environment that inherits it.
+          if (change.field === SPARE_WORKSPACE_FIELD) {
+            const all = yield* registry.listEnvironments();
+
+            yield* Effect.forEach(all, (item) => spares.of(item.id), { discard: true });
+          }
+
+          // As after the owner's save: each Environment's Build is made with the settings it inherits.
           yield* buildsAfterScope(registry, builds, GLOBAL_ID);
 
           return {

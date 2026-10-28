@@ -243,6 +243,11 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
           args,
           Option.map(text(args, "size"), (size) => `limit ${size}`),
         );
+      case "environment_setting_reset":
+        return inEnvironment(
+          args,
+          Option.map(text(args, "setting"), (setting) => `reset ${setting}`),
+        );
       case "environment_delete":
         return text(args, "id");
       case "environment_secret_delete":

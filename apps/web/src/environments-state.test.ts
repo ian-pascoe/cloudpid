@@ -3,9 +3,7 @@
 import {
   DEFAULT_CONTAINER_SETTINGS,
   INSTANCE_TYPES,
-  containerOverridesFrom,
   type ContainerSettings,
-  resolveGlobalSettings,
 } from "@cloudpid/config";
 import {
   type AgentChange,
@@ -19,9 +17,10 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import * as Record from "effect/Record";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "@effect/vitest";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
@@ -546,10 +545,18 @@ describe("the Repos of an Environment", () => {
   );
 });
 
+/** The answer for an Environment whose own variables are all of `settings`' and which overrides nothing else. */
 const stateOf = (settings: ContainerSettings): ContainerSettingsState => ({
   settings,
-  overrides: containerOverridesFrom(settings),
+  global: DEFAULT_CONTAINER_SETTINGS,
+  overrides: { variables: settings.variables },
 });
+
+/** An edit of the settings as the Edit dialog sends it: what it was opened with, and what it holds now. */
+const editing = (
+  edited: ContainerSettings,
+  loaded: ContainerSettings = DEFAULT_CONTAINER_SETTINGS,
+) => ({ loaded, edited });
 
 /** A Registry holding the settings of Environment `work`; the first `failures` loads fail, and an idle time of 9999 is refused. */
 const configured = (failures = 0) => {
@@ -562,11 +569,11 @@ const configured = (failures = 0) => {
       Effect.suspend(() =>
         left-- > 0 ? refused("The settings are not ready.") : Effect.succeed(stateOf(held)),
       ),
-    updateEnvironmentSettings: ({ overrides }) =>
-      JSON.stringify(overrides).includes("9999")
+    updateEnvironmentSettings: ({ set, reset }) =>
+      JSON.stringify(set).includes("9999")
         ? refused("idleMinutes: at most 1440")
         : Effect.sync(() => {
-            saved.push(overrides);
+            saved.push({ set, reset });
             held = { ...held, instance: "basic" };
 
             return stateOf(held);
@@ -609,41 +616,41 @@ describe("the settings of an Environment", () => {
     }),
   );
 
-  it.effect(
-    "saves the overrides of the settings, answers with the new state, and loads again",
-    () =>
-      Effect.gen(function* () {
-        const { registry, saved } = configured();
+  it.effect("saves what changed in the settings, answers with the new state, and loads again", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = configured();
 
-        registry.mount(environmentSettingsAtom("work"));
-        yield* settled(registry, environmentSettingsAtom("work"));
-        registry.set(saveEnvironmentAtom("work"), {
-          name: undefined,
-          settings: {
-            ...DEFAULT_CONTAINER_SETTINGS,
+      registry.mount(environmentSettingsAtom("work"));
+      yield* settled(registry, environmentSettingsAtom("work"));
+      registry.set(saveEnvironmentAtom("work"), {
+        name: undefined,
+        settings: editing({
+          ...DEFAULT_CONTAINER_SETTINGS,
+          instance: "basic",
+          ignore: ["/data"],
+          variables: { NODE_ENV: "test" },
+          startScript: "make up\n",
+        }),
+      });
+
+      const answer = yield* settled(registry, saveEnvironmentAtom("work"));
+
+      expect(AsyncResult.getOrThrow(answer)?.settings.instance).toBe("basic");
+      expect(saved).toEqual([
+        {
+          set: {
             instance: "basic",
             ignore: ["/data"],
             variables: { NODE_ENV: "test" },
             startScript: "make up\n",
           },
-        });
-
-        const answer = yield* settled(registry, saveEnvironmentAtom("work"));
-
-        expect(AsyncResult.getOrThrow(answer)?.settings.instance).toBe("basic");
-        expect(saved).toEqual([
-          {
-            instance: "basic",
-            ignore: ["/data"],
-            variables: { NODE_ENV: "test" },
-            startScript: "make up\n",
-          },
-        ]);
-        expect(
-          AsyncResult.getOrThrow(yield* settled(registry, environmentSettingsAtom("work"))).settings
-            .instance,
-        ).toBe("basic");
-      }),
+        },
+      ]);
+      expect(
+        AsyncResult.getOrThrow(yield* settled(registry, environmentSettingsAtom("work"))).settings
+          .instance,
+      ).toBe("basic");
+    }),
   );
 
   it.effect("says why a save was refused, with the Registry's message", () =>
@@ -652,7 +659,7 @@ describe("the settings of an Environment", () => {
 
       registry.set(saveEnvironmentAtom("work"), {
         name: undefined,
-        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 9999 },
+        settings: editing({ ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 9999 }),
       });
 
       expect(failureOf(yield* settled(registry, saveEnvironmentAtom("work")))).toBe(
@@ -688,9 +695,9 @@ const paging = (
       (settingsGate === undefined ? Effect.void : Deferred.await(settingsGate)).pipe(
         Effect.map(() => stateOf(held)),
       ),
-    updateEnvironmentSettings: ({ overrides }) =>
+    updateEnvironmentSettings: ({ set, reset }) =>
       Effect.sync(() => {
-        saved.push(overrides);
+        saved.push({ set, reset });
         held = { ...held, instance: "basic" };
 
         return stateOf(held);
@@ -721,33 +728,36 @@ describe("the dialogs of an Environment's card", () => {
       registry.set(environmentDialogAtom("work"), "edit");
       registry.set(saveEnvironmentAtom("work"), {
         name: "Renamed",
-        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 },
+        settings: editing({ ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 }),
       });
       yield* settled(registry, saveEnvironmentAtom("work"));
 
       expect(renamed).toEqual(["Renamed"]);
-      expect(saved).toEqual([{ instance: "basic", idleMinutes: 30 }]);
+      expect(saved).toEqual([{ set: { instance: "basic", idleMinutes: 30 } }]);
       expect(registry.get(environmentDialogAtom("work"))).toBeNull();
     }),
   );
 
-  it.effect("saves the Spare Workspace turned off as an override, and on again as none", () =>
+  it.effect("saves only the field changed, and a removed own variable as a reset", () =>
     Effect.gen(function* () {
       const { registry, saved } = paging();
 
       registry.mount(saveEnvironmentAtom("work"));
+
+      // The Environment has two own variables; the owner turns the Spare Workspace off and drops one of them.
+      const loaded = {
+        ...DEFAULT_CONTAINER_SETTINGS,
+        variables: { KEEP: "1", DROP: "2" },
+      };
+
       registry.set(saveEnvironmentAtom("work"), {
         name: undefined,
-        settings: { ...DEFAULT_CONTAINER_SETTINGS, spareWorkspace: false },
-      });
-      yield* settled(registry, saveEnvironmentAtom("work"));
-      registry.set(saveEnvironmentAtom("work"), {
-        name: undefined,
-        settings: DEFAULT_CONTAINER_SETTINGS,
+        settings: editing({ ...loaded, spareWorkspace: false, variables: { KEEP: "1" } }, loaded),
       });
       yield* settled(registry, saveEnvironmentAtom("work"));
 
-      expect(saved).toEqual([{ spareWorkspace: false }, {}]);
+      // Inherited fields such as the size and idle time are not in the payload.
+      expect(saved).toEqual([{ set: { spareWorkspace: false }, reset: ["variables.DROP"] }]);
     }),
   );
 
@@ -759,7 +769,7 @@ describe("the dialogs of an Environment's card", () => {
       registry.set(environmentDialogAtom("work"), "edit");
       registry.set(saveEnvironmentAtom("work"), {
         name: "bad",
-        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 },
+        settings: editing({ ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 }),
       });
 
       expect(settledFailureOf(yield* settled(registry, saveEnvironmentAtom("work")))).toBe(
@@ -920,6 +930,25 @@ describe("the Edit dialog's draft", () => {
           toolchains: '[tools]\nnode = "22.20.0"\n',
         });
       }),
+  );
+
+  it.effect("shows only the Environment's own variables, not the ones it gets from Global", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        listEnvironments: () => Effect.succeed([environment("work", "Work")]),
+        getEnvironmentSettings: () =>
+          Effect.succeed({
+            settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: { OWN: "1", FROM_GLOBAL: "2" } },
+            global: { ...DEFAULT_CONTAINER_SETTINGS, variables: { FROM_GLOBAL: "2" } },
+            overrides: { variables: { OWN: "1" } },
+          }),
+      });
+
+      yield* opened(registry);
+      yield* settled(registry, environmentSettingsAtom("work"));
+
+      expect(registry.get(environmentDraftAtom("work"))).toMatchObject({ variables: "OWN=1" });
+    }),
   );
 
   it.effect("keeps what was typed when the settings answer after it", () =>
@@ -1257,9 +1286,19 @@ describe("an Environment's Build", () => {
 });
 
 /** The variables kept Global before a test changes them. */
-const API_URL_ONLY = Result.getOrThrow(
-  resolveGlobalSettings({ variables: { API_URL: "https://api.test" } }),
-);
+const API_URL_ONLY = { variables: { API_URL: "https://api.test" } };
+
+/** The variables a patch at Global sets. */
+const SetVariables = Schema.Struct({
+  variables: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+});
+
+/** What Global answers with when it holds `variables` and nothing else. */
+const globalStateOf = (variables: Readonly<Record<string, string>>) => ({
+  settings: { ...DEFAULT_CONTAINER_SETTINGS, variables },
+  overrides: { variables },
+  overriddenIn: {},
+});
 
 describe("the Agent changes", () => {
   const change = (id: number, revertedBy: number | null = null): AgentChange => ({
@@ -1298,7 +1337,7 @@ describe("the Agent changes", () => {
           Effect.sync(() => {
             settingsAsked += 1;
 
-            return { settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} };
+            return stateOf(DEFAULT_CONTAINER_SETTINGS);
           }),
         listBuilds: () => Effect.succeed([]),
       });
@@ -1376,7 +1415,7 @@ describe("the Agent changes", () => {
 
   it.effect("of the variables kept Global load by the scope *, and a revert loads them again", () =>
     Effect.gen(function* () {
-      let held = API_URL_ONLY.variables;
+      let held: Readonly<Record<string, string>> = API_URL_ONLY.variables;
       let asked = 0;
 
       const registry = registryWith({
@@ -1387,11 +1426,11 @@ describe("the Agent changes", () => {
 
             return { ...change(2), scope: "*", actor: "owner" as const, reverts: 1 };
           }),
-        getGlobalSettings: () =>
+        getGlobalContainerSettings: () =>
           Effect.sync(() => {
             asked += 1;
 
-            return { settings: { variables: held }, overrides: { variables: held } };
+            return globalStateOf(held);
           }),
         listBuilds: () => Effect.succeed([]),
       });
@@ -1459,24 +1498,29 @@ describe("the Agent changes", () => {
 });
 
 describe("the variables kept Global", () => {
-  /** A Registry keeping them in memory, and the overrides it was asked to keep. */
+  /** A Registry keeping them in memory, and the patches it was asked to apply. */
   const keeping = () => {
-    let held = API_URL_ONLY.variables;
+    let held: Readonly<Record<string, string>> = API_URL_ONLY.variables;
     const saved: unknown[] = [];
     let builds = 0;
 
     const registry = registryWith({
-      getGlobalSettings: () =>
-        Effect.sync(() => ({ settings: { variables: held }, overrides: { variables: held } })),
-      updateGlobalSettings: ({ overrides }) =>
-        JSON.stringify(overrides).includes("TOO_MANY")
+      getGlobalContainerSettings: () => Effect.sync(() => globalStateOf(held)),
+      updateGlobalContainerSettings: (patch) =>
+        JSON.stringify(patch).includes("TOO_MANY")
           ? refused("variables: with the 50 variables it would have 51")
-          : Effect.sync(() => {
-              saved.push(overrides);
-              held = Result.getOrThrow(resolveGlobalSettings(overrides)).variables;
+          : Schema.decodeUnknownEffect(SetVariables)(patch.set ?? {}).pipe(
+              Effect.orDie,
+              Effect.map(({ variables: set }) => {
+                saved.push(patch);
 
-              return { settings: { variables: held }, overrides };
-            }),
+                const removed = (patch.reset ?? []).map((path) => path.replace("variables.", ""));
+
+                held = Record.filter({ ...held, ...set }, (_, name) => !removed.includes(name));
+
+                return globalStateOf(held);
+              }),
+            ),
       listBuilds: () =>
         Effect.sync(() => {
           builds += 1;
@@ -1507,7 +1551,7 @@ describe("the variables kept Global", () => {
   );
 
   it.effect(
-    "are saved as the overrides, then loaded again with the Builds, and the typed text clears",
+    "are saved as a patch against the loaded ones, then loaded again with the Builds, and the typed text clears",
     () =>
       Effect.gen(function* () {
         const { registry, saved, builds } = keeping();
@@ -1522,7 +1566,9 @@ describe("the variables kept Global", () => {
         yield* settled(registry, saveGlobalVariablesAtom);
         yield* settled(registry, globalSettingsAtom);
 
-        expect(saved).toEqual([{ variables: { NODE_ENV: "test" } }]);
+        expect(saved).toEqual([
+          { set: { variables: { NODE_ENV: "test" } }, reset: ["variables.API_URL"] },
+        ]);
         expect(registry.get(globalVariablesAtom)).toEqual({ NODE_ENV: "test" });
         expect(registry.get(globalVariablesDraftAtom)).toBeUndefined();
         expect(builds()).toBe(2);
@@ -1530,15 +1576,23 @@ describe("the variables kept Global", () => {
       }),
   );
 
-  it.effect("are saved as no overrides when none is left", () =>
+  it.effect("are saved with a changed variable set and a removed one reset", () =>
     Effect.gen(function* () {
       const { registry, saved } = keeping();
 
+      registry.mount(globalSettingsAtom);
+      yield* settled(registry, globalSettingsAtom);
       registry.mount(saveGlobalVariablesAtom);
-      registry.set(saveGlobalVariablesAtom, {});
+      registry.set(saveGlobalVariablesAtom, { API_URL: "https://new.test", ADDED: "1" });
+      yield* settled(registry, saveGlobalVariablesAtom);
+      yield* settled(registry, globalSettingsAtom);
+      registry.set(saveGlobalVariablesAtom, { ADDED: "1" });
       yield* settled(registry, saveGlobalVariablesAtom);
 
-      expect(saved).toEqual([{}]);
+      expect(saved).toEqual([
+        { set: { variables: { API_URL: "https://new.test", ADDED: "1" } } },
+        { reset: ["variables.API_URL"] },
+      ]);
       registry.dispose();
     }),
   );

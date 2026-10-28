@@ -5,10 +5,11 @@
 // to look at the Repos' default branches. What the Build object answers is recorded in the Registry, which hands the
 // last good Build to each new Workspace and shows where each stands (`listBuilds`).
 import {
+  type ContainerSettings,
+  type ContainerSettingsOverrides,
   containerOverridesFrom,
   mergedVariablesProblem,
-  resolveContainerSettingsLeniently,
-  withGlobalVariables,
+  resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
 import type { BuildView, EnvironmentRepo } from "@cloudpid/protocol";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
@@ -16,6 +17,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
+import type * as Types from "effect/Types";
 import { buildObjectName, testBuildObjectName } from "../workspace/binding.ts";
 import {
   buildKey,
@@ -34,10 +36,10 @@ import type { BuildRecord } from "./store.ts";
 export type BuildWork = {
   readonly environment: string;
   readonly repos: ReadonlyArray<EnvironmentRepo>;
-  /** The Environment's own Container settings overrides. */
-  readonly settings: Schema.Json;
-  /** The variables kept Global, which a Build gets under the Environment's own. */
-  readonly globalVariables: Readonly<Record<string, string>>;
+  /** The Environment's Container Overrides, as they resolve. */
+  readonly overrides: ContainerSettingsOverrides;
+  /** The Container settings at Global, which a Build gets under the Environment's Overrides. */
+  readonly global: ContainerSettings;
   readonly recorded: BuildRecord;
   /**
    * A keyed digest of the Secrets that reach the Build (`buildSecretsDigest`), null when none does: their values are
@@ -45,6 +47,10 @@ export type BuildWork = {
    */
   readonly secrets: string | null;
 };
+
+/** The Container settings a Build of `work`'s Environment is made with: its Overrides over Global's (ADR-0027). */
+export const buildSettingsOf = (work: Pick<BuildWork, "overrides" | "global">): ContainerSettings =>
+  resolveEnvironmentContainerSettings(work.global, work.overrides);
 
 /** How long after the last Build or look the next look at the Repos' default branches is due (or a failed Build retried). */
 export const BUILD_LOOK_INTERVAL_MS = 24 * 60 * 60_000;
@@ -192,8 +198,7 @@ export const buildUpkeep = (
       const name = buildObjectName(work.environment);
       let state = yield* Effect.promise(() => workspaces.buildState(name));
 
-      const own = resolveContainerSettingsLeniently(work.settings).settings;
-      const cut = mergedVariablesProblem(own.variables, work.globalVariables);
+      const cut = mergedVariablesProblem(work.overrides.variables ?? {}, work.global.variables);
 
       if (cut !== undefined) {
         yield* Effect.logWarning(
@@ -201,7 +206,7 @@ export const buildUpkeep = (
         );
       }
 
-      const settings = withGlobalVariables(own, work.globalVariables);
+      const settings = buildSettingsOf(work);
 
       const wanted = buildWanted(work.repos, settings);
 
@@ -321,7 +326,7 @@ export const buildUpkeep = (
 
         if (work === undefined) return yield* Effect.fail(noEnvironment(environment));
 
-        if (!buildWanted(work.repos, resolveContainerSettingsLeniently(work.settings).settings)) {
+        if (!buildWanted(work.repos, buildSettingsOf(work))) {
           return yield* Effect.fail(
             "The environment has no repos, no Setup Script and no Toolchains: there is nothing to build",
           );
@@ -357,28 +362,29 @@ const testBuilds = (
 
       if (work === undefined) return yield* Effect.fail(noEnvironment(environment));
 
-      // The saved settings as they are read (what no longer resolves left out), the proposed fields over them, then
-      // checked as the owner's save checks them.
-      const saved = resolveContainerSettingsLeniently(work.settings).settings;
+      // The saved Overrides as they are read (what no longer resolves left out), the proposed fields over them as
+      // Overrides of their own (the variables: the Environment's own), then checked as the owner's save checks them.
+      const saved = work.overrides;
 
-      const written = writeEnvironmentSettings(
-        containerOverridesFrom({
-          ...saved,
-          variables: proposed.variables ?? saved.variables,
-          setupScript: proposed.setupScript ?? saved.setupScript,
-          toolchains: proposed.toolchains ?? saved.toolchains,
-          ignore: proposed.ignore ?? saved.ignore,
-        }),
-        work.globalVariables,
-      );
+      const next: Types.Mutable<ContainerSettingsOverrides> = { ...saved };
+
+      if (proposed.variables !== undefined) next.variables = proposed.variables;
+
+      if (proposed.setupScript !== undefined) next.setupScript = proposed.setupScript;
+
+      if (proposed.toolchains !== undefined) next.toolchains = proposed.toolchains;
+
+      if (proposed.ignore !== undefined) next.ignore = proposed.ignore;
+
+      const written = writeEnvironmentSettings(saved, next, work.global);
 
       if (Result.isFailure(written)) {
         return yield* Effect.fail(`The proposed settings are refused: ${written.failure}`);
       }
 
       const repos = proposed.repos ?? work.repos;
-      // The variables kept Global still apply under the proposed ones, as they will once it is saved.
-      const settings = withGlobalVariables(written.success.settings, work.globalVariables);
+      // Global's settings still apply under the proposed ones (its variables by name), as they will once it is saved.
+      const settings = written.success.settings;
 
       if (!buildWanted(repos, settings)) {
         return yield* Effect.fail(

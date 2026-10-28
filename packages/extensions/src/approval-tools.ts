@@ -528,15 +528,47 @@ export const ApprovalTools: Effect.Effect<
   });
 
   const Id = Schema.String.annotate({
-    description:
-      "The Environment's id, as environment_list shows it (default: this Session's Environment)",
+    description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for the size limit at Global, which each Environment that does not override it inherits`,
   });
+
+  /** The size settings where the limit is set (an Environment's in force, or Global's), and how a result names it. */
+  const limitTarget = (id: string | undefined) =>
+    Effect.gen(function* () {
+      if (id === GLOBAL_ID) {
+        const { settings } = yield* environments.global;
+
+        return {
+          environment: GLOBAL_ID,
+          own: false,
+          named: { id: GLOBAL_ID, name: GLOBAL_NAME },
+          card: GLOBAL_NAME,
+          settings,
+          kept: settings.maxInstance,
+        };
+      }
+
+      const { environment, own } = yield* target(id);
+      const details = yield* environments.get(environment);
+
+      if (details === null) return yield* notFound(environment);
+
+      return {
+        environment,
+        own,
+        named: { id: details.id, name: details.name },
+        card: `Environment ${JSON.stringify(details.name)}`,
+        settings: details.settings,
+        // An inherited limit set to the same size becomes the Environment's own, so it is a change.
+        kept: details.overrides.maxInstance,
+      };
+    });
 
   const sizeLimit = yield* defineEffectTool({
     name: "environment_container_size_limit_set",
     description: Arr.join(
       [
         "Set an Environment's size limit (this Session's unless id names another): the largest size its Containers may have, which bounds environment_container_resize and container_resize. A larger limit lets the agent run larger, costlier Containers, so it is a Limit and the user must approve the change. It cannot be below the Environment's own size: lower that first with environment_container_resize.",
+        `With id "${GLOBAL_ID}" the limit at Global is set: each Environment that does not override it inherits it, and a limit that would leave such an Environment's size above it is refused. Setting an Environment's limit makes it the Environment's own; environment_setting_reset makes it inherit Global's again.`,
         APPROVAL,
       ],
       "\n\n",
@@ -552,13 +584,9 @@ export const ApprovalTools: Effect.Effect<
       Effect.gen(function* () {
         yield* plainReason(reason);
 
-        const { environment, own } = yield* target(id);
-        const details = yield* environments.get(environment);
-
-        if (details === null) return yield* notFound(environment);
-
+        const { environment, own, named: details, card, settings, kept } = yield* limitTarget(id);
         const where = named(details);
-        const { instance, maxInstance } = details.settings;
+        const { instance, maxInstance } = settings;
 
         if (compareInstances(size, instance) < 0) {
           return yield* EnvironmentsError.make({
@@ -566,7 +594,7 @@ export const ApprovalTools: Effect.Effect<
           });
         }
 
-        if (size === maxInstance && !(yield* askedBefore(approvals, api))) {
+        if (size === kept && !(yield* askedBefore(approvals, api))) {
           return {
             output: [
               {
@@ -590,7 +618,7 @@ export const ApprovalTools: Effect.Effect<
           api,
           {
             tool: "environment_container_size_limit_set",
-            target: `Environment ${JSON.stringify(details.name)}`,
+            target: card,
             change,
             before: sizeWords(maxInstance),
             after: sizeWords(size),

@@ -1,4 +1,4 @@
-import { SettingsError, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
+import { isContainerField, SettingsError, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
@@ -6,7 +6,6 @@ import {
   fieldRepo,
   fieldSecret,
   fieldSkill,
-  fieldVariable,
   MAX_ENVIRONMENT_SECRETS,
   NEW_WORKSPACE,
   parseRepoSource,
@@ -416,17 +415,17 @@ export const serveRegistryRpc = <R = never>(
       environment === null ? "kept Global" : `kept for ${scopeWords(environment)}`;
 
     /**
-     * After a Secret or a variable kept Global changed: each Environment's Build is looked at again
-     * (their key covers the Secrets and variables a Build gets).
+     * After a Secret or a Container setting kept Global changed: each Environment's Build is looked at again (their key
+     * covers the Secrets and settings a Build gets; one that overrides the setting keeps its key, and no Build is asked
+     * for), and with `spareChanged`, a change of the Spare Workspace setting, each Environment's spare too.
      */
-    const globalChanged = () =>
-      registry
-        .listEnvironments()
-        .pipe(
-          Effect.flatMap((all) =>
-            Effect.forEach(all, (item) => background(builds.of(item.id)), { discard: true }),
-          ),
-        );
+    const globalChanged = (spareChanged = false) =>
+      (spareChanged ? background(spares.all) : Effect.void).pipe(
+        Effect.andThen(registry.listEnvironments()),
+        Effect.flatMap((all) =>
+          Effect.forEach(all, (item) => background(builds.of(item.id)), { discard: true }),
+        ),
+      );
 
     /**
      * After a kept Secret changed: the Builds it may reach are looked at again (their key covers the Secrets a Build
@@ -753,8 +752,8 @@ export const serveRegistryRpc = <R = never>(
         registry
           .getEnvironmentSettings({ environment })
           .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(noEnvironment(environment)))),
-      updateEnvironmentSettings: ({ environment, overrides }) =>
-        registry.updateEnvironmentSettings({ environment, overrides }).pipe(
+      updateEnvironmentSettings: ({ environment, set, reset }) =>
+        registry.updateEnvironmentSettings({ environment, set, reset }).pipe(
           Effect.flatMap((update) => {
             switch (update.status) {
               case "saved":
@@ -773,14 +772,17 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
-      getGlobalSettings: () => registry.getGlobalSettings(),
-      updateGlobalSettings: ({ overrides }) =>
-        registry.updateGlobalSettings({ overrides }).pipe(
+      getGlobalContainerSettings: () => registry.getGlobalContainerSettings(),
+      updateGlobalContainerSettings: ({ set, reset }) =>
+        registry.updateGlobalContainerSettings({ set, reset }).pipe(
           Effect.flatMap((update) => {
             switch (update.status) {
               case "saved":
-                // A Build is made with the variables, so each Environment's is looked at again.
-                return globalChanged().pipe(Effect.as(update.state));
+                // A Build is made with the settings each Environment inherits, so each one's is looked at again, and
+                // the Spare Workspace setting keeps or removes the spare of each Environment that inherits it.
+                return globalChanged(
+                  update.previous.spareWorkspace !== update.state.settings.spareWorkspace,
+                ).pipe(Effect.as(update.state));
               // Overrides that do not resolve say why, one problem per line, and nothing was saved.
               case "rejected":
                 return failed(update.message);
@@ -799,9 +801,12 @@ export const serveRegistryRpc = <R = never>(
                 // A Skill is not part of a Build: its Workspaces take the set at their next readying.
                 if (fieldSkill(revert.change.field) !== null) return Effect.succeed(revert.change);
 
-                // A variable put back: as after the owner's save, each Environment's Build is looked at again.
-                if (environment === GLOBAL_SCOPE && fieldVariable(revert.change.field) !== null) {
-                  return globalChanged().pipe(Effect.as(revert.change));
+                // A Container setting at Global put back: as after the owner's save, each Environment's Build is looked
+                // at again (and its spare, for the Spare Workspace setting).
+                if (environment === GLOBAL_SCOPE && isContainerField(revert.change.field)) {
+                  return globalChanged(revert.change.field === SPARE_WORKSPACE_FIELD).pipe(
+                    Effect.as(revert.change),
+                  );
                 }
 
                 // A Build mark put back: as after the owner's switch, the Builds the Secret may reach are looked at

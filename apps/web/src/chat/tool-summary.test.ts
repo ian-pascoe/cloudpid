@@ -167,6 +167,13 @@ describe("toolSummary", () => {
     expect(
       toolSummary("environment_container_size_limit_set", { id: "0000abcd", size: "cpu-3" }),
     ).toBe("0000abcd: limit cpu-3");
+    expect(
+      toolSummary("environment_setting_reset", {
+        id: "0000abcd",
+        setting: "idleMinutes",
+        reason: "r",
+      }),
+    ).toBe("0000abcd: reset idleMinutes");
     expect(toolSummary("environment_delete", { id: "0000abcd", reason: "r" })).toBe("0000abcd");
     expect(toolSummary("environment_secret_delete", { id: "*", name: "NPM_TOKEN" })).toBe(
       "NPM_TOKEN at Global",

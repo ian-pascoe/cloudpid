@@ -373,6 +373,8 @@ export const toolchainsProblem = (toml: string): string | undefined => {
 
 const Toolchains = Schema.String.check(Schema.makeFilter(toolchainsProblem));
 
+const IgnoreList = Schema.Array(IgnorePattern).check(Schema.isMaxLength(MAX_IGNORE_PATTERNS));
+
 export const ContainerSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("cpu-1"))),
@@ -388,9 +390,7 @@ export const ContainerSettings = Schema.Struct({
    * Paths the Container keeps to itself, out of the Workspace's Durable Object, after the built-in ones (`TOOLCHAIN_IGNORE`), as
    * computer's `ignore` patterns: the last one that matches a path wins, so `!` keeps a built-in one synced.
    */
-  ignore: Schema.Array(IgnorePattern)
-    .check(Schema.isMaxLength(MAX_IGNORE_PATTERNS))
-    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  ignore: IgnoreList.pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /**
    * Environment variables every command on the Container gets, and its bootstrap and scripts, under the Container's own
    * (`toolchainEnv`) and what a caller passes. Plain: the agent can read them. A Workspace is handed them merged with
@@ -422,21 +422,38 @@ export type ContainerSettings = typeof ContainerSettings.Type;
  */
 export const SPARE_WORKSPACE_FIELD = "spareWorkspace" satisfies keyof ContainerSettings;
 
-/** What is stored: the settings that differ from the defaults. */
-export type ContainerSettingsOverrides = typeof ContainerSettings.Encoded;
+/** The Container settings' names, as an Agent change's and a reset's field (a variable's is `variables.<NAME>`). */
+export const CONTAINER_SETTING_NAMES: ReadonlyArray<keyof ContainerSettings> = [
+  "instance",
+  "maxInstance",
+  "idleMinutes",
+  "ignore",
+  "variables",
+  "setupScript",
+  "startScript",
+  "toolchains",
+  "spareWorkspace",
+];
 
 /**
- * The settings kept Global, under each Environment's own (`withGlobalVariables`): the
- * variables, for now. A struct so another setting can join them. Like the rest, every field has a decoding default.
+ * Some of the settings, each by its own rules and none with a default: what Global stores (only what differs from the
+ * defaults), and an Environment's Overrides of Global (ADR-0027: exactly the fields set on purpose, even one equal to
+ * Global's, its variables name by name).
  */
-export const GlobalSettings = Schema.Struct({
-  variables: ContainerVariables.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
+export const ContainerOverrides = Schema.Struct({
+  instance: Schema.optionalKey(InstanceType),
+  maxInstance: Schema.optionalKey(InstanceType),
+  idleMinutes: Schema.optionalKey(IdleMinutes),
+  ignore: Schema.optionalKey(IgnoreList),
+  variables: Schema.optionalKey(ContainerVariables),
+  setupScript: Schema.optionalKey(Script),
+  startScript: Schema.optionalKey(Script),
+  toolchains: Schema.optionalKey(Toolchains),
+  spareWorkspace: Schema.optionalKey(Schema.Boolean),
 });
 
-export type GlobalSettings = typeof GlobalSettings.Type;
-
-/** What is stored: the settings that differ from the defaults. */
-export type GlobalSettingsOverrides = typeof GlobalSettings.Encoded;
+/** Some of the settings: what Global stores, an Environment's Overrides, or what a Workspace is handed. */
+export type ContainerSettingsOverrides = typeof ContainerOverrides.Type;
 
 export class ContainerSettingsError extends Schema.TaggedError<
   ContainerSettingsError,
@@ -480,10 +497,13 @@ const withCurrentInstanceNames = (overrides: Schema.Json): Schema.Json =>
 const decodeOverrides = (overrides: Schema.Json) =>
   decodeCurrentOverrides(withCurrentInstanceNames(overrides));
 
-const decodeGlobalOverrides = Schema.decodeUnknownResult(GlobalSettings, {
+const decodeCurrentPartial = Schema.decodeUnknownResult(ContainerOverrides, {
   onExcessProperty: "error",
   errors: "all",
 });
+
+const decodePartial = (overrides: Schema.Json) =>
+  decodeCurrentPartial(withCurrentInstanceNames(overrides));
 
 const settingsError = (error: Schema.SchemaError): ContainerSettingsError =>
   ContainerSettingsError.make({
@@ -499,21 +519,17 @@ export const resolveContainerSettings = (
 ): Result.Result<ContainerSettings, ContainerSettingsError> =>
   Result.mapError(decodeOverrides(overrides), settingsError);
 
-/** The settings kept Global that `overrides` give, or why they are not valid, one problem per line. */
-export const resolveGlobalSettings = (
+/** An Environment's Overrides as saved, each by its setting's rules, or why they are not, one problem per line. */
+export const resolveContainerOverrides = (
   overrides: Schema.Json,
-): Result.Result<GlobalSettings, ContainerSettingsError> =>
-  Result.mapError(decodeGlobalOverrides(overrides), settingsError);
+): Result.Result<ContainerSettingsOverrides, ContainerSettingsError> =>
+  Result.mapError(decodePartial(overrides), settingsError);
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
 export const DEFAULT_CONTAINER_SETTINGS: ContainerSettings = Schema.decodeSync(ContainerSettings)(
   {},
 );
-
-/** The settings kept Global with every field at its default. */
-// @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
-export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = Schema.decodeSync(GlobalSettings)({});
 
 /** The overrides that make the defaults into `settings`: only what differs. What a settings form saves. */
 export const containerOverridesFrom = (settings: ContainerSettings): ContainerSettingsOverrides => {
@@ -548,10 +564,6 @@ export const containerOverridesFrom = (settings: ContainerSettings): ContainerSe
   return overrides;
 };
 
-/** The overrides that make the defaults into `settings`: `{}` when there are no variables. What the Registry stores. */
-export const globalOverridesFrom = (settings: GlobalSettings): GlobalSettingsOverrides =>
-  Record.isEmptyRecord(settings.variables) ? {} : { variables: settings.variables };
-
 /** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
 type Lenient<Settings> = {
   readonly settings: Settings;
@@ -572,12 +584,6 @@ const withLimitAtLeastSize = (settings: ContainerSettings): ContainerSettings =>
   instanceLimitProblem(settings) === undefined
     ? settings
     : { ...settings, maxInstance: settings.instance };
-
-/**
- * The settings kept Global, resolved from overrides that may be partly stale, and what was left out to
- * do it.
- */
-export type LenientGlobalSettings = Lenient<GlobalSettings>;
 
 const resolveLeniently = <Settings>(
   decode: (overrides: Schema.Json) => Result.Result<Settings, Schema.SchemaError>,
@@ -632,12 +638,185 @@ export const resolveContainerSettingsLeniently = (
   return { settings: withLimitAtLeastSize(settings), dropped };
 };
 
+/** An Environment's saved Overrides that still resolve, and one line for each dropped, as the strict read words it. */
+export type LenientContainerOverrides = {
+  readonly overrides: ContainerSettingsOverrides;
+  readonly dropped: ReadonlyArray<string>;
+};
+
 /**
- * The settings kept Global that `overrides` give once every override that does not resolve is dropped:
- * lenient like `resolveContainerSettingsLeniently`.
+ * An Environment's saved Overrides once every one that does not resolve is dropped (its field then inherits Global),
+ * leniently as `resolveContainerSettingsLeniently` reads settings. A field equal to Global's or the default is kept.
  */
-export const resolveGlobalSettingsLeniently = (overrides: Schema.Json): LenientGlobalSettings =>
-  resolveLeniently(decodeGlobalOverrides, DEFAULT_GLOBAL_SETTINGS, overrides);
+export const resolveContainerOverridesLeniently = (
+  overrides: Schema.Json,
+): LenientContainerOverrides => {
+  const { settings, dropped } = resolveLeniently(decodePartial, {}, overrides);
+
+  return { overrides: settings, dropped };
+};
+
+/**
+ * An Environment's Container settings: its Overrides over Global's settings (ADR-0027). Each field is replaced whole
+ * (a list, a script), but the variables merge by name, the Environment's own winning (`withGlobalVariables`). A size
+ * limit below the size is then raised to it, as `resolveContainerSettingsLeniently` does, so an Environment saved
+ * larger before it had a limit keeps its size. With Global at the defaults, this is what the Overrides alone resolved
+ * to before Global held Container settings.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- called with both arguments wherever settings are resolved.
+export const resolveEnvironmentContainerSettings = (
+  global: ContainerSettings,
+  overrides: ContainerSettingsOverrides,
+): ContainerSettings =>
+  withLimitAtLeastSize(
+    withGlobalVariables(
+      { ...global, ...overrides, variables: overrides.variables ?? {} },
+      global.variables,
+    ),
+  );
+
+const VARIABLE_PREFIX = "variables.";
+
+const isSettingName = (name: string): name is keyof ContainerSettings =>
+  Arr.contains(CONTAINER_SETTING_NAMES, name);
+
+/** Whether `field`, as an Agent change names one, is a Container setting (`idleMinutes`) or one variable (`variables.<NAME>`). */
+export const isContainerField = (field: string): boolean =>
+  field.startsWith(VARIABLE_PREFIX)
+    ? field !== VARIABLE_PREFIX
+    : field !== "variables" && isSettingName(field);
+
+/**
+ * A change to some saved settings (an Environment's Overrides, or Global's): `set` merges into them field by field, the
+ * variables name by name, and `reset` takes fields out by their field path (`idleMinutes`, `variables.<NAME>`, or
+ * `variables` for all of them), which an Environment then inherits from Global, and Global from the defaults.
+ */
+export type ContainerPatch = {
+  readonly set?: Schema.Json | undefined;
+  readonly reset?: ReadonlyArray<string> | undefined;
+};
+
+/** A copy of `object` that can be changed. */
+const copyOf = (object: Schema.JsonObject): Record<string, Schema.Json> =>
+  Record.map(object, (value) => value);
+
+/**
+ * `overrides` with `patch` applied, or why not: a reset of what is no Container setting, or of a field also set. What
+ * comes out is checked when it is saved, as any overrides are.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a store operation's step, not a combinator.
+export const patchContainerOverrides = (
+  overrides: Schema.Json,
+  { set, reset = [] }: ContainerPatch,
+): Result.Result<Schema.JsonObject, string> => {
+  if (set !== undefined && !isJsonObject(set)) return Result.fail("set: must be an object");
+
+  const next = isJsonObject(overrides) ? copyOf(overrides) : {};
+  const setFields: Schema.JsonObject = set ?? {};
+  const setVariables = setFields.variables;
+
+  for (const path of reset) {
+    const variable = path.startsWith(VARIABLE_PREFIX) ? path.slice(VARIABLE_PREFIX.length) : null;
+
+    if (variable === null && !isSettingName(path)) {
+      return Result.fail(`reset: ${JSON.stringify(path)} is not a Container setting`);
+    }
+
+    const alsoSet =
+      variable === null
+        ? setFields[path] !== undefined
+        : setVariables !== undefined &&
+          isJsonObject(setVariables) &&
+          setVariables[variable] !== undefined;
+
+    if (alsoSet) return Result.fail(`reset: ${JSON.stringify(path)} is also set`);
+  }
+
+  for (const [field, value] of Record.toEntries(setFields)) {
+    const held = next[field];
+
+    next[field] =
+      field === "variables" && isJsonObject(value) && held !== undefined && isJsonObject(held)
+        ? Record.union(held, value, (_, update) => update)
+        : value;
+  }
+
+  for (const path of reset) {
+    const held = next.variables;
+
+    if (!path.startsWith(VARIABLE_PREFIX)) {
+      delete next[path];
+    } else if (held !== undefined && isJsonObject(held)) {
+      const name = path.slice(VARIABLE_PREFIX.length);
+      const rest = Record.filter(held, (_, key) => key !== name);
+
+      if (Record.isEmptyRecord(rest)) delete next.variables;
+      else next.variables = rest;
+    }
+  }
+
+  return Result.succeed(next);
+};
+
+const sameValue = (left: Schema.Json, right: Schema.Json): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+/** A change to some settings as a form that edits them whole saves it (`containerPatchBetween`). */
+export type ContainerSettingsPatch = {
+  readonly set?: ContainerSettingsOverrides;
+  readonly reset?: ReadonlyArray<string>;
+};
+
+/**
+ * The patch that makes the settings `before` into `after`: each field that differs set, each variable added or changed
+ * set and each taken out reset. What a form that edits whole settings saves, so a field it left alone keeps whether it
+ * is inherited or overridden.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a diff of two values, not a combinator.
+export const containerPatchBetween = (
+  before: ContainerSettings,
+  after: ContainerSettings,
+): ContainerSettingsPatch => {
+  const set: {
+    -readonly [K in keyof ContainerSettingsOverrides]: ContainerSettingsOverrides[K];
+  } = {};
+
+  if (after.instance !== before.instance) set.instance = after.instance;
+
+  if (after.maxInstance !== before.maxInstance) set.maxInstance = after.maxInstance;
+
+  if (after.idleMinutes !== before.idleMinutes) set.idleMinutes = after.idleMinutes;
+
+  if (!sameValue(after.ignore, before.ignore)) set.ignore = after.ignore;
+
+  if (after.setupScript !== before.setupScript) set.setupScript = after.setupScript;
+
+  if (after.startScript !== before.startScript) set.startScript = after.startScript;
+
+  if (after.toolchains !== before.toolchains) set.toolchains = after.toolchains;
+
+  if (after.spareWorkspace !== before.spareWorkspace) set.spareWorkspace = after.spareWorkspace;
+
+  const variables = Record.filter(
+    after.variables,
+    (value, name) => before.variables[name] !== value,
+  );
+
+  if (!Record.isEmptyRecord(variables)) set.variables = variables;
+
+  const reset = Arr.map(
+    Arr.filter(Record.keys(before.variables), (name) => !Record.has(after.variables, name)),
+    (name) => `${VARIABLE_PREFIX}${name}`,
+  );
+
+  const patch: { -readonly [K in keyof ContainerSettingsPatch]: ContainerSettingsPatch[K] } = {};
+
+  if (!sameValue(set, {})) patch.set = set;
+
+  if (reset.length > 0) patch.reset = reset;
+
+  return patch;
+};
 
 /**
  * Why an Environment with the variables `own` cannot also have the ones kept Global, `every`, or
