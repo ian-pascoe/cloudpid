@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { byteSize, dollars, duration, relativeTime, spendLevel, tokenCount } from "./format.ts";
+import {
+  byteSize,
+  compactCount,
+  dollars,
+  duration,
+  relativeTime,
+  spendLevel,
+  tokenCount,
+} from "./format.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -48,6 +56,14 @@ describe("tokenCount", () => {
     expect(tokenCount(950)).toBe("950");
     expect(tokenCount(12_345)).toBe("12.3k");
     expect(tokenCount(1_250_000)).toBe("1.3M");
+  });
+});
+
+describe("compactCount", () => {
+  it("shortens a Skill's installs like skills.sh does", () => {
+    expect(compactCount(4_088_520)).toBe("4.1M");
+    expect(compactCount(22_670)).toBe("22.7k");
+    expect(compactCount(5)).toBe("5");
   });
 });
 

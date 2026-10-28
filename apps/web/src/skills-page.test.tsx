@@ -203,7 +203,8 @@ const render = (
     registry.set(searchAtom, search);
     before?.(registry);
     yield* settle(registry, [
-      anySkillInstalledAtom,
+      // The Skills page chooses its default tab from every scope's Skills; the Environments page has no tab.
+      ...(page.type === SkillsPage ? [anySkillInstalledAtom] : []),
       environmentsAtom,
       sessionsAtom,
       ...loaded.map((scope) => environmentSkillsAtom(scope)),
