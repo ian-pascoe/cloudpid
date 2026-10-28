@@ -117,7 +117,7 @@ export type ContainerLaunchDeps = {
    * Whether something that may change the disk holds the Container now (`IdleStop.writing`): a command that launches a
    * Container told of its write before the launch was recorded, so that launch is not unchanged.
    */
-  readonly writing?: (() => boolean) | undefined;
+  readonly writing: () => boolean;
   /** The Environment's Build the Workspace holds, which a launch with no snapshot of its own may start from. */
   readonly builds?: {
     /** The Build, unless this Workspace has given up on it (`failed`). */
@@ -181,6 +181,11 @@ export class ContainerLaunch {
   #restoring: string | undefined;
   /** Whether that snapshot is the Environment's Build's, not the Workspace's own. */
   #restoringBuild = false;
+  /**
+   * Whether something that may change the disk was told of since this instance's last launch (`noteWrite`), whether or
+   * not storage took it: a mark that could not be saved still keeps the snapshot.
+   */
+  #written = false;
 
   constructor(deps: ContainerLaunchDeps) {
     this.#deps = deps;
@@ -263,6 +268,7 @@ export class ContainerLaunch {
    * snapshot. Kept in storage, so an eviction does not forget it.
    */
   async noteWrite(): Promise<void> {
+    this.#written = true;
     await this.#current();
 
     // The record as it is now, not before the await: a launch may have replaced it meanwhile.
@@ -344,7 +350,7 @@ export class ContainerLaunch {
    * restore, nor runs now, and the Workspace still keeps the snapshot it was restored from. Logged when so.
    */
   async #unchanged(record: LaunchRecord): Promise<boolean> {
-    if (record.diskUnchanged !== true || this.#deps.writing?.() === true) return false;
+    if (record.diskUnchanged !== true || this.#written || this.#deps.writing()) return false;
 
     const kept = await this.#deps.snapshots.kept();
 
@@ -503,6 +509,9 @@ export class ContainerLaunch {
       return info;
     }
 
+    // A new Container: what was told of before is of the one before, or of the hold that launched this one (`writing`).
+    this.#written = false;
+
     await this.#remember({
       instance,
       idleMinutes: settings.idleMinutes,
@@ -516,7 +525,7 @@ export class ContainerLaunch {
       scanned: snapshot?.covered,
       // Restored from the Workspace's own snapshot, it has nothing new until something writes; unless what launched it
       // may write (a command), which told of it before this record was made.
-      diskUnchanged: snapshot !== undefined && this.#deps.writing?.() !== true ? true : undefined,
+      diskUnchanged: snapshot !== undefined && !this.#deps.writing() ? true : undefined,
       launchedAt: this.#deps.now(),
     });
 

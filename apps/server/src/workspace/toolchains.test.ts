@@ -14,6 +14,7 @@ import {
   START_TIMED_OUT_MESSAGE,
 } from "@cloudpid/sandbox-image/toolchains";
 import { describe, expect, it } from "vitest";
+import type { HoldOptions } from "./idle.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 
 type Shell = BackendHandle["rpc"]["shell"];
@@ -1595,7 +1596,7 @@ describe("the Start Scripts", () => {
 describe("what the bootstrap tells the idle stop may have changed the disk", () => {
   /** What a bootstrap on `container` held the Container with, and how many times it told of a write. */
   const toldAfter = async (container: ReturnType<typeof fakeContainer>) => {
-    const holds: Array<{ readonly writes?: boolean | undefined } | undefined> = [];
+    const holds: Array<HoldOptions | undefined> = [];
     let writes = 0;
 
     const { toolchains } = open(container, {

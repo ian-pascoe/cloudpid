@@ -74,6 +74,8 @@ type Fake = {
   failedBuilds: string[];
   /** Whether something that may change the disk holds the Container (`IdleStop.writing`). */
   writing: boolean;
+  /** Makes `load` reject. */
+  failLoad: boolean;
 };
 
 const DAY = 24 * 60 * 60_000;
@@ -110,6 +112,7 @@ const open = (
     build: undefined,
     failedBuilds: [],
     writing: false,
+    failLoad: false,
   };
 
   const api: IWorkspaceContainerAPI = {
@@ -196,7 +199,11 @@ const open = (
           state.failedBuilds.push(id);
         },
       },
-      load: async () => state.record,
+      load: async () => {
+        if (state.failLoad) throw new Error("storage unavailable");
+
+        return state.record;
+      },
       save: async (record) => {
         state.record = record;
       },
@@ -940,6 +947,7 @@ describe("a start the platform rejects for the snapshot", () => {
         load: async () => undefined,
         save: async () => undefined,
         running: () => false,
+        writing: () => false,
         now: () => 1,
         warn: () => undefined,
         info: () => undefined,
@@ -1115,6 +1123,19 @@ describe("the idle stop's snapshot", () => {
 
     expect(await make().snapshot("idle")).toBe("taken");
     expect(state.takes).toEqual(["idle"]);
+  });
+
+  it("is taken when the mark of a write could not reach storage", async () => {
+    const { state, make } = await restored();
+    // An evicted object, whose storage fails the mark's read of the launch record.
+    const evicted = make();
+
+    state.failLoad = true;
+    await expect(evicted.noteWrite()).rejects.toThrow("storage unavailable");
+    state.failLoad = false;
+
+    expect(state.record?.diskUnchanged).toBe(true);
+    expect(await evicted.snapshot("idle")).toBe("taken");
   });
 
   it("is skipped after an eviction when nothing ran", async () => {

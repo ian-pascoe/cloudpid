@@ -189,7 +189,7 @@ The agent restarting its Workspace's Container at another size, up to its Enviro
 _Avoid_: Scaling, upgrade
 
 **Held stop**:
-The Workspace stopping its Container, as an idle stop does (snapshot, then stop), because it was kept running an hour (or its idle time, when longer: the hold cap) after the last owner or agent activity in the Workspace, by a command handle never released or an open Container preview. Its Sessions show it as a notice.
+The Workspace stopping its Container, as an idle stop does (snapshot, unless nothing that may change its disk ran since its restore, then stop), because it was kept running an hour (or its idle time, when longer: the hold cap) after the last owner or agent activity in the Workspace, by a command handle never released or an open Container preview. Its Sessions show it as a notice.
 _Avoid_: Timeout, watchdog
 
 **Backend**:

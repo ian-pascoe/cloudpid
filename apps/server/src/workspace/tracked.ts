@@ -86,7 +86,8 @@ class TrackedRuntime extends WorkspaceRuntimeStub {
     // A command started is the owner's or the agent's activity, whichever backend runs it.
     tracker.noteActivity().catch(log);
 
-    // A failed write only shortens the idle time: the alarm works from what was stored before.
+    // A failed write only shortens the idle time: the alarm works from what was stored before. The command's mark that it
+    // may change the disk is kept in memory at once, so it holds however storage answers.
     const hold = onContainer ? tracker.hold({ writes: this.#writes }) : undefined;
 
     hold?.begun.catch(log);

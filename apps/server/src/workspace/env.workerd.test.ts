@@ -273,6 +273,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
         record = saved;
       },
       running: () => false,
+      writing: () => false,
       now: () => Date.now(),
       warn: () => undefined,
       info: () => undefined,

@@ -11,7 +11,7 @@
 // live Run, a file write) is snapshotted and stopped as at the idle stop, its holds dropped (a held stop). A command
 // handle never released, or a Container preview left open, can then keep it no longer.
 //
-// What may change the Container's disk is told on (`wrote`): a hold that may write (a command, by default) when it
+// What may change the Container's disk is told of (`wrote`): a hold that may write (a command, by default) as it
 // begins, and `noteWrite` for the rest (a bootstrap that installed something, a Setup or Start Script). The launch
 // record keeps it, and an idle stop of a Container in which nothing did takes no snapshot (`launch.ts`).
 
@@ -44,7 +44,8 @@ export const heldStopMinutes = (stop: HeldStop): number =>
 export type HoldOptions = {
   /**
    * Whether what holds it may change the Container's disk: a command, a script (the default). Not a Container preview's
-   * socket, nor a bootstrap's own hold (it tells of what it changed with `noteWrite`), nor the Workspace DO's reads.
+   * socket, a bootstrap's own hold (it tells of what it changed with `noteWrite`), the agent's resize (it snapshots
+   * itself), nor the Workspace DO's reads.
    */
   readonly writes?: boolean | undefined;
 };
@@ -78,8 +79,8 @@ export type IdleStopDeps = {
   /** Told of a held stop once the Container is stopped: the Workspace logs it and keeps it for its Sessions. */
   readonly held?: ((stop: HeldStop) => Promise<void>) | undefined;
   /**
-   * Told that something that may change the Container's disk ran or begins (a command, a script, a Container-only file
-   * write): the launch record keeps it, so the idle stop snapshots (`ContainerLaunch.noteWrite`).
+   * Told of something that may change the Container's disk (a command or a Container-only file write as its hold
+   * begins, a script): the launch record keeps it, so the idle stop snapshots (`ContainerLaunch.noteWrite`).
    */
   readonly wrote?: (() => Promise<void>) | undefined;
   /** Told of every use of the Container (`ContainerUsageLedger.seen`). */
@@ -147,8 +148,8 @@ export class IdleStop {
   }
 
   /**
-   * Something that may change the Container's disk ran (a bootstrap that installed something, a Setup or Start Script,
-   * a Container-only file write): the idle stop snapshots the Container.
+   * Something that may change the Container's disk ran without a hold of its own that writes (a bootstrap that
+   * installed something, a Setup or Start Script): the idle stop snapshots the Container.
    */
   async noteWrite(): Promise<void> {
     await this.#deps.wrote?.();
@@ -164,7 +165,7 @@ export class IdleStop {
 
   /**
    * A command (or a Container preview's socket, a bootstrap) began on the Container: it is in use until it ends. One
-   * that may write (`options.writes`, the default) is told on as it begins.
+   * that may write (`options.writes`, the default) is told of as it begins.
    */
   hold(options: HoldOptions = {}): ContainerHold {
     const token = {};
