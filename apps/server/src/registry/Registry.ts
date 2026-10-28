@@ -34,6 +34,8 @@ import {
   type SkillSave,
   skillSetOf,
 } from "./skills.ts";
+import { installSkills, type SkillInstallation } from "./skill-install.ts";
+import { githubSkillReader } from "./skill-reader.ts";
 import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
@@ -78,6 +80,7 @@ import {
 } from "./environment-secrets.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
 import { type BuildWork, buildView } from "./builds.ts";
+import { GitHubAppConfig } from "../github/config.ts";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
@@ -451,6 +454,24 @@ export type RegistryMethods = {
     readonly name: string;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<SkillRemoval>;
+  /**
+   * An Agent change (`docs/spec.md` → Installing from GitHub): install from the GitHub `source` the Skills `skills` names
+   * (`["*"]` for every one it holds; absent: the only one, else the list of them and nothing installed) for
+   * `environment`. Fetched here as the GitHub App at one commit, then each is kept with its Skill source as a save keeps a
+   * Skill and recorded with its files before and after. The caller hands the Session's own Workspace its new Skill set after.
+   */
+  readonly agentInstallSkills: (input: {
+    readonly environment: string;
+    readonly source: string;
+    readonly skills?: ReadonlyArray<string> | undefined;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SkillInstallation>;
+  /** The owner installs Skills from a GitHub `source` (as `agentInstallSkills`), recorded as no Agent change. */
+  readonly installSkills: (input: {
+    readonly environment: string;
+    readonly source: string;
+    readonly skills?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<SkillInstallation>;
   /** The Skills kept for `environment`, by name; null when it is not registered. */
   readonly listSkills: (input: {
     readonly environment: string;
@@ -634,13 +655,16 @@ export const RegistryLive = Registry.make(
     state: Cloudflare.DurableObjectState,
     push: PushConfig,
     secrets: SecretsConfig,
+    github: GitHubAppConfig,
   }).pipe(
-    Effect.map(({ state, push, secrets }) =>
+    Effect.map(({ state, push, secrets, github }) =>
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
         const changes = openAgentChanges(state.raw.storage);
         const skills = openSkills(state.raw.storage);
         const notify = pushNotifier({ store, vapid: push.vapid });
+        // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
+        const skillReader = githubSkillReader(github);
 
         // The bundle, the lowest layer of every Skill set until it is removed, hashed once. Loaded on first use: the
         // deploy loads this module in Node, which cannot load the bundle's `?raw` imports.
@@ -651,6 +675,26 @@ export const RegistryLive = Registry.make(
             ),
           ),
         );
+
+        /** Install `source`'s Skills into `environment`: as Agent changes by `author`, or as the owner's save with none. */
+        const installFromGithub = (input: {
+          readonly environment: string;
+          readonly source: string;
+          readonly skills: ReadonlyArray<string> | undefined;
+          readonly author: AgentChangeAuthor | null;
+        }) =>
+          Effect.gen(function* () {
+            const hashedBundle = yield* bundle;
+            const now = yield* Clock.currentTimeMillis;
+
+            return yield* Effect.promise(() =>
+              installSkills(
+                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                skillReader,
+                input,
+              ),
+            );
+          });
 
         /** `environment`'s Skill set before its texts are read: its own Skills over the bundle. */
         const mergedSkills = (environment: string) =>
@@ -1066,15 +1110,19 @@ export const RegistryLive = Registry.make(
                 { environment, name, author },
               );
             }),
+          agentInstallSkills: ({ environment, source, skills: names, author }) =>
+            installFromGithub({ environment, source, skills: names, author }),
+          installSkills: ({ environment, source, skills: names }) =>
+            installFromGithub({ environment, source, skills: names, author: null }),
           listSkills: ({ environment }) =>
             Effect.sync(() =>
               store.getEnvironment(environment) === null
                 ? null
-                : Arr.map(skills.list(environment), ({ name, description, savedAt }) => ({
-                    name,
-                    description,
-                    savedAt,
-                  })),
+                : Arr.map(skills.list(environment), ({ name, description, savedAt, source }) => {
+                    const listed = { name, description, savedAt };
+
+                    return source === null ? listed : { ...listed, source };
+                  }),
             ),
           removeSkill: ({ environment, name }) =>
             Effect.sync(() => {

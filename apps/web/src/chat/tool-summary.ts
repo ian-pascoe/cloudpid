@@ -231,6 +231,10 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return variable(args);
       case "environment_skill_save":
         return inEnvironment(args, text(args, "path"));
+      case "environment_skill_install":
+        return inEnvironment(args, text(args, "source"));
+      case "skill_search":
+        return text(args, "query");
       case "settings_spend_limit_set":
         return spendLimit(args);
       case "settings_subagent_depth_set":

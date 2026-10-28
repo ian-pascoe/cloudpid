@@ -470,13 +470,13 @@ describe("the texts of a Skill's files", () => {
       // As the owner's own save would keep it, with no change.
       skills.put(
         "0000abcd",
-        { name: "mine", description: "What mine does.", files: hashed.files },
+        { name: "mine", description: "What mine does.", files: hashed.files, source: null },
         hashed.contents,
         1_000,
       );
       skills.put(
         "0000abcd",
-        { name: "yours", description: "What yours does.", files: hashed.files },
+        { name: "yours", description: "What yours does.", files: hashed.files, source: null },
         hashed.contents,
         1_000,
       );

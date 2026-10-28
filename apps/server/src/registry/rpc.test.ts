@@ -54,6 +54,8 @@ import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
 import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
 import type { RegistryMethods } from "./Registry.ts";
+import type { SkillInstallation } from "./skill-install.ts";
+import type { SkillSearcher } from "./skill-search.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type {
@@ -116,6 +118,49 @@ const fakeRegistries = () => {
   const agentChanges: AgentChange[] = [];
   /** The Skills kept for each Environment, by its id. */
   const skillsKept = new Map<string, ReadonlyArray<EnvironmentSkill>>();
+
+  /** What the owner's install of Skills answers: the Skills a source holds, installed when named. */
+  const skillInstallation = (
+    environment: string,
+    named: ReadonlyArray<string> | undefined,
+  ): SkillInstallation => {
+    const found = Arr.findFirst(environments, (item) => item.id === environment);
+
+    if (Option.isNone(found)) return { status: "missing" };
+
+    const [repo, commit] = ["mattpocock/skills", "c0ffee0000000000000000000000000000000001"];
+
+    if (named === undefined) {
+      return {
+        status: "listed",
+        environment: found.value,
+        repo,
+        ref: null,
+        commit,
+        available: [
+          { name: "grill-me", description: "Interview me.", path: "skills/grill-me" },
+          { name: "tdd", description: "Test first.", path: "skills/tdd" },
+        ],
+      };
+    }
+
+    if (named.includes("nope"))
+      return { status: "refused", message: "Repo holds no Skill named nope" };
+
+    return {
+      status: "installed",
+      environment: found.value,
+      repo,
+      ref: null,
+      commit,
+      results: Arr.map(named, (name) => ({
+        name,
+        path: `skills/${name}`,
+        outcome: name === "same" ? ("unchanged" as const) : ("installed" as const),
+      })),
+    };
+  };
+
   /** The files before and after each Agent change of a Skill, by `<environment>:<change>`. */
   const skillFiles = new Map<string, SkillChangeFiles>();
   /** The Settings' Agent changes recorded, oldest first. */
@@ -742,6 +787,13 @@ const fakeRegistries = () => {
     keepAskedSecrets: () => Effect.die("The endpoint keeps no Secret for an ask"),
     agentSaveSkill: () => Effect.die("The endpoint makes no Agent change"),
     agentRemoveSkill: () => Effect.die("The endpoint makes no Agent change"),
+    agentInstallSkills: () => Effect.die("The endpoint makes no Agent change"),
+    installSkills: ({ environment, source, skills }) =>
+      Effect.sync(() => {
+        calls.push(`installSkills:${environment}:${source}:${skills?.join(",") ?? ""}`);
+
+        return skillInstallation(environment, skills);
+      }),
     listSkills: ({ environment }) =>
       Effect.sync(() =>
         Arr.some(environments, (item) => item.id === environment)
@@ -1241,6 +1293,24 @@ const fakeRegistries = () => {
     lookupsAsked,
     branches,
     branchesAsked,
+    /** skills.sh, answering a query of `down` with a failure. */
+    skillSearch: ((query) =>
+      Effect.succeed(
+        query === "down"
+          ? ({ ok: false, message: "skills.sh did not answer" } as const)
+          : ({
+              ok: true,
+              results: [
+                {
+                  id: "mattpocock/skills/grill-me",
+                  source: "mattpocock/skills",
+                  skillId: "grill-me",
+                  name: "grill-me",
+                  installs: 1_200,
+                },
+              ],
+            } as const),
+      )) satisfies SkillSearcher,
     registries,
     /** The Registry's methods, as the Session DO calls them. */
     registry,
@@ -1284,6 +1354,7 @@ const worker =
       builds: fake.buildUpkeep,
       lookups: fake.lookups,
       branches: fake.branches,
+      skillSearch: fake.skillSearch,
       background: fake.background,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
@@ -2816,6 +2887,83 @@ it("lists an Environment's Skills, removes one on the owner's word, and refuses 
     "removeSkill:default:release",
     "removeSkill:default:release",
   ]);
+});
+
+it("installs Skills from a source on the owner's word, listing a source that holds several, and refuses what fails", async () => {
+  const fake = fakeRegistries();
+
+  const listed = await call(fake, (registry) =>
+    registry.installEnvironmentSkills({
+      environment: DEFAULT_ENVIRONMENT,
+      source: "mattpocock/skills",
+    }),
+  );
+
+  const installed = await call(fake, (registry) =>
+    registry.installEnvironmentSkills({
+      environment: DEFAULT_ENVIRONMENT,
+      source: "mattpocock/skills",
+      skills: ["grill-me", "same"],
+    }),
+  );
+
+  const refused = await call(fake, (registry) =>
+    Effect.flip(
+      registry.installEnvironmentSkills({
+        environment: DEFAULT_ENVIRONMENT,
+        source: "mattpocock/skills",
+        skills: ["nope"],
+      }),
+    ),
+  );
+
+  const unknown = await call(fake, (registry) =>
+    Effect.flip(
+      registry.installEnvironmentSkills({ environment: "0000beef", source: "mattpocock/skills" }),
+    ),
+  );
+
+  expect(listed).toMatchObject({
+    status: "listed",
+    repo: "mattpocock/skills",
+    available: [{ name: "grill-me" }, { name: "tdd" }],
+  });
+  expect(installed).toEqual({
+    status: "installed",
+    repo: "mattpocock/skills",
+    ref: null,
+    commit: "c0ffee0000000000000000000000000000000001",
+    skills: [
+      { name: "grill-me", outcome: "installed" },
+      { name: "same", outcome: "unchanged" },
+    ],
+  });
+  expect(refused.message).toBe("Repo holds no Skill named nope");
+  expect(unknown.message).toBe('Environment "0000beef" does not exist');
+  // Skills are not part of a Build: nothing else runs.
+  expect(fake.calls.filter((name) => !name.startsWith("installSkills"))).toEqual([]);
+});
+
+it("searches skills.sh for the page and reports why a search failed", async () => {
+  const fake = fakeRegistries();
+
+  const found = await call(fake, (registry) => registry.searchSkills({ query: "grill" }));
+
+  const failed = await call(fake, (registry) =>
+    Effect.flip(registry.searchSkills({ query: "down" })),
+  );
+
+  expect(found).toEqual([
+    {
+      id: "mattpocock/skills/grill-me",
+      source: "mattpocock/skills",
+      skillId: "grill-me",
+      name: "grill-me",
+      installs: 1_200,
+    },
+  ]);
+  expect(failed).toBeInstanceOf(EnvironmentError);
+  expect(failed.message).toBe("skills.sh did not answer");
 });
 
 it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {

@@ -6,12 +6,13 @@ import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durabl
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
-import type { EnvironmentSkills } from "./environment-skills.ts";
+import type { EnvironmentSkills, SkillsInstalled } from "./environment-skills.ts";
 
 /** Skills that fail when called, for a fake that serves the other tools only. */
 export const unusedSkills: EnvironmentSkills = {
   saveSkill: () => Effect.die("saveSkill is not used here"),
   removeSkill: () => Effect.die("removeSkill is not used here"),
+  installSkills: () => Effect.die("installSkills is not used here"),
 };
 
 /**
@@ -35,6 +36,16 @@ export const fakeSkills = () => {
 
   let refusal: string | undefined;
   let next = 1;
+
+  /** What the Registry answers an install with, and what it was asked. */
+  let installation: SkillsInstalled | undefined;
+
+  const installs: Array<{
+    environment: string;
+    source: string;
+    skills: ReadonlyArray<string> | undefined;
+    reason: string;
+  }> = [];
 
   const changeOf = (
     environment: string,
@@ -116,12 +127,28 @@ export const fakeSkills = () => {
           handed: environment === "default",
         };
       }),
+    installSkills: ({ environment, source, skills, author }) =>
+      Effect.sync(() => {
+        installs.push({ environment, source, skills, reason: author.reason });
+
+        return (
+          installation ?? {
+            status: "refused" as const,
+            message: "the fake Registry was given no answer",
+          }
+        );
+      }),
   };
 
   return {
     service,
     kept,
     saves,
+    installs,
+    /** Answer the next installs with `answer`. */
+    answerInstall: (answer: SkillsInstalled) => {
+      installation = answer;
+    },
     refuse: (message: string) => {
       refusal = message;
     },

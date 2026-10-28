@@ -27,6 +27,7 @@ import {
   SettingsTools,
 } from "@cloudpid/extensions/settings";
 import { Skills } from "@cloudpid/extensions/skills";
+import { SkillSearchTools } from "@cloudpid/extensions/skill-search-tool";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Todo } from "@cloudpid/extensions/todo";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
@@ -101,6 +102,8 @@ export const sessionExtensions: Effect.Effect<
   Todo,
   Browser,
   Skills,
+  // `skill_search`: skills.sh, over the same network as the web tools.
+  SkillSearchTools,
   // Before the secrets extension, whose wraps then run first: a path's Secret references are resolved when it looks.
   AgentsMd,
   ContainerTools,

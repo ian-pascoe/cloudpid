@@ -41,6 +41,7 @@ import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
 import type { DraftBranches } from "./draft-branches.ts";
+import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
 import { removals } from "./removal.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
@@ -105,6 +106,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly lookups: WorkspaceLookups;
   /** The draft's Start from menu: the branches of an Environment's Repos, asked of GitHub. */
   readonly branches: DraftBranches;
+  /** The Environments page's search of skills.sh for Skills to install. */
+  readonly skillSearch: SkillSearcher;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
@@ -295,6 +298,7 @@ export const serveRegistryRpc = <R = never>(
     builds,
     lookups,
     branches,
+    skillSearch,
     background,
   }: RegistryRpcObjects<R>,
 ) =>
@@ -844,6 +848,45 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
+      // Fetched by the Registry as the GitHub App; each Workspace of the Environment is handed its Skill set with the
+      // Skills at its next readying. The owner's install is not an Agent change, as the owner's removal is not.
+      installEnvironmentSkills: ({ environment, source, skills }) =>
+        Effect.gen(function* () {
+          const installation = yield* registry.installSkills({ environment, source, skills });
+
+          switch (installation.status) {
+            case "missing":
+              return yield* failed(noEnvironment(environment));
+            case "refused":
+              return yield* failed(installation.message);
+            case "listed":
+              return {
+                status: "listed" as const,
+                repo: installation.repo,
+                ref: installation.ref,
+                commit: installation.commit,
+                available: installation.available,
+              };
+            case "installed":
+              return {
+                status: "installed" as const,
+                repo: installation.repo,
+                ref: installation.ref,
+                commit: installation.commit,
+                skills: Arr.map(installation.results, ({ name, outcome, message }) => {
+                  const shown = { name, outcome };
+
+                  return message === undefined ? shown : { ...shown, message };
+                }),
+              };
+          }
+        }),
+      searchSkills: ({ query }) =>
+        Effect.gen(function* () {
+          const found = yield* skillSearch(query);
+
+          return found.ok ? found.results : yield* failed(found.message);
+        }),
       listBuilds: () =>
         registry.listBuilds().pipe(
           // The Environments page asks again while a Build is under way, which records it once it ends.

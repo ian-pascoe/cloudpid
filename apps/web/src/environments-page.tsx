@@ -8,6 +8,9 @@ import {
   MAX_REPO_NAME_LENGTH,
   MAX_SECRET_NAME_LENGTH,
   parseRepoSource,
+  type SkillInstall,
+  skillSourceText,
+  skillSourceUrl,
   type EnvironmentRecord,
   type EnvironmentSecretRecord,
   fieldSkill,
@@ -25,12 +28,14 @@ import {
   ArrowLeft,
   Bot,
   Check,
+  Download,
   GitBranch,
   GitFork,
   KeyRound,
   Pencil,
   Play,
   RotateCw,
+  Search,
   Trash2,
   Undo2,
 } from "lucide-react";
@@ -41,7 +46,7 @@ import {
   useAtomSet,
   useAtomValue,
 } from "@effect/atom-react";
-import type { FormEvent } from "react";
+import { type FormEvent, useState } from "react";
 import { ChangeDiff } from "./change-diff.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
@@ -71,7 +76,11 @@ import {
   environmentSecretsAtom,
   environmentSecretsErrorAtom,
   environmentSkillsAtom,
+  installSkillsAtom,
   removeSkillAtom,
+  searchSkillsAtom,
+  skillSearchQueryAtom,
+  skillSourceAtom,
   skillChangeFilesAtom,
   skillChangeKey,
   skillDialogAtom,
@@ -120,6 +129,7 @@ import {
   secretVariable,
   environmentNameProblem,
   idleMinutesProblem,
+  installOutcomeLines,
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
@@ -1311,9 +1321,249 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
   );
 };
 
+/** What an install came to, below the form: the Skills it kept, each pinned to the commit; or the Skills to tick. */
+const InstallAnswer = ({
+  id,
+  answer,
+  source,
+  installing,
+}: {
+  id: string;
+  answer: SkillInstall;
+  source: string;
+  installing: boolean;
+}) => {
+  const [ticked, setTicked] = useState<ReadonlyArray<string>>([]);
+  // The same setter installs the ticked Skills and, reset, closes the list.
+  const install = useAtomSet(installSkillsAtom(id));
+
+  if (answer.status === "installed") {
+    return (
+      <div className="flex flex-col gap-1 text-xs" role="status">
+        <p className="text-muted-foreground">
+          From{" "}
+          {skillSourceText({ repo: answer.repo, path: "", ref: answer.ref, commit: answer.commit })}
+          :
+        </p>
+        <ul className="flex flex-col gap-0.5">
+          {installOutcomeLines(answer.skills).map((line) => (
+            <li key={line} className="font-mono break-words">
+              {line}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  const { available } = answer;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs text-muted-foreground">
+        {answer.repo} holds {available.length} skills. Tick the ones to install.
+      </p>
+      <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto" aria-label="Skills in the repo">
+        {available.map((skill) => (
+          <li key={skill.name}>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={ticked.includes(skill.name)}
+                disabled={installing}
+                onChange={(event) => {
+                  setTicked((now) =>
+                    event.target.checked
+                      ? [...now, skill.name]
+                      : now.filter((name) => name !== skill.name),
+                  );
+                }}
+              />
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate font-mono">{skill.name}</span>
+                <span className="line-clamp-2 text-xs break-words text-muted-foreground">
+                  {skill.description}
+                </span>
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={installing || ticked.length === 0}
+          onClick={() => {
+            install({ source, skills: ticked });
+          }}
+        >
+          <Download />
+          {installing ? "Installing…" : `Install ${ticked.length} selected`}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={installing}
+          onClick={() => {
+            install(Atom.Reset);
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+/** The skills.sh results for a search, each with the Skill's installs and an Add that installs that Skill. */
+const SkillSearchResults = ({ id, installing }: { id: string; installing: boolean }) => {
+  const searched = useAtomValue(searchSkillsAtom(id));
+  const install = useAtomSet(installSkillsAtom(id));
+  const found = searched.pipe(AsyncResult.value, Option.getOrNull);
+  const problem = settledFailureOf(searched);
+
+  if (problem !== null) return <DialogProblem problem={problem} />;
+
+  if (found === null) return searched.waiting ? <p className="text-xs">Searching…</p> : null;
+
+  if (found.length === 0) return <p className="text-xs text-muted-foreground">Nothing found.</p>;
+
+  return (
+    <ul className="flex flex-col gap-1" aria-label="skills.sh results">
+      {found.map((result) => (
+        <li key={result.id} className="flex items-center justify-between gap-2">
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate font-mono text-sm">{result.name}</span>
+            <span className="truncate font-mono text-xs text-muted-foreground">
+              {result.source} · {result.installs.toLocaleString("en-US")} installs
+            </span>
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={installing}
+            aria-label={`Add ${result.name} from ${result.source}`}
+            onClick={() => {
+              install({ source: result.source, skills: [result.skillId] });
+            }}
+          >
+            Add
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
 /**
- * The Skills Environment `id` keeps (ADR-0026): each one's name, description and when it was saved, with a removal
- * behind a confirmation. The agent saves them; every Workspace of the Environment serves them read-only.
+ * The form that adds Skills to Environment `id` from GitHub, on the owner's word: a source (`owner/repo`,
+ * `owner/repo@skill` or a GitHub URL), or a search of skills.sh. A source that holds several Skills lists them to tick.
+ * The Registry fetches it as the GitHub App, pinned to a commit.
+ */
+const AddSkillsForm = ({ id }: { id: string }) => {
+  const [source, setSource] = useAtom(skillSourceAtom(id));
+  const [query, setQuery] = useAtom(skillSearchQueryAtom(id));
+  const [answered, install] = useAtom(installSkillsAtom(id));
+  const [searched, search] = useAtom(searchSkillsAtom(id));
+  const answer = answered.pipe(AsyncResult.value, Option.getOrNull);
+  const installing = answered.waiting;
+  const picking = answer !== null && answer.status === "listed";
+  const inputId = `add-skills-${id}`;
+  const searchId = `search-skills-${id}`;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (source.trim() === "" || installing || picking) return;
+
+    install({ source });
+  };
+
+  const submitSearch = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (query.trim().length < 2 || searched.waiting) return;
+
+    search(query);
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <form onSubmit={submit} className="flex flex-col gap-1.5">
+        <label htmlFor={inputId} className="text-xs font-medium text-muted-foreground">
+          Add skills from GitHub
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <Input
+            id={inputId}
+            value={source}
+            onChange={(event) => {
+              setSource(event.target.value);
+            }}
+            placeholder="owner/repo, owner/repo@skill or a GitHub URL"
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            data-1p-ignore
+            disabled={installing || picking}
+            className="min-w-48 flex-1 font-mono"
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={installing || picking || source.trim() === ""}
+          >
+            <Download />
+            {installing && !picking ? "Adding…" : "Add"}
+          </Button>
+        </div>
+      </form>
+      <DialogProblem problem={settledFailureOf(answered)} />
+      {answer !== null && (
+        <InstallAnswer id={id} answer={answer} source={source} installing={installing} />
+      )}
+      <form onSubmit={submitSearch} className="flex flex-col gap-1.5">
+        <label htmlFor={searchId} className="sr-only">
+          Search skills.sh
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <Input
+            id={searchId}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+            }}
+            placeholder="Search skills.sh"
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            data-1p-ignore
+            className="min-w-48 flex-1"
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={searched.waiting || query.trim().length < 2}
+          >
+            <Search />
+            {searched.waiting ? "Searching…" : "Search"}
+          </Button>
+        </div>
+      </form>
+      <SkillSearchResults id={id} installing={installing} />
+    </div>
+  );
+};
+
+/**
+ * The Skills Environment `id` keeps (ADR-0026): each one's name, description and when it was saved, with its Skill
+ * source when it was installed from GitHub, and a removal behind a confirmation. The agent saves and installs them,
+ * and so does the owner's form; every Workspace of the Environment serves them read-only.
  */
 const SkillsSection = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSkillsAtom(id));
@@ -1330,8 +1580,9 @@ const SkillsSection = ({ id }: { id: string }) => {
         <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
       ) : skills.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          None of its own: its workspaces serve the bundle's skills. The agent saves one with
-          environment_skill_save.
+          None of its own: its workspaces serve the bundle's skills. Add some from GitHub below, or
+          the agent saves one with environment_skill_save or installs one with
+          environment_skill_install.
         </p>
       ) : (
         <ul className="flex flex-col gap-1">
@@ -1347,6 +1598,17 @@ const SkillsSection = ({ id }: { id: string }) => {
                   {/* @effect-diagnostics-next-line globalDate:off */}
                   Saved {relativeTime(skill.savedAt, Date.now())}
                 </span>
+                {skill.source !== undefined && (
+                  <a
+                    href={skillSourceUrl(skill.source)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate font-mono text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    title="Open this skill on GitHub at the commit it was installed at"
+                  >
+                    {skillSourceText(skill.source)}
+                  </a>
+                )}
               </span>
               <Button
                 size="icon"
@@ -1365,6 +1627,7 @@ const SkillsSection = ({ id }: { id: string }) => {
           ))}
         </ul>
       )}
+      <AddSkillsForm id={id} />
       <Dialog
         open={removing !== null}
         onClose={() => {
