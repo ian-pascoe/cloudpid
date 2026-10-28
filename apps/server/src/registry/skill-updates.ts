@@ -6,6 +6,7 @@
 // Environments page, is the owner's save and records none. The daily check (`checkSkillUpdates`) only reads GitHub, one
 // request for each repo and ref, and marks the Skills whose folder changed at the ref's head; it applies nothing.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- GitHub is read through a Promise API, and the reads and the checks run over native arrays.
+import { MAX_APPROVED_SKILLS } from "@cloudpid/extensions/skill-checks";
 import type { AgentChange, SkillSource } from "@cloudpid/protocol";
 import {
   fetchSkillsAt,
@@ -99,6 +100,8 @@ export type UpdateEntry =
 
 export type SkillUpdates<Entry = UpdateEntry> =
   | { readonly status: "missing" }
+  /** Nothing was read or changed: more Skills than one Approval shows, or a change for every Environment with no Approval. */
+  | { readonly status: "refused"; readonly message: string }
   /** No Skill was named and none is marked update available. */
   | { readonly status: "nothing"; readonly environment: SkillScope }
   | {
@@ -149,9 +152,11 @@ const plan = async (
   { store, skills }: Pick<SkillChangeContext, "store" | "skills">,
   reader: RepoReader,
   request: UpdateRequest,
+  limit?: number,
 ): Promise<
   | Planned
   | { readonly status: "missing" }
+  | { readonly status: "refused"; readonly message: string }
   | { readonly status: "nothing"; readonly environment: SkillScope }
 > => {
   const { environment, overwrite, pins } = request;
@@ -168,6 +173,13 @@ const plan = async (
       : [...new Set(request.names)];
 
   if (asked.length === 0) return { status: "nothing", environment: scope };
+
+  if (limit !== undefined && asked.length > limit) {
+    return {
+      status: "refused",
+      message: `${asked.length} Skills would be updated (${asked.join(", ")}), and one request for the user's Approval shows at most ${limit}, each with its files: name up to ${limit} of them, then call again for the rest`,
+    };
+  }
 
   const settled: UpdateEntry[] = [];
   const toRead: Array<StoredSkill & { readonly source: SkillSource }> = [];
@@ -312,7 +324,7 @@ export const previewSkillUpdates = async (
   reader: RepoReader,
   request: UpdateRequest,
 ): Promise<SkillUpdatePreview> => {
-  const planned = await plan(context, reader, request);
+  const planned = await plan(context, reader, request, MAX_APPROVED_SKILLS);
 
   if ("status" in planned) return planned;
 

@@ -4,6 +4,8 @@
 import {
   type AgentChange,
   type EnvironmentSkill,
+  type SkillInstallPin,
+  type SkillInstallPreview,
   type SkillExpectation,
   skillField,
 } from "@cloudpid/protocol";
@@ -30,6 +32,7 @@ export const unusedSkills: EnvironmentSkills = {
   installSkills: () => Effect.die("installSkills is not used here"),
   updateSkills: () => Effect.die("updateSkills is not used here"),
   previewUpdates: () => Effect.die("previewUpdates is not used here"),
+  previewInstall: () => Effect.die("previewInstall is not used here"),
 };
 
 /** The description a `SKILL.md`'s frontmatter gives, for a fake that does not parse YAML. */
@@ -78,11 +81,23 @@ export const fakeSkills = () => {
     source: string;
     skills: ReadonlyArray<string> | undefined;
     reason: string;
+    /** Whether the owner approved the install first (an Agent change made as approved). */
+    approved?: boolean | undefined;
+    pin?: SkillInstallPin | undefined;
+  }> = [];
+
+  /** What the Registry answers a preview of an install with, and what it was asked. */
+  let preview: SkillInstallPreview | undefined;
+
+  const previews: Array<{
+    environment: string;
+    source: string;
+    skills: ReadonlyArray<string> | undefined;
   }> = [];
 
   /** What the Registry answers an update and its preview with, and what each was asked. */
   let update: SkillsUpdated | undefined;
-  let preview: SkillUpdatesPreview | undefined;
+  let updatePreview: SkillUpdatesPreview | undefined;
 
   const updates: Array<{
     environment: string;
@@ -95,7 +110,7 @@ export const fakeSkills = () => {
     approved: boolean;
   }> = [];
 
-  const previews: Array<{
+  const updatePreviews: Array<{
     environment: string;
     names: ReadonlyArray<string> | undefined;
     overwrite: boolean;
@@ -264,9 +279,27 @@ export const fakeSkills = () => {
             : environment === "default",
         };
       }),
-    installSkills: ({ environment, source, skills, author }) =>
+    previewInstall: ({ environment, source, skills }) =>
       Effect.sync(() => {
-        installs.push({ environment, source, skills, reason: author.reason });
+        previews.push({ environment, source, skills });
+
+        return (
+          preview ?? {
+            status: "refused" as const,
+            message: "the fake Registry was given no preview",
+          }
+        );
+      }),
+    installSkills: ({ environment, source, skills, author, pin }) =>
+      Effect.sync(() => {
+        installs.push({
+          environment,
+          source,
+          skills,
+          reason: author.reason,
+          approved: author.approved,
+          pin,
+        });
 
         return (
           installation ?? {
@@ -290,9 +323,9 @@ export const fakeSkills = () => {
       }),
     previewUpdates: ({ environment, names, overwrite }) =>
       Effect.sync(() => {
-        previews.push({ environment, names, overwrite });
+        updatePreviews.push({ environment, names, overwrite });
 
-        return preview ?? { status: "missing" as const };
+        return updatePreview ?? { status: "missing" as const };
       }),
   };
 
@@ -317,13 +350,18 @@ export const fakeSkills = () => {
     recorded,
     installs,
     updates,
-    previews,
+    updatePreviews,
     /** Answer the next updates with `answer`. */
     answerUpdate: (answer: SkillsUpdated) => {
       update = answer;
     },
     /** Answer the next previews of an update with `answer`. */
-    answerPreview: (answer: SkillUpdatesPreview) => {
+    answerUpdatePreview: (answer: SkillUpdatesPreview) => {
+      updatePreview = answer;
+    },
+    previews,
+    /** Answer the next previews of an install with `answer`. */
+    answerPreview: (answer: SkillInstallPreview) => {
       preview = answer;
     },
     /** Answer the next installs with `answer`. */

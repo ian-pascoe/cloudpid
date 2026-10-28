@@ -14,6 +14,13 @@ export const MAX_SKILL_BYTES = 1024 * 1024;
 /** The most files a Skill's folder may hold, far above any real one. */
 export const MAX_SKILL_FILES = 500;
 
+/**
+ * The most Skills one Approval of an install for every Environment shows. Each is shown with up to 16,000 characters of
+ * its files, so the card stays a size the owner can read and a request a Durable Object keeps; more are installed in
+ * batches, the agent naming them. The Registry refuses a preview of more before it reads their files.
+ */
+export const MAX_APPROVED_SKILLS = 10;
+
 /** The bundle in `skills/` as a whole may be this large: the files ship inside the Workspaces Worker's upload. */
 export const MAX_TOTAL_BYTES = 1024 * 1024;
 

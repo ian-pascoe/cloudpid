@@ -27,7 +27,6 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type { RegistryMethods } from "../registry/Registry.ts";
-import type { EnvironmentRecord } from "../registry/store.ts";
 import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
 import type { Builds } from "../registry/builds.ts";
 import type { Placement } from "./workspace.ts";
@@ -52,6 +51,7 @@ export type EnvironmentsRegistry = Pick<
   | "agentInstallSkills"
   | "agentUpdateSkills"
   | "previewSkillUpdates"
+  | "agentPreviewSkillInstall"
   | "listSkills"
   | "workspaceSkillSet"
   | "getWorkspace"
@@ -99,7 +99,30 @@ const keptFor = (
 };
 
 /** An Environment as a change names it: its id and name. */
-const changedEnvironment = ({ id, name }: EnvironmentRecord) => ({ id, name });
+const changedEnvironment = ({ id, name }: { readonly id: string; readonly name: string }) => ({
+  id,
+  name,
+});
+
+/**
+ * The Environments whose own Skill hides every one of the Skills `results` kept for every Environment: a change reaches
+ * them in no Skill. None for Skills kept for one Environment.
+ */
+const hiddenInAll = (
+  results: ReadonlyArray<{
+    readonly outcome: string;
+    readonly overriddenIn?: ReadonlyArray<{ readonly id: string }> | undefined;
+  }>,
+): ReadonlyArray<{ readonly id: string }> => {
+  const [first, ...rest] = Arr.map(
+    Arr.filter(results, (result) => result.outcome === "installed"),
+    (result) => result.overriddenIn ?? [],
+  );
+
+  return Arr.filter(first ?? [], ({ id }) =>
+    Arr.every(rest, (hidden) => Arr.some(hidden, (one) => one.id === id)),
+  );
+};
 
 /** Every Environment as a change names it. */
 const EVERY_ENVIRONMENT = { id: EVERY_ENVIRONMENT_ID, name: EVERY_ENVIRONMENT_NAME };
@@ -376,7 +399,20 @@ export const sessionEnvironments = ({
             };
         }
       }),
-    installSkills: ({ environment, source, skills, author }) =>
+    previewInstall: ({ environment, source, skills }) =>
+      Effect.gen(function* () {
+        const previewed = yield* registry.agentPreviewSkillInstall({ environment, source, skills });
+
+        switch (previewed.status) {
+          case "missing":
+          case "refused":
+            return previewed;
+          case "listed":
+          case "previewed":
+            return { ...previewed, environment: changedEnvironment(previewed.environment) };
+        }
+      }),
+    installSkills: ({ environment, source, skills, author, pin }) =>
       Effect.gen(function* () {
         if (session === undefined) return yield* unlisted;
 
@@ -386,6 +422,7 @@ export const sessionEnvironments = ({
           source,
           skills,
           author: { session, ...author },
+          pin,
         });
 
         switch (installed.status) {
@@ -404,8 +441,9 @@ export const sessionEnvironments = ({
               ref,
               commit,
               results,
-              // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves them now.
-              handed: yield* handSkillsIfOwn(environment),
+              // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves them now, unless its
+              // Environment keeps its own Skill of every name installed for every Environment.
+              handed: yield* handSkillsAfter(environment, hiddenInAll(results)),
             };
           }
         }
@@ -425,6 +463,7 @@ export const sessionEnvironments = ({
 
         switch (updated.status) {
           case "missing":
+          case "refused":
             return updated;
           case "nothing":
             return { status: "nothing" as const, environment: updated.environment };

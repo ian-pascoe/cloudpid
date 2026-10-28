@@ -91,6 +91,10 @@ const updatedOutcome = (
     switch (updated.status) {
       case "missing":
         return yield* notFound(scope);
+      case "refused":
+        return yield* EnvironmentsError.make({
+          message: `${approved ? "The user approved, but nothing" : "Nothing"} was updated: ${updated.message}`,
+        });
       case "nothing":
         return {
           output: [
@@ -266,6 +270,12 @@ const updateEverywhere = (
     if (!rerun) {
       if (previewed === undefined || previewed.status === "missing") {
         return yield* notFound(EVERY_ENVIRONMENT_ID);
+      }
+
+      if (previewed.status === "refused") {
+        return yield* EnvironmentsError.make({
+          message: `Nothing was updated: ${previewed.message}.`,
+        });
       }
 
       if (previewed.status === "nothing") return yield* nothing(previewed);

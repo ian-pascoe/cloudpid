@@ -68,6 +68,77 @@ const REPO = {
   "skills/tdd/tests.md": "tests",
 } satisfies Repo;
 
+describe("fetchSkills for the folders a user was shown", () => {
+  const SWAPPED = {
+    // The folder named foo holds the Skill bar, and the folder named bar the Skill foo.
+    "x/foo/SKILL.md": skillMd("bar"),
+    "x/foo/steps.md": "bar's steps",
+    "bar/SKILL.md": skillMd("foo"),
+    "bar/steps.md": "foo's steps",
+    "skills/secret/SKILL.md": skillMd("secret", "internal", "metadata:\n  internal: true\n"),
+  } satisfies Repo;
+
+  it("reads exactly those folders, whatever their names say, and no other Skill", async () => {
+    const { reader, reads } = readerOf(SWAPPED);
+
+    const result = await fetchSkills(reader, {
+      source: source("o/skills@foo"),
+      // Naming foo (or *) would select the folder x/foo, or every Skill, by name.
+      skills: ["foo", "*"],
+      folders: ["bar"],
+    });
+
+    expect(result).toMatchObject({
+      status: "fetched",
+      skills: [
+        {
+          name: "foo",
+          path: "bar",
+          files: { "SKILL.md": skillMd("foo"), "steps.md": "foo's steps" },
+        },
+      ],
+      skipped: [],
+    });
+    expect(reads).not.toContain("x/foo/steps.md");
+    expect(reads).not.toContain("skills/secret/SKILL.md");
+  });
+
+  it("reads an internal Skill only when its folder is named, and reports a folder that holds no Skill", async () => {
+    const { reader } = readerOf(SWAPPED);
+
+    const result = await fetchSkills(reader, {
+      source: source("o/skills"),
+      folders: ["skills/secret", "gone"],
+    });
+
+    expect(result).toMatchObject({
+      status: "fetched",
+      skills: [{ name: "secret", path: "skills/secret" }],
+      skipped: [
+        { path: "gone", message: expect.stringContaining("no SKILL.md is in the folder gone") },
+      ],
+    });
+  });
+
+  it("refuses more Skills than the limit before it reads any Skill's files", async () => {
+    const { reader, reads } = readerOf(REPO);
+
+    const result = await fetchSkills(reader, {
+      source: source("o/skills"),
+      skills: ["*"],
+      limit: 1,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      kind: "too_many",
+      message: expect.stringContaining("more than the 1 one request may take"),
+    });
+    // Only the `SKILL.md` files that tell the Skills apart were read.
+    expect(reads.every((sha) => sha.endsWith("SKILL.md"))).toBe(true);
+  });
+});
+
 describe("fetchSkills", () => {
   it("installs the Skill a source names with @, pinned to the commit its ref resolved to", async () => {
     const { reader, reads, asked } = readerOf(REPO);
@@ -141,6 +212,19 @@ describe("fetchSkills", () => {
     const result = await fetchSkills(reader, { source: source("o/one") });
 
     expect(result).toMatchObject({ status: "fetched", skills: [{ name: "only" }] });
+  });
+
+  it("reads at the commit it is given, not the one the source's ref resolves to, and keeps the ref as named", async () => {
+    const { reader, asked } = readerOf(REPO);
+
+    const pinned = await fetchSkills(reader, {
+      source: source("https://github.com/o/skills/tree/main"),
+      skills: ["tdd"],
+      commit: "feed0000000000000000000000000000000000f1",
+    });
+
+    expect(asked).toEqual(["feed0000000000000000000000000000000000f1"]);
+    expect(pinned).toMatchObject({ status: "fetched", ref: "main", skills: [{ name: "tdd" }] });
   });
 
   it('installs every Skill for ["*"], and the ones named in skills and after @ together', async () => {

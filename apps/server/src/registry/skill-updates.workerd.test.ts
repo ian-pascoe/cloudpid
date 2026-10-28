@@ -963,6 +963,29 @@ describe("the daily check", () => {
     expect(later).toMatchObject({ checked: 2 });
   });
 
+  it("refuses a preview of more Skills than one Approval shows, before any file is read", async () => {
+    const github = fakeGithub();
+    const names = Array.from({ length: 11 }, (_, at) => `skill-${at}`);
+
+    github.push(
+      REPO,
+      Object.fromEntries(names.map((name) => [`skills/${name}/SKILL.md`, skillMd(name)])),
+    );
+
+    const [view, requests] = await inRegistry(async ({ install, preview }) => {
+      await install(REPO, { environment: "*" });
+      github.reset();
+
+      return [await preview({ environment: "*", names }), [...github.requests]] as const;
+    }, github);
+
+    expect(view).toMatchObject({
+      status: "refused",
+      message: expect.stringContaining("shows at most 10"),
+    });
+    expect(requests).toEqual([]);
+  });
+
   it("refuses, before the owner is asked, an update that would take a Skill set past its limits", async () => {
     const github = fakeGithub();
 
