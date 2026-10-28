@@ -2,7 +2,7 @@
 // time and Container-only paths are the Workspace's settings at that moment, kept for as long as that Container runs; a
 // snapshot of the image's Toolchains is restored when there is one, and a restore that does not come up falls back to
 // the image.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off newPromise:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
 import {
   DEFAULT_CONTAINER_SETTINGS,
