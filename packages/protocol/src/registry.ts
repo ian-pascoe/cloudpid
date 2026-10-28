@@ -1,11 +1,6 @@
 // The Registry operations (`docs/architecture/client-and-protocol.md`): listing and creating Sessions, Environments and
 // Workspaces. They hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import {
-  Settings,
-  SettingsError,
-  ContainerSettings,
-  EveryEnvironmentSettings,
-} from "@cloudpid/config";
+import { Settings, SettingsError, ContainerSettings, GlobalSettings } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -60,25 +55,22 @@ export type TitleSource = typeof TitleSource.Type;
 /** An Environment's id: what its Workspaces and Sessions are bound to. New ones get eight hex digits. */
 export const EnvironmentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
 
-/** Where a Secret is kept (`docs/architecture/agent-capabilities.md` → Secrets): an Environment's id, or null for every Environment. */
+/** Where a Secret is kept (`docs/architecture/agent-capabilities.md` → Secrets): an Environment's id, or null at Global. */
 export const SecretScope = Schema.NullOr(EnvironmentId);
 
 /**
- * The scope of the Agent changes of the Secrets, variables and Skills kept for every Environment (`docs/architecture/agent-changes.md`),
- * where an Environment's are kept under its id, and the scope the Skills kept for every Environment
+ * The scope of the Agent changes of the Secrets, variables and Skills kept Global (`docs/architecture/agent-changes.md`),
+ * where an Environment's are kept under its id, and the scope the Skills kept Global
  * themselves are kept under (ADR-0026). No Environment id can be it.
  */
-export const EVERY_ENVIRONMENT_SCOPE = "*";
+export const GLOBAL_SCOPE = "*";
 
 /**
  * Whose Agent changes `listAgentChanges` lists and `revertAgentChange` reverts, and whose Skills `listEnvironmentSkills`,
  * `removeEnvironmentSkill` and `skillChangeFiles` answer, and into which `installEnvironmentSkills` installs: an
- * Environment's, or those of every Environment.
+ * Environment's, or those of Global.
  */
-export const AgentChangeScope = Schema.Union([
-  EnvironmentId,
-  Schema.Literal(EVERY_ENVIRONMENT_SCOPE),
-]);
+export const AgentChangeScope = Schema.Union([EnvironmentId, Schema.Literal(GLOBAL_SCOPE)]);
 
 /**
  * The Environment a Session is made in when it names none: it is there from the start, has no Repos until the owner
@@ -355,17 +347,17 @@ export const ContainerSettingsState = Schema.Struct({
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
 
 /**
- * The settings kept for every Environment in force (`docs/architecture/container.md` → Container settings),
- * and the overrides they come from. Each Workspace of every Environment applies them at its next Container launch.
+ * The settings kept Global in force (`docs/architecture/container.md` → Container settings),
+ * and the overrides they come from. Every Workspace applies them at its next Container launch.
  */
-export const EveryEnvironmentSettingsState = Schema.Struct({
-  settings: EveryEnvironmentSettings,
+export const GlobalSettingsState = Schema.Struct({
+  settings: GlobalSettings,
   overrides: Schema.Json,
   /** Why the saved overrides were only partly used, when some no longer resolve: the rest still apply. */
   problem: Schema.optionalKey(Schema.String),
 });
 
-export type EveryEnvironmentSettingsState = typeof EveryEnvironmentSettingsState.Type;
+export type GlobalSettingsState = typeof GlobalSettingsState.Type;
 
 const VARIABLE_FIELD = "variables.";
 
@@ -393,7 +385,7 @@ export const SETTINGS_SCOPE = "settings";
 export const AgentChange = Schema.Struct({
   /** Its number, which grows with each change in the Registry. */
   id: Schema.Finite,
-  /** The Environment's id, or `EVERY_ENVIRONMENT_SCOPE` for a Secret, variable or Skill kept for every Environment. */
+  /** The Environment's id, or `GLOBAL_SCOPE` for a Secret, variable or Skill kept Global. */
   scope: Schema.String,
   at: Schema.Finite,
   /** Who made it: the agent, or the owner reverting an Agent change. */
@@ -576,7 +568,7 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { id: Schema.String },
     error: Schema.Union([SessionNotFound, SessionActionError]),
   }),
-  /** Every Environment, the default one included, newest first. */
+  /** All Environments, the default one included, newest first. */
   Rpc.make("listEnvironments", { success: Schema.Array(EnvironmentRecord) }),
   /** Make an Environment, with no Repos and the default Container settings. The name must be free, whatever the case. */
   Rpc.make("createEnvironment", {
@@ -638,20 +630,20 @@ export class RegistryRpcs extends RpcGroup.make(
     success: ContainerSettingsState,
     error: EnvironmentError,
   }),
-  /** The settings kept for every Environment in force (the variables), and their overrides. */
-  Rpc.make("getEveryEnvironmentSettings", { success: EveryEnvironmentSettingsState }),
+  /** The settings kept Global in force (the variables), and their overrides. */
+  Rpc.make("getGlobalSettings", { success: GlobalSettingsState }),
   /**
-   * Replace the saved overrides of the settings kept for every Environment. Overrides that do not resolve, or that
+   * Replace the saved overrides of the settings kept Global. Overrides that do not resolve, or that
    * would give any Environment more than 50 variables with its own, fail with an `EnvironmentError` whose message lists
    * each problem, and nothing is saved. Each Workspace applies them at its next Container start.
    */
-  Rpc.make("updateEveryEnvironmentSettings", {
+  Rpc.make("updateGlobalSettings", {
     payload: { overrides: Schema.Json },
-    success: EveryEnvironmentSettingsState,
+    success: GlobalSettingsState,
     error: EnvironmentError,
   }),
   /**
-   * Every Secret kept for an Environment or for every Environment (`docs/architecture/agent-capabilities.md` → Secrets): names, scopes, build
+   * Every Secret kept for an Environment or Global (`docs/architecture/agent-capabilities.md` → Secrets): names, scopes, build
    * flags and times, never a value.
    */
   Rpc.make("listEnvironmentSecrets", { success: Schema.Array(EnvironmentSecretRecord) }),
@@ -683,8 +675,8 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * The files before and after Agent change `change` of a Skill of `environment` (or of `*`, the Skills kept for every
-   * Environment; `docs/architecture/agent-changes.md`), with their texts, for the Skills page to show as diffs. Fails
+   * The files before and after Agent change `change` of a Skill of `environment` (or of `*`, the Skills kept
+   * Global; `docs/architecture/agent-changes.md`), with their texts, for the Skills page to show as diffs. Fails
    * with an `EnvironmentError` when the scope has no such change, or it is not a Skill's.
    */
   Rpc.make("skillChangeFiles", {
@@ -693,7 +685,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * The Skills kept for an Environment, or for every Environment (`*`; ADR-0026), by name, each with its description
+   * The Skills kept for an Environment, or Global (`*`; ADR-0026), by name, each with its description
    * and when it was saved.
    */
   Rpc.make("listEnvironmentSkills", {
@@ -702,7 +694,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * The files the Registry keeps for Skill `name` of an Environment, or of every Environment (`*`), with their texts, by
+   * The files the Registry keeps for Skill `name` of an Environment, or of Global (`*`), with their texts, by
    * path: what the Skills page shows of a Skill with no Skill source. Fails with an `EnvironmentError` when the scope
    * keeps no Skill of the name.
    */
@@ -712,8 +704,8 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Remove a Skill kept for an Environment, or for every Environment (`*`): the owner's own save, with no Approval. Its
-   * Workspaces stop serving it at their next readying (the Skill of the name kept for every Environment, if any, is
+   * Remove a Skill kept for an Environment, or Global (`*`): the owner's own save, with no Approval. Its
+   * Workspaces stop serving it at their next readying (the Skill of the name kept Global, if any, is
    * served again). Fails with an `EnvironmentError` when the scope keeps no Skill of the name.
    */
   Rpc.make("removeEnvironmentSkill", {
@@ -721,7 +713,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Update Skills kept for an Environment, or for every Environment (`*`), to the latest commit of each one's recorded ref
+   * Update Skills kept for an Environment, or Global (`*`), to the latest commit of each one's recorded ref
    * (ADR-0026): `names` the Skills (absent: every one marked update available), each fetched by the Registry as the GitHub
    * App and kept in place of itself with its new Skill source, unless the agent edited it (**modified**) and `overwrite` is
    * not set. The owner's own save: not an Agent change, no Approval, not revertible. Answers how each Skill went
@@ -738,7 +730,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Install Skills for an Environment, or for every Environment (`*`), from a GitHub `source` (`owner/repo`,
+   * Install Skills for an Environment, or Global (`*`), from a GitHub `source` (`owner/repo`,
    * `owner/repo@skill`, or a GitHub URL: ADR-0026), fetched by the Registry as the GitHub App and pinned to the commit the
    * ref resolved to; each is kept with its Skill source, in place of one of its name, if it passes a save's checks (not an
    * Agent change, as an owner's save is not, and with no Approval for `*`: it is the owner's own). `skills`
@@ -848,7 +840,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: SkillRepoError,
   }),
   /**
-   * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The
+   * Keep a Secret for `environment` (null: Global), or replace the value of the one kept under `name`. The
    * value is sealed in the Registry and never comes back. `build` says whether it reaches the Environment's Build;
    * left out, a new Secret does not, and a replaced one keeps its flag. A value that is empty, holds a NUL or is over
    * `MAX_ENVIRONMENT_SECRET_BYTES`, an Environment that does not exist, or a scope already holding
@@ -865,7 +857,7 @@ export class RegistryRpcs extends RpcGroup.make(
     success: EnvironmentSecretRecord,
     error: EnvironmentError,
   }),
-  /** Say whether a kept Secret reaches the Environment's Build (each Environment's, for one kept for every Environment). */
+  /** Say whether a kept Secret reaches the Environment's Build (each Environment's, for one kept Global). */
   Rpc.make("setEnvironmentSecretBuild", {
     payload: { environment: SecretScope, name: SecretName, build: Schema.Boolean },
     success: EnvironmentSecretRecord,
@@ -889,7 +881,7 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { environment: EnvironmentId },
     error: EnvironmentError,
   }),
-  /** Every Workspace, of every Environment, newest first. */
+  /** Every Workspace, of all Environments, newest first. */
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
   /**
    * The draft composer's catalog, before there is a Session to ask (`docs/architecture/client-and-protocol.md` → Session list → New session): the

@@ -326,7 +326,7 @@ describe("where a Skill's page says it is installed", () => {
   );
 
   it.effect(
-    "is every Environment and each Environment that keeps a copy, with its marks, Update and Remove",
+    "is Global and each Environment that keeps a copy, with its marks, Update and Remove",
     () =>
       Effect.gen(function* () {
         const markup = yield* render(
@@ -335,7 +335,7 @@ describe("where a Skill's page says it is installed", () => {
               found(
                 view({
                   installed: {
-                    everyEnvironment: true,
+                    global: true,
                     environments: ["work"],
                     updateAvailable: true,
                   },
@@ -359,8 +359,8 @@ describe("where a Skill's page says it is installed", () => {
         const body = text(markup);
 
         // The header's badges, and a section for each scope with a copy.
-        expect(body).toContain("Installed · every environment");
-        expect(body).toContain("Every environment");
+        expect(body).toContain("Installed · Global");
+        expect(body).toContain("Global");
         expect(body).toContain("Work");
         expect(body).not.toContain("Default");
         expect(body).toContain("update available");

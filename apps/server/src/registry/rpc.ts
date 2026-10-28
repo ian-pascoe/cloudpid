@@ -51,7 +51,7 @@ import { removals } from "./removal.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import {
   type EnvironmentNaming,
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   type SessionRecord,
   type SessionRefusal,
   type SubagentOwner,
@@ -166,7 +166,7 @@ export const legacyCleanup = (
 /** The upkeep of the Environments' spare Workspaces (`spareUpkeep`). Neither ever fails: what goes wrong is logged. */
 export type Spares = {
   /**
-   * Keep every Environment's spare current. Once a run finds nothing to do, this isolate does no more, until a run of
+   * Keep each Environment's spare current. Once a run finds nothing to do, this isolate does no more, until a run of
    * `of` fails.
    */
   readonly all: Effect.Effect<void>;
@@ -410,13 +410,16 @@ export const serveRegistryRpc = <R = never>(
 
     /** Where a Secret is kept, in words. */
     const scopeWords = (environment: string | null) =>
-      environment === null ? "every environment" : `environment "${environment}"`;
+      environment === null ? "Global" : `environment "${environment}"`;
+
+    const keptWords = (environment: string | null) =>
+      environment === null ? "kept Global" : `kept for ${scopeWords(environment)}`;
 
     /**
-     * After a Secret or a variable kept for every Environment changed: every Environment's Build is looked at again
+     * After a Secret or a variable kept Global changed: each Environment's Build is looked at again
      * (their key covers the Secrets and variables a Build gets).
      */
-    const everyEnvironmentChanged = () =>
+    const globalChanged = () =>
       registry
         .listEnvironments()
         .pipe(
@@ -427,10 +430,10 @@ export const serveRegistryRpc = <R = never>(
 
     /**
      * After a kept Secret changed: the Builds it may reach are looked at again (their key covers the Secrets a Build
-     * gets), each Environment's for one kept for every Environment.
+     * gets), each Environment's for one kept Global.
      */
     const secretChanged = (environment: string | null) =>
-      environment === null ? everyEnvironmentChanged() : background(builds.of(environment));
+      environment === null ? globalChanged() : background(builds.of(environment));
 
     /**
      * The Workspace whose files a Fork or Clone carries to a new one (`fresh`), after checking the Git branch asked for;
@@ -770,14 +773,14 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
-      getEveryEnvironmentSettings: () => registry.getEveryEnvironmentSettings(),
-      updateEveryEnvironmentSettings: ({ overrides }) =>
-        registry.updateEveryEnvironmentSettings({ overrides }).pipe(
+      getGlobalSettings: () => registry.getGlobalSettings(),
+      updateGlobalSettings: ({ overrides }) =>
+        registry.updateGlobalSettings({ overrides }).pipe(
           Effect.flatMap((update) => {
             switch (update.status) {
               case "saved":
-                // A Build is made with the variables, so every Environment's is looked at again.
-                return everyEnvironmentChanged().pipe(Effect.as(update.state));
+                // A Build is made with the variables, so each Environment's is looked at again.
+                return globalChanged().pipe(Effect.as(update.state));
               // Overrides that do not resolve say why, one problem per line, and nothing was saved.
               case "rejected":
                 return failed(update.message);
@@ -796,20 +799,17 @@ export const serveRegistryRpc = <R = never>(
                 // A Skill is not part of a Build: its Workspaces take the set at their next readying.
                 if (fieldSkill(revert.change.field) !== null) return Effect.succeed(revert.change);
 
-                // A variable put back: as after the owner's save, every Environment's Build is looked at again.
-                if (
-                  environment === EVERY_ENVIRONMENT_SCOPE &&
-                  fieldVariable(revert.change.field) !== null
-                ) {
-                  return everyEnvironmentChanged().pipe(Effect.as(revert.change));
+                // A variable put back: as after the owner's save, each Environment's Build is looked at again.
+                if (environment === GLOBAL_SCOPE && fieldVariable(revert.change.field) !== null) {
+                  return globalChanged().pipe(Effect.as(revert.change));
                 }
 
                 // A Build mark put back: as after the owner's switch, the Builds the Secret may reach are looked at
-                // again, each Environment's for one kept for every Environment (scope `*`).
+                // again, each Environment's for one kept Global (scope `*`).
                 if (fieldSecret(revert.change.field) !== null) {
-                  return secretChanged(
-                    environment === EVERY_ENVIRONMENT_SCOPE ? null : environment,
-                  ).pipe(Effect.as(revert.change));
+                  return secretChanged(environment === GLOBAL_SCOPE ? null : environment).pipe(
+                    Effect.as(revert.change),
+                  );
                 }
 
                 // As after the owner's save: the variables are among what a Build is made with. A Repo put back or
@@ -879,7 +879,7 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
-      // Fetched by the Registry as the GitHub App; each Workspace of the Environment (of every Environment, for `*`) is
+      // Fetched by the Registry as the GitHub App; each Workspace of the Environment (of all Environments, for `*`) is
       // handed its Skill set with the Skills at its next readying. The owner's install is not an Agent change, as the
       // owner's removal is not.
       installEnvironmentSkills: ({ environment, source, skills, folders }) =>
@@ -1052,7 +1052,7 @@ export const serveRegistryRpc = <R = never>(
                 return failed(noEnvironment(environment ?? ""));
               case "full":
                 return failed(
-                  `At most ${MAX_ENVIRONMENT_SECRETS} Secrets are kept for ${scopeWords(environment)}: delete one first`,
+                  `At most ${MAX_ENVIRONMENT_SECRETS} Secrets are ${keptWords(environment)}: delete one first`,
                 );
             }
           }),
@@ -1060,7 +1060,7 @@ export const serveRegistryRpc = <R = never>(
       setEnvironmentSecretBuild: ({ environment, name, build }) =>
         registry.setEnvironmentSecretBuild({ environment, name, build }).pipe(
           Effect.filterOrFail(Predicate.isNotNull, () =>
-            failed(`No Secret ${name} is kept for ${scopeWords(environment)}`),
+            failed(`No Secret ${name} is ${keptWords(environment)}`),
           ),
           Effect.tap(() => secretChanged(environment)),
         ),
@@ -1071,7 +1071,7 @@ export const serveRegistryRpc = <R = never>(
             Effect.flatMap((deleted) =>
               deleted
                 ? secretChanged(environment)
-                : failed(`No Secret ${name} is kept for ${scopeWords(environment)}`),
+                : failed(`No Secret ${name} is ${keptWords(environment)}`),
             ),
           ),
       listWorkspaces: () => registry.listWorkspaces(),

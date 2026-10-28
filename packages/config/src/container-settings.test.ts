@@ -6,8 +6,8 @@ import {
   compareInstances,
   containerInstance,
   DEFAULT_CONTAINER_SETTINGS,
-  DEFAULT_EVERY_ENVIRONMENT_SETTINGS,
-  everyEnvironmentOverridesFrom,
+  DEFAULT_GLOBAL_SETTINGS,
+  globalOverridesFrom,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
   INSTANCE_RESOURCES,
@@ -20,8 +20,8 @@ import {
   mergedVariablesProblem,
   resolveContainerSettings,
   resolveContainerSettingsLeniently,
-  resolveEveryEnvironmentSettings,
-  resolveEveryEnvironmentSettingsLeniently,
+  resolveGlobalSettings,
+  resolveGlobalSettingsLeniently,
   containerOverridesFrom,
   currentFieldValue,
   currentInstanceName,
@@ -30,9 +30,9 @@ import {
   scriptProblem,
   toolchainsProblem,
   type ContainerSettings,
-  type EveryEnvironmentSettings,
+  type GlobalSettings,
   variableNameProblem,
-  withEveryEnvironmentVariables,
+  withGlobalVariables,
 } from "./container-settings.ts";
 
 const NONE = {
@@ -535,64 +535,60 @@ describe("resolveContainerSettingsLeniently", () => {
 const variables = (count: number, prefix = "V"): Record<string, string> =>
   Record.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}`, "x"]));
 
-const resolvedEvery = (overrides: Schema.Json): EveryEnvironmentSettings => {
-  const result = resolveEveryEnvironmentSettings(overrides);
+const resolvedGlobal = (overrides: Schema.Json): GlobalSettings => {
+  const result = resolveGlobalSettings(overrides);
 
   if (Result.isFailure(result)) throw new Error(result.failure.message);
 
   return result.success;
 };
 
-const rejectedEvery = (overrides: Schema.Json): string => {
-  const result = resolveEveryEnvironmentSettings(overrides);
+const rejectedGlobal = (overrides: Schema.Json): string => {
+  const result = resolveGlobalSettings(overrides);
 
   if (Result.isSuccess(result)) throw new Error("Expected the overrides to be rejected");
 
   return result.failure.message;
 };
 
-describe("EveryEnvironmentSettings", () => {
+describe("GlobalSettings", () => {
   it("has no variables by default, which is what no overrides resolve to", () => {
-    expect(DEFAULT_EVERY_ENVIRONMENT_SETTINGS).toEqual({ variables: {} });
-    expect(resolvedEvery({})).toEqual(DEFAULT_EVERY_ENVIRONMENT_SETTINGS);
+    expect(DEFAULT_GLOBAL_SETTINGS).toEqual({ variables: {} });
+    expect(resolvedGlobal({})).toEqual(DEFAULT_GLOBAL_SETTINGS);
   });
 
   it("takes variables under an Environment's rules", () => {
-    expect(resolvedEvery({ variables: { EMAIL: "a@b.c" } }).variables).toEqual({
+    expect(resolvedGlobal({ variables: { EMAIL: "a@b.c" } }).variables).toEqual({
       EMAIL: "a@b.c",
     });
 
     for (const name of ["PATH", "CLOUDPID_X", "1A"]) {
-      expect(rejectedEvery({ variables: { [name]: "x" } }), name).toContain("variables");
+      expect(rejectedGlobal({ variables: { [name]: "x" } }), name).toContain("variables");
     }
 
-    expect(rejectedEvery({ variables: { A: "a".repeat(4097) } })).toContain("variables");
-    expect(rejectedEvery({ variables: { A: "a\u0000b" } })).toContain("variables");
-    expect(rejectedEvery({ variables: variables(MAX_VARIABLES + 1) })).toContain("variables");
-    expect(resolvedEvery({ variables: variables(MAX_VARIABLES) }).variables).toEqual(
+    expect(rejectedGlobal({ variables: { A: "a".repeat(4097) } })).toContain("variables");
+    expect(rejectedGlobal({ variables: { A: "a\u0000b" } })).toContain("variables");
+    expect(rejectedGlobal({ variables: variables(MAX_VARIABLES + 1) })).toContain("variables");
+    expect(resolvedGlobal({ variables: variables(MAX_VARIABLES) }).variables).toEqual(
       variables(MAX_VARIABLES),
     );
   });
 
   it("refuses a key it does not know when it is saved, and drops only that key when it is read", () => {
-    expect(rejectedEvery({ idleMinutes: 5 })).toContain("idleMinutes");
-    expect(
-      resolveEveryEnvironmentSettingsLeniently({ idleMinutes: 5, variables: { A: "1" } }),
-    ).toEqual({
+    expect(rejectedGlobal({ idleMinutes: 5 })).toContain("idleMinutes");
+    expect(resolveGlobalSettingsLeniently({ idleMinutes: 5, variables: { A: "1" } })).toEqual({
       settings: { variables: { A: "1" } },
       dropped: [expect.stringContaining("idleMinutes")],
     });
-    expect(
-      resolveEveryEnvironmentSettingsLeniently({ variables: { PATH: "/bin" } }).settings,
-    ).toEqual(DEFAULT_EVERY_ENVIRONMENT_SETTINGS);
-    expect(resolveEveryEnvironmentSettingsLeniently("nonsense").settings).toEqual(
-      DEFAULT_EVERY_ENVIRONMENT_SETTINGS,
+    expect(resolveGlobalSettingsLeniently({ variables: { PATH: "/bin" } }).settings).toEqual(
+      DEFAULT_GLOBAL_SETTINGS,
     );
+    expect(resolveGlobalSettingsLeniently("nonsense").settings).toEqual(DEFAULT_GLOBAL_SETTINGS);
   });
 
   it("keeps only what differs from the defaults, so no variables is {}", () => {
-    expect(everyEnvironmentOverridesFrom(DEFAULT_EVERY_ENVIRONMENT_SETTINGS)).toEqual({});
-    expect(everyEnvironmentOverridesFrom({ variables: { A: "1" } })).toEqual({
+    expect(globalOverridesFrom(DEFAULT_GLOBAL_SETTINGS)).toEqual({});
+    expect(globalOverridesFrom({ variables: { A: "1" } })).toEqual({
       variables: { A: "1" },
     });
   });
@@ -605,33 +601,33 @@ describe("mergedVariablesProblem", () => {
     expect(mergedVariablesProblem(variables(40), variables(20))).toBeUndefined();
   });
 
-  it("says how many of the variables for every Environment it does not override push it past the limit", () => {
+  it("says how many of the variables at Global it does not override push it past the limit", () => {
     expect(mergedVariablesProblem(variables(46), variables(7, "W"))).toBe(
-      "with the 7 variables for every Environment it does not override, it would have 53: at most 50",
+      "with the 7 variables at Global it does not override, it would have 53: at most 50",
     );
-    expect(mergedVariablesProblem(variables(50), { W: "1" })).toContain("the 1 variable for");
+    expect(mergedVariablesProblem(variables(50), { W: "1" })).toContain("the 1 variable at");
   });
 });
 
-describe("withEveryEnvironmentVariables", () => {
-  it("puts the variables for every Environment under the Environment's own", () => {
+describe("withGlobalVariables", () => {
+  it("puts the variables at Global under the Environment's own", () => {
     const settings = { ...DEFAULT_CONTAINER_SETTINGS, variables: { A: "own", B: "own" } };
 
-    expect(withEveryEnvironmentVariables(settings, { A: "every", C: "every" })).toEqual({
+    expect(withGlobalVariables(settings, { A: "every", C: "every" })).toEqual({
       ...settings,
       variables: { A: "own", B: "own", C: "every" },
     });
   });
 
-  it("answers the settings themselves for no variables for every Environment, so a Build's key stays", () => {
+  it("answers the settings themselves for no variables at Global, so a Build's key stays", () => {
     const settings = { ...DEFAULT_CONTAINER_SETTINGS, variables: { A: "own" } };
 
-    expect(withEveryEnvironmentVariables(settings, {})).toBe(settings);
+    expect(withGlobalVariables(settings, {})).toBe(settings);
   });
 
   it(`keeps at most ${MAX_VARIABLES}, the Environment's own first and the others by name`, () => {
     const settings = { ...DEFAULT_CONTAINER_SETTINGS, variables: variables(48) };
-    const merged = withEveryEnvironmentVariables(settings, { Z: "1", Y: "1", X: "1" });
+    const merged = withGlobalVariables(settings, { Z: "1", Y: "1", X: "1" });
 
     expect(Record.keys(merged.variables)).toHaveLength(MAX_VARIABLES);
     expect(merged.variables).toEqual({ ...variables(48), X: "1", Y: "1" });

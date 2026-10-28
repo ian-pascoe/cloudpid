@@ -5,23 +5,19 @@ import { secretBuildField } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import {
-  EVERY_ENVIRONMENT_ID,
-  EVERY_ENVIRONMENT_NAME,
-  type SecretMarks,
-} from "./environment-secret-marks.ts";
+import { GLOBAL_ID, GLOBAL_NAME, type SecretMarks } from "./environment-secret-marks.ts";
 
 /** A mark that fails when called, for a fake that serves the other tools only. */
 export const unusedSecretMarks: SecretMarks = {
   markSecret: () => Effect.die("markSecret is not used here"),
 };
 
-/** A Secret kept in the fake: for an Environment's id, or `EVERY_ENVIRONMENT_ID`. */
+/** A Secret kept in the fake: for an Environment's id, or `GLOBAL_ID`. */
 export type KeptMark = { scope: string; name: string; build: boolean };
 
 /**
  * Marks over Environments `default` (named Default) and `0000abcd` (named Other), and these kept Secrets: API_KEY for
- * Default, marked for the Build, and NPM_TOKEN for every Environment, not marked.
+ * Default, marked for the Build, and NPM_TOKEN at Global, not marked.
  */
 export const fakeSecretMarks = () => {
   const names = new Map([
@@ -31,7 +27,7 @@ export const fakeSecretMarks = () => {
 
   const kept: KeptMark[] = [
     { scope: "default", name: "API_KEY", build: true },
-    { scope: EVERY_ENVIRONMENT_ID, name: "NPM_TOKEN", build: false },
+    { scope: GLOBAL_ID, name: "NPM_TOKEN", build: false },
   ];
 
   const calls: Array<{ environment: string; name: string; build: boolean; tool: string }> = [];
@@ -40,8 +36,8 @@ export const fakeSecretMarks = () => {
   const service: SecretMarks = {
     markSecret: ({ environment, name, build, author }) =>
       Effect.sync(() => {
-        const every = environment === EVERY_ENVIRONMENT_ID;
-        const known = every ? EVERY_ENVIRONMENT_NAME : names.get(environment);
+        const isGlobal = environment === GLOBAL_ID;
+        const known = isGlobal ? GLOBAL_NAME : names.get(environment);
 
         if (known === undefined) return { status: "missing" as const };
 

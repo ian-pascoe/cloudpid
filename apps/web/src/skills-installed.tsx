@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of sections, Skills and files are native arrays.
 
 // The Skills page's Installed tab (ADR-0026, docs/architecture/workspace.md → Installing from GitHub): the Skills kept
-// for every Environment and each Environment's own, or only one scope's (`?environment=`), each with its marks, Update,
+// at Global and each Environment's own, or only one scope's (`?environment=`), each with its marks, Update,
 // Remove, the form that adds Skills from GitHub or a skills.sh search, a viewer of the files of a Skill with no Skill
 // source, and the Skills' Agent changes with their file diffs and Revert. Everything here is the owner's own change, so
 // it waits for no Approval.
@@ -30,7 +30,7 @@ import { failureOf, settledFailureOf } from "./registry.ts";
 import { skillsParamsAtom, skillsPath } from "./router.ts";
 import { sessionListAtom } from "./sessions.ts";
 import { environmentListAtom, environmentsErrorAtom } from "./environments-state.ts";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import {
   environmentSkillsAtom,
   installSkillsAtom,
@@ -60,7 +60,7 @@ const skillMdFirst = (files: ReadonlyArray<SkillFile>): ReadonlyArray<SkillFile>
 ];
 
 /**
- * Confirm removing Skill `name` from Environment `id` (or `EVERY_ENVIRONMENT`: the Skills kept for every Environment),
+ * Confirm removing Skill `name` from Environment `id` (or `GLOBAL`: the Skills kept Global),
  * after saying what follows. It is the owner's own change, so it waits for no Approval.
  */
 const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
@@ -78,17 +78,17 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
-      {id === EVERY_ENVIRONMENT ? (
+      {id === GLOBAL ? (
         <p className="text-sm">
-          Every environment's workspaces stop serving it at their next readying, except those of an
+          Each environment's workspaces stop serving it at their next readying, except those of an
           environment that keeps its own skill of the same name. Sessions already running keep it in
           their skills list until their next context window.
         </p>
       ) : (
         <p className="text-sm">
           Its workspaces stop serving it at their next readying, and the skill of the same name kept
-          for every environment, if any, is served again. Sessions already running keep it in their
-          skills list until their next context window.
+          at Global, if any, is served again. Sessions already running keep it in their skills list
+          until their next context window.
         </p>
       )}
       <p className="text-sm">
@@ -117,7 +117,7 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
 };
 
 /**
- * Confirm updating Skill `skill.name` of Environment `id` (or `EVERY_ENVIRONMENT`) to the latest commit of the ref it was
+ * Confirm updating Skill `skill.name` of Environment `id` (or `GLOBAL`) to the latest commit of the ref it was
  * installed from, after saying what follows. It is the owner's own change, so it waits for no Approval, and it is no
  * agent change, so it has no revert; a Skill the agent edited since it was installed has the edits replaced.
  */
@@ -140,8 +140,8 @@ const UpdateSkillDialog = ({ id, skill }: { id: string; skill: EnvironmentSkill 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
       <p className="text-sm">
-        {id === EVERY_ENVIRONMENT
-          ? "Every environment's workspaces serve the new files at their next readying, except those of an environment that keeps its own skill of the same name."
+        {id === GLOBAL
+          ? "Each environment's workspaces serve the new files at their next readying, except those of an environment that keeps its own skill of the same name."
           : "Its workspaces serve the new files at their next readying."}{" "}
         Sessions already running keep the old description in their skills list until their next
         context window.
@@ -324,7 +324,7 @@ const SkillSearchResults = ({ id, installing }: { id: string; installing: boolea
 };
 
 /**
- * The form that adds Skills to Environment `id` (or, with `EVERY_ENVIRONMENT`, to every Environment) from GitHub, on the
+ * The form that adds Skills to Environment `id` (or, with `GLOBAL`, to Global) from GitHub, on the
  * owner's word: a source (`owner/repo`, `owner/repo@skill` or a GitHub URL), or a search of skills.sh. A source that holds
  * several Skills lists them to tick.
  * The Registry fetches it as the GitHub App, pinned to a commit.
@@ -360,7 +360,7 @@ const AddSkillsForm = ({ id }: { id: string }) => {
     <div className="flex flex-col gap-2">
       <form onSubmit={submit} className="flex flex-col gap-1.5">
         <label htmlFor={inputId} className="text-xs font-medium text-muted-foreground">
-          Add skills from GitHub{id === EVERY_ENVIRONMENT ? " for every environment" : ""}
+          Add skills from GitHub{id === GLOBAL ? " at Global" : ""}
         </label>
         <div className="flex flex-wrap gap-2">
           <Input
@@ -427,7 +427,7 @@ const AddSkillsForm = ({ id }: { id: string }) => {
 };
 
 /**
- * The files the Registry keeps for Skill `name` of Environment `id` (or `EVERY_ENVIRONMENT`), read-only, `SKILL.md` and
+ * The files the Registry keeps for Skill `name` of Environment `id` (or `GLOBAL`), read-only, `SKILL.md` and
  * then the others by path: what a Skill with no Skill source has to show, as no repo holds it.
  */
 const SkillFilesViewer = ({ id, name }: { id: string; name: string }) => {
@@ -600,26 +600,26 @@ export const SkillDialogs = ({
 };
 
 /**
- * The Skills Environment `id` keeps (ADR-0026), or `EVERY_ENVIRONMENT` those kept for every Environment: each one's
+ * The Skills Environment `id` keeps (ADR-0026), or `GLOBAL` those kept Global: each one's
  * name, description and when it was saved, with its Skill source when it was installed from GitHub, and a removal
- * behind a confirmation. The agent saves them (those for every Environment only with your Approval) and installs them
+ * behind a confirmation. The agent saves them (those at Global only with your Approval) and installs them
  * for an Environment, and so does the owner's form; every Workspace of the Environment serves them read-only. An
- * Environment's section names the Skills it gets from every Environment, and which of its own win.
+ * Environment's section names the Skills it gets from Global, and which of its own win.
  */
 export const SkillsSection = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSkillsAtom(id));
-  const everywhere = id === EVERY_ENVIRONMENT;
-  const every = useAtomValue(environmentSkillsAtom(EVERY_ENVIRONMENT));
+  const atGlobal = id === GLOBAL;
+  const globalSkills = useAtomValue(environmentSkillsAtom(GLOBAL));
   const skills = loaded.pipe(AsyncResult.value, Option.getOrNull);
   const loadError = failureOf(loaded);
   const [viewing, setViewing] = useAtom(skillFilesDialogAtom(id));
 
   const { inherited, overridden } =
-    everywhere || skills === null
+    atGlobal || skills === null
       ? { inherited: [], overridden: [] }
       : inheritedSkills(
           skills,
-          every.pipe(
+          globalSkills.pipe(
             AsyncResult.value,
             Option.getOrElse(() => []),
           ),
@@ -628,15 +628,15 @@ export const SkillsSection = ({ id }: { id: string }) => {
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-xs font-medium text-muted-foreground">
-        {everywhere ? "Skills for every environment" : "Skills"}
+        {atGlobal ? "Global skills" : "Skills"}
       </h3>
       {skills === null ? (
         <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
       ) : skills.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          {everywhere
-            ? "None kept for every environment. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install and the id *, and you approve it in its session."
-            : "None of its own: its workspaces serve those kept for every environment. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install."}
+          {atGlobal
+            ? "None kept Global. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install and the id *, and you approve it in its session."
+            : "None of its own: its workspaces serve those kept Global. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install."}
         </p>
       ) : (
         <ul className="flex flex-col gap-1">
@@ -678,13 +678,12 @@ export const SkillsSection = ({ id }: { id: string }) => {
       )}
       {inherited.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          Also from every environment: <span className="font-mono">{inherited.join(", ")}</span>
+          Also from Global: <span className="font-mono">{inherited.join(", ")}</span>
         </p>
       )}
       {overridden.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          Overriding the one for every environment:{" "}
-          <span className="font-mono">{overridden.join(", ")}</span>
+          Overrides the Global one: <span className="font-mono">{overridden.join(", ")}</span>
         </p>
       )}
       <AddSkillsForm id={id} />
@@ -707,7 +706,7 @@ export const SkillsSection = ({ id }: { id: string }) => {
 const SKILL_CHANGES_EMPTY = "The agent has changed no skill here.";
 
 /**
- * The section of one scope's Skills (an Environment's own, or `EVERY_ENVIRONMENT`'s): its title, what it says of them
+ * The section of one scope's Skills (an Environment's own, or `GLOBAL`'s): its title, what it says of them
  * (`children`), the list with its forms, and the Skills' Agent changes.
  */
 const ScopeSection = ({
@@ -718,7 +717,7 @@ const ScopeSection = ({
 }: {
   id: string;
   title: string;
-  /** The Sessions whose Agent changes the section may link: the Environment's, or every one for `EVERY_ENVIRONMENT`. */
+  /** The Sessions whose Agent changes the section may link: the Environment's, or every one for `GLOBAL`. */
   sessions: readonly SessionRecord[];
   children?: ReactNode;
 }) => (
@@ -750,7 +749,7 @@ const filterText = (
 };
 
 /**
- * The Installed tab: the Skills kept for every Environment, then each Environment's own, or only the scope
+ * The Installed tab: the Skills kept Global, then each Environment's own, or only the scope
  * `?environment=` names (an Environment's id, or `*`), with a link back to all of them.
  */
 export const InstalledTab = () => {
@@ -762,8 +761,8 @@ export const InstalledTab = () => {
 
   // What the filter names, said above the sections; undefined while the Environment list loads, or lacks it.
   const named =
-    filter === EVERY_ENVIRONMENT
-      ? "every environment"
+    filter === GLOBAL
+      ? "Global"
       : environments?.find((environment) => environment.id === filter)?.name;
 
   return (
@@ -780,11 +779,11 @@ export const InstalledTab = () => {
         </p>
       )}
       <DialogProblem problem={listError} />
-      {/* The Skills kept for every Environment need no Environment list; an Environment's section waits for it. */}
-      {scopes.includes(EVERY_ENVIRONMENT) && (
-        <ScopeSection id={EVERY_ENVIRONMENT} title="For every environment" sessions={sessions}>
+      {/* The Skills kept Global need no Environment list; an Environment's section waits for it. */}
+      {scopes.includes(GLOBAL) && (
+        <ScopeSection id={GLOBAL} title="Global" sessions={sessions}>
           <p className="text-xs text-muted-foreground">
-            A skill kept here is served read-only in every environment's workspaces at their next
+            A skill kept here is served read-only in each environment's workspaces at their next
             readying. It steers every future session, so the agent's save, install or removal of one
             waits for your Approval in its session. An environment's own skill of the same name wins
             in that environment. Adding or removing one here is your own change: it waits for

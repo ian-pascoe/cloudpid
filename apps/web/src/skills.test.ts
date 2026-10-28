@@ -18,17 +18,17 @@ import {
   updateOutcomeLines,
 } from "./skills.ts";
 
-describe("the Skills an Environment gets from every Environment", () => {
+describe("the Skills an Environment gets from Global", () => {
   const skill = (name: string) => ({ name, description: `What ${name} does.`, savedAt: 1 });
 
-  it("are those kept for every Environment that it keeps none of its own of the name, by name", () => {
-    const every = [skill("review"), skill("release"), skill("triage")];
+  it("are those kept Global that it keeps none of its own of the name, by name", () => {
+    const globalSkills = [skill("review"), skill("release"), skill("triage")];
 
-    expect(inheritedSkills([skill("release")], every)).toEqual({
+    expect(inheritedSkills([skill("release")], globalSkills)).toEqual({
       inherited: ["review", "triage"],
       overridden: ["release"],
     });
-    expect(inheritedSkills([], every)).toEqual({
+    expect(inheritedSkills([], globalSkills)).toEqual({
       inherited: ["release", "review", "triage"],
       overridden: [],
     });
@@ -92,17 +92,15 @@ describe("a Skill's source and the outcome of an install", () => {
 describe("the line an Environment's card shows of its Skills", () => {
   const skill = (name: string) => ({ name, description: `What ${name} does.`, savedAt: 1 });
 
-  it("counts the Skills its Workspaces serve: its own, and those it gets from every Environment", () => {
+  it("counts the Skills its Workspaces serve: its own, and those it gets from Global", () => {
     expect(skillCountText([], [])).toBe("No skills");
     expect(skillCountText([skill("a")], [])).toBe("1 skill");
     expect(skillCountText([skill("a"), skill("b")], [skill("b")])).toBe("2 skills");
-    expect(skillCountText([skill("a")], [skill("b"), skill("c")])).toBe(
-      "3 skills, 2 from every environment",
-    );
-    expect(skillCountText([], [skill("b")])).toBe("1 skill, 1 from every environment");
+    expect(skillCountText([skill("a")], [skill("b"), skill("c")])).toBe("3 skills, 2 from Global");
+    expect(skillCountText([], [skill("b")])).toBe("1 skill, 1 from Global");
   });
 
-  it("counts those kept for every Environment on their own card", () => {
+  it("counts those kept Global on their own card", () => {
     expect(skillCountText([skill("a"), skill("b")])).toBe("2 skills");
     expect(skillCountText([])).toBe("No skills");
   });
@@ -118,11 +116,11 @@ describe("the sections the Installed tab shows", () => {
 
   const known = [environment("default"), environment("work")];
 
-  it("are every Environment's, then each Environment's, without a filter", () => {
+  it("are each Environment's, then each Environment's, without a filter", () => {
     expect(installedScopes(known, undefined)).toEqual(["*", "default", "work"]);
   });
 
-  it("are the one Environment named, or those kept for every Environment for *", () => {
+  it("are the one Environment named, or those kept Global for *", () => {
     expect(installedScopes(known, "work")).toEqual(["work"]);
     expect(installedScopes(known, "*")).toEqual(["*"]);
   });
@@ -146,15 +144,15 @@ describe("directoryBadges", () => {
     expect(directoryBadges(undefined)).toEqual([]);
   });
 
-  it("says every environment, or in how many Environments, and update available", () => {
+  it("says Global, or in how many Environments, and update available", () => {
     expect(
-      directoryBadges({ everyEnvironment: true, environments: ["work"], updateAvailable: false }),
-    ).toEqual(["Installed · every environment"]);
+      directoryBadges({ global: true, environments: ["work"], updateAvailable: false }),
+    ).toEqual(["Installed · Global"]);
+    expect(directoryBadges({ global: false, environments: ["a"], updateAvailable: false })).toEqual(
+      ["Installed · in 1 environment"],
+    );
     expect(
-      directoryBadges({ everyEnvironment: false, environments: ["a"], updateAvailable: false }),
-    ).toEqual(["Installed · in 1 environment"]);
-    expect(
-      directoryBadges({ everyEnvironment: false, environments: ["a", "b"], updateAvailable: true }),
+      directoryBadges({ global: false, environments: ["a", "b"], updateAvailable: true }),
     ).toEqual(["Installed · in 2 environments", "update available"]);
   });
 });

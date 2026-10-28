@@ -30,7 +30,7 @@ describe("installedIn", () => {
     expect(installedIn(installed, { repo: "o/skills", skillId: "grill-me" })).toBeUndefined();
   });
 
-  it("says every Environment, and lists the Environments that keep their own, in order", () => {
+  it("says Global, and lists the Environments that keep their own, in order", () => {
     const installed = [
       ref("work", "o/skills", "skills/grill-me"),
       ref("*", "o/skills", "skills/grill-me"),
@@ -39,7 +39,7 @@ describe("installedIn", () => {
     ];
 
     expect(installedIn(installed, { repo: "o/skills", skillId: "grill-me" })).toEqual({
-      everyEnvironment: true,
+      global: true,
       environments: ["default", "work"],
       updateAvailable: false,
     });
@@ -49,7 +49,7 @@ describe("installedIn", () => {
     const installed = [ref("work", "Mattpocock/Skills", "skills/productivity/Grill_Me")];
 
     expect(installedIn(installed, { repo: "mattpocock/skills", skillId: "grill-me" })).toEqual({
-      everyEnvironment: false,
+      global: false,
       environments: ["work"],
       updateAvailable: false,
     });
@@ -59,7 +59,7 @@ describe("installedIn", () => {
     const installed = [ref("*", "o/one", "", { name: "one-skill" })];
 
     expect(installedIn(installed, { repo: "o/one", skillId: "one-skill" })).toMatchObject({
-      everyEnvironment: true,
+      global: true,
     });
     expect(installedIn(installed, { repo: "o/one", skillId: "another" })).toBeUndefined();
   });
@@ -77,11 +77,11 @@ describe("installedIn", () => {
         repo: "vercel-labs/agent-skills",
         skillId: "vercel-react-best-practices",
       }),
-    ).toMatchObject({ everyEnvironment: true });
+    ).toMatchObject({ global: true });
     // Its folder's name finds it too, as an install resolves it; another Skill of the repo is not it.
     expect(
       installedIn(installed, { repo: "vercel-labs/agent-skills", skillId: "react-best-practices" }),
-    ).toMatchObject({ everyEnvironment: true });
+    ).toMatchObject({ global: true });
     expect(
       installedIn(installed, { repo: "vercel-labs/agent-skills", skillId: "composition-patterns" }),
     ).toBeUndefined();
@@ -94,12 +94,12 @@ describe("installedIn", () => {
     ];
 
     expect(installedIn(installed, { repo: "o/skills", skillId: "foo" })).toEqual({
-      everyEnvironment: false,
+      global: false,
       environments: ["work"],
       updateAvailable: false,
     });
     expect(installedIn(installed, { repo: "o/skills", skillId: "bar" })).toMatchObject({
-      everyEnvironment: true,
+      global: true,
     });
   });
 
@@ -107,7 +107,7 @@ describe("installedIn", () => {
     const installed = [ref("*", "o/skills", "a/tdd"), ref("work", "o/skills", "b/tdd")];
 
     expect(installedIn(installed, { repo: "o/skills", path: "b/tdd" })).toEqual({
-      everyEnvironment: false,
+      global: false,
       environments: ["work"],
       updateAvailable: false,
     });
@@ -135,7 +135,7 @@ describe("withInstalled", () => {
     expect(withInstalled(rows, [ref("*", "o/skills", "skills/tdd")])).toEqual([
       {
         ...rows[0],
-        installed: { everyEnvironment: true, environments: [], updateAvailable: false },
+        installed: { global: true, environments: [], updateAvailable: false },
       },
       rows[1],
     ]);

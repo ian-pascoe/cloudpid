@@ -675,7 +675,7 @@ export const leakReason = (hits: ReadonlyArray<ScanHit>): string => {
 
   // A value that is not secret is a variable, not a Secret: only the message says so, not what the scan finds.
   const hint = hits.some(({ found }) => found.some((label) => label !== TOKEN_LABEL))
-    ? "; a value that is not secret belongs in the variables (kept for the Environment or for every Environment)"
+    ? "; a value that is not secret belongs in the variables (kept for the Environment or Global)"
     : "";
 
   return `${files.join("; ")}${more}${hint}`;

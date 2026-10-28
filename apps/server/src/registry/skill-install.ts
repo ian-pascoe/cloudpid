@@ -1,4 +1,4 @@
-// Installing Skills from GitHub into an Environment, or for every Environment (ADR-0026, `docs/architecture/workspace.md` →
+// Installing Skills from GitHub into an Environment, or Global (ADR-0026, `docs/architecture/workspace.md` →
 // _Installing from GitHub_): fetch the source's Skills at one commit (`../github/skill-fetch.ts`), then keep each as a save keeps a Skill, with its Skill
 // source (repo, the Skill's path, the ref named, the commit). The agent's install records each Skill it keeps as an Agent
 // change; the owner's, from the Skills page, as the owner's save, records none. The fetch is the only part that
@@ -108,7 +108,7 @@ const readSkills = async (
 };
 
 /**
- * Install into `environment` (an Environment's id, or `*` for every Environment) the Skills of `source` that `skills`
+ * Install into `environment` (an Environment's id, or `*` at Global) the Skills of `source` that `skills`
  * names (`["*"]` for every one it holds; absent: the only one it holds, else the list of them), read through `reader` at
  * one commit. By `author` as Agent changes, or with no author as the owner's install, which records none. The caller
  * hands the Session's own Workspace the new Skill set after.
@@ -227,7 +227,7 @@ export const installSkills = async (
 
 /**
  * What `installSkills` would do with the same source and Skills, checked as it checks them, with nothing kept or
- * recorded: the Approval card of an install for every Environment shows it before the owner is asked. More than
+ * recorded: the Approval card of an install at Global shows it before the owner is asked. More than
  * `MAX_APPROVED_SKILLS` Skills are refused before any Skill's files are read.
  */
 export const previewSkillInstall = async (

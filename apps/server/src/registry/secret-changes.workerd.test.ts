@@ -1,6 +1,6 @@
 // Agent changes to kept Secrets over real Durable Object SQLite (docs/architecture/agent-capabilities.md → Secrets, docs/architecture/agent-changes.md): a Secret the
 // owner keeps in a `secret_ask` form is saved and recorded by name only, the Build mark the agent sets is recorded with
-// the mark before and after, and the history of the Secrets kept for every Environment is the scope `*`.
+// the mark before and after, and the history of the Secrets kept Global is the scope `*`.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { runInDurableObject } from "cloudflare:test";
@@ -13,7 +13,7 @@ import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./a
 import { keepSecretAs, openEnvironmentSecrets, type SecretKept } from "./environment-secrets.ts";
 import { deleteSecretAs, markSecretBuildAs } from "./secret-changes.ts";
 import { noSkills, type TestRegistry } from "./store.fixture.ts";
-import { EVERY_ENVIRONMENT_SCOPE, openRegistryStore } from "./store.ts";
+import { GLOBAL_SCOPE, openRegistryStore } from "./store.ts";
 
 const MASTER = "test-master-key-0123456789abcdef0123456789";
 const VALUE = "sk-live-0123456789abcdef";
@@ -145,15 +145,17 @@ describe("a Secret the owner keeps in a secret_ask form", () => {
     expect(dump).not.toContain(VALUE);
   });
 
-  it("is recorded in the history of every Environment, scope *, when kept for all of them", async () => {
-    const [kept, everyHistory, environmentHistory] = await inRegistry(async ({ keep, changes }) => [
-      await keep("NPM_TOKEN", null),
-      changes.list(EVERY_ENVIRONMENT_SCOPE),
-      changes.list(DEFAULT_ENVIRONMENT),
-    ]);
+  it("is recorded in the history of Global, scope *, when kept Global", async () => {
+    const [kept, globalHistory, environmentHistory] = await inRegistry(
+      async ({ keep, changes }) => [
+        await keep("NPM_TOKEN", null),
+        changes.list(GLOBAL_SCOPE),
+        changes.list(DEFAULT_ENVIRONMENT),
+      ],
+    );
 
     expect(kept).toMatchObject({ status: "kept", record: { environment: null } });
-    expect(everyHistory).toMatchObject([
+    expect(globalHistory).toMatchObject([
       { scope: "*", field: "secrets.NPM_TOKEN", before: null, after: "kept" },
     ]);
     expect(environmentHistory).toEqual([]);
@@ -178,14 +180,14 @@ describe("a Secret the owner keeps in a secret_ask form", () => {
     expect(marks).toMatchObject([{ name: "API_KEY", build: true }]);
   });
 
-  it("says when the Environment's own Secret of the name wins over one kept for every Environment", async () => {
-    const [every, own] = await inRegistry(async ({ keep }) => {
+  it("says when the Environment's own Secret of the name wins over one kept Global", async () => {
+    const [atGlobal, own] = await inRegistry(async ({ keep }) => {
       await keep("API_KEY", DEFAULT_ENVIRONMENT);
 
       return [await keep("API_KEY", null), await keep("OTHER", null)];
     });
 
-    expect(every).toMatchObject({ status: "kept", shadowed: true });
+    expect(atGlobal).toMatchObject({ status: "kept", shadowed: true });
     expect(own).toMatchObject({ status: "kept", shadowed: false });
   });
 
@@ -243,22 +245,22 @@ describe("the agent's change of a kept Secret's Build mark", () => {
     expect(stored).toMatchObject([{ name: "API_KEY", build: true, updatedAt: 2_000 }]);
   });
 
-  it("changes a Secret kept for every Environment with the scope *, recorded in its history", async () => {
-    const [marked, every, own] = await inRegistry(async ({ keep, mark, changes }) => {
+  it("changes a Secret kept Global with the scope *, recorded in its history", async () => {
+    const [marked, atGlobal, own] = await inRegistry(async ({ keep, mark, changes }) => {
       await keep("NPM_TOKEN", null);
 
       return [
-        mark(EVERY_ENVIRONMENT_SCOPE, "NPM_TOKEN", true),
-        changes.list(EVERY_ENVIRONMENT_SCOPE).map(({ field }) => field),
+        mark(GLOBAL_SCOPE, "NPM_TOKEN", true),
+        changes.list(GLOBAL_SCOPE).map(({ field }) => field),
         changes.list(DEFAULT_ENVIRONMENT),
       ];
     });
 
     expect(marked).toMatchObject({
       status: "changed",
-      environment: { id: "*", name: "every Environment" },
+      environment: { id: "*", name: "Global" },
     });
-    expect(every).toEqual(["secrets.NPM_TOKEN.build", "secrets.NPM_TOKEN"]);
+    expect(atGlobal).toEqual(["secrets.NPM_TOKEN.build", "secrets.NPM_TOKEN"]);
     expect(own).toEqual([]);
   });
 
@@ -268,7 +270,7 @@ describe("the agent's change of a kept Secret's Build mark", () => {
         await keep("NPM_TOKEN", null);
 
         return [
-          mark(EVERY_ENVIRONMENT_SCOPE, "NPM_TOKEN", false),
+          mark(GLOBAL_SCOPE, "NPM_TOKEN", false),
           mark(DEFAULT_ENVIRONMENT, "GHOST", true),
           mark(DEFAULT_ENVIRONMENT, "NPM_TOKEN", true),
           mark("ffff0000", "NPM_TOKEN", true),
@@ -279,7 +281,7 @@ describe("the agent's change of a kept Secret's Build mark", () => {
 
     expect(same).toMatchObject({ status: "unchanged", build: false });
     expect(absent).toMatchObject({ status: "absent" });
-    // A Secret kept for every Environment is not the Environment's own.
+    // A Secret kept Global is not the Environment's own.
     expect(wrongScope).toMatchObject({ status: "absent" });
     expect(missing).toEqual({ status: "missing" });
     expect(listed).toEqual([]);
@@ -315,12 +317,12 @@ describe("the agent's change of a kept Secret's Build mark", () => {
     expect(history).toMatchObject({ actor: "owner", reverts: 2 });
   });
 
-  it("is reverted for a Secret kept for every Environment, through the scope *", async () => {
+  it("is reverted for a Secret kept Global, through the scope *", async () => {
     const [reverted, mark] = await inRegistry(async ({ keep, mark, revert, store }) => {
       await keep("NPM_TOKEN", null);
-      mark(EVERY_ENVIRONMENT_SCOPE, "NPM_TOKEN", true);
+      mark(GLOBAL_SCOPE, "NPM_TOKEN", true);
 
-      return [revert(EVERY_ENVIRONMENT_SCOPE, 2), store.listEnvironmentSecrets()[0]?.build];
+      return [revert(GLOBAL_SCOPE, 2), store.listEnvironmentSecrets()[0]?.build];
     });
 
     expect(reverted).toMatchObject({ status: "reverted", change: { scope: "*" } });
@@ -458,7 +460,7 @@ describe("a kept Secret the agent deletes with the owner's Approval", () => {
     expect(deleted).toMatchObject({ status: "deleted" });
   });
 
-  it("deletes a Secret kept for every Environment in the scope *", async () => {
+  it("deletes a Secret kept Global in the scope *", async () => {
     const [deleted, left] = await inRegistry(async ({ keep, store, changes }) => {
       await keep("NPM_TOKEN", null);
 
@@ -467,7 +469,7 @@ describe("a kept Secret the agent deletes with the owner's Approval", () => {
           { transactionSync: (body) => body() },
           store,
           changes,
-          { environment: EVERY_ENVIRONMENT_SCOPE, name: "NPM_TOKEN", author: approved },
+          { environment: GLOBAL_SCOPE, name: "NPM_TOKEN", author: approved },
           2_000,
         ),
         store.listEnvironmentSecrets(),

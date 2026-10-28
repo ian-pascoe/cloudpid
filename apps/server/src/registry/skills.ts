@@ -1,9 +1,9 @@
-// The Skills kept for an Environment, and for every Environment (ADR-0026, `docs/architecture/workspace.md` → The Environment's own Skills):
+// The Skills kept for an Environment, and Global (ADR-0026, `docs/architecture/workspace.md` → The Environment's own Skills):
 // kept in the Registry DO's SQLite, each file's text once per content hash (`skill_files`), shared by the Skills kept
-// now (`skills`, by scope, an Environment's id or `*` for every Environment, and name) and the Agent changes that saved
+// now (`skills`, by scope, an Environment's id or `*` at Global, and name) and the Agent changes that saved
 // or removed one (their files before and after, by hash, under the same scope). Text that neither refers to any more is
-// dropped when the history is pruned. The Registry merges an Environment's own Skills over those kept for every
-// Environment, into the Skill set its Workspaces serve (empty where none is kept), and
+// dropped when the history is pruned. The Registry merges an Environment's own Skills over those kept
+// Global, into the Skill set its Workspaces serve (empty where none is kept), and
 // hands it to a Workspace whose set's hash differs. Synchronous over SQLite, as the store is, but for the hashes, which
 // are made before a transaction.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
@@ -18,7 +18,7 @@ import {
 import { MAX_SKILLS, readFrontmatter } from "@cloudpid/extensions/skills-discovery";
 import {
   type AgentChange,
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   fieldSkill,
   SkillChangeValue,
   type SkillExpectation,
@@ -433,21 +433,21 @@ export type MergedSkills = {
 };
 
 /**
- * The layers of `environment`'s Skill set, nearest first: its own Skills, then those kept for every Environment (an
- * Environment's own of a name hides the one kept for every Environment). The Skills kept for every Environment are the
+ * The layers of `environment`'s Skill set, nearest first: its own Skills, then those kept Global (an
+ * Environment's own of a name hides the one kept Global). The Skills kept Global are the
  * only layer of their own scope.
  */
 export const skillLayers = (
   skills: Skills,
   environment: string,
 ): ReadonlyArray<ReadonlyArray<StoredSkill>> =>
-  environment === EVERY_ENVIRONMENT_SCOPE
-    ? [skills.list(EVERY_ENVIRONMENT_SCOPE)]
-    : [skills.list(environment), skills.list(EVERY_ENVIRONMENT_SCOPE)];
+  environment === GLOBAL_SCOPE
+    ? [skills.list(GLOBAL_SCOPE)]
+    : [skills.list(environment), skills.list(GLOBAL_SCOPE)];
 
 /**
- * The Skill set of `layers` (the scopes' Skills, nearest first: an Environment's own, then those kept for every
- * Environment): a Skill of a nearer layer hides the others of its name. Its hash is that of every file's path and
+ * The Skill set of `layers` (the scopes' Skills, nearest first: an Environment's own, then those kept
+ * Global): a Skill of a nearer layer hides the others of its name. Its hash is that of every file's path and
  * content hash, in order, so with no Skill in any layer it is the empty set's (`EMPTY_SKILL_SET_HASH`), and a Workspace
  * that holds the empty set is handed nothing.
  */
@@ -575,7 +575,7 @@ type SetContext = {
  * Why the Skill sets are refused once `change` is made to the Skills kept in `scope` (an Environment's id, or `*`), or
  * undefined when they are not: more than `MAX_SKILLS` Skills, or more than `MAX_SKILL_SET_BYTES`, every layer counted
  * (`contents`: the texts of the files not kept yet). A change to an Environment's Skills checks that
- * Environment's set; one to those kept for every Environment checks every Environment's, and the set of an
+ * Environment's set; one to those kept Global checks each Environment's, and the set of an
  * Environment keeping none of its own, and the message names the first that would pass, as ADR-0023 does for variables.
  */
 const setProblem = (
@@ -584,18 +584,18 @@ const setProblem = (
   change: Change,
   contents: ReadonlyMap<string, string> = new Map(),
 ): string | undefined => {
-  const every = skills.list(EVERY_ENVIRONMENT_SCOPE);
+  const globalSkills = skills.list(GLOBAL_SCOPE);
 
-  if (scope !== EVERY_ENVIRONMENT_SCOPE) {
+  if (scope !== GLOBAL_SCOPE) {
     return sizeProblem(
       skills,
       "The Environment's Skill set",
-      [withChange(skills.list(scope), change), every],
+      [withChange(skills.list(scope), change), globalSkills],
       contents,
     );
   }
 
-  const kept = withChange(every, change);
+  const kept = withChange(globalSkills, change);
 
   // An Environment with none of its own Skills (a new one, or one that removes its override) serves these alone.
   const alone = sizeProblem(
@@ -626,15 +626,14 @@ const refusedToKeep = (problem: string): string => `${problem}: remove a Skill f
 
 /**
  * Why taking Skill `name` out of `scope` is refused, or undefined when it is not. Taking a Skill out only grows a set
- * where the Skill of its name kept for every Environment, which an Environment's own Skill hides, is served in its
- * place, so that is what is checked: the sets that would then be served. A Skill kept for every Environment hides
+ * where the Skill of its name kept Global, which an Environment's own Skill hides, is served in its
+ * place, so that is what is checked: the sets that would then be served. A Skill kept Global hides
  * nothing.
  */
 const refusedToTakeOut = (context: SetContext, scope: string, name: string): string | undefined => {
   const { skills } = context;
 
-  const exposed =
-    scope !== EVERY_ENVIRONMENT_SCOPE && skills.get(EVERY_ENVIRONMENT_SCOPE, name) !== null;
+  const exposed = scope !== GLOBAL_SCOPE && skills.get(GLOBAL_SCOPE, name) !== null;
 
   const problem = exposed ? setProblem(context, scope, { name, files: null }) : undefined;
 
@@ -663,13 +662,13 @@ const changeValue = ({
 const decodeChangeValue = Schema.decodeUnknownOption(SkillChangeValue);
 
 /**
- * Why the Registry refuses an agent's change to the Skills kept for every Environment that was made with no Approval, or
+ * Why the Registry refuses an agent's change to the Skills kept Global that was made with no Approval, or
  * undefined when it may go on. The Session asks the owner first and passes what they were shown (`expected`, or an
  * install's `pin`), so a call without it is not one that asked: a second guard, for a caller that skips the first.
  */
-export const unapprovedEveryChange = (scope: string, approved: boolean): string | undefined =>
-  scope === EVERY_ENVIRONMENT_SCOPE && !approved
-    ? "a change to the Skills kept for every Environment is made only against what the owner approved (no Approval was passed): nothing was changed"
+export const unapprovedGlobalChange = (scope: string, approved: boolean): string | undefined =>
+  scope === GLOBAL_SCOPE && !approved
+    ? "a change to the Skills kept Global is made only against what the owner approved (no Approval was passed): nothing was changed"
     : undefined;
 
 /** The files an Agent change of a Skill records, or null where there were none (or the value is not a Skill's). */
@@ -678,7 +677,7 @@ export const changeFiles = (value: AgentChange["before"]): HashedFiles | null =>
     ? null
     : Option.getOrNull(Option.map(decodeChangeValue(value), ({ files }) => files));
 
-/** An Environment, or every Environment (id `*`), as a Skill's change names it. */
+/** An Environment, or Global (id `*`), as a Skill's change names it. */
 export type SkillScope = SecretScope;
 
 /** The Skill source an Agent change of a Skill records, or null where it recorded none. */
@@ -703,10 +702,10 @@ export type SkillSave =
       readonly environment: SkillScope;
       readonly change: AgentChange;
       readonly skill: StoredSkill;
-      /** Whether it is an Environment's own Skill that hides the one of the name kept for every Environment. */
+      /** Whether it is an Environment's own Skill that hides the one of the name kept Global. */
       readonly inherited: boolean;
       /**
-       * For a Skill kept for every Environment: the Environments whose own Skill of the name hides it, so it does not
+       * For a Skill kept Global: the Environments whose own Skill of the name hides it, so it does not
        * reach them. None for an Environment's own.
        */
       readonly overriddenIn: ReadonlyArray<SkillScope>;
@@ -725,9 +724,9 @@ export type SkillRemoval =
       readonly status: "removed";
       readonly environment: SkillScope;
       readonly change: AgentChange;
-      /** Whether the Skill of the name kept for every Environment is served in its place, for an Environment's own. */
+      /** Whether the Skill of the name kept Global is served in its place, for an Environment's own. */
       readonly inherited: boolean;
-      /** For a Skill kept for every Environment: the Environments whose own Skill of the name stays served there. */
+      /** For a Skill kept Global: the Environments whose own Skill of the name stays served there. */
       readonly overriddenIn: ReadonlyArray<SkillScope>;
     }
   /** The scope keeps no Skill of the name: nothing was recorded. */
@@ -776,7 +775,7 @@ export type SkillChangeContext = {
 
 /** A Skill to keep: its folder, its files (hashed beforehand), and where it was installed from, if it was. */
 export type SkillToKeep = {
-  /** An Environment's id, or `*` for every Environment. */
+  /** An Environment's id, or `*` at Global. */
   readonly environment: string;
   readonly folder: string;
   readonly files: SkillFiles;
@@ -806,7 +805,7 @@ type SavePlan =
 /**
  * Check the save of `skill` (its files hashed beforehand, `hashFiles`): as `checkSkill` checks it, refused when a Skill
  * set would hold more than `MAX_SKILLS` Skills or `MAX_SKILL_SET_BYTES` (those of every Environment, for one kept for
- * every Environment). The same files as kept (and the same source, when one is given) are `unchanged`, and not refused
+ * Global). The same files as kept (and the same source, when one is given) are `unchanged`, and not refused
  * for the size.
  */
 const planSave = (
@@ -911,7 +910,7 @@ export const previewSkillSave = (
 
 /**
  * The agent saves the Skill in folder `folder` with `files` (hashed beforehand, `hashFiles`) for `environment` (an
- * Environment's id, or `*` for every Environment), in place of one of its name: checked as `previewSkillSave` checks
+ * Environment's id, or `*` at Global), in place of one of its name: checked as `previewSkillSave` checks
  * it; installed from GitHub when `source` is given. Recorded as an Agent change by `author` under the same scope, with
  * the files before (none for a new Skill) and after; the same files as kept record nothing. With `expected`, only while
  * the Skill of the name was last saved then (`null`: none kept), which the owner's Approval was asked against.
@@ -965,19 +964,19 @@ export const saveSkillAs = (
 
 /**
  * What a change to Skill `name` in `scope` (an Environment's id, or `*`) meets in the layers around it, once it is made:
- * whether the Skill of the name kept for every Environment does, for an Environment's own (`inherited`), and, for one
- * kept for every Environment, the Environments whose own Skill of the name hides it (`overriddenIn`).
+ * whether the Skill of the name kept Global does, for an Environment's own (`inherited`), and, for one
+ * kept Global, the Environments whose own Skill of the name hides it (`overriddenIn`).
  */
 const layersAround = (
   { store, skills }: SetContext & { readonly store: SkillStore },
   scope: string,
   name: string,
 ) => {
-  const everywhere = scope === EVERY_ENVIRONMENT_SCOPE;
+  const atGlobal = scope === GLOBAL_SCOPE;
 
   return {
-    inherited: !everywhere && skills.get(EVERY_ENVIRONMENT_SCOPE, name) !== null,
-    overriddenIn: everywhere
+    inherited: !atGlobal && skills.get(GLOBAL_SCOPE, name) !== null,
+    overriddenIn: atGlobal
       ? Arr.flatMap(store.listEnvironments(), ({ id, name: environmentName }) =>
           skills.get(id, name) === null ? [] : [{ id, name: environmentName }],
         )
@@ -1164,7 +1163,7 @@ const descriptionOf = (text: string | undefined): string => {
 
 /**
  * The owner's revert of `change`, a save or removal of Skill `name` in `environment` (an Environment's id, or `*` for
- * every Environment): the files before written back (a save of a new Skill is removed, a removal brings the Skill
+ * Global): the files before written back (a save of a new Skill is removed, a removal brings the Skill
  * back), recorded as the owner's change, under the same scope. It is the owner's own save, so it waits for no Approval.
  * Refused when the Skill no longer has the files the change gave it, or bringing it back would take a Skill set (every
  * Environment's, for the scope `*`) past its limits.

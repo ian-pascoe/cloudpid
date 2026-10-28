@@ -9,7 +9,7 @@ import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { environmentListAtom } from "./environments-state.ts";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import { RegistryClient } from "./registry.ts";
 import { environmentSkillsAtom, type SkillsToInstall } from "./skills-state.ts";
 import { copiesOfSkill } from "./skills.ts";
@@ -74,7 +74,7 @@ export const skillToInstall = (skill: SkillView, ref: string | undefined): Skill
 
 /** One scope that keeps a copy of a Skill: the scope, and all of its Skills (what its Update and Remove dialogs look in). */
 export interface SkillCopies {
-  /** The Environment's id, or `EVERY_ENVIRONMENT`. */
+  /** The Environment's id, or `GLOBAL`. */
   readonly scope: string;
   readonly skills: readonly EnvironmentSkill[];
   /** The scope's Skills that came from this Skill. */
@@ -94,14 +94,14 @@ export interface InstalledCopiesKey {
 }
 
 /**
- * The copies of the Skill kept for every Environment and by each Environment, matched by their Skill source's repo and
+ * The copies of the Skill kept Global and by each Environment, matched by their Skill source's repo and
  * folder (as the badges are, never by name alone), from the same lists the Installed tab shows, so Update and Remove
  * there and here act on one state and a change shows at once on both.
  */
 export const installedCopiesAtom = Atom.family(({ repo, path }: InstalledCopiesKey) =>
   Atom.readable((get): InstalledCopies => {
     const environments = get(environmentListAtom);
-    const scopes = [EVERY_ENVIRONMENT, ...(environments ?? []).map(({ id }) => id)];
+    const scopes = [GLOBAL, ...(environments ?? []).map(({ id }) => id)];
     const found: SkillCopies[] = [];
     let loading = environments === null;
 

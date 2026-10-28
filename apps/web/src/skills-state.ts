@@ -1,8 +1,8 @@
 // The Skills page's state (ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the tab it shows, the Skills
-// each Environment keeps and those kept for every Environment, what the owner does to them on the Installed tab
+// each Environment keeps and those kept Global, what the owner does to them on the Installed tab
 // (install from GitHub or a skills.sh search, update, remove), the files of a Skill's Agent change and of a Skill with no
 // Skill source, and the state of the tab's forms and dialogs. Each family is keyed by scope: an Environment's id, or
-// `EVERY_ENVIRONMENT` for the Skills kept for every Environment. The Skill directory's lists and search, and the install
+// `GLOBAL` for the Skills kept Global. The Skill directory's lists and search, and the install
 // target picker the rows (and, later, a repo's and a Skill's page) open, are here too.
 
 import type { SkillDirectoryView } from "@cloudpid/protocol";
@@ -10,7 +10,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import { changing, RegistryClient } from "./registry.ts";
 import { skillsParamsAtom, type SkillsTab } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
@@ -18,7 +18,7 @@ import { visibleTickAtom } from "./sessions.ts";
 import { installSource } from "./skills.ts";
 
 /**
- * Whether any Environment, or every Environment, keeps a Skill: asked once while the Skills page is open, never again,
+ * Whether any Environment, or Global, keeps a Skill: asked once while the Skills page is open, never again,
  * so that an install made from the page does not change which tab is the default under the owner. A failure is an answer
  * too: the Installed tab is where the page says what went wrong.
  */
@@ -28,7 +28,7 @@ export const anySkillInstalledAtom = appRuntime.atom(
       const environments = yield* registry("listEnvironments", undefined);
 
       const kept = yield* Effect.forEach(
-        [EVERY_ENVIRONMENT, ...Arr.map(environments, ({ id }) => id)],
+        [GLOBAL, ...Arr.map(environments, ({ id }) => id)],
         (environment) => registry("listEnvironmentSkills", { environment }),
         { concurrency: "unbounded" },
       );
@@ -79,7 +79,7 @@ export interface SkillUpdateRequest {
 }
 
 /**
- * Update Skill `name` of Environment `id` (or `EVERY_ENVIRONMENT`) to the latest commit of its ref, on the owner's word:
+ * Update Skill `name` of Environment `id` (or `GLOBAL`) to the latest commit of its ref, on the owner's word:
  * no Approval, and no Agent change, so no revert. It answers how the Skill went; the Skills list, and the badges of the
  * pages that show where a Skill is installed (the `skill-badges` key), ask again either way.
  */
@@ -188,7 +188,7 @@ export interface SkillKey {
   readonly name: string;
 }
 
-/** The key of Skill `name` of `environment` (or `EVERY_ENVIRONMENT`), so equal keys are equal values, as a family compares them. */
+/** The key of Skill `name` of `environment` (or `GLOBAL`), so equal keys are equal values, as a family compares them. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a plain constructor of a key, called from React.
 export const skillKey = (environment: string, name: string): SkillKey => ({ environment, name });
 
@@ -259,7 +259,7 @@ export interface SkillsToInstall {
  */
 export const skillsToInstallAtom = Atom.make<SkillsToInstall | null>(null);
 
-/** An install the target picker makes: `skills` of `source`, into Environment `target` or, for `EVERY_ENVIRONMENT`, every Environment. */
+/** An install the target picker makes: `skills` of `source`, into Environment `target` or, for `GLOBAL`, Global. */
 export interface SkillInstallToTarget extends SkillsToInstall {
   readonly target: string;
 }

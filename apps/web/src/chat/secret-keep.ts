@@ -1,6 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off
 // What the owner can do with the Secrets they enter in a masked form (`docs/architecture/agent-capabilities.md` → Secrets): hold them for the
-// Session, or keep them for its Environment or for every Environment. The agent's `keep` only pre-selects one; the
+// Session, or keep them for its Environment or Global. The agent's `keep` only pre-selects one; the
 // form always offers all three and the owner's choice is final.
 import { SecretKeep, type SecretRequest } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -14,7 +14,7 @@ export const KEEP_FIELD = "keep";
 export const KEEP_CHOICES = [
   { value: "session", label: "This Session only" },
   { value: "environment", label: "Keep for this Environment" },
-  { value: "all", label: "Keep for every Environment" },
+  { value: "all", label: "Keep at Global" },
 ] as const satisfies ReadonlyArray<{ readonly value: SecretKeep; readonly label: string }>;
 
 /** The choice the form starts on: the agent's suggestion, else the Session only. */
@@ -33,7 +33,7 @@ export const keepNote = (keep: SecretKeep, lifetimeMinutes: number): string => {
     case "environment":
       return "Saved encrypted for this Environment, as on the Environments page: it does not expire, and a Build can use it where marked.";
     case "all":
-      return "Saved encrypted for every Environment, as on the Environments page: it does not expire, and an Environment's own Secret of the name wins.";
+      return "Saved encrypted at Global, as on the Environments page: it does not expire, and an Environment's own Secret of the name wins.";
   }
 };
 

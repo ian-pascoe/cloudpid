@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { describe, expect, it } from "@effect/vitest";
 import { revertAgentChangeAtom } from "./environments-state.ts";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import { settledFailureOf } from "./registry.ts";
 import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
 import { searchAtom } from "./router.ts";
@@ -187,7 +187,7 @@ const directory = () => {
             : {
                 ...row,
                 installed: {
-                  everyEnvironment: where.some(({ environment }) => environment === "*"),
+                  global: where.some(({ environment }) => environment === "*"),
                   environments: where.flatMap(({ environment }) =>
                     environment === "*" ? [] : [environment],
                   ),
@@ -310,46 +310,44 @@ describe("the Skill directory's lists", () => {
 });
 
 describe("installing from the Skill directory", () => {
-  it.effect(
-    "sends `*` for every Environment, and the picked Skill only, and the row's badge follows",
-    () =>
-      Effect.gen(function* () {
-        const { handlers, installs } = directory();
-        const registry = registryWith(handlers);
-        const first = skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0));
+  it.effect("sends `*` at Global, and the picked Skill only, and the row's badge follows", () =>
+    Effect.gen(function* () {
+      const { handlers, installs } = directory();
+      const registry = registryWith(handlers);
+      const first = skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0));
 
-        registry.mount(first);
-        registry.mount(installToTargetAtom);
+      registry.mount(first);
+      registry.mount(installToTargetAtom);
 
-        const before = AsyncResult.getOrThrow(yield* settled(registry, first));
+      const before = AsyncResult.getOrThrow(yield* settled(registry, first));
 
-        expect(before.skills.every((skill) => skill.installed === undefined)).toBe(true);
+      expect(before.skills.every((skill) => skill.installed === undefined)).toBe(true);
 
-        registry.set(installToTargetAtom, {
-          target: EVERY_ENVIRONMENT,
-          source: "mattpocock/skills",
-          skills: ["grill-me"],
-        });
+      registry.set(installToTargetAtom, {
+        target: GLOBAL,
+        source: "mattpocock/skills",
+        skills: ["grill-me"],
+      });
 
-        const answer = AsyncResult.getOrThrow(yield* settled(registry, installToTargetAtom));
+      const answer = AsyncResult.getOrThrow(yield* settled(registry, installToTargetAtom));
 
-        expect(answer).toMatchObject({ status: "installed", skills: [{ name: "grill-me" }] });
-        // The source holds more Skills; only the picked one is named.
-        expect(installs).toEqual([
-          { environment: "*", source: "mattpocock/skills", skills: ["grill-me"] },
-        ]);
+      expect(answer).toMatchObject({ status: "installed", skills: [{ name: "grill-me" }] });
+      // The source holds more Skills; only the picked one is named.
+      expect(installs).toEqual([
+        { environment: "*", source: "mattpocock/skills", skills: ["grill-me"] },
+      ]);
 
-        // The list asks again, so the badge updates.
-        const after = AsyncResult.getOrThrow(yield* settled(registry, first));
+      // The list asks again, so the badge updates.
+      const after = AsyncResult.getOrThrow(yield* settled(registry, first));
 
-        expect(after.skills.find(({ skillId }) => skillId === "grill-me")?.installed).toEqual({
-          everyEnvironment: true,
-          environments: [],
-          updateAvailable: false,
-        });
-        expect(after.skills.find(({ skillId }) => skillId === "tdd")?.installed).toBeUndefined();
-        registry.dispose();
-      }),
+      expect(after.skills.find(({ skillId }) => skillId === "grill-me")?.installed).toEqual({
+        global: true,
+        environments: [],
+        updateAvailable: false,
+      });
+      expect(after.skills.find(({ skillId }) => skillId === "tdd")?.installed).toBeUndefined();
+      registry.dispose();
+    }),
   );
 
   it.effect("sends the Environment's id for one Environment, and the row says in how many", () =>
@@ -375,7 +373,7 @@ describe("installing from the Skill directory", () => {
         { environment: "work", source: "mattpocock/skills", skills: ["tdd"] },
       ]);
       expect(after.skills.find(({ skillId }) => skillId === "tdd")?.installed).toEqual({
-        everyEnvironment: false,
+        global: false,
         environments: ["work"],
         updateAvailable: false,
       });
@@ -540,7 +538,7 @@ describe("the Skills' Agent changes", () => {
   );
 
   it.effect(
-    "of the Skills kept for every Environment load by the scope *, and a removal or revert loads them again",
+    "of the Skills kept Global load by the scope *, and a removal or revert loads them again",
     () =>
       Effect.gen(function* () {
         let kept = [
@@ -578,35 +576,33 @@ describe("the Skills' Agent changes", () => {
           listBuilds: () => Effect.succeed([]),
         });
 
-        registry.mount(environmentSkillsAtom(EVERY_ENVIRONMENT));
+        registry.mount(environmentSkillsAtom(GLOBAL));
         expect(
-          AsyncResult.getOrThrow(
-            yield* settled(registry, environmentSkillsAtom(EVERY_ENVIRONMENT)),
-          ),
+          AsyncResult.getOrThrow(yield* settled(registry, environmentSkillsAtom(GLOBAL))),
         ).toHaveLength(2);
 
-        registry.mount(removeSkillAtom(EVERY_ENVIRONMENT));
-        registry.set(removeSkillAtom(EVERY_ENVIRONMENT), "review");
-        yield* settled(registry, removeSkillAtom(EVERY_ENVIRONMENT));
-        yield* settled(registry, environmentSkillsAtom(EVERY_ENVIRONMENT));
+        registry.mount(removeSkillAtom(GLOBAL));
+        registry.set(removeSkillAtom(GLOBAL), "review");
+        yield* settled(registry, removeSkillAtom(GLOBAL));
+        yield* settled(registry, environmentSkillsAtom(GLOBAL));
 
         expect(removed).toEqual([{ environment: "*", name: "review" }]);
         expect(
-          AsyncResult.getOrThrow(registry.get(environmentSkillsAtom(EVERY_ENVIRONMENT))).map(
+          AsyncResult.getOrThrow(registry.get(environmentSkillsAtom(GLOBAL))).map(
             (skill) => skill.name,
           ),
         ).toEqual(["release"]);
 
         // A revert of a change of the scope * asks for the Skills of the scope again.
         kept = [];
-        registry.mount(revertAgentChangeAtom(EVERY_ENVIRONMENT));
-        registry.set(revertAgentChangeAtom(EVERY_ENVIRONMENT), 1);
-        yield* settled(registry, revertAgentChangeAtom(EVERY_ENVIRONMENT));
-        yield* settled(registry, environmentSkillsAtom(EVERY_ENVIRONMENT));
+        registry.mount(revertAgentChangeAtom(GLOBAL));
+        registry.set(revertAgentChangeAtom(GLOBAL), 1);
+        yield* settled(registry, revertAgentChangeAtom(GLOBAL));
+        yield* settled(registry, environmentSkillsAtom(GLOBAL));
 
         expect(asked.every((environment) => environment === "*")).toBe(true);
         expect(
-          AsyncResult.getOrThrow(registry.get(environmentSkillsAtom(EVERY_ENVIRONMENT))).map(
+          AsyncResult.getOrThrow(registry.get(environmentSkillsAtom(GLOBAL))).map(
             (skill) => skill.name,
           ),
         ).toEqual(["release"]);

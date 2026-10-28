@@ -1,4 +1,4 @@
-// The change to the Skills kept for every Environment that waits for the owner's Approval (ADR-0026, GLOSSARY.md →
+// The change to the Skills kept Global that waits for the owner's Approval (ADR-0026, GLOSSARY.md →
 // Approval, `docs/architecture/agent-changes.md` → Approval): `environment_skill_save`, `environment_skill_remove` and
 // `environment_skill_install` with `id: "*"`. A Skill there steers every future Session, so it is where a
 // prompt-injected agent would plant instructions: the owner reads the Skill's files on the card (which says plainly what it could
@@ -24,9 +24,9 @@ import {
   withApproval,
 } from "./approvals.ts";
 import { EnvironmentsError } from "./environment.ts";
-import { EVERY_ENVIRONMENT_ID } from "./environment-secret-marks.ts";
+import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
-  EVERY,
+  GLOBAL_TARGET,
   installedOutcome,
   named,
   refused,
@@ -38,7 +38,7 @@ import {
 import { MAX_APPROVED_SKILLS } from "./skill-checks.ts";
 
 /**
- * What a tool's description says of the Approval of a change to the Skills kept for every Environment. It is not the
+ * What a tool's description says of the Approval of a change to the Skills kept Global. It is not the
  * Limits' wording (`approval-tools.ts`): what must still hold when the owner answers is the Skill, not a setting.
  */
 export const SKILL_APPROVAL =
@@ -153,11 +153,11 @@ const SaveAsked = Schema.Struct({ savedAt: Schema.NullOr(Schema.Finite), digest:
 /** What an Approval of a removal was asked against: when the Skill was last saved. */
 const RemoveAsked = Schema.Struct({ savedAt: Schema.NullOr(Schema.Finite) });
 
-type EveryDeps = Pick<SkillToolDeps, "environments" | "approvals" | "log" | "notFound">;
+type GlobalDeps = Pick<SkillToolDeps, "environments" | "approvals" | "log" | "notFound">;
 
-/** Save the folder's Skill for every Environment once the owner approves it. */
-export const saveEverywhere = (
-  { environments, approvals, log, notFound }: EveryDeps,
+/** Save the folder's Skill at Global once the owner approves it. */
+export const saveAtGlobal = (
+  { environments, approvals, log, notFound }: GlobalDeps,
   {
     folder,
     files,
@@ -175,7 +175,7 @@ export const saveEverywhere = (
     const tool = "environment_skill_save";
 
     const previewed = yield* environments.previewSkill({
-      environment: EVERY_ENVIRONMENT_ID,
+      environment: GLOBAL_ID,
       folder,
       files,
     });
@@ -187,7 +187,7 @@ export const saveEverywhere = (
       if (rerun) yield* approvals.settle(String(api.taskId));
 
       return yield* previewed.status === "missing"
-        ? notFound(EVERY_ENVIRONMENT_ID)
+        ? notFound(GLOBAL_ID)
         : refused(`\n${previewed.message}`);
     }
 
@@ -198,10 +198,10 @@ export const saveEverywhere = (
         output: [
           {
             type: "text" as const,
-            text: `${named(EVERY)} keeps the Skill ${name} with these files already: nothing was asked, changed or recorded. It is at ${servedAt(name)}.`,
+            text: `${named(GLOBAL_TARGET)} keeps the Skill ${name} with these files already: nothing was asked, changed or recorded. It is at ${servedAt(name)}.`,
           },
         ],
-        details: { unchanged: { environment: EVERY, field: skillField(name) } },
+        details: { unchanged: { environment: GLOBAL_TARGET, field: skillField(name) } },
       };
     }
 
@@ -213,12 +213,12 @@ export const saveEverywhere = (
       api,
       {
         tool,
-        target: "every Environment",
+        target: "Global",
         change: `Save the Skill ${JSON.stringify(name)}`,
         before:
           current === null
-            ? "Not kept for every Environment"
-            : `Kept for every Environment: ${current.description} (files: ${Arr.join(current.files, ", ")})`,
+            ? "Not kept Global"
+            : `Kept at Global: ${current.description} (files: ${Arr.join(current.files, ", ")})`,
         after: card.after,
         reason,
         // The Skill as the owner saw it: saved only while the Skill of the name was last saved then, and the folder holds
@@ -228,7 +228,7 @@ export const saveEverywhere = (
       (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
-            return declined(answer, `saving the Skill ${name} for every Environment`);
+            return declined(answer, `saving the Skill ${name} at Global`);
           }
 
           const asked = Schema.decodeUnknownOption(SaveAsked)(answer.expected);
@@ -246,7 +246,7 @@ export const saveEverywhere = (
           }
 
           const saved = yield* environments.saveSkill({
-            environment: EVERY_ENVIRONMENT_ID,
+            environment: GLOBAL_ID,
             folder,
             files,
             expected: { savedAt: asked.value.savedAt },
@@ -257,7 +257,7 @@ export const saveEverywhere = (
             environments,
             log,
             notFound,
-            scope: EVERY_ENVIRONMENT_ID,
+            scope: GLOBAL_ID,
             own: false,
             approved: true,
             folder,
@@ -265,31 +265,31 @@ export const saveEverywhere = (
             note:
               card.unseen === null
                 ? undefined
-                : `The card showed the user only the first ${MAX_CARD_CHARS} characters of the Skill's files: ${card.unseen.characters} characters in ${card.unseen.files} file${card.unseen.files === 1 ? "" : "s"} were cut or left out, so that part was not reviewed. Keep a Skill for every Environment small enough to review in full.`,
+                : `The card showed the user only the first ${MAX_CARD_CHARS} characters of the Skill's files: ${card.unseen.characters} characters in ${card.unseen.files} file${card.unseen.files === 1 ? "" : "s"} were cut or left out, so that part was not reviewed. Keep a Skill at Global small enough to review in full.`,
           });
         }),
     );
   });
 
-/** Remove the Skill kept for every Environment once the owner approves it. */
-export const removeEverywhere = (
-  { environments, approvals, log, notFound }: EveryDeps,
+/** Remove the Skill kept Global once the owner approves it. */
+export const removeAtGlobal = (
+  { environments, approvals, log, notFound }: GlobalDeps,
   { name, reason }: { readonly name: string; readonly reason: string },
   api: ApprovalCall,
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_remove";
-    const { skills } = yield* environments.every;
+    const { skills } = yield* environments.global;
     const kept = Arr.findFirst(skills, (skill) => skill.name === name);
 
     if (Option.isNone(kept) && !(yield* askedBefore(approvals, api))) {
       return yield* EnvironmentsError.make({
-        message: `Nothing was asked or removed: no Skill named "${name}" is kept for every Environment. environment_get with id "${EVERY_ENVIRONMENT_ID}" lists them.`,
+        message: `Nothing was asked or removed: no Skill named "${name}" is kept Global. environment_get with id "${GLOBAL_ID}" lists them.`,
       });
     }
 
     const before = Option.match(kept, {
-      onNone: () => `${name}, no longer kept for every Environment`,
+      onNone: () => `${name}, no longer kept Global`,
       onSome: (skill) => `${name}: ${skill.description}`,
     });
 
@@ -298,11 +298,10 @@ export const removeEverywhere = (
       api,
       {
         tool,
-        target: "every Environment",
+        target: "Global",
         change: `Remove the Skill ${JSON.stringify(name)}`,
         before,
-        after:
-          "Removed for every Environment: each Environment serves its own Skill of the name if it has one",
+        after: "Removed at Global: each Environment serves its own Skill of the name if it has one",
         reason,
         expected: {
           savedAt: Option.match(kept, { onNone: () => null, onSome: (skill) => skill.savedAt }),
@@ -311,7 +310,7 @@ export const removeEverywhere = (
       (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
-            return declined(answer, `removing the Skill ${name} from every Environment`);
+            return declined(answer, `removing the Skill ${name} from Global`);
           }
 
           const asked = Schema.decodeUnknownOption(RemoveAsked)(answer.expected);
@@ -323,7 +322,7 @@ export const removeEverywhere = (
           }
 
           const removed = yield* environments.removeSkill({
-            environment: EVERY_ENVIRONMENT_ID,
+            environment: GLOBAL_ID,
             name,
             expected: asked.value,
             author: { conversation: api.conversationId, tool, reason, approved: true },
@@ -333,7 +332,7 @@ export const removeEverywhere = (
             environments,
             log,
             notFound,
-            scope: EVERY_ENVIRONMENT_ID,
+            scope: GLOBAL_ID,
             own: false,
             approved: true,
             name,
@@ -342,7 +341,7 @@ export const removeEverywhere = (
     );
   });
 
-/** What a tool's description says of the Approval of an install for every Environment. */
+/** What a tool's description says of the Approval of an install at Global. */
 export const INSTALL_APPROVAL =
   "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the Skills shown are installed and recorded as approved; on Decline nothing is installed, and the result carries their reason. A Skill is installed only if it is the one the user was shown (the same folder and files, at the commit shown) and the Skill of its name was not saved again meanwhile; any other is reported, and you are told to ask again.";
 
@@ -364,7 +363,7 @@ const InstallAsked = Schema.Struct({
 });
 
 /**
- * Install the Skills of GitHub `source` that `names` names (absent: the repo's only Skill) for every Environment once
+ * Install the Skills of GitHub `source` that `names` names (absent: the repo's only Skill) at Global once
  * the owner approves them. The Registry reads them first (`previewInstall`), the card shows each Skill's files as a save's
  * does, and on Approve exactly the folders the owner was shown are read again at that commit (not chosen again by name): a
  * Skill is kept only if its files are the ones shown and only while the Skill of its name is the one that was replaced on
@@ -373,8 +372,8 @@ const InstallAsked = Schema.Struct({
  * A rerun after an eviction that holds the request or its answer reads nothing first (the repo may have moved, or GitHub
  * be unreachable): it waits for the request the owner sees, or takes its answer, and installs what that pinned.
  */
-export const installEverywhere = (
-  { environments, approvals, log, notFound }: EveryDeps,
+export const installAtGlobal = (
+  { environments, approvals, log, notFound }: GlobalDeps,
   {
     source,
     names,
@@ -388,7 +387,7 @@ export const installEverywhere = (
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_install";
-    const call = { environments, log, notFound, scope: EVERY_ENVIRONMENT_ID, own: false };
+    const call = { environments, log, notFound, scope: GLOBAL_ID, own: false };
 
     /** What the owner's answer comes to: on Approve, the pinned Skills read again at the commit shown. */
     const answered = (answer: ApprovalAnswer, what: string) =>
@@ -406,7 +405,7 @@ export const installEverywhere = (
         const shown = asked.value;
 
         const installed = yield* environments.installSkills({
-          environment: EVERY_ENVIRONMENT_ID,
+          environment: GLOBAL_ID,
           source,
           author: { conversation: api.conversationId, tool, reason, approved: true },
           pin: { commit: shown.commit, skills: shown.skills },
@@ -441,7 +440,7 @@ export const installEverywhere = (
                 {
                   type: "text" as const,
                   text: `${approvedAlready(
-                    `every Environment keeps ${Arr.join(
+                    `Global keeps ${Arr.join(
                       Arr.map(kept, (result) => result.name),
                       ", ",
                     )} from ${skillSourceText({ repo: installed.repo, path: "", ref: installed.ref, commit: installed.commit })}`,
@@ -461,7 +460,7 @@ export const installEverywhere = (
             note:
               shown.unseen.files === 0
                 ? undefined
-                : `The card showed the user only the first ${MAX_CARD_CHARS} characters of each Skill's files: ${shown.unseen.characters} characters in ${shown.unseen.files} file${shown.unseen.files === 1 ? "" : "s"} were cut or left out, so that part was not reviewed. Keep a Skill for every Environment small enough to review in full.`,
+                : `The card showed the user only the first ${MAX_CARD_CHARS} characters of each Skill's files: ${shown.unseen.characters} characters in ${shown.unseen.files} file${shown.unseen.files === 1 ? "" : "s"} were cut or left out, so that part was not reviewed. Keep a Skill at Global small enough to review in full.`,
           },
         );
       });
@@ -473,19 +472,19 @@ export const installEverywhere = (
         // Never shown: the request the owner sees is the one the first call made.
         {
           tool,
-          target: "every Environment",
+          target: "Global",
           change: `Install Skills from ${source}`,
           before: "",
           after: "",
           reason,
           expected: null,
         },
-        (answer) => answered(answer, `installing Skills from ${source} for every Environment`),
+        (answer) => answered(answer, `installing Skills from ${source} at Global`),
       );
     }
 
     const previewed = yield* environments.previewInstall({
-      environment: EVERY_ENVIRONMENT_ID,
+      environment: GLOBAL_ID,
       source,
       skills: names,
     });
@@ -532,7 +531,7 @@ export const installEverywhere = (
 
     if (ready.length > MAX_APPROVED_SKILLS) {
       return yield* EnvironmentsError.make({
-        message: `Nothing was asked or installed: ${ready.length} Skills from ${repo} would be installed for every Environment (${Arr.join(
+        message: `Nothing was asked or installed: ${ready.length} Skills from ${repo} would be installed at Global (${Arr.join(
           Arr.map(ready, (skill) => skill.name),
           ", ",
         )}), and one request for the user's Approval shows at most ${MAX_APPROVED_SKILLS}, each with its files. Call again with skills naming up to ${MAX_APPROVED_SKILLS} of them, then again for the rest.`,
@@ -554,7 +553,7 @@ export const installEverywhere = (
       api,
       {
         tool,
-        target: "every Environment",
+        target: "Global",
         change: `Install ${ready.length === 1 ? "the Skill" : "the Skills"} ${Arr.join(
           Arr.map(ready, ({ name }) => JSON.stringify(name)),
           ", ",
@@ -562,8 +561,8 @@ export const installEverywhere = (
         before: Arr.join(
           Arr.map(ready, ({ name, current }) =>
             current === null
-              ? `${name}: not kept for every Environment`
-              : `${name}: kept for every Environment: ${current.description} (files: ${Arr.join(current.files, ", ")})`,
+              ? `${name}: not kept Global`
+              : `${name}: kept Global: ${current.description} (files: ${Arr.join(current.files, ", ")})`,
           ),
           "\n",
         ),
@@ -596,7 +595,7 @@ export const installEverywhere = (
           `installing ${Arr.join(
             Arr.map(ready, ({ name }) => name),
             ", ",
-          )} from ${pinned} for every Environment`,
+          )} from ${pinned} at Global`,
         ),
     );
   });

@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of changes and files are native arrays.
 
-// The Agent changes of an Environment, or of every Environment (`docs/architecture/agent-changes.md`), as the Environments
+// The Agent changes of an Environment, or of Global (`docs/architecture/agent-changes.md`), as the Environments
 // page lists those of its settings and the Skills page those of its Skills: each with its values before and after (a
 // Skill's as its files' diffs), who made it and why, a revert while it is the agent's, and a dismissal. The Settings page
 // lists its own changes with the same row.

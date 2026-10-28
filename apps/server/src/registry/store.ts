@@ -4,7 +4,7 @@ import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentRepo,
   type EnvironmentSecretRecord,
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   ForkKind,
   MAX_ENVIRONMENT_SECRETS,
   type SessionOrigin,
@@ -181,8 +181,8 @@ export type StoredEnvironmentSecret = EnvironmentSecretRecord & { readonly seale
 /** How keeping a Secret went: its record, or its Environment does not exist, or its scope holds as many as it may. */
 export type SecretPut = EnvironmentSecretRecord | "missing" | "full";
 
-/** The scope column of the Secrets kept for every Environment; no Environment id can be it. */
-export { EVERY_ENVIRONMENT_SCOPE };
+/** The scope column of the Secrets kept Global; no Environment id can be it. */
+export { GLOBAL_SCOPE };
 
 /** Something left from before Environments (ADR-0016) whose Durable Object is still to be wiped. */
 export type LegacyObject = { readonly kind: "session" | "machine"; readonly id: string };
@@ -243,7 +243,7 @@ export type RegistryStore = {
   readonly createEnvironment: (id: string, name: string, now: number) => EnvironmentNaming;
   /** The Environment registered under `id`, or null. */
   readonly getEnvironment: (id: string) => EnvironmentRecord | null;
-  /** Every Environment, newest first. */
+  /** All Environments, newest first. */
   readonly listEnvironments: () => EnvironmentRecord[];
   /** Give an Environment a new name, which no other may have in any case. */
   readonly renameEnvironment: (id: string, name: string) => EnvironmentNaming;
@@ -264,7 +264,7 @@ export type RegistryStore = {
   readonly getBuild: (environment: string) => BuildRecord | null;
   /** Keep what an Environment's Build object answered; says whether the Environment is registered. */
   readonly putBuild: (environment: string, record: BuildRecord) => boolean;
-  /** Every Environment's Build, by Environment id, newest Environment first. */
+  /** Each Environment's Build, by Environment id, newest Environment first. */
   readonly listBuilds: () => Array<BuildRecord & { readonly environment: string }>;
   /** The Workspace registered under `id`, or null; a spare is not one until it is taken. */
   readonly getWorkspace: (id: string) => WorkspaceRecord | null;
@@ -299,12 +299,12 @@ export type RegistryStore = {
   readonly takeLegacy: (limit: number, now: number, leaseMs: number) => LegacyObject[];
   /** Forget a legacy object once it is wiped. */
   readonly forgetLegacy: (object: LegacyObject) => void;
-  /** Every kept Secret, without its value: those for every Environment first, then by Environment, each by name. */
+  /** Every kept Secret, without its value: those at Global first, then by Environment, each by name. */
   readonly listEnvironmentSecrets: () => EnvironmentSecretRecord[];
-  /** The sealed Secrets `environment` uses: those kept for every Environment, and its own. */
+  /** The sealed Secrets `environment` uses: those kept Global, and its own. */
   readonly getEnvironmentSecrets: (environment: string) => StoredEnvironmentSecret[];
   /**
-   * Keep a sealed value under `name` for `environment` (null: every Environment), replacing the one kept there; `build`
+   * Keep a sealed value under `name` for `environment` (null: Global), replacing the one kept there; `build`
    * left out keeps a replaced one's flag (false for a new one).
    */
   readonly putEnvironmentSecret: (
@@ -327,7 +327,7 @@ export type RegistryStore = {
   readonly deleteEnvironmentSecret: (environment: string | null, name: string) => boolean;
   /**
    * The JSON text of the document called `name`, or null. Documents hold the Registry's own settings and the variables
-   * kept for every Environment.
+   * kept Global.
    */
   readonly getDocument: (name: string) => string | null;
   /** Save a document, replacing the one with its name. */
@@ -393,7 +393,7 @@ type WorkspaceRow = {
 type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
 
 type EnvironmentSecretRow = {
-  /** An Environment's id, or `EVERY_ENVIRONMENT_SCOPE`. */
+  /** An Environment's id, or `GLOBAL_SCOPE`. */
   scope: string;
   name: string;
   /** Base64: the AES-GCM nonce and ciphertext of the value (`SealedValue`). */
@@ -404,10 +404,10 @@ type EnvironmentSecretRow = {
   updated_at: number;
 };
 
-const scopeOf = (environment: string | null): string => environment ?? EVERY_ENVIRONMENT_SCOPE;
+const scopeOf = (environment: string | null): string => environment ?? GLOBAL_SCOPE;
 
 const toSecretRecord = (row: EnvironmentSecretRow): EnvironmentSecretRecord => ({
-  environment: row.scope === EVERY_ENVIRONMENT_SCOPE ? null : row.scope,
+  environment: row.scope === GLOBAL_SCOPE ? null : row.scope,
   name: row.name,
   build: row.build === 1,
   updatedAt: row.updated_at,
@@ -688,12 +688,12 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("ALTER TABLE workspaces ADD COLUMN spare INTEGER NOT NULL DEFAULT 0");
   },
   // 13: each Environment's Build (ADR-0016), as its Build object last answered: the last good one, and the one in
-  // progress or the last failure. Every Environment stored before has none yet.
+  // progress or the last failure. Each Environment stored before has none yet.
   (sql) => {
     sql.exec("ALTER TABLE environments ADD COLUMN build TEXT");
     sql.exec("ALTER TABLE environments ADD COLUMN build_status TEXT");
   },
-  // 14: the Secrets kept for an Environment, or for every Environment (`*`), each value sealed by the Registry DO
+  // 14: the Secrets kept for an Environment, or Global (`*`), each value sealed by the Registry DO
   // under a key bound to its scope and name (docs/architecture/agent-capabilities.md → Secrets). None before.
   (sql) => {
     sql.exec(`CREATE TABLE environment_secrets (
@@ -1138,7 +1138,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       }
 
       sql.exec("DELETE FROM environments WHERE id = ?", id);
-      // Its Secrets go with it; those kept for every Environment stay. So do its Agent changes and its Skills, and the
+      // Its Secrets go with it; those kept Global stay. So do its Agent changes and its Skills, and the
       // texts of their files that nothing else refers to.
       sql.exec("DELETE FROM environment_secrets WHERE scope = ?", id);
       sql.exec("DELETE FROM agent_changes WHERE scope = ?", id);
@@ -1371,7 +1371,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         sql
           .exec<EnvironmentSecretRow>(
             "SELECT * FROM environment_secrets ORDER BY scope != ?, scope, name",
-            EVERY_ENVIRONMENT_SCOPE,
+            GLOBAL_SCOPE,
           )
           .toArray(),
         toSecretRecord,
@@ -1382,9 +1382,9 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         sql
           .exec<EnvironmentSecretRow>(
             "SELECT * FROM environment_secrets WHERE scope IN (?, ?) ORDER BY scope != ?, name",
-            EVERY_ENVIRONMENT_SCOPE,
+            GLOBAL_SCOPE,
             environment,
-            EVERY_ENVIRONMENT_SCOPE,
+            GLOBAL_SCOPE,
           )
           .toArray(),
         (row) => ({

@@ -397,7 +397,7 @@ describe("installing Skills from GitHub", () => {
     expect(listed).toEqual([expect.objectContaining({ name: "grill-me", source: GRILL_SOURCE })]);
   });
 
-  it("keeps the source of a Skill kept for every Environment that the agent saves again", async () => {
+  it("keeps the source of a Skill kept Global that the agent saves again", async () => {
     const [saved, change, listed] = await inRegistry(async ({ skills, context, changes }) => {
       const kept = { "SKILL.md": skillMd("grill-me") };
       const hashedKept = await hashFiles(kept);
@@ -435,9 +435,9 @@ describe("installing Skills from GitHub", () => {
     expect(listed).toEqual([expect.objectContaining({ name: "grill-me", source: GRILL_SOURCE })]);
   });
 
-  it("counts the Skills kept for every Environment in the set an install would make", async () => {
+  it("counts the Skills kept Global in the set an install would make", async () => {
     const results = await inRegistry(async ({ install, skills }) => {
-      // 100 Skills for every Environment are the most a set may hold: one more is too many.
+      // 100 Skills at Global are the most a set may hold: one more is too many.
       for (let at = 0; at < 100; at += 1) {
         const files = { "SKILL.md": skillMd(`every-${at}`) };
         const hashed = await hashFiles(files);
@@ -519,7 +519,7 @@ describe("installing Skills from GitHub", () => {
     expect(results.find((result) => result.name === "Bad_Name")?.message).toContain("lowercase");
   });
 
-  it("keeps the Skills for every Environment recorded under *, as approved when the install says so, and names the Environments whose own Skill hides one", async () => {
+  it("keeps the Skills at Global recorded under *, as approved when the install says so, and names the Environments whose own Skill hides one", async () => {
     const [installed, listed, changes, set] = await inRegistry(
       async ({ install, skills, changes, context }) => {
         const own = { "SKILL.md": skillMd("tdd", "Mine.") };
@@ -544,7 +544,7 @@ describe("installing Skills from GitHub", () => {
 
     expect(installed).toMatchObject({
       status: "installed",
-      environment: { id: "*", name: "every Environment" },
+      environment: { id: "*", name: "Global" },
       results: [
         { name: "grill-me", outcome: "installed", overriddenIn: [] },
         {
@@ -856,7 +856,7 @@ describe("installing Skills from GitHub", () => {
     expect(one).toMatchObject({ status: "previewed", skills: [{ name: "l0" }] });
   });
 
-  it("is the owner's install for every Environment: kept with its source, no Agent change, the checks across every Environment's set", async () => {
+  it("is the owner's install at Global: kept with its source, no Agent change, the checks across each Environment's set", async () => {
     const [installed, listed, changes] = await inRegistry(async ({ install, skills, changes }) => [
       await install(readerOf(REPO), { environment: "*", source: "o/skills@tdd", owner: true }),
       skills.list("*"),
@@ -953,7 +953,7 @@ describe("installing Skills from GitHub", () => {
 
 describe("the Skill directory's badges over installed Skills", () => {
   it("find a Skill by its source repo and folder in each scope that keeps it, whatever it is named", async () => {
-    const [every, own, none] = await inRegistry(async ({ install, skills }) => {
+    const [atGlobal, own, none] = await inRegistry(async ({ install, skills }) => {
       await install(readerOf(REPO), { source: "o/skills@grill-me", owner: true, environment: "*" });
       await install(readerOf(REPO), { source: "o/skills@grill-me", owner: true });
       await install(readerOf(REPO), { source: "o/skills@tdd", owner: true });
@@ -967,13 +967,13 @@ describe("the Skill directory's badges over installed Skills", () => {
       ];
     });
 
-    expect(every).toEqual({
-      everyEnvironment: true,
+    expect(atGlobal).toEqual({
+      global: true,
       environments: [DEFAULT_ENVIRONMENT],
       updateAvailable: false,
     });
     expect(own).toEqual({
-      everyEnvironment: false,
+      global: false,
       environments: [DEFAULT_ENVIRONMENT],
       updateAvailable: false,
     });

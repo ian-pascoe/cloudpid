@@ -40,15 +40,15 @@ const descriptionOf = (files: Readonly<Record<string, string>>): string =>
   /^description: (.*)$/m.exec(files["SKILL.md"] ?? "")?.[1] ?? "";
 
 /**
- * Skills over Environments `default` (named Default, this Session's) and `0000abcd` (named Other), and every Environment
+ * Skills over Environments `default` (named Default, this Session's) and `0000abcd` (named Other), and Global
  * (`*`), each keeping none at first. A save is refused with `refusal` when it is set, as the Registry
- * refuses one. A scope's Skill of a name hides the one kept for every Environment, as the Registry's layers do.
+ * refuses one. A scope's Skill of a name hides the one kept Global, as the Registry's layers do.
  */
 export const fakeSkills = () => {
   const names = new Map([
     ["default", "Default"],
     ["0000abcd", "Other"],
-    ["*", "every Environment"],
+    ["*", "Global"],
   ]);
 
   /** What each scope keeps, by `<scope>:<name>`. */
@@ -153,7 +153,7 @@ export const fakeSkills = () => {
     Record.size(before) === Record.size(after) &&
     Arr.every(Record.toEntries(after), ([path, text]) => before[path] === text);
 
-  /** The Environments (not `*`) whose own Skill of `name` hides the one kept for every Environment. */
+  /** The Environments (not `*`) whose own Skill of `name` hides the one kept Global. */
   const overriding = (name: string) =>
     Arr.filter(
       Arr.map(
@@ -221,18 +221,18 @@ export const fakeSkills = () => {
         kept.set(key, files);
         savedAt.set(key, clock++);
 
-        const everywhere = environment === "*";
-        const hiding = everywhere ? overriding(folder) : [];
+        const atGlobal = environment === "*";
+        const hiding = atGlobal ? overriding(folder) : [];
 
         return {
           status: "saved" as const,
           environment: checked.environment,
           change: changeOf(environment, folder, author, before, files),
           name: folder,
-          inherited: !everywhere && kept.has(`*:${folder}`),
+          inherited: !atGlobal && kept.has(`*:${folder}`),
           overriddenIn: hiding,
           // The Session's own Workspace takes it unless its Environment (default) keeps its own of the name.
-          handed: everywhere
+          handed: atGlobal
             ? !Arr.some(hiding, ({ id }) => id === "default")
             : environment === "default",
         };
@@ -263,16 +263,16 @@ export const fakeSkills = () => {
         kept.delete(key);
         savedAt.delete(key);
 
-        const everywhere = environment === "*";
-        const hiding = everywhere ? overriding(name) : [];
+        const atGlobal = environment === "*";
+        const hiding = atGlobal ? overriding(name) : [];
 
         return {
           status: "removed" as const,
           environment: where,
           change: changeOf(environment, name, author, before, undefined),
-          inherited: !everywhere && kept.has(`*:${name}`),
+          inherited: !atGlobal && kept.has(`*:${name}`),
           overriddenIn: hiding,
-          handed: everywhere
+          handed: atGlobal
             ? !Arr.some(hiding, ({ id }) => id === "default")
             : environment === "default",
         };

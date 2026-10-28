@@ -1,14 +1,14 @@
 // The Session's `Environments` (`@cloudpid/extensions/environment`, `docs/architecture/agent-changes.md`): the Registry's
 // Environments, read and changed for the agent. A change is applied and recorded by the Registry (`changeEnvironment`,
-// and `changeEveryEnvironment` for a variable kept for every Environment), as the owner's save is applied; then, as
-// after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),
+// and `changeGlobal` for a variable kept Global), as the owner's save is applied; then, as
+// after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept Global),
 // and the spares' upkeep after a change of its Spare Workspace setting; a change that reaches the Session's own
-// Environment is handed to its Workspace at once (`updateContainerSettings`), with the variables kept for every
-// Environment merged in, which applies it at its next Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
+// Environment is handed to its Workspace at once (`updateContainerSettings`), with the variables kept
+// Global merged in, which applies it at its next Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
 // installed or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentInstallSkills`, `agentRemoveSkill`,
-// `agentPreviewSkill`), for an Environment or, saved or removed, for every Environment (`*`); the Session's own Workspace
-// is handed its Environment's new Skill set at once (`updateSkills`), unless the change is to those kept for every
-// Environment and its Environment keeps its own Skill of the name, and no Build's upkeep runs: Skills are not part of a
+// `agentPreviewSkill`), for an Environment or, saved or removed, at Global (`*`); the Session's own Workspace
+// is handed its Environment's new Skill set at once (`updateSkills`), unless the change is to those kept
+// Global and its Environment keeps its own Skill of the name, and no Build's upkeep runs: Skills are not part of a
 // Build.
 import type {
   AppliedChange,
@@ -17,11 +17,7 @@ import type {
   EnvironmentsService,
   KeptSecretListing,
 } from "@cloudpid/extensions/environment";
-import {
-  EnvironmentsError,
-  EVERY_ENVIRONMENT_ID,
-  EVERY_ENVIRONMENT_NAME,
-} from "@cloudpid/extensions/environment";
+import { EnvironmentsError, GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/extensions/environment";
 import { SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import type { BuildView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -43,8 +39,8 @@ export type EnvironmentsRegistry = Pick<
   | "getEnvironmentSettings"
   | "listEnvironmentSecrets"
   | "changeEnvironment"
-  | "changeEveryEnvironment"
-  | "getEveryEnvironmentSettings"
+  | "changeGlobal"
+  | "getGlobalSettings"
   | "workspaceOverrides"
   | "agentMarkSecretBuild"
   | "agentSaveSkill"
@@ -85,7 +81,7 @@ export type SessionEnvironmentsOptions = {
 
 const NO_BUILD: BuildView = { status: "none" };
 
-/** The Secrets `environment` uses, by name: its own, then those kept for every Environment that it does not override. */
+/** The Secrets `environment` uses, by name: its own, then those kept Global that it does not override. */
 const keptFor = (
   environment: string,
   records: Effect.Success<ReturnType<RegistryMethods["listEnvironmentSecrets"]>>,
@@ -109,7 +105,7 @@ const changedEnvironment = ({ id, name }: { readonly id: string; readonly name: 
 });
 
 /**
- * The Environments whose own Skill hides every one of the Skills `results` kept for every Environment: a change reaches
+ * The Environments whose own Skill hides every one of the Skills `results` kept Global: a change reaches
  * them in no Skill. None for Skills kept for one Environment.
  */
 const hiddenInAll = (
@@ -128,13 +124,13 @@ const hiddenInAll = (
   );
 };
 
-/** Every Environment as a change names it. */
-const EVERY_ENVIRONMENT = { id: EVERY_ENVIRONMENT_ID, name: EVERY_ENVIRONMENT_NAME };
+/** Global as a change names it. */
+const GLOBAL = { id: GLOBAL_ID, name: GLOBAL_NAME };
 
 /**
- * The Builds' upkeep after a kept Secret changed (its Build mark, or one more kept) or a variable kept for every
- * Environment did, as the main Worker runs it after the owner's: the Builds it may reach are looked at again, each
- * Environment's for one kept for every Environment (`*`).
+ * The Builds' upkeep after a kept Secret changed (its Build mark, or one more kept) or a variable kept
+ * Global did, as the main Worker runs it after the owner's: the Builds it may reach are looked at again, each
+ * Environment's for one kept Global (`*`).
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const buildsAfterScope = (
@@ -142,7 +138,7 @@ export const buildsAfterScope = (
   builds: Pick<Builds, "of">,
   environment: string,
 ): Effect.Effect<void> =>
-  environment === EVERY_ENVIRONMENT_ID
+  environment === GLOBAL_ID
     ? registry
         .listEnvironments()
         .pipe(
@@ -250,12 +246,12 @@ export const sessionEnvironments = ({
 
   /**
    * Hand the Session's own Workspace its Environment's Skill set after a change to the Skills kept for `environment`
-   * (an Environment's id, or `*`): whether the Workspace took it. A change to those kept for every Environment reaches
+   * (an Environment's id, or `*`): whether the Workspace took it. A change to those kept Global reaches
    * the Session's Environment unless it is one of those `hidden` by an own Skill of the name.
    */
   const handSkillsAfter = (environment: string, hidden: ReadonlyArray<{ readonly id: string }>) =>
     Effect.gen(function* () {
-      if (environment !== EVERY_ENVIRONMENT_ID) return yield* handSkillsIfOwn(environment);
+      if (environment !== GLOBAL_ID) return yield* handSkillsIfOwn(environment);
 
       const own = yield* where.pipe(
         Effect.catchCause((cause) =>
@@ -306,9 +302,9 @@ export const sessionEnvironments = ({
 
         const byId = yield* buildsById;
         const secrets = yield* registry.listEnvironmentSecrets();
-        const every = yield* registry.getEveryEnvironmentSettings();
+        const globalSettings = yield* registry.getGlobalSettings();
         const skills = yield* registry.listSkills({ environment: id });
-        const everySkills = yield* registry.listSkills({ environment: EVERY_ENVIRONMENT_ID });
+        const globalSkills = yield* registry.listSkills({ environment: GLOBAL_ID });
 
         return {
           id,
@@ -318,15 +314,15 @@ export const sessionEnvironments = ({
           settings: state.settings,
           problem: state.problem,
           secrets: keptFor(id, secrets),
-          everyVariables: every.settings.variables,
+          globalVariables: globalSettings.settings.variables,
           skills: skills ?? [],
-          everySkills: everySkills ?? [],
+          globalSkills: globalSkills ?? [],
         } satisfies EnvironmentDetails;
       }),
-    every: Effect.gen(function* () {
-      const { settings } = yield* registry.getEveryEnvironmentSettings();
+    global: Effect.gen(function* () {
+      const { settings } = yield* registry.getGlobalSettings();
       const secrets = yield* registry.listEnvironmentSecrets();
-      const skills = yield* registry.listSkills({ environment: EVERY_ENVIRONMENT_ID });
+      const skills = yield* registry.listSkills({ environment: GLOBAL_ID });
 
       return {
         variables: settings.variables,
@@ -445,7 +441,7 @@ export const sessionEnvironments = ({
               commit,
               results,
               // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves them now, unless its
-              // Environment keeps its own Skill of every name installed for every Environment.
+              // Environment keeps its own Skill of every name installed at Global.
               handed: yield* handSkillsAfter(environment, hiddenInAll(results)),
             };
           }
@@ -509,46 +505,46 @@ export const sessionEnvironments = ({
 
         const own = yield* where;
 
-        if (environment === EVERY_ENVIRONMENT_ID) {
-          const everywhere = yield* registry.changeEveryEnvironment({
+        if (environment === GLOBAL_ID) {
+          const atGlobal = yield* registry.changeGlobal({
             change,
             author: { session, ...author },
             environment: own?.environment,
           });
 
-          switch (everywhere.status) {
+          switch (atGlobal.status) {
             case "rejected":
-              return everywhere;
+              return atGlobal;
             case "unchanged":
               return {
                 status: "unchanged",
-                environment: EVERY_ENVIRONMENT,
-                value: everywhere.value,
+                environment: GLOBAL,
+                value: atGlobal.value,
               };
             case "changed":
               break;
           }
 
           // The Session's own Workspace takes it now unless its Environment has a variable of its own by that name.
-          if (own !== null && everywhere.own === true) {
+          if (own !== null && atGlobal.own === true) {
             yield* handToWorkspace(
               own.object,
               registry.workspaceOverrides({ environment: own.environment }),
             );
           }
 
-          // As after the owner's save: every Environment's Build is made with the variables.
-          yield* buildsAfterScope(registry, builds, EVERY_ENVIRONMENT_ID);
+          // As after the owner's save: each Environment's Build is made with the variables.
+          yield* buildsAfterScope(registry, builds, GLOBAL_ID);
 
           return {
             status: "changed",
-            environment: EVERY_ENVIRONMENT,
-            change: everywhere.change,
-            newBuild: everywhere.newBuilds.length > 0,
-            every: {
-              overriddenIn: everywhere.overriddenIn,
-              newBuilds: everywhere.newBuilds,
-              own: everywhere.own === true,
+            environment: GLOBAL,
+            change: atGlobal.change,
+            newBuild: atGlobal.newBuilds.length > 0,
+            global: {
+              overriddenIn: atGlobal.overriddenIn,
+              newBuilds: atGlobal.newBuilds,
+              own: atGlobal.own === true,
             },
           } satisfies AppliedChange;
         }
@@ -576,7 +572,7 @@ export const sessionEnvironments = ({
         }
 
         // The Session's own Workspace takes it now, not at its next readying; one that cannot be reached gets it then.
-        // What it is handed has the variables kept for every Environment merged in, which the change may not have
+        // What it is handed has the variables kept Global merged in, which the change may not have
         // touched.
         if (own?.environment === environment) {
           yield* handToWorkspace(

@@ -1,11 +1,11 @@
 // The `environment` extension (`docs/architecture/agent-changes.md`, ADR-0019): the agent's tools for its Environments,
 // `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset` (which also keep
-// variables for every Environment, with the id `*`), and one tool for each of the other Container settings
+// variables at Global, with the id `*`), and one tool for each of the other Container settings
 // (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,
 // `environment_start_script_set`, `environment_toolchains_set`, `environment_ignore_set` and
 // `environment_spare_workspace_set`), and `environment_secret_build` for the Build mark of a kept Secret, and
 // `environment_skill_save`, `environment_skill_install`, `environment_skill_update` and `environment_skill_remove` for
-// its own Skills and, saved, installed, updated or removed, those kept for every Environment (`environment-skills.ts`; a
+// its own Skills and, saved, installed, updated or removed, those kept Global (`environment-skills.ts`; a
 // change to the latter waits for the owner's Approval, so this extension needs the Session's `Approvals`). Each change is an Agent change: the Registry applies it as the owner's save
 // is applied and records it, the Session hands a change to its own Environment to its Workspace
 // at once, and the Run's end notifies the owner of the changes it made (`AgentChangeLog`). They are the root
@@ -50,8 +50,8 @@ import { Approvals } from "./approvals.ts";
 import { SIZE_LINES } from "./container.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
 import {
-  EVERY_ENVIRONMENT_ID,
-  EVERY_ENVIRONMENT_NAME,
+  GLOBAL_ID,
+  GLOBAL_NAME,
   type SecretMarks,
   secretMarkTools,
 } from "./environment-secret-marks.ts";
@@ -62,8 +62,8 @@ import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 
 export {
-  EVERY_ENVIRONMENT_ID,
-  EVERY_ENVIRONMENT_NAME,
+  GLOBAL_ID,
+  GLOBAL_NAME,
   type SecretMarked,
   type SecretMarks,
 } from "./environment-secret-marks.ts";
@@ -86,7 +86,7 @@ export type EnvironmentListing = {
 /** A Secret kept for an Environment, by name only: where it is kept, and whether it reaches the Build. */
 export type KeptSecretListing = {
   readonly name: string;
-  /** Kept for this Environment, or for every Environment. */
+  /** Kept for this Environment, or Global. */
   readonly scope: "environment" | "every";
   readonly build: boolean;
 };
@@ -100,19 +100,19 @@ export type EnvironmentDetails = EnvironmentListing & {
   /** Why only some of the saved settings apply, when a later release no longer accepts one. */
   readonly problem?: string | undefined;
   readonly secrets: ReadonlyArray<KeptSecretListing>;
-  /** The variables kept for every Environment, which the Environment's own of the same name override. */
-  readonly everyVariables: Readonly<Record<string, string>>;
+  /** The variables kept Global, which the Environment's own of the same name override. */
+  readonly globalVariables: Readonly<Record<string, string>>;
   /** The Skills it keeps of its own, as `environment_get` lists them. */
   readonly skills: ReadonlyArray<EnvironmentSkill>;
-  /** The Skills kept for every Environment, which the Environment's own of the same name hide. */
-  readonly everySkills: ReadonlyArray<EnvironmentSkill>;
+  /** The Skills kept Global, which the Environment's own of the same name hide. */
+  readonly globalSkills: ReadonlyArray<EnvironmentSkill>;
 };
 
 /**
- * What is kept for every Environment, as `environment_get` shows it for the id `*`: the variables, the Secrets'
+ * What is kept Global, as `environment_get` shows it for the id `*`: the variables, the Secrets'
  * names and the Skills.
  */
-export type EveryEnvironmentDetails = {
+export type GlobalDetails = {
   readonly variables: Readonly<Record<string, string>>;
   readonly secrets: ReadonlyArray<KeptSecretListing>;
   readonly skills: ReadonlyArray<EnvironmentSkill>;
@@ -136,8 +136,8 @@ export type ChangeAuthor = {
 /** The Environment a change was made to, by id and name. */
 export type ChangedEnvironment = { readonly id: string; readonly name: string };
 
-/** How a change of a variable kept for every Environment reached the Environments. */
-export type EveryEnvironmentChanged = {
+/** How a change of a variable kept Global reached the Environments. */
+export type GlobalChanged = {
   /** The Environments whose own variable of the name wins over it, so it does not reach them. */
   readonly overriddenIn: ReadonlyArray<ChangedEnvironment>;
   /** The Environments for which the Build upkeep after it asked for a new Build. */
@@ -155,8 +155,8 @@ export type AppliedChange =
       readonly change: AgentChange;
       /** Whether the Build upkeep after it asked for a new Build. */
       readonly newBuild: boolean;
-      /** Set for a variable kept for every Environment (the environment is then `EVERY_ENVIRONMENT_ID`). */
-      readonly every?: EveryEnvironmentChanged;
+      /** Set for a variable kept Global (the environment is then `GLOBAL_ID`). */
+      readonly global?: GlobalChanged;
     }
   /** The setting already had the value: nothing was saved or recorded. */
   | {
@@ -191,8 +191,8 @@ export type EnvironmentsService = {
   readonly list: Effect.Effect<ReadonlyArray<EnvironmentListing>, EnvironmentsError>;
   /** Environment `id`, or null when there is none. */
   readonly get: (id: string) => Effect.Effect<EnvironmentDetails | null, EnvironmentsError>;
-  /** What is kept for every Environment: its variables, its Secrets' names and its Skills. */
-  readonly every: Effect.Effect<EveryEnvironmentDetails, EnvironmentsError>;
+  /** What is kept Global: its variables, its Secrets' names and its Skills. */
+  readonly global: Effect.Effect<GlobalDetails, EnvironmentsError>;
   readonly change: (input: {
     readonly environment: string;
     readonly change: SettingChange;
@@ -294,7 +294,7 @@ const block = (text: string, language: string): string =>
   text === "" ? "none" : `\n\`\`\`${language}\n${text}\n\`\`\``;
 
 const describeSecret = (secret: KeptSecretListing): string =>
-  `${secret.name} (${secret.scope === "environment" ? "kept for this Environment" : "kept for every Environment"}${secret.build ? ", reaches the Build" : ""}; commands get it as $${secretEnvName(secret.name)})`;
+  `${secret.name} (${secret.scope === "environment" ? "kept for this Environment" : "kept Global"}${secret.build ? ", reaches the Build" : ""}; commands get it as $${secretEnvName(secret.name)})`;
 
 /** Variables as `environment_get` lists them, one a line. */
 const variableLines = (variables: Readonly<Record<string, string>>): string =>
@@ -322,22 +322,22 @@ const skillLines = (skills: ReadonlyArray<EnvironmentSkill>): string =>
 
 /** What `environment_get` says of an Environment. */
 export const describeEnvironment = (details: EnvironmentDetails, current: boolean): string => {
-  const { settings, everyVariables } = details;
+  const { settings, globalVariables } = details;
   const variables = Record.toEntries(settings.variables);
 
   const inherited = Record.filter(
-    everyVariables,
+    globalVariables,
     (_, name) => !Record.has(settings.variables, name),
   );
 
-  const overridden = Arr.filter(Record.keys(everyVariables), (name) =>
+  const overridden = Arr.filter(Record.keys(globalVariables), (name) =>
     Record.has(settings.variables, name),
   );
 
   const ownSkills = new Set(Arr.map(details.skills, (skill) => skill.name));
-  const inheritedSkills = Arr.filter(details.everySkills, (skill) => !ownSkills.has(skill.name));
+  const inheritedSkills = Arr.filter(details.globalSkills, (skill) => !ownSkills.has(skill.name));
 
-  const overriddenSkills = Arr.filterMap(details.everySkills, (skill) =>
+  const overriddenSkills = Arr.filterMap(details.globalSkills, (skill) =>
     ownSkills.has(skill.name) ? Result.succeed(skill.name) : Result.failVoid,
   );
 
@@ -352,8 +352,8 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
       `Variables (plain, in every command's environment): ${
         variables.length === 0 ? "none" : variableLines(settings.variables)
       }`,
-      `Variables for every Environment (id "${EVERY_ENVIRONMENT_ID}"; the Environment's own of the same name win): ${
-        Record.isEmptyRecord(everyVariables)
+      `Variables at Global (id "${GLOBAL_ID}"; the Environment's own of the same name win): ${
+        Record.isEmptyRecord(globalVariables)
           ? "none"
           : `${variableLines(inherited)}${overridden.length === 0 ? "" : `\n  overridden here: ${Arr.join(overridden, ", ")}`}`
       }`,
@@ -366,9 +366,9 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over those kept for every Environment of the same name; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove change them): ${skillLines(details.skills)}`,
-      `Skills for every Environment (id "${EVERY_ENVIRONMENT_ID}"; the Environment's own of the same name win): ${
-        details.everySkills.length === 0
+      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over those kept Global of the same name; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove change them): ${skillLines(details.skills)}`,
+      `Skills at Global (id "${GLOBAL_ID}"; the Environment's own of the same name win): ${
+        details.globalSkills.length === 0
           ? "none"
           : `${skillLines(inheritedSkills)}${overriddenSkills.length === 0 ? "" : `\n  overridden here: ${Arr.join(overriddenSkills, ", ")}`}`
       }`,
@@ -381,12 +381,12 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
   );
 };
 
-/** What `environment_get` says of what is kept for every Environment (id `*`). */
-const describeEveryEnvironment = (details: EveryEnvironmentDetails): string =>
+/** What `environment_get` says of what is kept Global (id `*`). */
+const describeGlobal = (details: GlobalDetails): string =>
   Arr.join(
     [
-      `Kept for every Environment (id "${EVERY_ENVIRONMENT_ID}")`,
-      `Variables (plain, in every command's environment of every Environment; an Environment's own of the same name wins): ${
+      `Kept at Global (id "${GLOBAL_ID}")`,
+      `Variables (plain, in every command's environment, in any Environment; an Environment's own of the same name wins): ${
         Record.isEmptyRecord(details.variables) ? "none" : variableLines(details.variables)
       }`,
       `Kept Secrets (values never shown): ${
@@ -394,7 +394,7 @@ const describeEveryEnvironment = (details: EveryEnvironmentDetails): string =>
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (served read-only at ${SKILLS_ROOT}/<name> in every Environment's Workspaces; an Environment's own of the same name wins there; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove with id "${EVERY_ENVIRONMENT_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
+      `Skills (served read-only at ${SKILLS_ROOT}/<name> in each Environment's Workspaces; an Environment's own of the same name wins there; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove with id "${GLOBAL_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
     ],
     "\n",
   );
@@ -407,11 +407,9 @@ const listingLine = (environment: EnvironmentListing, current: boolean): string 
 const shownValue = (value: Schema.Json | null): string =>
   value === null ? "not set" : JSON.stringify(value);
 
-/** An Environment as a result names it: its name in quotes, then its id; or every Environment. */
+/** An Environment as a result names it: its name in quotes, then its id; or Global. */
 const namedEnvironment = ({ id, name }: { readonly id: string; readonly name: string }): string =>
-  id === EVERY_ENVIRONMENT_ID
-    ? EVERY_ENVIRONMENT_NAME
-    : `Environment ${JSON.stringify(name)} (${id})`;
+  id === GLOBAL_ID ? GLOBAL_NAME : `Environment ${JSON.stringify(name)} (${id})`;
 
 /** When a change applies, and whether a Build was asked for. */
 export const describeApplied = (own: boolean, newBuild: boolean): string =>
@@ -433,20 +431,16 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
   );
 
 /**
- * When a change of a variable kept for every Environment applies, whom it does not reach, and whose Build was asked
+ * When a change of a variable kept Global applies, whom it does not reach, and whose Build was asked
  * for.
  */
-const describeAppliedEverywhere = ({
-  overriddenIn,
-  newBuilds,
-  own,
-}: EveryEnvironmentChanged): string =>
+const describeAppliedGlobal = ({ overriddenIn, newBuilds, own }: GlobalChanged): string =>
   Arr.join(
     [
       overriddenIn.length === 0
         ? "No Environment has a variable of its own with that name, so it reaches them all."
         : `Each Environment's own variable of the same name wins; it does not reach ${Arr.join(Arr.map(overriddenIn, namedEnvironment), ", ")}.`,
-      "It applies at the next Container start of each Workspace of every Environment: a Container that runs keeps what it started with.",
+      "It applies at the next Container start of every Workspace: a Container that runs keeps what it started with.",
       ...(own
         ? [
             "This Session's Workspace has the change already: container_restart applies it to its Container now.",
@@ -504,19 +498,19 @@ export const Id = Schema.String.annotate({
  * The `id` of a tool that also takes `*`, `kept` saying what that addresses. Built when used: the constant is not there
  * when this module loads first.
  */
-export const idOrEvery = (kept: string) =>
+export const idOrGlobal = (kept: string) =>
   Schema.String.annotate({
-    description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${EVERY_ENVIRONMENT_ID}" for ${kept}`,
+    description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for ${kept}`,
   });
 
 /**
- * Fails when `id` is `*`, which only the tools that keep something for every Environment take: the others change one
+ * Fails when `id` is `*`, which only the tools that keep something at Global take: the others change one
  * Environment's own record or settings.
  */
-export const refuseEveryEnvironment = (id: string | undefined) =>
-  id === EVERY_ENVIRONMENT_ID
+export const refuseGlobal = (id: string | undefined) =>
+  id === GLOBAL_ID
     ? EnvironmentsError.make({
-        message: `The id "${EVERY_ENVIRONMENT_ID}" names the variables, Secrets and Skills kept for every Environment: only environment_variable_set, environment_variable_unset, environment_get, environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
+        message: `The id "${GLOBAL_ID}" names the variables, Secrets and Skills kept Global: only environment_variable_set, environment_variable_unset, environment_get, environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
       })
     : Effect.void;
 
@@ -580,7 +574,7 @@ export const EnvironmentTools: Effect.Effect<
   /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
   const target = (id: string | undefined) =>
     Effect.gen(function* () {
-      yield* refuseEveryEnvironment(id);
+      yield* refuseGlobal(id);
 
       const current = yield* environments.current;
       const environment = id ?? current;
@@ -599,12 +593,12 @@ export const EnvironmentTools: Effect.Effect<
    * Apply the change of `field` to `value` as `tool`, and say how it went: refused when any of `texts` holds a Secret
    * (`refusal` says it) or the reason does, then `prepare`d with the Environment found (which may refuse it too, or hand
    * `changed` what it read), then made by the Registry. With `every`, `id` may be `*`: the change is then to the
-   * variables kept for every Environment.
+   * variables kept Global.
    */
   const applyChange = <Prepared>({
     tool,
     id,
-    every = false,
+    takesGlobal = false,
     field,
     value,
     texts = [],
@@ -617,7 +611,7 @@ export const EnvironmentTools: Effect.Effect<
   }: {
     readonly tool: string;
     readonly id: string | undefined;
-    readonly every?: boolean;
+    readonly takesGlobal?: boolean;
     readonly field: string;
     readonly value: Schema.Json | null;
     /** The text the value is made of, kept as written: none holds a Secret's value or a credential. */
@@ -635,8 +629,8 @@ export const EnvironmentTools: Effect.Effect<
       readonly change: AgentChange;
       readonly own: boolean;
       readonly newBuild: boolean;
-      /** Set for a change to the variables kept for every Environment. */
-      readonly every: EveryEnvironmentChanged | undefined;
+      /** Set for a change to the variables kept Global. */
+      readonly global: GlobalChanged | undefined;
       readonly prepared: Prepared;
     }) => string;
   }) =>
@@ -654,8 +648,8 @@ export const EnvironmentTools: Effect.Effect<
       }
 
       const { environment, own } =
-        every && id === EVERY_ENVIRONMENT_ID
-          ? { environment: EVERY_ENVIRONMENT_ID, own: false }
+        takesGlobal && id === GLOBAL_ID
+          ? { environment: GLOBAL_ID, own: false }
           : yield* target(id);
 
       const prepared = yield* prepare(environment);
@@ -694,8 +688,8 @@ export const EnvironmentTools: Effect.Effect<
 
         case "changed": {
           const { change } = applied;
-          // A change for every Environment reaches the Session's own Workspace unless its Environment overrides it.
-          const reaches = applied.every?.own ?? own;
+          // A change at Global reaches the Session's own Workspace unless its Environment overrides it.
+          const reaches = applied.global?.own ?? own;
 
           yield* log.record({ tool, environmentName: applied.environment.name, field });
 
@@ -708,7 +702,7 @@ export const EnvironmentTools: Effect.Effect<
                   change,
                   own: reaches,
                   newBuild: applied.newBuild,
-                  every: applied.every,
+                  global: applied.global,
                   prepared,
                 }),
               },
@@ -745,17 +739,17 @@ export const EnvironmentTools: Effect.Effect<
     },
     conversation: number,
   ) => {
-    const everywhere = id === EVERY_ENVIRONMENT_ID;
-    const preposition = everywhere ? "for" : "in";
+    const atGlobal = id === GLOBAL_ID;
+    const preposition = atGlobal ? "for" : "in";
 
     return applyChange({
       tool,
       id,
-      every: true,
+      takesGlobal: true,
       field: variableField(name),
       value,
       texts: value === null ? [] : [value],
-      refusal: `Nothing was saved: the value holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.${everywhere ? ` If the value is not secret (an email, a URL) and is kept as a Secret only so every Environment has it, ask the user to delete that Secret first (environment_secret_delete asks for their Approval, or they delete it on the Environments page): then this call saves it as a variable for every Environment.` : ""}`,
+      refusal: `Nothing was saved: the value holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.${atGlobal ? ` If the value is not secret (an email, a URL) and is kept as a Secret only so it is kept Global, ask the user to delete that Secret first (environment_secret_delete asks for their Approval, or they delete it on the Environments page): then this call saves it as a variable at Global.` : ""}`,
       reason,
       conversation,
       prepare: () => Effect.void,
@@ -763,8 +757,8 @@ export const EnvironmentTools: Effect.Effect<
         value === null
           ? `${name} is not set ${preposition} ${where}: nothing changed, and nothing was recorded.`
           : `${name} already has that value ${preposition} ${where}: nothing changed, and nothing was recorded.`,
-      changed: ({ where, change, own, newBuild, every }) =>
-        `${value === null ? `Unset ${name}` : `Set ${name}`} ${preposition} ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${every === undefined ? describeApplied(own, newBuild) : describeAppliedEverywhere(every)}`,
+      changed: ({ where, change, own, newBuild, global }) =>
+        `${value === null ? `Unset ${name}` : `Set ${name}`} ${preposition} ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${global === undefined ? describeApplied(own, newBuild) : describeAppliedGlobal(global)}`,
     });
   };
 
@@ -813,14 +807,14 @@ export const EnvironmentTools: Effect.Effect<
   const list = yield* defineEffectTool({
     name: "environment_list",
     description:
-      "List the Environments: each one's id, name, Repos and Build, marking this Session's own, and how many variables are kept for every Environment. An Environment is what a Workspace is made from: its Repos and its Container settings. Use environment_get with an id to see an Environment's settings.",
+      "List the Environments: each one's id, name, Repos and Build, marking this Session's own, and how many variables are kept Global. An Environment is what a Workspace is made from: its Repos and its Container settings. Use environment_get with an id to see an Environment's settings.",
     parameters: Schema.Struct({}),
     replay: "safe",
     execute: () =>
       Effect.gen(function* () {
         const current = yield* environments.current;
         const listed = yield* environments.list;
-        const every = yield* environments.every;
+        const globalDetails = yield* environments.global;
 
         return {
           output: [
@@ -834,7 +828,7 @@ export const EnvironmentTools: Effect.Effect<
                         listingLine(environment, environment.id === current),
                       ),
                       "\n",
-                    )}\nVariables for every Environment: ${Record.size(every.variables)} (environment_get with id "${EVERY_ENVIRONMENT_ID}")`,
+                    )}\nVariables at Global: ${Record.size(globalDetails.variables)} (environment_get with id "${GLOBAL_ID}")`,
             },
           ],
           details: { current, environments: Arr.map(listed, ({ id, name }) => ({ id, name })) },
@@ -844,22 +838,18 @@ export const EnvironmentTools: Effect.Effect<
 
   const get = yield* defineEffectTool({
     name: "environment_get",
-    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace), the variables kept for every Environment that its own do not override, the names of the Secrets kept for it and for every Environment (never their values), its own Skills (name, description, when saved) and the Skills kept for every Environment that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${EVERY_ENVIRONMENT_ID}", show what is kept for every Environment instead: its variables, the names of its Secrets and its Skills.`,
+    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace), the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its variables, the names of its Secrets and its Skills.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(
-        idOrEvery("the variables, Secrets and Skills kept for every Environment"),
-      ),
+      id: Schema.optionalKey(idOrGlobal("the variables, Secrets and Skills kept Global")),
     }),
     replay: "safe",
     execute: ({ id }) =>
       Effect.gen(function* () {
-        if (id === EVERY_ENVIRONMENT_ID) {
+        if (id === GLOBAL_ID) {
           return {
-            output: [
-              { type: "text" as const, text: describeEveryEnvironment(yield* environments.every) },
-            ],
+            output: [{ type: "text" as const, text: describeGlobal(yield* environments.global) }],
             details: {
-              environment: { id: EVERY_ENVIRONMENT_ID, name: EVERY_ENVIRONMENT_NAME },
+              environment: { id: GLOBAL_ID, name: GLOBAL_NAME },
               current: false,
             },
           };
@@ -882,14 +872,14 @@ export const EnvironmentTools: Effect.Effect<
     description: Arr.join(
       [
         "Set one of an Environment's variables (this Session's Environment unless id names another): every command on its Workspaces' Containers, their Setup and Start Scripts and the Environment's Build get it. The same rules as the user's Edit dialog: at most 50 variables, values of at most 4096 characters, and names a shell can export, other than those the Container sets itself (PATH, HOME, GITHUB_TOKEN, CLOUDPID_…).",
-        `With id "${EVERY_ENVIRONMENT_ID}" the variable is kept for every Environment, for a value that is shared and not secret (an email, a URL); an Environment's own variable of the same name wins, and the 50 counts an Environment's own and the ones it inherits together, so a call that would leave any Environment with more is refused. Every Environment's Build is made with it, so a new Build is asked for in each Environment that does not override it.`,
+        `With id "${GLOBAL_ID}" the variable is kept Global, for a value that is shared and not secret (an email, a URL); an Environment's own variable of the same name wins, and the 50 counts an Environment's own and the ones it inherits together, so a call that would leave any Environment with more is refused. Each Environment's Build is made with it, so a new Build is asked for in each Environment that does not override it.`,
         PLAIN_VALUES,
         "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a variable kept for every Environment")),
+      id: Schema.optionalKey(idOrGlobal("a variable kept Global")),
       name: VariableName,
       value: Schema.String.annotate({ description: "The value, saved as written" }),
       reason: Reason,
@@ -902,9 +892,9 @@ export const EnvironmentTools: Effect.Effect<
 
   const unset = yield* defineEffectTool({
     name: "environment_variable_unset",
-    description: `Unset one of an Environment's variables (this Session's Environment unless id names another; id "${EVERY_ENVIRONMENT_ID}" is a variable kept for every Environment, which no Environment inherits any more, and a new Build is asked for in each that did). The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now. A variable that is not set is left as it is, and nothing is recorded.`,
+    description: `Unset one of an Environment's variables (this Session's Environment unless id names another; id "${GLOBAL_ID}" is a variable kept Global, which no Environment inherits any more, and a new Build is asked for in each that did). The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now. A variable that is not set is left as it is, and nothing is recorded.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a variable kept for every Environment")),
+      id: Schema.optionalKey(idOrGlobal("a variable kept Global")),
       name: VariableName,
       reason: Reason,
     }),

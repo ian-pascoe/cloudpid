@@ -43,7 +43,7 @@ const notKept = (request: KeepRequest, problem: string): ReadonlyArray<KeepResul
 
 /**
  * The keep hook of the Session's Secrets (`SecretsOptions.keep`): saves the Secrets of an answer for the Session's
- * Environment or for every Environment, and says of each how it went. Never fails.
+ * Environment or Global, and says of each how it went. Never fails.
  */
 export const sessionKeepSecrets =
   ({ registry, session, builds, changes }: SessionKeepOptions) =>

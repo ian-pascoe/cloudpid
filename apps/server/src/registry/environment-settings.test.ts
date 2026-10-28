@@ -31,16 +31,16 @@ describe("saving an Environment's Container settings", () => {
   });
 });
 
-describe("saving an Environment's variables beside those kept for every Environment", () => {
+describe("saving an Environment's variables beside those kept Global", () => {
   const variables = (count: number, prefix = "V") =>
     Record.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}`, "x"] as const));
 
-  it("refuses variables that, with the ones kept for every Environment they do not override, are more than 50", () => {
+  it("refuses variables that, with the ones kept Global they do not override, are more than 50", () => {
     const refused = writeEnvironmentSettings({ variables: variables(46) }, variables(7, "E"));
 
     expect(refused).toEqual(
       Result.fail(
-        "variables: with the 7 variables for every Environment it does not override, it would have 53: at most 50",
+        "variables: with the 7 variables at Global it does not override, it would have 53: at most 50",
       ),
     );
   });
@@ -54,7 +54,7 @@ describe("saving an Environment's variables beside those kept for every Environm
     ).toBe(true);
   });
 
-  it("keeps the variables saved as the Environment's own, without those kept for every Environment", () => {
+  it("keeps the variables saved as the Environment's own, without those kept Global", () => {
     expect(
       Result.getOrThrow(writeEnvironmentSettings({ variables: { A: "1" } }, { B: "2" })).overrides,
     ).toEqual({ variables: { A: "1" } });

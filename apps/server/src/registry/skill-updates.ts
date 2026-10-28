@@ -65,7 +65,7 @@ const isCommit = (ref: string): boolean => /^[0-9a-f]{40}$/.test(ref);
 
 /** What an update is asked: the Skills (absent: every one marked update available), and whether edits may be replaced. */
 export type UpdateRequest = {
-  /** An Environment's id, or `*` for every Environment. */
+  /** An Environment's id, or `*` at Global. */
   readonly environment: string;
   readonly names?: ReadonlyArray<string> | undefined;
   readonly overwrite: boolean;
@@ -286,7 +286,7 @@ const ordered = <Entry extends { readonly name: string }>(
 
 /**
  * What an update of the Skills `request` names would do, with nothing saved or recorded: the files each would take, for
- * the owner's Approval card of an update for every Environment.
+ * the owner's Approval card of an update at Global.
  */
 export const previewSkillUpdates = async (
   context: Pick<SkillChangeContext, "store" | "skills">,

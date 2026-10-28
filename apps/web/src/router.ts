@@ -20,7 +20,7 @@
 // layout on the device (`session-layout-state.ts`) shows them again when the Session is opened without a query.
 //
 // The Skills page (`/skills`) keeps its view in the query too: `?tab=` (`installed`, `all-time`, `trending`, `hot`),
-// `?q=` (the search) and `?environment=` (an Environment's id, or `*` for the Skills kept for every Environment, that
+// `?q=` (the search) and `?environment=` (an Environment's id, or `*` for the Skills kept Global, that
 // the Installed tab shows alone). The tabs are a query, not a path, because the path's first segment after `/skills`
 // is always an owner: `/skills/:owner`, `/skills/:owner/:repo` and `/skills/:owner/:repo/:skill`, so an owner named
 // `installed` is an owner (docs/architecture/client-and-protocol.md → Skills page).
@@ -170,7 +170,7 @@ export interface SkillsParams {
   readonly tab: SkillsTab | undefined;
   /** The search, as typed; `""` for none. */
   readonly query: string;
-  /** The Environment whose Skills the Installed tab shows alone (`*`: those kept for every Environment); undefined for all. */
+  /** The Environment whose Skills the Installed tab shows alone (`*`: those kept Global); undefined for all. */
   readonly environment: string | undefined;
 }
 

@@ -140,7 +140,7 @@ export type InstalledSkill = {
   readonly message?: string | undefined;
   /** The Agent change that kept it (the agent's install only). */
   readonly change?: AgentChange | undefined;
-  /** For a Skill kept for every Environment: the Environments whose own Skill of the name hides it. */
+  /** For a Skill kept Global: the Environments whose own Skill of the name hides it. */
   readonly overriddenIn?: ReadonlyArray<{ readonly id: string; readonly name: string }> | undefined;
 };
 
@@ -188,7 +188,7 @@ export type SkillInstallPreview =
     };
 
 /**
- * What the owner's Approval of an install for every Environment was asked against, which the install must still find: the
+ * What the owner's Approval of an install at Global was asked against, which the install must still find: the
  * commit shown, and for each Skill shown its folder, the digest of its files, and when the Skill of its name was last
  * saved (null: none kept). Exactly those folders are read again at that commit; a Skill whose files are not as shown is
  * not kept.
@@ -281,11 +281,11 @@ export class SkillDirectoryError extends Schema.TaggedError<
 
 /**
  * Where a Skill of the Skill directory is installed, as the Registry works it out from the Skills it keeps, matched by
- * Skill source repo and path (not by name alone): for every Environment, or as an Environment's own Skill.
+ * Skill source repo and path (not by name alone): at Global, or as an Environment's own Skill.
  */
 export const SkillInstalledIn = Schema.Struct({
-  /** The Skills kept for every Environment hold it. */
-  everyEnvironment: Schema.Boolean,
+  /** The Skills kept Global hold it. */
+  global: Schema.Boolean,
   /** The ids of the Environments that keep it as their own. */
   environments: Schema.Array(Schema.String),
   /** An installed copy is marked update available (GLOSSARY.md → Skill source). */
@@ -519,7 +519,7 @@ export const SkillUpdate = Schema.Struct({ skills: Schema.Array(SkillUpdated) })
 export type SkillUpdate = typeof SkillUpdate.Type;
 
 /**
- * What the owner's Approval of an update for every Environment was asked for, to apply exactly that: the commit shown, the
+ * What the owner's Approval of an update at Global was asked for, to apply exactly that: the commit shown, the
  * digest of the folder at it (`folderHash`), and when the Skill was last saved. The update is made only at that commit,
  * with those files, while the Skill still was last saved then.
  */
@@ -575,7 +575,7 @@ export type SkillUpdateReady = {
 /** How an update of installed Skills went, as the Registry answers it. */
 export type SkillUpdateRun<Entry = SkillUpdateEntry> =
   | { readonly status: "missing" }
-  /** Nothing was read or changed: more Skills than one Approval shows, or a change for every Environment with no Approval. */
+  /** Nothing was read or changed: more Skills than one Approval shows, or a change at Global with no Approval. */
   | { readonly status: "refused"; readonly message: string }
   /** No Skill was named and none is marked update available. */
   | {

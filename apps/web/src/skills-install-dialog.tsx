@@ -2,7 +2,7 @@
 
 // The install target picker (ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the dialog every place
 // that offers Install opens, a row of a Skill directory list, a repo's selected Skills, a Skill's page. It asks where to
-// install, Every environment (the default) or one Environment, and installs only the Skills the page named, through the
+// install, Global (the default) or one Environment, and installs only the Skills the page named, through the
 // owner's install: no Approval, and no Agent change. A page opens it by setting `skillsToInstallAtom` (with the `ref` its
 // `?ref=` names, if any). `SkillsFrame` (skills-page.tsx) mounts it, so every page that renders through the frame, which
 // all of `/skills` and the pages below it do, has it; a page that does not must mount it itself.
@@ -16,7 +16,7 @@ import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { environmentListAtom } from "./environments-state.ts";
-import { EVERY_ENVIRONMENT } from "./environments.ts";
+import { GLOBAL } from "./environments.ts";
 import { settledFailureOf } from "./registry.ts";
 import { installToTargetAtom, skillsToInstallAtom, type SkillsToInstall } from "./skills-state.ts";
 import { installOutcomeLines } from "./skills.ts";
@@ -25,11 +25,11 @@ import { installOutcomeLines } from "./skills.ts";
 const titleOf = ({ skills }: SkillsToInstall): string =>
   skills.length === 1 ? `Install ${skills[0]}` : `Install ${skills.length} skills`;
 
-/** The picker's form: the target, with Every environment chosen first, and the install's outcome once it ran. */
+/** The picker's form: the target, with Global chosen first, and the install's outcome once it ran. */
 const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close: () => void }) => {
   const environments = useAtomValue(environmentListAtom);
   const [installed, install] = useAtom(installToTargetAtom);
-  const [target, setTarget] = useState(EVERY_ENVIRONMENT);
+  const [target, setTarget] = useState(GLOBAL);
   const answer = installed.pipe(AsyncResult.value, Option.getOrNull);
   const busy = installed.waiting;
 
@@ -59,7 +59,7 @@ const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close
             setTarget(event.target.value);
           }}
         >
-          <option value={EVERY_ENVIRONMENT}>Every environment</option>
+          <option value={GLOBAL}>Global</option>
           {(environments ?? []).map((environment) => (
             <option key={environment.id} value={environment.id}>
               {environment.name}

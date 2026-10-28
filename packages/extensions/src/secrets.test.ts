@@ -298,7 +298,7 @@ describe("secrets", () => {
 
       const result = await session.lastResult();
 
-      expect(result?.text).toContain("API_KEY: provided and kept for every Environment");
+      expect(result?.text).toContain("API_KEY: provided and kept Global");
       expect(result?.text).toContain("it does not expire");
       expect(result?.text).not.toContain(VALUE);
       expect(session.registry.secrets).toEqual([

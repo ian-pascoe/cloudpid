@@ -9,7 +9,7 @@ import {
   EnvironmentError,
   type EnvironmentSecretRecord,
   type EnvironmentSkill,
-  EVERY_ENVIRONMENT_SCOPE,
+  GLOBAL_SCOPE,
   fieldRepo,
   fieldSkill,
   fieldVariable,
@@ -56,7 +56,7 @@ import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
-import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
+import { GLOBAL_DOCUMENT, workspaceOverridesOf } from "./global.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillRepos } from "./skill-repo.ts";
@@ -95,14 +95,14 @@ const fakeRegistries = () => {
   const environments: EnvironmentRecord[] = [
     { id: DEFAULT_ENVIRONMENT, name: "Default", repos: [], createdAt: 0 },
   ];
-  /** The Container settings overrides saved per Environment, and under `*` the settings kept for every Environment. */
+  /** The Container settings overrides saved per Environment, and under `*` the settings kept Global. */
 
   const overridesOf = new Map<string, Schema.Json>();
 
-  /** The variables kept for every Environment. */
-  const everyVariables = (): Readonly<Record<string, string>> =>
+  /** The variables kept Global. */
+  const globalVariables = (): Readonly<Record<string, string>> =>
     // SAFETY: the tests only save overrides of the settings' own shape.
-    (overridesOf.get(EVERY_ENVIRONMENT_SCOPE) as { variables?: Record<string, string> } | undefined)
+    (overridesOf.get(GLOBAL_SCOPE) as { variables?: Record<string, string> } | undefined)
       ?.variables ?? {};
 
   /**
@@ -113,9 +113,7 @@ const fakeRegistries = () => {
     workspaceOverridesOf(
       {
         getDocument: (name) =>
-          name === EVERY_ENVIRONMENT_DOCUMENT
-            ? JSON.stringify(overridesOf.get(EVERY_ENVIRONMENT_SCOPE) ?? {})
-            : null,
+          name === GLOBAL_DOCUMENT ? JSON.stringify(overridesOf.get(GLOBAL_SCOPE) ?? {}) : null,
         putDocument: () => undefined,
         getEnvironmentSettings: (id) => overridesOf.get(id) ?? {},
       },
@@ -143,7 +141,7 @@ const fakeRegistries = () => {
   ): SkillInstallation => {
     const found =
       environment === "*"
-        ? Option.some({ id: "*", name: "every Environment" })
+        ? Option.some({ id: "*", name: "Global" })
         : Arr.findFirst(environments, (item) => item.id === environment);
 
     if (Option.isNone(found)) return { status: "missing" };
@@ -203,7 +201,7 @@ const fakeRegistries = () => {
       return known;
     });
 
-  /** What `environment` uses: its own over those kept for every Environment, by name. */
+  /** What `environment` uses: its own over those kept Global, by name. */
   const keptFor = (environment: string): ReadonlyArray<KeptSecret> => {
     const byName = new Map<string, KeptSecret>();
 
@@ -775,30 +773,30 @@ const fakeRegistries = () => {
           },
         };
       }),
-    getEveryEnvironmentSettings: () =>
+    getGlobalSettings: () =>
       Effect.sync(() => ({
-        settings: { variables: everyVariables() },
-        overrides: overridesOf.get(EVERY_ENVIRONMENT_SCOPE) ?? {},
+        settings: { variables: globalVariables() },
+        overrides: overridesOf.get(GLOBAL_SCOPE) ?? {},
       })),
-    updateEveryEnvironmentSettings: ({ overrides }) =>
+    updateGlobalSettings: ({ overrides }) =>
       Effect.sync(() => {
-        calls.push("updateEveryEnvironmentSettings");
+        calls.push("updateGlobalSettings");
 
         if (overrides === null) {
           return { status: "rejected" as const, message: "variables: Expected an object" };
         }
 
-        overridesOf.set(EVERY_ENVIRONMENT_SCOPE, overrides);
+        overridesOf.set(GLOBAL_SCOPE, overrides);
 
         return {
           status: "saved" as const,
-          state: { settings: { variables: everyVariables() }, overrides },
+          state: { settings: { variables: globalVariables() }, overrides },
         };
       }),
     workspaceOverrides: () => Effect.die("The endpoint hands no Workspace its overrides"),
     // The Session DO makes Agent changes, never the endpoint.
     changeEnvironment: () => Effect.die("The endpoint makes no Agent change"),
-    changeEveryEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    changeGlobal: () => Effect.die("The endpoint makes no Agent change"),
     agentCreateEnvironment: () => Effect.die("The endpoint makes no Agent change"),
     agentRenameEnvironment: () => Effect.die("The endpoint makes no Agent change"),
     agentAddRepo: () => Effect.die("The endpoint makes no Agent change"),
@@ -1088,7 +1086,7 @@ const fakeRegistries = () => {
             environment: item.id,
             repos: item.repos,
             settings: overridesOf.get(item.id) ?? {},
-            everyVariables: everyVariables(),
+            globalVariables: globalVariables(),
             recorded: buildRecords.get(item.id) ?? NO_BUILD,
             secrets: buildDigestOf(item.id),
           }),
@@ -2871,17 +2869,17 @@ it("fails overrides the Registry rejects with its readable message, saving nothi
   ).toMatchObject({ overrides: {} });
 });
 
-it("saves the settings kept for every Environment and keeps every Environment's Build current after the answer", async () => {
+it("saves the settings kept Global and keeps each Environment's Build current after the answer", async () => {
   const fake = fakeRegistries();
   const other = await makeEnvironment(fake, "Other");
 
   await fake.runBackground();
 
   const saved = await call(fake, (registry) =>
-    registry.updateEveryEnvironmentSettings({ overrides: { variables: { SHARED: "all" } } }),
+    registry.updateGlobalSettings({ overrides: { variables: { SHARED: "all" } } }),
   );
 
-  const read = await call(fake, (registry) => registry.getEveryEnvironmentSettings());
+  const read = await call(fake, (registry) => registry.getGlobalSettings());
 
   expect(saved).toEqual({
     settings: { variables: { SHARED: "all" } },
@@ -2897,16 +2895,16 @@ it("saves the settings kept for every Environment and keeps every Environment's 
   expect(fake.calls).not.toContain("buildWork:*");
 });
 
-it("fails settings kept for every Environment that the Registry rejects with its readable message, saving nothing", async () => {
+it("fails settings kept Global that the Registry rejects with its readable message, saving nothing", async () => {
   const fake = fakeRegistries();
 
   const error = await call(fake, (registry) =>
-    Effect.flip(registry.updateEveryEnvironmentSettings({ overrides: null })),
+    Effect.flip(registry.updateGlobalSettings({ overrides: null })),
   );
 
   expect(error).toBeInstanceOf(EnvironmentError);
   expect(error.message).toBe("variables: Expected an object");
-  expect(await call(fake, (registry) => registry.getEveryEnvironmentSettings())).toEqual({
+  expect(await call(fake, (registry) => registry.getGlobalSettings())).toEqual({
     settings: { variables: {} },
     overrides: {},
   });
@@ -2914,7 +2912,7 @@ it("fails settings kept for every Environment that the Registry rejects with its
   await fake.runBackground();
 
   // No Build is looked at again for a save that was refused.
-  expect(fake.calls).toEqual(["updateEveryEnvironmentSettings"]);
+  expect(fake.calls).toEqual(["updateGlobalSettings"]);
 });
 
 it("refuses the settings of an Environment the Registry does not list", async () => {
@@ -2973,7 +2971,7 @@ it("lists an Environment's Agent changes, newest first, and refuses an Environme
   expect(error.message).toBe('Environment "0000beef" does not exist');
 });
 
-it("lists the Agent changes of the Secrets kept for every Environment under the scope *, and takes it to revert one", async () => {
+it("lists the Agent changes of the Secrets kept Global under the scope *, and takes it to revert one", async () => {
   const fake = fakeRegistries();
 
   fake.agentChanges.push({
@@ -2994,20 +2992,20 @@ it("lists the Agent changes of the Secrets kept for every Environment under the 
   expect(error.message).toBe('Environment "*" has no change 9');
 });
 
-it("reverts an Agent change to a variable kept for every Environment, and keeps every Environment's Build current, not a Build of the scope *", async () => {
+it("reverts an Agent change to a variable kept Global, and keeps each Environment's Build current, not a Build of the scope *", async () => {
   const fake = fakeRegistries();
   const other = await makeEnvironment(fake, "Other");
 
   await fake.runBackground();
-  fake.overridesOf.set(EVERY_ENVIRONMENT_SCOPE, { variables: { SHARED: "2" } });
-  fake.agentChanges.push(agentChange(1, "SHARED", "1", "2", EVERY_ENVIRONMENT_SCOPE));
+  fake.overridesOf.set(GLOBAL_SCOPE, { variables: { SHARED: "2" } });
+  fake.agentChanges.push(agentChange(1, "SHARED", "1", "2", GLOBAL_SCOPE));
 
   const reverted = await call(fake, (registry) =>
-    registry.revertAgentChange({ environment: EVERY_ENVIRONMENT_SCOPE, change: 1 }),
+    registry.revertAgentChange({ environment: GLOBAL_SCOPE, change: 1 }),
   );
 
   expect(reverted).toMatchObject({ actor: "owner", before: "2", after: "1", reverts: 1 });
-  expect(fake.overridesOf.get(EVERY_ENVIRONMENT_SCOPE)).toEqual({ variables: { SHARED: "1" } });
+  expect(fake.overridesOf.get(GLOBAL_SCOPE)).toEqual({ variables: { SHARED: "1" } });
 
   fake.calls.length = 0;
   await fake.runBackground();
@@ -3178,7 +3176,7 @@ it("lists an Environment's Skills, removes one on the owner's word, and refuses 
   ]);
 });
 
-it("lists the Skills kept for every Environment, removes one on the owner's word with no Approval, and shows a change's files under the scope *", async () => {
+it("lists the Skills kept Global, removes one on the owner's word with no Approval, and shows a change's files under the scope *", async () => {
   const fake = fakeRegistries();
 
   fake.skillsKept.set("*", [{ name: "release", description: "Cut a release.", savedAt: 1_000 }]);
@@ -3249,7 +3247,7 @@ it("installs Skills from a source on the owner's word, listing a source that hol
     ),
   );
 
-  // The owner installs for every Environment (`*`) with the same call.
+  // The owner installs at Global (`*`) with the same call.
   await call(fake, (registry) =>
     registry.installEnvironmentSkills({ environment: "*", source: "mattpocock/skills" }),
   );
@@ -3287,7 +3285,7 @@ it("updates Skills for the page as the owner's own save, saying how each went an
     }),
   );
 
-  const everywhere = await call(fake, (registry) =>
+  const atGlobal = await call(fake, (registry) =>
     registry.updateEnvironmentSkills({ environment: "*", names: [], overwrite: true }),
   );
 
@@ -3302,7 +3300,7 @@ it("updates Skills for the page as the owner's own save, saying how each went an
       { name: "tdd", outcome: "modified", message: "it was edited" },
     ],
   });
-  expect(everywhere).toEqual({ skills: [] });
+  expect(atGlobal).toEqual({ skills: [] });
   expect(unknown.message).toBe('Environment "ghost" does not exist');
   // Skills are not part of a Build: nothing else runs. The owner's Update needs no Approval, even for `*`.
   expect(fake.calls.filter((name) => !name.startsWith("updateSkills"))).toEqual([]);
@@ -3378,7 +3376,7 @@ it("lists a Skill directory page with where each Skill is installed, matched by 
   const fake = fakeRegistries();
   const commit = "c0ffee0000000000000000000000000000000001";
 
-  // Kept for every Environment from a folder of the repo whose name is the row's Skill ID; the name in it is another.
+  // Kept at Global from a folder of the repo whose name is the row's Skill ID; the name in it is another.
   fake.skillsKept.set("*", [
     {
       name: "Grill Me",
@@ -3427,7 +3425,7 @@ it("lists a Skill directory page with where each Skill is installed, matched by 
         skillId: "grill-me",
         name: "grill-me",
         installs: 1_450_000,
-        installed: { everyEnvironment: true, environments: [], updateAvailable: true },
+        installed: { global: true, environments: [], updateAvailable: true },
       },
       {
         source: "vercel-labs/skills",
@@ -3435,7 +3433,7 @@ it("lists a Skill directory page with where each Skill is installed, matched by 
         name: "find-skills",
         installs: 4_088_520,
         installed: {
-          everyEnvironment: false,
+          global: false,
           environments: [DEFAULT_ENVIRONMENT],
           updateAvailable: false,
         },
@@ -3481,7 +3479,7 @@ it("searches the Skill directory with the same badges, and reports why a list or
       skillId: "tdd",
       name: "tdd",
       installs: 900_000,
-      installed: { everyEnvironment: false, environments: ["work"], updateAvailable: false },
+      installed: { global: false, environments: ["work"], updateAvailable: false },
     },
   ]);
   expect(searchFailed).toBeInstanceOf(SkillDirectoryError);
@@ -3560,7 +3558,7 @@ it("lists a repo's Skills with installs from the Skill directory and badges matc
       description: "Interview me.",
       path: "skills/productivity/grill-me",
       skillId: "grill-me",
-      installed: { everyEnvironment: true, environments: [], updateAvailable: true },
+      installed: { global: true, environments: [], updateAvailable: true },
     },
     { name: "zzz", description: "Nothing known of it.", path: "skills/zzz", skillId: "zzz" },
   ]);
@@ -3645,7 +3643,7 @@ it("answers one Skill of a repo with its installs from the Skill directory and w
       // From the directory's search of the repo.
       installs: 900_000,
       installed: {
-        everyEnvironment: false,
+        global: false,
         environments: [DEFAULT_ENVIRONMENT],
         updateAvailable: true,
       },
@@ -3849,7 +3847,7 @@ it("dismisses a Settings change from the list, and refuses one that is not there
   expect(missing.message).toBe("The Settings have no change 9");
 });
 
-it("lists Workspaces of every Environment, newest first", async () => {
+it("lists Workspaces of all Environments, newest first", async () => {
   const fake = fakeRegistries();
   const environment = await makeEnvironment(fake, "Cloudpid");
 
@@ -4206,7 +4204,7 @@ it("answers a Repo change whose stale spare could not be wiped, and looks again 
   expect(fake.calls).toContain("upkeepSpares:*");
 });
 
-it("keeps every Environment's spare behind the Session list, until a run finds nothing to do in the isolate", async () => {
+it("keeps each Environment's spare behind the Session list, until a run finds nothing to do in the isolate", async () => {
   const fake = fakeRegistries();
 
   await call(fake, (registry) => registry.listSessions());
@@ -4479,10 +4477,10 @@ describe("a Test Build", () => {
     expect(fake.buildRecords.get(environment)?.status).toMatchObject({ status: "building" });
   });
 
-  it("gives a Test Build the variables kept for every Environment under the proposed ones, and refuses more than 50 in all", async () => {
+  it("gives a Test Build the variables kept Global under the proposed ones, and refuses more than 50 in all", async () => {
     const { fake, environment } = await saved();
 
-    fake.overridesOf.set(EVERY_ENVIRONMENT_SCOPE, { variables: { SHARED: "all", CI: "0" } });
+    fake.overridesOf.set(GLOBAL_SCOPE, { variables: { SHARED: "all", CI: "0" } });
 
     await ok(
       fake.buildUpkeep.test.start({
@@ -4518,7 +4516,7 @@ describe("a Test Build", () => {
         }),
       ),
     ).toBe(
-      "The proposed settings are refused: variables: with the 2 variables for every Environment it does not override, it would have 52: at most 50",
+      "The proposed settings are refused: variables: with the 2 variables at Global it does not override, it would have 52: at most 50",
     );
   });
 
@@ -4646,7 +4644,7 @@ it("asks for a Build again when the settings a Build uses change, and not for a 
   expect(fake.buildRecords.get(environment)?.build).toEqual(good);
 });
 
-it("makes a Build with the variables kept for every Environment under the Environment's own, and keeps the request and key of one that overrides every name", async () => {
+it("makes a Build with the variables kept Global under the Environment's own, and keeps the request and key of one that overrides every name", async () => {
   const fake = fakeRegistries();
   const shadowing = await makeEnvironment(fake, "Shadowing");
   const inheriting = await makeEnvironment(fake, "Inheriting");
@@ -4662,7 +4660,7 @@ it("makes a Build with the variables kept for every Environment under the Enviro
 
   await fake.runBackground();
 
-  // Nothing kept for every Environment: the request and key are the Environment's own.
+  // Nothing kept Global: the request and key are the Environment's own.
   for (const environment of [shadowing, inheriting, overriding]) {
     expect(fake.buildRequests.get(`build:${environment}`)).toMatchObject({
       key: await keyOf(fake, environment),
@@ -4673,7 +4671,7 @@ it("makes a Build with the variables kept for every Environment under the Enviro
   const before = fake.buildRequests.get(`build:${overriding}`);
   const shadowed = fake.buildRequests.get(`build:${shadowing}`);
 
-  fake.overridesOf.set(EVERY_ENVIRONMENT_SCOPE, { variables: { SHARED: "all", OTHER: "x" } });
+  fake.overridesOf.set(GLOBAL_SCOPE, { variables: { SHARED: "all", OTHER: "x" } });
 
   for (const environment of [shadowing, inheriting, overriding]) {
     await Effect.runPromise(fake.buildUpkeep.of(environment));
@@ -4692,7 +4690,7 @@ it("makes a Build with the variables kept for every Environment under the Enviro
     check: false,
   });
 
-  // It overrides every name kept for every Environment, so its request and key are what they were.
+  // It overrides every name kept Global, so its request and key are what they were.
   expect(fake.buildRequests.get(`build:${shadowing}`)).toEqual(shadowed);
   expect(shadowed?.settings).toEqual({ variables: { SHARED: "its", OTHER: "own" } });
 
@@ -4990,7 +4988,7 @@ it("hands a spare's object its Environment's Secrets with the set-up", async () 
   ]);
 });
 
-it("keeps Secrets for an Environment and for every Environment, and never answers a value", async () => {
+it("keeps Secrets for an Environment and Global, and never answers a value", async () => {
   const fake = fakeRegistries();
   const environment = await makeEnvironment(fake, "Cloudpid");
   const value = "sk-live-0123456789abcdef";
@@ -5086,7 +5084,7 @@ it("sets a Secret's build flag and deletes it, and says when there is no such Se
     Effect.flip(registry.deleteEnvironmentSecret({ environment: null, name: "API_KEY" })),
   );
 
-  expect(missing.message).toBe("No Secret API_KEY is kept for every environment");
+  expect(missing.message).toBe("No Secret API_KEY is kept Global");
 });
 
 it("hands a Build the Environment's Secrets, and builds again when a Secret for the Build changes", async () => {

@@ -64,7 +64,7 @@ describe("toolSummary", () => {
     );
     expect(
       toolSummary("environment_secret_build", { id: "*", name: "NPM_TOKEN", build: true }),
-    ).toBe("NPM_TOKEN for every environment");
+    ).toBe("NPM_TOKEN at Global");
     expect(
       toolSummary("environment_skill_save", {
         path: "/workspace/.cloudpid/tmp/release",
@@ -94,7 +94,7 @@ describe("toolSummary", () => {
     );
     expect(
       toolSummary("environment_variable_set", { id: "*", name: "CLOUDFLARE_EMAIL", value: "x" }),
-    ).toBe("CLOUDFLARE_EMAIL for every environment");
+    ).toBe("CLOUDFLARE_EMAIL at Global");
     expect(
       toolSummary("environment_container_resize", { size: "cpu-2", reason: "needs 6 GiB" }),
     ).toBe("needs 6 GiB (to cpu-2)");
@@ -169,7 +169,7 @@ describe("toolSummary", () => {
     ).toBe("0000abcd: limit cpu-3");
     expect(toolSummary("environment_delete", { id: "0000abcd", reason: "r" })).toBe("0000abcd");
     expect(toolSummary("environment_secret_delete", { id: "*", name: "NPM_TOKEN" })).toBe(
-      "NPM_TOKEN for every environment",
+      "NPM_TOKEN at Global",
     );
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");

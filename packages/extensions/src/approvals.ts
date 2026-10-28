@@ -11,7 +11,7 @@
 //   is withdrawn once the Session is idle (`dropAbandoned`).
 //
 // `withApproval` is the way a tool waits: one request per call (its task's id), settled when the call ends however it
-// ends. It is shared by the tools that change a Limit or delete, by those that change the Skills kept for every Environment, and meant for the Guardian (#38) too.
+// ends. It is shared by the tools that change a Limit or delete, by those that change the Skills kept Global, and meant for the Guardian (#38) too.
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

@@ -45,12 +45,12 @@ import {
   credentialCheck,
   type DeployCredentials,
   describeApplied,
-  refuseEveryEnvironment,
+  refuseGlobal,
   Environments,
   EnvironmentsError,
   MAX_CHANGE_REASON,
 } from "./environment.ts";
-import { EVERY_ENVIRONMENT_ID, EVERY_ENVIRONMENT_NAME } from "./environment-secret-marks.ts";
+import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
@@ -85,7 +85,7 @@ const SecretAsked = Schema.Struct({ updatedAt: Schema.Finite });
 export type SecretDeleted =
   | {
       readonly status: "deleted";
-      /** The Environment, or every Environment (`EVERY_ENVIRONMENT_ID`), whose history records it. */
+      /** The Environment, or Global (`GLOBAL_ID`), whose history records it. */
       readonly environment: ChangedEnvironment;
       readonly change: AgentChange;
     }
@@ -109,7 +109,7 @@ export type EnvironmentRemovalService = {
    * object, then its record, its kept Secrets and its Agent changes. Fails saying what is left when it cannot finish.
    */
   readonly deleteEnvironment: (environment: string) => Effect.Effect<void, EnvironmentsError>;
-  /** The Secrets kept in `scope` (an Environment's id, or `EVERY_ENVIRONMENT_ID`); null for an unknown Environment. */
+  /** The Secrets kept in `scope` (an Environment's id, or `GLOBAL_ID`); null for an unknown Environment. */
   readonly keptSecrets: (
     scope: string,
   ) => Effect.Effect<ReadonlyArray<KeptSecretMark> | null, EnvironmentsError>;
@@ -181,9 +181,11 @@ const storedSizeWords = (stored: Schema.Json | null): string =>
 
 /** An Environment as a result and a card name it. */
 const named = ({ id, name }: ChangedEnvironment): string =>
-  id === EVERY_ENVIRONMENT_ID
-    ? EVERY_ENVIRONMENT_NAME
-    : `Environment ${JSON.stringify(name)} (${id})`;
+  id === GLOBAL_ID ? GLOBAL_NAME : `Environment ${JSON.stringify(name)} (${id})`;
+
+/** "kept Global", or "kept for" the Environment, as a message says it. */
+const keptIn = (environment: ChangedEnvironment): string =>
+  environment.id === GLOBAL_ID ? "kept Global" : `kept for ${named(environment)}`;
 
 const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -264,7 +266,7 @@ export const ApprovalTools: Effect.Effect<
   /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
   const target = (id: string | undefined) =>
     Effect.gen(function* () {
-      yield* refuseEveryEnvironment(id);
+      yield* refuseGlobal(id);
 
       const current = yield* environments.current;
       const environment = id ?? current;
@@ -800,7 +802,7 @@ export const ApprovalTools: Effect.Effect<
     name: "environment_secret_delete",
     description: Arr.join(
       [
-        `Delete a Secret kept for an Environment (this Session's unless id names another; id "${EVERY_ENVIRONMENT_ID}" is a Secret kept for every Environment), as the user's delete on the Environments page does: commands and Sessions no longer get it, nor Builds. The history keeps no value, so no revert brings it back, and the user must approve it. environment_get lists the Secrets kept (names only).`,
+        `Delete a Secret kept for an Environment (this Session's unless id names another; id "${GLOBAL_ID}" is a Secret kept Global), as the user's delete on the Environments page does: commands and Sessions no longer get it, nor Builds. The history keeps no value, so no revert brings it back, and the user must approve it. environment_get lists the Secrets kept (names only).`,
         APPROVAL,
       ],
       "\n\n",
@@ -808,7 +810,7 @@ export const ApprovalTools: Effect.Effect<
     parameters: Schema.Struct({
       id: Schema.optionalKey(
         Schema.String.annotate({
-          description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${EVERY_ENVIRONMENT_ID}" for a Secret kept for every Environment`,
+          description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for a Secret kept Global`,
         }),
       ),
       name: SecretName.annotate({ description: "The Secret's name, such as NPM_TOKEN" }),
@@ -820,12 +822,11 @@ export const ApprovalTools: Effect.Effect<
       Effect.gen(function* () {
         yield* plainReason(reason);
 
-        const environment =
-          id === EVERY_ENVIRONMENT_ID ? EVERY_ENVIRONMENT_ID : (yield* target(id)).environment;
+        const environment = id === GLOBAL_ID ? GLOBAL_ID : (yield* target(id)).environment;
 
         const scope: ChangedEnvironment =
-          environment === EVERY_ENVIRONMENT_ID
-            ? { id: EVERY_ENVIRONMENT_ID, name: EVERY_ENVIRONMENT_NAME }
+          environment === GLOBAL_ID
+            ? { id: GLOBAL_ID, name: GLOBAL_NAME }
             : yield* Effect.flatMap(environments.get(environment), (details) =>
                 details === null
                   ? notFound(environment)
@@ -840,22 +841,19 @@ export const ApprovalTools: Effect.Effect<
 
         if (Option.isNone(secret) && !(yield* askedBefore(approvals, api))) {
           return yield* EnvironmentsError.make({
-            message: `Nothing was asked or deleted: no Secret ${name} is kept for ${named(scope)}. environment_get lists the Secrets kept (names only); a Secret kept for every Environment is addressed with id "${EVERY_ENVIRONMENT_ID}".`,
+            message: `Nothing was asked or deleted: no Secret ${name} is ${keptIn(scope)}. environment_get lists the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}".`,
           });
         }
 
         const marked = Option.isSome(secret) && secret.value.build;
-        const before = `${name}, kept for ${named(scope)}${marked ? ", marked for the Build" : ""}`;
+        const before = `${name}, ${keptIn(scope)}${marked ? ", marked for the Build" : ""}`;
 
         return yield* withApproval(
           approvals,
           api,
           {
             tool: "environment_secret_delete",
-            target:
-              scope.id === EVERY_ENVIRONMENT_ID
-                ? "every Environment"
-                : `Environment ${JSON.stringify(scope.name)}`,
+            target: scope.id === GLOBAL_ID ? "Global" : `Environment ${JSON.stringify(scope.name)}`,
             change: "Delete a kept Secret",
             before,
             after: "Deleted, with no revert",
@@ -893,7 +891,7 @@ export const ApprovalTools: Effect.Effect<
                       {
                         type: "text" as const,
                         text: approvedAlready(
-                          `no Secret ${name} is kept for ${named(deleted.environment)}`,
+                          `no Secret ${name} is ${keptIn(deleted.environment)}`,
                         ),
                       },
                     ],
@@ -901,7 +899,7 @@ export const ApprovalTools: Effect.Effect<
                   };
                 case "changed-since":
                   return yield* EnvironmentsError.make({
-                    message: `The user approved, but ${name}, kept for ${named(deleted.environment)}, changed since they were asked (its value or its Build mark): nothing was deleted. Ask again if it should still be deleted.`,
+                    message: `The user approved, but ${name}, ${keptIn(deleted.environment)}, changed since they were asked (its value or its Build mark): nothing was deleted. Ask again if it should still be deleted.`,
                   });
                 case "deleted":
                   yield* log.record({

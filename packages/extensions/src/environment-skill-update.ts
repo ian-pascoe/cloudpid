@@ -3,7 +3,7 @@
 // Session or a Container, and keeps the files as an Agent change for each Skill, with the files and the Skill source
 // before and after, so the user's revert brings back the earlier commit and any edits an overwrite replaced. A Skill the
 // agent edited since it was installed (**modified**) is refused unless `overwrite` is set, and the result names it.
-// With `id: "*"` the update waits for the owner's Approval (`./environment-skills-every.ts`), which shows the files each
+// With `id: "*"` the update waits for the owner's Approval (`./environment-skills-global.ts`), which shows the files each
 // Skill would take and is made at exactly the commits they were shown.
 //
 // `environment.ts` imports this module through `./environment-skills.ts`, so what it takes from `environment.ts` is used
@@ -31,8 +31,8 @@ import {
   declined,
   withApproval,
 } from "./approvals.ts";
-import { type ChangedEnvironment, EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
-import { EVERY_ENVIRONMENT_ID } from "./environment-secret-marks.ts";
+import { type ChangedEnvironment, EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
+import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   asJsonValue,
   named,
@@ -41,7 +41,7 @@ import {
   type SkillToolDeps,
   type SkillsUpdated,
 } from "./environment-skill-results.ts";
-import { cardOf, MAX_CARD_CHARS, SKILL_APPROVAL } from "./environment-skills-every.ts";
+import { cardOf, MAX_CARD_CHARS, SKILL_APPROVAL } from "./environment-skills-global.ts";
 import { SKILL_SIZES } from "./skill-checks.ts";
 
 const TOOL = "environment_skill_update";
@@ -93,7 +93,7 @@ const problemLines = (
 
 /**
  * The result of an update, whatever it came to: the tool's own result, or its refusal when no Skill was moved or found
- * up to date. `scope` is the Environment the call named, or every Environment.
+ * up to date. `scope` is the Environment the call named, or Global.
  */
 const updatedOutcome = (
   updated: SkillsUpdated,
@@ -112,7 +112,7 @@ const updatedOutcome = (
   },
 ) =>
   Effect.gen(function* () {
-    const everywhere = scope === EVERY_ENVIRONMENT_ID;
+    const atGlobal = scope === GLOBAL_ID;
 
     switch (updated.status) {
       case "missing":
@@ -167,7 +167,7 @@ const updatedOutcome = (
           });
         }
 
-        const current = everywhere ? yield* environments.current : null;
+        const current = atGlobal ? yield* environments.current : null;
         const overwrote = Arr.filter(moved, (result) => result.overwrote);
         const first = moved[0]?.name ?? same[0]?.name ?? "<name>";
 
@@ -211,9 +211,9 @@ const updatedOutcome = (
               : [
                   updated.handed
                     ? `They are served now at ${SKILLS_ROOT}/<name> (read-only): read ${SKILLS_ROOT}/${first}/SKILL.md to use one.`
-                    : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
-                  everywhere
-                    ? `Every Environment's Workspaces and spares get it at their next readying${updated.handed ? "; this Session's Workspace has it now" : ""}${current === null || updated.handed ? "" : " (or its Environment keeps its own Skill of the name, which hides it there)"}.`
+                    : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${atGlobal ? "" : " of the Environment"}.`,
+                  atGlobal
+                    ? `Each Environment's Workspaces and spares get it at their next readying${updated.handed ? "; this Session's Workspace has it now" : ""}${current === null || updated.handed ? "" : " (or its Environment keeps its own Skill of the name, which hides it there)"}.`
                     : reach(environment, updated.handed, own),
                   PROMPT_NOTE,
                   `Each change is recorded${approved ? " as approved" : ""} with your reason and the files and Skill source before and after, and the user can revert it on the Skills page.`,
@@ -230,7 +230,7 @@ const updatedOutcome = (
             before: asJsonValue(change.before),
             after: asJsonValue(change.after),
           })),
-          own: everywhere ? updated.handed : own,
+          own: atGlobal ? updated.handed : own,
         };
 
         return {
@@ -254,8 +254,8 @@ const leftOut = (
   return lines.length === 0 ? "" : `Not part of this update:\n${Arr.join(lines, "\n")}\n\n`;
 };
 
-/** Update the Skills kept for every Environment once the owner approves exactly what they are shown. */
-const updateEverywhere = (
+/** Update the Skills kept Global once the owner approves exactly what they are shown. */
+const updateAtGlobal = (
   deps: UpdateDeps,
   {
     names,
@@ -270,13 +270,13 @@ const updateEverywhere = (
 ) =>
   Effect.gen(function* () {
     const { environments, approvals, notFound } = deps;
-    const EVERY: ChangedEnvironment = { id: EVERY_ENVIRONMENT_ID, name: "every Environment" };
+    const GLOBAL_TARGET: ChangedEnvironment = { id: GLOBAL_ID, name: "Global" };
 
     /** What the owner's answer comes to: on Approve, the pinned updates made at the commits they were shown. */
     const answered = (answer: ApprovalAnswer) =>
       Effect.gen(function* () {
         if (!answer.approved) {
-          return declined(answer, "updating the Skills kept for every Environment");
+          return declined(answer, "updating the Skills kept Global");
         }
 
         const asked = Schema.decodeUnknownOption(UpdateAsked)(answer.expected);
@@ -291,7 +291,7 @@ const updateEverywhere = (
         const shown = asked.value;
 
         const updated = yield* environments.updateSkills({
-          environment: EVERY_ENVIRONMENT_ID,
+          environment: GLOBAL_ID,
           names: Arr.map(shown.pins, (pin) => pin.name),
           overwrite: shown.overwrite,
           pins: shown.pins,
@@ -301,7 +301,7 @@ const updateEverywhere = (
         if (updated.status !== "done") {
           return yield* updatedOutcome(updated, {
             ...deps,
-            scope: EVERY_ENVIRONMENT_ID,
+            scope: GLOBAL_ID,
             own: false,
             approved: true,
           });
@@ -336,7 +336,7 @@ const updateEverywhere = (
 
         const result = yield* updatedOutcome(
           { ...updated, results },
-          { ...deps, scope: EVERY_ENVIRONMENT_ID, own: false, approved: true },
+          { ...deps, scope: GLOBAL_ID, own: false, approved: true },
         );
 
         return shown.unseen.files === 0
@@ -347,7 +347,7 @@ const updateEverywhere = (
                 ...result.output,
                 {
                   type: "text" as const,
-                  text: `The card showed the user only the first ${MAX_CARD_CHARS} characters of each Skill's files: ${shown.unseen.characters} characters in ${shown.unseen.files} file${shown.unseen.files === 1 ? "" : "s"} were cut or left out, so that part was not reviewed. Keep a Skill for every Environment small enough to review in full.`,
+                  text: `The card showed the user only the first ${MAX_CARD_CHARS} characters of each Skill's files: ${shown.unseen.characters} characters in ${shown.unseen.files} file${shown.unseen.files === 1 ? "" : "s"} were cut or left out, so that part was not reviewed. Keep a Skill at Global small enough to review in full.`,
                 },
               ],
             };
@@ -363,8 +363,8 @@ const updateEverywhere = (
         // Never shown: the request the owner sees is the one the first call made.
         {
           tool: TOOL,
-          target: "every Environment",
-          change: "Update the Skills kept for every Environment",
+          target: "Global",
+          change: "Update the Skills kept Global",
           before: "",
           after: "",
           reason,
@@ -375,7 +375,7 @@ const updateEverywhere = (
     }
 
     const previewed: SkillUpdatePreview | undefined = yield* environments.previewUpdates({
-      environment: EVERY_ENVIRONMENT_ID,
+      environment: GLOBAL_ID,
       names,
       overwrite,
     });
@@ -384,12 +384,12 @@ const updateEverywhere = (
     const nothing = (settled: SkillsUpdated) =>
       updatedOutcome(settled, {
         ...deps,
-        scope: EVERY_ENVIRONMENT_ID,
+        scope: GLOBAL_ID,
         own: false,
         approved: false,
       });
 
-    if (previewed.status === "missing") return yield* notFound(EVERY_ENVIRONMENT_ID);
+    if (previewed.status === "missing") return yield* notFound(GLOBAL_ID);
 
     if (previewed.status === "refused") {
       return yield* EnvironmentsError.make({
@@ -415,7 +415,7 @@ const updateEverywhere = (
     if (ready.length === 0) {
       return yield* nothing({
         status: "done",
-        environment: EVERY,
+        environment: GLOBAL_TARGET,
         results: Arr.filter(
           results,
           (result): result is SkillUpdateEntry => result.outcome !== "ready",
@@ -449,7 +449,7 @@ const updateEverywhere = (
       api,
       {
         tool: TOOL,
-        target: "every Environment",
+        target: "Global",
         change: `Update ${ready.length === 1 ? "the Skill" : "the Skills"} ${Arr.join(
           Arr.map(ready, ({ name }) => JSON.stringify(name)),
           ", ",
@@ -458,7 +458,7 @@ const updateEverywhere = (
           Arr.map(
             ready,
             (skill) =>
-              `${skill.name}: kept for every Environment: ${skillSourceText(skill.from)}${skill.overwrites ? " (edited since installed)" : ""} (files: ${Arr.join(skill.current.files, ", ")})`,
+              `${skill.name}: kept Global: ${skillSourceText(skill.from)}${skill.overwrites ? " (edited since installed)" : ""} (files: ${Arr.join(skill.current.files, ", ")})`,
           ),
           "\n",
         ),
@@ -478,7 +478,7 @@ const updateEverywhere = (
     );
   });
 
-/** `environment_skill_update`. Runs alone; `replay: "safe"` so an update for every Environment waits for the same request. */
+/** `environment_skill_update`. Runs alone; `replay: "safe"` so an update at Global waits for the same request. */
 export const updateTool = ({
   environments,
   approvals,
@@ -495,12 +495,12 @@ export const updateTool = ({
       [
         `Update installed Skills of an Environment (this Session's unless id names another) to the latest commit of the ref each was installed from: cloudpid fetches them, not you (no Container, no \`npx skills\`). Each Skill moved is kept in place of itself with its new Skill source and recorded as an Agent change with the files before and after, so the user can revert it on the Skills page. Skills stay pinned until someone updates them; environment_get marks a Skill "update available" when the daily check found its folder changed at its Skill source, and "modified" when it was edited since it was installed.`,
         `names are the Skills to update (as environment_get lists them); without names, every Skill marked update available is updated. A Skill whose folder is the same at the new commit records nothing. A modified Skill is refused, and named in the result, unless overwrite is true: that replaces the edits made to it (the user's revert brings them back); only set it when the user wants their edits replaced. A Skill that was not installed from GitHub has no source to update from, and one the checks refuse (the Agent Skills name rules, text only, ${SKILL_SIZES.file} a file, ${SKILL_SIZES.skill} a Skill, 100 Skills and ${SKILL_SIZES.set} in a set) is reported while the others are updated. After an update, this Session's Workspace serves the new files at ${SKILLS_ROOT}/<name> at once; the skills list in your system prompt changes at the next Context Window.`,
-        `With id "${EVERY_ENVIRONMENT_ID}" the Skills kept for every Environment are updated, which the user must approve because they steer every future Session: they read the files each Skill would take on the card (the first ${MAX_CARD_CHARS} characters of each Skill's files, with a warning for what is cut), and the update is made at exactly those commits. ${SKILL_APPROVAL}`,
+        `With id "${GLOBAL_ID}" the Skills kept Global are updated, which the user must approve because they steer every future Session: they read the files each Skill would take on the card (the first ${MAX_CARD_CHARS} characters of each Skill's files, with a warning for what is cut), and the update is made at exactly those commits. ${SKILL_APPROVAL}`,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("the Skills kept for every Environment")),
+      id: Schema.optionalKey(idOrGlobal("the Skills kept Global")),
       names: Schema.optionalKey(
         Schema.Array(Schema.String.check(Schema.isMinLength(1))).annotate({
           description:
@@ -519,7 +519,7 @@ export const updateTool = ({
       }),
     }),
     executionMode: "sequential",
-    // A rerun after an eviction waits for the request an update for every Environment made, or takes its answer; one for
+    // A rerun after an eviction waits for the request an update at Global made, or takes its answer; one for
     // an Environment's own Skills finds the Skills already at the new commit (unchanged) and records nothing again.
     replay: "safe",
     execute: ({ id, names, overwrite, reason }, api) =>
@@ -529,12 +529,8 @@ export const updateTool = ({
           ...Arr.map(names ?? [], (name) => ({ what: "a Skill name", text: name })),
         ]);
 
-        if (id === EVERY_ENVIRONMENT_ID) {
-          return yield* updateEverywhere(
-            deps,
-            { names, overwrite: overwrite === true, reason },
-            api,
-          );
+        if (id === GLOBAL_ID) {
+          return yield* updateAtGlobal(deps, { names, overwrite: overwrite === true, reason }, api);
         }
 
         const { environment, own } = yield* target(id);

@@ -8,7 +8,7 @@ import {
   containerOverridesFrom,
   mergedVariablesProblem,
   resolveContainerSettingsLeniently,
-  withEveryEnvironmentVariables,
+  withGlobalVariables,
 } from "@cloudpid/config";
 import type { BuildView, EnvironmentRepo } from "@cloudpid/protocol";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
@@ -36,8 +36,8 @@ export type BuildWork = {
   readonly repos: ReadonlyArray<EnvironmentRepo>;
   /** The Environment's own Container settings overrides. */
   readonly settings: Schema.Json;
-  /** The variables kept for every Environment, which a Build gets under the Environment's own. */
-  readonly everyVariables: Readonly<Record<string, string>>;
+  /** The variables kept Global, which a Build gets under the Environment's own. */
+  readonly globalVariables: Readonly<Record<string, string>>;
   readonly recorded: BuildRecord;
   /**
    * A keyed digest of the Secrets that reach the Build (`buildSecretsDigest`), null when none does: their values are
@@ -147,7 +147,7 @@ export type TestBuilds = {
 
 /** The upkeep of the Environments' Builds (`buildUpkeep`). Only `rebuild` fails, with why. */
 export type Builds = {
-  /** Keep every Environment's Build current. Once a run finds nothing to do or under way, this isolate rests a while. */
+  /** Keep each Environment's Build current. Once a run finds nothing to do or under way, this isolate rests a while. */
   readonly all: Effect.Effect<void>;
   /** Keep `environment`'s Build current, as after its Repos or settings changed. */
   readonly of: (environment: string) => Effect.Effect<void>;
@@ -193,7 +193,7 @@ export const buildUpkeep = (
       let state = yield* Effect.promise(() => workspaces.buildState(name));
 
       const own = resolveContainerSettingsLeniently(work.settings).settings;
-      const cut = mergedVariablesProblem(own.variables, work.everyVariables);
+      const cut = mergedVariablesProblem(own.variables, work.globalVariables);
 
       if (cut !== undefined) {
         yield* Effect.logWarning(
@@ -201,7 +201,7 @@ export const buildUpkeep = (
         );
       }
 
-      const settings = withEveryEnvironmentVariables(own, work.everyVariables);
+      const settings = withGlobalVariables(own, work.globalVariables);
 
       const wanted = buildWanted(work.repos, settings);
 
@@ -369,7 +369,7 @@ const testBuilds = (
           toolchains: proposed.toolchains ?? saved.toolchains,
           ignore: proposed.ignore ?? saved.ignore,
         }),
-        work.everyVariables,
+        work.globalVariables,
       );
 
       if (Result.isFailure(written)) {
@@ -377,8 +377,8 @@ const testBuilds = (
       }
 
       const repos = proposed.repos ?? work.repos;
-      // The variables kept for every Environment still apply under the proposed ones, as they will once it is saved.
-      const settings = withEveryEnvironmentVariables(written.success.settings, work.everyVariables);
+      // The variables kept Global still apply under the proposed ones, as they will once it is saved.
+      const settings = withGlobalVariables(written.success.settings, work.globalVariables);
 
       if (!buildWanted(repos, settings)) {
         return yield* Effect.fail(

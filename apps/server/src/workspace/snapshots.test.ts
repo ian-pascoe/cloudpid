@@ -203,7 +203,7 @@ describe("ContainerSnapshots and the Environment's Secrets", () => {
     // It says where a value that is not secret belongs.
     expect(leaked).toMatchObject({
       reason: expect.stringContaining(
-        "belongs in the variables (kept for the Environment or for every Environment)",
+        "belongs in the variables (kept for the Environment or Global)",
       ),
     });
   });

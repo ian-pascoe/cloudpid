@@ -265,7 +265,7 @@ describe("the Skills page's query", () => {
     expect(skillsParamsOf("?tab=trending").tab).toBe("trending");
   });
 
-  it("takes * as every Environment, and names no tab or Environment it cannot be", () => {
+  it("takes * as Global, and names no tab or Environment it cannot be", () => {
     expect(skillsParamsOf("?environment=*").environment).toBe("*");
     expect(skillsParamsOf("?environment=%2A").environment).toBe("*");
     expect(skillsParamsOf("?environment=").environment).toBeUndefined();

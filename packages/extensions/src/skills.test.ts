@@ -246,7 +246,7 @@ describe("the skills section", () => {
         "The following skills provide specialized instructions for specific tasks.",
         "Use the read tool to load a skill's file when the task matches its description.",
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
-        "The skills in /workspace/.agents/skills are the Environment's (its own, and those kept for every Environment) and read-only: change them with environment_skill_save and the other environment_skill_* tools, not by writing there.",
+        "The skills in /workspace/.agents/skills are the Environment's (its own, and those kept Global) and read-only: change them with environment_skill_save and the other environment_skill_* tools, not by writing there.",
         "",
         "<available_skills>",
         "  <skill>",
@@ -433,7 +433,7 @@ describe("the skills section", () => {
     expect(section).toContain("<name>deploy</name>");
     expect(section).toContain("<name>tdd</name>");
     expect(section).toContain(
-      "are the Environment's (its own, and those kept for every Environment) and read-only",
+      "are the Environment's (its own, and those kept Global) and read-only",
     );
     expect(section).not.toContain("bundled");
   });

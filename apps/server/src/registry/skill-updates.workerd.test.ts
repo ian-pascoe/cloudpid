@@ -102,7 +102,7 @@ const inRegistry = <A>(
         storage: state.storage,
         context,
         install: async (source, { environment, owner = false, at = 1_000, reader } = {}) => {
-          // The Skills kept for every Environment are installed by the owner here: no Approval is part of the test.
+          // The Skills kept Global are installed by the owner here: no Approval is part of the test.
           await installSkills(context(at), reader ?? github.reader, {
             environment: environment ?? DEFAULT_ENVIRONMENT,
             source,
@@ -491,12 +491,12 @@ describe("updating installed Skills", () => {
     });
   });
 
-  it("is the owner's update from the page: no Agent change, even for every Environment", async () => {
+  it("is the owner's update from the page: no Agent change, even at Global", async () => {
     const github = fakeGithub();
 
     github.push(REPO, files());
 
-    const [here, everywhere, changes] = await inRegistry(
+    const [here, atGlobal, changes] = await inRegistry(
       async ({ install, update, skills, changes }) => {
         await install(REPO, { owner: true });
         await install(REPO, { owner: true, environment: "*" });
@@ -512,7 +512,7 @@ describe("updating installed Skills", () => {
     );
 
     expect(here).toMatchObject({ results: [{ name: "grill-me", outcome: "updated" }] });
-    expect(everywhere).toMatchObject({
+    expect(atGlobal).toMatchObject({
       environment: { id: "*" },
       results: [{ name: "grill-me", outcome: "updated" }],
     });
@@ -530,7 +530,7 @@ describe("updating installed Skills", () => {
   });
 });
 
-describe("an update for every Environment the owner approved", () => {
+describe("an update at Global the owner approved", () => {
   it("is made at the commits and folders the owner was shown, not at the ref's head by then", async () => {
     const github = fakeGithub();
 

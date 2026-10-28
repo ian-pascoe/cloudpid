@@ -266,7 +266,7 @@ export interface SessionClient {
   /**
    * Answer Secret request `request` with the values the owner typed (a name left out is skipped), or `null` when the
    * owner cancelled. `keep` is what the owner chose to do with them: hold them for the Session (the default), or keep
-   * them for its Environment or for every Environment. The values go to the Session once and are not kept here; the
+   * them for its Environment or Global. The values go to the Session once and are not kept here; the
    * Session's next `secret_requests` closes the form, and a refusal shows as `failure`.
    */
   readonly answerSecrets: (

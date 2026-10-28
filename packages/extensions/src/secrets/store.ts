@@ -6,12 +6,12 @@
 // Secrets it provided, so a call that an eviction cut off finds the answer when it reruns, and an owner who answers
 // while no call waits still has the answer kept.
 //
-// The Secrets kept for the Session's Environment (or for every Environment) are held beside them, in memory only: they
+// The Secrets kept for the Session's Environment (or Global) are held beside them, in memory only: they
 // are asked for (`SecretsOptions.kept`) when first needed and again once `KEPT_REFRESH_MS` has passed, so a change on
 // the Environments page applies soon. An asked Secret of the same name wins, and a kept one cannot be forgotten here.
 //
-// The owner may also choose, in the form, to keep what they enter for the Session's Environment or for every
-// Environment (`SecretsOptions.keep`, which saves through the Registry as the Environments page's form does). A Secret
+// The owner may also choose, in the form, to keep what they enter for the Session's Environment or at
+// Global (`SecretsOptions.keep`, which saves through the Registry as the Environments page's form does). A Secret
 // so kept is not entered for 15 minutes: it is a kept one, which the next ask of the Registry brings back, and it is
 // redacted from the moment it is answered. The answer stored for a rerun holds the scope, never a value.
 import { SecretKeep } from "@cloudpid/protocol";
@@ -68,7 +68,7 @@ export type AskOutcome =
       readonly name: string;
       readonly status: "kept";
       readonly scope: KeptScope;
-      /** Set when the Environment keeps its own Secret of the name, which wins over one kept for every Environment. */
+      /** Set when the Environment keeps its own Secret of the name, which wins over one kept Global. */
       readonly shadowed?: true;
     }
   | { readonly name: string; readonly status: "skipped" | "cancelled" };
@@ -217,13 +217,13 @@ export type SecretsOptions = {
    */
   readonly asked?: (ask: SecretAsk) => Effect.Effect<void>;
   /**
-   * The Secrets kept for the Session's Environment and for every Environment, with their values: asked for when first
+   * The Secrets kept for the Session's Environment and Global, with their values: asked for when first
    * needed and once `KEPT_REFRESH_MS` has passed since. A failure keeps what was held, and asks again after
    * `KEPT_RETRY_MS`. Without it, none are held.
    */
   readonly kept?: Effect.Effect<ReadonlyArray<KeptSecret>, unknown> | undefined;
   /**
-   * Keep Secrets the owner chose to keep in an answer, for the Session's Environment or for every Environment, and say
+   * Keep Secrets the owner chose to keep in an answer, for the Session's Environment or Global, and say
    * of each how it went. It runs once the values are sealed, before anything is stored, and must not fail. Needs
    * `kept`: without either, the Secrets are held for the Session only, and the answer says so.
    */

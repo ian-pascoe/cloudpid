@@ -1,5 +1,5 @@
 // The install target picker, rendered with `react-dom/server` over the fake Registry (ADR-0026): open for the Skills a
-// page named, it offers Every environment first and then each Environment, and says what it installs.
+// page named, it offers Global first and then each Environment, and says what it installs.
 
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
@@ -36,13 +36,13 @@ const render = (pending: SkillsToInstall | null) =>
   });
 
 describe("the install target picker", () => {
-  it.effect("offers Every environment first, then each Environment, for one picked Skill", () =>
+  it.effect("offers Global first, then each Environment, for one picked Skill", () =>
     Effect.gen(function* () {
       const markup = yield* render({ source: "mattpocock/skills", skills: ["grill-me"] });
 
       expect(markup).toContain("Install grill-me");
       expect(markup).toMatch(
-        /<option value="\*"[^>]*>Every environment<\/option><option value="default"[^>]*>Default<\/option><option value="work"[^>]*>Work<\/option>/,
+        /<option value="\*"[^>]*>Global<\/option><option value="default"[^>]*>Default<\/option><option value="work"[^>]*>Work<\/option>/,
       );
       expect(markup).toContain("mattpocock/skills");
       expect(markup).toContain("Only this skill is");
@@ -73,7 +73,7 @@ describe("the install target picker", () => {
 
   it.effect("shows nothing while no Skill is being installed", () =>
     Effect.gen(function* () {
-      expect(yield* render(null)).not.toContain("Every environment");
+      expect(yield* render(null)).not.toContain("Global");
     }),
   );
 });
