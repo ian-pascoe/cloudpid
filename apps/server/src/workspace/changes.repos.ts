@@ -1,15 +1,28 @@
-// The repos the Changes tests read, shared by the Node set-up that makes them with real git (`changes.setup.ts`) and
-// the workerd tests that write them into a Workspace (`changes.workerd.test.ts`, `changes.bench.workerd.test.ts`).
+// The repos the Changes tests and the read of unpushed work read, shared by the Node set-up that makes them with real
+// git (`changes.setup.ts`) and the tests that write them into a Workspace (`changes.workerd.test.ts`,
+// `changes.bench.workerd.test.ts`, `work-state.workerd.test.ts`).
 // Nothing here may import Node built-ins: the workerd tests import it too.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 
 /** A repo as the set-up hands it over: each file's path (its `.git` included) and bytes, base64. */
 export type RepoFiles = Readonly<Record<string, string>>;
 
+/** The branch the work-state clones are on (`WorkStateRepos`). */
+export const WORK_STATE_BRANCH = "cloudpid/1a2b3c4d";
+
+/** The Repos the work-state test reads (the last, `missing`, not cloned), each clone's files, and the script's output. */
+export type WorkStateRepos = {
+  readonly repos: ReadonlyArray<string>;
+  readonly files: Readonly<Record<string, RepoFiles>>;
+  readonly stdout: string;
+};
+
 declare module "vitest" {
   export interface ProvidedContext {
     /** The repos real git made, by name (`changes.setup.ts`). */
     readonly changesRepos: Readonly<Record<string, RepoFiles>>;
+    /** A Workspace's clones real git made, and what the Container's `workStateScript` printed for them (`changes.setup.ts`). */
+    readonly workStateRepos: WorkStateRepos;
   }
 }
 

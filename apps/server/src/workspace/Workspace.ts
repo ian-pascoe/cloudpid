@@ -66,6 +66,7 @@ import { workerShellGit } from "./git.ts";
 import {
   type ChangeFileRequest,
   type ChangesRequest,
+  type ContainerOnly,
   type KeptChanges,
   WorkspaceChangesModule,
 } from "./changes.ts";
@@ -80,6 +81,7 @@ import {
   type RunStartRequest,
   WorkspaceRunsModule,
 } from "./runs.ts";
+import { WorkspaceWorkStateModule } from "./work-state.ts";
 import { IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
@@ -104,12 +106,7 @@ import {
   preparationHost,
   type WorkspaceSetup,
 } from "./prepare.ts";
-import {
-  carryWorkspaceScript,
-  parseWorkState,
-  type RepoWorkState,
-  workStateScript,
-} from "@cloudpid/sandbox-image/workspaces";
+import { carryWorkspaceScript, type RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import {
   workspaceBuildStore,
   type WorkspaceSettingsAnswer,
@@ -212,9 +209,6 @@ const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
 /** How long carrying the clones to a Fork's new Workspace may take, in seconds: a Container start, then pushes. */
 const CARRY_TIMEOUT_SECONDS = 15 * 60;
 
-/** How long reading what the clones have not pushed may take, in seconds: a Container start, then local git. */
-const WORK_STATE_TIMEOUT_SECONDS = 5 * 60;
-
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
 
@@ -258,6 +252,8 @@ export class Workspace extends ContainerHost {
   readonly #comparison: WorkspaceComparisonModule;
   /** The Run copies of the Workspace's repos and the Run diff (`runStart`, `runEnd`, `runDiff`, `runFile`). */
   readonly #runs: WorkspaceRunsModule;
+  /** What the Workspace's clones have not pushed (`workState`). */
+  readonly #workState: WorkspaceWorkStateModule;
   /** The Container previews: the Session's browser's requests for the Container's ports (`containerPreview`). */
   readonly #containerPreview: ContainerPreview;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
@@ -611,16 +607,19 @@ export class Workspace extends ContainerHost {
     });
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
 
+    // Which absolute paths are Container-only for the launch that runs now, or the next one (ADR-0018).
+    const containerOnly = async (): Promise<ContainerOnly> => {
+      const ignore = await launch.ignore();
+      const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
+
+      return (path) => isContainerOnly(path, patterns);
+    };
+
     // The repos' Changes: read here with isomorphic-git, or by the Container's git for a repo that needs it, which only
     // a call that may start the Container starts (ADR-0022).
     this.#changes = new WorkspaceChangesModule({
       files: () => this.#workspace.provider(),
-      containerOnly: async () => {
-        const ignore = await launch.ignore();
-        const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
-
-        return (path) => isContainerOnly(path, patterns);
-      },
+      containerOnly,
       running: () => ctx.container?.running === true,
       run: (script) => this.#runOnContainer(script, {}),
       kept: {
@@ -655,12 +654,7 @@ export class Workspace extends ContainerHost {
     this.#runs = new WorkspaceRunsModule({
       files: () => this.#workspace.provider(),
       changes: this.#changes,
-      containerOnly: async () => {
-        const ignore = await launch.ignore();
-        const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
-
-        return (path) => isContainerOnly(path, patterns);
-      },
+      containerOnly,
       running: () => this.containerRunning(),
       run: (script) => this.runContainerScript(script),
       store: {
@@ -671,6 +665,17 @@ export class Workspace extends ContainerHost {
         },
         keys: async (prefix) => Array.from(ctx.storage.kv.list({ prefix }), ([key]) => key),
       },
+      warn: (message) => console.warn(message),
+    });
+
+    // What the clones have not pushed: read here with isomorphic-git while the Container is stopped, so a report or delete
+    // of a Subagent Workspace starts no Container; by the Container's git while it runs, or for a repo that needs it.
+    this.#workState = new WorkspaceWorkStateModule({
+      files: () => this.#workspace.provider(),
+      needsContainer: (repo) => this.#changes.needsContainer(repo),
+      containerOnly,
+      running: () => this.containerRunning(),
+      run: (script) => this.runContainerScript(script),
       warn: (message) => console.warn(message),
     });
 
@@ -1072,8 +1077,9 @@ export class Workspace extends ContainerHost {
 
   /**
    * What this Workspace's clones of `repos` have not pushed of `branch` (`LifecycleHost.workState`): a Subagent
-   * Workspace's report and delete, and the warning a spawn from this one gives (`workStateScript`). It runs on the
-   * Container, starting it if it is stopped.
+   * Workspace's report and delete, and the warning a spawn from this one gives, as `workStateScript` reads it. Read
+   * here while the Container is stopped, which starts it only for a repo this object cannot read
+   * (`WorkspaceWorkStateModule`).
    */
   async workState(
     branch: string,
@@ -1081,16 +1087,7 @@ export class Workspace extends ContainerHost {
   ): Promise<ReadonlyArray<RepoWorkState>> {
     this.#spare.noteUse();
 
-    const ran = await this.#ownHost(`computer:work-state:${this.ctx.id.toString()}`).run(
-      workStateScript(repos, branch),
-      WORK_STATE_TIMEOUT_SECONDS,
-    );
-
-    if (ran.exitCode !== 0) throw failure("The workspace's repos could not be read", ran);
-
-    // Its own lines have six tab-separated fields: anything else the run printed is left out, and a Repo it printed no
-    // line for is taken as not cloned.
-    return parseWorkState(ran.output, repos);
+    return this.#workState.read(branch, repos);
   }
 
   /**

@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { workStateScript } from "@cloudpid/sandbox-image/workspaces";
 import type { TestProject } from "vitest/node";
 import { collect } from "./changes.collect.ts";
 import {
@@ -17,6 +18,8 @@ import {
   lines,
   REWRITE_LINES,
   type RepoFiles,
+  WORK_STATE_BRANCH,
+  type WorkStateRepos,
 } from "./changes.repos.ts";
 
 const env = {
@@ -159,6 +162,44 @@ const bench = (count: number) => {
   );
 };
 
+/**
+ * Clones of a remote on `WORK_STATE_BRANCH` (`work-state.workerd.test.ts`): `ahead` with commits the remote branch lacks
+ * (one a merge), packed, and uncommitted changes; `fresh` as cloned, its refs loose; and `missing`, never cloned. The
+ * Container's answer is the real script's output for them.
+ */
+const workStateRepos = (): WorkStateRepos => {
+  const base = mkdtempSync(join(tmpdir(), "work-state-repos-"));
+
+  const sh = (script: string) =>
+    execFileSync("bash", ["-c", `set -e\n${script}`], { cwd: base, env, encoding: "utf8" });
+
+  sh(`git init -q --bare -b main origin.git
+git init -q -b main seed && cd seed
+printf 'one\\n' > a.txt && mkdir -p src && printf 'lib\\n' > src/lib.ts
+git add -A && git commit -q -m first && git push -q ../origin.git main
+cd .. && mkdir workspace && cd workspace
+git clone -q ../origin.git fresh && git -C fresh checkout -q -b ${WORK_STATE_BRANCH}
+git clone -q ../origin.git ahead && cd ahead && git checkout -q -b ${WORK_STATE_BRANCH}
+git push -q origin ${WORK_STATE_BRANCH}
+printf 'mine\\n' > mine.txt && git add mine.txt && git commit -q -m mine
+cd ../../seed && printf 'two\\n' >> a.txt && git commit -q -am second && git push -q ../origin.git main
+cd ../workspace/ahead && git fetch -q origin && git merge -q --no-edit origin/main && git gc -q
+printf 'changed\\n' > a.txt && mkdir -p new && printf 'n\\n' > new/one.txt && printf 'n\\n' > new/two.txt`);
+
+  const repos = ["ahead", "fresh", "missing"];
+  const root = join(base, "workspace");
+  const stdout = sh(workStateScript(repos, WORK_STATE_BRANCH, root));
+
+  const files = {
+    ahead: collect(join(root, "ahead"), () => false),
+    fresh: collect(join(root, "fresh"), () => false),
+  };
+
+  rmSync(base, { recursive: true, force: true });
+
+  return { repos, files, stdout };
+};
+
 export default function setup(project: TestProject) {
   const measured =
     process.env.CHANGES_BENCH === "1"
@@ -172,4 +213,5 @@ export default function setup(project: TestProject) {
     many: many(),
     ...Object.fromEntries(measured),
   });
+  project.provide("workStateRepos", workStateRepos());
 }
