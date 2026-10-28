@@ -159,11 +159,15 @@ const open = (enabled = true) => {
         fake.stops++;
       },
       idle: {
-        begin: async () => {
+        hold: () => {
           fake.holds++;
-        },
-        end: async () => {
-          fake.holds--;
+
+          return {
+            begun: Promise.resolve(),
+            end: async () => {
+              fake.holds--;
+            },
+          };
         },
       },
       redact: (text) => text.replaceAll(TOKEN, "***"),

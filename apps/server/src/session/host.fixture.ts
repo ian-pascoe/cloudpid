@@ -96,6 +96,7 @@ import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
+import type { HeldStop } from "../workspace/idle.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
@@ -652,6 +653,19 @@ export class TestSession extends DurableObject {
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
+              // The Workspace's side of the hold cap: the activity noted is counted, and the held stops are what a
+              // test put in `held-stops`.
+              workspaceActivity: async () => {
+                ctx.storage.kv.put(
+                  "workspace-activity",
+                  (ctx.storage.kv.get<number>("workspace-activity") ?? 0) + 1,
+                );
+              },
+              containerHeldStops: async (after) =>
+                Arr.filter(
+                  ctx.storage.kv.get<ReadonlyArray<HeldStop>>("held-stops") ?? [],
+                  (stop) => stop.at > after,
+                ),
               // Short only for a Registry that hangs; a loaded runner can take longer than that for a report that
               // lands, which would count it failed and report it again.
               reportTimeout:

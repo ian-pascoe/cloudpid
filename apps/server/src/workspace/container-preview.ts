@@ -7,14 +7,16 @@
 //
 // Each request is a use of the Container (`IdleStop.touch`). A page's WebSockets, which Browser Run does not route, are
 // carried over HTTP by the script put in every HTML page (`container-preview-script.ts`): this module holds each carried
-// socket's real socket to the Container, which counts as a running command (`begin`/`end`) while it is open, and closes
-// it when the page's stream goes away (cancelled, a write fails) or stops being read.
+// socket's real socket to the Container, which counts as a running command (`hold`) while it is open, and closes
+// it when the page's stream goes away (cancelled, a write fails) or stops being read. Neither is the owner's or the
+// agent's activity: an open page keeps the Container only until the hold cap passes without any (`IdleStop`).
 // @effect-diagnostics asyncFunction:off globalTimers:off preferEffectArray:off preferSchemaOverJson:off
 import {
   CONTAINER_PREVIEW_PORTS,
   containerPreviewHost,
 } from "@cloudpid/extensions/browser/contract";
 import * as Predicate from "effect/Predicate";
+import type { IdleStop } from "./idle.ts";
 import {
   CONTAINER_PREVIEW_HEADER,
   CONTAINER_PREVIEW_SCRIPT,
@@ -38,11 +40,7 @@ export const CONTAINER_PREVIEW_MAX_UNREAD_BYTES = 96 * 1024 * 1024;
 const CONTAINER_PREVIEW_SLICE_BYTES = 64 * 1024;
 
 /** The use of the Container a Container preview makes, as the idle stop counts it (`IdleStop`). */
-export type ContainerPreviewActivity = {
-  readonly touch: () => Promise<void>;
-  readonly begin: () => Promise<void>;
-  readonly end: () => Promise<void>;
-};
+export type ContainerPreviewActivity = Pick<IdleStop, "touch" | "hold">;
 
 export type ContainerPreviewDeps = {
   /** Whether the Container runs now. */
@@ -352,7 +350,8 @@ export class ContainerPreview {
     const id = this.#deps.newId();
     const activity = this.#deps.activity();
     // Begun before anything can end the socket, so its end always comes after it.
-    const begun = this.#use(activity.begin());
+    const hold = activity.hold();
+    const begun = this.#use(hold.begun);
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
@@ -370,7 +369,7 @@ export class ContainerPreview {
       ended = true;
       clearInterval(keepAlive);
       this.#carried.delete(id);
-      void begun.then(() => this.#use(activity.end()));
+      void begun.then(() => this.#use(hold.end()));
 
       try {
         socket.close(sendableCode(code), reason);

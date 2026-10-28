@@ -188,6 +188,10 @@ _Avoid_: Reset (for the Container alone), reboot
 The agent restarting its Workspace's Container at another size, up to its Environment's size limit, for that Container alone: the next Container after the idle stop has the Environment's size again. Changing the Environment's size is not a Container resize.
 _Avoid_: Scaling, upgrade
 
+**Held stop**:
+The Workspace stopping its Container, as an idle stop does (snapshot, then stop), because it was kept running an hour (or its idle time, when longer: the hold cap) after the last owner or agent activity in the Workspace, by a command handle never released or an open Container preview. Its Sessions show it as a notice.
+_Avoid_: Timeout, watchdog
+
 **Backend**:
 A place a Workspace runs commands: the Worker Shell or the Container.
 _Avoid_: Runtime, executor

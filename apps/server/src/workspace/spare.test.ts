@@ -74,11 +74,15 @@ const open = () => {
         });
       },
       idle: {
-        begin: async () => {
+        hold: () => {
           state.running++;
-        },
-        end: async () => {
-          state.running--;
+
+          return {
+            begun: Promise.resolve(),
+            end: async () => {
+              state.running--;
+            },
+          };
         },
         stop: async () => {
           state.stops++;

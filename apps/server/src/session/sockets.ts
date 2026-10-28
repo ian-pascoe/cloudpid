@@ -894,6 +894,9 @@ export const sessionSocketsLayer = (
           Effect.catch((error) => Effect.logWarning("Syncing the agent on connect failed", error)),
         );
 
+        // In the background: the notice of a held stop reaches the client through its watch, as any entry does.
+        yield* host.showHeldStops.pipe(Effect.forkIn(scope));
+
         const root = yield* host.activeBranch;
         const copying = yield* host.copying;
         const { 0: client, 1: server } = new WebSocketPair();

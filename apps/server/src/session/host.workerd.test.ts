@@ -928,3 +928,62 @@ describe("a Session's spans", () => {
     expect(await spansOf(stub, "session.resume")).not.toHaveLength(0);
   });
 });
+
+describe("a Session host's side of the hold cap (docs/architecture/container.md → Idle stop)", () => {
+  it("tells its Workspaces it is at work while a Run is live", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["done"]);
+      await instance.prompt({ requestId: "turn-1", text: "hi" });
+    });
+
+    await eventually(
+      stub,
+      async (_instance, state) => (state.storage.kv.get<number>("workspace-activity") ?? 0) > 0,
+    );
+  });
+
+  it("shows a held stop of its Workspace's Container as a notice before the next message, once", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["first", "second", "third"]);
+      // The first message marks where the Session starts: a stop before it is not its own.
+      await instance.prompt({ requestId: "turn-1", text: "one" });
+    });
+
+    await runInDurableObject(stub, async (_instance: TestSession, state) => {
+      const seen = state.storage.kv.get<number>("container-held-stops-seen") ?? 0;
+
+      state.storage.kv.put("held-stops", [
+        { at: seen - 1, lastActivity: seen - 3_600_001, holds: 1 },
+        { at: seen + 1, lastActivity: seen + 1 - 3_600_000, holds: 1 },
+      ]);
+    });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      await instance.prompt({ requestId: "turn-2", text: "two" });
+      await instance.prompt({ requestId: "turn-3", text: "three" });
+    });
+
+    const entries = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.rootEntries(),
+    );
+
+    const notices = Arr.filter(entries, (entry) => entry.kind === "cloudpid.container-held-stop");
+
+    const kinds = Arr.map(entries, (entry) =>
+      entry.kind === "cloudpid.container-held-stop" ? "notice" : entry.text,
+    );
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.data).toMatchObject({
+      notice: "Container stopped: held for 60 minutes without owner or agent activity",
+    });
+    // Shown before the message that came after it, and never sent to the model.
+    expect(kinds.indexOf("notice")).toBeGreaterThan(kinds.indexOf("one"));
+    expect(kinds.indexOf("notice")).toBeLessThan(kinds.indexOf("two"));
+    expect(notices[0]?.text).toBe("");
+  });
+});

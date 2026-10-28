@@ -98,8 +98,7 @@ const pageWithScript = (running = true) => {
     }),
     activity: () => ({
       touch: () => Promise.resolve(),
-      begin: () => Promise.resolve(),
-      end: () => Promise.resolve(),
+      hold: () => ({ begun: Promise.resolve(), end: () => Promise.resolve() }),
     }),
     used: () => undefined,
     newId: () => `socket-${sockets.length}`,
