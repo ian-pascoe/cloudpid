@@ -19,10 +19,9 @@ import type {
   SessionOrigin,
   SkillChangeFiles,
 } from "@cloudpid/protocol";
-import type { SkillSet } from "../workspace/bundled-skill-set.ts";
+import { EMPTY_SKILL_SET_HASH, type SkillSet } from "../workspace/skill-set-schema.ts";
 import {
   previewSkillSave,
-  hashBundle,
   hashFiles,
   mergeSkills,
   openSkills,
@@ -162,7 +161,8 @@ export type WorkspaceChoice =
  * good Build (null for none yet) and kept Secrets, opened (docs/spec.md → Secrets): the Workspace keeps them sealed,
  * to search a snapshot for and to take out of output. When the Registry cannot open them, `secrets` is absent and
  * `secretsUnavailable` says so (`SECRETS_UNAVAILABLE`), and the Workspace refuses the snapshots that would need them.
- * `skills` is the Environment's Skill set (its own Skills over those kept for every Environment, over the bundle), absent when the Workspace holds it already.
+ * `skills` is the Environment's Skill set (its own Skills over those kept for every Environment), absent when the
+ * Workspace holds it already.
  */
 export type WorkspaceSetupWithSettings = WorkspaceSetup & {
   readonly settings: Schema.Json;
@@ -559,8 +559,8 @@ export type RegistryMethods = {
     readonly change: number;
   }) => Effect.Effect<SkillChangeFiles | null>;
   /**
-   * The Skill set `environment`'s Workspaces serve: its own Skills over those kept for every Environment, over the
-   * bundle. Null when it is not registered.
+   * The Skill set `environment`'s Workspaces serve: its own Skills over those kept for every Environment. Null
+   * when it is not registered.
    */
   readonly workspaceSkillSet: (input: {
     readonly environment: string;
@@ -741,16 +741,6 @@ export const RegistryLive = Registry.make(
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
         const skillReader = githubSkillReader(github);
 
-        // The bundle, the lowest layer of every Skill set until it is removed, hashed once. Loaded on first use: the
-        // deploy loads this module in Node, which cannot load the bundle's `?raw` imports.
-        const bundle = yield* Effect.cached(
-          Effect.promise(() => import("../workspace/bundled-skill-set.ts")).pipe(
-            Effect.flatMap(({ BUNDLED_SKILL_SET }) =>
-              Effect.promise(() => hashBundle(BUNDLED_SKILL_SET)),
-            ),
-          ),
-        );
-
         /** Install `source`'s Skills into `environment`: as Agent changes by `author`, or as the owner's save with none. */
         const installFromGithub = (input: {
           readonly environment: string;
@@ -760,12 +750,11 @@ export const RegistryLive = Registry.make(
           readonly pin?: SkillInstallPin | undefined;
         }) =>
           Effect.gen(function* () {
-            const hashedBundle = yield* bundle;
             const now = yield* Clock.currentTimeMillis;
 
             return yield* Effect.promise(() =>
               installSkills(
-                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                { storage: state.raw.storage, store, skills, changes, now },
                 skillReader,
                 input,
               ),
@@ -777,12 +766,11 @@ export const RegistryLive = Registry.make(
           input: UpdateRequest & { readonly author: AgentChangeAuthor | null },
         ) =>
           Effect.gen(function* () {
-            const hashedBundle = yield* bundle;
             const now = yield* Clock.currentTimeMillis;
 
             return yield* Effect.promise(() =>
               updateSkills(
-                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                { storage: state.raw.storage, store, skills, changes, now },
                 skillReader,
                 input,
               ),
@@ -810,21 +798,16 @@ export const RegistryLive = Registry.make(
           Effect.catchCause((cause) => Effect.logWarning("The Skill update check failed", cause)),
         );
 
-        /**
-         * `environment`'s Skill set before its texts are read: its own Skills over those kept for every Environment,
-         * over the bundle.
-         */
+        /** `environment`'s Skill set before its texts are read: its own Skills over those kept for every Environment. */
         const mergedSkills = (environment: string) =>
-          Effect.flatMap(bundle, (hashed) =>
-            Effect.promise(() => mergeSkills(skillLayers(skills, environment), hashed)),
-          );
+          Effect.promise(() => mergeSkills(skillLayers(skills, environment)));
 
         /** `environment`'s Skill set with its texts, unless its hash is `held`'s. */
         const skillSetUnless = (environment: string, held: string | undefined) =>
           Effect.gen(function* () {
             const merged = yield* mergedSkills(environment);
 
-            return merged.hash === held ? undefined : skillSetOf(merged, yield* bundle, skills);
+            return merged.hash === held ? undefined : skillSetOf(merged, skills);
           });
 
         // The kept Secrets' key, derived once, on first use: a malformed master key fails the calls that need it, not
@@ -1185,7 +1168,6 @@ export const RegistryLive = Registry.make(
             ),
           revertAgentChange: ({ environment, change }) =>
             Effect.gen(function* () {
-              const hashedBundle = yield* bundle;
               const now = yield* Clock.currentTimeMillis;
 
               return revertAgentChange(
@@ -1194,7 +1176,7 @@ export const RegistryLive = Registry.make(
                 changes,
                 { environment, id: change },
                 now,
-                { skills, bundle: hashedBundle },
+                skills,
               );
             }),
           dismissAgentChange: ({ environment, change }) =>
@@ -1215,23 +1197,18 @@ export const RegistryLive = Registry.make(
                 return { status: "rejected" as const, message: unapproved };
 
               const hashed = yield* Effect.promise(() => hashFiles(files));
-              const hashedBundle = yield* bundle;
               const now = yield* Clock.currentTimeMillis;
 
               return saveSkillAs(
-                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                { storage: state.raw.storage, store, skills, changes, now },
                 { environment, folder, files, hashed, author, expected },
               );
             }),
           agentPreviewSkill: ({ environment, folder, files }) =>
             Effect.gen(function* () {
               const hashed = yield* Effect.promise(() => hashFiles(files));
-              const hashedBundle = yield* bundle;
 
-              return previewSkillSave(
-                { store, skills, bundle: hashedBundle },
-                { environment, folder, files, hashed },
-              );
+              return previewSkillSave({ store, skills }, { environment, folder, files, hashed });
             }),
           agentRemoveSkill: ({ environment, name, author, expected }) =>
             Effect.gen(function* () {
@@ -1240,11 +1217,10 @@ export const RegistryLive = Registry.make(
               if (unapproved !== undefined)
                 return { status: "rejected" as const, message: unapproved };
 
-              const hashedBundle = yield* bundle;
               const now = yield* Clock.currentTimeMillis;
 
               return removeSkillAs(
-                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                { storage: state.raw.storage, store, skills, changes, now },
                 { environment, name, author, expected },
               );
             }),
@@ -1257,17 +1233,13 @@ export const RegistryLive = Registry.make(
                 : Effect.succeed({ status: "refused" as const, message: unapproved });
             }),
           agentPreviewSkillInstall: ({ environment, source, skills: names }) =>
-            Effect.gen(function* () {
-              const hashedBundle = yield* bundle;
-
-              return yield* Effect.promise(() =>
-                previewSkillInstall({ store, skills, bundle: hashedBundle }, skillReader, {
-                  environment,
-                  source,
-                  skills: names,
-                }),
-              );
-            }),
+            Effect.promise(() =>
+              previewSkillInstall({ store, skills }, skillReader, {
+                environment,
+                source,
+                skills: names,
+              }),
+            ),
           installSkills: ({ environment, source, skills: names }) =>
             installFromGithub({ environment, source, skills: names, author: null }),
           agentUpdateSkills: ({ environment, names, overwrite, pins, author }) =>
@@ -1281,17 +1253,13 @@ export const RegistryLive = Registry.make(
           updateSkills: ({ environment, names, overwrite }) =>
             updateFromGithub({ environment, names, overwrite, author: null }),
           previewSkillUpdates: ({ environment, names, overwrite }) =>
-            Effect.gen(function* () {
-              const hashedBundle = yield* bundle;
-
-              return yield* Effect.promise(() =>
-                previewSkillUpdates({ store, skills, bundle: hashedBundle }, skillReader, {
-                  environment,
-                  names,
-                  overwrite,
-                }),
-              );
-            }),
+            Effect.promise(() =>
+              previewSkillUpdates({ store, skills }, skillReader, {
+                environment,
+                names,
+                overwrite,
+              }),
+            ),
           checkSkillUpdates: () => checkInstalledSkills,
           listSkills: ({ environment }) =>
             Effect.sync(() =>
@@ -1307,21 +1275,11 @@ export const RegistryLive = Registry.make(
                   ),
             ),
           removeSkill: ({ environment, name }) =>
-            Effect.gen(function* () {
-              if (
-                environment !== EVERY_ENVIRONMENT_SCOPE &&
-                store.getEnvironment(environment) === null
-              ) {
-                return { status: "missing" as const };
-              }
-
-              const hashedBundle = yield* bundle;
-
-              return removeSkill(
-                { storage: state.raw.storage, store, skills, bundle: hashedBundle },
-                { environment, name },
-              );
-            }),
+            Effect.sync(() =>
+              environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
+                ? { status: "missing" as const }
+                : removeSkill({ storage: state.raw.storage, store, skills }, { environment, name }),
+            ),
           skillChangeFiles: ({ environment, change }) =>
             Effect.sync(() => {
               const found = changes.get(environment, change);
@@ -1352,12 +1310,13 @@ export const RegistryLive = Registry.make(
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
               const { stale, made } = store.upkeepSpares(environments, shortId, now);
-              const { set } = yield* bundle;
 
-              // A spare is new, so it holds the bundle: it is handed its Environment's Skill set when that differs.
+              // A spare is new, so it holds the empty Skill set: it is handed its Environment's when that differs.
               return {
                 stale,
-                made: yield* Effect.forEach(made, (setup) => withSettings(setup, set.hash)),
+                made: yield* Effect.forEach(made, (setup) =>
+                  withSettings(setup, EMPTY_SKILL_SET_HASH),
+                ),
               } satisfies SpareWork;
             }),
           buildWork: ({ environments }) =>

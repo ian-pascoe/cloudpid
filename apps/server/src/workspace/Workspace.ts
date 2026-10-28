@@ -53,7 +53,7 @@ import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import { type WorkspaceSecrets, workspaceSecretsStore } from "./environment-secrets.ts";
-import type { SkillSet } from "./bundled-skill-set.ts";
+import type { SkillSet } from "./skill-set-schema.ts";
 import {
   checkSkillSet,
   type SkillSetAnswer,
@@ -262,7 +262,7 @@ export class Workspace extends ContainerHost {
   readonly #containerPreview: ContainerPreview;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
-  /** The Skill set the mount at `SKILLS_MOUNT` serves: the bundle until one is handed over (`updateSkills`). */
+  /** The Skill set the mount at `SKILLS_MOUNT` serves: empty until one is handed over (`updateSkills`). */
   readonly #skills: ReturnType<typeof skillSetStore>;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
@@ -523,8 +523,8 @@ export class Workspace extends ContainerHost {
 
     this.#workspace = new ComputerWorkspace({
       storage: ctx.storage,
-      // The Skill set the Workspace holds (the bundled skills, `skills/`, until another is handed over) appears
-      // read-only: a write under the mount fails with EROFS, and a set of another hash replaces the copy.
+      // The Skill set the Workspace holds (empty until one is handed over) appears read-only: a write under the mount
+      // fails with EROFS, and a set of another hash replaces the copy.
       mounts: {
         [SKILLS_MOUNT]: skillSetMount(
           () => skills.current(),
@@ -1149,7 +1149,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * The Workspace is ready once computer has indexed its mounts, which copies the bundled skills into the files the first
+   * The Workspace is ready once computer has indexed its mounts, which copies the Skill set into the files the first
    * time. A mount replaces what is at its path, so what the Workspace had at the skills' mount before is moved aside
    * first (`keepPriorSkills`).
    */
@@ -1409,7 +1409,7 @@ export class Workspace extends ContainerHost {
   }
 
   async #fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
-    // The bundled skills are copied into the files the first time the mounts are indexed, which `#ready()` does once.
+    // The Skill set is copied into the files the first time the mounts are indexed, which `#ready()` does once.
     await this.#ready();
 
     return this.#host.handle(request);

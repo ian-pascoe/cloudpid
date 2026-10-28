@@ -1,11 +1,11 @@
-// The Skill set a Workspace holds (ADR-0026): the files its read-only mount at `/workspace/.agents/skills` serves and its
-// Skill discovery reads, with their content hash. It is kept in the Workspace DO's own storage, and is the bundle
-// (`BUNDLED_SKILL_SET`, `bundled-skill-set.ts`) until one is handed over (`Workspace.updateSkills`).
+// The Skill set a Workspace holds (ADR-0026): the files its read-only mount at `/workspace/.agents/skills` serves and
+// its Skill discovery reads, with their content hash. It is kept in the Workspace DO's own storage, and is empty
+// (`EMPTY_SKILL_SET`, `skill-set-schema.ts`) until one is handed over (`Workspace.updateSkills`).
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { type EagerMount, type MountWriteAPI, WorkerBundle } from "@cloudflare/computer";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { BUNDLED_SKILL_SET, SkillSet } from "./bundled-skill-set.ts";
+import { EMPTY_SKILL_SET, SkillSet } from "./skill-set-schema.ts";
 
 /** What a hand-over of a Skill set answers: whether the Workspace holds it now, or why not. */
 export type SkillSetAnswer =
@@ -13,12 +13,12 @@ export type SkillSetAnswer =
   | { readonly ok: false; readonly message: string };
 
 /** The mount serving `set`, as computer's `WorkerBundle`. Making it throws when a path names a file and a directory. */
-const bundleOf = (set: SkillSet): EagerMount =>
+const mountOf = (set: SkillSet): EagerMount =>
   WorkerBundle({ version: set.hash, files: set.files });
 
 /** Writes `set` under the mount's root, as computer's `WorkerBundle` would. */
 export const writeSkillSet = (set: SkillSet, api: MountWriteAPI): Promise<void> =>
-  bundleOf(set).materialize(api);
+  mountOf(set).materialize(api);
 
 /**
  * Why `path` is not a file's path under the mount as a walk of it lists it: segments joined by `/`, none empty, `.` or
@@ -61,7 +61,7 @@ export const checkSkillSet = (
 
   try {
     // Only for its check that no path names both a file and a directory.
-    bundleOf(decoded.success);
+    mountOf(decoded.success);
   } catch (cause) {
     return { ok: false, message: cause instanceof Error ? cause.message : String(cause) };
   }
@@ -69,7 +69,7 @@ export const checkSkillSet = (
   return { ok: true, set: decoded.success };
 };
 
-/** Where the held set's hash is kept; absent, the Workspace holds the bundle. */
+/** Where the held set's hash is kept; absent, the Workspace holds the empty set. */
 const HASH_KEY = "cloudpid:skills:hash";
 
 /** Where each file of the held set is kept, under `<prefix><path>`: one entry per file keeps each value small. */
@@ -87,7 +87,7 @@ export const skillSetStore = (storage: SkillSetStorage) => {
   const load = (): SkillSet => {
     const hash = storage.kv.get<string>(HASH_KEY);
 
-    if (hash === undefined) return BUNDLED_SKILL_SET;
+    if (hash === undefined) return EMPTY_SKILL_SET;
 
     const files: Record<string, string> = {};
 
@@ -103,14 +103,13 @@ export const skillSetStore = (storage: SkillSetStorage) => {
     current: (): SkillSet => (held ??= load()),
 
     /**
-     * Keep `set` in place of the one held, in one transaction. The bundle is kept as nothing, so a deploy that changes
-     * the bundle reaches a Workspace that holds it.
+     * Keep `set` in place of the one held, in one transaction. The empty set is kept as nothing.
      */
     replace: (set: SkillSet): void => {
       storage.transactionSync(() => {
         for (const [key] of storage.kv.list({ prefix: FILE_PREFIX })) storage.kv.delete(key);
 
-        if (set.hash === BUNDLED_SKILL_SET.hash) {
+        if (set.hash === EMPTY_SKILL_SET.hash) {
           storage.kv.delete(HASH_KEY);
 
           return;
@@ -131,8 +130,9 @@ export const skillSetStore = (storage: SkillSetStorage) => {
 /**
  * The read-only mount of the set `current` answers: its version is the set's hash, so computer copies the files again
  * (clearing the mount first) only when the hash differs from the one it recorded, at the first index of each instance
- * and at each `remount()`. The bundle's hash is the version the mount had before sets existed, so a Workspace that
- * holds the bundle is not copied again. `write` writes a set's files (`writeSkillSet`; a test Worker makes it fail).
+ * and at each `remount()`, so a Workspace that mounted other Skills before (the empty set's hash is none computer
+ * recorded for them) is cleared at its next index. `write` writes a set's files (`writeSkillSet`; a test Worker makes it
+ * fail).
  */
 export const skillSetMount = (
   current: () => SkillSet,

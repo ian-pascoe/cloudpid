@@ -95,7 +95,7 @@ class TrackedRuntime extends WorkspaceRuntimeStub {
 
 /**
  * The Workspace's file system for the Worker Shell, where `mkdir -p` of a directory that exists succeeds even above a
- * read-only mount: computer refuses it on `/workspace` once the bundled skills are mounted below (`ensureDirectory`).
+ * read-only mount: computer refuses it on `/workspace` once the Skill set is mounted below (`ensureDirectory`).
  */
 export class GuardedFilesystem extends WorkspaceFilesystemStub {
   readonly #workspace: ComputerWorkspace;

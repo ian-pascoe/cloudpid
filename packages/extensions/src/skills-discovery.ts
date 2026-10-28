@@ -30,8 +30,8 @@ export const SKILLS_DIRECTORY = ".agents/skills";
 /** The Workspace root: discovery goes no further up. */
 const WORKSPACE_ROOT = "/workspace";
 
-/** Where the bundled skills are mounted, read-only, in every Workspace: the Workspace root's own `.agents/skills`. */
-export const BUNDLED_SKILLS_DIRECTORY = `${WORKSPACE_ROOT}/${SKILLS_DIRECTORY}`;
+/** Where the Environment's Skill set is mounted, read-only, in every Workspace: the root's own `.agents/skills`. */
+export const SKILL_SET_DIRECTORY = `${WORKSPACE_ROOT}/${SKILLS_DIRECTORY}`;
 
 /** The longest description listed, the Agent Skills limit: a repo's skills are not trusted to size the prompt. */
 export const MAX_DESCRIPTION_LENGTH = 1024;
@@ -299,7 +299,7 @@ const skillsIn = (env: SkillsEnv, root: string): Effect.Effect<ReadonlyArray<Ski
 /**
  * The skills a conversation in `env`'s `cwd` can use: nearest directory first, and where two have one name the first
  * wins, as pi keeps the first it finds. `known` holds the skills of a `.agents/skills` directory (by its path) that
- * are not worth a walk, as the bundled skills of a read-only mount are not: those are used as they are.
+ * are not worth a walk, as the Skill set of a read-only mount is not: those are used as they are.
  */
 export const discoverSkills = (
   env: SkillsEnv,

@@ -13,7 +13,6 @@
     ".roo/**",
     ".windsurf/**",
     ".repos/**",
-    "skills/**",
     "tools/oxlint/anti-slop/**"
   ],
   "jsPlugins": [

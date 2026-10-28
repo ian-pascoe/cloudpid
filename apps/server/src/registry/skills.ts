@@ -3,7 +3,7 @@
 // now (`skills`, by scope, an Environment's id or `*` for every Environment, and name) and the Agent changes that saved
 // or removed one (their files before and after, by hash, under the same scope). Text that neither refers to any more is
 // dropped when the history is pruned. The Registry merges an Environment's own Skills over those kept for every
-// Environment, over the bundle (the lowest layer until it is removed), into the Skill set its Workspaces serve, and
+// Environment, into the Skill set its Workspaces serve (empty where none is kept), and
 // hands it to a Workspace whose set's hash differs. Synchronous over SQLite, as the store is, but for the hashes, which
 // are made before a transaction.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
@@ -31,7 +31,7 @@ import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import type { SkillSet } from "../workspace/bundled-skill-set.ts";
+import type { SkillSet } from "../workspace/skill-set-schema.ts";
 import type { AgentChangeAuthor, AgentChangeRevert, AgentChanges } from "./agent-changes.ts";
 import { type SecretScope, scopeOf } from "./secret-changes.ts";
 import type { EnvironmentRecord, RegistryStorage } from "./store.ts";
@@ -421,46 +421,14 @@ export const checkSkill = (
     : { ok: true, skill };
 };
 
-/** The bundle, hashed once per isolate: its set, the names of its Skills, and each file's content hash by mount path. */
-export type HashedBundle = {
-  readonly set: SkillSet;
-  readonly names: ReadonlySet<string>;
-  readonly hashes: Readonly<Record<string, string>>;
-  /** Each Skill's size in UTF-8 bytes, by name. */
-  readonly bytes: ReadonlyMap<string, number>;
-};
-
-/** The Skill a path under the mount belongs to: its first segment. */
-const skillOf = (path: string): string => path.split("/", 1)[0] ?? path;
-
-export const hashBundle = async (set: SkillSet): Promise<HashedBundle> => ({
-  set,
-  names: new Set(Arr.map(Record.keys(set.files), skillOf)),
-  bytes: Arr.reduce(Record.toEntries(set.files), new Map<string, number>(), (sizes, [path, text]) =>
-    sizes.set(skillOf(path), (sizes.get(skillOf(path)) ?? 0) + utf8Bytes(text)),
-  ),
-  hashes: Object.fromEntries(
-    await Promise.all(
-      Arr.map(
-        Record.toEntries(set.files),
-        async ([path, text]) => [path, await contentHash(text)] as const,
-      ),
-    ),
-  ),
-});
-
 /**
  * A Skill set as the Registry merges it, before its texts are read: its hash, the names of its Skills, and each file's
- * content hash by its path under the mount, with whether the bundle holds its text.
+ * content hash by its path under the mount.
  */
 export type MergedSkills = {
   readonly hash: string;
   readonly names: ReadonlyArray<string>;
-  readonly entries: ReadonlyArray<{
-    readonly path: string;
-    readonly hash: string;
-    readonly bundled: boolean;
-  }>;
+  readonly entries: ReadonlyArray<{ readonly path: string; readonly hash: string }>;
 };
 
 /**
@@ -478,13 +446,12 @@ export const skillLayers = (
 
 /**
  * The Skill set of `layers` (the scopes' Skills, nearest first: an Environment's own, then those kept for every
- * Environment) over the bundle, the lowest layer: a Skill of a nearer layer hides the others of its name. With no Skill in any layer it is the bundle, under the
- * bundle's own hash, so a Workspace that holds the bundle is handed nothing; otherwise its hash is that of every file's
- * path and content hash, in order.
+ * Environment): a Skill of a nearer layer hides the others of its name. Its hash is that of every file's path and
+ * content hash, in order, so with no Skill in any layer it is the empty set's (`EMPTY_SKILL_SET_HASH`), and a Workspace
+ * that holds the empty set is handed nothing.
  */
 export const mergeSkills = async (
   layers: ReadonlyArray<ReadonlyArray<Pick<StoredSkill, "name" | "files">>>,
-  bundle: HashedBundle,
 ): Promise<MergedSkills> => {
   const taken = new Set<string>();
   const entries: Array<MergedSkills["entries"][number]> = [];
@@ -496,25 +463,9 @@ export const mergeSkills = async (
       taken.add(skill.name);
 
       for (const [path, hash] of Record.toEntries(skill.files)) {
-        entries.push({ path: `${skill.name}/${path}`, hash, bundled: false });
+        entries.push({ path: `${skill.name}/${path}`, hash });
       }
     }
-  }
-
-  if (taken.size === 0) {
-    return {
-      hash: bundle.set.hash,
-      names: [...bundle.names],
-      entries: Arr.map(Record.toEntries(bundle.hashes), ([path, hash]) => ({
-        path,
-        hash,
-        bundled: true,
-      })),
-    };
-  }
-
-  for (const [path, hash] of Record.toEntries(bundle.hashes)) {
-    if (!taken.has(skillOf(path))) entries.push({ path, hash, bundled: true });
   }
 
   const ordered = Arr.sort(
@@ -529,27 +480,21 @@ export const mergeSkills = async (
         "",
       ),
     ),
-    names: [...new Set([...taken, ...bundle.names])],
+    names: [...taken],
     entries: ordered,
   };
 };
 
-/** The Skill set `merged` describes, with its texts: the bundle's from the bundle, the others from `skills`. */
-export const skillSetOf = (
-  merged: MergedSkills,
-  bundle: HashedBundle,
-  skills: Skills,
-): SkillSet => {
-  const kept = skills.contents(
-    Arr.flatMap(merged.entries, ({ hash, bundled }) => (bundled ? [] : [hash])),
-  );
+/** The Skill set `merged` describes, with its texts from `skills`. */
+export const skillSetOf = (merged: MergedSkills, skills: Skills): SkillSet => {
+  const kept = skills.contents(Arr.map(merged.entries, ({ hash }) => hash));
 
   return {
     hash: merged.hash,
     // A text that is not kept (which the pruning never leaves) is left out rather than served empty.
     files: Object.fromEntries(
-      Arr.flatMap(merged.entries, ({ path, hash, bundled }) => {
-        const text = bundled ? bundle.set.files[path] : kept.get(hash);
+      Arr.flatMap(merged.entries, ({ path, hash }) => {
+        const text = kept.get(hash);
 
         return text === undefined ? [] : [[path, text] as const];
       }),
@@ -558,8 +503,8 @@ export const skillSetOf = (
 };
 
 /**
- * The most UTF-8 bytes an Environment's Skill set may hold, the bundle's counted: the whole set goes to a Workspace in
- * one Durable Object call, and each Workspace keeps a copy.
+ * The most UTF-8 bytes an Environment's Skill set may hold: the whole set goes to a Workspace in one Durable Object
+ * call, and each Workspace keeps a copy.
  */
 export const MAX_SKILL_SET_BYTES = 8 * 1024 * 1024;
 
@@ -576,13 +521,12 @@ const withChange = (kept: ReadonlyArray<Counted>, change: Change): ReadonlyArray
 ];
 
 /**
- * Why a set of `layers` (nearest first, a Skill of a nearer layer hiding the others of its name) over the bundle is too
- * large, saying whose it is (`who`), or undefined when it is not: more than `MAX_SKILLS` Skills, or more than
- * `MAX_SKILL_SET_BYTES`, the bundle's counted. `contents` holds the texts of the files not kept yet.
+ * Why a set of `layers` (nearest first, a Skill of a nearer layer hiding the others of its name) is too large, saying
+ * whose it is (`who`), or undefined when it is not: more than `MAX_SKILLS` Skills, or more than `MAX_SKILL_SET_BYTES`.
+ * `contents` holds the texts of the files not kept yet.
  */
 const sizeProblem = (
   skills: Skills,
-  bundle: HashedBundle,
   who: string,
   layers: ReadonlyArray<ReadonlyArray<Counted>>,
   contents: ReadonlyMap<string, string>,
@@ -593,26 +537,18 @@ const sizeProblem = (
     for (const skill of layer) if (!served.has(skill.name)) served.set(skill.name, skill);
   }
 
-  const count = new Set([...served.keys(), ...bundle.names]).size;
-
-  if (count > MAX_SKILLS) {
-    return `${who} would hold ${count} Skills, more than the ${MAX_SKILLS} a set may`;
+  if (served.size > MAX_SKILLS) {
+    return `${who} would hold ${served.size} Skills, more than the ${MAX_SKILLS} a set may`;
   }
 
   const hashes = Arr.flatMap([...served.values()], (kept) => Record.values(kept.files));
   const sizes = skills.sizes(hashes);
 
-  const ownBytes = Arr.reduce(hashes, 0, (total, hash) => {
+  const bytes = Arr.reduce(hashes, 0, (total, hash) => {
     const text = contents.get(hash);
 
     return total + (sizes.get(hash) ?? (text === undefined ? 0 : utf8Bytes(text)));
   });
-
-  const bundleBytes = Arr.reduce([...bundle.bytes], 0, (total, [name, bytes]) =>
-    served.has(name) ? total : total + bytes,
-  );
-
-  const bytes = ownBytes + bundleBytes;
 
   return bytes > MAX_SKILL_SET_BYTES
     ? `${who} would be ${bytes} bytes, more than the ${MAX_SKILL_SET_BYTES} a set may`
@@ -623,18 +559,17 @@ const sizeProblem = (
 type SetContext = {
   readonly store: Pick<SkillStore, "listEnvironments">;
   readonly skills: Skills;
-  readonly bundle: HashedBundle;
 };
 
 /**
  * Why the Skill sets are refused once `change` is made to the Skills kept in `scope` (an Environment's id, or `*`), or
- * undefined when they are not: more than `MAX_SKILLS` Skills, or more than `MAX_SKILL_SET_BYTES`, every layer and the
- * bundle counted (`contents`: the texts of the files not kept yet). A change to an Environment's Skills checks that
+ * undefined when they are not: more than `MAX_SKILLS` Skills, or more than `MAX_SKILL_SET_BYTES`, every layer counted
+ * (`contents`: the texts of the files not kept yet). A change to an Environment's Skills checks that
  * Environment's set; one to those kept for every Environment checks every Environment's, and the set of an
  * Environment keeping none of its own, and the message names the first that would pass, as ADR-0023 does for variables.
  */
 const setProblem = (
-  { store, skills, bundle }: SetContext,
+  { store, skills }: SetContext,
   scope: string,
   change: Change,
   contents: ReadonlyMap<string, string> = new Map(),
@@ -644,7 +579,6 @@ const setProblem = (
   if (scope !== EVERY_ENVIRONMENT_SCOPE) {
     return sizeProblem(
       skills,
-      bundle,
       "The Environment's Skill set",
       [withChange(skills.list(scope), change), every],
       contents,
@@ -656,7 +590,6 @@ const setProblem = (
   // An Environment with none of its own Skills (a new one, or one that removes its override) serves these alone.
   const alone = sizeProblem(
     skills,
-    bundle,
     "The Skill set of an Environment keeping none of its own Skills",
     [kept],
     contents,
@@ -667,7 +600,6 @@ const setProblem = (
   for (const { id, name } of store.listEnvironments()) {
     const problem = sizeProblem(
       skills,
-      bundle,
       `Environment ${JSON.stringify(name)} (${id})'s Skill set`,
       [skills.list(id), kept],
       contents,
@@ -684,16 +616,15 @@ const refusedToKeep = (problem: string): string => `${problem}: remove a Skill f
 
 /**
  * Why taking Skill `name` out of `scope` is refused, or undefined when it is not. Taking a Skill out only grows a set
- * where the Skill of its name in the layer below, which it hid, is served in its place (an Environment's own Skill
- * hides one kept for every Environment and the bundle's; one kept for every Environment hides the bundle's), so that
- * is what is checked: the sets that would then be served.
+ * where the Skill of its name kept for every Environment, which an Environment's own Skill hides, is served in its
+ * place, so that is what is checked: the sets that would then be served. A Skill kept for every Environment hides
+ * nothing.
  */
 const refusedToTakeOut = (context: SetContext, scope: string, name: string): string | undefined => {
-  const { skills, bundle } = context;
+  const { skills } = context;
 
   const exposed =
-    bundle.names.has(name) ||
-    (scope !== EVERY_ENVIRONMENT_SCOPE && skills.get(EVERY_ENVIRONMENT_SCOPE, name) !== null);
+    scope !== EVERY_ENVIRONMENT_SCOPE && skills.get(EVERY_ENVIRONMENT_SCOPE, name) !== null;
 
   const problem = exposed ? setProblem(context, scope, { name, files: null }) : undefined;
 
@@ -762,8 +693,6 @@ export type SkillSave =
       readonly environment: SkillScope;
       readonly change: AgentChange;
       readonly skill: StoredSkill;
-      /** Whether the bundle's Skill of the name is hidden by it. */
-      readonly bundled: boolean;
       /** Whether it is an Environment's own Skill that hides the one of the name kept for every Environment. */
       readonly inherited: boolean;
       /**
@@ -786,8 +715,6 @@ export type SkillRemoval =
       readonly status: "removed";
       readonly environment: SkillScope;
       readonly change: AgentChange;
-      /** Whether the bundle's Skill of the name is served in its place. */
-      readonly bundled: boolean;
       /** Whether the Skill of the name kept for every Environment is served in its place, for an Environment's own. */
       readonly inherited: boolean;
       /** For a Skill kept for every Environment: the Environments whose own Skill of the name stays served there. */
@@ -825,19 +752,15 @@ export type SkillStore = {
   readonly listEnvironments: () => ReadonlyArray<EnvironmentRecord>;
 };
 
-/** The Skills kept, and the bundle a Skill set must fit with: what reverting a Skill's change needs besides the changes. */
-export type KeptSkills = { readonly skills: Skills; readonly bundle: HashedBundle };
-
 /**
  * What a change of a Skill reads and writes: the Registry's storage (for the transaction) and store, the Skills kept,
- * the Agent changes, the bundle the merged set must fit with, and the time of the change.
+ * the Agent changes, and the time of the change.
  */
 export type SkillChangeContext = {
   readonly storage: Pick<RegistryStorage, "transactionSync">;
   readonly store: SkillStore;
   readonly skills: Skills;
   readonly changes: AgentChanges;
-  readonly bundle: HashedBundle;
   readonly now: number;
 };
 
@@ -877,7 +800,7 @@ type SavePlan =
  * for the size.
  */
 const planSave = (
-  { store, skills, bundle }: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
+  { store, skills }: Pick<SkillChangeContext, "store" | "skills">,
   { environment, folder, files, hashed, source }: SkillToKeep,
 ): SavePlan => {
   const scope = scopeOf(environment, store);
@@ -900,7 +823,7 @@ const planSave = (
   }
 
   const problem = setProblem(
-    { store, skills, bundle },
+    { store, skills },
     environment,
     { name, files: hashed.files },
     hashed.contents,
@@ -951,7 +874,7 @@ const keepPlanned = (
  * with nothing saved or recorded: the agent's Approval card shows it before the owner is asked.
  */
 export const previewSkillSave = (
-  context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
+  context: Pick<SkillChangeContext, "store" | "skills">,
   input: SkillToKeep,
 ): SkillPreview => {
   const plan = planSave(context, input);
@@ -1032,19 +955,17 @@ export const saveSkillAs = (
 
 /**
  * What a change to Skill `name` in `scope` (an Environment's id, or `*`) meets in the layers around it, once it is made:
- * whether the bundle keeps a Skill of the name (`bundled`), whether the Skill of the name kept for every Environment
- * does, for an Environment's own (`inherited`), and, for one kept for every Environment, the Environments whose own
- * Skill of the name hides it (`overriddenIn`).
+ * whether the Skill of the name kept for every Environment does, for an Environment's own (`inherited`), and, for one
+ * kept for every Environment, the Environments whose own Skill of the name hides it (`overriddenIn`).
  */
 const layersAround = (
-  { store, skills, bundle }: SetContext & { readonly store: SkillStore },
+  { store, skills }: SetContext & { readonly store: SkillStore },
   scope: string,
   name: string,
 ) => {
   const everywhere = scope === EVERY_ENVIRONMENT_SCOPE;
 
   return {
-    bundled: bundle.names.has(name),
     inherited: !everywhere && skills.get(EVERY_ENVIRONMENT_SCOPE, name) !== null,
     overriddenIn: everywhere
       ? Arr.flatMap(store.listEnvironments(), ({ id, name: environmentName }) =>
@@ -1090,7 +1011,7 @@ export type SkillKept =
  * asked against.
  */
 export const removeSkillAs = (
-  { storage, store, skills, changes, bundle, now }: SkillChangeContext,
+  { storage, store, skills, changes, now }: SkillChangeContext,
   {
     environment,
     name,
@@ -1116,7 +1037,7 @@ export const removeSkillAs = (
       return { status: "changed-since", environment: scope };
     }
 
-    const problem = refusedToTakeOut({ store, skills, bundle }, environment, name);
+    const problem = refusedToTakeOut({ store, skills }, environment, name);
 
     if (problem !== undefined) return { status: "rejected", message: problem };
 
@@ -1141,7 +1062,7 @@ export const removeSkillAs = (
       status: "removed",
       environment: scope,
       change,
-      ...layersAround({ store, skills, bundle }, environment, name),
+      ...layersAround({ store, skills }, environment, name),
     };
   });
 
@@ -1162,8 +1083,7 @@ export const removeSkill = (
     storage,
     store,
     skills,
-    bundle,
-  }: Pick<SkillChangeContext, "storage" | "store" | "skills" | "bundle"> & {
+  }: Pick<SkillChangeContext, "storage" | "store" | "skills"> & {
     readonly storage: RegistryStorage;
   },
   { environment, name }: { readonly environment: string; readonly name: string },
@@ -1171,7 +1091,7 @@ export const removeSkill = (
   storage.transactionSync((): OwnerRemoval => {
     if (skills.get(environment, name) === null) return { status: "absent" };
 
-    const problem = refusedToTakeOut({ store, skills, bundle }, environment, name);
+    const problem = refusedToTakeOut({ store, skills }, environment, name);
 
     if (problem !== undefined) return { status: "rejected", message: problem };
 
@@ -1230,13 +1150,7 @@ const descriptionOf = (text: string | undefined): string => {
  * Environment's, for the scope `*`) past its limits.
  */
 export const revertSkillChange = (
-  {
-    store,
-    skills,
-    changes,
-    bundle,
-    now,
-  }: Pick<SkillChangeContext, "store" | "skills" | "changes" | "bundle" | "now">,
+  { store, skills, changes, now }: Pick<SkillChangeContext, "store" | "skills" | "changes" | "now">,
   environment: string,
   change: AgentChange,
 ): AgentChangeRevert => {
@@ -1268,13 +1182,13 @@ export const revertSkillChange = (
   }
 
   if (before === null) {
-    const problem = refusedToTakeOut({ store, skills, bundle }, environment, name);
+    const problem = refusedToTakeOut({ store, skills }, environment, name);
 
     if (problem !== undefined) return { status: "refused", message: `Not reverted: ${problem}` };
 
     skills.remove(environment, name);
   } else {
-    const problem = setProblem({ store, skills, bundle }, environment, { name, files: before });
+    const problem = setProblem({ store, skills }, environment, { name, files: before });
 
     if (problem !== undefined) {
       return { status: "refused", message: `Not reverted: ${refusedToKeep(problem)}` };

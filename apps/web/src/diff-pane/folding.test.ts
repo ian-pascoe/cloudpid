@@ -46,7 +46,7 @@ describe("foldReason", () => {
       "api/service.pb.go",
       "api/service_pb2.py",
       "lib/model.g.dart",
-      "src/workspace/bundled-skills.generated.ts",
+      "src/api/client.generated.ts",
     ]) {
       expect(foldReason(modified(path)), path).toBe("generated");
     }

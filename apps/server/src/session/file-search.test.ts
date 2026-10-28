@@ -86,7 +86,7 @@ describe("the paths a listing leaves out", () => {
     ).toEqual(["ok.ts"]);
   });
 
-  it("leaves out the Attachments and the bundled Skills, from wherever it is listed", () => {
+  it("leaves out the Attachments and the Skill set, from wherever it is listed", () => {
     expect(
       fileCandidates(
         [

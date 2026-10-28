@@ -174,7 +174,6 @@ const open = (
             updateAvailable: false,
             savedAt: 1,
           },
-          bundled: false,
           inherited: false,
           // The Session's Environment keeps its own Skill of the name, which hides one kept for every Environment.
           overriddenIn:
@@ -202,7 +201,6 @@ const open = (
               status: "removed" as const,
               environment: input.environment === "*" ? EVERY_SCOPE : DEFAULT_SCOPE,
               change: { ...CHANGE, field: "skills.release", after: null },
-              bundled: false,
               inherited: false,
               overriddenIn:
                 input.environment === "*" && overridesHere
@@ -233,7 +231,6 @@ const open = (
                     field: "skills.grill-me",
                     tool: "environment_skill_install",
                   },
-                  shadows: false,
                   overriddenIn:
                     input.environment === "*" && overridesHere
                       ? [{ id: "default", name: "Default" }]

@@ -158,7 +158,6 @@ export const installSkills = async (
         const saved = {
           ...named,
           outcome: "installed" as const,
-          shadows: kept.bundled,
           overriddenIn: kept.overriddenIn,
         };
 
@@ -226,7 +225,7 @@ export const installSkills = async (
  * `MAX_APPROVED_SKILLS` Skills are refused before any Skill's files are read.
  */
 export const previewSkillInstall = async (
-  context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
+  context: Pick<SkillChangeContext, "store" | "skills">,
   reader: RepoReader,
   input: InstallRequest,
 ): Promise<SkillInstallPreview> => {

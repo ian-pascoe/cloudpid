@@ -41,7 +41,7 @@ const descriptionOf = (files: Readonly<Record<string, string>>): string =>
 
 /**
  * Skills over Environments `default` (named Default, this Session's) and `0000abcd` (named Other), and every Environment
- * (`*`), each keeping none at first, and a bundle of `pr`. A save is refused with `refusal` when it is set, as the Registry
+ * (`*`), each keeping none at first. A save is refused with `refusal` when it is set, as the Registry
  * refuses one. A scope's Skill of a name hides the one kept for every Environment, as the Registry's layers do.
  */
 export const fakeSkills = () => {
@@ -229,7 +229,6 @@ export const fakeSkills = () => {
           environment: checked.environment,
           change: changeOf(environment, folder, author, before, files),
           name: folder,
-          bundled: folder === "pr",
           inherited: !everywhere && kept.has(`*:${folder}`),
           overriddenIn: hiding,
           // The Session's own Workspace takes it unless its Environment (default) keeps its own of the name.
@@ -271,7 +270,6 @@ export const fakeSkills = () => {
           status: "removed" as const,
           environment: where,
           change: changeOf(environment, name, author, before, undefined),
-          bundled: name === "pr",
           inherited: !everywhere && kept.has(`*:${name}`),
           overriddenIn: hiding,
           handed: everywhere

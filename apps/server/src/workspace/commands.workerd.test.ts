@@ -41,8 +41,19 @@ const inDemo = (slug: string) => {
 };
 
 describe("the composer's catalog", () => {
-  it("lists the repo's Prompt templates and Skills nearest first, with the bundled ones and those for the owner to name", async () => {
-    const catalog = await inDemo(await workspaceWithRepo())((instance) => instance.catalog());
+  it("lists the repo's Prompt templates and Skills nearest first, with the Environment's and those for the owner to name", async () => {
+    const slug = await workspaceWithRepo();
+
+    await env.WORKSPACES.getByName(slug).updateSkills({
+      hash: "sha256:environment",
+      files: {
+        "tdd/SKILL.md": "---\nname: tdd\ndescription: Test first.\n---\n\nRed, green.\n",
+        "implement/SKILL.md":
+          "---\nname: implement\ndescription: Implement a spec.\ndisable-model-invocation: true\n---\n\nDo it.\n",
+      },
+    });
+
+    const catalog = await inDemo(slug)((instance) => instance.catalog());
 
     expect(catalog.commands.map(({ name }) => name)).toEqual([
       "compact",

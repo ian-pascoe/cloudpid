@@ -1,6 +1,6 @@
 // The draft composer's lookups (`session/lookups.ts`) on a Workspace's own DO, with no Session: the Prompt templates and
-// Skills of a repo's directory, the bundled Skills with them, and the `@` menu's files, listed once for requests close
-// together.
+// Skills of a repo's directory, the Environment's Skills with them, and the `@` menu's files, listed once for
+// requests close together.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -59,8 +59,15 @@ const withRepo = async (slug: string) => {
 };
 
 describe("the draft composer's lookups", () => {
-  it("offer a repo's templates and Skills, the bundled Skills after them, and no commands", async () => {
+  it("offer a repo's templates and Skills, the Environment's Skills after them, and no commands", async () => {
     const place = await withRepo(uniqueWorkspace());
+
+    await env.WORKSPACES.getByName(place.object).updateSkills({
+      hash: "sha256:environment",
+      files: {
+        "tdd/SKILL.md": "---\nname: tdd\ndescription: Test first.\n---\n\nRed, green.\n",
+      },
+    });
     const { answer } = await withLookups((lookups) => lookups.catalog(place));
 
     expect(answer.commands).toEqual([]);

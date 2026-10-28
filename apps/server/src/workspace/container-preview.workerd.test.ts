@@ -357,8 +357,13 @@ describe("a WebSocket of a Container preview, a carried socket", () => {
     const stub = await workspace();
     const { events } = await openSocket(stub);
 
-    // The page reads nothing more while the dev server keeps sending.
-    for (let at = 0; at < 8; at++) await stub.devServerSend(0, "x".repeat(128 * 1024));
+    // The page reads nothing more while the dev server keeps sending. Once the Workspace finds it so it closes the
+    // socket, and a send after that raises the error of a send on a closed socket: that one is expected.
+    for (let at = 0; at < 8; at++) {
+      await stub.devServerSend(0, "x".repeat(128 * 1024)).catch((cause: unknown) => {
+        if (!String(cause).includes("after close()")) throw cause;
+      });
+    }
 
     await vi.waitFor(
       async () =>

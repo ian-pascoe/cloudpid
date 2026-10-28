@@ -12,7 +12,7 @@ import {
 import { discoverPrompts, type PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import * as Effect from "effect/Effect";
 import { SKILLS_MOUNT } from "./binding.ts";
-import type { SkillSet } from "./bundled-skill-set.ts";
+import type { SkillSet } from "./skill-set-schema.ts";
 
 /**
  * How many parsed Skill sets an isolate keeps: its Workspaces may each hold another set, and a set is fixed for its
@@ -97,7 +97,7 @@ export const discoverWorkspaceInstructions = (
  * Where a Workspace's own files at the skills' mount are kept: the directory beside it. It is not a skills directory,
  * so nothing discovers what is in it.
  */
-export const PRIOR_SKILLS = `${SKILLS_MOUNT}.pre-bundle`;
+export const PRIOR_SKILLS = `${SKILLS_MOUNT}.pre-mount`;
 
 const lstatOf = async (fs: PriorSkillsOptions["fs"], path: string) => {
   try {
@@ -118,7 +118,7 @@ export type PriorSkillsOptions = {
 
 /**
  * What is at the mount before the Workspace first indexes it is the Workspace's own (an agent wrote a skill there before
- * the bundled skills existed). computer clears a mount's root when it indexes it, so those files are moved to
+ * the mount existed). computer clears a mount's root when it indexes it, so those files are moved to
  * `PRIOR_SKILLS` first, unless there are none (no directory, or an empty one). A mount that was indexed once is
  * read-only, so what is there is the Skill set's and is left to computer, which replaces it when the set changes.
  * Returns where the files went.

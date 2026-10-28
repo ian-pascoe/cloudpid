@@ -288,7 +288,7 @@ const ordered = <Entry extends { readonly name: string }>(
  * the owner's Approval card of an update for every Environment.
  */
 export const previewSkillUpdates = async (
-  context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
+  context: Pick<SkillChangeContext, "store" | "skills">,
   reader: RepoReader,
   request: UpdateRequest,
 ): Promise<SkillUpdatePreview> => {

@@ -17,7 +17,6 @@ import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./a
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import {
   contentHash,
-  hashBundle,
   hashFiles,
   mergeSkills,
   openSkills,
@@ -34,11 +33,6 @@ const author: AgentChangeAuthor = {
   conversation: 1,
   tool: "environment_skill_install",
   reason: "The user asked for the grill-me Skill",
-};
-
-const BUNDLE = {
-  hash: "bundle-version-1",
-  files: { "pr/SKILL.md": "---\nname: pr\ndescription: The bundled pr.\n---\nBundled.\n" },
 };
 
 const COMMIT = "c0ffee0000000000000000000000000000000001";
@@ -131,14 +125,12 @@ const inRegistry = <A>(
       const store = openRegistryStore(state.storage);
       const changes = openAgentChanges(state.storage);
       const skills = openSkills(state.storage);
-      const bundle = await hashBundle(BUNDLE);
 
       const context = (now: number) => ({
         storage: state.storage,
         store,
         skills,
         changes,
-        bundle,
         now,
       });
 
@@ -168,12 +160,12 @@ const inRegistry = <A>(
             changes,
             { environment: DEFAULT_ENVIRONMENT, id },
             at,
-            { skills, bundle },
+            skills,
           ),
         set: async () => {
-          const merged = await mergeSkills([skills.list(DEFAULT_ENVIRONMENT)], bundle);
+          const merged = await mergeSkills([skills.list(DEFAULT_ENVIRONMENT)]);
 
-          return skillSetOf(merged, bundle, skills);
+          return skillSetOf(merged, skills);
         },
       });
     },
@@ -195,9 +187,7 @@ describe("installing Skills from GitHub", () => {
       repo: "o/skills",
       ref: null,
       commit: COMMIT,
-      results: [
-        { name: "grill-me", path: "skills/grill-me", outcome: "installed", shadows: false },
-      ],
+      results: [{ name: "grill-me", path: "skills/grill-me", outcome: "installed" }],
     });
 
     expect(listed).toEqual([
@@ -208,10 +198,9 @@ describe("installing Skills from GitHub", () => {
       }),
     ]);
 
-    expect(set.files).toMatchObject({
+    expect(set.files).toEqual({
       "grill-me/SKILL.md": skillMd("grill-me"),
       "grill-me/references/questions.md": "- why?\n",
-      "pr/SKILL.md": BUNDLE.files["pr/SKILL.md"],
     });
 
     expect(changes).toHaveLength(1);
@@ -440,8 +429,8 @@ describe("installing Skills from GitHub", () => {
 
   it("counts the Skills kept for every Environment in the set an install would make", async () => {
     const results = await inRegistry(async ({ install, skills }) => {
-      // The bundle holds `pr`: 99 more Skills for every Environment make 100, the most a set may hold.
-      for (let at = 0; at < 99; at += 1) {
+      // 100 Skills for every Environment are the most a set may hold: one more is too many.
+      for (let at = 0; at < 100; at += 1) {
         const files = { "SKILL.md": skillMd(`every-${at}`) };
         const hashed = await hashFiles(files);
 
