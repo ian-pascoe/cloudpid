@@ -2494,9 +2494,10 @@ export const EnvironmentsPage = () => {
           />
           <p className="text-xs text-muted-foreground">
             A skill kept here is served read-only in every environment's workspaces at their next
-            readying. It steers every future session, so the agent's save or removal of one waits
-            for your Approval in its session. An environment's own skill of the same name wins in
-            that environment. Removing one here is your own change: it waits for nothing.
+            readying. It steers every future session, so the agent's save, install or removal of one
+            waits for your Approval in its session. An environment's own skill of the same name wins
+            in that environment. Adding or removing one here is your own change: it waits for
+            nothing.
           </p>
           <SkillsSection id={EVERY_ENVIRONMENT} />
           <AgentChangesSection id={EVERY_ENVIRONMENT} sessions={sessions ?? []} />
