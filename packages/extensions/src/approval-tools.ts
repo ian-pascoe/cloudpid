@@ -1,14 +1,24 @@
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
 // The tools whose Agent changes wait for the owner's Approval (`docs/architecture/agent-changes.md` → Approval, ADR-0019): those that change a
 // Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`, `settings_subagent_workspaces_set`,
-// `environment_container_size_limit_set`) and those no revert can undo (`environment_delete`,
-// `environment_secret_delete`). Each checks what it can first and refuses without asking what it would refuse anyway;
+// `environment_container_size_limit_set`, and `settings_reset` of a Limit) and those no revert can undo
+// (`environment_delete`, `environment_secret_delete`). The Settings' Limits are kept at both Scopes (ADR-0027): their
+// tools and `settings_reset` take a required `scope`, `*` for Global or an Environment's id, and ask at either; a
+// `settings_reset` of any other field is made at once, as the `settings` tools make a change. Each checks what it can first and refuses without asking what it would refuse anyway;
 // then it asks the owner (`withApproval`), and on Approve makes the change as the other tools do (applied, recorded
 // with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
 // changes nothing, and the result carries the owner's reason. The tools are the root conversation's only
 // (`PARENT_ONLY_TOOL_PREFIXES` has `environment_` and `settings_`), run alone, and are replayed after an eviction: the
 // rerun waits for the same request, or takes the answer given meanwhile.
-import { compareInstances, extensionField, InstanceType } from "@cloudpid/config";
+import {
+  compareInstances,
+  DEFAULT_SETTINGS,
+  extensionField,
+  InstanceType,
+  overrideFieldPath,
+  overrideValue,
+  settingsFieldValue,
+} from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   type AgentChange,
@@ -24,6 +34,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import {
   type ApprovalCall,
@@ -50,7 +61,25 @@ import {
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
-import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
+import {
+  agentChangeDetails,
+  CHANGE_NOTE,
+  changedLines,
+  fieldLabel,
+  GLOBAL_SETTINGS_SCOPE,
+  inheritedWords,
+  isGlobalView,
+  SCOPE_NOTE,
+  scopeName,
+  scopeWhere,
+  SettingsAccess,
+  SettingsAccessError,
+  SettingsChanges,
+  type SettingsFieldChange,
+  SettingsReload,
+  SettingsScope,
+  type SettingsView,
+} from "./settings.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
 import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 
@@ -167,6 +196,73 @@ const workspacesOf = (stored: Schema.Json | null): number =>
 const storedWorkspacesWords = (stored: Schema.Json | null): string =>
   `${workspacesWords(workspacesOf(stored))}${stored === null ? " (the default)" : ""}`;
 
+/** A Limit of the Settings: its field, what the card calls it, and how the owner reads a value of it. */
+type SettingsLimit = {
+  readonly field: string;
+  /** The Limit as a card names it. */
+  readonly change: string;
+  /** The Limit as a sentence names it. */
+  readonly name: string;
+  /** A stored value as the owner reads it (null: not set, the default). */
+  readonly words: (stored: Schema.Json | null) => string;
+  /** Its default as the owner reads it. */
+  readonly byDefault: string;
+};
+
+const SPEND_LIMIT: SettingsLimit = {
+  field: "spendLimit.perSession",
+  change: "Spend limit",
+  name: "the spend limit",
+  words: spendWords,
+  byDefault: "no limit (the default)",
+};
+
+const DEPTH_LIMIT: SettingsLimit = {
+  field: extensionField("subagents", "maxSubagentDepth"),
+  change: "Subagent depth",
+  name: "the subagent depth",
+  words: storedDepthWords,
+  byDefault: storedDepthWords(null),
+};
+
+const WORKSPACES_LIMIT: SettingsLimit = {
+  field: extensionField("subagents", "maxSubagentWorkspaces"),
+  change: "Subagent Workspace limit",
+  name: "the Subagent Workspace limit",
+  words: storedWorkspacesWords,
+  byDefault: storedWorkspacesWords(null),
+};
+
+const SETTINGS_LIMITS: ReadonlyArray<SettingsLimit> = [SPEND_LIMIT, DEPTH_LIMIT, WORKSPACES_LIMIT];
+
+/** The Settings a card names as the target: Global's, or an Environment's by name. */
+const settingsTarget = (view: SettingsView): string =>
+  isGlobalView(view)
+    ? "the Global Settings"
+    : `Environment ${JSON.stringify(view.name)}'s Settings`;
+
+/** What a Limit at an Environment was when the owner was asked: its value in force, and whether it was inherited. */
+const LimitAtEnvironment = Schema.Struct({
+  value: Schema.NullOr(Schema.Json),
+  inherited: Schema.Boolean,
+});
+
+const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
+
+const DEFAULTS: Readonly<Record<string, unknown>> = DEFAULT_SETTINGS;
+
+/** The fields `settings_reset` takes, as its description and its refusal list them. */
+const RESET_FIELDS = Arr.join(
+  Arr.flatMap(Record.toEntries(DEFAULTS), ([root, value]) => {
+    if (root === "extensions") return ["extensions.<extension>.<key>"];
+
+    return Predicate.isObject(value) && !Arr.isArray(value)
+      ? Arr.map(Record.keys(value), (key) => `${root}.${key}`)
+      : [root];
+  }),
+  ", ",
+);
+
 const isInstanceType = Schema.is(InstanceType);
 
 /** A stored size limit as the owner reads it. */
@@ -234,6 +330,7 @@ export const ApprovalTools: Effect.Effect<
   const secrets = yield* Secrets;
 
   const holdsCredential = yield* credentialCheck;
+  const { apply: applySettings, reach } = yield* SettingsChanges;
 
   /**
    * Fails, asking nothing, when the reason holds a Secret the Session holds, a deploy-time credential, or a Secret
@@ -280,44 +377,73 @@ export const ApprovalTools: Effect.Effect<
       message: `No Environment has the id ${JSON.stringify(id)}. Call environment_list for the Environments and their ids.`,
     });
 
+  /** A Limit's value in force at `view`'s Scope, and at an Environment whether it is inherited (it has no Override). */
+  const limitNow = (view: SettingsView, limit: SettingsLimit) => ({
+    stored: settingsFieldValue(view.settings, limit.field),
+    inherited: isGlobalView(view)
+      ? undefined
+      : Option.isNone(overrideValue(view.overrides, limit.field)),
+  });
+
   /**
-   * Change the Settings' `field` to `value` with the owner's Approval: `before` is what it is now (`stored`, as the
-   * Registry reads it, is what the change is made against), and the words are what the card and the result say.
+   * Make `fieldChange` to `limit` at `view`'s Scope as `tool`, with the owner's Approval: the card shows the Limit as it
+   * is now and `after`, and the change is made only while the Limit is still as the owner saw it (at an Environment,
+   * inherited or not as it was).
    */
   const changeLimit = ({
     tool,
-    field,
-    value,
-    stored,
+    view,
+    limit,
+    fieldChange,
+    change,
+    after,
     reason,
     api,
-    change,
-    before,
-    after,
-    words,
   }: {
     readonly tool: string;
-    readonly field: string;
-    readonly value: Schema.Json | null;
-    readonly stored: Schema.Json | null;
+    readonly view: SettingsView;
+    readonly limit: SettingsLimit;
+    readonly fieldChange: SettingsFieldChange;
+    /** The change as the card names it. */
+    readonly change: string;
+    /** The value the Limit has after the change, as the owner reads it. */
+    readonly after: string;
     readonly reason: string;
     readonly api: ApprovalCall;
-    readonly change: string;
-    readonly before: string;
-    readonly after: string;
-    /** A stored value of the field as the owner reads it. */
-    readonly words: (value: Schema.Json | null) => string;
-  }) =>
-    withApproval(
+  }) => {
+    const { stored, inherited } = limitNow(view, limit);
+    const before = `${limit.words(stored)}${inheritedWords(inherited)}`;
+    const where = scopeWhere(view);
+
+    return withApproval(
       approvals,
       api,
-      { tool, target: "the Settings", change, before, after, reason, expected: stored },
+      {
+        tool,
+        target: settingsTarget(view),
+        change,
+        before,
+        after,
+        reason,
+        expected: inherited === undefined ? stored : { value: stored, inherited },
+      },
       (answer) =>
         Effect.gen(function* () {
-          if (!answer.approved) return declined(answer, `${change} from ${before} to ${after}`);
+          if (!answer.approved) {
+            return declined(answer, `${change} ${where}, from ${before} to ${after}`);
+          }
+
+          // What the owner saw: at Global the value, at an Environment the value and whether it was inherited.
+          const expected = isGlobalView(view)
+            ? { value: answer.expected }
+            : Option.getOrElse(
+                Schema.decodeUnknownOption(LimitAtEnvironment)(answer.expected),
+                () => ({ value: answer.expected }),
+              );
 
           const applied = yield* access.change({
-            changes: [{ field, value, expected: { value: answer.expected } }],
+            scope: view.scope,
+            changes: [{ ...fieldChange, expected }],
             author: { conversation: api.conversationId, tool, reason, approved: true },
           });
 
@@ -328,50 +454,117 @@ export const ApprovalTools: Effect.Effect<
               });
             case "changed-since":
               return yield* SettingsAccessError.make({
-                message: changedSince(change, words(applied.current)),
+                message: changedSince(
+                  `${limit.name} ${where}`,
+                  `${limit.words(applied.current)}${inheritedWords(applied.inherited)}`,
+                ),
               });
             case "unchanged":
               return {
-                output: [{ type: "text" as const, text: approvedAlready(`${change} is ${after}`) }],
-                details: { approval: { approved: true }, agentChanges: [] },
+                output: [
+                  {
+                    type: "text" as const,
+                    text: approvedAlready(`${limit.name} ${where} is ${after}`),
+                  },
+                ],
+                details: { scope: view.scope, approval: { approved: true }, agentChanges: [] },
               };
             case "changed": {
-              for (const made of applied.changes) yield* log.record({ tool, field: made.field });
+              for (const made of applied.changes) {
+                yield* log.record(
+                  isGlobalView(view)
+                    ? { tool, field: made.field }
+                    : { tool, field: made.field, environmentName: view.name },
+                );
+              }
 
               yield* reload.apply;
+
+              const reached = yield* reach(view, [limit.field]);
 
               return {
                 output: [
                   {
                     type: "text" as const,
-                    text: `The user approved: ${change} was ${before}, and is ${after} now. It reaches this Session's next request, and other Sessions when they next admit input. The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
+                    text: `The user approved: ${limit.name} ${where} was ${before}, and is ${after} now. ${reached.text} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
                   },
                 ],
                 details: {
+                  scope: view.scope,
                   approval: { approved: true },
-                  agentChanges: Arr.map(applied.changes, (made) => ({
-                    id: made.id,
-                    field: made.field,
-                    before: asJsonValue(made.before),
-                    after: asJsonValue(made.after),
-                  })),
+                  agentChanges: agentChangeDetails(view, applied.changes),
                 },
               };
             }
           }
         }),
     );
+  };
+
+  /**
+   * Set `limit` to `value` at `view`'s Scope as `tool`, with the owner's Approval, unless it has the value already (`same`
+   * of the value in force; at an Environment only as its Override, since an inherited value is not pinned): then nothing
+   * is asked, but by a rerun that asked already.
+   */
+  const setLimit = ({
+    tool,
+    view,
+    limit,
+    value,
+    same,
+    after,
+    reason,
+    api,
+  }: {
+    readonly tool: string;
+    readonly view: SettingsView;
+    readonly limit: SettingsLimit;
+    readonly value: Schema.Json | null;
+    readonly same: (stored: Schema.Json | null) => boolean;
+    readonly after: string;
+    readonly reason: string;
+    readonly api: ApprovalCall;
+  }) =>
+    Effect.gen(function* () {
+      const { stored, inherited } = limitNow(view, limit);
+
+      if (same(stored) && inherited !== true && !(yield* askedBefore(approvals, api))) {
+        return {
+          output: [
+            {
+              type: "text" as const,
+              text: `${limit.name.replace(/^t/, "T")} ${scopeWhere(view)} is ${after}${inherited === false ? " as its Override" : ""} already: nothing was asked, changed or recorded.`,
+            },
+          ],
+          details: { scope: view.scope, unchanged: [limit.field], agentChanges: [] },
+        };
+      }
+
+      return yield* changeLimit({
+        tool,
+        view,
+        limit,
+        fieldChange: { field: limit.field, value },
+        change: limit.change,
+        after,
+        reason,
+        api,
+      });
+    });
 
   const spendLimit = yield* defineEffectTool({
     name: "settings_spend_limit_set",
     description: Arr.join(
       [
-        "Set the spend limit: the US dollars one Session (its root conversation and every subagent) may spend on model requests before it stops, or null for no limit. It is a Limit, so the user must approve the change.",
+        "Set the spend limit: the US dollars one Session (its root conversation and every subagent) may spend on model requests before it stops, or null for no limit. It is a Limit, so the user must approve the change, at either Scope.",
+        SCOPE_NOTE,
         APPROVAL,
+        CHANGE_NOTE,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
+      scope: SettingsScope,
       per_session: Schema.NullOr(Schema.Finite.check(Schema.isGreaterThan(0))).annotate({
         description: "US dollars per Session, more than 0; null turns the limit off",
       }),
@@ -380,51 +573,36 @@ export const ApprovalTools: Effect.Effect<
     executionMode: "sequential",
     // The wait survives an eviction: the rerun finds the same request, or the answer given meanwhile.
     replay: "safe",
-    execute: ({ per_session, reason }, api) =>
+    execute: ({ scope, per_session, reason }, api) =>
       Effect.gen(function* () {
         yield* plainReason(reason);
 
-        const current = (yield* access.get).settings.spendLimit.perSession;
-
-        if (current === per_session && !(yield* askedBefore(approvals, api))) {
-          return {
-            output: [
-              {
-                type: "text" as const,
-                text: `The spend limit is ${spendWords(current)} already: nothing was asked, changed or recorded.`,
-              },
-            ],
-            details: { unchanged: ["spendLimit.perSession"], agentChanges: [] },
-          };
-        }
-
-        return yield* changeLimit({
+        return yield* setLimit({
           tool: "settings_spend_limit_set",
-          field: "spendLimit.perSession",
+          view: yield* access.get(scope),
+          limit: SPEND_LIMIT,
           value: per_session,
-          stored: current,
+          same: (stored) => stored === per_session,
+          after: spendWords(per_session),
           reason,
           api,
-          change: "Spend limit",
-          before: spendWords(current),
-          after: spendWords(per_session),
-          words: spendWords,
         });
       }),
   });
-
-  const depthField = extensionField("subagents", "maxSubagentDepth");
 
   const subagentDepth = yield* defineEffectTool({
     name: "settings_subagent_depth_set",
     description: Arr.join(
       [
-        `Set the subagent depth: how many levels of subagents may run below the root conversation (1: the root's children only; ${DEFAULT_MAX_SUBAGENT_DEPTH}, the default: their children too). A deeper tree can spend more at once. It is a Limit, so the user must approve the change. Subagents that run keep the depth they started with.`,
+        `Set the subagent depth: how many levels of subagents may run below the root conversation (1: the root's children only; ${DEFAULT_MAX_SUBAGENT_DEPTH}, the default: their children too). A deeper tree can spend more at once. It is a Limit, so the user must approve the change, at either Scope. Subagents that run keep the depth they started with.`,
+        SCOPE_NOTE,
         APPROVAL,
+        CHANGE_NOTE,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
+      scope: SettingsScope,
       depth: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({
         description: "Levels of subagents below the root, at least 1",
       }),
@@ -432,54 +610,36 @@ export const ApprovalTools: Effect.Effect<
     }),
     executionMode: "sequential",
     replay: "safe",
-    execute: ({ depth, reason }, api) =>
+    execute: ({ scope, depth, reason }, api) =>
       Effect.gen(function* () {
         yield* plainReason(reason);
 
-        const view = yield* access.get;
-        const stored = view.settings.extensions.subagents?.maxSubagentDepth ?? null;
-
-        const current = depthOf(stored);
-
-        if (current === depth && !(yield* askedBefore(approvals, api))) {
-          return {
-            output: [
-              {
-                type: "text" as const,
-                text: `The subagent depth is ${depth} already: nothing was asked, changed or recorded.`,
-              },
-            ],
-            details: { unchanged: [depthField], agentChanges: [] },
-          };
-        }
-
-        return yield* changeLimit({
+        return yield* setLimit({
           tool: "settings_subagent_depth_set",
-          field: depthField,
+          view: yield* access.get(scope),
+          limit: DEPTH_LIMIT,
           value: depth,
-          stored,
+          same: (stored) => depthOf(stored) === depth,
+          after: depthWords(depth),
           reason,
           api,
-          change: "Subagent depth",
-          before: storedDepthWords(stored),
-          after: depthWords(depth),
-          words: storedDepthWords,
         });
       }),
   });
-
-  const workspacesField = extensionField("subagents", "maxSubagentWorkspaces");
 
   const subagentWorkspaces = yield* defineEffectTool({
     name: "settings_subagent_workspaces_set",
     description: Arr.join(
       [
-        `Set the Subagent Workspace limit: how many Subagent Workspaces (subagent with workspace "new": a Workspace of its own, with its own Container) one Session may have at once, default ${DEFAULT_MAX_SUBAGENT_WORKSPACES}. Each runs a Container of its own, which costs while it runs. It is a Limit, so the user must approve the change. Subagent Workspaces that exist stay.`,
+        `Set the Subagent Workspace limit: how many Subagent Workspaces (subagent with workspace "new": a Workspace of its own, with its own Container) one Session may have at once, default ${DEFAULT_MAX_SUBAGENT_WORKSPACES}. Each runs a Container of its own, which costs while it runs. It is a Limit, so the user must approve the change, at either Scope. Subagent Workspaces that exist stay.`,
+        SCOPE_NOTE,
         APPROVAL,
+        CHANGE_NOTE,
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
+      scope: SettingsScope,
       limit: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
         description: "Subagent Workspaces one Session may have at once; 0 allows none",
       }),
@@ -487,36 +647,105 @@ export const ApprovalTools: Effect.Effect<
     }),
     executionMode: "sequential",
     replay: "safe",
-    execute: ({ limit, reason }, api) =>
+    execute: ({ scope, limit, reason }, api) =>
       Effect.gen(function* () {
         yield* plainReason(reason);
 
-        const view = yield* access.get;
-        const stored = view.settings.extensions.subagents?.maxSubagentWorkspaces ?? null;
+        return yield* setLimit({
+          tool: "settings_subagent_workspaces_set",
+          view: yield* access.get(scope),
+          limit: WORKSPACES_LIMIT,
+          value: limit,
+          same: (stored) => workspacesOf(stored) === limit,
+          after: workspacesWords(limit),
+          reason,
+          api,
+        });
+      }),
+  });
 
-        if (workspacesOf(stored) === limit && !(yield* askedBefore(approvals, api))) {
+  const reset = yield* defineEffectTool({
+    name: "settings_reset",
+    description: Arr.join(
+      [
+        `Reset one setting at a Scope: with an Environment's id, remove the Environment's Override of the field, so it inherits Global again; with scope "${GLOBAL_SETTINGS_SCOPE}", put the field back to its default at Global (an Environment that overrides it keeps its Override). A field the Environment does not override, or that is at its default at Global, changes nothing. The fields: ${RESET_FIELDS}. A Role is one field (its model and hint together), and so is each extension option.`,
+        `Resetting a Limit (${Arr.join(
+          Arr.map(SETTINGS_LIMITS, (limit) => limit.field),
+          ", ",
+        )}) waits for the user's Approval at either Scope, as the Limit tools do: ${APPROVAL} Any other field is reset at once.`,
+        CHANGE_NOTE,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      scope: SettingsScope,
+      field: Schema.String.check(Schema.isMinLength(1)).annotate({
+        description:
+          "The setting to reset, as settings_get and the Agent changes name it, such as model, roles.small, compaction.enabled or extensions.subagents.readToolset",
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    // A Limit's wait survives an eviction; a rerun of any other field's reset finds it reset, and changes nothing.
+    replay: "safe",
+    execute: ({ scope, field, reason }, api) =>
+      Effect.gen(function* () {
+        yield* plainReason(reason);
+
+        if (overrideFieldPath(field) === undefined) {
+          return yield* SettingsAccessError.make({
+            message: `Nothing was asked or saved: ${field} is not a setting settings_reset takes. The settings are: ${RESET_FIELDS}.`,
+          });
+        }
+
+        const view = yield* access.get(scope);
+        const global = isGlobalView(view);
+        const label = fieldLabel(field);
+        const fieldChange: SettingsFieldChange = { field, value: null, reset: true };
+        const limit = Arr.findFirst(SETTINGS_LIMITS, (each) => each.field === field);
+
+        const reset = global
+          ? sameJson(
+              settingsFieldValue(view.settings, field),
+              settingsFieldValue(DEFAULT_SETTINGS, field),
+            )
+          : Option.isNone(overrideValue(view.overrides, field));
+
+        const already = global
+          ? `The ${label} is at its default at Global already: nothing was asked, changed or recorded.`
+          : `${scopeName(view)} does not override the ${label}: it inherits Global already, so nothing was asked, changed or recorded.`;
+
+        if (reset && !(Option.isSome(limit) && (yield* askedBefore(approvals, api)))) {
           return {
-            output: [
-              {
-                type: "text" as const,
-                text: `The Subagent Workspace limit is ${limit} already: nothing was asked, changed or recorded.`,
-              },
-            ],
-            details: { unchanged: [workspacesField], agentChanges: [] },
+            output: [{ type: "text" as const, text: already }],
+            details: { scope: view.scope, unchanged: [field], agentChanges: [] },
           };
         }
 
-        return yield* changeLimit({
-          tool: "settings_subagent_workspaces_set",
-          field: workspacesField,
-          value: limit,
-          stored,
+        if (Option.isSome(limit)) {
+          return yield* changeLimit({
+            tool: "settings_reset",
+            view,
+            limit: limit.value,
+            fieldChange,
+            change: `${limit.value.change}, reset`,
+            after: global
+              ? limit.value.byDefault
+              : `${limit.value.words(settingsFieldValue(view.global, field))}${inheritedWords(true)}`,
+            reason,
+            api,
+          });
+        }
+
+        return yield* applySettings({
+          tool: "settings_reset",
+          view,
+          fields: [fieldChange],
           reason,
-          api,
-          change: "Subagent Workspace limit",
-          before: storedWorkspacesWords(stored),
-          after: workspacesWords(limit),
-          words: storedWorkspacesWords,
+          conversation: api.conversationId,
+          unchanged: already,
+          changed: ({ changes, reach: reached }) =>
+            `Reset the ${label} ${scopeWhere(view)}${global ? " to its default" : ": it inherits Global again"}:\n${changedLines(changes)}\n${reached.text} The change is recorded with your reason; the user can see and revert it on the Settings page.`,
         });
       }),
   });
@@ -991,6 +1220,7 @@ export const ApprovalTools: Effect.Effect<
       sizeLimit,
       deleteEnvironment,
       deleteSecret,
+      reset,
     ],
   });
 });

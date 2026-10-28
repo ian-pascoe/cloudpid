@@ -6,7 +6,16 @@ import {
   type ContainerSettingsOverrides,
   DEFAULT_CONTAINER_SETTINGS,
   DEFAULT_SETTINGS,
+  type OverrideFieldChange,
+  overrideValue,
+  overridesFrom,
+  overridesWithFields,
+  resolveOverrides,
+  resolveOverridesLeniently,
+  resolveSettings,
   type Settings,
+  settingsFieldValue,
+  withOverrideFields,
 } from "@cloudpid/config";
 import type { AgentChange } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -20,6 +29,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -42,12 +52,27 @@ import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
-import { type SettingsFieldChange, SettingsAccess, SettingsReload } from "./settings.ts";
+import {
+  type AppliedSettingsChange,
+  GLOBAL_SETTINGS_SCOPE,
+  SettingsAccess,
+  SettingsAccessError,
+  type SettingsFieldChange,
+  SettingsReload,
+  type SettingsView,
+} from "./settings.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 const HELD = "sk-live-0123456789abcdef";
+
+const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
+
+const sameOverride = (left: Option.Option<Schema.Json>, right: Option.Option<Schema.Json>) =>
+  Option.isNone(left)
+    ? Option.isNone(right)
+    : Option.isSome(right) && sameJson(left.value, right.value);
 
 const change = (fields: Partial<AgentChange>): AgentChange => ({
   id: 1,
@@ -86,7 +111,11 @@ const details = (
 
 /** What a fake recorded being asked to do. */
 type Calls = {
-  settings: Array<{ changes: ReadonlyArray<SettingsFieldChange>; author: ChangeAuthor }>;
+  settings: Array<{
+    scope: string;
+    changes: ReadonlyArray<SettingsFieldChange>;
+    author: ChangeAuthor;
+  }>;
   environments: Array<{
     environment: string;
     field: string;
@@ -99,11 +128,27 @@ type Calls = {
   reloads: number;
 };
 
+/** An Environment's Settings as the fake holds them: its name and its Overrides. */
+type FakeOverrides = { name: string; overrides: Schema.Json };
+
+/** What a test changes as it goes: the Settings at both Scopes, and what deletes take and find. */
+type FakeState = {
+  /** Global's overrides. */
+  global: Schema.Json;
+  environments: Record<string, FakeOverrides>;
+  footprint: EnvironmentFootprint;
+  kept: Readonly<Record<string, ReadonlyArray<KeptSecretMark>>>;
+};
+
 /** What a test starts from: the Session's Environment, the Settings, the Environments and their kept Secrets. */
 type Start = {
   readonly current?: string;
+  /** Global's spend limit. */
   readonly spendLimit?: number | null;
+  /** Global's extension options. */
   readonly extensions?: Settings["extensions"];
+  /** The Environments' Settings Overrides by id: Default and Other (0000abcd), with none, by default. */
+  readonly overrides?: Readonly<Record<string, FakeOverrides>>;
   readonly held?: Readonly<Record<string, EnvironmentDetails>>;
   readonly footprint?: EnvironmentFootprint;
   readonly kept?: Readonly<Record<string, ReadonlyArray<KeptSecretMark>>>;
@@ -127,6 +172,10 @@ const setUp = async ({
   held = { default: details("default", "Default"), "0000abcd": details("0000abcd", "Other") },
   footprint = { workspaces: 2, sessions: 3, secrets: 1 },
   kept = { default: [{ name: "API_KEY", build: true, updatedAt: 1 }], "*": [] },
+  overrides = {
+    default: { name: "Default", overrides: {} },
+    "0000abcd": { name: "Other", overrides: {} },
+  },
 }: Start = {}) => {
   const calls: Calls = { settings: [], environments: [], deleted: [], secrets: [], reloads: 0 };
   const logged: RunChange[] = [];
@@ -134,7 +183,14 @@ const setUp = async ({
   const asked: ApprovalAsk[] = [];
   /** The requests the owner was notified of. */
   const notified: ApprovalAsk[] = [];
-  const state = { spendLimit, extensions, footprint, kept };
+
+  const state: FakeState = {
+    global: { spendLimit: { perSession: spendLimit }, extensions },
+    environments: structuredClone({ ...overrides }),
+    footprint,
+    kept,
+  };
+
   const map = new Map<string, unknown>();
 
   const approvals: ApprovalsService = await Effect.runPromise(
@@ -165,11 +221,132 @@ const setUp = async ({
     redact: (value: string) => redactions.redact(value),
   } as SecretsService;
 
-  const settings = (): Settings => ({
-    ...DEFAULT_SETTINGS,
-    spendLimit: { perSession: state.spendLimit },
-    extensions: state.extensions,
-  });
+  const globalSettings = (): Settings => {
+    const result = resolveSettings(state.global);
+
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+
+    return result.success;
+  };
+
+  /** Global's fields changed as the Registry changes them: a reset to the default, against what the owner saw. */
+  const changeGlobal = (changes: ReadonlyArray<SettingsFieldChange>): AppliedSettingsChange => {
+    const before = globalSettings();
+
+    const differing = Arr.filter(
+      Arr.map(changes, (each) =>
+        each.reset === true
+          ? { ...each, value: settingsFieldValue(DEFAULT_SETTINGS, each.field) }
+          : each,
+      ),
+      (each) => !sameJson(settingsFieldValue(before, each.field), each.value),
+    );
+
+    if (differing.length === 0) return { status: "unchanged" };
+
+    const moved = differing.find(
+      (each) =>
+        each.expected !== undefined &&
+        !sameJson(settingsFieldValue(before, each.field), each.expected.value),
+    );
+
+    if (moved !== undefined) {
+      return {
+        status: "changed-since",
+        field: moved.field,
+        current: settingsFieldValue(before, moved.field),
+      };
+    }
+
+    const next = resolveSettings(overridesWithFields(before, differing));
+
+    if (Result.isFailure(next)) return { status: "rejected", message: next.failure.message };
+
+    state.global = overridesFrom(next.success);
+
+    return {
+      status: "changed",
+      changes: Arr.map(differing, (each) =>
+        change({
+          field: each.field,
+          before: settingsFieldValue(before, each.field),
+          after: settingsFieldValue(next.success, each.field),
+          approved: true,
+        }),
+      ),
+    };
+  };
+
+  /** An Environment's Overrides changed as the Registry changes them, against what the owner saw. */
+  const changeOverrides = (
+    id: string,
+    environment: FakeOverrides,
+    changes: ReadonlyArray<SettingsFieldChange>,
+  ): AppliedSettingsChange => {
+    const known = resolveOverridesLeniently(state.global, environment.overrides);
+
+    const next = withOverrideFields(
+      known.overrides,
+      Arr.map(changes, (each): OverrideFieldChange =>
+        each.reset === true
+          ? { field: each.field, reset: true }
+          : { field: each.field, value: each.value },
+      ),
+      known.settings,
+    );
+
+    if (Result.isFailure(next)) return { status: "rejected", message: next.failure.message };
+
+    const differing = Arr.filter(
+      changes,
+      (each) =>
+        !sameOverride(
+          overrideValue(known.overrides, each.field),
+          overrideValue(next.success, each.field),
+        ),
+    );
+
+    if (differing.length === 0) return { status: "unchanged" };
+
+    const inherited = (field: string) => Option.isNone(overrideValue(known.overrides, field));
+
+    const moved = differing.find(
+      ({ field, expected }) =>
+        expected !== undefined &&
+        (!sameJson(settingsFieldValue(known.settings, field), expected.value) ||
+          (expected.inherited ?? false) !== inherited(field)),
+    );
+
+    if (moved !== undefined) {
+      return {
+        status: "changed-since",
+        field: moved.field,
+        current: settingsFieldValue(known.settings, moved.field),
+        inherited: inherited(moved.field),
+      };
+    }
+
+    const after = resolveOverrides(state.global, next.success);
+
+    if (Result.isFailure(after)) return { status: "rejected", message: after.failure.message };
+
+    environment.overrides = next.success;
+
+    return {
+      status: "changed",
+      changes: Arr.map(differing, ({ field }) =>
+        change({
+          scope: id,
+          field,
+          before: settingsFieldValue(known.settings, field),
+          after: settingsFieldValue(after.success, field),
+          approved: true,
+          beforeInherited: inherited(field),
+          afterInherited: Option.isNone(overrideValue(next.success, field)),
+        }),
+      ),
+    };
+  };
 
   const extension = await Effect.runPromise(
     ApprovalTools.pipe(
@@ -276,30 +453,47 @@ const setUp = async ({
           }),
       }),
       Effect.provideService(SettingsAccess, {
-        get: Effect.sync(() => ({ settings: settings(), overrides: {} })),
-        change: ({ changes, author }) =>
-          Effect.sync(() => {
-            calls.settings.push({ changes, author });
-
-            const [first] = changes;
-
-            if (first === undefined) return { status: "unchanged" as const };
-
-            const before =
-              first.field === "spendLimit.perSession"
-                ? state.spendLimit
-                : (state.extensions.subagents?.maxSubagentDepth ?? null);
-
-            if (before === first.value) return { status: "unchanged" as const };
-
-            if (first.expected !== undefined && first.expected.value !== before) {
-              return { status: "changed-since" as const, field: first.field, current: before };
+        get: (scope) =>
+          Effect.suspend((): Effect.Effect<SettingsView, SettingsAccessError> => {
+            if (scope === GLOBAL_SETTINGS_SCOPE) {
+              return Effect.succeed({
+                scope: GLOBAL_SETTINGS_SCOPE,
+                settings: globalSettings(),
+                overrides: overridesFrom(globalSettings()),
+                overriddenIn: {},
+              });
             }
 
-            return {
-              status: "changed" as const,
-              changes: [change({ field: first.field, before, after: first.value, approved: true })],
-            };
+            const environment = state.environments[scope];
+
+            if (environment === undefined) {
+              return Effect.fail(
+                SettingsAccessError.make({
+                  message: `No Environment has the id "${scope}".`,
+                }),
+              );
+            }
+
+            const lenient = resolveOverridesLeniently(state.global, environment.overrides);
+
+            return Effect.succeed({
+              scope,
+              name: environment.name,
+              settings: lenient.settings,
+              overrides: lenient.overrides,
+              global: lenient.global,
+            });
+          }),
+        own: Effect.succeed(current),
+        change: ({ scope, changes, author }) =>
+          Effect.sync(() => {
+            calls.settings.push({ scope, changes, author });
+
+            const environment = state.environments[scope];
+
+            return environment === undefined
+              ? changeGlobal(changes)
+              : changeOverrides(scope, environment, changes);
           }),
       }),
       Effect.provideService(SettingsReload, {
@@ -419,6 +613,7 @@ const NAMES = [
   "environment_container_size_limit_set",
   "environment_delete",
   "environment_secret_delete",
+  "settings_reset",
 ];
 
 describe("the tools that wait for Approval", () => {
@@ -439,6 +634,7 @@ describe("the tools that wait for Approval", () => {
     const { call, asked } = await setUp();
 
     const { result, text } = await call("settings_spend_limit_set", {
+      scope: "*",
       per_session: 10,
       reason: `the key ${HELD} is billed`,
     });
@@ -455,6 +651,7 @@ describe("the tools that wait for Approval", () => {
 
     for (const name of ["API_KEY", "NOT_HELD"]) {
       const { result, text } = await call("settings_spend_limit_set", {
+        scope: "*",
         per_session: 10,
         reason: `the key ${placeholder(name)} is billed`,
       });
@@ -467,6 +664,7 @@ describe("the tools that wait for Approval", () => {
 
     // An escaped placeholder is plain text.
     const { result } = await call("settings_spend_limit_set", {
+      scope: "*",
       per_session: 10,
       reason: `written as \\${placeholder("API_KEY")} in the docs`,
     });
@@ -482,6 +680,7 @@ describe("settings_spend_limit_set", () => {
     const { call, calls, logged, asked, notified } = await setUp();
 
     const { result, text, pending } = await call("settings_spend_limit_set", {
+      scope: "*",
       per_session: 10,
       reason: "The refactor needs more requests",
     });
@@ -491,7 +690,7 @@ describe("settings_spend_limit_set", () => {
         id: "1",
         conversationId: ROOT_CONVERSATION_ID,
         tool: "settings_spend_limit_set",
-        target: "the Settings",
+        target: "the Global Settings",
         change: "Spend limit",
         before: "$5 per Session",
         after: "$10 per Session",
@@ -501,6 +700,7 @@ describe("settings_spend_limit_set", () => {
     ]);
     expect(calls.settings).toEqual([
       {
+        scope: "*",
         changes: [{ field: "spendLimit.perSession", value: 10, expected: { value: 5 } }],
         author: {
           conversation: ROOT_CONVERSATION_ID,
@@ -528,7 +728,7 @@ describe("settings_spend_limit_set", () => {
 
     const { result, text } = await call(
       "settings_spend_limit_set",
-      { per_session: null, reason: "No limit for the migration" },
+      { scope: "*", per_session: null, reason: "No limit for the migration" },
       { approve: false, reason: "Keep it at $5" },
     );
 
@@ -545,12 +745,12 @@ describe("settings_spend_limit_set", () => {
 
     const { result, text } = await call(
       "settings_spend_limit_set",
-      { per_session: 10, reason: "More requests" },
+      { scope: "*", per_session: 10, reason: "More requests" },
       {
         approve: true,
         meanwhile: () => {
           // The owner saves another limit on the Settings page while the card waits.
-          state.spendLimit = 7;
+          state.global = { spendLimit: { perSession: 7 } };
         },
       },
     );
@@ -563,7 +763,11 @@ describe("settings_spend_limit_set", () => {
   it("asks nothing when the limit already has the value", async () => {
     const { call, asked } = await setUp();
 
-    const { text } = await call("settings_spend_limit_set", { per_session: 5, reason: "Same" });
+    const { text } = await call("settings_spend_limit_set", {
+      scope: "*",
+      per_session: 5,
+      reason: "Same",
+    });
 
     expect(text).toContain("already");
     expect(asked).toEqual([]);
@@ -574,16 +778,18 @@ describe("settings_spend_limit_set", () => {
 
     await answeredEarlier(7, 5);
     // The cut-off call had applied the change.
-    state.spendLimit = 10;
+    state.global = { spendLimit: { perSession: 10 } };
 
     const { result, text, pending } = await call(
       "settings_spend_limit_set",
-      { per_session: 10, reason: "More requests" },
+      { scope: "*", per_session: 10, reason: "More requests" },
       { approve: true, task: 7 },
     );
 
     expect(result.isError).not.toBe(true);
-    expect(text).toContain("The user approved, and Spend limit is $10 per Session already");
+    expect(text).toContain(
+      "The user approved, and the spend limit at Global is $10 per Session already",
+    );
     expect(result.details).toMatchObject({ approval: { approved: true } });
     expect(asked).toEqual([]);
     expect(pending).toEqual([]);
@@ -594,7 +800,11 @@ describe("settings_subagent_depth_set", () => {
   it("asks with the default depth as the value before, and sets the option the extension reads", async () => {
     const { call, calls, asked } = await setUp();
 
-    await call("settings_subagent_depth_set", { depth: 3, reason: "A review tree needs three" });
+    await call("settings_subagent_depth_set", {
+      scope: "*",
+      depth: 3,
+      reason: "A review tree needs three",
+    });
 
     expect(asked[0]).toMatchObject({
       change: "Subagent depth",
@@ -613,6 +823,7 @@ describe("settings_subagent_workspaces_set", () => {
     const { call, calls, asked } = await setUp();
 
     const { text } = await call("settings_subagent_workspaces_set", {
+      scope: "*",
       limit: 5,
       reason: "Five parallel implementers",
     });
@@ -635,7 +846,7 @@ describe("settings_subagent_workspaces_set", () => {
 
     await call(
       "settings_subagent_workspaces_set",
-      { limit: 9, reason: "More" },
+      { scope: "*", limit: 9, reason: "More" },
       { approve: false },
     );
 
@@ -645,10 +856,314 @@ describe("settings_subagent_workspaces_set", () => {
   it("asks nothing when the limit already has the value", async () => {
     const { call, asked } = await setUp();
 
-    const { text } = await call("settings_subagent_workspaces_set", { limit: 1, reason: "Same" });
+    const { text } = await call("settings_subagent_workspaces_set", {
+      scope: "*",
+      limit: 1,
+      reason: "Same",
+    });
 
     expect(text).toContain("already");
     expect(asked).toEqual([]);
+  });
+});
+
+describe("the Limits at an Environment", () => {
+  it("each require a scope, which has no default", async () => {
+    const { tool, call, calls } = await setUp();
+
+    for (const name of [
+      "settings_spend_limit_set",
+      "settings_subagent_depth_set",
+      "settings_subagent_workspaces_set",
+      "settings_reset",
+    ]) {
+      expect(tool(name).parameters).toMatchObject({ required: expect.arrayContaining(["scope"]) });
+    }
+
+    const { result } = await call("settings_spend_limit_set", { per_session: 10, reason: "r" });
+
+    expect(result.isError).toBe(true);
+    expect(calls.settings).toEqual([]);
+  });
+
+  it("ask with the Environment as the target and the inherited value now, and override it on Approve", async () => {
+    const { call, calls, asked, logged, state } = await setUp();
+
+    const { result, text } = await call("settings_spend_limit_set", {
+      scope: "0000abcd",
+      per_session: 10,
+      reason: "The experiment needs more",
+    });
+
+    expect(asked).toEqual([
+      {
+        id: "1",
+        conversationId: ROOT_CONVERSATION_ID,
+        tool: "settings_spend_limit_set",
+        target: 'Environment "Other"\'s Settings',
+        change: "Spend limit",
+        before: "$5 per Session (inherited from Global)",
+        after: "$10 per Session",
+        reason: "The experiment needs more",
+        expected: { value: 5, inherited: true },
+      },
+    ]);
+    expect(calls.settings).toEqual([
+      {
+        scope: "0000abcd",
+        changes: [
+          {
+            field: "spendLimit.perSession",
+            value: 10,
+            expected: { value: 5, inherited: true },
+          },
+        ],
+        author: {
+          conversation: ROOT_CONVERSATION_ID,
+          tool: "settings_spend_limit_set",
+          reason: "The experiment needs more",
+          approved: true,
+        },
+      },
+    ]);
+    expect(state.environments["0000abcd"]?.overrides).toEqual({
+      spendLimit: { perSession: 10 },
+    });
+    expect(text).toContain(
+      'The user approved: the spend limit for Environment "Other" (0000abcd) was $5 per Session (inherited from Global), and is $10 per Session now.',
+    );
+    // This Session runs in the default Environment.
+    expect(text).toContain("does not reach it");
+    expect(result.details).toMatchObject({
+      approval: { approved: true },
+      agentChanges: [
+        {
+          scope: "0000abcd",
+          field: "spendLimit.perSession",
+          before: 5,
+          after: 10,
+          beforeInherited: true,
+          afterInherited: false,
+        },
+      ],
+    });
+    expect(logged).toEqual([
+      {
+        tool: "settings_spend_limit_set",
+        field: "spendLimit.perSession",
+        environmentName: "Other",
+      },
+    ]);
+  });
+
+  it("ask to pin a value equal to the inherited one, and not for one the Environment overrides with already", async () => {
+    const { call, asked, state } = await setUp({
+      overrides: {
+        default: { name: "Default", overrides: { spendLimit: { perSession: 20 } } },
+        "0000abcd": { name: "Other", overrides: {} },
+      },
+    });
+
+    await call("settings_spend_limit_set", { scope: "0000abcd", per_session: 5, reason: "Pin" });
+
+    expect(asked).toHaveLength(1);
+    expect(state.environments["0000abcd"]?.overrides).toEqual({ spendLimit: { perSession: 5 } });
+
+    const { text } = await call("settings_spend_limit_set", {
+      scope: "default",
+      per_session: 20,
+      reason: "Same",
+    });
+
+    expect(text).toContain(
+      'The spend limit for Environment "Default" (default) is $20 per Session as its Override already',
+    );
+    expect(asked).toHaveLength(1);
+  });
+
+  it("apply nothing when the Environment's Override changed between the request and the answer", async () => {
+    const { call, state } = await setUp();
+
+    const { result, text } = await call(
+      "settings_subagent_depth_set",
+      { scope: "0000abcd", depth: 3, reason: "Deeper" },
+      {
+        approve: true,
+        meanwhile: () => {
+          // The owner pins the inherited value meanwhile: same value, no longer inherited.
+          state.environments["0000abcd"] = {
+            name: "Other",
+            overrides: { extensions: { subagents: { maxSubagentDepth: 2 } } },
+          };
+        },
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain(
+      "changed since they were asked: it is 2 levels of subagents below the root (overridden) now",
+    );
+  });
+
+  it("fail for an id no Environment has, asking nothing", async () => {
+    const { call, asked } = await setUp();
+
+    const { result, text } = await call("settings_subagent_workspaces_set", {
+      scope: "nope",
+      limit: 3,
+      reason: "r",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain('No Environment has the id "nope"');
+    expect(asked).toEqual([]);
+  });
+});
+
+describe("settings_reset", () => {
+  const OVERRIDDEN = {
+    default: { name: "Default", overrides: {} },
+    "0000abcd": {
+      name: "Other",
+      overrides: { model: "anthropic/claude-sonnet-5-5", spendLimit: { perSession: 20 } },
+    },
+  };
+
+  it("of a Limit at an Environment waits for Approval, then removes the Override", async () => {
+    const { call, calls, asked, state, logged } = await setUp({ overrides: OVERRIDDEN });
+
+    const { result, text } = await call("settings_reset", {
+      scope: "0000abcd",
+      field: "spendLimit.perSession",
+      reason: "Back to the Global limit",
+    });
+
+    expect(asked).toEqual([
+      {
+        id: "1",
+        conversationId: ROOT_CONVERSATION_ID,
+        tool: "settings_reset",
+        target: 'Environment "Other"\'s Settings',
+        change: "Spend limit, reset",
+        before: "$20 per Session (overridden)",
+        after: "$5 per Session (inherited from Global)",
+        reason: "Back to the Global limit",
+        expected: { value: 20, inherited: false },
+      },
+    ]);
+    expect(calls.settings[0]?.changes).toEqual([
+      {
+        field: "spendLimit.perSession",
+        value: null,
+        reset: true,
+        expected: { value: 20, inherited: false },
+      },
+    ]);
+    expect(state.environments["0000abcd"]?.overrides).toEqual({
+      model: "anthropic/claude-sonnet-5-5",
+    });
+    expect(text).toContain("The user approved");
+    expect(result.details).toMatchObject({
+      approval: { approved: true },
+      agentChanges: [{ before: 20, after: 5, beforeInherited: false, afterInherited: true }],
+    });
+    expect(logged).toEqual([
+      { tool: "settings_reset", field: "spendLimit.perSession", environmentName: "Other" },
+    ]);
+  });
+
+  it("of a Limit at Global waits for Approval, then puts the default back", async () => {
+    const { call, asked, state } = await setUp();
+
+    await call("settings_reset", { scope: "*", field: "spendLimit.perSession", reason: "r" });
+
+    expect(asked[0]).toMatchObject({
+      target: "the Global Settings",
+      before: "$5 per Session",
+      after: "no limit (the default)",
+      expected: 5,
+    });
+    expect(state.global).toEqual({});
+  });
+
+  it("changes nothing on Decline", async () => {
+    const { call, calls, state } = await setUp({ overrides: OVERRIDDEN });
+
+    const { text } = await call(
+      "settings_reset",
+      { scope: "0000abcd", field: "spendLimit.perSession", reason: "r" },
+      { approve: false, reason: "Keep $20 there" },
+    );
+
+    expect(text).toContain("The user declined");
+    expect(calls.settings).toEqual([]);
+    expect(state.environments["0000abcd"]?.overrides).toEqual(OVERRIDDEN["0000abcd"].overrides);
+  });
+
+  it("of any other field applies at once, asking nothing", async () => {
+    const { call, asked, state, logged, calls } = await setUp({ overrides: OVERRIDDEN });
+
+    const { result, text } = await call("settings_reset", {
+      scope: "0000abcd",
+      field: "model",
+      reason: "Follow Global again",
+    });
+
+    expect(asked).toEqual([]);
+    expect(calls.settings[0]?.changes).toEqual([{ field: "model", value: null, reset: true }]);
+    expect(state.environments["0000abcd"]?.overrides).toEqual({
+      spendLimit: { perSession: 20 },
+    });
+    expect(text).toContain(
+      'Reset the default model for Environment "Other" (0000abcd): it inherits Global again',
+    );
+    expect(text).toContain(
+      "default model: it was anthropic/claude-sonnet-5-5 (overridden), and is anthropic/claude-opus-5-5 (inherited from Global) now",
+    );
+    expect(result.details).toMatchObject({
+      agentChanges: [
+        {
+          scope: "0000abcd",
+          environment: { id: "0000abcd", name: "Other" },
+          field: "model",
+          afterInherited: true,
+        },
+      ],
+    });
+    expect(logged).toEqual([{ tool: "settings_reset", field: "model", environmentName: "Other" }]);
+  });
+
+  it("says so of a field the Environment does not override, asking and changing nothing", async () => {
+    const { call, asked, calls } = await setUp();
+
+    const { result, text } = await call("settings_reset", {
+      scope: "0000abcd",
+      field: "spendLimit.perSession",
+      reason: "r",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain(
+      "does not override the spend limit per Session: it inherits Global already",
+    );
+    expect(asked).toEqual([]);
+    expect(calls.settings).toEqual([]);
+  });
+
+  it("refuses a name that is not a setting it takes, listing those it does", async () => {
+    const { call, calls } = await setUp();
+
+    const { result, text } = await call("settings_reset", {
+      scope: "*",
+      field: "roles.small.model",
+      reason: "r",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain("roles.small.model is not a setting settings_reset takes");
+    expect(text).toContain("roles.small, roles.medium");
+    expect(text).toContain("extensions.<extension>.<key>");
+    expect(calls.settings).toEqual([]);
   });
 });
 
