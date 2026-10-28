@@ -3,7 +3,8 @@
 // @effect-diagnostics preferEffectArray:off
 import { describe, expect, it } from "vitest";
 import type { InstalledSkillRef } from "./skill-badges.ts";
-import { joinRepoSkills, skillIdOf, type SkillRepoRows } from "./skill-repo.ts";
+import { skillIdOf } from "../github/skill-fetch.ts";
+import { joinRepoSkills, type SkillRepoRows } from "./skill-repo.ts";
 
 const rows = (skills: SkillRepoRows["skills"]): SkillRepoRows => ({
   repo: "Acme/Skills",

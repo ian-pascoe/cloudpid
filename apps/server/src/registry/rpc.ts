@@ -44,7 +44,7 @@ import type { DraftBranches } from "./draft-branches.ts";
 import { withInstalled } from "./skill-badges.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
 import { skillOwnersOver } from "./skill-owner.ts";
-import { joinRepoSkills, repoSearchQuery, type SkillRepos } from "./skill-repo.ts";
+import { joinRepoSkills, joinSkillView, repoSearchQuery, type SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
 import { removals } from "./removal.ts";
@@ -1007,6 +1007,28 @@ export const serveRegistryRpc = <R = never>(
         }),
       // From the Skill directory's search alone (it has no owner listing): no GitHub, so nothing installed to join.
       listOwnerRepos: ({ owner }) => skillOwnersOver(skillDirectory).list(owner),
+      // The same reads as the repo's listing, for one Skill: GitHub says what it holds, the directory its installs.
+      viewSkill: ({ owner, repo, skill, path, ref }) =>
+        Effect.gen(function* () {
+          const viewed = yield* skillRepos.view({ owner, repo, skill, path, ref });
+
+          if (viewed.status === "ambiguous") return viewed;
+
+          const rows = viewed.skill;
+          const query = repoSearchQuery(rows.repo);
+
+          const [installed, found] = yield* Effect.all(
+            [
+              registry.installedSkills(),
+              query === undefined
+                ? Effect.succeed([])
+                : skillDirectory.search(query).pipe(Effect.orElseSucceed(() => [])),
+            ],
+            { concurrency: "unbounded" },
+          );
+
+          return { status: "found" as const, skill: joinSkillView(rows, installed, found) };
+        }),
       listBuilds: () =>
         registry.listBuilds().pipe(
           // The Environments page asks again while a Build is under way, which records it once it ends.

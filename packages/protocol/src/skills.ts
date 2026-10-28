@@ -262,7 +262,7 @@ export const SkillDirectoryPageNumber = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: 1_000 }),
 );
 
-/** How many rows skills.sh answers for a leaderboard page, and the most a search finds. */
+/** How many rows skills.sh answers for a leaderboard page (`SKILL_SEARCH_LIMIT` is the most a search finds). */
 export const SKILL_DIRECTORY_PAGE_SIZE = 200;
 
 /**
@@ -333,6 +333,13 @@ export const SkillRepoErrorKind = Schema.Literals([
   "not_found",
   /** The repo is readable but has no such branch, tag or commit. */
   "bad_ref",
+  /** A Skill's page only: the repo is readable at the ref, but holds no such Skill. */
+  "no_skill",
+  /**
+   * A Skill's page only: the repo has more SKILL.md files than can be read to find a Skill by its name, and none is in a
+   * folder of that name. The Skill is opened from the repo page, or by its folder (`?path=`).
+   */
+  "too_many",
   /** The owner, repo or ref cannot be one GitHub has. */
   "invalid",
   "rate_limited",
@@ -383,6 +390,68 @@ export const UnreadableSkill = Schema.Struct({
 });
 
 export type UnreadableSkill = typeof UnreadableSkill.Type;
+
+/** One file of a Skill as an install takes it: its path in the Skill's folder, and its size in bytes when GitHub says. */
+export const SkillViewFile = Schema.Struct({
+  path: Schema.String,
+  size: Schema.optionalKey(Schema.Int),
+});
+
+export type SkillViewFile = typeof SkillViewFile.Type;
+
+/**
+ * One Skill of a GitHub repo as a Skill's page (`/skills/:owner/:repo/:skill`) shows it: its SKILL.md and the files an
+ * install would take, read at one commit of the ref.
+ */
+export const SkillView = Schema.Struct({
+  /** `owner/name`, as asked. */
+  repo: Schema.String,
+  /** The ref asked for; null for the repo's default branch. */
+  ref: Schema.NullOr(Schema.String),
+  /** The commit it was read at, in full. */
+  commit: Schema.String,
+  /** Its name and description, from its SKILL.md's frontmatter. */
+  name: Schema.String,
+  description: Schema.String,
+  /** Its folder in the repo (empty for a Skill at the repo's root). */
+  path: Schema.String,
+  /** What its page's URL calls it (`RepoSkill.skillId`). */
+  skillId: Schema.String,
+  /** Its SKILL.md as it is at the commit, frontmatter included. */
+  skillMd: Schema.String,
+  /** That file's name in the Skill's folder, in the case the repo has it (`skill.md` is as good a name as `SKILL.md`). */
+  skillMdFile: Schema.String,
+  /** The files an install takes of its folder, `SKILL.md` first, then by path. */
+  files: Schema.Array(SkillViewFile),
+  /** Why an install would refuse it for its size (too many files or bytes); absent when it fits. */
+  refused: Schema.optionalKey(Schema.String),
+  /** Its installs, all time, when the Skill directory knows the Skill; absent when it does not. */
+  installs: Schema.optionalKey(Schema.Finite),
+  /** Where it is installed here, matched by the repo and the Skill's folder; absent when it is nowhere. */
+  installed: Schema.optionalKey(SkillInstalledIn),
+});
+
+export type SkillView = typeof SkillView.Type;
+
+/** What a Skill's page answers: the Skill, or the Skills of the repo its name could mean. */
+export const SkillViewAnswer = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("found"), skill: SkillView }),
+  /**
+   * The name is the name or the folder of several Skills of the repo, so none is shown: a link to each, by its folder,
+   * in the walk's order.
+   */
+  Schema.Struct({
+    status: Schema.Literal("ambiguous"),
+    repo: Schema.String,
+    ref: Schema.NullOr(Schema.String),
+    commit: Schema.String,
+    candidates: Schema.Array(
+      Schema.Struct({ name: Schema.String, description: Schema.String, path: Schema.String }),
+    ),
+  }),
+]);
+
+export type SkillViewAnswer = typeof SkillViewAnswer.Type;
 
 /** What GitHub has of a repo at a ref: every Skill the walk the install uses finds, read at one commit. */
 export const SkillRepoListing = Schema.Struct({

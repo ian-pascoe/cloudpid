@@ -4,7 +4,7 @@
 // every Skill GitHub has in the repo at the ref, read by the main Worker as the GitHub App (so a private repo the app can
 // read is listed, and a repo skills.sh does not know is too), each with its description, its installs when skills.sh has
 // them and where it is installed here, a checkbox, and Install selected, which opens the target picker at the ref. A row
-// links to the Skill's page (#309). A repo that is not there, that the app cannot read, that has no such ref or no Skills
+// links to the Skill's page (`skills-skill.tsx`). A repo that is not there, that the app cannot read, that has no such ref or no Skills
 // says so plainly.
 
 import { type RepoSkill, type SkillRepoListing } from "@cloudpid/protocol";
