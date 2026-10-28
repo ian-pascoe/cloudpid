@@ -22,6 +22,14 @@ export const settingsStateAtom = Atom.map(settingsAtom, (result) =>
   result.pipe(AsyncResult.value, Option.getOrNull),
 );
 
+/**
+ * Environment `environment`'s Settings (ADR-0027): its Overrides, the Global settings it inherits, and the settings its
+ * Sessions run with.
+ */
+export const settingsOverridesAtom = Atom.family((environment: string) =>
+  RegistryClient.query("getSettingsOverrides", { environment }, { reactivityKeys: ["settings"] }),
+);
+
 /** Why the settings could not load, or null. */
 export const settingsLoadErrorAtom = Atom.map(settingsAtom, failureOf);
 

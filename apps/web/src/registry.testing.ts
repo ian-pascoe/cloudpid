@@ -68,6 +68,8 @@ const UNEXPECTED: Handlers = {
   restartContainer: unexpected("restartContainer"),
   getSettings: unexpected("getSettings"),
   updateSettings: unexpected("updateSettings"),
+  getSettingsOverrides: unexpected("getSettingsOverrides"),
+  updateSettingsOverrides: unexpected("updateSettingsOverrides"),
   listSettingsChanges: unexpected("listSettingsChanges"),
   revertSettingsChange: unexpected("revertSettingsChange"),
   dismissSettingsChange: unexpected("dismissSettingsChange"),

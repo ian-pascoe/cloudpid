@@ -52,7 +52,7 @@ export const useShowFailure = () => useAtomSet(pageProblemAtom);
 /** Move the active branch to `point`, through the summary prompt unless the settings skip it. */
 export const useMove = (): ((point: TreePoint) => void) => {
   const sessionId = useShownSessionId();
-  const skip = useAtomValue(skipSummaryPromptAtom);
+  const skip = useAtomValue(skipSummaryPromptAtom(sessionId));
   const setPending = useAtomSet(pendingMoveAtom);
   const navigate = useCall(navigateAtom(sessionId));
   const show = useShowFailure();

@@ -24,6 +24,7 @@ import {
 const stateOf = (settings: Settings): SettingsState => ({
   settings,
   overrides: overridesFrom(settings),
+  overriddenIn: {},
 });
 
 /** A Registry holding `settings`, which an update replaces unless it asks for the "max" thinking level, which the Registry refuses. */
