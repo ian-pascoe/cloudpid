@@ -37,7 +37,7 @@ const region = (markup: string, open: RegExp, tag: string): string => {
 describe("ApprovalCard", () => {
   it("scrolls Now, After and Why in a region bounded by the viewport's height", () => {
     const markup = render(LISTING);
-    const body = region(markup, /<div class="[^"]*overflow-y-auto/, "dl");
+    const body = region(markup, /<div role="region"/, "dl");
 
     expect(body).toMatch(/max-h-\[\d+dvh\]/);
     expect(body).toContain("Now");

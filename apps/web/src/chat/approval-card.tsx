@@ -48,14 +48,19 @@ const Card = ({
       className="mx-auto mb-3 w-full max-w-3xl rounded-lg border bg-card px-4 py-3 shadow-sm"
     >
       <div className="flex items-center gap-2 text-sm font-semibold">
-        <ShieldCheck className="size-4" aria-hidden />
+        <ShieldCheck className="size-4 shrink-0" aria-hidden />
         The agent asks your Approval: {request.change}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
         {request.target} · <span className="font-mono">{request.tool}</span>
       </p>
       {/* The values scroll in their own region, so the reason input and the buttons stay in view whatever the size. */}
-      <div className="mt-3 max-h-[30dvh] overflow-y-auto overscroll-contain">
+      <div
+        role="region"
+        aria-label="What the change does"
+        tabIndex={0}
+        className="mt-3 max-h-[30dvh] overflow-y-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
           <dt className="text-muted-foreground">Now</dt>
           <dd className={valueClass(request.before)}>{request.before}</dd>
