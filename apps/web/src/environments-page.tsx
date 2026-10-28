@@ -1362,7 +1362,7 @@ const InstallAnswer = ({
       <p className="text-xs text-muted-foreground">
         {answer.repo} holds {available.length} skills. Tick the ones to install.
       </p>
-      <ul className="flex flex-col gap-1">
+      <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto" aria-label="Skills in the repo">
         {available.map((skill) => (
           <li key={skill.name}>
             <label className="flex items-start gap-2 text-sm">
