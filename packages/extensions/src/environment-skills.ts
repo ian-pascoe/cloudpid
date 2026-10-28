@@ -3,8 +3,8 @@
 // from the Workspace (one the agent wrote, or one `npx skills add --copy` made) and saves it for the Environment, in
 // place of one of its name, `environment_skill_install` installs Skills from GitHub (fetched by the Registry, never by
 // the Session or a Container; for `*` too, with the owner's Approval), and `environment_skill_remove` removes one. The
-// Registry checks a save (the Agent Skills name rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path, at most 100
-// Skills and 8 MB in the merged set) and records each as an Agent change with the files before and after, so the owner
+// Registry checks a save (the Agent Skills name rules, text only, `SKILL_SIZES`, nothing that looks like a credential or
+// a local path, at most 100 Skills in the merged set) and records each as an Agent change with the files before and after, so the owner
 // sees the diffs and can revert it. The Session hands its own Workspace the new Skill set at once; the Environment's
 // other Workspaces and its spare get it at their next readying. The skills list in the prompt changes at the next
 // Context Window. With `id: "*"` the Skill is kept for every Environment, and the change waits for the owner's Approval
@@ -43,6 +43,7 @@ import {
   MAX_SKILL_BYTES,
   MAX_SKILL_FILES,
   problemsIn,
+  SKILL_SIZES,
 } from "./skill-checks.ts";
 
 export type {
@@ -289,7 +290,7 @@ export const skillTools = ({
       [
         `Save a Skill for an Environment (this Session's unless id names another), from its folder in the Workspace: a folder you wrote (such as ${WORKSPACE_ROOT}/.cloudpid/tmp/<name>), or one \`npx skills add <source> --copy\` made. Every Workspace of the Environment then serves it read-only at ${SKILLS_ROOT}/<name>, over the Skill of the same name kept for every Environment, and lists it among the skills; Workspaces of other Environments do not. A Skill of the same name the Environment keeps is replaced. Saving a Skill whose name is also kept for every Environment makes the Environment's own copy, which wins in this Environment only.`,
         `With id "${EVERY_ENVIRONMENT_ID}" the Skill is kept for every Environment: every Environment's Workspaces serve it at their next readying (this Session's at once, unless its Environment keeps its own Skill of the name). A Skill there steers every future Session, so the user must approve the change, reading the Skill on the card: it shows the first ${MAX_CARD_CHARS} characters of the files and warns the user of what it cuts, so keep a Skill for every Environment small enough to review in full, or expect it to be declined. ${SKILL_APPROVAL}`,
-        "The folder holds a SKILL.md whose YAML frontmatter sets name (1 to 64 lowercase letters, digits and hyphens, not starting or ending with a hyphen, no two in a row, and the folder's own name) and description (at most 1024 characters, saying what the Skill does and when to use it), and any files it refers to. The files must be text, at most 128 KB each and 1 MB together, with nothing that looks like a credential or a path on somebody's machine (/home/<user>/…), nor the value of a Secret this Session holds. A Skill set holds at most 100 Skills and 8 MB, every layer counted; a Skill for every Environment is refused when any Environment's set would pass either.",
+        `The folder holds a SKILL.md whose YAML frontmatter sets name (1 to 64 lowercase letters, digits and hyphens, not starting or ending with a hyphen, no two in a row, and the folder's own name) and description (at most 1024 characters, saying what the Skill does and when to use it), and any files it refers to. The files must be text, at most ${SKILL_SIZES.file} each and ${SKILL_SIZES.skill} together, with nothing that looks like a credential or a path on somebody's machine (/home/<user>/…), nor the value of a Secret this Session holds. A Skill set holds at most 100 Skills and ${SKILL_SIZES.set}, every layer counted; a Skill for every Environment is refused when any Environment's set would pass either.`,
         "To change a Skill, copy its folder from the skills directory to a scratch folder, edit it there, and save it again. The change is recorded with your reason and the files before and after, and the user can see the difference and revert it on the Environments page.",
       ],
       "\n\n",
@@ -348,7 +349,7 @@ export const skillTools = ({
 
   const remove = defineEffectTool({
     name: "environment_skill_remove",
-    description: `Remove a Skill the Environment keeps (this Session's Environment unless id names another): its Workspaces stop serving it at ${SKILLS_ROOT}/<name>, and serve the Skill of that name kept for every Environment again if there is one (refused if a Skill set would then hold more than 100 Skills or 8 MB). environment_get lists the Environment's own Skills; those kept for every Environment are not the Environment's and cannot be removed this way. With id "${EVERY_ENVIRONMENT_ID}" the Skill is removed from those kept for every Environment, which the user must approve: ${SKILL_APPROVAL} The change is recorded with your reason and the files the Skill had, and the user can revert it on the Environments page.`,
+    description: `Remove a Skill the Environment keeps (this Session's Environment unless id names another): its Workspaces stop serving it at ${SKILLS_ROOT}/<name>, and serve the Skill of that name kept for every Environment again if there is one (refused if a Skill set would then hold more than 100 Skills or ${SKILL_SIZES.set}). environment_get lists the Environment's own Skills; those kept for every Environment are not the Environment's and cannot be removed this way. With id "${EVERY_ENVIRONMENT_ID}" the Skill is removed from those kept for every Environment, which the user must approve: ${SKILL_APPROVAL} The change is recorded with your reason and the files the Skill had, and the user can revert it on the Environments page.`,
     parameters: Schema.Struct({
       id: Schema.optionalKey(idOrEvery("a Skill kept for every Environment")),
       name: Schema.String.check(Schema.isMinLength(1)).annotate({
@@ -393,7 +394,7 @@ export const skillTools = ({
         "source is owner/repo, owner/repo@skill, or a GitHub URL such as https://github.com/owner/repo/tree/<ref>/<path> (the first segment after tree/ is the ref, so write a branch name with a slash as feature%2Ffoo; without one, the default branch is used). Public repos work, and so do private ones in an account the GitHub App is installed on. Other sources (GitLab, other hosts, well-known indexes) are not fetched here: run `npx skills add <source> --copy` in a Container and save the folder with environment_skill_save.",
         `With id "${EVERY_ENVIRONMENT_ID}" the Skills are kept for every Environment: every Environment's Workspaces serve them at their next readying (this Session's at once, unless its Environment keeps its own Skill of the name). They steer every future Session, so the user must approve the install, reading each Skill on the card: it shows the first ${MAX_CARD_CHARS} characters of each Skill's files and warns the user of what it cuts, so install Skills small enough to review in full, or expect them to be declined. One request shows at most ${MAX_APPROVED_SKILLS} Skills: name fewer with skills, then call again for the rest. The call reads the repo, asks about the Skills it would keep (those kept with the same files and Skill source already are left out), and on Approve installs exactly the commit the user was shown, each Skill only while the Skill of its name is still the one that was shown. ${INSTALL_APPROVAL}`,
         'skills names the Skills to install (by name): ["*"] installs every Skill the repo holds. When the repo holds several and you name none, nothing is installed and its Skills are listed; ask the user which they want, or call again with skills. skill_search finds a source on skills.sh.',
-        "Each Skill passes the checks of environment_skill_save (the Agent Skills name rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path; a set holds at most 100 Skills and 8 MB). One that fails is reported and the others are still installed. Each is recorded with your reason and the files before and after, and the user can revert it on the Environments page.",
+        `Each Skill passes the checks of environment_skill_save (the Agent Skills name rules, text only, ${SKILL_SIZES.file} a file, ${SKILL_SIZES.skill} a Skill, nothing that looks like a credential or a local path; a set holds at most 100 Skills and ${SKILL_SIZES.set}). One that fails is reported and the others are still installed. Each is recorded with your reason and the files before and after, and the user can revert it on the Environments page.`,
       ],
       "\n\n",
     ),

@@ -3,6 +3,7 @@
 // They live in their own file so no file of the `workerd-session` project grows large (#64).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
+import { MAX_FILE_BYTES } from "@cloudpid/extensions/skill-checks";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
@@ -10,6 +11,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 import { EMPTY_SKILL_SET } from "./skill-set-schema.ts";
+import { FILE_PREFIX, skillSetStore } from "./skill-set.ts";
 import { skillFile } from "./skills.fixtures.ts";
 import { UNWRITABLE_SKILL_SET } from "./workerd.fixture.ts";
 
@@ -484,5 +486,55 @@ describe("a Workspace with the read-only mount", () => {
 
     expect(results[0]).toBe("a=0\nb=0\nc=0\nd=0\n");
     expect(results[1]).toContain("read-only mount at /workspace/.agents/skills");
+  });
+});
+
+describe("the Skill set a Workspace keeps", () => {
+  it("keeps a file as large as a Skill's file may be, past Latin-1, across an eviction", async () => {
+    const slug = uniqueWorkspace();
+    const workspace = env.WORKSPACES.getByName(slug);
+    // As a string, V8 would keep this at two bytes a character, past the 2 MB a deployed storage value may hold (the
+    // local workerd does not enforce it, so this checks the round trip only).
+    const data = `${"x".repeat(MAX_FILE_BYTES - 3)}✓`;
+
+    expect(
+      await workspace.updateSkills({
+        hash: "sha256:big",
+        files: {
+          "big/SKILL.md": skillFile("big", "A big one.", "See data.txt."),
+          "big/data.txt": data,
+        },
+      }),
+    ).toEqual({ ok: true });
+
+    await evictDurableObject(workspace);
+
+    const { results } = await sessionOn(slug).runFull([
+      call("bash", {
+        command:
+          "wc -c < /workspace/.agents/skills/big/data.txt; tail -c 3 /workspace/.agents/skills/big/data.txt",
+        backend: "worker",
+      }),
+    ]);
+
+    expect(results[0]).toBe(`${MAX_FILE_BYTES}\n✓`);
+  });
+
+  it("reads a set kept before as strings", async () => {
+    const slug = uniqueWorkspace();
+    const workspace = env.WORKSPACES.getByName(slug);
+
+    await withTdd(slug);
+
+    const files = await runInDurableObject(workspace, async (_instance, state) => {
+      state.storage.kv.put(`${FILE_PREFIX}tdd/tests.md`, "# Kept as a string\n");
+
+      return skillSetStore({
+        kv: state.storage.kv,
+        transactionSync: (closure) => state.storage.transactionSync(closure),
+      }).current().files;
+    });
+
+    expect(files).toEqual({ ...TDD_SET.files, "tdd/tests.md": "# Kept as a string\n" });
   });
 });

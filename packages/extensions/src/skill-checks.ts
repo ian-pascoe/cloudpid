@@ -3,11 +3,29 @@
 // are saved, by the Registry and by `environment_skill_save`, and the Agent Skills name rules. Plain TypeScript with no
 // imports, which Node runs by type stripping.
 
-/** A Skill's file this large is refused: every Workspace holds a copy of its Skill set. */
-export const MAX_FILE_BYTES = 128 * 1024;
+/**
+ * A Skill's file larger than this is refused: the Registry keeps each text in one SQLite row and each Workspace keeps it
+ * as one storage value (as UTF-8 bytes), and a Durable Object's row or value may hold 2 MB.
+ */
+export const MAX_FILE_BYTES = 1536 * 1024;
 
-/** A Skill, all its files together, may be this large. */
-export const MAX_SKILL_BYTES = 1024 * 1024;
+/** A Skill, all its files together, may be this large: every Workspace holds a copy of its Skill set. */
+export const MAX_SKILL_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The most UTF-8 bytes an Environment's Skill set may hold: the whole set goes to a Workspace in one Durable Object
+ * call, and each Workspace keeps a copy.
+ */
+export const MAX_SKILL_SET_BYTES = 8 * 1024 * 1024;
+
+const inMiB = (bytes: number): string => `${bytes / (1024 * 1024)} MiB`;
+
+/** The size limits of a Skill's file, a Skill and a Skill set, as the tools' descriptions say them. */
+export const SKILL_SIZES = {
+  file: inMiB(MAX_FILE_BYTES),
+  skill: inMiB(MAX_SKILL_BYTES),
+  set: inMiB(MAX_SKILL_SET_BYTES),
+} as const;
 
 /** The most files a Skill's folder may hold, far above any real one. */
 export const MAX_SKILL_FILES = 500;

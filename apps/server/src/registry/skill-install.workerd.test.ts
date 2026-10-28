@@ -3,6 +3,7 @@
 // installs and as nothing when the owner does, and put back with their source by a revert.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
+import { MAX_FILE_BYTES, MAX_SKILL_SET_BYTES } from "@cloudpid/extensions/skill-checks";
 import { runInDurableObject } from "cloudflare:test";
 import {
   DEFAULT_ENVIRONMENT,
@@ -737,6 +738,30 @@ describe("installing Skills from GitHub", () => {
       message: expect.stringContaining("more than the 10 one request may take"),
     });
     expect(own).toMatchObject({ status: "installed" });
+  });
+
+  it("refuses a preview of Skills more than a Skill set may hold together, though each passes alone", async () => {
+    // Three Skills of 3 MiB each: 9 MiB together.
+    const data = "x".repeat(MAX_FILE_BYTES);
+
+    const large = Object.fromEntries(
+      Array.from({ length: 3 }, (_, at) => [
+        [`skills/l${at}/SKILL.md`, skillMd(`l${at}`)],
+        [`skills/l${at}/a.txt`, data],
+        [`skills/l${at}/b.txt`, data],
+      ]).flat(),
+    );
+
+    const [refused, one] = await inRegistry(async ({ preview }) => [
+      await preview(readerOf(large), { environment: "*", source: "o/skills", skills: ["*"] }),
+      await preview(readerOf(large), { environment: "*", source: "o/skills", skills: ["l0"] }),
+    ]);
+
+    expect(refused).toMatchObject({
+      status: "refused",
+      message: expect.stringContaining(`more than the ${MAX_SKILL_SET_BYTES} a Skill set may hold`),
+    });
+    expect(one).toMatchObject({ status: "previewed", skills: [{ name: "l0" }] });
   });
 
   it("is the owner's install for every Environment: kept with its source, no Agent change, the checks across every Environment's set", async () => {
