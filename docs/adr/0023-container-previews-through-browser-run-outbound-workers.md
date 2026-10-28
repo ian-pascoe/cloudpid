@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (Container previews: amended by the hold cap, #325)
 ---
 
 # A Container's dev server opens in the Session's browser through Browser Run's outbound Workers

@@ -18,7 +18,7 @@ import type { IdleStop } from "./idle.ts";
 type ExecHandle = WorkspaceRuntimeExecHandleStub<"utf8" | undefined>;
 
 /** The commands' side of the idle stop: what `IdleStop` offers them. */
-export type CommandTracker = Pick<IdleStop, "hold" | "active">;
+export type CommandTracker = Pick<IdleStop, "hold" | "noteActivity">;
 
 /** An exec handle stub that ends its command's run on the Container when its client disposes it. */
 class TrackedExecHandle extends RpcTarget {
@@ -76,7 +76,7 @@ class TrackedRuntime extends WorkspaceRuntimeStub {
     const log = (cause: unknown) => console.warn("idle stop: tracking a command failed", cause);
 
     // A command started is the owner's or the agent's activity, whichever backend runs it.
-    tracker.active().catch(log);
+    tracker.noteActivity().catch(log);
 
     // A failed write only shortens the idle time: the alarm works from what was stored before.
     const hold = onContainer ? tracker.hold() : undefined;

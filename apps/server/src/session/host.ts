@@ -126,7 +126,8 @@ import {
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { contextUsageOf } from "./context-usage.ts";
-import { type HeldStopRecord, noticeHeldStops } from "./held-stops.ts";
+import type { HeldStop } from "../workspace/idle.ts";
+import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
 import { attempt, refuse, SessionError } from "./errors.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
@@ -157,6 +158,12 @@ export const REPORT_TIMEOUT: Duration.Input = "5 seconds";
  * to 64 subscribed browsers; a Session that gave up sooner would send the same notification again.
  */
 export const NOTIFY_TIMEOUT: Duration.Input = "20 seconds";
+
+/**
+ * How long asking the Workspace for its held stops and writing their notices may take: a slow Workspace leaves them to
+ * the next check rather than hold up a message.
+ */
+const HELD_STOPS_TIMEOUT: Duration.Input = "5 seconds";
 
 /** The submissions the owner made whose Run's end has not been notified yet, in the Session's key-value storage. */
 const NOTIFY_KEY = "notify-submissions";
@@ -300,9 +307,7 @@ export type SessionHostOptions<R = never> = {
    */
   readonly workspaceActivity?: ((subagents: ReadonlyArray<string>) => Promise<void>) | undefined;
   /** The held stops of the Session's Workspace's Container after `after`, which the Session shows as notices. */
-  readonly containerHeldStops?:
-    | ((after: number) => Promise<ReadonlyArray<HeldStopRecord>>)
-    | undefined;
+  readonly containerHeldStops?: ((after: number) => Promise<ReadonlyArray<HeldStop>>) | undefined;
   /** The Session's Subagent Workspaces, which the owner's delete of a subagent removes. */
   readonly subagentWorkspaces?: SubagentWorkspaceHost | undefined;
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
@@ -450,7 +455,7 @@ export type SessionHostService = {
    * Show the held stops of the Session's Workspace not shown yet as notices (docs/architecture/container.md "Idle
    * stop"), as a client connects. Never fails.
    */
-  readonly noticeContainerStops: Effect.Effect<void>;
+  readonly showHeldStops: Effect.Effect<void>;
   /**
    * Abort the work of the active branch, or of the conversation `conversationId` names (anything else fails),
    * and withdraw its queued input, once it is idle. Subagents below it keep working unless `subagents` is true.
@@ -1209,10 +1214,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /**
    * Show the held stops of the Session's Workspace it has not shown, each as a notice on the active branch
-   * (`noticeHeldStops`): when a client connects and before input is admitted. Never failing: a stop not shown is shown
+   * (`held-stops.ts`): when a client connects and before input is admitted. Never failing: a stop not shown is shown
    * at the next check.
    */
-  const noticeContainerStops: Effect.Effect<void> = Effect.gen(function* () {
+  const showHeldStops: Effect.Effect<void> = Effect.gen(function* () {
     const read = options.containerHeldStops;
 
     if (read === undefined) return;
@@ -1221,7 +1226,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     const conversation = yield* active;
 
     yield* attempt("containerHeldStops", () =>
-      noticeHeldStops({
+      showHeldStopsIn({
         kv,
         now,
         read,
@@ -1231,7 +1236,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       }),
     );
   }).pipe(
-    Effect.timeout(options.reportTimeout ?? REPORT_TIMEOUT),
+    Effect.timeout(HELD_STOPS_TIMEOUT),
     Effect.catchCause((cause) =>
       Effect.logWarning("Showing the Container's held stops failed", cause),
     ),
@@ -1265,7 +1270,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       yield* refreshSettings;
 
       // A Container stopped for having been held without activity is shown before the message that follows it.
-      yield* noticeContainerStops;
+      yield* showHeldStops;
 
       // Another conversation is checked before arming: a bad ID must not report the Session running to the Registry.
       const other = conversationId === undefined ? undefined : yield* addressed(conversationId);
@@ -2397,7 +2402,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         Effect.tap(usageChanged),
       ),
     sync: refreshSettings.pipe(Effect.andThen(applyAgent.pipe(serially))),
-    noticeContainerStops,
+    showHeldStops,
     picks: Effect.sync(() => {
       const pick = picked();
 

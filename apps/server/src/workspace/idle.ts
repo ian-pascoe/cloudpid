@@ -7,7 +7,7 @@
 // it (`stop`).
 //
 // Holds and uses are bounded by the hold cap: a Container kept past `CONTAINER_HOLD_CAP_MS` (or its idle time, when
-// longer) since the last owner or agent activity in the Workspace (`active`: a command started, a Session's message or
+// longer) since the last owner or agent activity in the Workspace (`noteActivity`: a command started, a Session's message or
 // live Run, a file write) is snapshotted and stopped as at the idle stop, its holds dropped (a held stop). A command
 // handle never released, or a Container preview left open, can then keep it no longer.
 
@@ -31,6 +31,10 @@ export type HeldStop = {
   /** The holds it had (commands, Container preview sockets), dropped with it. */
   readonly holds: number;
 };
+
+/** How long `stop`'s Container went without activity before it was stopped, in whole minutes. */
+export const heldStopMinutes = (stop: HeldStop): number =>
+  Math.round((stop.at - stop.lastActivity) / 60_000);
 
 /** A hold on the Container: it is in use, however quiet, until `end`. */
 export type ContainerHold = {
@@ -111,7 +115,7 @@ export class IdleStop {
    * The owner or the agent did something in the Workspace (a command started, a message, a live Run, a file write): the
    * hold cap counts from now. Not a use of the Container: it neither keeps it from the idle stop nor arms the alarm.
    */
-  async active(): Promise<void> {
+  async noteActivity(): Promise<void> {
     const at = this.#deps.now();
 
     this.#lastActivity = at;
@@ -229,7 +233,7 @@ export class IdleStop {
       return stored;
     }
 
-    await this.active();
+    await this.noteActivity();
 
     return now;
   }

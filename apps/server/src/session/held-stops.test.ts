@@ -2,7 +2,8 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { projectEntry } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { type HeldStopRecord, heldStopEntry, noticeHeldStops } from "./held-stops.ts";
+import type { HeldStop } from "../workspace/idle.ts";
+import { HELD_STOPS_SEEN_KEY, heldStopEntry, showHeldStops } from "./held-stops.ts";
 
 const MINUTE = 60_000;
 
@@ -18,9 +19,9 @@ const kv = () => {
   };
 };
 
-const stop = (at: number): HeldStopRecord => ({ at, lastActivity: at - 60 * MINUTE, holds: 1 });
+const stop = (at: number): HeldStop => ({ at, lastActivity: at - 60 * MINUTE, holds: 1 });
 
-describe("noticeHeldStops", () => {
+describe("showHeldStops", () => {
   it("shows nothing at its first check, and every held stop after it once", async () => {
     const store = kv();
     const written: unknown[] = [];
@@ -28,7 +29,7 @@ describe("noticeHeldStops", () => {
     const kept = [stop(2_000_000), stop(3_000_000)];
 
     const check = (now: number) =>
-      noticeHeldStops({
+      showHeldStops({
         kv: store,
         now,
         read: async (after) => {
@@ -63,7 +64,7 @@ describe("noticeHeldStops", () => {
     const written: unknown[] = [];
 
     const check = () =>
-      noticeHeldStops({
+      showHeldStops({
         kv: store,
         now: 4_000_000,
         read: async (after) => kept.filter((each) => each.at > after),
@@ -73,7 +74,7 @@ describe("noticeHeldStops", () => {
         },
       });
 
-    store.put("container-held-stops-seen", 1_000_000);
+    store.put(HELD_STOPS_SEEN_KEY, 1_000_000);
     await expect(check()).rejects.toThrow("storage unavailable");
 
     fail = false;

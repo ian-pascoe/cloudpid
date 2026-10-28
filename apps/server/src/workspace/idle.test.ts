@@ -445,7 +445,7 @@ describe("IdleStop's hold cap", () => {
     const { state, idle } = fake;
 
     // The agent runs a command whose handle is never disposed: its start is the last activity.
-    await idle.active();
+    await idle.noteActivity();
 
     const lastActivity = state.now;
 
@@ -468,7 +468,7 @@ describe("IdleStop's hold cap", () => {
     const fake = open(2 * MINUTE);
     const { state, idle } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
 
     const leaked = idle.hold();
 
@@ -477,7 +477,7 @@ describe("IdleStop's hold cap", () => {
     expect(state.stops).toBe(1);
 
     // The next command starts a Container; the old handle is disposed late, and must not end the new hold.
-    await idle.active();
+    await idle.noteActivity();
 
     const next = idle.hold();
 
@@ -496,7 +496,7 @@ describe("IdleStop's hold cap", () => {
     const fake = open(2 * MINUTE);
     const { state, idle } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
 
     const lastActivity = state.now;
 
@@ -518,7 +518,7 @@ describe("IdleStop's hold cap", () => {
     const fake = open(2 * MINUTE);
     const { state, idle } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
 
     const lastActivity = state.now;
 
@@ -537,7 +537,7 @@ describe("IdleStop's hold cap", () => {
     const fake = open(2 * MINUTE);
     const { state, idle } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
 
     const build = idle.hold();
 
@@ -546,7 +546,7 @@ describe("IdleStop's hold cap", () => {
     // Three hours of build, the Session's Run live meanwhile (its heartbeat is activity).
     for (let minute = 0; minute < 180; minute += 30) {
       await runUntil(fake, idle, state.now + 30 * MINUTE);
-      await idle.active();
+      await idle.noteActivity();
     }
 
     expect(state.stops).toBe(0);
@@ -563,14 +563,14 @@ describe("IdleStop's hold cap", () => {
     const fake = open(2 * MINUTE);
     const { state, idle } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
 
     const command = idle.hold();
 
     await command.begun;
     state.duringSnapshot = async () => {
       state.now += 5_000;
-      await idle.active();
+      await idle.noteActivity();
     };
 
     await runUntil(fake, idle, state.now + CONTAINER_HOLD_CAP_MS);
@@ -592,7 +592,7 @@ describe("IdleStop's hold cap", () => {
     const fake = open(2 * MINUTE);
     const { state, idle } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
     await idle.hold().begun;
 
     // A restart stopped the Container since.
@@ -610,7 +610,7 @@ describe("IdleStop's hold cap", () => {
     const fake = open(idleMs);
     const { state, idle } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
     await idle.touch();
 
     const lastUse = state.now;
@@ -626,7 +626,7 @@ describe("IdleStop's hold cap", () => {
     const fake = open(2 * MINUTE);
     const { state, idle, make } = fake;
 
-    await idle.active();
+    await idle.noteActivity();
 
     const lastActivity = state.now;
 
@@ -647,7 +647,7 @@ describe("IdleStop's hold cap", () => {
   it("knows the Container stops by the cap when that comes before its idle time", async () => {
     const { state, idle } = open(2 * MINUTE);
 
-    await idle.active();
+    await idle.noteActivity();
 
     const lastActivity = state.now;
 

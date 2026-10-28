@@ -895,7 +895,7 @@ export const sessionSocketsLayer = (
         );
 
         // In the background: the notice of a held stop reaches the client through its watch, as any entry does.
-        yield* host.noticeContainerStops.pipe(Effect.forkIn(scope));
+        yield* host.showHeldStops.pipe(Effect.forkIn(scope));
 
         const root = yield* host.activeBranch;
         const copying = yield* host.copying;

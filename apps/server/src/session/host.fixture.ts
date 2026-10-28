@@ -96,7 +96,7 @@ import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
-import type { HeldStopRecord } from "./held-stops.ts";
+import type { HeldStop } from "../workspace/idle.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
@@ -663,7 +663,7 @@ export class TestSession extends DurableObject {
               },
               containerHeldStops: async (after) =>
                 Arr.filter(
-                  ctx.storage.kv.get<ReadonlyArray<HeldStopRecord>>("held-stops") ?? [],
+                  ctx.storage.kv.get<ReadonlyArray<HeldStop>>("held-stops") ?? [],
                   (stop) => stop.at > after,
                 ),
               // Short only for a Registry that hangs; a loaded runner can take longer than that for a report that

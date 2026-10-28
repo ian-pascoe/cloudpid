@@ -82,7 +82,7 @@ import {
   WorkspaceRunsModule,
 } from "./runs.ts";
 import { WorkspaceWorkStateModule } from "./work-state.ts";
-import { type HeldStop, IdleStop } from "./idle.ts";
+import { type HeldStop, heldStopMinutes, IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
 import {
@@ -179,7 +179,7 @@ const ContainerHost = withWorkspaceContainer(class extends DurableObject<Workspa
 /** Where the last use of the Container is kept, for an alarm that wakes an evicted object. */
 const LAST_USE_KEY = "cloudpid:container-last-use";
 
-/** Where the last owner or agent activity in the Workspace is kept, which the hold cap counts from (`IdleStop.active`). */
+/** Where the last owner or agent activity in the Workspace is kept, which the hold cap counts from (`IdleStop.noteActivity`). */
 const LAST_ACTIVITY_KEY = "cloudpid:container-last-activity";
 
 /** Where the Workspace's latest held stops are kept, for its Sessions' notices (`containerHeldStops`). */
@@ -188,7 +188,7 @@ const HELD_STOPS_KEY = "cloudpid:container-held-stops";
 /** How many held stops are kept: a Session that has missed more shows the latest. */
 const HELD_STOPS_KEPT = 10;
 
-/** The file operations that write: a model tool's write is activity in the Workspace (`IdleStop.active`). */
+/** The file operations that write: a model tool's write is activity in the Workspace (`IdleStop.noteActivity`). */
 const WRITE_OPERATIONS: ReadonlySet<EnvRequest["op"]> = new Set([
   "writeFile",
   "truncate",
@@ -479,7 +479,7 @@ export class Workspace extends ContainerHost {
       // A Container held past the hold cap without activity: logged, and kept for the Sessions' notices.
       held: async (stop) => {
         console.warn(
-          `workspace.container.held-stop: stopped after ${Math.round((stop.at - stop.lastActivity) / 60_000)} min without owner or agent activity, ${stop.holds} hold(s) dropped (a command handle never released, or a Container preview left open)`,
+          `workspace.container.held-stop: stopped after ${heldStopMinutes(stop)} min without owner or agent activity, ${stop.holds} hold(s) dropped (a command handle never released, or a Container preview left open)`,
         );
 
         const kept = (await ctx.storage.get<ReadonlyArray<HeldStop>>(HELD_STOPS_KEY)) ?? [];
@@ -1085,7 +1085,7 @@ export class Workspace extends ContainerHost {
   async noteSessionActivity(): Promise<void> {
     this.#spare.noteUse();
 
-    await this.#idle.active();
+    await this.#idle.noteActivity();
   }
 
   /**
@@ -1465,7 +1465,7 @@ export class Workspace extends ContainerHost {
     // a watcher polls.
     if (WRITE_OPERATIONS.has(request.op)) {
       this.#idle
-        .active()
+        .noteActivity()
         .catch((cause: unknown) => console.warn("idle stop: noting activity failed", cause));
     }
 
