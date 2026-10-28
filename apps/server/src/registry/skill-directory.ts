@@ -14,12 +14,8 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off globalFetchInEffect:off -- skills.sh is asked with fetch, a Promise API.
 import {
   MAX_DIRECTORY_LIMIT,
-  queryProblem,
-  readSkillSearch,
   SEARCH_HEADERS,
   SEARCH_TIMEOUT_MS,
-  skillSearchUnreachable,
-  skillSearchUrl,
 } from "@cloudpid/extensions/skill-search";
 import {
   type DirectorySkill,
@@ -31,6 +27,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { skillSearcher } from "./skill-search.ts";
 
 /** skills.sh's leaderboard API: <base>/{view}/{page}. */
 export const SKILLS_LEADERBOARD_URL = "https://skills.sh/api/skills";
@@ -197,6 +194,8 @@ export const skillDirectoryOver = ({
     }
   };
 
+  const searcher = skillSearcher({ ask, limit: MAX_DIRECTORY_LIMIT, max: MAX_DIRECTORY_LIMIT });
+
   return {
     leaderboard: (view, page) =>
       Effect.promise(async () => asked(view, page)).pipe(
@@ -207,22 +206,7 @@ export const skillDirectoryOver = ({
         ),
       ),
     search: (query) =>
-      Effect.promise(async () => {
-        const problem = queryProblem(query);
-
-        if (problem !== undefined) return { ok: false, message: problem } as const;
-
-        try {
-          const response = await ask(
-            skillSearchUrl(query.trim(), MAX_DIRECTORY_LIMIT, MAX_DIRECTORY_LIMIT),
-            { headers: SEARCH_HEADERS, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
-          );
-
-          return await readSkillSearch(response);
-        } catch (cause) {
-          return skillSearchUnreachable(cause);
-        }
-      }).pipe(
+      searcher(query).pipe(
         Effect.flatMap((found) =>
           found.ok
             ? Effect.succeed(

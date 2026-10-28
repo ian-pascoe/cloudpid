@@ -139,3 +139,13 @@ export const directoryBadges = (installed: SkillInstalledIn | undefined): Readon
 /** The Hot tab's change figure: "+4", or "−3" for a fall. */
 export const changeText = (change: number): string =>
   change < 0 ? `\u2212${-change}` : `+${change}`;
+
+/**
+ * The source an install takes for `source` (`owner/repo`) at `ref` (a branch, tag or commit): a GitHub tree URL, which is
+ * how an install names a ref, with the ref encoded so a branch such as `feature/x` stays one segment. Without a ref, the
+ * source as it is, which installs from the repo's default branch.
+ */
+export const installSource = (source: string, ref?: string): string =>
+  ref === undefined || ref === ""
+    ? source
+    : `https://github.com/${source}/tree/${encodeURIComponent(ref)}`;

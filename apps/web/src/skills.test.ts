@@ -8,6 +8,7 @@ import {
   githubSource,
   inheritedSkills,
   installedScopes,
+  installSource,
   installOutcomeLines,
   skillCountText,
   updateOutcomeLines,
@@ -158,5 +159,16 @@ describe("changeText", () => {
   it("signs the Hot tab's change", () => {
     expect(changeText(4)).toBe("+4");
     expect(changeText(-3)).toBe("\u22123");
+  });
+});
+
+describe("installSource", () => {
+  it("is the source itself without a ref, and a tree URL with one, the ref kept as one segment", () => {
+    expect(installSource("o/skills")).toBe("o/skills");
+    expect(installSource("o/skills", "")).toBe("o/skills");
+    expect(installSource("o/skills", "v2")).toBe("https://github.com/o/skills/tree/v2");
+    expect(installSource("o/skills", "feature/x")).toBe(
+      "https://github.com/o/skills/tree/feature%2Fx",
+    );
   });
 });

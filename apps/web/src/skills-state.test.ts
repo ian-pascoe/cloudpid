@@ -383,6 +383,31 @@ describe("installing from the Skill directory", () => {
     }),
   );
 
+  it.effect("installs at the ref a page names, as a GitHub tree URL", () =>
+    Effect.gen(function* () {
+      const { handlers, installs } = directory();
+      const registry = registryWith(handlers);
+
+      registry.mount(installToTargetAtom);
+      registry.set(installToTargetAtom, {
+        target: "*",
+        source: "mattpocock/skills",
+        skills: ["tdd"],
+        ref: "feature/x",
+      });
+      yield* settled(registry, installToTargetAtom);
+
+      expect(installs).toEqual([
+        {
+          environment: "*",
+          source: "https://github.com/mattpocock/skills/tree/feature%2Fx",
+          skills: ["tdd"],
+        },
+      ]);
+      registry.dispose();
+    }),
+  );
+
   it.effect("says why an install failed", () =>
     Effect.gen(function* () {
       const registry = registryWith({

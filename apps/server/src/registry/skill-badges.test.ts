@@ -64,6 +64,45 @@ describe("installedIn", () => {
     expect(installedIn(installed, { repo: "o/one", skillId: "another" })).toBeUndefined();
   });
 
+  it("finds a Skill whose folder is not named like it, by the name skills.sh lists it under", () => {
+    // vercel-labs/agent-skills keeps vercel-react-best-practices in skills/react-best-practices/.
+    const installed = [
+      ref("*", "vercel-labs/agent-skills", "skills/react-best-practices", {
+        name: "vercel-react-best-practices",
+      }),
+    ];
+
+    expect(
+      installedIn(installed, {
+        repo: "vercel-labs/agent-skills",
+        skillId: "vercel-react-best-practices",
+      }),
+    ).toMatchObject({ everyEnvironment: true });
+    // Its folder's name finds it too, as an install resolves it; another Skill of the repo is not it.
+    expect(
+      installedIn(installed, { repo: "vercel-labs/agent-skills", skillId: "react-best-practices" }),
+    ).toMatchObject({ everyEnvironment: true });
+    expect(
+      installedIn(installed, { repo: "vercel-labs/agent-skills", skillId: "composition-patterns" }),
+    ).toBeUndefined();
+  });
+
+  it("prefers the Skill of that name over one whose folder is named so, as an install does", () => {
+    const installed = [
+      ref("*", "o/skills", "a/foo", { name: "bar" }),
+      ref("work", "o/skills", "b/baz", { name: "foo" }),
+    ];
+
+    expect(installedIn(installed, { repo: "o/skills", skillId: "foo" })).toEqual({
+      everyEnvironment: false,
+      environments: ["work"],
+      updateAvailable: false,
+    });
+    expect(installedIn(installed, { repo: "o/skills", skillId: "bar" })).toMatchObject({
+      everyEnvironment: true,
+    });
+  });
+
   it("matches a path exactly when the list knows it", () => {
     const installed = [ref("*", "o/skills", "a/tdd"), ref("work", "o/skills", "b/tdd")];
 

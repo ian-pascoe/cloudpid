@@ -16,21 +16,37 @@ import * as Effect from "effect/Effect";
 /** How the page searches for Skills: what it found, or why it could not. Never fails. */
 export type SkillSearcher = (query: string) => Effect.Effect<SkillSearch>;
 
+/**
+ * A `SkillSearcher` over skills.sh, asking for `limit` results (at most `max`) with `ask`: the Skills page's search of the
+ * Installed tab's form (the tool's defaults), and the Skill directory's (200).
+ */
+export const skillSearcher =
+  ({
+    ask = fetch,
+    limit,
+    max,
+  }: {
+    readonly ask?: typeof fetch;
+    readonly limit?: number;
+    readonly max?: number;
+  } = {}): SkillSearcher =>
+  (query) =>
+    Effect.promise(async (): Promise<SkillSearch> => {
+      const problem = queryProblem(query);
+
+      if (problem !== undefined) return { ok: false, message: problem };
+
+      try {
+        const response = await ask(skillSearchUrl(query.trim(), limit, max), {
+          headers: SEARCH_HEADERS,
+          signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+        });
+
+        return await readSkillSearch(response);
+      } catch (cause) {
+        return skillSearchUnreachable(cause);
+      }
+    });
+
 /** `SkillSearcher` over skills.sh. */
-export const searchSkillsSh: SkillSearcher = (query) =>
-  Effect.promise(async (): Promise<SkillSearch> => {
-    const problem = queryProblem(query);
-
-    if (problem !== undefined) return { ok: false, message: problem };
-
-    try {
-      const response = await fetch(skillSearchUrl(query.trim()), {
-        headers: SEARCH_HEADERS,
-        signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-      });
-
-      return await readSkillSearch(response);
-    } catch (cause) {
-      return skillSearchUnreachable(cause);
-    }
-  });
+export const searchSkillsSh: SkillSearcher = skillSearcher();

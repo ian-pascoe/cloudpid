@@ -295,7 +295,10 @@ export const DirectorySkill = Schema.Struct({
   /** Its ID in the source: what an install names to take only this Skill. */
   skillId: Schema.String,
   name: Schema.String,
-  /** Its installs, all time. */
+  /**
+   * Its installs as skills.sh counts them for the list it is in: all time (All time), the last 24 hours (Trending), or today
+   * (Hot, with `installsYesterday` and `change`); a search answers all time.
+   */
   installs: Schema.Finite,
   /** Hot only: its installs yesterday, and the change from the day before. */
   installsYesterday: Schema.optionalKey(Schema.Finite),

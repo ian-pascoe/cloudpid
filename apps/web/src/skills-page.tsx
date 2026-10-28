@@ -34,8 +34,11 @@ const TAB_LABELS: Readonly<Record<SkillsTab, string>> = {
   hot: "Hot",
 };
 
-/** The page's frame: the back button a phone needs, the title, and what the page shows. */
-const SkillsFrame = ({ title, children }: { title: string; children: ReactNode }) => (
+/**
+ * The page's frame: the back button a phone needs, the title, and what the page shows, and the install target picker (`skills-install-dialog.tsx`)
+ * that every page of `/skills` shares.
+ */
+export const SkillsFrame = ({ title, children }: { title: string; children: ReactNode }) => (
   // `relative` makes the scroller the containing block of the `sr-only` labels in the forms, as on the Environments page.
   <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">

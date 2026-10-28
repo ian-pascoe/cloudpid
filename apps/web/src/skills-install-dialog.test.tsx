@@ -8,9 +8,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { environmentsAtom } from "./environments-state.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import { InstallSkillsDialog } from "./skills-install-dialog.tsx";
-import { skillsToInstallAtom } from "./skills-state.ts";
+import { skillsToInstallAtom, type SkillsToInstall } from "./skills-state.ts";
 
-const render = (pending: { source: string; skills: ReadonlyArray<string> } | null) =>
+const render = (pending: SkillsToInstall | null) =>
   Effect.gen(function* () {
     const registry = registryWith({
       listEnvironments: () =>
@@ -48,6 +48,17 @@ describe("the install target picker", () => {
       expect(markup).toContain("Only this skill is");
       expect(markup).toContain("no approval is asked");
       expect(markup).toContain(">Install</button>");
+    }),
+  );
+
+  it.effect("says which ref it installs from, or the default branch", () =>
+    Effect.gen(function* () {
+      const named = yield* render({ source: "o/skills", skills: ["a"], ref: "v2" });
+      const none = yield* render({ source: "o/skills", skills: ["a"] });
+
+      expect(named).toContain("latest commit of <span");
+      expect(named).toContain(">v2</span>");
+      expect(none).toContain("its default branch");
     }),
   );
 

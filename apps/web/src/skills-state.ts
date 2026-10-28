@@ -15,6 +15,7 @@ import { changing, RegistryClient } from "./registry.ts";
 import { skillsParamsAtom, type SkillsTab } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { visibleTickAtom } from "./sessions.ts";
+import { installSource } from "./skills.ts";
 
 /**
  * Whether any Environment, or every Environment, keeps a Skill: asked once while the Skills page is open, never again,
@@ -224,11 +225,7 @@ export const skillDirectoryPageKey = (
  * to show the new badge.
  */
 export const skillDirectoryPageAtom = Atom.family(({ view, page }: SkillDirectoryPageKey) =>
-  RegistryClient.query(
-    "listSkillDirectory",
-    { view, page },
-    { reactivityKeys: ["skill-directory"] },
-  ),
+  RegistryClient.query("listSkillDirectory", { view, page }, { reactivityKeys: ["skill-badges"] }),
 );
 
 /** How many pages of list `view` the page shows: one, and one more for each Load more. */
@@ -236,7 +233,7 @@ export const skillDirectoryPagesAtom = Atom.family((_view: SkillDirectoryView) =
 
 /** What skills.sh finds for `query` (at most 200, fuzzy), each result saying where its Skill is installed. */
 export const skillDirectorySearchAtom = Atom.family((query: string) =>
-  RegistryClient.query("searchSkillDirectory", { query }, { reactivityKeys: ["skill-directory"] }),
+  RegistryClient.query("searchSkillDirectory", { query }, { reactivityKeys: ["skill-badges"] }),
 );
 
 /** The Skills an install is being picked a target for: their source, and the IDs in it to install (never the whole repo). */
@@ -245,6 +242,8 @@ export interface SkillsToInstall {
   readonly source: string;
   /** The Skills of the source to install, by ID; only these are installed, whatever else the source holds. */
   readonly skills: ReadonlyArray<string>;
+  /** The branch, tag or commit to install at (a repo's or a Skill's page `?ref=`); absent: the repo's default branch. */
+  readonly ref?: string | undefined;
 }
 
 /**
@@ -260,12 +259,17 @@ export interface SkillInstallToTarget extends SkillsToInstall {
 
 /**
  * Install the picked Skills of a source into `target`, on the owner's word (no Approval, and no Agent change), through the
- * same RPC as the Installed tab's form. It names the Skills, so a source that holds several installs only those. The Skill
- * directory's rows and the target's Skills ask again, so the badge updates.
+ * same RPC as the Installed tab's form, at `ref` when one is named. It names the Skills, so a source that holds several
+ * installs only those. The target's Skills and every query that reads the `skill-badges` key (the Skill directory's rows,
+ * and a repo's or a Skill's page, which put their badge queries on that key) ask again, so the badges update.
  */
 export const installToTargetAtom = appRuntime.fn(
-  ({ target, source, skills }: SkillInstallToTarget) =>
+  ({ target, source, skills, ref }: SkillInstallToTarget) =>
     RegistryClient.use((registry) =>
-      registry("installEnvironmentSkills", { environment: target, source: source.trim(), skills }),
-    ).pipe(changing([`environment-skills:${target}`, "skill-directory"])),
+      registry("installEnvironmentSkills", {
+        environment: target,
+        source: installSource(source, ref),
+        skills,
+      }),
+    ).pipe(changing([`environment-skills:${target}`, "skill-badges"])),
 );

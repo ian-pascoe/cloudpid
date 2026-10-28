@@ -3,7 +3,9 @@
 // The install target picker (ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the dialog every place
 // that offers Install opens, a row of a Skill directory list, a repo's selected Skills, a Skill's page. It asks where to
 // install, Every environment (the default) or one Environment, and installs only the Skills the page named, through the
-// owner's install: no Approval, and no Agent change. A page opens it by setting `skillsToInstallAtom`, and mounts it once.
+// owner's install: no Approval, and no Agent change. A page opens it by setting `skillsToInstallAtom` (with the `ref` its
+// `?ref=` names, if any). `SkillsFrame` (skills-page.tsx) mounts it, so every page that renders through the frame, which
+// all of `/skills` and the pages below it do, has it; a page that does not must mount it itself.
 
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
@@ -30,15 +32,20 @@ const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close
   const [target, setTarget] = useState(EVERY_ENVIRONMENT);
   const answer = installed.pipe(AsyncResult.value, Option.getOrNull);
   const busy = installed.waiting;
-  // An answer that kept a Skill ends the picking; one that did not (every Skill refused) leaves it to try another target.
-  const done = answer !== null && answer.status === "installed";
+
+  // An answer that kept a Skill, or found it kept already, ends the picking; one where every Skill was refused leaves it
+  // open to try another target.
+  const done =
+    answer !== null &&
+    answer.status === "installed" &&
+    answer.skills.some(({ outcome }) => outcome !== "rejected");
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
 
     if (busy || done) return;
 
-    install({ target, source: pending.source, skills: pending.skills });
+    install({ target, ...pending });
   };
 
   return (
@@ -61,8 +68,13 @@ const InstallTargetForm = ({ pending, close }: { pending: SkillsToInstall; close
         </NativeSelect>
       </label>
       <p className="text-xs text-muted-foreground">
-        From <span className="font-mono">{pending.source}</span>, pinned to its latest commit.{" "}
-        {pending.skills.length === 1 ? "Only this skill is" : "Only the picked skills are"}{" "}
+        From <span className="font-mono">{pending.source}</span>, pinned to the latest commit of{" "}
+        {pending.ref === undefined ? (
+          "its default branch"
+        ) : (
+          <span className="font-mono">{pending.ref}</span>
+        )}
+        . {pending.skills.length === 1 ? "Only this skill is" : "Only the picked skills are"}{" "}
         installed, whatever else the source holds. It is your own change: no approval is asked and
         the agent records nothing.
       </p>

@@ -15,7 +15,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
-import { installedIn } from "./skill-badges.ts";
+import { installedIn, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import {
   contentHash,
@@ -867,13 +867,7 @@ describe("the Skill directory's badges over installed Skills", () => {
       await install(readerOf(REPO), { source: "o/skills@grill-me", owner: true });
       await install(readerOf(REPO), { source: "o/skills@tdd", owner: true });
 
-      const installed = skills
-        .listSourced()
-        .flatMap(({ scope, name, source, updateAvailable }) =>
-          source === null
-            ? []
-            : [{ scope, name, repo: source.repo, path: source.path, updateAvailable }],
-        );
+      const installed = installedSkillRefs(skills);
 
       return [
         installedIn(installed, { repo: "O/Skills", skillId: "grill-me" }),

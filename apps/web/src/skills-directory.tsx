@@ -6,7 +6,11 @@
 // installed here, links to its pages, and has Install, which opens the target picker. skills.sh being down is a plain
 // error here; the Installed tab does not depend on it.
 
-import type { DirectorySkill, SkillDirectoryView } from "@cloudpid/protocol";
+import {
+  type DirectorySkill,
+  SKILL_DIRECTORY_PAGE_SIZE,
+  type SkillDirectoryView,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -244,7 +248,7 @@ const DirectoryPage = ({ view, page }: { view: SkillDirectoryView; page: number 
         <DirectoryRow
           key={`${skill.source}/${skill.skillId}`}
           skill={skill}
-          rank={page * 200 + at + 1}
+          rank={page * SKILL_DIRECTORY_PAGE_SIZE + at + 1}
         />
       ))}
     </>

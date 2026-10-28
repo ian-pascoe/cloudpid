@@ -40,7 +40,7 @@ import {
   skillSetOf,
   unapprovedEveryChange,
 } from "./skills.ts";
-import type { InstalledSkillRef } from "./skill-badges.ts";
+import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
@@ -1301,14 +1301,7 @@ export const RegistryLive = Registry.make(
             }),
           skillFiles: ({ environment, name }) =>
             Effect.sync(() => keptSkillFiles(skills, environment, name)),
-          installedSkills: () =>
-            Effect.sync(() =>
-              Arr.flatMap(skills.listSourced(), ({ scope, name, source, updateAvailable }) =>
-                source === null
-                  ? []
-                  : [{ scope, name, repo: source.repo, path: source.path, updateAvailable }],
-              ),
-            ),
+          installedSkills: () => Effect.sync(() => installedSkillRefs(skills)),
           workspaceSkillSet: ({ environment }) =>
             Effect.suspend(() =>
               store.getEnvironment(environment) === null

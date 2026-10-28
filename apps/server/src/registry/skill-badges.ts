@@ -5,6 +5,7 @@
 // Skills, a Skill's page) answers them the same way. A copy matches by its Skill source's repo and path, not by name alone.
 import type { SkillInstalledIn } from "@cloudpid/protocol";
 import { slug } from "../github/skill-fetch.ts";
+import type { Skills } from "./skills.ts";
 
 /** One installed Skill that has a Skill source: where it is kept, and where it came from. */
 export type InstalledSkillRef = {
@@ -26,20 +27,28 @@ export type WantedSkill =
 const folderName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 
 /**
- * Whether installed Skill `ref` is the Skill `wanted`: the same repo (GitHub's names ignore case) and the same folder. The
- * Skill directory's rows (skills.sh's leaderboards and search) name a Skill by its ID in the source, not its folder, so
- * there a copy counts when its folder is named so, or, for a Skill at the repo's root, which has no folder name, when its
- * name is: how an install finds the Skill `skills: [skillId]` names.
+ * The kept copies that are the Skill `wanted`, in the same repo (GitHub's names ignore case). With a folder, the copy in
+ * exactly that folder. With only the Skill's ID in the source (skills.sh's leaderboards and search name a Skill by its
+ * SKILL.md name, which is not always its folder's), as an install resolves the ID (`skills: [skillId]`, `skill-fetch.ts`):
+ * the copies of that name, else those in a folder named so, so that a row and its install agree and two Skills of a repo
+ * do not share a badge.
  */
-const matches = (ref: InstalledSkillRef, wanted: WantedSkill): boolean => {
-  if (ref.repo.toLowerCase() !== wanted.repo.toLowerCase()) return false;
+const copiesOf = (
+  installed: ReadonlyArray<InstalledSkillRef>,
+  wanted: WantedSkill,
+): ReadonlyArray<InstalledSkillRef> => {
+  const repo = wanted.repo.toLowerCase();
+  const inRepo = installed.filter((ref) => ref.repo.toLowerCase() === repo);
 
-  if ("path" in wanted) return ref.path === wanted.path;
+  if ("path" in wanted) return inRepo.filter((ref) => ref.path === wanted.path);
 
   const id = slug(wanted.skillId);
-  const folder = slug(folderName(ref.path));
 
-  return folder === "" ? slug(ref.name) === id : folder === id;
+  if (id === "") return [];
+
+  const named = inRepo.filter((ref) => slug(ref.name) === id);
+
+  return named.length > 0 ? named : inRepo.filter((ref) => slug(folderName(ref.path)) === id);
 };
 
 /** Where the Skill `wanted` is installed according to `installed`, or undefined when nowhere. */
@@ -47,7 +56,7 @@ export const installedIn = (
   installed: ReadonlyArray<InstalledSkillRef>,
   wanted: WantedSkill,
 ): SkillInstalledIn | undefined => {
-  const found = installed.filter((ref) => matches(ref, wanted));
+  const found = copiesOf(installed, wanted);
 
   if (found.length === 0) return undefined;
 
@@ -61,6 +70,18 @@ export const installedIn = (
     updateAvailable: found.some(({ updateAvailable }) => updateAvailable),
   };
 };
+
+/** The Skills the Registry keeps that have a Skill source, in any scope, as the badges read them. */
+export const installedSkillRefs = (
+  skills: Pick<Skills, "listSourced">,
+): ReadonlyArray<InstalledSkillRef> =>
+  skills
+    .listSourced()
+    .flatMap(({ scope, name, source, updateAvailable }) =>
+      source === null
+        ? []
+        : [{ scope, name, repo: source.repo, path: source.path, updateAvailable }],
+    );
 
 /** `rows` of the Skill directory, each with where its Skill is installed (none: no `installed`). */
 export const withInstalled = <Row extends { readonly source: string; readonly skillId: string }>(
