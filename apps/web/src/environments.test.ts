@@ -637,14 +637,20 @@ describe("a Skill's source and the outcome of an install", () => {
       updateOutcomeLines([
         { name: "a", outcome: "updated" },
         { name: "b", outcome: "unchanged" },
-        { name: "c", outcome: "modified", message: "set overwrite to replace the edits" },
+        {
+          name: "c",
+          outcome: "modified",
+          message: "it was edited, and an update would replace the edits",
+        },
+        { name: "c2", outcome: "modified" },
         { name: "d", outcome: "rejected", message: "GitHub's rate limit is used up" },
         { name: "e", outcome: "rejected" },
       ]),
     ).toEqual([
       "a: updated to the latest commit",
       "b: already up to date, nothing changed",
-      "c: not updated, it was edited since it was installed: set overwrite to replace the edits",
+      "c: not updated: it was edited, and an update would replace the edits",
+      "c2: not updated: it was edited since it was installed",
       "d: not updated: GitHub's rate limit is used up",
       "e: not updated",
     ]);

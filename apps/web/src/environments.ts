@@ -381,7 +381,7 @@ export const updateOutcomeLines = (skills: SkillUpdate["skills"]): ReadonlyArray
       case "unchanged":
         return `${name}: already up to date, nothing changed`;
       case "modified":
-        return `${name}: not updated, it was edited since it was installed${message === undefined ? "" : `: ${message}`}`;
+        return `${name}: not updated: ${message ?? "it was edited since it was installed"}`;
       case "rejected":
         return `${name}: not updated${message === undefined ? "" : `: ${message}`}`;
     }

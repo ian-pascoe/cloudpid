@@ -18,6 +18,7 @@ import {
   previewSkillUpdates,
   runDailySkillCheck,
   SKILL_CHECK_DOCUMENT,
+  SKILL_CHECK_INTERVAL_MS,
   type UpdatePin,
   updateSkills,
 } from "./skill-updates.ts";
@@ -188,7 +189,7 @@ const inRegistry = <A>(
     },
   );
 
-const DAY = 24 * 60 * 60_000;
+const DAY = SKILL_CHECK_INTERVAL_MS;
 
 describe("a save over an installed Skill", () => {
   it("keeps the source and marks the Skill modified, and a revert brings the mark back off", async () => {
@@ -343,7 +344,11 @@ describe("updating installed Skills", () => {
     expect(refused).toMatchObject({
       status: "done",
       results: [
-        { name: "grill-me", outcome: "modified", message: expect.stringContaining("overwrite") },
+        {
+          name: "grill-me",
+          outcome: "modified",
+          message: expect.stringContaining("would replace the edits"),
+        },
       ],
     });
     expect(overwritten.kept).toMatchObject({ modified: true });
@@ -357,6 +362,36 @@ describe("updating installed Skills", () => {
       files: original?.files,
       source: original?.source,
     });
+  });
+
+  it("leaves the hash and mark of a Skill reverted to another commit to the next check, which records them again", async () => {
+    const github = fakeGithub();
+
+    github.push(REPO, files());
+
+    const [reverted, afterCheck] = await inRegistry(
+      async ({ install, update, revert, check, skills, changes }) => {
+        await install(REPO);
+        github.push(REPO, files({}, "New steps."));
+        await update({ environment: DEFAULT_ENVIRONMENT, names: ["grill-me"] });
+
+        const change = changes.list(DEFAULT_ENVIRONMENT)[0];
+
+        revert(change?.id ?? -1);
+
+        const right = skills.get(DEFAULT_ENVIRONMENT, "grill-me");
+
+        await check();
+
+        return [right, skills.get(DEFAULT_ENVIRONMENT, "grill-me")] as const;
+      },
+      github,
+    );
+
+    // Back at the first commit: nothing is assumed of the ref until the check has looked.
+    expect(reverted).toMatchObject({ updateAvailable: false, folderHash: null });
+    // The check records the hash from the tree at that commit, and finds the ref has moved on.
+    expect(afterCheck).toMatchObject({ updateAvailable: true, folderHash: expect.any(String) });
   });
 
   it("updates only the Skills marked update available when none is named, and says when none is", async () => {
@@ -862,6 +897,130 @@ describe("the daily check", () => {
       ["last", true],
       ["tdd", false],
     ]);
+  });
+
+  it("leaves alone only the Skill whose installed commit GitHub no longer has, and compares the others", async () => {
+    const github = fakeGithub();
+    const installed = github.push(REPO, files());
+
+    const [result, marks] = await inRegistry(async ({ install, check, skills, storage }) => {
+      await install(REPO);
+      // Kept before the digest was recorded: its folder is read from the tree at its commit.
+      storage.sql.exec("UPDATE skills SET folder_hash = NULL WHERE name = 'grill-me'");
+      github.push(REPO, files({ "skills/tdd/SKILL.md": skillMd("tdd", "New.") }));
+      github.forget(installed);
+
+      return [
+        await check(),
+        skills.list(DEFAULT_ENVIRONMENT).map((skill) => [skill.name, skill.updateAvailable]),
+      ] as const;
+    }, github);
+
+    expect(result).toMatchObject({
+      checked: 1,
+      marked: 1,
+      rateLimited: false,
+      problems: [
+        expect.stringContaining(
+          "grill-me: its folder at the installed commit could not be read: GitHub has no commit",
+        ),
+      ],
+    });
+    expect(marks).toEqual([
+      ["grill-me", false],
+      ["tdd", true],
+    ]);
+  });
+
+  it("tries again in an hour after an error that is not GitHub's answer, not tomorrow", async () => {
+    const github = fakeGithub();
+
+    github.push(REPO, files());
+
+    const [failed, early, later] = await inRegistry(async ({ install, daily }) => {
+      await install(REPO);
+      github.fail(REPO, new Error("boom"));
+
+      let failure: Error | undefined;
+
+      try {
+        await daily(10 * DAY);
+      } catch (cause) {
+        failure = cause instanceof Error ? cause : undefined;
+      }
+
+      github.fail(REPO, undefined);
+
+      return [
+        failure,
+        await daily(10 * DAY + 30 * 60_000),
+        await daily(10 * DAY + 60 * 60_000),
+      ] as const;
+    }, github);
+
+    expect(failed).toEqual(new Error("boom"));
+    expect(early).toBeUndefined();
+    expect(later).toMatchObject({ checked: 2 });
+  });
+
+  it("refuses, before the owner is asked, an update that would take a Skill set past its limits", async () => {
+    const github = fakeGithub();
+
+    github.push(REPO, files());
+
+    const [view, skill] = await inRegistry(async ({ install, preview, skills }) => {
+      await install(REPO, { environment: "*" });
+
+      // The Environment's own Skills take 7.5 MB of the set's 8: an update to a Skill of 940 KB would pass it there.
+      for (let at = 0; at < 8; at += 1) {
+        const own = {
+          "SKILL.md": skillMd(`big-${at}`),
+          ...Object.fromEntries(
+            Array.from({ length: 8 }, (_, part) => [`part-${part}.md`, "x".repeat(117_000)]),
+          ),
+        };
+
+        const hashed = await hashFiles(own);
+
+        skills.put(
+          DEFAULT_ENVIRONMENT,
+          {
+            name: `big-${at}`,
+            description: `What big-${at} does.`,
+            files: hashed.files,
+            source: null,
+          },
+          hashed.contents,
+          1_000,
+        );
+      }
+
+      const grown = Object.fromEntries(
+        Array.from({ length: 8 }, (_, part) => [
+          `skills/grill-me/part-${part}.md`,
+          "y".repeat(117_000),
+        ]),
+      );
+
+      github.push(REPO, files(grown));
+
+      return [
+        await preview({ environment: "*", names: ["grill-me"] }),
+        skills.get("*", "grill-me"),
+      ] as const;
+    }, github);
+
+    expect(view).toMatchObject({
+      status: "done",
+      results: [
+        {
+          name: "grill-me",
+          outcome: "rejected",
+          message: expect.stringContaining("more than the 8388608 a set may"),
+        },
+      ],
+    });
+    expect(skill?.source?.commit).toBeDefined();
   });
 
   it("applies nothing: the Skills' files and sources stay as they were", async () => {

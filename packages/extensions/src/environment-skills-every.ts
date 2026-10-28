@@ -41,7 +41,7 @@ export const SKILL_APPROVAL =
 export const MAX_CARD_CHARS = 16_000;
 
 /** What the card showed of a Skill's files, and what of them it did not. */
-export type Card = {
+type Card = {
   /** The Skill as the card's _After_ shows it: its description and files, between a warning when anything is cut. */
   readonly after: string;
   /** What the card could not show: null when it showed everything. */

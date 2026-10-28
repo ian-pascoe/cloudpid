@@ -528,7 +528,8 @@ export type RegistryMethods = {
   }) => Effect.Effect<SkillUpdates>;
   /**
    * The daily check of the installed Skills (`checkSkillUpdates`): once a day at most, one request for each repo and ref the
-   * Skills of every scope came from, marking those whose folder changed. Applies nothing, tells nobody, and never fails:
+   * Skills of every scope came from (and one more for the tree at the installed commit of Skills kept before their hash was
+   * recorded), marking those whose folder changed. Applies nothing, tells nobody, and never fails:
    * what GitHub refuses is logged and the marks are left as they are.
    */
   readonly checkSkillUpdates: () => Effect.Effect<void>;
@@ -1240,13 +1241,17 @@ export const RegistryLive = Registry.make(
           updateSkills: ({ environment, names, overwrite }) =>
             updateFromGithub({ environment, names, overwrite, pins: undefined, author: null }),
           previewSkillUpdates: ({ environment, names, overwrite }) =>
-            Effect.promise(() =>
-              previewSkillUpdates({ store, skills }, skillReader, {
-                environment,
-                names,
-                overwrite,
-              }),
-            ),
+            Effect.gen(function* () {
+              const hashedBundle = yield* bundle;
+
+              return yield* Effect.promise(() =>
+                previewSkillUpdates({ store, skills, bundle: hashedBundle }, skillReader, {
+                  environment,
+                  names,
+                  overwrite,
+                }),
+              );
+            }),
           checkSkillUpdates: () => checkInstalledSkills,
           listSkills: ({ environment }) =>
             Effect.sync(() =>

@@ -245,7 +245,7 @@ A directory with a `SKILL.md` (name, description, instructions) and supporting f
 _Avoid_: Plugin, command, global Skill (say: for every Environment), Bundled Skill (cloudpid is to ship none: ADR-0026)
 
 **Skill source**:
-Where a Skill was installed from: a GitHub repo, the Skill's path in it, the ref named and the commit it was fetched at. An update fetches the Skill again at the ref's latest commit; until then it changes only when the agent edits it, which makes it **modified**. A Skill is marked **update available** when its ref has moved on. A Skill the agent wrote has none.
+Where a Skill was installed from: a GitHub repo, the Skill's path in it, the ref named and the commit it was fetched at. An update fetches the Skill again at the ref's latest commit; until then it changes only when the agent edits it, which makes it **modified**. A Skill is marked **update available** when the daily check finds that the files it installs have changed at its ref's head; a ref that moved without touching its folder does not mark it, and a Skill pinned to a tag shows an update only if the tag moves. A check only marks: nothing is applied until the owner or the agent updates. A Skill the agent wrote has none.
 _Avoid_: Upstream (alone), origin, registry
 
 **Skill set**:

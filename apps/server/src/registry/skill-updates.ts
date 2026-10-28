@@ -5,7 +5,7 @@
 // before and after, so a revert brings back the earlier commit and the edits an overwrite replaced; the owner's, from the
 // Environments page, is the owner's save and records none. The daily check (`checkSkillUpdates`) only reads GitHub, one
 // request for each repo and ref, and marks the Skills whose folder changed at the ref's head; it applies nothing.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off globalDate:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- GitHub is read through a Promise API, and the reads and the checks run over native arrays.
 import type { AgentChange, SkillSource } from "@cloudpid/protocol";
 import {
   fetchSkillsAt,
@@ -20,6 +20,7 @@ import { scopeOf } from "./secret-changes.ts";
 import {
   hashFiles,
   keepSkillAsOwner,
+  previewSkillSave,
   sameFiles,
   saveSkillAs,
   type SkillChangeContext,
@@ -68,7 +69,7 @@ export type ReadyUpdate = {
   readonly description: string;
   readonly files: SkillFiles;
   readonly folderHash: string;
-  /** When the Skill is kept was saved: an approved update is made only while it still was then. */
+  /** When the Skill kept was last saved: an approved update is made only while it still was then. */
   readonly savedAt: number;
   /** The Skill is modified: the update would replace the agent's edits. */
   readonly overwrites: boolean;
@@ -191,8 +192,7 @@ const plan = async (
       settled.push({
         name,
         outcome: "modified",
-        message:
-          "it was edited since it was installed, and an update would replace the edits: update it again with overwrite to replace them",
+        message: "it was edited since it was installed, and an update would replace the edits",
       });
     } else if (pinned.has(name) && pinned.get(name)?.savedAt !== skill.savedAt) {
       settled.push({
@@ -308,7 +308,7 @@ const ordered = <Entry extends { readonly name: string }>(
  * the owner's Approval card of an update for every Environment.
  */
 export const previewSkillUpdates = async (
-  context: Pick<SkillChangeContext, "store" | "skills">,
+  context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
   reader: RepoReader,
   request: UpdateRequest,
 ): Promise<SkillUpdatePreview> => {
@@ -323,15 +323,27 @@ export const previewSkillUpdates = async (
     environment,
     results: ordered<UpdateEntry | ReadyUpdate>(order, [
       ...settled,
-      ...candidates.map(({ read, same, skill }): UpdateEntry | ReadyUpdate =>
-        same
-          ? {
-              name: skill.name,
-              outcome: "unchanged",
-              message: "its folder is the same at the ref's latest commit",
-            }
-          : read,
-      ),
+      ...candidates.map(({ read, same, skill, hashed }): UpdateEntry | ReadyUpdate => {
+        if (same) {
+          return {
+            name: skill.name,
+            outcome: "unchanged",
+            message: "its folder is the same at the ref's latest commit",
+          };
+        }
+
+        // The caps are checked before the owner is asked, as a save's are: against the sets the update would make.
+        const checked = previewSkillSave(context, {
+          environment: request.environment,
+          folder: skill.name,
+          files: read.files,
+          hashed,
+        });
+
+        return checked.status === "rejected"
+          ? { name: skill.name, outcome: "rejected", message: checked.message }
+          : read;
+      }),
     ]),
   };
 };
@@ -540,14 +552,28 @@ export const checkSkillUpdates = async (
             installedTrees.set(treeKey, tree);
           }
 
-          const at = await tree;
+          // A commit GitHub no longer has (a force-push) leaves this Skill alone, not the others of the repo and ref.
+          let why = "";
 
-          const atMd = at.truncated
-            ? undefined
-            : skillMdIn({ tree: at.entries }, skill.source.path);
+          const at = await tree.catch((cause: unknown) => {
+            if (Schema.is(GithubReadError)(cause) && cause.kind !== "rate_limited") {
+              why = `: ${cause.message}`;
 
-          if (atMd === undefined) {
-            problems.push(`${skill.name}: its folder at the installed commit could not be read`);
+              return undefined;
+            }
+
+            throw cause;
+          });
+
+          const atMd =
+            at === undefined || at.truncated
+              ? undefined
+              : skillMdIn({ tree: at.entries }, skill.source.path);
+
+          if (at === undefined || atMd === undefined) {
+            problems.push(
+              `${skill.name}: its folder at the installed commit could not be read${why}`,
+            );
             continue;
           }
 
@@ -607,15 +633,24 @@ export const runDailySkillCheck = async (
 
   documents.putDocument(SKILL_CHECK_DOCUMENT, String(now), now);
 
-  const check = await checkSkillUpdates(skills, reader);
-
-  if (check.rateLimited) {
+  const retrySoon = () => {
     documents.putDocument(
       SKILL_CHECK_DOCUMENT,
       String(now - SKILL_CHECK_INTERVAL_MS + SKILL_CHECK_RETRY_MS),
       now,
     );
-  }
+  };
 
-  return check;
+  try {
+    const check = await checkSkillUpdates(skills, reader);
+
+    if (check.rateLimited) retrySoon();
+
+    return check;
+  } catch (cause) {
+    // An error that is not GitHub's answer (the caller logs it) is tried again in an hour, not tomorrow.
+    retrySoon();
+
+    throw cause;
+  }
 };

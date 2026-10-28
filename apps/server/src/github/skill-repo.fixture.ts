@@ -24,7 +24,7 @@ export const fakeGithub = () => {
   /** The commit each `<repo>@<ref>` (a branch or a tag; `main` is the default branch) names. */
   const refs = new Map<string, string>();
   const requests: string[] = [];
-  const failures = new Map<string, GithubReadError>();
+  const failures = new Map<string, Error>();
   let next = 1;
 
   const key = ({ owner, name }: SkillRepo) => `${owner}/${name}`;
@@ -70,6 +70,10 @@ export const fakeGithub = () => {
       requests.push(`tree ${key(repo)}@${commit.slice(0, 7)}`);
       failing(repo);
 
+      if (!commits.has(commit)) {
+        throw GithubReadError.of("not_found", `GitHub has no commit ${commit} in ${key(repo)}`);
+      }
+
       return treeOf(commit);
     },
     headTree: async (repo, ref) => {
@@ -108,10 +112,14 @@ export const fakeGithub = () => {
 
       return commit;
     },
-    /** Make every request about `repo` fail as `failure`; `undefined` stops. */
-    fail: (repo: string, failure: GithubReadError | undefined) => {
+    /** Make every request about `repo` fail as `failure` (a `GithubReadError`, or any error); `undefined` stops. */
+    fail: (repo: string, failure: Error | undefined) => {
       if (failure === undefined) failures.delete(repo);
       else failures.set(repo, failure);
+    },
+    /** Lose a commit, as a force-push does: a tree asked at it is not found. */
+    forget: (commit: string) => {
+      commits.delete(commit);
     },
     /** Forget the requests made so far. */
     reset: () => {

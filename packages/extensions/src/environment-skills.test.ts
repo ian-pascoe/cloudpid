@@ -1731,6 +1731,64 @@ describe("environment_skill_update for every Environment", () => {
     expect(updates).toEqual([]);
   });
 
+  const pin = { name: "grill-me", savedAt: 1_234, commit: NEW_COMMIT, folderHash: "folder-hash-1" };
+
+  it("applies on a rerun what the owner approved, though GitHub shows nothing to ask about now", async () => {
+    const { call, answeredEarlier, updates, answerUpdate } = await setUp();
+
+    // The owner approved the update before the eviction; the rerun's preview finds the Skill gone from the list (unanswered).
+    await answeredEarlier(7, { overwrite: false, pins: [pin] });
+
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "updated",
+          from,
+          to,
+          overwrote: false,
+          change: installChange(4, "grill-me"),
+        },
+      ],
+      handed: false,
+    });
+
+    const { text: said, pending } = await call("environment_skill_update", args, {
+      approve: true,
+      task: 7,
+    });
+
+    expect(updates).toEqual([expect.objectContaining({ pins: [pin], approved: true })]);
+    expect(said).toContain("The user approved: updated grill-me");
+    expect(pending).toEqual([]);
+  });
+
+  it("reports an approved update a rerun finds made, as approved, with nothing more changed", async () => {
+    const { call, answeredEarlier, logged, answerUpdate } = await setUp();
+
+    await answeredEarlier(9, { overwrite: false, pins: [pin] });
+
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "unchanged",
+          message: "it already has these files from that commit",
+        },
+      ],
+      handed: false,
+    });
+
+    const { text: said } = await call("environment_skill_update", args, { approve: true, task: 9 });
+
+    expect(said).toContain("The user approved, and the Skills grill-me were updated already");
+    expect(logged).toEqual([]);
+  });
+
   it("asks nothing when none is marked update available", async () => {
     const { call, answerPreview } = await setUp();
 

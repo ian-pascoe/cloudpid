@@ -1272,9 +1272,9 @@ export const revertSkillChange = (
 
     const texts = skills.contents(Record.values(before));
 
-    // Back at an earlier commit than the Skill is at, the Skill has an update available again; at the same commit (a
-    // save's revert) the mark it has is kept. The folder's hash is that of its commit's: kept when the commit is, else
-    // recorded again by the next check.
+    // Back at the same commit (a save's revert) the folder's hash and the mark it has are kept. At another commit what
+    // they would be is not known (the ref may be anywhere from it), so they are left to the next check, which records the
+    // hash again from the tree at that commit and marks the Skill if its ref has moved.
     const sameCommit = current?.source?.commit === beforeSource?.commit;
 
     skills.put(
@@ -1286,14 +1286,7 @@ export const revertSkillChange = (
         source: beforeSource,
         modified: beforeModified,
         folderHash: sameCommit ? (current?.folderHash ?? null) : null,
-        updateAvailable:
-          beforeSource === null
-            ? false
-            : sameCommit
-              ? (current?.updateAvailable ?? false)
-              : current !== null &&
-                current.source !== null &&
-                beforeSource.repo === current.source.repo,
+        updateAvailable: sameCommit ? (current?.updateAvailable ?? false) : false,
       },
       texts,
       now,

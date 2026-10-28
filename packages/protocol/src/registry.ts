@@ -702,8 +702,9 @@ export class RegistryRpcs extends RpcGroup.make(
    * Update Skills kept for an Environment, or for every Environment (`*`), to the latest commit of each one's recorded ref
    * (ADR-0026): `names` the Skills (absent: every one marked update available), each fetched by the Registry as the GitHub
    * App and kept in place of itself with its new Skill source, unless the agent edited it (**modified**) and `overwrite` is
-   * not set. The owner's own save: not an Agent change, no Approval, not revertible. Fails with an `EnvironmentError`
-   * saying why when nothing could be tried (no such Environment, no Skill marked, GitHub not answering).
+   * not set. The owner's own save: not an Agent change, no Approval, not revertible. Answers how each Skill went
+   * (none when none is named and none is marked update available), and fails with an `EnvironmentError` when the
+   * Environment is not there.
    */
   Rpc.make("updateEnvironmentSkills", {
     payload: {

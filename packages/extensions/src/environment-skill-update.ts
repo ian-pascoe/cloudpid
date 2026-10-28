@@ -17,7 +17,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { askedBefore, approvedAlready, declined, withApproval } from "./approvals.ts";
 import type { ApprovalCall } from "./approvals.ts";
-import { EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
+import { type ChangedEnvironment, EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
 import { EVERY_ENVIRONMENT_ID } from "./environment-secret-marks.ts";
 import {
   asJsonValue,
@@ -28,6 +28,7 @@ import {
   type SkillUpdatePin,
   type SkillUpdateReady,
   type SkillUpdateResult,
+  type SkillUpdatesPreview,
   type SkillsUpdated,
 } from "./environment-skill-results.ts";
 import { cardOfSkills, MAX_CARD_CHARS, SKILL_APPROVAL } from "./environment-skills-every.ts";
@@ -68,7 +69,7 @@ const problemLines = (results: ReadonlyArray<SkillUpdateResult>): ReadonlyArray<
  * The result of an update, whatever it came to: the tool's own result, or its refusal when no Skill was moved or found
  * up to date. `scope` is the Environment the call named, or every Environment.
  */
-export const updatedOutcome = (
+const updatedOutcome = (
   updated: SkillsUpdated,
   {
     environments,
@@ -238,45 +239,51 @@ const updateEverywhere = (
   Effect.gen(function* () {
     const { environments, approvals, notFound } = deps;
     const rerun = yield* askedBefore(approvals, api);
+    const EVERY: ChangedEnvironment = { id: EVERY_ENVIRONMENT_ID, name: "every Environment" };
 
-    const previewed = yield* environments.previewUpdates({
+    // A rerun after an eviction asked already: what the owner was shown is in its request, and what they answered is
+    // applied at exactly that, so GitHub's answer now (a rate limit, a commit that is the head already) must not withdraw
+    // the request or hide that the update was made.
+    const previewing = environments.previewUpdates({
       environment: EVERY_ENVIRONMENT_ID,
       names,
       overwrite,
     });
 
-    // A rerun that no longer has an update to ask for asks nothing: its request, if still waiting, is withdrawn.
-    const nothing = (settled: SkillsUpdated) =>
-      Effect.gen(function* () {
-        if (rerun) yield* approvals.settle(String(api.taskId));
+    const previewed: SkillUpdatesPreview | undefined = rerun
+      ? Option.getOrUndefined(yield* Effect.option(previewing))
+      : yield* previewing;
 
-        return yield* updatedOutcome(settled, {
-          ...deps,
-          scope: EVERY_ENVIRONMENT_ID,
-          own: false,
-          approved: false,
-        });
+    // A call that asks nothing: its request, if one still waits, is withdrawn.
+    const nothing = (settled: SkillsUpdated) =>
+      updatedOutcome(settled, {
+        ...deps,
+        scope: EVERY_ENVIRONMENT_ID,
+        own: false,
+        approved: false,
       });
 
-    if (previewed.status === "missing") {
-      if (rerun) yield* approvals.settle(String(api.taskId));
+    if (!rerun) {
+      if (previewed === undefined || previewed.status === "missing") {
+        return yield* notFound(EVERY_ENVIRONMENT_ID);
+      }
 
-      return yield* notFound(EVERY_ENVIRONMENT_ID);
+      if (previewed.status === "nothing") return yield* nothing(previewed);
     }
 
-    if (previewed.status === "nothing") return yield* nothing(previewed);
+    const results = previewed?.status === "done" ? previewed.results : [];
 
     const ready = Arr.filter(
-      previewed.results,
+      results,
       (result): result is SkillUpdateReady => result.outcome === "ready",
     );
 
-    if (ready.length === 0) {
+    if (!rerun && ready.length === 0) {
       return yield* nothing({
         status: "done",
-        environment: previewed.environment,
+        environment: EVERY,
         results: Arr.filter(
-          previewed.results,
+          results,
           (result): result is SkillUpdateResult => result.outcome !== "ready",
         ),
         handed: false,
@@ -315,7 +322,7 @@ const updateEverywhere = (
           ),
           "\n",
         ),
-        after: `${leftOut(previewed.results)}${card.after}`,
+        after: `${leftOut(results)}${card.after}`,
         reason,
         // What the owner is shown: applied only at these commits, while each Skill was last saved as it is now.
         expected: { overwrite, pins },

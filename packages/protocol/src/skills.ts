@@ -54,10 +54,10 @@ export const EnvironmentSkill = Schema.Struct({
   source: Schema.optionalKey(SkillSource),
   /**
    * Whether the agent edited it since it was installed (GLOSSARY.md → Skill source): an update refuses it unless asked to
-   * overwrite. Absent when it is not.
+   * overwrite. False or absent when it is not.
    */
   modified: Schema.optionalKey(Schema.Boolean),
-  /** Whether the daily check found its folder changed at the ref's head: an update would move it. Absent when not. */
+  /** Whether the daily check found its folder changed at the ref's head: an update would move it. False or absent when not. */
   updateAvailable: Schema.optionalKey(Schema.Boolean),
 });
 
