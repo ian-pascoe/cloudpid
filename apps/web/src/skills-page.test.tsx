@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import type * as AsyncResult from "effect/reactivity/AsyncResult";
 import type * as Atom from "effect/reactivity/Atom";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
+import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { agentChangesAtom, environmentsAtom } from "./environments-state.ts";
 import { EnvironmentsPage } from "./environments-page.tsx";
@@ -107,29 +108,46 @@ const settle = (
 
 const scopes = ["*", "default", "work"];
 
-/** The Skills page at `search`, once the Environments, the Skills and their Agent changes have loaded. */
-const renderSkills = (search: string) =>
+/**
+ * `page` rendered at the query `search`, once the Environments, the Sessions, every scope's Skills and Agent changes, and
+ * the `more` atoms have loaded; `before` sets what the owner has open first.
+ */
+const render = (
+  page: ReactElement,
+  {
+    search = "",
+    more = [],
+    before,
+  }: {
+    search?: string;
+    more?: ReadonlyArray<Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>;
+    before?: (registry: AtomRegistry.AtomRegistry) => void;
+  } = {},
+) =>
   Effect.gen(function* () {
     const registry = registryWith(HANDLERS);
 
     registry.set(searchAtom, search);
+    before?.(registry);
     yield* settle(registry, [
       environmentsAtom,
       sessionsAtom,
       ...scopes.map((scope) => environmentSkillsAtom(scope)),
       ...scopes.map((scope) => agentChangesAtom(scope)),
+      ...more,
     ]);
 
     const markup = renderToStaticMarkup(
-      <RegistryContext.Provider value={registry}>
-        <SkillsPage />
-      </RegistryContext.Provider>,
+      <RegistryContext.Provider value={registry}>{page}</RegistryContext.Provider>,
     );
 
     registry.dispose();
 
     return markup;
   });
+
+/** The Skills page at the query `search`. */
+const renderSkills = (search: string) => render(<SkillsPage />, { search });
 
 /** Each link of `markup`: its address (unescaped), its text, and whether it is the current page. */
 const links = (markup: string) =>
@@ -270,52 +288,16 @@ describe("the Installed tab", () => {
 
 /** The Installed tab with the files viewer of Skill `name` of `scope` open, once its files have loaded. */
 const viewer = (scope: string, name: string) =>
-  Effect.gen(function* () {
-    const registry = registryWith(HANDLERS);
-
-    registry.set(searchAtom, `?environment=${scope}`);
-    registry.set(skillFilesDialogAtom(scope), name);
-    yield* settle(registry, [
-      environmentsAtom,
-      sessionsAtom,
-      environmentSkillsAtom(scope),
-      environmentSkillsAtom("*"),
-      agentChangesAtom(scope),
-      keptSkillFilesAtom(skillKey(scope, name)),
-    ]);
-
-    const markup = renderToStaticMarkup(
-      <RegistryContext.Provider value={registry}>
-        <SkillsPage />
-      </RegistryContext.Provider>,
-    );
-
-    registry.dispose();
-
-    return markup;
+  render(<SkillsPage />, {
+    search: `?environment=${scope}`,
+    more: [keptSkillFilesAtom(skillKey(scope, name))],
+    before: (registry) => {
+      registry.set(skillFilesDialogAtom(scope), name);
+    },
   });
 
 describe("the Environments page", () => {
-  const renderEnvironments = Effect.gen(function* () {
-    const registry = registryWith(HANDLERS);
-
-    yield* settle(registry, [
-      environmentsAtom,
-      sessionsAtom,
-      ...scopes.map((scope) => environmentSkillsAtom(scope)),
-      ...scopes.map((scope) => agentChangesAtom(scope)),
-    ]);
-
-    const markup = renderToStaticMarkup(
-      <RegistryContext.Provider value={registry}>
-        <EnvironmentsPage />
-      </RegistryContext.Provider>,
-    );
-
-    registry.dispose();
-
-    return markup;
-  });
+  const renderEnvironments = render(<EnvironmentsPage />);
 
   it.effect("has one Skills line per Environment, linking to its Installed tab", () =>
     Effect.gen(function* () {
