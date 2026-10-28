@@ -1,4 +1,4 @@
-// The Container's Toolchains on the Workspace DO's side (docs/spec.md → Container and Toolchains, ADR-0004), as a
+// The Container's Toolchains on the Workspace DO's side (docs/architecture/container.md, ADR-0004), as a
 // wrapper around computer's `ContainerBackend`:
 //
 // - Before the first command of each Container start, the bootstrap runs (`mise install` from the Workspace's lockfile,

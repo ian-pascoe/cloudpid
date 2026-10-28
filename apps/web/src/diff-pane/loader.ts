@@ -1,4 +1,4 @@
-// The Diff pane's loading of its files' contents (`docs/spec.md` → Diffs and review → Diff pane), an Effect program per
+// The Diff pane's loading of its files' contents (`docs/architecture/diffs-and-review.md` → Diff pane), an Effect program per
 // Pane. The Pane says which files it wants, nearest the view first (`want`); the loader keeps at most 4 loads running
 // (`MAX_FILE_REQUESTS`), each `change_file`, then the line-up worker, then the library's file. A load whose file is no
 // longer wanted (scrolled away, folded) or is wanted for another change (a new list) is interrupted. What a file shows is

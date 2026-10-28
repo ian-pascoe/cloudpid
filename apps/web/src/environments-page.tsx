@@ -1941,7 +1941,7 @@ export const AgentChangeRow = ({
 };
 
 /**
- * Environment `id`'s Agent changes, newest first (`docs/spec.md` → Agent changes), each with the Session that made it,
+ * Environment `id`'s Agent changes, newest first (`docs/architecture/agent-changes.md`), each with the Session that made it,
  * a revert and a dismissal. A revert the Registry refuses (its field has changed since) says why.
  */
 const AgentChangesSection = ({

@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain helpers.
-// The Browser Pane's latest screen, for the composer to attach with a page (`docs/spec.md` → Attached pages): while a
+// The Browser Pane's latest screen, for the composer to attach with a page (`docs/architecture/client-and-protocol.md` → Attached pages): while a
 // Pane is open on a Session, its connection keeps the newest screencast frame in that Session's `latestScreenAtom` (a
 // base64 JPEG, as Browser Run sent it, which the composer fits into the message's images); when the Pane goes, so does the
 // frame. The composer reads it once, when the owner attaches the shown Owner tab: a Pane that is not open has no screen to

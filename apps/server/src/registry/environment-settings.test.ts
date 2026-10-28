@@ -1,4 +1,4 @@
-// An Environment's Container settings as the Registry reads and saves them (docs/spec.md → Container settings): the size
+// An Environment's Container settings as the Registry reads and saves them (docs/architecture/container.md → Container settings): the size
 // limit refuses a save with a larger size, and an Environment saved larger before it had a limit keeps its size.
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import * as Record from "effect/Record";

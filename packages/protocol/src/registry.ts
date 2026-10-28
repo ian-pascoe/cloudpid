@@ -1,4 +1,4 @@
-// The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions, Environments and
+// The Registry operations (`docs/architecture/client-and-protocol.md`): listing and creating Sessions, Environments and
 // Workspaces. They hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
 import {
   Settings,
@@ -49,12 +49,12 @@ export type TitleSource = typeof TitleSource.Type;
 /** An Environment's id: what its Workspaces and Sessions are bound to. New ones get eight hex digits. */
 export const EnvironmentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
 
-/** Where a Secret is kept (`docs/spec.md` → Secrets): an Environment's id, or null for every Environment. */
+/** Where a Secret is kept (`docs/architecture/agent-capabilities.md` → Secrets): an Environment's id, or null for every Environment. */
 export const SecretScope = Schema.NullOr(EnvironmentId);
 
 /**
- * The scope of the Agent changes of the Secrets, variables and Skills kept for every Environment (`docs/spec.md` →
- * Agent changes), where an Environment's are kept under its id, and the scope the Skills kept for every Environment
+ * The scope of the Agent changes of the Secrets, variables and Skills kept for every Environment (`docs/architecture/agent-changes.md`),
+ * where an Environment's are kept under its id, and the scope the Skills kept for every Environment
  * themselves are kept under (ADR-0026). No Environment id can be it.
  */
 export const EVERY_ENVIRONMENT_SCOPE = "*";
@@ -120,7 +120,7 @@ export const SessionRecord = Schema.Struct({
   title: Schema.NullOr(Schema.String),
   /**
    * Who set the title; null while there is none. A generated title is set at most once, and never replaces an owner's
-   * (`docs/spec.md` → Client and protocol → Titles).
+   * (`docs/architecture/client-and-protocol.md` → Titles).
    */
   titleSource: Schema.NullOr(TitleSource),
   /** The id of the Environment the Session's Workspace was made from; it never changes. */
@@ -290,7 +290,7 @@ export const RepoBranches = Schema.Union([
 export type RepoBranches = typeof RepoBranches.Type;
 
 /**
- * Where an Environment's Build stands (`docs/spec.md` → Builds): none made yet, one being made (with when the last good
+ * Where an Environment's Build stands (`docs/architecture/container.md` → Builds): none made yet, one being made (with when the last good
  * one is from, which Workspaces start from meanwhile), the last good one (when it finished), or the last attempt failed
  * (why, when, and when the last good one is from, which stays in use).
  */
@@ -320,7 +320,7 @@ export const EnvironmentBuildState = Schema.Struct({
 
 export type EnvironmentBuildState = typeof EnvironmentBuildState.Type;
 
-/** The settings in force, and the overrides saved over the defaults (`docs/spec.md` → Settings). */
+/** The settings in force, and the overrides saved over the defaults (`docs/architecture/overview.md` → Settings). */
 export const SettingsState = Schema.Struct({
   settings: Settings,
   overrides: Schema.Json,
@@ -331,7 +331,7 @@ export const SettingsState = Schema.Struct({
 export type SettingsState = typeof SettingsState.Type;
 
 /**
- * An Environment's Container settings in force (`docs/spec.md` → Container and Toolchains → Container settings), and the
+ * An Environment's Container settings in force (`docs/architecture/container.md` → Container settings), and the
  * overrides they come from. Each of its Workspaces applies them at its next Container launch.
  */
 export const ContainerSettingsState = Schema.Struct({
@@ -344,7 +344,7 @@ export const ContainerSettingsState = Schema.Struct({
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
 
 /**
- * The settings kept for every Environment in force (`docs/spec.md` → Container and Toolchains → Container settings),
+ * The settings kept for every Environment in force (`docs/architecture/container.md` → Container settings),
  * and the overrides they come from. Each Workspace of every Environment applies them at its next Container launch.
  */
 export const EveryEnvironmentSettingsState = Schema.Struct({
@@ -375,7 +375,7 @@ export const MAX_AGENT_CHANGES = 200;
 export const SETTINGS_SCOPE = "settings";
 
 /**
- * One Agent change (GLOSSARY.md → Agent change; `docs/spec.md` → Agent changes): a change the agent made to an
+ * One Agent change (GLOSSARY.md → Agent change; `docs/architecture/agent-changes.md`): a change the agent made to an
  * Environment or to the Settings, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`
  * and `after` are its values then, null where it had none (a variable not set).
  */
@@ -640,12 +640,12 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Every Secret kept for an Environment or for every Environment (`docs/spec.md` → Secrets): names, scopes, build
+   * Every Secret kept for an Environment or for every Environment (`docs/architecture/agent-capabilities.md` → Secrets): names, scopes, build
    * flags and times, never a value.
    */
   Rpc.make("listEnvironmentSecrets", { success: Schema.Array(EnvironmentSecretRecord) }),
   /**
-   * An Environment's Agent changes (`docs/spec.md` → Agent changes), newest first: those of the last
+   * An Environment's Agent changes (`docs/architecture/agent-changes.md`), newest first: those of the last
    * `MAX_AGENT_CHANGES` the owner has not dismissed, the owner's reverts among them.
    */
   Rpc.make("listAgentChanges", {
@@ -673,7 +673,7 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * The files before and after Agent change `change` of a Skill of `environment` (or of `*`, the Skills kept for every
-   * Environment; `docs/spec.md` → Agent changes), with their texts, for the Environments page to show as diffs. Fails
+   * Environment; `docs/architecture/agent-changes.md`), with their texts, for the Environments page to show as diffs. Fails
    * with an `EnvironmentError` when the scope has no such change, or it is not a Skill's.
    */
   Rpc.make("skillChangeFiles", {
@@ -775,7 +775,7 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { environment: SecretScope, name: SecretName },
     error: EnvironmentError,
   }),
-  /** Where each Environment's Build stands (`docs/spec.md` → Builds). */
+  /** Where each Environment's Build stands (`docs/architecture/container.md` → Builds). */
   Rpc.make("listBuilds", { success: Schema.Array(EnvironmentBuildState) }),
   /**
    * Make the Environment's Build again now, whatever the last one was made from; one already being made is left to
@@ -788,7 +788,7 @@ export class RegistryRpcs extends RpcGroup.make(
   /** Every Workspace, of every Environment, newest first. */
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
   /**
-   * The draft composer's catalog, before there is a Session to ask (`docs/spec.md` → Session list → New session): the
+   * The draft composer's catalog, before there is a Session to ask (`docs/architecture/client-and-protocol.md` → Session list → New session): the
    * Prompt templates and Skills of the directory a Session made with `environment` and `workspace` would work in, as a
    * Session's `catalog` answers them, and no commands. A new Workspace is looked up in the Environment's spare
    * Workspace, the one a new Session takes; with no spare, the catalog is empty. Fails with an `EnvironmentError`
@@ -816,7 +816,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * The draft's Start from menu (`docs/spec.md` → Session list → New session): the branches of each of the
+   * The draft's Start from menu (`docs/architecture/client-and-protocol.md` → Session list → New session): the branches of each of the
    * Environment's Repos on GitHub, asked with a read-only token of the GitHub App and kept for 60 s, in the
    * Environment's order. A Repo that is not on GitHub, or that GitHub would not list, has its reason instead. No
    * Workspace or Container is woken. Fails with an `EnvironmentError` when the Environment is not listed.
@@ -869,7 +869,7 @@ export class RegistryRpcs extends RpcGroup.make(
     error: SettingsError,
   }),
   /**
-   * The Settings' Agent changes (`docs/spec.md` → Agent changes), newest first: those of the last `MAX_AGENT_CHANGES`
+   * The Settings' Agent changes (`docs/architecture/agent-changes.md`), newest first: those of the last `MAX_AGENT_CHANGES`
    * the owner has not dismissed, the owner's reverts among them. Each one's `field` names a setting (`model`, `roles.small.model`, `tools.offered`,
    * `extensions.<extension>.<key>`).
    */

@@ -1,4 +1,4 @@
-// A patch drawn by @pierre/diffs (`docs/spec.md` → Diffs and review): the library, its highlighter and its theme load
+// A patch drawn by @pierre/diffs (`docs/architecture/diffs-and-review.md`): the library, its highlighter and its theme load
 // with this module, so a page with no diff on it does not fetch them (`CallDiffBody` imports it lazily).
 //
 // Given an `anchor` (the call that wrote the file), the owner drafts Annotations on it from the gutter

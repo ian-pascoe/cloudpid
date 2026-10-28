@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off preferSchemaOverJson:off
-// The Session's Secrets (`docs/spec.md` → Secrets): values the owner enters in a masked form on the client, kept
+// The Session's Secrets (`docs/architecture/agent-capabilities.md` → Secrets): values the owner enters in a masked form on the client, kept
 // encrypted in the Session DO's storage for their lifetime, and the redaction of every value held in this instance.
 //
 // An ask is durable: it is stored until the owner answers or its call is cancelled, and the answer is stored with the
@@ -160,7 +160,7 @@ export type SecretsService = {
   readonly scrub: <M>(messages: ReadonlyArray<M>) => Effect.Effect<ReadonlyArray<M>, SecretsError>;
 };
 
-/** The Session's Secrets (`docs/spec.md` → Effect boundary lists it among the Session DO's services). */
+/** The Session's Secrets (`docs/architecture/overview.md` → Effect boundary lists it among the Session DO's services). */
 export class Secrets extends Context.Service<Secrets, SecretsService>()(
   "@cloudpid/extensions/secrets/store/Secrets",
 ) {}

@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
-// Approval (GLOSSARY.md → Approval, `docs/spec.md` → Approval, ADR-0019): an Agent change that waits for the owner's
+// Approval (GLOSSARY.md → Approval, `docs/architecture/agent-changes.md` → Approval, ADR-0019): an Agent change that waits for the owner's
 // yes. A tool that needs one makes a durable request (the change, its target, the values before and after, the agent's
 // reason), which the Session sends to every client and the owner answers on a card, Approve or Decline. Modelled on
 // `secret_ask`'s requests (`./secrets/store.ts`):
@@ -95,7 +95,7 @@ export type ApprovalsService = {
   readonly dropAbandoned: Effect.Effect<void>;
 };
 
-/** The Session's Approval requests (`docs/spec.md` → Approval). */
+/** The Session's Approval requests (`docs/architecture/agent-changes.md` → Approval). */
 export class Approvals extends Context.Service<Approvals, ApprovalsService>()(
   "@cloudpid/extensions/approvals",
 ) {}

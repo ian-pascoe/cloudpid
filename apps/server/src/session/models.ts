@@ -1,4 +1,4 @@
-// Model access through the model proxy (`docs/spec.md` → Models). Providers mirror `~/.pi/agent/models.json`: pi-ai's
+// Model access through the model proxy (`docs/architecture/overview.md` → Models). Providers mirror `~/.pi/agent/models.json`: pi-ai's
 // built-in provider and models, served from the proxy's base URL and authenticated with the proxy's API key.
 import {
   createModels,

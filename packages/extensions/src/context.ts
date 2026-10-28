@@ -1,4 +1,4 @@
-// The `context` extension (`docs/spec.md` → Context management): pi-context-management's `context_notes`,
+// The `context` extension (`docs/architecture/agent-capabilities.md` → Context management): pi-context-management's `context_notes`,
 // `context_history`, and `context_rollover`, rebuilt on pi-durable. Notes are a conversation document, History reads
 // stored entries, and Rollover hands off with `control: { handoff }`; a `beforeCompact` hook turns a background
 // threshold compaction into a Rollover request, and a compaction that cannot wait into an Emergency Rollover.

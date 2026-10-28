@@ -1,4 +1,4 @@
-// The Container's exit reports (docs/spec.md → Container and Toolchains → Exit reports): what the supervisor posts is
+// The Container's exit reports (docs/architecture/container.md → Exit reports): what the supervisor posts is
 // logged, cut to size and without the GitHub token, and the report host is intercepted for every Container launched.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";

@@ -1,4 +1,4 @@
-// How the Workspace DO launches its Container (docs/spec.md → Container and Toolchains → Container settings, Snapshots).
+// How the Workspace DO launches its Container (docs/architecture/container.md → Container settings, Snapshots).
 // `@cloudflare/computer`'s `ContainerBackend` builds each launch's spec itself and has no hook for either a size that
 // changes or a snapshot, so this wraps the Container API it launches through (`wrap`):
 //
@@ -15,7 +15,7 @@
 // - the Container-only paths (computer's `ignore`: the built-in ones, then the Workspace's own) are decided before
 //   computer builds the launch (`ignore`), kept for as long as that Container runs, and recorded from the launch itself,
 //   so a snapshot is restored only by a launch with the paths it was taken with;
-// - a Workspace with no snapshot of its own starts from its Environment's Build (docs/spec.md → Builds) when the Build
+// - a Workspace with no snapshot of its own starts from its Environment's Build (docs/architecture/container.md → Builds) when the Build
 //   is of the image a launch would run now, has the launch's Container-only paths and is within its lifetime. Such a
 //   launch has computerd's store reset (`RESET_STORE_VARIABLE` in its environment), and asks for it again whenever it
 //   reconnects to that Container, since computer relaunches a running Container whose environment differs. A Build

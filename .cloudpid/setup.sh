@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# This repo's Setup Script (docs/spec.md → Container and Toolchains → Setup Scripts): the Container runs it in the repo's
+# This repo's Setup Script (docs/architecture/container.md → Setup Scripts): the Container runs it in the repo's
 # directory when the repo's Container is first started and whenever this file changes.
 #
 # - CI=1 turns off pnpm's prompts, since nobody can answer one: a Setup Script has no input (it also makes pnpm install

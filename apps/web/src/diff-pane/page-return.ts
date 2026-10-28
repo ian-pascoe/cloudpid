@@ -1,4 +1,4 @@
-// When the owner comes back to a Session's page, its Changes are listed again (`docs/spec.md` → Diffs and review → Diff
+// When the owner comes back to a Session's page, its Changes are listed again (`docs/architecture/diffs-and-review.md` → Diff
 // pane): the page shown again (`visibilitychange`), or the window focused again after it had really lost the focus. A
 // focus that comes back from a frame of the page (the Live View, the Browser Pane) is not a return: the page had it all
 // along. Returns within `RETURN_GAP` of the last refresh ask nothing more.

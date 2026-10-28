@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over the Todo document's JSON.
-// A conversation's Todo List as a conversation document (`docs/spec.md` → Todo). Documents are not part of the
+// A conversation's Todo List as a conversation document (`docs/architecture/agent-capabilities.md` → Todo). Documents are not part of the
 // transcript, so a Handoff or a compaction leaves the list as it is; the projection (`./projection.ts`) puts it back
 // in front of the model. Every conversation, a subagent's included, has a list of its own, and a fork starts with the
 // list its source has then.

@@ -1,4 +1,4 @@
-// Drafting Annotations in a diff (`docs/spec.md` → Diffs and review → Annotations and Reviews): the gutter's + (or a
+// Drafting Annotations in a diff (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): the gutter's + (or a
 // drag down it, or lines picked by their numbers first) opens an editor under the lines picked; a saved draft shows under
 // its last line as a card with its text, Edit and Delete, marked when its lines changed since. Every client shows the
 // same drafts (the Session sends them); the text being typed stays in this browser until it is saved.

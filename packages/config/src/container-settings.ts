@@ -1,4 +1,4 @@
-// An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Container settings): the Container's
+// An Environment's Container settings (`docs/architecture/container.md` → Container settings): the Container's
 // instance size, how long it may sit unused before its Workspace stops it, the paths it keeps to itself on top of the
 // built-in ones, the variables every command gets, the Environment's own Setup and Start Scripts, and its Toolchains (a
 // mise.toml). Like the global settings, every field has a decoding default, so decoding the saved overrides gives

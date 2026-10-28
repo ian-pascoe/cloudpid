@@ -1,4 +1,4 @@
-// Last run on the Session (docs/spec.md → Diffs and review → Run diff), over a fake Workspace that answers the copies
+// Last run on the Session (docs/architecture/diffs-and-review.md → Run diff), over a fake Workspace that answers the copies
 // (`host.fixture.ts` `setRun`, `runCalls`): when a Run opens and ends, what the clients are told, and how the drafts on
 // the Last run are checked. The Workspace's own part is `workspace/runs.test.ts` and `runs.workerd.test.ts`.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.

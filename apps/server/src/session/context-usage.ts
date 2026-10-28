@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over a context view.
-// How full the active branch's Context Window is, for the Session header (`docs/spec.md` → Operations → Usage): the
+// How full the active branch's Context Window is, for the Session header (`docs/architecture/operations.md` → Usage): the
 // size of its next request as pi-durable reckons it before compacting (the newest answer's usage, plus estimates of
 // what came after it), against the model's context window, with where automatic compaction starts and what the
 // context is made of.

@@ -1,5 +1,5 @@
 // An Environment's own Skills, and those kept for every Environment (scope `*`), over real Durable Object SQLite (ADR-0026,
-// docs/spec.md → The Environment's own Skills): saved and removed by the agent as Agent changes with their files before
+// docs/architecture/workspace.md → The Environment's own Skills): saved and removed by the agent as Agent changes with their files before
 // and after, merged (the Environment's own, then those for every Environment) into the Skill set its
 // Workspaces serve, each text kept once, and reverted unless saved again since.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.

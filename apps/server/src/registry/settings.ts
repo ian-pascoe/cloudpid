@@ -1,4 +1,4 @@
-// The settings overrides as the Registry keeps them (`docs/spec.md` → Settings): one JSON document in the store's
+// The settings overrides as the Registry keeps them (`docs/architecture/overview.md` → Settings): one JSON document in the store's
 // document table. Reading falls back to the defaults and writing validates, so what Sessions read always resolves.
 import {
   DEFAULT_SETTINGS,

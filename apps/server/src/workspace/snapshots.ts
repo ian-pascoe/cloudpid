@@ -1,4 +1,4 @@
-// The Container's disk snapshots (docs/spec.md → Container and Toolchains → Snapshots). A snapshot of the Container's root
+// The Container's disk snapshots (docs/architecture/container.md → Snapshots). A snapshot of the Container's root
 // file system, taken after a successful bootstrap that installed something (`ContainerLaunch.afterInstall`) and when the
 // Container idles, is restored at the next launch, so the Toolchains come back without a download. The platform keeps the snapshot; the Workspace DO keeps its handle.
 //

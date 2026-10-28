@@ -1,4 +1,4 @@
-// Lining up a changed file's two sides (`docs/spec.md` → Diffs and review → Diff pane), run in a Web Worker of its own
+// Lining up a changed file's two sides (`docs/architecture/diffs-and-review.md` → Diff pane), run in a Web Worker of its own
 // (`line-up.worker.ts`) so a hard pair never holds the page: jsdiff, with its `timeout` at 2 s. Past it the file is shown
 // as a whole-file replacement (every old line removed, every new one added), marked so. In the browser the clock moves
 // while code runs, so the timeout fires; it blocks that worker for those 2 s, and only that worker.

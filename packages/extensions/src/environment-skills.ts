@@ -1,5 +1,5 @@
 // The `environment` extension's tools for an Environment's own Skills, and those kept for every Environment (ADR-0026,
-// `docs/spec.md` → Agent changes, and → The Environment's own Skills): `environment_skill_save` reads a Skill's folder
+// `docs/architecture/agent-changes.md`, and → The Environment's own Skills): `environment_skill_save` reads a Skill's folder
 // from the Workspace (one the agent wrote, or one `npx skills add --copy` made) and saves it for the Environment, in
 // place of one of its name, `environment_skill_install` installs Skills from GitHub (fetched by the Registry, never by
 // the Session or a Container; for `*` too, with the owner's Approval), and `environment_skill_remove` removes one. The

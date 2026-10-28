@@ -1,4 +1,4 @@
-// A Workspace's set-up (docs/spec.md → Workspaces, ADR-0016): when a Session first works in it, and at most once a
+// A Workspace's set-up (docs/architecture/workspace.md → Workspaces, ADR-0016): when a Session first works in it, and at most once a
 // minute after, the Session readies its Workspace: the Environment's Container settings are handed to the Workspace's
 // Durable Object (its Worker cannot reach the Registry), and each Repo the Workspace's files lack is cloned on its
 // Container, on the Workspace's branch, then its Setup Script and its Start Script run. A clone made while the Workspace

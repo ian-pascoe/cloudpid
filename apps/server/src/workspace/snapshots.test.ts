@@ -1,4 +1,4 @@
-// The Container's disk snapshots (docs/spec.md → Container and Toolchains → Snapshots): when one is taken, what
+// The Container's disk snapshots (docs/architecture/container.md → Snapshots): when one is taken, what
 // stops it, and when a taken one is offered back. The Container, its storage and the clock are fakes; the disk scan's
 // script runs in a local bash over a temporary directory.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off

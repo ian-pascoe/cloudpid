@@ -1,4 +1,4 @@
-// What a submit may hold (`docs/spec.md` → Client and protocol → Attachments). The owner's message is stored as one
+// What a submit may hold (`docs/architecture/client-and-protocol.md` → Attachments). The owner's message is stored as one
 // entry, a single SQLite row that Cloudflare caps at 2 MB, and a message that waits for the run is copied into the
 // conversation's inbox, one document (one row) for every message waiting. A write over the cap fails the commit, which
 // fails the whole Session, so the Session refuses such a message first, with why, and keeps running.

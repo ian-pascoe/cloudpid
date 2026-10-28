@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a plain function over text.
-// What a push says (`docs/spec.md` → Client and protocol → Notifications): a title, a line of body, and the Session's
+// What a push says (`docs/architecture/client-and-protocol.md` → Notifications): a title, a line of body, and the Session's
 // page, small enough for any push service and for a lock screen.
 import { MAX_NOTICE_URL_LENGTH, type PushEvent } from "@cloudpid/extensions/notify";
 import { sessionPagePath } from "@cloudpid/protocol";

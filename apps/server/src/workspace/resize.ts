@@ -1,4 +1,4 @@
-// The agent's Container resize (docs/spec.md → Container and Toolchains → Resize by the agent; GLOSSARY.md → Container
+// The agent's Container resize (docs/architecture/container.md → Resize by the agent; GLOSSARY.md → Container
 // resize): `container_resize` has the Workspace's next launch start on another size, up to its Environment's size limit,
 // until the idle stop. The size is a one-launch override kept in the Workspace DO's storage: `ContainerLaunch` takes it
 // instead of the settings' size (`launchSize`), the launch record keeps what each Container launched with, and the idle

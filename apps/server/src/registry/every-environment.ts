@@ -1,4 +1,4 @@
-// The variables kept for every Environment (`docs/spec.md` → Container and Toolchains → Container settings, ADR-0023):
+// The variables kept for every Environment (`docs/architecture/container.md` → Container settings, ADR-0023):
 // one JSON document in the store's document table, as the settings are. Reading falls back to the defaults and writing
 // validates, so what a Workspace is handed always resolves. The Registry merges them under each Environment's own
 // variables when it hands settings over (`workspaceOverridesOf`), so the Workspace DO never knows of them.

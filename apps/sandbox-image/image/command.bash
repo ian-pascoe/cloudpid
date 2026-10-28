@@ -1,4 +1,4 @@
-# What every Container command's bash reads before the command (docs/spec.md → Container and Toolchains → Memory
+# What every Container command's bash reads before the command (docs/architecture/container.md → Memory
 # guard): the Workspace DO points BASH_ENV here (`toolchainEnv`), and bash reads the file named there when it starts
 # non-interactively, as the `exec bash -c '…'` a command runs in does. The command's own text is not changed, so its
 # line numbers are its own.

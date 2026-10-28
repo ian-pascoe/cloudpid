@@ -1,4 +1,4 @@
-// The `environment` extension's tools for an Environment's own Skills, and those kept for every Environment (docs/spec.md
+// The `environment` extension's tools for an Environment's own Skills, and those kept for every Environment (docs/architecture/workspace.md
 // → The Environment's own Skills, → Approval): `environment_skill_save` reads a Skill's folder from the Workspace and
 // saves it, `environment_skill_remove` removes one, over fake Skills that keep them as the Registry does. With `id: "*"`
 // each waits for the owner's Approval.

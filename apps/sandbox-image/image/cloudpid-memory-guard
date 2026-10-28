@@ -1,5 +1,5 @@
 #!/bin/bash
-# The Container's memory guard (docs/spec.md → Container and Toolchains → Memory guard), which the supervisor runs
+# The Container's memory guard (docs/architecture/container.md → Memory guard), which the supervisor runs
 # beside computerd. It runs earlyoom, which stops the largest process when the Container is nearly out of memory, and
 # passes earlyoom's lines through to its stdout.
 #

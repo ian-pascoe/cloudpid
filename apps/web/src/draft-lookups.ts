@@ -1,4 +1,4 @@
-// The draft composer's menus (`docs/spec.md` → Session list → New session): the Prompt templates and Skills after `/`
+// The draft composer's menus (`docs/architecture/client-and-protocol.md` → Session list → New session): the Prompt templates and Skills after `/`
 // and `$`, and the files after `@`, of the directory the Session the draft makes would work in. There is no Session to
 // ask yet, so they are asked of the Registry (`draftCatalog`, `draftFiles`), for the Environment and Workspace the
 // draft is made in, and kept as a Session's composer keeps its own (`catalog.ts`, `file-search.ts`). The Start from

@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain functions over pi's message arrays.
-// Bounding the screenshots that accumulate (`docs/spec.md` → Browser). Every screenshot stays in the transcript, so how
+// Bounding the screenshots that accumulate (`docs/architecture/browser.md`). Every screenshot stays in the transcript, so how
 // many are sent grows with a Session: to the model with each request (a provider caps the images and bytes of one), and
 // to a client in the transcript snapshot (one socket message has a size cap). Only the latest few are sent; an older one
 // is replaced by a short text, in the request and in the snapshot, and stays in the transcript's storage.

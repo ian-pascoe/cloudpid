@@ -1,4 +1,4 @@
-// An Environment's Build (docs/spec.md → Builds, ADR-0016), made by a Workspace DO of its own (`buildObjectName`): a
+// An Environment's Build (docs/architecture/container.md → Builds, ADR-0016), made by a Workspace DO of its own (`buildObjectName`): a
 // Snapshot of a Container with the Environment's Toolchains installed and what its Setup Scripts download cached outside
 // `/workspace`, which new Workspaces start their first Container from. The main Worker asks for one (`request`) when the
 // Environment's Repos or Container settings or the image changed, or for the daily look at the Repos' default branches;

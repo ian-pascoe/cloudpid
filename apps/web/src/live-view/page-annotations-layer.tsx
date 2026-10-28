@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off asyncFunction:off -- the pins over native arrays; hooks, not combinators; the page's answers come as the screen's promises (`ScreenPage`).
 
-// Annotations on the page in the Browser Pane (#243; `docs/spec.md` → Browser → Annotate mode), drawn over its screen
+// Annotations on the page in the Browser Pane (#243; `docs/architecture/browser.md` → Annotate mode), drawn over its screen
 // (`LiveScreen`'s `overlay`) and never into the page: the agent's screenshots never show them.
 //
 // - Pins: the drafts on the page shown (its URL, fragment aside, from whichever Owner tab drew them), each numbered at

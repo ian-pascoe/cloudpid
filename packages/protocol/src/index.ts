@@ -1,4 +1,4 @@
-// The client ↔ server contract (`docs/spec.md` → Client and protocol), shared by the server and the web app.
+// The client ↔ server contract (`docs/architecture/client-and-protocol.md`), shared by the server and the web app.
 export * from "./annotations.ts";
 
 export * from "./attached-pages.ts";

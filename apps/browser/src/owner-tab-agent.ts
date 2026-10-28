@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
-// The agent in the owner's Owner tabs (`docs/spec.md` → Browser → Browser Pane): `browser` given an Owner tab runs the
+// The agent in the owner's Owner tabs (`docs/architecture/browser.md` → Browser Pane): `browser` given an Owner tab runs the
 // model's code in that tab's own `agents/browser` scope (`owner-tab:<id>`), whose active tab is the Owner tab, so
 // `browserTool`'s per-scope machinery applies as is and the conversation's own tab and active tab are left alone. What
 // the agent is told of the Owner tabs without a call is the Pane's listing (`OwnerTabs.tabs`).

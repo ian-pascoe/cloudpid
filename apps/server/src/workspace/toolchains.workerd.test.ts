@@ -1,5 +1,5 @@
 // The ignore list as computer's Container backend takes it: the backend refuses a pattern computerd would, as it is
-// built, so a bad list would fail every Container start (docs/spec.md → Container and Toolchains).
+// built, so a bad list would fail every Container start (docs/architecture/container.md).
 import { ContainerBackend } from "@cloudflare/computer/backends/container";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import { expect, it } from "vitest";

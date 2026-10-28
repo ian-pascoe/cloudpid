@@ -1,4 +1,4 @@
-// What an Environment's Build is to everything but the Build's own Durable Object (docs/spec.md → Builds, ADR-0016):
+// What an Environment's Build is to everything but the Build's own Durable Object (docs/architecture/container.md → Builds, ADR-0016):
 // the record of a finished good Build, which the Registry keeps with the Environment and hands to each of its
 // Workspaces with their set-up, what the main Worker asks a Build's object for and is answered, the key that says
 // whether a Build is current, and the variable that has a Container started from it reset computerd's store. Plain

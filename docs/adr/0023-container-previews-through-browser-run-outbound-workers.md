@@ -64,7 +64,7 @@ the object that made it. The spike (#244) measured it against a public token rou
   spike saw one four minutes into a page, with nothing deployed. A restart of the Container does the same.
 - An open Container preview keeps its Container running (about $0.03 an hour on `custom-1` for memory and disk, plus CPU
   as used, as Vite's client pings every 30 s anyway) until the page or the browser closes. Requests themselves cost little: a page load is about a dozen.
-- Exposure (`docs/spec.md` → _Risks_ → Exposure of the shared browser session): only pages in the Session's browser
+- Exposure (`docs/architecture/risks-and-spikes.md` → Exposure of the shared browser session): only pages in the Session's browser
   reach a dev server. From an `https` page, requests to it are blocked as mixed content. A page with an `http` origin can
   send it blind requests but not read the answers. That is a laptop's `localhost`, less its mixed-content exemption. The
   shim's endpoints must not let such a page write into an open socket.

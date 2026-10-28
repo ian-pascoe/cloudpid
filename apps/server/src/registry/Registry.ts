@@ -158,7 +158,7 @@ export type WorkspaceChoice =
 
 /**
  * What a Workspace's Durable Object sets itself up with, with its Environment's Container settings overrides, last
- * good Build (null for none yet) and kept Secrets, opened (docs/spec.md → Secrets): the Workspace keeps them sealed,
+ * good Build (null for none yet) and kept Secrets, opened (docs/architecture/agent-capabilities.md → Secrets): the Workspace keeps them sealed,
  * to search a snapshot for and to take out of output. When the Registry cannot open them, `secrets` is absent and
  * `secretsUnavailable` says so (`SECRETS_UNAVAILABLE`), and the Workspace refuses the snapshots that would need them.
  * `skills` is the Environment's Skill set (its own Skills over those kept for every Environment), absent when the
@@ -331,14 +331,14 @@ export type RegistryMethods = {
     readonly overrides: Schema.Json;
   }) => Effect.Effect<EnvironmentSettingsUpdate>;
   /**
-   * An Agent change (`docs/spec.md` → Agent changes): give one of `environment`'s Container settings a new value, by the
+   * An Agent change (`docs/architecture/agent-changes.md`): give one of `environment`'s Container settings a new value, by the
    * rules of `updateEnvironmentSettings`, and record it with its `author`. Says the values before and after and whether
    * a new Build is wanted; a field that already has the value records nothing. The caller runs the Build upkeep after.
    */
   readonly changeEnvironment: (input: {
     readonly environment: string;
     readonly change: ContainerFieldChange;
-    /** The value the field must still have, for a change the owner approved against it (`docs/spec.md` → Approval). */
+    /** The value the field must still have, for a change the owner approved against it (`docs/architecture/agent-changes.md` → Approval). */
     readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<EnvironmentChangeAnswer>;
@@ -352,7 +352,7 @@ export type RegistryMethods = {
     readonly overrides: Schema.Json;
   }) => Effect.Effect<EveryEnvironmentSettingsUpdate>;
   /**
-   * An Agent change (`docs/spec.md` → Agent changes): give one variable kept for every Environment a new value, by the
+   * An Agent change (`docs/architecture/agent-changes.md`): give one variable kept for every Environment a new value, by the
    * rules of `updateEveryEnvironmentSettings`, and record it with its `author` under the scope `*`. Says which
    * Environments override it and which want a new Build; a variable that already has the value records nothing. The
    * caller runs the Build upkeep after. `environment` is the caller's own, to say whether the change reaches it.
@@ -370,7 +370,7 @@ export type RegistryMethods = {
     readonly environment: string;
   }) => Effect.Effect<Schema.Json | null>;
   /**
-   * The agent makes an Environment (`docs/spec.md` → Agent changes): `name` as the owner's `createEnvironment` checks
+   * The agent makes an Environment (`docs/architecture/agent-changes.md`): `name` as the owner's `createEnvironment` checks
    * it, `repos` (their directories and addresses, parsed by the caller) added, the default Container settings, recorded
    * as an Agent change. The caller runs the spares' and Builds' upkeep after.
    */
@@ -403,7 +403,7 @@ export type RegistryMethods = {
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<LifecycleOutcome<LifecycleChanged>>;
   /**
-   * An Agent change (`docs/spec.md` → Agent changes): mark the Secret `name` kept for `environment` (an Environment's id,
+   * An Agent change (`docs/architecture/agent-changes.md`): mark the Secret `name` kept for `environment` (an Environment's id,
    * or `*` for every Environment) for the Build, or take the mark off, as the owner's switch does, and record it with its
    * `author`; a Secret that has the mark records nothing. The caller runs the Builds' upkeep after.
    */
@@ -414,7 +414,7 @@ export type RegistryMethods = {
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<SecretBuildMark>;
   /**
-   * An Agent change the owner approved (`docs/spec.md` → Approval): delete the Secret `name` kept for `environment` (an
+   * An Agent change the owner approved (`docs/architecture/agent-changes.md` → Approval): delete the Secret `name` kept for `environment` (an
    * Environment's id, or `*` for every Environment), as the owner's delete does, and record it by name with its
    * `author`, provided it was last changed at `expected.updatedAt` (as the owner saw it). The caller runs the Builds'
    * upkeep after.
@@ -457,7 +457,7 @@ export type RegistryMethods = {
     readonly change: number;
   }) => Effect.Effect<boolean>;
   /**
-   * An Agent change (`docs/spec.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
+   * An Agent change (`docs/architecture/workspace.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
    * its path in the folder) for `environment` (an Environment's id, or `*` for every Environment), in place of one of its
    * name, if it passes a save's checks, and record it with its files before and after. The same files as kept record
    * nothing. With `expected`, only while the Skill of the name was last saved then (null: none kept), as an Approval
@@ -487,7 +487,7 @@ export type RegistryMethods = {
     readonly expected?: SkillExpectation | undefined;
   }) => Effect.Effect<SkillRemoval>;
   /**
-   * An Agent change (`docs/spec.md` → Installing from GitHub): install from the GitHub `source` the Skills `skills` names
+   * An Agent change (`docs/architecture/workspace.md` → Installing from GitHub): install from the GitHub `source` the Skills `skills` names
    * (`["*"]` for every one it holds; absent: the only one, else the list of them and nothing installed) for
    * `environment`. Fetched here as the GitHub App at one commit, then each is kept with its Skill source as a save keeps a
    * Skill and recorded with its files before and after. The caller hands the Session's own Workspace its new Skill set after.
@@ -515,7 +515,7 @@ export type RegistryMethods = {
     readonly skills?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SkillInstallation>;
   /**
-   * An Agent change (`docs/spec.md` → Installing from GitHub → Updates): update the Skills `names` (absent: every one marked
+   * An Agent change (`docs/architecture/workspace.md` → Installing from GitHub → Updates): update the Skills `names` (absent: every one marked
    * update available) kept for `environment` (or `*`) to the latest commit of their recorded ref, fetched here as the GitHub
    * App. A modified Skill is refused unless `overwrite`. Each Skill moved is recorded with its files and source before and
    * after; one whose folder is the same records nothing. With `pins` (the owner's Approval of an update for every
@@ -679,7 +679,7 @@ export type RegistryMethods = {
     readonly overrides: Schema.Json;
   }) => Effect.Effect<SettingsUpdate>;
   /**
-   * An Agent change to the Settings (`docs/spec.md` → Agent changes): give some of their fields new values, by the rules
+   * An Agent change to the Settings (`docs/architecture/agent-changes.md`): give some of their fields new values, by the rules
    * of `updateSettings`, and record each field that changed with its `author`; none of the values before or after is
    * recorded for a field that already has its value. Sessions read the new settings when they next admit input.
    */
@@ -720,7 +720,7 @@ export type RegistryMethods = {
 export const LEGACY_LEASE_MS = 5 * 60_000;
 
 /**
- * The index of Sessions, Environments and Workspaces (`docs/spec.md` → Durable Objects), over this object's SQLite storage.
+ * The index of Sessions, Environments and Workspaces (`docs/architecture/overview.md` → Durable Objects), over this object's SQLite storage.
  * The class name is the Durable Object class name in every stage's migrations, so it cannot be renamed once deployed.
  */
 export class Registry extends Cloudflare.DurableObject<Registry, RegistryMethods>()("Registry") {}

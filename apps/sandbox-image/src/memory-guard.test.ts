@@ -1,4 +1,4 @@
-// The memory guard (docs/spec.md → Container and Toolchains → Memory guard): `cloudpid-memory-guard` runs earlyoom and
+// The memory guard (docs/architecture/container.md → Memory guard): `cloudpid-memory-guard` runs earlyoom and
 // leaves a note for each process earlyoom announces it is stopping, and each command that ran meanwhile prints the
 // notes on stderr when it ends, through the file its bash reads first (BASH_ENV). The scripts run for real, under
 // bash, around a fake earlyoom; the supervisor's side is `supervisor.test.ts`.

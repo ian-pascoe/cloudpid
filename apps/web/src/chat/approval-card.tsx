@@ -28,7 +28,7 @@ const valueClass = (value: string): string =>
   value.includes("\n") ? "font-mono text-xs break-words whitespace-pre-wrap" : "break-words";
 
 /**
- * The card for one Approval request (`docs/spec.md` → Approval): the change the agent wants to make, its target, the
+ * The card for one Approval request (`docs/architecture/agent-changes.md` → Approval): the change the agent wants to make, its target, the
  * value before and after (for a delete, what is deleted), and the agent's reason, with Approve and Decline. A Decline
  * may carry the owner's reason to the agent. The card closes when the Session's next list leaves the request out.
  */

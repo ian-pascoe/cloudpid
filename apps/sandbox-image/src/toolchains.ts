@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
-// The Container's Toolchain contract (docs/spec.md → Container and Toolchains, ADR-0004), kept next to the Dockerfile it
+// The Container's Toolchain contract (docs/architecture/container.md, ADR-0004), kept next to the Dockerfile it
 // must agree with. The Workspace DO imports it: no Node built-ins here, since it runs in a Worker.
 import { COMMAND_BASH_ENV } from "./memory-guard.ts";
 
@@ -21,7 +21,7 @@ export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
  * mise's own directories are not here, because they are not under `/workspace`: mise keeps its Toolchains and
  * downloads where it does by default, on the Container's disk (`/root/.local/share/mise`, `/root/.cache/mise`), and
  * its temp files go to `/tmp` on the same disk. That makes a rename between them one filesystem's (no `EXDEV`), and
- * it never crosses the ignore boundary at all. Putting them under `/workspace/.mise` on this list, as docs/spec.md
+ * it never crosses the ignore boundary at all. Putting them under `/workspace/.mise` on this list, as the design
  * first planned, works for installs (gh, git, node, python install there) but computerd 0.5.1's FUSE answers
  * `listxattr` on an ignored path with `ENOENT` where a synced path answers `[]`, which makes Python's
  * `shutil.copystat` fail: `python -m venv` could not copy ensurepip's wheels out of a Toolchain on such a path.
@@ -39,7 +39,7 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   // pnpm's content-addressed store. The Container's global pnpm configuration puts it on the Container's disk
   // (`PNPM_STORE_DIRECTORY_NAME` under the home directory), but with the home directory on the Container's disk and the
   // project on the FUSE mount, pnpm puts a store nobody configured at the mount's root, `/workspace/.pnpm-store`, where
-  // one install synced most of a Workspace's files (docs/spec.md → Container and Toolchains → Snapshots). That is what
+  // one install synced most of a Workspace's files (docs/architecture/container.md → Snapshots). That is what
   // an install made before the configuration, or one with an older pnpm, leaves; it stays local, on the same side as
   // `node_modules`, so pnpm still hard-links between them.
   `**/${PNPM_STORE_DIRECTORY_NAME}`,

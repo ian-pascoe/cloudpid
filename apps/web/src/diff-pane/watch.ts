@@ -1,4 +1,4 @@
-// The Changes a Session's page, or a Subagent page, watches while it is open (`docs/spec.md` → Diffs and review → Diff
+// The Changes a Session's page, or a Subagent page, watches while it is open (`docs/architecture/diffs-and-review.md` → Diff
 // pane): their totals, read by the Session details, the New pane and the Diff pane, and a new listing asked for each
 // time the owner comes back to the page (`page-return.ts`). Each is kept by the Changes' key (`conversation-key.ts`).
 

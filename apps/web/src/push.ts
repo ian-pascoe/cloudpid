@@ -1,4 +1,4 @@
-// Web Push in the browser (`docs/spec.md` → Client and protocol → Notifications): this device's subscription, kept in the
+// Web Push in the browser (`docs/architecture/client-and-protocol.md` → Notifications): this device's subscription, kept in the
 // Registry so Sessions can notify it, and turned on and off from the settings page. The browser is the `PushManager`
 // service and the Registry is the app's client, so the logic runs without either.
 import type { PushSubscription } from "@cloudpid/protocol";

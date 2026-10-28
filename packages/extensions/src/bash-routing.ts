@@ -1,4 +1,4 @@
-// Which backend a `bash` command runs on when the model names none (docs/spec.md → Backends): the Worker Shell, unless
+// Which backend a `bash` command runs on when the model names none (docs/architecture/workspace.md → Backends): the Worker Shell, unless
 // the command needs something the Worker Shell does not have, and then the Container. The Container is the costly
 // backend, so the Worker Shell gets every command it can run: a program neither list below holds is asked of the Worker
 // Shell itself (`resolveRoute`), and a command that writes no file is run again on the Container when the Worker Shell
@@ -1463,7 +1463,7 @@ const collectPaths = (
 };
 
 /**
- * The paths `command`, run in `cwd`, names (docs/spec.md → Backends): the argument words of every simple command,
+ * The paths `command`, run in `cwd`, names (docs/architecture/workspace.md → Backends): the argument words of every simple command,
  * those inside substitutions and `bash -c` scripts included, the targets of file redirects, the values of `--opt=value`,
  * and the literal part of a glob, each made absolute against the directory it runs in, following the command's `cd`s
  * (a `cd` whose target is unknown stops that). A leading `~` is the Container's home (`/root`). Words that are no path

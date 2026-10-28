@@ -1,4 +1,4 @@
-// What a Session's Containers cost together (`docs/spec.md` → Operations → Container cost): its Workspace's, and its
+// What a Session's Containers cost together (`docs/architecture/operations.md` → Container cost): its Workspace's, and its
 // Subagent Workspaces', each read by its own Workspace DO, summed into the one `ContainerUsage` the Session header shows.
 import { currentInstanceName } from "@cloudpid/config";
 import type { ContainerUsage } from "@cloudpid/protocol";

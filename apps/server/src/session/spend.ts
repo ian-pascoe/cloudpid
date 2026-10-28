@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off globalDate:off -- the gate sits in pi-ai's Promise streams, and its failure carries pi-ai's own request timestamp.
-// What a Session has spent and the limit on it (`docs/spec.md` → Settings, Operations → Usage). pi-durable keeps a ledger of
+// What a Session has spent and the limit on it (`docs/architecture/overview.md` → Settings, `docs/architecture/operations.md` → Usage). pi-durable keeps a ledger of
 // each conversation's spend (`pi.usage`) and sums the Session's; the title call, which has no conversation, is kept in the
 // Session's own storage. The limit is enforced at the model seam, as the secret scrubbing and the image limit are: a
 // request over the limit never reaches the proxy and ends as an error the Harness already knows how to end a run with.

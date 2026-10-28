@@ -1,4 +1,4 @@
-// Agent changes to an Environment's own record (`docs/spec.md` → Agent changes, ADR-0019): the agent makes, renames,
+// Agent changes to an Environment's own record (`docs/architecture/agent-changes.md`, ADR-0019): the agent makes, renames,
 // adds a Repo to and takes a Repo out of an Environment, and asks for its Build. Each is applied as the owner's RPC
 // applies it (the same rules and messages) and recorded as an Agent change in the same transaction, so a change and its
 // record are one step. The changes to an Environment's Container settings are in `agent-changes.ts`; the revert of

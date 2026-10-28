@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain string functions.
-// Canonical agent IDs (`docs/spec.md` → Subagents), as pi-minimal-subagents writes them: the root agent is `root`, a
+// Canonical agent IDs (`docs/architecture/agent-capabilities.md` → Subagents), as pi-minimal-subagents writes them: the root agent is `root`, a
 // root child's ID is its own segment (`agent-1`), and a nested child's ID is its parent's ID, a dot, and its segment
 // (`agent-1.reviewer`). A leading `root.` is accepted and dropped, so `root.agent-1` names `agent-1`.
 

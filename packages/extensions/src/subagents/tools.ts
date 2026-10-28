@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off -- pi-durable commit callbacks are Promise code.
-// The six coordinator tools (`docs/spec.md` → Subagents), with pi-minimal-subagents' parameters and semantics, over the
+// The six coordinator tools (`docs/architecture/agent-capabilities.md` → Subagents), with pi-minimal-subagents' parameters and semantics, over the
 // Subagents document and the tasks in `./tasks.ts`. Each tool that changes state decides in one commit and records its
 // result for its own call, so a call rerun after a restart (`replay: "safe"`) returns what the first run decided.
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";

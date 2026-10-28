@@ -1,5 +1,5 @@
-// The Call diff on an `edit` or `write` card, and on the calls a `codemode` card lists (`docs/spec.md` → Diffs and
-// review): `+n −m` on the line, and, opened, the diff in place of the arguments, with "Open in Diff pane".
+// The Call diff on an `edit` or `write` card, and on the calls a `codemode` card lists (`docs/architecture/diffs-and-review.md`):
+// `+n −m` on the line, and, opened, the diff in place of the arguments, with "Open in Diff pane".
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useId, useMemo, useState, type ReactNode } from "react";

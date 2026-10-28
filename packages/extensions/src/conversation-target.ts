@@ -1,5 +1,5 @@
 // The conversation a tool runs for, as the Session's Workspace services take it: a conversation with a Subagent
-// Workspace of its own works there, any other in the Session's Workspace (`docs/spec.md` → Subagents).
+// Workspace of its own works there, any other in the Session's Workspace (`docs/architecture/agent-capabilities.md` → Subagents).
 import { ChordContext } from "@cloudpid/effect-durable";
 import type { Context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentReader, ToolExecutionApi } from "@earendil-works/pi-durable";

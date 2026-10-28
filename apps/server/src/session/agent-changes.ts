@@ -1,4 +1,4 @@
-// The Agent changes of the Session's Run (`docs/spec.md` → Agent changes): each change the `environment` tools make is
+// The Agent changes of the Session's Run (`docs/architecture/agent-changes.md`): each change the `environment` tools make is
 // kept in the Session's storage, so an eviction does not lose it, until the Run's end turns them into one
 // Notification listing them (`agentChangesNotice`), besides the usual `finished` or `failed` one.
 import type { RunChange } from "@cloudpid/extensions/environment";

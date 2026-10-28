@@ -1,4 +1,4 @@
-// The difference an Agent change made to a long value, a script or a `mise.toml` (`docs/spec.md` → Agent changes):
+// The difference an Agent change made to a long value, a script or a `mise.toml` (`docs/architecture/agent-changes.md`):
 // its lines with a `+` or `-`, and the runs of lines that stayed folded to a count. Shown on the call's card in the
 // transcript and on the Environments page.
 import * as Arr from "effect/Array";

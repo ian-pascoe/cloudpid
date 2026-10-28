@@ -283,7 +283,7 @@ const shownValue = (value: Schema.Json | null): string =>
   value === null ? "not set" : JSON.stringify(value);
 
 /**
- * The main Worker's `RegistryRpcs` endpoint (`docs/spec.md` → Client and protocol): Effect RPC over HTTP with JSON
+ * The main Worker's `RegistryRpcs` endpoint (`docs/architecture/client-and-protocol.md`): Effect RPC over HTTP with JSON
  * serialization, answered by the Registry DO, except for what needs a Workspace's or a Session's own object
  * (`RegistryRpcObjects`). It is reachable only through the Access gate in front of the Worker.
  */

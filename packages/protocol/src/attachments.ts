@@ -1,7 +1,7 @@
 // Attachments (GLOSSARY.md → Messages): a file the owner gives with a message is uploaded into the Session's Workspace at
 // `/workspace/.cloudpid/uploads/<session-id>/<name>` and pointed at by its path; an attached image also goes inline to the model.
 // The web app (to name and size what it uploads and sends) and the server (to place an upload and to bound what a
-// submit may hold) share these rules (`docs/spec.md` → Client and protocol → Attachments).
+// submit may hold) share these rules (`docs/architecture/client-and-protocol.md` → Attachments).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain string functions.
 import * as Schema from "effect/Schema";
 import { WORKSPACE_ROOT } from "./repo.ts";

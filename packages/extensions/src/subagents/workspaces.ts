@@ -1,4 +1,4 @@
-// Subagent Workspaces (GLOSSARY.md; `docs/spec.md` → Subagents): a Workspace of the Session's Environment made for one
+// Subagent Workspaces (GLOSSARY.md; `docs/architecture/agent-capabilities.md` → Subagents): a Workspace of the Session's Environment made for one
 // subagent, on a branch of its own, with a Container of its own. The Session makes, reads and removes them
 // (`SubagentWorkspaces`); this module says what the subagent tools tell the model about them.
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- the hand-back runs in a reporter task's Promise code.

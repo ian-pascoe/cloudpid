@@ -1,4 +1,4 @@
-// Which files of a Diff pane start folded (`docs/spec.md` → Diffs and review → Diff pane): decided from the file list
+// Which files of a Diff pane start folded (`docs/architecture/diffs-and-review.md` → Diff pane): decided from the file list
 // alone, before any content loads. Lockfiles, generated or minified names, files under `generated/`, `__generated__/`,
 // `vendor/` or `third_party/`, what the root `.gitattributes` marks `linguist-generated` or `linguist-vendored` (the
 // list's flags; `=false` unmarks a file whatever its name says), files with more than 1,000 changed lines, and deleted

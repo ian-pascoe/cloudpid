@@ -1,4 +1,4 @@
-// The `browser` extension (`docs/spec.md` → Browser, ADR-0007): the model-facing `browser` tool, which drives the
+// The `browser` extension (`docs/architecture/browser.md`, ADR-0007): the model-facing `browser` tool, which drives the
 // Session's one browser over CDP with a tab per conversation or in one of the owner's Owner tabs, `browser_owner_tabs`,
 // which lists those, `browser_handoff`, and the keep-alive that closes the browser once the
 // Session has been idle past it. The browser itself is hosted by the `apps/browser` Worker (`./browser/host.ts`).

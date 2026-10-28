@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain string functions.
-// A child's ordinary tools (`docs/spec.md` → Subagents): the `read` and `modify` presets or an exact list, always
+// A child's ordinary tools (`docs/architecture/agent-capabilities.md` → Subagents): the `read` and `modify` presets or an exact list, always
 // within the capability ceiling, the ordinary tools its caller has. The six coordinator tools are never ordinary: a
 // child gets them by its delegation, not its selection.
 import * as Arr from "effect/Array";

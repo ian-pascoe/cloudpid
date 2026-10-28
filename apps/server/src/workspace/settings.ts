@@ -1,4 +1,4 @@
-// A Workspace's Container settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Container
+// A Workspace's Container settings, kept in its Durable Object's storage (docs/architecture/container.md → Container
 // settings). They are its Environment's, which the Registry keeps: a Session hands them over when it readies the
 // Workspace (`prepare.ts`), since the Workspace DO reads them when it launches its Container, and its Worker
 // (`Workspaces`) deploys before the main Worker that hosts the Registry, so it cannot reach the Registry.
@@ -73,7 +73,7 @@ const FAILED_BUILDS_KEY = "cloudpid:failed-builds";
 const FAILED_BUILDS_KEPT = 10;
 
 /**
- * The Workspace's copy of its Environment's Build (docs/spec.md → Builds), which its next launch with no snapshot of its
+ * The Workspace's copy of its Environment's Build (docs/architecture/container.md → Builds), which its next launch with no snapshot of its
  * own starts from (`ContainerLaunch`). A Session's readying and a spare's request hand it over with the settings
  * (`prepare.ts`). A Build a Container did not come up from is remembered, and not offered again.
  */

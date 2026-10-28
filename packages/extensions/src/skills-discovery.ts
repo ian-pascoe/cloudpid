@@ -1,4 +1,4 @@
-// Finding skills (docs/spec.md → Filesystem and tools): what a skill is, how a `SKILL.md` is read, and the walk from a
+// Finding skills (docs/architecture/workspace.md → Filesystem and tools): what a skill is, how a `SKILL.md` is read, and the walk from a
 // conversation's `cwd` up to the Workspace root through each `.agents/skills`. It reads files only, through the small
 // part of an `ExecutionEnv` it needs, so it runs where the files are as well as in a Session: the Workspace DO runs it
 // next to its own storage (`discoverSkills` of `SkillSource`), so a request costs one RPC however many skills there are.

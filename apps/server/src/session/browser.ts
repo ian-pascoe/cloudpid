@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain factory functions.
-// A Session's browser (`docs/spec.md` → Browser, ADR-0007): its host is a Durable Object of the `apps/browser` Worker, one
+// A Session's browser (`docs/architecture/browser.md`, ADR-0007): its host is a Durable Object of the `apps/browser` Worker, one
 // per Session, named by the Session's ID and reached over a Durable Object binding, as the codemode sandbox is
 // (`./codemode.ts`).
 import { BrowserError, type BrowserHostService } from "@cloudpid/extensions/browser";

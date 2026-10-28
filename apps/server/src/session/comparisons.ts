@@ -1,4 +1,4 @@
-// This branch on the Session socket (docs/spec.md → Diffs and review → Comparisons): the Session's Workspace serves the
+// This branch on the Session socket (docs/architecture/diffs-and-review.md → Comparisons): the Session's Workspace serves the
 // picker's repos, a repo's Comparison and a file's two sides, and the Session passes each on to the client that asked.
 // These are request commands, not a watch: a Comparison is fixed once its SHAs are. Only a `compare` that says so
 // (`startContainer`, the owner's pick or Refresh) may start a stopped Container.

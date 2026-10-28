@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off -- plain functions over a request's messages.
-// The Todo List in the model's context (`docs/spec.md` → Todo). pi-todo keeps hidden snapshots of the list among the
+// The Todo List in the model's context (`docs/architecture/agent-capabilities.md` → Todo). pi-todo keeps hidden snapshots of the list among the
 // messages, each at a fixed place with fixed text, and re-places one after a compaction. Here the list is a document
 // that a Handoff or compaction never touches, and the context needs it back in three cases. The first two are handled
 // at a place that stays the same for as long as the context lasts, so the provider's prompt cache keeps hitting:

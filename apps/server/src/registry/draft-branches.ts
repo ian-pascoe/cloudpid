@@ -1,4 +1,4 @@
-// The draft's Start from menu (`docs/spec.md` → Session list → New session): the branches of each of an Environment's
+// The draft's Start from menu (`docs/architecture/client-and-protocol.md` → Session list → New session): the branches of each of an Environment's
 // Repos, asked of GitHub by the main Worker with a read-only token of the GitHub App for the installation on the repo's
 // owner (ADR-0025) through the client the Diff pane's picker uses (`GithubPulls`), which keeps each repo's list for 60 s
 // per isolate. No Workspace or Container is woken.

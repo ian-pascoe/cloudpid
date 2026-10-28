@@ -1,4 +1,4 @@
-// A Workspace's clones on its Container (docs/spec.md → Workspaces, ADR-0016): one full clone of each of its
+// A Workspace's clones on its Container (docs/architecture/workspace.md → Workspaces, ADR-0016): one full clone of each of its
 // Environment's Repos at `<root>/<repo>`, all on the Workspace's branch, made when a Session first works in it, or ahead
 // of it on a spare Workspace's placeholder branch and switched when a Session takes the spare. These are bash scripts the
 // Container runs, with real git.
@@ -311,7 +311,7 @@ exit 0
 `;
 
 /**
- * What one clone of a Workspace has not pushed (docs/spec.md → Subagents): its uncommitted Changes (untracked files that
+ * What one clone of a Workspace has not pushed (docs/architecture/agent-capabilities.md → Subagents): its uncommitted Changes (untracked files that
  * are not ignored included) and the commits of a branch that no remote branch has. `cloned` is false for a Repo with no
  * clone there (or one the read printed nothing for); `onRemote` says whether `origin` has the branch, as the clone last
  * saw it; `head` is the branch the clone has checked out (null for a detached HEAD or no clone), so a clone a set-up left

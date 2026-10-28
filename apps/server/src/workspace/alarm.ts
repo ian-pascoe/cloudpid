@@ -1,5 +1,5 @@
-// The Workspace DO's one alarm, which a spare's preparation, a Build and the idle stop share (docs/spec.md → Container
-// and Toolchains → Idle stop): each step runs whatever became of the ones before it.
+// The Workspace DO's one alarm, which a spare's preparation, a Build and the idle stop share (docs/architecture/container.md →
+// Idle stop): each step runs whatever became of the ones before it.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off
 
 /** A step of the alarm: its name in a log line, and what it does. */

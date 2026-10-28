@@ -16,7 +16,7 @@ export { WorkspaceProxy, WorkspaceServiceProxy } from "@cloudflare/computer";
 export { Workspace } from "./Workspace.ts";
 
 /**
- * The report host of one Workspace's Container (docs/spec.md → Container and Toolchains → Exit reports): the Workspace
+ * The report host of one Workspace's Container (docs/architecture/container.md → Exit reports): the Workspace
  * DO intercepts `EXIT_REPORT_HOST` with it, naming itself in `props`. A report goes to the Workers logs and nowhere
  * else, so it needs nothing of the DO.
  */

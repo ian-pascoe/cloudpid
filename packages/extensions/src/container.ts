@@ -1,4 +1,4 @@
-// The `container` extension (`docs/spec.md` → Container and Toolchains → Restart by the agent, Resize by the agent): the
+// The `container` extension (`docs/architecture/container.md` → Restart by the agent, Resize by the agent): the
 // tools that act on the Container of the calling conversation's Workspace (the Session's, or its Subagent Workspace).
 // `container_restart` stops it so the next command starts a new one: the agent's way out of a Container that no longer
 // answers (every command hangs, `echo` included), which it cannot fix with a command. `container_resize` restarts it at

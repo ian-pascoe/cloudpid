@@ -1,4 +1,4 @@
-// Code mode (`docs/spec.md` → Agent capabilities, ADR-0005): pi-durable's `codemode` tool, whose scripts call the Session's
+// Code mode (`docs/architecture/agent-capabilities.md`, ADR-0005): pi-durable's `codemode` tool, whose scripts call the Session's
 // tools as nested calls. The QuickJS VM runs in a Durable Object of the separately deployed codemode sandbox Worker, one
 // object per Session; the tools and the journal that makes a script survive an eviction stay in the Session's Harness.
 // @effect-diagnostics missingPipeableSignature:off

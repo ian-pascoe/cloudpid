@@ -1,4 +1,4 @@
-// A line diff for the long values of an Agent change (`docs/spec.md` → Agent changes): a script or a `mise.toml` is
+// A line diff for the long values of an Agent change (`docs/architecture/agent-changes.md`): a script or a `mise.toml` is
 // shown as what was added and removed, with a few lines of the text around each change, instead of twice in full.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, called from React.
 import type { AgentChange, SkillChangeFiles } from "@cloudpid/protocol";

@@ -1,5 +1,5 @@
-// Polls the V8 heap of a workerd isolate through its inspector, for the Changes measurements (`docs/spec.md` → Known
-// risks and spikes). workerd reports no memory to the code it runs (`process.memoryUsage()` is all zeros), so the heap is
+// Polls the V8 heap of a workerd isolate through its inspector, for the Changes measurements (`docs/architecture/risks-and-spikes.md`).
+// workerd reports no memory to the code it runs (`process.memoryUsage()` is all zeros), so the heap is
 // read from outside: run the workerd tests with `--inspect --no-file-parallelism`, then this script, which writes one
 // `<epoch ms> <used bytes> <total bytes> <after gc: 0 or 1>` line per sample to stdout until the inspector goes away.
 // With a `gc` every (say 10), every that many samples is taken after a full garbage collection, so it is the live heap:

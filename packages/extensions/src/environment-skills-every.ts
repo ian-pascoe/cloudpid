@@ -1,5 +1,5 @@
 // The change to the Skills kept for every Environment that waits for the owner's Approval (ADR-0026, GLOSSARY.md →
-// Approval, `docs/spec.md` → Approval): `environment_skill_save`, `environment_skill_remove` and
+// Approval, `docs/architecture/agent-changes.md` → Approval): `environment_skill_save`, `environment_skill_remove` and
 // `environment_skill_install` with `id: "*"`. A Skill there steers every future Session, so it is where a
 // prompt-injected agent would plant instructions: the owner reads the Skill's files on the card (which says plainly what it could
 // not show), and the change is made only against what they were shown (a save's folder digest, an install's commit and

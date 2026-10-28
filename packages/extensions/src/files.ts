@@ -1,4 +1,4 @@
-// `ls`, `find`, and `grep`: pi's search tools over a Workspace's file system (docs/spec.md → Filesystem and tools,
+// `ls`, `find`, and `grep`: pi's search tools over a Workspace's file system (docs/architecture/workspace.md → Filesystem and tools,
 // ADR-0008). Their parameters and output follow local pi's (`packages/coding-agent/src/core/tools/{ls,find,grep}.ts`),
 // except where the Workspace's file system differs: it has no `.gitignore` handling, so `find` and `grep` skip
 // `node_modules` and `.git` instead, as local pi's `find` does for a custom backend.

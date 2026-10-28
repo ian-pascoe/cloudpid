@@ -1,4 +1,4 @@
-// The Container previews' routes (ADR-0023, `docs/spec.md` → Browser → Container preview): Browser Run sends a browser's
+// The Container previews' routes (ADR-0023, `docs/architecture/browser.md` → Container preview): Browser Run sends a browser's
 // requests for the hosts of `outboundByHost`, fixed when the browser is acquired, to a Worker of ours instead of the
 // network. Each of the eight Container preview hosts (`http://<port>.cloudpid.internal/`) goes to the `ContainerPreviews`
 // entrypoint this Worker exports, made for the Session's Workspace, which hands the request to the Workspaces Worker's

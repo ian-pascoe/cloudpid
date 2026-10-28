@@ -26,7 +26,7 @@ export const settingsStateAtom = Atom.map(settingsAtom, (result) =>
 export const settingsLoadErrorAtom = Atom.map(settingsAtom, failureOf);
 
 /**
- * The Settings' Agent changes (`docs/spec.md` → Agent changes), newest first, asked again every few seconds while the
+ * The Settings' Agent changes (`docs/architecture/agent-changes.md`), newest first, asked again every few seconds while the
  * page is visible: a Session's agent makes them, which the page hears of no other way.
  */
 export const settingsChangesAtom = RegistryClient.query("listSettingsChanges", undefined, {

@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-// The `skill-search` extension (ADR-0026, `docs/spec.md` → _Installing from GitHub_): `skill_search` searches skills.sh
+// The `skill-search` extension (ADR-0026, `docs/architecture/workspace.md` → _Installing from GitHub_): `skill_search` searches skills.sh
 // (its undocumented `/api/search`) for Skills and returns each one's ID, source and install count. It records nothing and
 // needs no GitHub token, so it runs in the Session DO; installing does not depend on it, and a failure of the search is
 // the tool's error result and breaks nothing else. Root conversation only (`PARENT_ONLY_TOOLS`), and deferred unless the

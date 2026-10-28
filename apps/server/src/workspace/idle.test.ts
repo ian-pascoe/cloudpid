@@ -1,4 +1,4 @@
-// The Container's idle stop (docs/spec.md → Container and Toolchains): a Workspace stops its Container once no command
+// The Container's idle stop (docs/architecture/container.md): a Workspace stops its Container once no command
 // has used it for the idle time. The Workspace DO's alarm and storage are faked; the clock is a number the test moves.
 // @effect-diagnostics asyncFunction:off
 import { describe, expect, it } from "vitest";

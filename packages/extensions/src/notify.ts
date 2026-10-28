@@ -1,4 +1,4 @@
-// Telling the owner (`docs/spec.md` → Client and protocol → Notifications): what a Session can push to the owner's
+// Telling the owner (`docs/architecture/client-and-protocol.md` → Notifications): what a Session can push to the owner's
 // devices, and the service an extension yields to do it. The Session DO provides the service; extensions that need the
 // owner (the secrets request, a Browser Handoff) depend only on this module.
 import * as Context from "effect/Context";
@@ -26,7 +26,7 @@ export type PushEvent =
   | { readonly kind: "failed"; readonly reason?: string | undefined }
   /**
    * The agent waits for the owner: to enter the Secrets `names`, or, with `approval`, to approve the change it names
-   * (`docs/spec.md` → Approval).
+   * (`docs/architecture/agent-changes.md` → Approval).
    */
   | {
       readonly kind: "input";

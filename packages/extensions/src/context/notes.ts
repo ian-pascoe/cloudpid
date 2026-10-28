@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over the Notes document's JSON.
-// A conversation's Notes and its last saved Handoff, as one conversation document (`docs/spec.md` → Context
+// A conversation's Notes and its last saved Handoff, as one conversation document (`docs/architecture/agent-capabilities.md` → Context
 // management). Documents are not part of the transcript, so a Handoff, which starts a new context, leaves them as they
 // are; a fork starts with the Notes its source has then.
 import { type ConversationId, defineDoc } from "@earendil-works/pi-durable";

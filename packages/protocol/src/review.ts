@@ -1,4 +1,4 @@
-// A Review (GLOSSARY.md → Review; `docs/spec.md` → Diffs and review → Annotations and Reviews): the owner's drafts sent
+// A Review (GLOSSARY.md → Review; `docs/architecture/diffs-and-review.md` → Annotations and Reviews): the owner's drafts sent
 // together as one message. The model gets Markdown, after the owner's summary; the `cloudpid.user` entry's data keeps
 // where each Annotation's quote and text sit in that Markdown, so the transcript's Review card shows them without the
 // entry holding them twice (at the limits, twice would not fit one stored message).

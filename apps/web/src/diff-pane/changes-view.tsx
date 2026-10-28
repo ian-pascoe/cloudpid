@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- the Pane's files, over native arrays and maps.
 
-// The Diff pane's files in one scroll (`docs/spec.md` → Diffs and review → Diff pane): one virtualized `CodeView` with
+// The Diff pane's files in one scroll (`docs/architecture/diffs-and-review.md` → Diff pane): one virtualized `CodeView` with
 // sticky headers that fold, highlighting on the Worker Pool. A file's contents are asked for (`change_file`) only while
 // it is unfolded and near the visible window, the ones in view first, at most 4 at a time (`loader.ts`, driven from
 // `view-atoms.ts`), and lined up in the line-up worker, past whose 2 s the file shows as a whole-file replacement, marked

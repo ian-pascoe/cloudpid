@@ -1,4 +1,4 @@
-// Changes (GLOSSARY.md → Diffs and review; docs/spec.md → Diffs and review → Changes; ADR-0022): each repo's working
+// Changes (GLOSSARY.md → Diffs and review; docs/architecture/diffs-and-review.md → Changes; ADR-0022): each repo's working
 // tree against its HEAD, as the Workspace DO lists it. Two calls, a list of the repos a directory covers and one file's
 // two sides, and the backend is chosen inside, so no caller knows which ran:
 //
@@ -45,7 +45,7 @@ import { MAX_PACK_BYTES, packfileBytes } from "./git.ts";
 /**
  * The most tracked files a repo may have for the Workspace DO to list its Changes itself; past it, the Container's git
  * does. A listing reads and hashes every tracked file, about 1.2 ms and 5 KB of heap each in workerd: 2,000 is about
- * 2.5 s and 10 MB (docs/spec.md → Known risks and spikes → Changes in the Workspace DO), during which the listing lets
+ * 2.5 s and 10 MB (docs/architecture/risks-and-spikes.md → Changes in the Workspace DO), during which the listing lets
  * the Workspace DO's other calls in every `YIELD_EVERY` reads.
  */
 export const MAX_TRACKED_FILES = 2_000;

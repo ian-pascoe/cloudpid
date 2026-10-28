@@ -1,4 +1,4 @@
-// Changes (GLOSSARY.md → Diffs and review; `docs/spec.md` → Diffs and review → Changes): each Repo's working tree
+// Changes (GLOSSARY.md → Diffs and review; `docs/architecture/diffs-and-review.md` → Changes): each Repo's working tree
 // against its HEAD, as the Workspace DO lists it and the Session socket carries it (`watch_changes`, `change_file`).
 import * as Schema from "effect/Schema";
 

@@ -1,4 +1,4 @@
-// Pull request Comparisons in the Workspace module (docs/spec.md → Diffs and review → Comparisons): the Workspace DO's files
+// Pull request Comparisons in the Workspace module (docs/architecture/diffs-and-review.md → Comparisons): the Workspace DO's files
 // are a temp directory, the Container is bash running the real script on it with real git, and GitHub's API is a stub that
 // answers by path. Nothing here starts a Container the call may not start.
 // @effect-diagnostics asyncFunction:off globalDate:off nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off globalFetch:off newPromise:off globalTimers:off

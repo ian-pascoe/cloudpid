@@ -1,4 +1,4 @@
-// The Session socket (`docs/spec.md` → Client and protocol, ADR-0009): clients' hibernatable WebSockets to the Session
+// The Session socket (`docs/architecture/client-and-protocol.md`, ADR-0009): clients' hibernatable WebSockets to the Session
 // DO, carrying `@cloudpid/protocol`'s Session messages. As in the socket glue of Cloudflare's `agents` pi example,
 // watches live in memory and each socket's attachment names the conversations it watches, so an instance woken from
 // hibernation restarts them, each with a fresh snapshot, on sockets that never closed.

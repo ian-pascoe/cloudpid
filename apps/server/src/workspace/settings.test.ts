@@ -1,4 +1,4 @@
-// A Workspace's own settings in its Durable Object's storage (docs/spec.md → Container and Toolchains → Container settings).
+// A Workspace's own settings in its Durable Object's storage (docs/architecture/container.md → Container settings).
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";

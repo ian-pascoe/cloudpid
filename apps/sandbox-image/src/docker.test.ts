@@ -1,4 +1,4 @@
-// Docker in the Container (docs/spec.md → Container and Toolchains → Docker, ADR-0016): the daemon's configuration the
+// Docker in the Container (docs/architecture/container.md → Docker, ADR-0016): the daemon's configuration the
 // image ships, and `cloudpid-dockerd`, the helper a Start Script calls to bring the daemon up. The helper runs for
 // real, under bash, around a fake `dockerd` and `docker`.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off asyncFunction:off newPromise:off

@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off -- pi's `TelemetryContext` takes callbacks that return promises.
-// pi-telemetry → Effect `Tracer` (`docs/spec.md` → Operations → Telemetry). pi code starts spans through a
+// pi-telemetry → Effect `Tracer` (`docs/architecture/operations.md` → Telemetry). pi code starts spans through a
 // `TelemetryContext`, passing the parent explicitly; this one makes each of them an Effect span, so pi's spans and
 // Effect's (`Effect.withSpan`, `Effect.fn`) are made by one tracer and nest in one trace. Which tracer decides where
 // they go: `workersTracer` sends them to Workers Observability.

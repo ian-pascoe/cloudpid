@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
-// The `secrets` extension (`docs/spec.md` → Secrets), ported from pi-secret's `pi-secret-extension.ts` (see
+// The `secrets` extension (`docs/architecture/agent-capabilities.md` → Secrets), ported from pi-secret's `pi-secret-extension.ts` (see
 // ../../NOTICE.md): `secret_ask`, `secret_list`, and `secret_forget`; a `beforeTool` hook that blocks calls referencing
 // a Secret the Session does not hold; an `afterTool` hook that redacts every result; and wraps that resolve references
 // in the tools that use Secrets. Provider requests are scrubbed at the Session's model seam (`./models.ts`), which the
@@ -482,8 +482,8 @@ export const secretsExtension = (
           // So the call's result is redacted of the kept Secrets (`afterTool`) also when it references none.
           yield* secrets.refresh;
 
-          // The `environment` tools save plain values as written and resolve no Secret Reference (`docs/spec.md` →
-          // Agent changes): a reference in their arguments is text, whether or not the Session holds it.
+          // The `environment` tools save plain values as written and resolve no Secret Reference (`docs/architecture/agent-changes.md`):
+          // a reference in their arguments is text, whether or not the Session holds it.
           if (call.name.startsWith(ENVIRONMENT_TOOL_PREFIX)) return undefined;
 
           const names = [...referencedSecretNames(call.arguments)];

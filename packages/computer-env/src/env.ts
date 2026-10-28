@@ -1,4 +1,4 @@
-// `ComputerExecutionEnv`: pi-durable's `ExecutionEnv` over a Workspace DO stub (docs/spec.md → Filesystem and tools).
+// `ComputerExecutionEnv`: pi-durable's `ExecutionEnv` over a Workspace DO stub (docs/architecture/workspace.md → Filesystem and tools).
 // File operations run in the Workspace DO and answer plain data (`host.ts`); commands run on the Workspace's runtime
 // through `@cloudflare/computer`'s RPC client (`exec.ts`).
 // pi-durable's `ExecutionEnv` is Promise-native and stays so (ADR-0003); this adapter follows it.

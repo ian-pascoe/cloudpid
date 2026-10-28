@@ -1,4 +1,4 @@
-// The Container's memory guard (docs/spec.md → Container and Toolchains → Memory guard): earlyoom, which the image's
+// The Container's memory guard (docs/architecture/container.md → Memory guard): earlyoom, which the image's
 // supervisor runs beside computerd through `image/cloudpid-memory-guard`, and the note each command gets when the
 // guard stopped a process while it ran. The Workspace DO imports it (through `toolchainEnv`): no Node built-ins here,
 // since it runs in a Worker. The scripts in `image/` repeat these values; `memory-guard.test.ts` fails when they differ.

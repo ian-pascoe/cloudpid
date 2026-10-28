@@ -1,4 +1,4 @@
-// A Review's crops (`docs/spec.md` → Diffs and review → Annotations and Reviews): each page Annotation's crop of the
+// A Review's crops (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): each page Annotation's crop of the
 // Pane's screen goes to the model as an image after the message's other parts, named by a line of text before it. They
 // are fitted into what the message leaves: at most `MAX_REVIEW_CROPS` of them, within the base64 characters of
 // `INLINE_IMAGE_BUDGET` the message's other images (the attached pages' screens, the Attachments' pictures) leave, and

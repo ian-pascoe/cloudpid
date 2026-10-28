@@ -1,4 +1,4 @@
-// The Container's side of Changes (docs/spec.md → Diffs and review → Changes, ADR-0022): the fallback the Workspace DO
+// The Container's side of Changes (docs/architecture/diffs-and-review.md → Changes, ADR-0022): the fallback the Workspace DO
 // runs, with real git, for a repo isomorphic-git cannot be trusted with. Its list is `git diff HEAD -M` on a private copy
 // of the index (`GIT_INDEX_FILE`), with the untracked files added there as intent-to-add, so the shared `.git/index`
 // is never written; a file's HEAD side is the blob itself. These are bash scripts and their parsers; no Node built-ins,

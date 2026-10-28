@@ -1,4 +1,4 @@
-// A Container preview (ADR-0023, `docs/spec.md` → Browser → Container preview): a request a page of the Session's
+// A Container preview (ADR-0023, `docs/architecture/browser.md` → Container preview): a request a page of the Session's
 // browser made to `http://<port>.cloudpid.internal/`, which Browser Run sent to the browser Worker's `ContainerPreviews`
 // entrypoint, which hands it here through the Workspaces Worker's `WorkspaceContainerPreviews`. It is answered from the
 // Container's port (`getTcpPort`, as computer's `fetchPort` does), on the Container's interface, so a dev server must

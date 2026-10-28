@@ -1,6 +1,6 @@
 // The coding tools: pi-durable's `write` and `edit`; its `read`, wrapped so every image it returns fits the
-// conversation (`./images/read.ts`, docs/spec.md → Filesystem and tools); and a `bash` that chooses where its command
-// runs (docs/spec.md → Backends). `bash` is pi-durable's own tool with one more argument, `backend`; the rest of its
+// conversation (`./images/read.ts`, docs/architecture/workspace.md → Filesystem and tools); and a `bash` that chooses where its command
+// runs (docs/architecture/workspace.md → Backends). `bash` is pi-durable's own tool with one more argument, `backend`; the rest of its
 // behavior (streaming, output limits, spill, exit status) is pi-durable's.
 //
 // A call that names a `backend` runs there. One that names none is routed by its command (`bash-routing.ts`): the Worker

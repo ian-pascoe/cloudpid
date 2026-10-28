@@ -1,5 +1,5 @@
-// What `environment_skill_save` and `environment_skill_remove` are built over and say (ADR-0026, `docs/spec.md` → Agent
-// changes): the Session's `EnvironmentSkills` service they call, what each call can come to (`SkillSaved`,
+// What `environment_skill_save` and `environment_skill_remove` are built over and say (ADR-0026, `docs/architecture/agent-changes.md`):
+// the Session's `EnvironmentSkills` service they call, what each call can come to (`SkillSaved`,
 // `SkillRemoved`), and the results they give for each, shared by a change to an Environment's own Skills and one to those
 // kept for every Environment (which waits for the owner's Approval first: `./environment-skills-every.ts`).
 //

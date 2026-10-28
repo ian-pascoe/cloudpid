@@ -1,4 +1,4 @@
-// Last run on the Session (docs/spec.md → Diffs and review → Run diff): the Session's Workspace keeps a copy of its repos'
+// Last run on the Session (docs/architecture/diffs-and-review.md → Run diff): the Session's Workspace keeps a copy of its repos'
 // files from before the Run's first writing call and another from its end, and this object tells it when each moment
 // comes and every client where the Run stands.
 //

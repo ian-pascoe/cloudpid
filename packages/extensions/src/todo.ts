@@ -1,4 +1,4 @@
-// The `todo` extension (`docs/spec.md` → Todo): pi-todo's `todo` tool, rebuilt on a conversation document. The list is
+// The `todo` extension (`docs/architecture/agent-capabilities.md` → Todo): pi-todo's `todo` tool, rebuilt on a conversation document. The list is
 // a document, so it outlives a Handoff or a compaction, and a request that no longer shows the list gets it put back
 // (`./todo/projection.ts`). Every conversation has its own list, a subagent's included.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- `clearTodoList` is a plain function run inside a pi-durable commit, which is Promise code.

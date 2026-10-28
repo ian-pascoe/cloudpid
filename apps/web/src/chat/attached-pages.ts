@@ -1,6 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain helpers and an atom family.
 
-// What the composer offers to attach (`docs/spec.md` → Attached pages): the Owner tabs the Browser Pane's tab strip lists
+// What the composer offers to attach (`docs/architecture/client-and-protocol.md` → Attached pages): the Owner tabs the Browser Pane's tab strip lists
 // (`ownerTabsAtom`: their IDs and titles, and the one shown), asked of the Session while a composer of it is open and
 // again when its page menu opens, and what attaching one takes: the Browser Pane's latest screen if it is the Owner tab
 // shown.

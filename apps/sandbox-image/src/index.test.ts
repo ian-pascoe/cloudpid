@@ -1,5 +1,5 @@
 // The sandbox image's seam with the Workspace DO: the computerd inside it must be the version of
-// `@cloudflare/computer` the DO runs (docs/spec.md → Known risks: pin versions and keep the image and package in
+// `@cloudflare/computer` the DO runs (docs/architecture/risks-and-spikes.md: pin versions and keep the image and package in
 // lockstep). A mismatch speaks a different sync protocol and fails only once a Container starts.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off
 import { readFileSync } from "node:fs";

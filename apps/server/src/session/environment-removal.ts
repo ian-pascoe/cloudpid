@@ -1,4 +1,4 @@
-// The deletes the agent makes once the owner approved them (`@cloudpid/extensions/approval-tools`, `docs/spec.md` →
+// The deletes the agent makes once the owner approved them (`@cloudpid/extensions/approval-tools`, `docs/architecture/agent-changes.md` →
 // Approval): an Environment, deleted as the owner's delete on the Environments page deletes it (`removals`, which the
 // main Worker's endpoint runs too), and a Secret kept for an Environment, deleted and recorded by the Registry
 // (`agentDeleteSecret`), after which the Builds' upkeep runs as after the owner's delete.

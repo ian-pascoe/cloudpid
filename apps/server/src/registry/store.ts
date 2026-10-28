@@ -21,7 +21,7 @@ import { SessionStatus } from "../session/status.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
 import { dropUnreferencedSkillFiles } from "./skills.ts";
 
-// The Registry's tables over the Registry DO's SQLite storage (`docs/spec.md` → Durable Objects). Synchronous, as
+// The Registry's tables over the Registry DO's SQLite storage (`docs/architecture/overview.md` → Durable Objects). Synchronous, as
 // SQLite in a Durable Object is, and given the time by its caller so tests control it.
 
 export type { SessionAgent, SessionStatus };
@@ -159,7 +159,7 @@ export type SpareUpkeep = {
 };
 
 /**
- * What the Registry knows of an Environment's Build (docs/spec.md → Builds), as the Build's object last answered: its
+ * What the Registry knows of an Environment's Build (docs/architecture/container.md → Builds), as the Build's object last answered: its
  * last good Build, which new Workspaces start from, and the one in progress or the last failure.
  */
 export type BuildRecord = {
@@ -167,7 +167,7 @@ export type BuildRecord = {
   readonly status: BuildProgress | null;
 };
 
-/** A kept Secret's sealed value with what it is kept as (`docs/spec.md` → Secrets): the Registry DO opens it. */
+/** A kept Secret's sealed value with what it is kept as (`docs/architecture/agent-capabilities.md` → Secrets): the Registry DO opens it. */
 export type StoredEnvironmentSecret = EnvironmentSecretRecord & { readonly sealed: SealedValue };
 
 /** How keeping a Secret went: its record, or its Environment does not exist, or its scope holds as many as it may. */
@@ -679,7 +679,7 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("ALTER TABLE environments ADD COLUMN build_status TEXT");
   },
   // 14: the Secrets kept for an Environment, or for every Environment (`*`), each value sealed by the Registry DO
-  // under a key bound to its scope and name (docs/spec.md → Secrets). None before.
+  // under a key bound to its scope and name (docs/architecture/agent-capabilities.md → Secrets). None before.
   (sql) => {
     sql.exec(`CREATE TABLE environment_secrets (
       scope TEXT NOT NULL,
@@ -735,7 +735,7 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("ALTER TABLE workspaces ADD COLUMN subagent TEXT");
     sql.exec("CREATE INDEX workspaces_by_session ON workspaces (session, subagent)");
   },
-  // 20: whether the owner dismissed an Agent change from its list (`docs/spec.md` → Agent changes): 1 once dismissed,
+  // 20: whether the owner dismissed an Agent change from its list (`docs/architecture/agent-changes.md`): 1 once dismissed,
   // 0 for every other, all of those stored before. A dismissed change stays recorded, and what it changed stays.
   (sql) => {
     sql.exec("ALTER TABLE agent_changes ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0");

@@ -1,4 +1,4 @@
-// The Session's Browser Handoffs (`docs/spec.md` → Browser): the requests for the owner to take over the browser, kept in
+// The Session's Browser Handoffs (`docs/architecture/browser.md`): the requests for the owner to take over the browser, kept in
 // this object's storage and sent to every client over the Session socket. None carries a Live View link: the owner's
 // Live View asks for its own with `live_view` (`./sockets.ts`), answered to that client alone.
 import {

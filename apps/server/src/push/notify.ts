@@ -1,5 +1,5 @@
 // @effect-diagnostics preferSchemaOverJson:off -- the payload is JSON text for the service worker, not a parsed value.
-// Sending a Session's notification to every subscribed browser (`docs/spec.md` → Client and protocol → Notifications).
+// Sending a Session's notification to every subscribed browser (`docs/architecture/client-and-protocol.md` → Notifications).
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

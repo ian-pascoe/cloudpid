@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
-// Secret References (`docs/spec.md` → Secrets), ported from pi-secret's `secret-references.ts` (see ../../NOTICE.md):
+// Secret References (`docs/architecture/agent-capabilities.md` → Secrets), ported from pi-secret's `secret-references.ts` (see ../../NOTICE.md):
 // a double-brace placeholder in any string argument, which the Secrets wrapper replaces with the value just before
 // the tool runs, and an environment variable under `SECRET_ENV_PREFIX` in commands, which it injects into the
 // command's environment. A backslash right before either form writes it as literal text.

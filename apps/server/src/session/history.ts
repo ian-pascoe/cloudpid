@@ -1,5 +1,5 @@
 // `history`: a page of a conversation's History before a given entry, for the transcript to show what its snapshot no
-// longer holds once a Rollover or a compaction started a new Context Window (docs/spec.md → Client and protocol).
+// longer holds once a Rollover or a compaction started a new Context Window (docs/architecture/client-and-protocol.md).
 // @effect-diagnostics missingPipeableSignature:off -- a reader and an entry ID in, a page out.
 import {
   type HistoryPage,

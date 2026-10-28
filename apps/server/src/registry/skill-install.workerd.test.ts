@@ -1,4 +1,4 @@
-// Installing Skills from GitHub into an Environment over real Durable Object SQLite (ADR-0026, docs/spec.md → Installing
+// Installing Skills from GitHub into an Environment over real Durable Object SQLite (ADR-0026, docs/architecture/workspace.md → Installing
 // from GitHub): fetched through a fake `RepoReader`, kept with their Skill source, recorded as Agent changes when the agent
 // installs and as nothing when the owner does, and put back with their source by a revert.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.

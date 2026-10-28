@@ -1,4 +1,4 @@
-// Fitting a message's inline images into what one message may hold (`docs/spec.md` → Client and protocol →
+// Fitting a message's inline images into what one message may hold (`docs/architecture/client-and-protocol.md` →
 // Attachments): every attached image goes to the model downscaled to a 1568 px long edge and re-encoded, at one quality
 // for all of them, the best at which they share `INLINE_IMAGE_BUDGET` base64 characters. When even the lowest quality
 // does not fit, the largest image goes as a file only, and the rest are fitted again; so does one that fails to encode.

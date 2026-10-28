@@ -1,4 +1,4 @@
-# The Workspace Container's image (docs/spec.md → Container and Toolchains, ADR-0004): Ubuntu 26.04 LTS with fuse3, the
+# The Workspace Container's image (docs/architecture/container.md, ADR-0004): Ubuntu 26.04 LTS with fuse3, the
 # everyday command-line tools, a C toolchain, Docker, computerd under its supervisor with a memory guard, and mise with
 # its installs of the base mise.toml's Toolchains. Every program a project uses is a mise Toolchain; the image's installs are only found by mise for a
 # Workspace that asks for those versions. The image is glibc-based because computerd is a glibc Node SEA, and
@@ -49,7 +49,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Docker's daemon without iptables or IP forwarding, which the Container's read-only /proc/sys refuses, and the helper
-# a Start Script brings it up with (docs/spec.md → Container and Toolchains → Docker).
+# a Start Script brings it up with (docs/architecture/container.md → Docker).
 COPY daemon.json /etc/docker/daemon.json
 COPY --chmod=755 cloudpid-dockerd /usr/local/bin/cloudpid-dockerd
 
@@ -73,7 +73,7 @@ COPY --chmod=755 supervise /usr/local/bin/cloudpid-supervise
 
 # The memory guard, which the supervisor runs: earlyoom (an apt package above), and a note for the commands that run
 # when it stops a process, which the file every command's bash reads first (BASH_ENV) prints when the command ends
-# (docs/spec.md → Container and Toolchains → Memory guard).
+# (docs/architecture/container.md → Memory guard).
 COPY --chmod=755 cloudpid-memory-guard /usr/local/bin/cloudpid-memory-guard
 COPY command.bash /usr/local/share/cloudpid/command.bash
 
@@ -84,8 +84,8 @@ COPY command.bash /usr/local/share/cloudpid/command.bash
 # computerd passes on to a command, so it is the one set here: mise's other settings reach a command in its exec
 # environment (apps/sandbox-image/src/toolchains.ts).
 # computerd keeps its copy of the Workspace in COMPUTERD_DB, on the Container's disk, so a snapshot holds it with its
-# sync positions: a Container restored from one is sent only what changed since, not every file (docs/spec.md →
-# Container and Toolchains → Snapshots). In memory, the default, it is rebuilt from the Workspace DO at each start.
+# sync positions: a Container restored from one is sent only what changed since, not every file (docs/architecture/container.md →
+# Snapshots). In memory, the default, it is rebuilt from the Workspace DO at each start.
 ENV PORT=8080 \
     MOUNT_POINT=/workspace \
     FUSE_MOUNT=auto \
@@ -95,5 +95,5 @@ RUN mkdir -p /var/lib/computerd
 EXPOSE 8080
 
 # computerd runs under a supervisor that reports why it stopped, when it stops on its own, to the Workspace DO
-# (`supervise`; docs/spec.md → Container and Toolchains → Exit reports).
+# (`supervise`; docs/architecture/container.md → Exit reports).
 ENTRYPOINT ["/usr/local/bin/cloudpid-supervise"]

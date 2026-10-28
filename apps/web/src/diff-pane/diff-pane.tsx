@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- the Pane's files, over native arrays, sets and maps.
 
-// The Diff pane (`docs/spec.md` → Diffs and review → Diff pane): one per Session page, on the Session's Changes, and one
+// The Diff pane (`docs/architecture/diffs-and-review.md` → Diff pane): one per Session page, on the Session's Changes, and one
 // per Subagent page, on the Changes of the subagent's conversation's Workspace (ADR-0024); opened from the New pane, the
 // Session details and a Call diff card. A header with the source picker (the Changes, and on the Session page This
 // branch of each repo), Refresh, "may be out of date" (Changes) or what a Comparison is of (branch, base, merge-base,

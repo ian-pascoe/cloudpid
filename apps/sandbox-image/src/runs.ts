@@ -1,4 +1,4 @@
-// The Container's side of the Run diff's copies (docs/spec.md → Diffs and review → Run diff, ADR-0022): for a repo the
+// The Container's side of the Run diff's copies (docs/architecture/diffs-and-review.md → Run diff, ADR-0022): for a repo the
 // Workspace DO cannot list itself (the Container's git is the fallback Changes uses too), one command that saves the
 // working tree as git objects, a tree and a commit under `refs/cloudpid/runs/<scope>/{start,end}`. It runs on a private
 // copy of the repo's index (`GIT_INDEX_FILE`, which keeps the stat data of the files git has already seen, so only the

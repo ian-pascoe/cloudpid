@@ -1,5 +1,5 @@
-// The Call diff of an `edit` or `write` card, and of the calls a `codemode` card lists (`docs/spec.md` → Diffs and
-// review): what the call recorded of its change, its `+n −m`, the cap on how much of the patch a card shows, and whether
+// The Call diff of an `edit` or `write` card, and of the calls a `codemode` card lists (`docs/architecture/diffs-and-review.md`):
+// what the call recorded of its change, its `+n −m`, the cap on how much of the patch a card shows, and whether
 // it is laid out split or stacked.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, called from React.
 import * as Arr from "effect/Array";

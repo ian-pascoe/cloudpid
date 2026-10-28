@@ -1,4 +1,4 @@
-// Who drives the owner's Owner tabs (`docs/spec.md` → Browser → Browser Pane): the `browser` calls working in one, sent to
+// Who drives the owner's Owner tabs (`docs/architecture/browser.md` → Browser Pane): the `browser` calls working in one, sent to
 // every client over the Session socket whenever they change (and to each client on connect, `./sockets.ts`), for the
 // Browser Pane to show that the agent is driving.
 import { type OwnerTabDrivers, ownerTabDriversLayer } from "@cloudpid/extensions/browser";

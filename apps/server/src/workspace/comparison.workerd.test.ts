@@ -1,4 +1,4 @@
-// This branch in the Workspace DO (docs/spec.md → Diffs and review → Comparisons), over a repo real git made and the
+// This branch in the Workspace DO (docs/architecture/diffs-and-review.md → Comparisons), over a repo real git made and the
 // Container's command real git ran on it (`comparison.setup.ts`), written into a Workspace as computer's sync would.
 // The test Worker has no Container: a fake one answers the command with what real git printed, and is counted.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off

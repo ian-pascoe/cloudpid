@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- the exports are data-first functions and a plain-data factory, called directly, not combinators to pipe.
-// Generated Session titles (`docs/spec.md` → Client and protocol → Titles): after the root conversation's first answer, the
+// Generated Session titles (`docs/architecture/client-and-protocol.md` → Titles): after the root conversation's first answer, the
 // `small` role's model names the Session in 3 to 6 words, and the Registry keeps the title unless the owner named the
 // Session first. The task runs beside the Run, never inside it, and what it needs to be sure of is kept in storage:
 // whether it is done, and how often it failed, so an eviction costs one attempt and a later answer tries again.

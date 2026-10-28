@@ -1,4 +1,4 @@
-// What the browser knows of a Session through its socket (`docs/spec.md` → Client and protocol): the shape
+// What the browser knows of a Session through its socket (`docs/architecture/client-and-protocol.md`): the shape
 // `SessionClient` keeps in its `SubscriptionRef`, and the types of what its commands take.
 
 import {
@@ -164,7 +164,7 @@ export interface SessionState {
    * of its last list; a conversation is listed once the Session sends its first list, and dropped when it is unwatched.
    */
   readonly conversationChanges: Readonly<Record<string, ChangesState>>;
-  /** The Session's Last run (`docs/spec.md` → Diffs and review → Run diff), as of the last message; null when no Run has written. */
+  /** The Session's Last run (`docs/architecture/diffs-and-review.md` → Run diff), as of the last message; null when no Run has written. */
   readonly lastRun: LastRun | null;
   /** The active branch's Todo List, as of the last one the Session sent; empty until it sends one. */
   readonly todos: readonly TodoTask[];

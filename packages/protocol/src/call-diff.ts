@@ -1,4 +1,4 @@
-// What a tool result's `details` record of a change to a file (`docs/spec.md` → Diffs and review → Call diffs). The tools
+// What a tool result's `details` record of a change to a file (`docs/architecture/diffs-and-review.md` → Call diffs). The tools
 // that write it (`write`, and `codemode` for the calls its script made: `@cloudpid/extensions/call-diff`) and the web
 // app that reads it share this one shape.
 // @effect-diagnostics missingPipeableSignature:off -- the decoder is called with a value, not piped.

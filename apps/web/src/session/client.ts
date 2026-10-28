@@ -1,4 +1,4 @@
-// The browser's end of a Session socket (`docs/spec.md` → Client and protocol, ADR-0009), as an Effect program: it
+// The browser's end of a Session socket (`docs/architecture/client-and-protocol.md`, ADR-0009), as an Effect program: it
 // connects, watches the root conversation the Session names in `hello`, folds the events into a `SessionView` kept in a
 // `SubscriptionRef`, sends the owner's commands, and keeps the connection alive: a heartbeat, and a reconnect with a
 // fresh watch after any close. It lives in a scope: closing it closes the socket and stops its fibers.
@@ -207,7 +207,7 @@ export interface SessionClient {
     conversationId?: number,
   ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
-   * The repos the Diff pane's picker lists, each with its HEAD (`docs/spec.md` → Diffs and review → Comparisons). It never
+   * The repos the Diff pane's picker lists, each with its HEAD (`docs/architecture/diffs-and-review.md` → Comparisons). It never
    * starts the Container. Fails as `catalog` does.
    */
   readonly comparisonSources: (options?: {
@@ -239,7 +239,7 @@ export interface SessionClient {
     query: Omit<Extract<ClientMessage, { type: "comparison_file" }>, "type" | "id">,
   ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
-   * The Run diff of the Session's Last run (`docs/spec.md` → Diffs and review → Run diff), or null while no Run has written.
+   * The Run diff of the Session's Last run (`docs/architecture/diffs-and-review.md` → Run diff), or null while no Run has written.
    * A live Run's list is made again at each ask. It never starts the Container. Fails as `catalog` does.
    */
   readonly runDiff: Effect.Effect<RunDiff | null, SessionCommandError>;
@@ -248,7 +248,7 @@ export interface SessionClient {
     query: Omit<Extract<ClientMessage, { type: "run_file" }>, "type" | "id">,
   ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
-   * Save draft Annotation `annotation`, new or edited (`docs/spec.md` → Diffs and review → Annotations and Reviews): done
+   * Save draft Annotation `annotation`, new or edited (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): done
    * once the Session has it, and every client then has the new list in `annotations`. Fails as `catalog` does, and with
    * the Session's refusal past 100 drafts.
    */
@@ -275,7 +275,7 @@ export interface SessionClient {
     keep?: SecretKeep,
   ) => Effect.Effect<void>;
   /**
-   * Answer Approval request `request` (`docs/spec.md` → Approval): `approve` lets the agent make the change; a Decline
+   * Answer Approval request `request` (`docs/architecture/agent-changes.md` → Approval): `approve` lets the agent make the change; a Decline
    * may give the agent the owner's `reason`. The Session's next `approval_requests` closes the card, and a refusal (the
    * request was answered elsewhere, or its call ended) shows as `failure`.
    */

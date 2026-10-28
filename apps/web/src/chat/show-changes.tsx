@@ -1,4 +1,4 @@
-// "Show changes" under the final answer of the Session's latest writing Run (`docs/spec.md` → Diffs and review → Run
+// "Show changes" under the final answer of the Session's latest writing Run (`docs/architecture/diffs-and-review.md` → Run
 // diff): what the Run changed, summed up as the Session details sum up the Changes ("1 file +13 −0"), which opens the
 // Diff pane on the Last run. Only that one answer has it: not an older Run's, not while the Run is live, and not a Run
 // that changed no file (a `bash` call that only read, or one whose diff lists no file: nothing captured, or nothing

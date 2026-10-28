@@ -1,4 +1,4 @@
-// Last run (GLOSSARY.md → Run diff; `docs/spec.md` → Diffs and review → Run diff): the change the Session's latest
+// Last run (GLOSSARY.md → Run diff; `docs/architecture/diffs-and-review.md` → Run diff): the change the Session's latest
 // writing Run made to the files of its Workspace's repos, from a copy of each repo's tree saved before the Run's first
 // writing call to one saved at its end (the working tree while the Run is live). The Session tells every client where
 // the Run stands (`last_run`), and answers `run_diff` and `run_file` as it does for the Changes and Comparisons. A Run

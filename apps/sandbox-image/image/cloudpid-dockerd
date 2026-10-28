@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # cloudpid-dockerd: bring up Docker's daemon in this Container, for a Start Script to call before it starts services
-# (docs/spec.md → Container and Toolchains → Docker). Nothing runs systemd here, so nothing else starts it. It does
+# (docs/architecture/container.md → Docker). Nothing runs systemd here, so nothing else starts it. It does
 # nothing when the daemon answers already, and otherwise starts it detached, with its output in a log of its own, and
 # waits for it to answer. Two calls at once start one daemon. Arguments are passed on to dockerd.
 #

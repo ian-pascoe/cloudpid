@@ -1,4 +1,4 @@
-// The Container's Toolchain contract with the Workspace DO (docs/spec.md → Container and Toolchains, ADR-0004): which
+// The Container's Toolchain contract with the Workspace DO (docs/architecture/container.md, ADR-0004): which
 // paths stay container-local, what a command's environment carries, and what the bootstrap does on Container start.
 // The bootstrap runs for real, under bash, against a fake `mise` that records what it is asked.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off globalDate:off

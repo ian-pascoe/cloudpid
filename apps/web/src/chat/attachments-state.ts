@@ -1,4 +1,4 @@
-// A conversation's Attachments in its composer (`docs/spec.md` → Client and protocol → Attachments): each file uploads
+// A conversation's Attachments in its composer (`docs/architecture/client-and-protocol.md` → Attachments): each file uploads
 // once it is attached, one at a time in the order they came, with its progress; removing one before it is sent stops
 // its upload or deletes the stored file; and the pictures among them are fitted, while the owner writes, into what one
 // message may hold (`image-budget.ts`), so each tile says before sending whether its image goes inline. Kept while a
@@ -594,7 +594,7 @@ export const removeAttachmentAtom = Atom.family((key: ConversationKey) =>
   removeFrom(attachmentsProgramAtom(key)),
 );
 
-/** Attach an Owner tab to the conversation's message (`docs/spec.md` → Attached pages). */
+/** Attach an Owner tab to the conversation's message (`docs/architecture/client-and-protocol.md` → Attached pages). */
 export const addPageAtom = Atom.family((key: ConversationKey) =>
   addPageTo(attachmentsProgramAtom(key)),
 );

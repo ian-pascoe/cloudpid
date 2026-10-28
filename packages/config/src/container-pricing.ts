@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, not combinators.
-// What a Workspace's Container costs to run (`docs/spec.md` → Operations → Usage): Cloudflare's list prices for
+// What a Workspace's Container costs to run (`docs/architecture/operations.md` → Usage): Cloudflare's list prices for
 // Containers on the Workers Paid plan (https://developers.cloudflare.com/containers/pricing/, 2026-10), applied to each
 // size's resources. Memory and disk are billed on the provisioned size for as long as the Container runs, CPU on active
 // use only. The monthly allowance the plan includes is the account's, not a Workspace's, so it is not taken off.

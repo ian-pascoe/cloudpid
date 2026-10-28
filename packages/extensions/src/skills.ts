@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off
-// The `skills` extension (docs/spec.md → Filesystem and tools): a `skills` system prompt section that lists the skills
+// The `skills` extension (docs/architecture/workspace.md → Filesystem and tools): a `skills` system prompt section that lists the skills
 // the agent can read, the way local pi does (`formatSkillsForPrompt` in pi's coding agent): each skill's name,
 // description and the path of its `SKILL.md`, which the agent loads with `read` when a task matches. Skills are found
 // in the `.agents/skills` directory of the conversation's `cwd` and of each directory above it up to the Workspace root,

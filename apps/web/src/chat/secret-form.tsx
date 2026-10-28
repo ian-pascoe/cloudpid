@@ -36,7 +36,7 @@ const FormState = ScopedAtom.make(() =>
 );
 
 /**
- * The masked form for one Secret request (`docs/spec.md` → Secrets): a password field per name. The values are read
+ * The masked form for one Secret request (`docs/architecture/agent-capabilities.md` → Secrets): a password field per name. The values are read
  * from the form when it is submitted and sent once; nothing here keeps them, and they never enter the chat. An empty
  * field skips its name.
  */

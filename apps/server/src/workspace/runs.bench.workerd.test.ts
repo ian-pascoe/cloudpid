@@ -1,4 +1,4 @@
-// The Run copy measurements (docs/spec.md → Known risks and spikes): the copy before a Run, the copy and the frozen list at
+// The Run copy measurements (docs/architecture/risks-and-spikes.md): the copy before a Run, the copy and the frozen list at
 // its end, and a live Run diff, in a Workspace DO, on the repos of 1,000, 5,000 and 20,000 tracked files the Changes
 // measurements use (`changes.setup.ts`), ten files edited before the Run and ten during it. Skipped unless
 // `CHANGES_BENCH=1`. Times are taken here, around each call: workerd's clock stands still while code runs.

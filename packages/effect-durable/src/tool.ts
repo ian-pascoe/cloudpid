@@ -39,7 +39,7 @@ export type EffectToolDefinition<
   ) => Effect.Effect<ToolExecutionResult<TDetails>, E, R>;
 };
 
-/** Every model-facing tool name is snake_case (`docs/spec.md` → Tool naming). */
+/** Every model-facing tool name is snake_case (`docs/architecture/agent-capabilities.md` → Tool naming). */
 const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 
 /** Arguments the parameters do not model are rejected, by the JSON Schema and by the decoder alike. */

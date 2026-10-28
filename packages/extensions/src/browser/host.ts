@@ -1,4 +1,4 @@
-// The browser the Session's `browser` tool drives (`docs/spec.md` → Browser, ADR-0007): a Durable Object of the
+// The browser the Session's `browser` tool drives (`docs/architecture/browser.md`, ADR-0007): a Durable Object of the
 // `apps/browser` Worker, one per Session, which hosts `agents/browser`'s `Browser` on Browser Run and runs the model's
 // CDP code in a Worker Loader isolate. This is its contract from the Session's side, in plain data a Durable Object
 // RPC carries; the extension depends on it and not on `agents`, which only workerd can load.

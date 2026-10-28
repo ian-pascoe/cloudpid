@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a few dozen rects hit-tested at each tap, over native arrays, and plain functions rather than combinators.
 
-// The field map (`docs/spec.md` → Browser, #154): where the tab's editable elements are, so the Pane can decide at the
+// The field map (`docs/architecture/browser.md`, #154): where the tab's editable elements are, so the Pane can decide at the
 // end of a tap, inside the gesture iOS needs to open its keyboard, whether the tap landed in a field and which keyboard
 // it wants. One `Runtime.evaluate` of `FIELD_MAP_SCRIPT` reads it; the Pane reads it again when the frame scrolls (at
 // most every 250 ms), after a tap and input, and every second. Native pickers (`<select>`, date, time, colour inputs)

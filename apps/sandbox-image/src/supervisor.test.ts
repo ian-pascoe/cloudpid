@@ -1,4 +1,4 @@
-// The image's entrypoint (docs/spec.md → Container and Toolchains → Exit reports): computerd's output passes through,
+// The image's entrypoint (docs/architecture/container.md → Exit reports): computerd's output passes through,
 // and when computerd exits on its own its last lines reach the report host. The script runs for real, under bash,
 // around a fake computerd, and reports to a local HTTP server standing in for the Workspace DO's intercept.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off asyncFunction:off globalDate:off newPromise:off

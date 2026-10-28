@@ -32,7 +32,7 @@ import { type GitHubAppManifest, githubAppManifest, withDevEnvValues } from "./s
 /** The GitHub environments whose deploys bind the app's secrets. */
 const ENVIRONMENTS = ["production", "preview"];
 
-/** Where a workstation keeps its deploy secrets (AGENTS.md → Infra). */
+/** Where a workstation keeps its deploy secrets (docs/development/infra.md → Secrets and variables). */
 const DEV_ENV = join(homedir(), ".config", "cloudpid", "dev.env");
 
 /** The app's homepage: where `prod` is served. */

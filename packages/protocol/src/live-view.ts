@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain helpers over text.
-// The names a Browser Handoff's Live View is known by on both sides of the Session socket (`docs/spec.md` → Browser):
+// The names a Browser Handoff's Live View is known by on both sides of the Session socket (`docs/architecture/browser.md`):
 // its Pane's key and the query that opens it, and the words `live_view` fails with once the handoff is over; and the
 // words `owner_tab_view` fails with when the Browser Pane's Owner tab is gone. No imports, so the browser host's Worker
 // can take this module alone (`@cloudpid/protocol/live-view`).
