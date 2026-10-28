@@ -93,7 +93,8 @@ const SkillProblem = ({
             {where} has no skill “{page.skill}”{page.ref === undefined ? "" : ` at ${page.ref}`}.
           </p>
           <p className="text-muted-foreground">
-            {failure.message}{" "}
+            {/* Asked for by name, the title says it all; a folder asked for has its own reason. */}
+            {page.path !== undefined && <>{failure.message} </>}
             <InAppLink
               href={skillRepoPath(page.owner, page.repo, page.ref)}
               className="underline underline-offset-2 hover:text-foreground"
