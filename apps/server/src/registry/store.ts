@@ -271,7 +271,7 @@ export type RegistryStore = {
   readonly getSettingsOverrides: (environment: string) => Schema.Json | null;
   /** Save an Environment's Settings Overrides; says whether it is registered. */
   readonly putSettingsOverrides: (environment: string, overrides: Schema.Json) => boolean;
-  /** Every Environment that has Settings Overrides, with them as saved, newest Environment first. */
+  /** The Environments that have Settings Overrides, with them as saved, newest Environment first. */
   readonly listSettingsOverrides: () => Array<{
     readonly id: string;
     readonly name: string;

@@ -52,7 +52,7 @@ export const extensionName = "settings";
 /** The prefix of every tool of the extension: all of them are the root conversation's only. */
 export const SETTINGS_TOOL_PREFIX = "settings_";
 
-/** The Scope `*`: the Global Settings, which every Environment inherits (ADR-0027). */
+/** The Scope `*`: the Global Settings, which an Environment inherits where it has no Override (ADR-0027). */
 export const GLOBAL_SETTINGS_SCOPE = "*";
 
 /**
@@ -184,11 +184,11 @@ const Reason = Schema.String.check(
 
 /** The `scope` of a tool that changes the Settings: where, named on purpose, with no default (ADR-0027). */
 export const SettingsScope = Schema.String.check(Schema.isMinLength(1)).annotate({
-  description: `Where the change applies: "${GLOBAL_SETTINGS_SCOPE}" for Global, which every Environment inherits unless it overrides the field, or one Environment's id as environment_list shows it, which overrides Global for that Environment's Sessions only. Name it on purpose: there is no default.`,
+  description: `Where the change applies: "${GLOBAL_SETTINGS_SCOPE}" for Global, which each Environment inherits unless it overrides the field, or one Environment's id as environment_list shows it, which overrides Global for that Environment's Sessions only. Name it on purpose: there is no default.`,
 });
 
 /** What the descriptions of the changing tools say of the `scope`. */
-export const SCOPE_NOTE = `Give scope "${GLOBAL_SETTINGS_SCOPE}" to change Global, which every Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.`;
+export const SCOPE_NOTE = `Give scope "${GLOBAL_SETTINGS_SCOPE}" to change Global, which each Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.`;
 
 /** What the descriptions of the changing tools say of the record and of the Sessions a change reaches. */
 export const CHANGE_NOTE =
@@ -289,6 +289,10 @@ export const scopeWhere = (view: SettingsView): string =>
 // SAFETY: the two types describe the same values; the details are never mutated.
 const asJsonValue = (value: Schema.Json | null): JsonValue => value as JsonValue;
 
+/** A change for the Run's Notification: the tool and the field, with the Environment's name at an Environment. */
+export const loggedChange = (view: SettingsView, tool: string, field: string) =>
+  isGlobalView(view) ? { tool, field } : { tool, field, environmentName: view.name };
+
 /** The changes as a result's `details.agentChanges` carry them, each with its Scope and, at an Environment, inheritance. */
 export const agentChangeDetails = (view: SettingsView, changes: ReadonlyArray<AgentChange>) =>
   Arr.map(changes, (change) => {
@@ -313,15 +317,8 @@ export const agentChangeDetails = (view: SettingsView, changes: ReadonlyArray<Ag
   });
 
 /** Whether `overrides` hold a value at `field`'s path. */
-const overridden = (overrides: SettingsOverrides, field: string): boolean => {
-  let found: unknown = overrides;
-
-  for (const key of field.split(".")) {
-    found = Predicate.hasProperty(found, key) ? found[key] : undefined;
-  }
-
-  return found !== undefined;
-};
+const overridden = (overrides: SettingsOverrides, field: string): boolean =>
+  Option.isSome(overrideValue(overrides, field));
 
 /** A setting's value as `settings_get` shows it, read from settings: the Scope's own, or Global's at an Environment. */
 type Shown = (settings: Settings) => string;
@@ -370,7 +367,7 @@ export const describeSettings = (view: SettingsView, own: string | null): string
 
   const header = isGlobalView(view)
     ? [
-        `Global Settings (scope "${GLOBAL_SETTINGS_SCOPE}"): what every Environment inherits, field by field, unless it overrides the field. Each value says where it comes from: "default" (nobody sets it) or "Global" (set at Global), and names the Environments that override it, whose Sessions a change at Global does not reach.`,
+        `Global Settings (scope "${GLOBAL_SETTINGS_SCOPE}"): what each Environment inherits, field by field, unless it overrides the field. Each value says where it comes from: "default" (nobody sets it) or "Global" (set at Global), and names the Environments that override it, whose Sessions a change at Global does not reach.`,
         own === null
           ? "This Session's Environment is not one the Registry lists."
           : `This Session runs with the Settings of its own Environment (id ${own}): settings_get with scope "${own}" shows them.`,
@@ -603,11 +600,7 @@ export const SettingsChanges = Effect.gen(function* () {
           };
         case "changed": {
           for (const change of answer.changes) {
-            yield* log.record(
-              isGlobalView(view)
-                ? { tool, field: change.field }
-                : { tool, field: change.field, environmentName: view.name },
-            );
+            yield* log.record(loggedChange(view, tool, change.field));
           }
 
           const applied = yield* reload.apply;
@@ -642,7 +635,7 @@ export const SettingsChanges = Effect.gen(function* () {
   return { apply, reach };
 });
 
-const RECORDED =
+export const RECORDED =
   "The change is recorded with your reason; the user can see and revert it on the Settings page.";
 
 /**

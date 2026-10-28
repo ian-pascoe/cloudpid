@@ -69,6 +69,8 @@ import {
   GLOBAL_SETTINGS_SCOPE,
   inheritedWords,
   isGlobalView,
+  loggedChange,
+  RECORDED,
   SCOPE_NOTE,
   scopeName,
   scopeWhere,
@@ -471,11 +473,7 @@ export const ApprovalTools: Effect.Effect<
               };
             case "changed": {
               for (const made of applied.changes) {
-                yield* log.record(
-                  isGlobalView(view)
-                    ? { tool, field: made.field }
-                    : { tool, field: made.field, environmentName: view.name },
-                );
+                yield* log.record(loggedChange(view, tool, made.field));
               }
 
               yield* reload.apply;
@@ -745,7 +743,7 @@ export const ApprovalTools: Effect.Effect<
           conversation: api.conversationId,
           unchanged: already,
           changed: ({ changes, reach: reached }) =>
-            `Reset the ${label} ${scopeWhere(view)}${global ? " to its default" : ": it inherits Global again"}:\n${changedLines(changes)}\n${reached.text} The change is recorded with your reason; the user can see and revert it on the Settings page.`,
+            `Reset the ${label} ${scopeWhere(view)}${global ? " to its default" : ": it inherits Global again"}:\n${changedLines(changes)}\n${reached.text} ${RECORDED}`,
         });
       }),
   });

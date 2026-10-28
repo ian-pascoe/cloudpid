@@ -32,6 +32,7 @@ import {
   overriddenIn,
   readSettings,
   readSettingsOverrides,
+  type SessionSettingsSource,
   sessionSettingsSource,
   type SettingsAnswer,
   type SettingsState,
@@ -337,7 +338,7 @@ export class TestRegistry extends DurableObject {
   }
 
   /** What Session `session` resolves its Settings from, as the Registry DO answers it. */
-  sessionSettings(session: string): ReturnType<typeof sessionSettingsSource> {
+  sessionSettings(session: string): SessionSettingsSource {
     return sessionSettingsSource(this.#store, session);
   }
 

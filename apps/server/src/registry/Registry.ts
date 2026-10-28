@@ -113,6 +113,7 @@ import {
   overriddenIn,
   readSettings,
   readSettingsOverrides,
+  type SessionSettingsSource,
   sessionSettingsSource,
   type SettingsAnswer,
   SettingsUpdate,
@@ -216,15 +217,7 @@ export type SettingsOverridesUpdate =
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
 
-/** What a Session resolves its Settings from (`sessionSettings`). */
-export type SessionSettingsSource = {
-  /** Global's overrides of the defaults that apply. */
-  readonly global: Schema.Json;
-  /** The Session's Environment, or null for a Session the Registry does not list. */
-  readonly environment: string | null;
-  /** The Environment's Overrides as saved: `{}` for none. */
-  readonly overrides: Schema.Json;
-};
+export type { SessionSettingsSource } from "./settings.ts";
 
 /** The Container settings at Global, with the Environments that override each field (ADR-0027). */
 export type GlobalContainerState = GlobalState & {

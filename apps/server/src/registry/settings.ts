@@ -205,6 +205,16 @@ export const updateSettingsOverrides = (
       : putSettingsOverrides(store, environment, next.success);
   });
 
+/** What a Session resolves its Settings from (`sessionSettings`). */
+export type SessionSettingsSource = {
+  /** Global's overrides of the defaults that apply. */
+  readonly global: Schema.Json;
+  /** The Session's Environment, or null for a Session the Registry does not list. */
+  readonly environment: string | null;
+  /** The Environment's Overrides as saved: `{}` for none. */
+  readonly overrides: Schema.Json;
+};
+
 /**
  * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, and the Overrides of the
  * Environment its Workspace was made from, as saved. A Session the store does not list has no Environment, and Global's.
@@ -214,11 +224,7 @@ export const sessionSettingsSource = (
     readonly getSession: (id: string) => { readonly environment: string } | null;
   },
   session: string,
-): {
-  readonly global: Schema.Json;
-  readonly environment: string | null;
-  readonly overrides: Schema.Json;
-} => {
+): SessionSettingsSource => {
   const global = readSettings(store).overrides;
   const known = store.getSession(session);
   const overrides = known === null ? null : store.getSettingsOverrides(known.environment);

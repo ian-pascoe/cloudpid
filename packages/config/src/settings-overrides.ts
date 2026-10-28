@@ -166,7 +166,7 @@ const overriding = (base: Schema.JsonObject, overrides: Schema.Json): Schema.Jso
  * The Overrides `overrides` become with `set` (a deep partial of the settings) given field by field, and the fields of
  * `reset` removed, so they inherit again. A Role set in part is completed from the Role in force (`current`, the
  * Environment's settings now), since a Role is one field; an extension's option set to null is reset (null takes an
- * option away). Refused for a `reset` that names no field, or a `set` that is not an object; the strict resolution of
+ * option away), and so is each option of an extension set to null. Refused for a `reset` that names no field, or a `set` that is not an object; the strict resolution of
  * the result says whether its values are valid.
  */
 export const withOverrides = (

@@ -202,9 +202,7 @@ const decodeOverrides = Schema.decodeUnknownResult(Settings, {
 /** One thing wrong with overrides: the keys that lead to it, and a line for a person to read. */
 export type SettingsProblem = { readonly keys: ReadonlyArray<string>; readonly line: string };
 
-type Problem = SettingsProblem;
-
-const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
+const problemsOf = (error: Schema.SchemaError): ReadonlyArray<SettingsProblem> =>
   Arr.map(formatIssues(error.issue).issues, (issue) => {
     const path = pathText(issue.path);
 
