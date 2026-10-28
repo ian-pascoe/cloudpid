@@ -520,7 +520,7 @@ export const SkillsSection = ({ id }: { id: string }) => {
         <ul className="flex flex-col gap-1">
           {skills.map((skill) => (
             <li key={skill.name} className="flex items-start justify-between gap-2">
-              <span className="flex min-w-0 flex-col">
+              <span className="flex min-w-0 flex-1 flex-col">
                 {skill.source === undefined ? (
                   // A Skill with no Skill source (one the agent wrote or saved) has no page elsewhere: its files are
                   // the Registry's, shown read-only.
