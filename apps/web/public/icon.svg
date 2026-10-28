@@ -1,8 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="cloud" gradientUnits="userSpaceOnUse" x1="0" y1="106" x2="0" y2="366">
+      <stop offset="0" stop-color="#fbad41"/>
+      <stop offset="1" stop-color="#f38020"/>
+    </linearGradient>
+  </defs>
   <rect width="512" height="512" rx="112" fill="#18181b"/>
-  <g fill="none" stroke="#fafafa" stroke-width="40" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M136 188h240"/>
-    <path d="M200 188v176"/>
-    <path d="M312 188v140c0 28 14 40 40 40"/>
+  <g fill="#fbad41">
+    <circle cx="388" cy="294" r="64"/>
+    <rect x="300" y="294" width="160" height="72" rx="36"/>
+  </g>
+  <g fill="url(#cloud)">
+    <circle cx="158" cy="294" r="64"/>
+    <circle cx="268" cy="230" r="124"/>
+    <rect x="52" y="294" width="340" height="72" rx="36"/>
+  </g>
+  <g fill="none" stroke="#18181b" stroke-width="38" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M186 190h164"/>
+    <path d="M230 190v138"/>
+    <path d="M308 190v108c0 20 10 30 30 30"/>
+  </g>
+  <g transform="translate(400 396)">
+    <circle r="68" fill="#18181b"/>
+    <path d="M-38 -28v56c0 12 17 21 38 21s38-9 38-21v-56z" fill="#fafafa"/>
+    <g fill="none" stroke="#18181b" stroke-width="8">
+      <path d="M-38 0c0 12 17 21 38 21s38-9 38-21"/>
+      <path d="M-38 -28c0 12 17 21 38 21s38-9 38-21"/>
+    </g>
+    <ellipse cy="-28" rx="38" ry="17" fill="#fafafa"/>
   </g>
 </svg>

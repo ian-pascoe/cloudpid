@@ -39,7 +39,7 @@ It is the owner's own pi harness (same tools, skills, roles, and conversation mo
 
 ## Brand Commitments
 
-- The app's name in the manifest and page title is "Pi on Cloudflare" (short name "Pi"); "cloudpid" is the repository's name. Whether the product's name should change is not decided.
+- The app's name is "cloudpid" (pronounced "cloud-pi-d"), always lowercase: the manifest's name and short name, the page title, and a notification's fallback title. It is also the repository's name.
 - Voice: plain, precise, unhurried sentences, no marketing tone.
 
 ## Evidence on Hand

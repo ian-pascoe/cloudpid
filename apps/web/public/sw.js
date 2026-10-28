@@ -38,7 +38,7 @@ self.addEventListener("push", (event) => {
     options.renotify = true;
   }
 
-  event.waitUntil(self.registration.showNotification(title || "Pi on Cloudflare", options));
+  event.waitUntil(self.registration.showNotification(title || "cloudpid", options));
 });
 
 self.addEventListener("notificationclick", (event) => {

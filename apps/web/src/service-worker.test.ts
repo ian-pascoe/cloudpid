@@ -154,7 +154,7 @@ describe("the service worker", () => {
     });
     await dispatch("push", {});
 
-    expect(shown.map((one) => one.title)).toEqual(["Pi on Cloudflare", "Pi on Cloudflare"]);
+    expect(shown.map((one) => one.title)).toEqual(["cloudpid", "cloudpid"]);
     expect(shown[0]?.options).toMatchObject({ body: "hello" });
   });
 

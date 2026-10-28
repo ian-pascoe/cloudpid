@@ -1,4 +1,4 @@
-# cloudpid: Pi on Cloudflare
+# cloudpid
 
 A personal, always-on coding agent that recreates the local pi harness on Cloudflare. pi-durable runs the agent, `@cloudflare/computer` holds the files and runs commands, alchemy provisions everything, and Effect is the application language.
 

@@ -2,7 +2,7 @@
   "name": "cloudpid",
   "version": "0.0.0",
   "private": true,
-  "description": "Pi on Cloudflare",
+  "description": "A personal, always-on pi coding agent on Cloudflare",
   "type": "module",
   "scripts": {
     "build": "turbo run build",
