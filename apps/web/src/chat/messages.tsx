@@ -10,7 +10,13 @@ import {
 import * as Arr from "effect/Array";
 import { ChevronRight, Globe } from "lucide-react";
 import * as Predicate from "effect/Predicate";
-import { KeptDetails, MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
+import {
+  KeptDetails,
+  MarkdownText,
+  OwnerMarkdownText,
+  ReasoningPart,
+  ToolCallCard,
+} from "./parts.tsx";
 import { ShowChanges } from "./show-changes.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent.ts";
@@ -95,7 +101,7 @@ const UserImage = () => {
   );
 };
 
-const USER_PARTS = { Image: UserImage };
+const USER_PARTS = { Text: OwnerMarkdownText, Image: UserImage };
 
 const UserMessage = () => {
   const custom = useAuiState((state) => state.message.metadata.custom);
@@ -106,7 +112,7 @@ const UserMessage = () => {
 
   return (
     <MessagePrimitive.Root className="group/message flex flex-col items-end gap-1">
-      <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
+      <div className="max-w-[85%] min-w-0 rounded-lg bg-muted px-4 py-2 break-words">
         <MessagePrimitive.Parts components={USER_PARTS} />
         {pages.length > 0 && (
           <ul aria-label="Attached pages" className="mt-1.5 flex flex-col gap-1.5">
