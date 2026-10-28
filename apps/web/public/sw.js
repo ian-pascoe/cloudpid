@@ -1,4 +1,4 @@
-// The web app's service worker (`docs/spec.md` → Client and protocol → Notifications). It exists for Web Push: it shows
+// The web app's service worker (`docs/architecture/client-and-protocol.md` → Notifications). It exists for Web Push: it shows
 // the notification a Session's push carries and opens that Session's page when the owner taps it. It caches nothing,
 // so the app is never stale and a deploy needs no cache bust. Plain JavaScript, served as is from the site's root so
 // its scope is the whole app.

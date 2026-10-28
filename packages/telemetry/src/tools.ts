@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- pi-durable tools are Promise code.
-// Tool spans (`docs/spec.md` → Operations → Telemetry): every tool's call is a `pi.tool` span of the Session's telemetry,
+// Tool spans (`docs/architecture/operations.md` → Telemetry): every tool's call is a `pi.tool` span of the Session's telemetry,
 // whether the tool is Effect, native, or run by a codemode script as a nested call. Arguments and results are never
 // recorded.
 import {

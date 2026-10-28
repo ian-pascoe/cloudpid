@@ -1,4 +1,4 @@
-// Which backend `bash` runs a command on when the model names none (docs/spec.md → Backends): the Worker Shell unless
+// Which backend `bash` runs a command on when the model names none (docs/architecture/workspace.md → Backends): the Worker Shell unless
 // the command needs something it does not have. The table is the heuristic's contract, one row per decision.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { describe, expect, it } from "vitest";

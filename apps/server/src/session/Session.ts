@@ -138,7 +138,7 @@ export const ModelProxyConfigLive = Layer.effect(
 );
 
 /**
- * What the Session DO answers: its alarm, and its clients' sockets (`docs/spec.md` → Client and protocol). `fetch`
+ * What the Session DO answers: its alarm, and its clients' sockets (`docs/architecture/client-and-protocol.md`). `fetch`
  * accepts a socket upgrade the main Worker forwards; the socket's events then reach the object directly.
  */
 export type SessionMethods = {
@@ -188,7 +188,7 @@ export type SessionMethods = {
   readonly reset: () => Effect.Effect<void>;
 };
 
-/** One Session: a pi-durable Harness over this object's SQLite storage (`docs/spec.md` → Session host). */
+/** One Session: a pi-durable Harness over this object's SQLite storage (`docs/architecture/overview.md` → Session host). */
 export class Session extends Cloudflare.DurableObject<Session, SessionMethods>()("Session", {
   errors: [SessionError],
 }) {}
@@ -231,7 +231,7 @@ export const SessionLive = Session.make(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
     Effect.map(({ github, proxy, registries, sessions, secrets, state, web, worker }) =>
       Effect.gen(function* () {
-        // One tracer for the object's life: its spans are custom spans of the Worker's trace (`docs/spec.md` → Telemetry).
+        // One tracer for the object's life: its spans are custom spans of the Worker's trace (`docs/architecture/operations.md` → Telemetry).
         const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
 
         /** `effect` as an invocation of the object: a span of its own, under the tracer every Session span is made by. */

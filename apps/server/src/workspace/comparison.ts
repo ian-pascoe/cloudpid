@@ -1,4 +1,4 @@
-// Comparisons (GLOSSARY.md → Diffs and review; docs/spec.md → Diffs and review → Comparisons; ADR-0022): This branch, a
+// Comparisons (GLOSSARY.md → Diffs and review; docs/architecture/diffs-and-review.md → Comparisons; ADR-0022): This branch, a
 // branch's commits since it left its base, as the Workspace DO serves it, beside the Changes module and behind the same
 // kind of seam. Three calls, the picker's repos, one repo's Comparison, and one file's two sides; no caller knows which
 // backend ran:

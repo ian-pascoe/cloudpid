@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off
-// Who is driving the owner's Owner tabs (`docs/spec.md` → Browser → Browser Pane): while a `browser` call works in an
+// Who is driving the owner's Owner tabs (`docs/architecture/browser.md` → Browser Pane): while a `browser` call works in an
 // Owner tab, the Session tells every client which Owner tab and which conversation (the root agent's, or a subagent's),
 // so the Browser Pane can show that the agent is driving and the owner can tell their clicks from the agent's. The calls
 // live in this instance only: an eviction cuts them off, and a new instance starts with none.

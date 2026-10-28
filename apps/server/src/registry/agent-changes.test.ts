@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off
-// Whether an Agent change asks for a new Build (docs/spec.md → Agent changes): the Build upkeep after it asks for one
+// Whether an Agent change asks for a new Build (docs/architecture/agent-changes.md): the Build upkeep after it asks for one
 // when the Build the Environment wants is of another key.
 import { type ContainerSettings, DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";

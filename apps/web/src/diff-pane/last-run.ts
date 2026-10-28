@@ -1,4 +1,4 @@
-// The Last run in the Diff pane and the transcript (`docs/spec.md` → Diffs and review → Run diff): what the Pane says of
+// The Last run in the Diff pane and the transcript (`docs/architecture/diffs-and-review.md` → Run diff): what the Pane says of
 // the Run and of the repos that have no copy, and where in the transcript "Show changes" sits. Pure.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over values, called from React.
 

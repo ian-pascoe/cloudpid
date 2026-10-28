@@ -1,4 +1,4 @@
-// Updating installed Skills, and the daily check that marks them, over real Durable Object SQLite (ADR-0026, docs/spec.md →
+// Updating installed Skills, and the daily check that marks them, over real Durable Object SQLite (ADR-0026, docs/architecture/workspace.md →
 // Installing from GitHub → Updates): a save over an installed Skill marks it modified, an update moves it to the ref's
 // latest commit as an Agent change (and refuses a modified one unless asked to overwrite), a revert brings back the files,
 // the source and the mark, and the check marks the Skills whose folder moved with one request for each repo and ref.

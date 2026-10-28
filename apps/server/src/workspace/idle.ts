@@ -1,4 +1,4 @@
-// The Container's idle stop (docs/spec.md → Container and Toolchains). computer never stops the Container it starts: its
+// The Container's idle stop (docs/architecture/container.md). computer never stops the Container it starts: its
 // connection to computerd (a WebSocket, a heartbeat timer, a container monitor) keeps the Workspace DO in memory, and
 // the platform's own inactivity timeout never fires. So the Workspace stops it: every use of the Container records the
 // time, and a Durable Object alarm destroys the Container once the idle time has passed without one. A command that is

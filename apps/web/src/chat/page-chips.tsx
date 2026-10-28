@@ -1,6 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off missedPipeableOpportunity:off -- components, not combinators.
 
-// The composer's attached pages (`docs/spec.md` → Attached pages): a chip per Owner tab attached to the message, above the
+// The composer's attached pages (`docs/architecture/client-and-protocol.md` → Attached pages): a chip per Owner tab attached to the message, above the
 // Attachments' tiles, removable before sending, with a thumbnail of its screen when it carries one; and the toolbar's
 // button that attaches a page, offering the Session's Owner tabs in a menu with the one shown first. The button is there
 // only while the Session has Owner tabs.

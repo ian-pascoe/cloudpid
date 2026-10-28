@@ -1,4 +1,4 @@
-// Finding project instructions (docs/spec.md → Filesystem and tools → Project instructions): the `AGENTS.md` (or
+// Finding project instructions (docs/architecture/workspace.md → Filesystem and tools → Project instructions): the `AGENTS.md` (or
 // `CLAUDE.md`) of a directory and of each directory above it up to the Workspace root, as local pi finds them
 // (`loadProjectContextFiles` in pi's coding agent: the first of `INSTRUCTION_FILE_NAMES` in each directory, the farthest
 // first). It reads files only, through the small part of an `ExecutionEnv` it needs, so it runs where the files are as

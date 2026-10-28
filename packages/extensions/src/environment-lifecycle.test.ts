@@ -1,4 +1,4 @@
-// The `environment` extension's tools for an Environment's record (docs/spec.md → Agent changes): making an Environment,
+// The `environment` extension's tools for an Environment's record (docs/architecture/agent-changes.md): making an Environment,
 // renaming it, adding and removing Repos, asking for a Build. Over fake Environments that apply each as the Registry does.
 // @effect-diagnostics asyncFunction:off
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";

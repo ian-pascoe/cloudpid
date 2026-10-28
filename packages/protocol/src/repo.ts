@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off
-// An Environment's Repos (`docs/spec.md` → Filesystem and tools, ADR-0016): each Workspace clones every one into a
+// An Environment's Repos (`docs/architecture/workspace.md` → Filesystem and tools, ADR-0016): each Workspace clones every one into a
 // directory of its own below `/workspace`, named by the owner or taken from the clone URL. Both the web app (to check
 // input as it is typed) and the server (before a name reaches a path or a URL reaches `git`) use these, so the rules are
 // in one place.

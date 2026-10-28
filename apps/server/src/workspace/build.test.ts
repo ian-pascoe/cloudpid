@@ -1,4 +1,4 @@
-// An Environment's Build (docs/spec.md → Builds): the Build's object, its Container a fake shell that answers each step's
+// An Environment's Build (docs/architecture/container.md → Builds): the Build's object, its Container a fake shell that answers each step's
 // script, its storage and alarm in memory. The scripts themselves run for real in `@cloudpid/sandbox-image`'s tests.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off newPromise:off
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";

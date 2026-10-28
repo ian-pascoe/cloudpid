@@ -1,6 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions of sizes, and a canvas.
 
-// The crop a page Annotation carries (#243; `docs/spec.md` → Browser → Annotate mode): the spot picked, cut from the
+// The crop a page Annotation carries (#243; `docs/architecture/browser.md` → Annotate mode): the spot picked, cut from the
 // Pane's last frame of the page (never a new screenshot of the tab, which the agent's browser would take), with a margin,
 // as a JPEG of at most `MAX_ANNOTATION_CROP` base64 characters. That bound is what lets 100 drafts' crops fit one
 // message: coarser first, then smaller, until it fits; a spot that fits at no size has no crop.

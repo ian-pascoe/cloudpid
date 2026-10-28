@@ -1,10 +1,10 @@
-// GitHub's API for pull requests (docs/spec.md → Diffs and review → Comparisons): the open pull requests of a repo for the
+// GitHub's API for pull requests (docs/architecture/diffs-and-review.md → Comparisons): the open pull requests of a repo for the
 // Diff pane's picker (one GraphQL query, counts and heads included), one pull request's state and head for a Comparison
 // (REST), and the base of a branch's open pull request (REST). The Workspace DO asks with a GitHub token from the GitHub
 // App (ADR-0025), and again with a new one when GitHub refuses it with a 401; opening the picker never starts the
 // Container. A list is kept for 60 s per repo, and a failure for a few seconds, so a refused or rate-limited token is
 // not asked again on every call. The main Worker asks the same client for a repo's branches,
-// for the draft's Start from menu (`docs/spec.md` → Session list → New session), kept the same way.
+// for the draft's Start from menu (`docs/architecture/client-and-protocol.md` → Session list → New session), kept the same way.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off globalFetch:off missedPipeableOpportunity:off
 import {
   branchProblem,

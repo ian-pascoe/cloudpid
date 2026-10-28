@@ -1,4 +1,4 @@
-// The Diff pane's items with their files' drafts on them (`docs/spec.md` → Diffs and review → Annotations and Reviews):
+// The Diff pane's items with their files' drafts on them (`docs/architecture/diffs-and-review.md` → Annotations and Reviews):
 // each item takes the line annotations of its file, and an item whose annotations moved is a new object with a higher
 // version, so the library draws them again; one whose item and annotations are as before is the same object. Part of
 // the Pane's lazy chunk.

@@ -1,4 +1,4 @@
-// A Session's Workspace (`docs/spec.md` → Filesystem and tools, ADR-0001, ADR-0016): its conversations' execution
+// A Session's Workspace (`docs/architecture/workspace.md` → Filesystem and tools, ADR-0001, ADR-0016): its conversations' execution
 // environment is a `ComputerExecutionEnv` over the Workspace's own Durable Object (`workspaceObjectName`), and `ls`,
 // `find`, and `grep` search the same Workspace's files. Every Session in a Workspace reaches the same DO, so they share
 // one tree and one Container. A Session works in its Workspace's directory (its one repo's clone, or `/workspace`) unless

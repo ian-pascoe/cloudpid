@@ -1,4 +1,4 @@
-// The settings (`docs/spec.md` → Settings): one Effect `Schema` whose every field has a decoding default. Decoding the
+// The settings (`docs/architecture/overview.md` → Settings): one Effect `Schema` whose every field has a decoding default. Decoding the
 // overrides, a JSON document that holds only what differs from the defaults, therefore gives the resolved settings, and
 // the schema's `Encoded` side is the overrides' shape: a deep partial of the settings that rejects keys it does not know.
 import * as Arr from "effect/Array";
@@ -112,7 +112,7 @@ const Tools = Schema.Struct({
 });
 
 /**
- * What a Session may spend (`docs/spec.md` → Settings). A Session over it stops before its next model request. Off by
+ * What a Session may spend (`docs/architecture/overview.md` → Settings). A Session over it stops before its next model request. Off by
  * default: the amount a Session is worth depends on the work, and the model proxy's own key limits bound a runaway.
  */
 const SpendLimit = Schema.Struct({
@@ -303,7 +303,7 @@ export const extensionField = (extension: string, key: string): string =>
   `extensions.${extension}.${key}`;
 
 /**
- * The keys a settings field leads through (`docs/spec.md` → Agent changes): a setting's dotted path (`thinkingLevel`,
+ * The keys a settings field leads through (`docs/architecture/agent-changes.md`): a setting's dotted path (`thinkingLevel`,
  * `roles.small.model`), or `extensions.<extension>.<key>` for an extension's option, whose key may hold dots (the
  * extension's name may not). Undefined for a path that does not start at a setting or has an empty part.
  */

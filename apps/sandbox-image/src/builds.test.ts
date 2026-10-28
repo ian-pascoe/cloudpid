@@ -1,4 +1,4 @@
-// An Environment's Build on the Container (docs/spec.md → Builds): the scripts run for real, under bash, with real git,
+// An Environment's Build on the Container (docs/architecture/container.md → Builds): the scripts run for real, under bash, with real git,
 // against a throwaway scratch root and local bare "remotes", and the clean-up against real processes it must stop.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off newPromise:off asyncFunction:off globalDate:off globalRandom:off globalTimers:off
 import { spawn, spawnSync } from "node:child_process";

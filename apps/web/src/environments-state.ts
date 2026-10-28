@@ -381,7 +381,7 @@ export const environmentSettingsAtom = Atom.family((id: string) =>
 );
 
 /**
- * Environment `id`'s Agent changes (`docs/spec.md` → Agent changes), newest first, asked again every few seconds while
+ * Environment `id`'s Agent changes (`docs/architecture/agent-changes.md`), newest first, asked again every few seconds while
  * its history is shown and the page is visible: a Session's agent makes them, which the page hears of no other way.
  */
 export const agentChangesAtom = Atom.family((id: string) =>

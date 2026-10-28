@@ -1,4 +1,4 @@
-// Annotations (GLOSSARY.md → Annotation; `docs/spec.md` → Diffs and review → Annotations and Reviews): the owner's
+// Annotations (GLOSSARY.md → Annotation; `docs/architecture/diffs-and-review.md` → Annotations and Reviews): the owner's
 // drafts on a line range of one side of a diff, or on an element or area of a page in the Browser Pane, kept by the
 // Session DO and synced to every client, until they are sent together as a Review. Each is anchored to its source: a
 // Call diff (the call, as recorded, which never changes), the Changes (the repo and the HEAD it was written against,
@@ -126,7 +126,7 @@ export const PullSource = Schema.Struct({
 export type PullSource = typeof PullSource.Type;
 
 /**
- * An Annotation on a repo's file in the Last run (`docs/spec.md` → Diffs and review → Run diff): the conversation whose
+ * An Annotation on a repo's file in the Last run (`docs/architecture/diffs-and-review.md` → Run diff): the conversation whose
  * Run it is, the Run, the repo, and the commits of the Run's start and end copies. While the Run is live `end` is null
  * and the drafts follow the Changes' outdated rule; once it ended they are checked a last time and never again.
  */

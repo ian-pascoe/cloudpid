@@ -1,4 +1,4 @@
-// The Workspace DO (docs/spec.md → Durable Objects, ADR-0001): one `@cloudflare/computer` Workspace per slug, its
+// The Workspace DO (docs/architecture/overview.md → Durable Objects, ADR-0001): one `@cloudflare/computer` Workspace per slug, its
 // files in this object's SQLite storage, its commands on the Worker Shell or, for real binaries, in the Container the
 // object schedules itself (ADR-0004; `durable_object` scheduling). It is a plain class rather than an alchemy
 // Effect DO: computer reaches it through `__getWorkspaceStub()` with raw Workers RPC (its Worker Shell calls back into
@@ -356,8 +356,8 @@ export class Workspace extends ContainerHost {
     const launch = new ContainerLaunch({
       settings: async () => (await this.#settings.read()).settings,
       resized: () => this.#resizes.recorded(),
-      // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/spec.md →
-      // Container and Toolchains): the built-in paths, then the Workspace's own, so its `!` patterns can take one back.
+      // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/architecture/container.md):
+      // the built-in paths, then the Workspace's own, so its `!` patterns can take one back.
       // mise's Toolchains are on the Container's disk and need no entry. The local Container cannot keep any.
       // The harness's own directory (`/workspace/.cloudpid`: temp files, spills, Attachments) is taken back last, so
       // nothing the Environment adds makes it local (ADR-0018).
@@ -476,7 +476,7 @@ export class Workspace extends ContainerHost {
       workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
       name: WORKSPACE_CONTAINER,
       connectTimeoutMs: CONNECT_TIMEOUT_MS,
-      // Unrestricted direct egress in v1, not logged (docs/spec.md → Container and Toolchains).
+      // Unrestricted direct egress in v1, not logged (docs/architecture/container.md).
       egress: { mode: "direct" },
     };
 
@@ -938,7 +938,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s), or
+   * Make this object's Environment's Build of `request` (docs/architecture/container.md → Builds; the object is `buildObjectName`'s), or
    * its Test Build of a request marked `test` (the object is `testBuildObjectName`'s): it is kept and begun at the
    * alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
    * Environment's, are kept sealed apart from the request: those for the Build reach its Setup Scripts, and every one is
@@ -1018,7 +1018,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Have the Container start on `size` until its idle stop (the agent's `container_resize`; docs/spec.md → Resize by the
+   * Have the Container start on `size` until its idle stop (the agent's `container_resize`; docs/architecture/container.md → Resize by the
    * agent), within the Environment's size limit: a running Container is snapshotted and stopped (commands running there
    * end), unless it already runs on `size`, and the next launch restores the snapshot on `size`. The resize holds the
    * Container from the idle stop meanwhile, so the idle alarm does not stop it under the snapshot and forget the size.
@@ -1094,7 +1094,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Prepare this Workspace as its Environment's spare (docs/spec.md → Spare Workspace): `setup` is kept and the work
+   * Prepare this Workspace as its Environment's spare (docs/architecture/workspace.md → Spare Workspace): `setup` is kept and the work
    * starts at the alarm, so this answers at once (`SparePreparation`).
    */
   async prepareSpare(setup: WorkspaceSetup): Promise<void> {
@@ -1218,7 +1218,7 @@ export class Workspace extends ContainerHost {
    * at once: computer clears the mount and writes the set, so a file the set lacks is gone. A set with the hash held does
    * nothing. One that is not a set, or whose paths are not the mount's, is refused, and so is one that cannot be
    * written: the set held before is mounted again. No other call of this object runs meanwhile, so each sees the whole
-   * old set or the whole new one, never a mount that is cleared or writable (docs/spec.md → Filesystem and tools →
+   * old set or the whole new one, never a mount that is cleared or writable (docs/architecture/workspace.md → Filesystem and tools →
    * Skills).
    */
   async updateSkills(set: SkillSet): Promise<SkillSetAnswer> {
@@ -1302,7 +1302,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * The Changes of the repos `request.directory` covers (docs/spec.md → Diffs and review → Changes): listed here, or by
+   * The Changes of the repos `request.directory` covers (docs/architecture/diffs-and-review.md → Changes): listed here, or by
    * the Container's git for a repo that needs it, which starts the Container only with `startContainer`; a repo that
    * needs a stopped Container otherwise keeps its last list, marked `stale`.
    */
@@ -1322,7 +1322,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * The picker's repos (docs/spec.md → Diffs and review → Comparisons): the repos `directory` covers, the Session's own
+   * The picker's repos (docs/architecture/diffs-and-review.md → Comparisons): the repos `directory` covers, the Session's own
    * first, each with its HEAD, and with `pulls` its open pull requests (GitHub's REST API, kept for 60 s). It never starts
    * the Container.
    */
@@ -1353,7 +1353,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * A Run starts writing (docs/spec.md → Diffs and review → Run diff): each repo `request.directory` covers is copied
+   * A Run starts writing (docs/architecture/diffs-and-review.md → Run diff): each repo `request.directory` covers is copied
    * before the Run's first writing call, which waits for it; the Session's last Run is replaced. Starts no Container: a
    * repo that needs it while it is stopped is "not captured".
    */

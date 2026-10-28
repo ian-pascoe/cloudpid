@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
-// Redaction of Secret values (`docs/spec.md` → Secrets), ported from pi-utils' `secret-registry.ts` (see
+// Redaction of Secret values (`docs/architecture/agent-capabilities.md` → Secrets), ported from pi-utils' `secret-registry.ts` (see
 // ../../NOTICE.md). Every value held in this Session instance is replaced by its Secret Reference wherever it occurs,
 // written as is or in a common encoding: JSON string escaping, percent-encoding, hex, and base64 and base64url at any
 // alignment. Values are only ever added, so a Redaction Generation (how many were held) always names the same values,

@@ -1,4 +1,4 @@
-// The Secrets kept for an Environment, or for every Environment, on the Registry DO's side (docs/spec.md → Secrets,
+// The Secrets kept for an Environment, or for every Environment, on the Registry DO's side (docs/architecture/agent-capabilities.md → Secrets,
 // ADR-0016). The owner's value is checked, then sealed here (AES-GCM under a key HKDF derives from
 // `SECRETS_ENCRYPTION_KEY` for the Registry, bound to the record's scope and name, so a row moved to another scope or
 // name does not open) and only the ciphertext is stored. What an Environment uses is opened here and handed, over

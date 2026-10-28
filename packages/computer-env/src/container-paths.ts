@@ -1,7 +1,7 @@
 // Container-only paths (GLOSSARY.md): the paths whose files only the Workspace's Container has. Outside the Workspace
 // that is every path; inside it, those a launch's patterns name (computer's `ignore`, which computerd applies as
 // `MOUNT_IGNORE`). The Workspace DO decides with these when a model tool's file operation, or a `bash` command, has to
-// reach the Container (docs/spec.md → Filesystem and tools, ADR-0018).
+// reach the Container (docs/architecture/workspace.md → Filesystem and tools, ADR-0018).
 //
 // The patterns are computer's (`checkIgnorePatterns` in `@cloudflare/computer/backends/container`): relative to the
 // mount root, `/…` anchored at it, `**/…` at any depth, `*` within one segment, `**` a whole segment, a leading `!`

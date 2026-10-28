@@ -1,4 +1,4 @@
-// Keeping each Environment's Build current (docs/spec.md → Builds, ADR-0016), from the main Worker after an answer, as
+// Keeping each Environment's Build current (docs/architecture/container.md → Builds, ADR-0016), from the main Worker after an answer, as
 // the spares are kept (`spareUpkeep`): the Registry says what each Environment is (one call), each Environment's Build
 // object says what it has and which image a launch runs now, and a Build is asked for when the one wanted (`buildKey`:
 // the Repos, the Container settings a Build uses, the image) is neither the last good one nor under way, or once a day
@@ -119,7 +119,7 @@ export type ProposedBuild = {
 };
 
 /**
- * The Environments' Test Builds (docs/spec.md → Builds → Test Builds), each made by the Environment's Test Build object
+ * The Environments' Test Builds (docs/architecture/container.md → Builds → Test Builds), each made by the Environment's Test Build object
  * (`testBuildObjectName`), one at a time, by the id of the call that asks for it. Each fails with why, in words.
  */
 export type TestBuilds = {

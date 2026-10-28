@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-// The Session's side of the Browser Pane (`docs/spec.md` → Browser → Browser Pane, ADR-0013): the links to the Owner tab
+// The Session's side of the Browser Pane (`docs/architecture/browser.md` → Browser Pane, ADR-0013): the links to the Owner tab
 // the Pane shows, which the browser host mints for the one client that asked (`owner_tab_view`), and the Owner tabs of its
 // tab strip (`tabs`, `open`, `show`, `close`). Like a Browser Handoff's Live View links (`./handoff.ts`), no link is kept
 // here or sent to another client.

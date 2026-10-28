@@ -1,4 +1,4 @@
-// A repo's root `.gitattributes`, as Changes read it (docs/spec.md → Diffs and review → Changes): whether it has rules
+// A repo's root `.gitattributes`, as Changes read it (docs/architecture/diffs-and-review.md → Changes): whether it has rules
 // isomorphic-git ignores but git applies when it compares (`text`, `eol`, `binary`, `filter`), which send the repo to
 // the Container's git, and the `linguist-generated` and `linguist-vendored` flags the web app folds files by. Only the
 // root file is read. Patterns follow git's rules for `.gitattributes`: those of `.gitignore` without negation, where a

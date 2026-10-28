@@ -1,4 +1,4 @@
-// Approval requests (docs/spec.md → Approval): asked by a call, answered by the owner, and kept across an "eviction" (a
+// Approval requests (docs/architecture/agent-changes.md → Approval): asked by a call, answered by the owner, and kept across an "eviction" (a
 // second store over the same storage), withdrawn when the call is stopped or gone.
 // @effect-diagnostics strictEffectProvide:off preferEffectArray:off asyncFunction:off
 import * as Effect from "effect/Effect";

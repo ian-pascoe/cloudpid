@@ -1,4 +1,4 @@
-// The agent's Container resize (docs/spec.md → Container and Toolchains → Resize by the agent): refused above the size
+// The agent's Container resize (docs/architecture/container.md → Resize by the agent): refused above the size
 // limit, a running Container snapshotted and stopped, and the size recorded for the next launch only.
 // @effect-diagnostics asyncFunction:off
 import {

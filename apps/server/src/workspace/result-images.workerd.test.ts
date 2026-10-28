@@ -1,7 +1,7 @@
 // Several images in one tool result, through a Session's `codemode` on a real Workspace: a script can show many, each
 // within the per-image bound, which together would outgrow the result's one SQLite row. They are kept in order until
 // one result's budget is spent, and the rest are noted, in the stored result and in the script's run, which code mode
-// stores before it (docs/spec.md → Filesystem and tools). miniflare's SQLite does not enforce Cloudflare's 2 MB row
+// stores before it (docs/architecture/workspace.md → Filesystem and tools). miniflare's SQLite does not enforce Cloudflare's 2 MB row
 // cap, so the sizes are what is checked.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off globalDate:off

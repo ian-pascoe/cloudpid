@@ -1,4 +1,4 @@
-// What a Session tells the Registry (`docs/spec.md` → Durable Objects): whether it has a Run in progress, its subagents,
+// What a Session tells the Registry (`docs/architecture/overview.md` → Durable Objects): whether it has a Run in progress, its subagents,
 // what the owner should be notified of, and the title it generated.
 import { type SessionAgent, SessionStatus } from "@cloudpid/protocol";
 import * as Context from "effect/Context";

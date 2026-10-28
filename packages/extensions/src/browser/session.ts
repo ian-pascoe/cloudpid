@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off -- two times, filtered like `earliest` in the Session's `wake.ts`.
-// The Session's hold on its browser (`docs/spec.md` → Browser): when the browser was last used or last watched, and
+// The Session's hold on its browser (`docs/architecture/browser.md`): when the browser was last used or last watched, and
 // closing it once the Session has been idle past its idle window. Browser Run reclaims an idle browser by itself after `keep_alive`; the
 // window is shorter, so closing it here frees the browser sooner than that, and retires the browser's record, so no later
 // run hits a browser that is already gone. The host's own idle and alarm logic drives it: `closeAt` is a wake time, and

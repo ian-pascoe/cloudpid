@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions.
-// The `tool_search` extension (`docs/spec.md` → Agent capabilities → Tool discovery): pi-durable's `tool_search` tool, and
+// The `tool_search` extension (`docs/architecture/agent-capabilities.md` → Tool discovery): pi-durable's `tool_search` tool, and
 // the rule that decides which tools it has to search. A tool the settings do not offer is deferred: absent from the
 // model's tool list until `tool_search` loads it (loaded tools stay offered on that branch), while code mode scripts and
 // other tools call it any time. The rule is a wrap on every other tool, so a tool of a later extension is deferred

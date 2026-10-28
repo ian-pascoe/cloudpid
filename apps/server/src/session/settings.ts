@@ -1,4 +1,4 @@
-// What a Session reads from the settings (`docs/spec.md` → Settings). The overrides live in the Registry DO; the Session
+// What a Session reads from the settings (`docs/architecture/overview.md` → Settings). The overrides live in the Registry DO; the Session
 // keeps the last it read, in its own storage, and hands the Harness live getters over that copy. The Harness reads its
 // settings synchronously, so the Registry is read before a request is admitted (`refresh`), never inside a getter.
 import { DEFAULT_SETTINGS, parseModelId, resolveLeniently, type Settings } from "@cloudpid/config";

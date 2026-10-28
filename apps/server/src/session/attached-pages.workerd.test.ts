@@ -1,5 +1,5 @@
-// Pages attached to a message over the Session socket, against real Durable Object storage (`docs/spec.md` → Client and
-// protocol → Attached pages): the Session reads the ones a message attaches from the
+// Pages attached to a message over the Session socket, against real Durable Object storage (`docs/architecture/client-and-protocol.md` →
+// Attached pages): the Session reads the ones a message attaches from the
 // browser and fences what the pages supplied as page content apart from the owner's words, the transcript shows a chip
 // for each instead of the block, and a page that is gone fails the send.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.

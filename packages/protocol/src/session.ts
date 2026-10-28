@@ -1,4 +1,4 @@
-// The Session socket: one WebSocket per client to one Session DO (`docs/spec.md` → Client and protocol, ADR-0009).
+// The Session socket: one WebSocket per client to one Session DO (`docs/architecture/client-and-protocol.md`, ADR-0009).
 // The shapes follow the socket protocol of Cloudflare's `agents` pi example (`examples/next/harnesses/pi`, MIT), in
 // Effect `Schema`: commands carry an optional `id` that a `result` or `error` answers, and every watched conversation
 // streams `events` batches whose first batch is a `snapshot`.
@@ -181,7 +181,7 @@ export const AnnotationDelete = Schema.Struct({
 
 /**
  * Tick (`blob`: the file's head blob id as the Comparison lists it) or untick (`blob: null`) the Viewed box of file `path`
- * of pull request `pull` in `repo` (`docs/spec.md` → Diffs and review → Comparisons). The last set wins. Refused past
+ * of pull request `pull` in `repo` (`docs/architecture/diffs-and-review.md` → Comparisons). The last set wins. Refused past
  * `MAX_VIEWED` boxes. Answered with `null`; every client is sent the list (`viewed`).
  */
 export const ViewedSet = Schema.Struct({
@@ -289,7 +289,7 @@ export const ComparisonSourcesRequest = Schema.Struct({
 });
 
 /**
- * Compare `repo`'s `source` (`docs/spec.md` → Diffs and review → Comparisons). Answered with a `CompareResult`: the base
+ * Compare `repo`'s `source` (`docs/architecture/diffs-and-review.md` → Comparisons). Answered with a `CompareResult`: the base
  * and head names, the merge-base and head SHAs and the file list, or why there is none (an error state, in place of the
  * list). A result for the HEAD as it is now is kept in the Workspace's storage, so asking again after the Container's
  * idle stop starts nothing. Only `startContainer` (the owner's pick or Refresh) may start a stopped Container; without
@@ -324,7 +324,7 @@ export const ComparisonFileRequest = Schema.Struct({
 });
 
 /**
- * Ask for the Run diff of the Session's Last run (`docs/spec.md` → Diffs and review → Run diff). Answered with a
+ * Ask for the Run diff of the Session's Last run (`docs/architecture/diffs-and-review.md` → Run diff). Answered with a
  * `RunDiff`, or `null` while no Run has written. A live Run's list is made again at each ask; an ended Run's is the one
  * kept at its end. It never starts the Container.
  */
@@ -504,7 +504,7 @@ export const OwnerTabViewRequest = Schema.Struct({
 });
 
 /**
- * List the Owner tabs of the Browser Pane (`docs/spec.md` → Browser → Browser Pane): each by its title, and the one
+ * List the Owner tabs of the Browser Pane (`docs/architecture/browser.md` → Browser Pane): each by its title, and the one
  * shown. Answered with an `OwnerTabListing`, to the asking client. The browser host also finds here the tabs a page
  * opened (a link with `target=_blank`) and adds them to the list, so a Pane asks again now and then while it is open.
  * Starts nothing: with no browser running the list is empty.
@@ -706,7 +706,7 @@ export const SecretRequests = Schema.Struct({
 });
 
 /**
- * A call's request for the owner's Approval of an Agent change (GLOSSARY.md → Approval; `docs/spec.md` → Approval): a
+ * A call's request for the owner's Approval of an Agent change (GLOSSARY.md → Approval; `docs/architecture/agent-changes.md` → Approval): a
  * change to a Limit, or one no revert can undo. Every field is text the card shows as it is.
  */
 export const ApprovalRequest = Schema.Struct({
@@ -762,7 +762,7 @@ export const ViewedMessage = Schema.Struct({
 });
 
 /**
- * A Browser Handoff waiting for the owner (`docs/spec.md` → Browser): the agent gave the owner live control of its browser
+ * A Browser Handoff waiting for the owner (`docs/architecture/browser.md`): the agent gave the owner live control of its browser
  * for a step it cannot do. It carries no Live View link: a client mints one with `live_view` when the owner takes over.
  */
 export const BrowserHandoffRequest = Schema.Struct({
@@ -875,7 +875,7 @@ export const ContainerRates = Schema.Struct({
 });
 
 /**
- * What the Session's Workspace's Containers have cost (`docs/spec.md` → Operations → Usage), at Cloudflare's list prices:
+ * What the Session's Workspace's Containers have cost (`docs/architecture/operations.md` → Usage), at Cloudflare's list prices:
  * Cloudflare's usage analytics up to `reportedThrough`, and after it (or throughout, where the deployment has no analytics
  * token) an estimate: memory and disk for every second a Container ran, CPU as every vCPU at full use while commands
  * ran on it. It is the Workspace's, so Sessions that share a Workspace each show all of it. The amounts are as of
@@ -936,7 +936,7 @@ export const ContextUsage = Schema.Struct({
 export type ContextUsage = typeof ContextUsage.Type;
 
 /**
- * What the Session has spent on model requests (`docs/spec.md` → Telemetry), as pi-durable's `pi.usage` counts it:
+ * What the Session has spent on model requests (`docs/architecture/operations.md` → Telemetry), as pi-durable's `pi.usage` counts it:
  * every conversation of the Session, subagents' included, and the title call, which has no conversation. Token counts
  * are as the provider reported them; `cost` is in US dollars, as the model catalog prices the tokens. `container` is
  * what its Workspace's Containers have cost, absent when no Container has run or it could not be read; it is not part of
@@ -1037,7 +1037,7 @@ export const CatalogCommand = Schema.Struct({
 export type CatalogCommand = typeof CatalogCommand.Type;
 
 /**
- * The Slash commands the Session runs, on the conversation they are typed in (docs/spec.md → Client and protocol → Slash
+ * The Slash commands the Session runs, on the conversation they are typed in (docs/architecture/client-and-protocol.md → Slash
  * commands). Known to the client too, so a command typed before the catalog arrives, or after it could not be had, runs
  * as one instead of reaching the model.
  */

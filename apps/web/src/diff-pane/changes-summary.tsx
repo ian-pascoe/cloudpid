@@ -1,4 +1,4 @@
-// The Changes outside the Diff pane (`docs/spec.md` → Diffs and review → Diff pane): the watch a Session's page (or a
+// The Changes outside the Diff pane (`docs/architecture/diffs-and-review.md` → Diff pane): the watch a Session's page (or a
 // Subagent page, on the subagent's) keeps while it is open, and the section of the Session details, the only summary of
 // them. The section shows only while there are Changes, and opens the Pane: the totals and "and n more" at the top,
 // a file at that file.

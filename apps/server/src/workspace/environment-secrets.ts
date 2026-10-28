@@ -1,4 +1,4 @@
-// A Workspace's copy of its Environment's kept Secrets (docs/spec.md → Secrets, Snapshots): the values its Container
+// A Workspace's copy of its Environment's kept Secrets (docs/architecture/agent-capabilities.md → Secrets, docs/architecture/container.md → Snapshots): the values its Container
 // must not keep in a snapshot, and must not print. The Workspaces Worker cannot reach the Registry, so they are handed
 // over with the Container settings (a Session's readying, a spare's request, a Build's request), and the Workspace DO
 // keeps them sealed in its storage (AES-GCM under a key HKDF derives from `SECRETS_ENCRYPTION_KEY`, bound to this

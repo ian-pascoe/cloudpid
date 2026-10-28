@@ -1,4 +1,4 @@
-// The Run copies and the Run diff (docs/spec.md → Diffs and review → Run diff), over repos real git made in a temp
+// The Run copies and the Run diff (docs/architecture/diffs-and-review.md → Run diff), over repos real git made in a temp
 // directory: the Workspace DO's files are that directory (as `/workspace`), the Container is bash running the real
 // scripts there, and what the module saves is checked with real git (`fsck`, `ls-tree`, `diff`). The same module over the
 // Workspace DO's own files, in workerd, is covered by `runs.workerd.test.ts`.

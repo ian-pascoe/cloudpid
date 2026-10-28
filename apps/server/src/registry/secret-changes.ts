@@ -1,4 +1,4 @@
-// Agent changes to the Secrets kept for an Environment, or for every Environment (`docs/spec.md` → Agent changes,
+// Agent changes to the Secrets kept for an Environment, or for every Environment (`docs/architecture/agent-changes.md`,
 // ADR-0019): the Build mark the agent sets with `environment_secret_build`, applied as the owner's switch on the
 // Environments page applies it and recorded with the mark before and after, and the revert of such a change. A Secret
 // the owner keeps through `secret_ask`'s form is recorded by `keepSecretAs` (`environment-secrets.ts`) and has no revert.

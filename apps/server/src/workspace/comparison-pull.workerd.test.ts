@@ -1,4 +1,4 @@
-// Pull request Comparisons in the Workspace DO (docs/spec.md → Diffs and review → Comparisons), over a repo real git made and
+// Pull request Comparisons in the Workspace DO (docs/architecture/diffs-and-review.md → Comparisons), over a repo real git made and
 // the Container's command real git ran on it (`comparison.setup.ts`), written into a Workspace as computer's sync would, with
 // GitHub's API and the clock stubbed in the test Worker: the 60 s the list is kept, the "New commits" banner when the
 // pull request's head moves, closed and merged, and the refs of pull requests no longer open. The Container is a fake that

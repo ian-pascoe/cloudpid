@@ -1,4 +1,4 @@
-// The outdated check of drafts on the Changes (`docs/spec.md` → Diffs and review → Annotations and Reviews): a draft's
+// The outdated check of drafts on the Changes (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): a draft's
 // quote compared with the lines of its side of the file as they are now. Still in place, nothing changes; found exactly
 // once elsewhere, the draft moves there silently (one edit above the drafts must not make them all outdated); otherwise
 // it is marked outdated, or "no longer in the diff" when its file has left the Changes. A Call diff never changes, so

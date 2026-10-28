@@ -1,4 +1,4 @@
-// The Session's Secrets (`docs/spec.md` → Secrets): values the owner enters in a masked form on a client, encrypted in
+// The Session's Secrets (`docs/architecture/agent-capabilities.md` → Secrets): values the owner enters in a masked form on a client, encrypted in
 // this object's storage under a key derived from the deployment's `SECRETS_ENCRYPTION_KEY`, and the requests for them
 // sent to every client over the Session socket; and the Secrets kept for its Environment, which the Registry opens and
 // hands over Durable Object RPC, held in memory only.

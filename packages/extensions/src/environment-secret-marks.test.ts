@@ -1,4 +1,4 @@
-// The `environment` extension's tool for the Build mark of a kept Secret (docs/spec.md → Agent changes):
+// The `environment` extension's tool for the Build mark of a kept Secret (docs/architecture/agent-changes.md):
 // `environment_secret_build`, over fake kept Secrets that apply a mark as the Registry does.
 // @effect-diagnostics asyncFunction:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

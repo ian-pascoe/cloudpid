@@ -1,4 +1,4 @@
-// The Changes measurements (docs/spec.md → Known risks and spikes): isomorphic-git's `statusMatrix({ refresh: false })`
+// The Changes measurements (docs/architecture/risks-and-spikes.md): isomorphic-git's `statusMatrix({ refresh: false })`
 // and `readBlob`, and the whole listing, in a Workspace DO, on repos real git made of 1,000, 5,000 and 20,000 tracked
 // files (`changes.setup.ts`). Skipped unless `CHANGES_BENCH=1`. Times are taken here, around each call: workerd's clock
 // stands still while code runs. The heap is sampled from outside (`scripts/heap-poll.mjs`), so each phase is logged

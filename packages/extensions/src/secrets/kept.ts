@@ -1,4 +1,4 @@
-// Secrets kept for an Environment, or for every Environment (`docs/spec.md` → Secrets, ADR-0016): Secrets like
+// Secrets kept for an Environment, or for every Environment (`docs/architecture/agent-capabilities.md` → Secrets, ADR-0016): Secrets like
 // `secret_ask`'s, used by reference and scrubbed from output and provider requests, that the owner sets on the
 // Environments page and that do not expire. Plain data, as they cross Durable Object RPC; a value is never stored
 // outside a vault (`openKeptVault`).

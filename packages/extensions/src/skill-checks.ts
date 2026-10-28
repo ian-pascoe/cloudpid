@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off
-// What a Skill may hold (ADR-0026, docs/spec.md → The Environment's own Skills): the checks a Skill's files pass before they
+// What a Skill may hold (ADR-0026, docs/architecture/workspace.md → The Environment's own Skills): the checks a Skill's files pass before they
 // are saved, by the Registry and by `environment_skill_save`, and the Agent Skills name rules. Plain TypeScript with no
 // imports, which Node runs by type stripping.
 

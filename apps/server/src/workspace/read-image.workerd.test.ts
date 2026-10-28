@@ -1,6 +1,6 @@
 // `read` of an image too large for one SQLite row, through a Session on a real Workspace and the Images binding (which
 // miniflare emulates with sharp): the image the model gets is held to the conversation's bound, the result says it was
-// reduced, and the Session keeps running (docs/spec.md → Filesystem and tools). miniflare's SQLite does not enforce
+// reduced, and the Session keeps running (docs/architecture/workspace.md → Filesystem and tools). miniflare's SQLite does not enforce
 // Cloudflare's 2 MB row cap, so the sizes are what is checked, not the failure the bound prevents.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off

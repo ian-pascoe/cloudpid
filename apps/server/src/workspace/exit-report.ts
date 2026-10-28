@@ -1,4 +1,4 @@
-// The Container's account of why it stopped (docs/spec.md → Container and Toolchains → Exit reports). The platform keeps
+// The Container's account of why it stopped (docs/architecture/container.md → Exit reports). The platform keeps
 // a Container's output where no API reads it, and computer logs only that the Container exited, so a computerd that
 // dies left nothing in the Workers logs to say why. The image's supervisor (`apps/sandbox-image/image/supervise`) posts
 // computerd's status and last lines to `EXIT_REPORT_HOST` when computerd exits on its own; the Workspace DO intercepts

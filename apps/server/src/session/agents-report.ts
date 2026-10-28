@@ -1,4 +1,4 @@
-// The summary of a Session's subagents it keeps in the Registry (ADR-0024, `docs/spec.md` → Client and protocol →
+// The summary of a Session's subagents it keeps in the Registry (ADR-0024, `docs/architecture/client-and-protocol.md` →
 // Registry), so the Session list shows them without waking each Session DO: what the task graph's panel shows of each
 // agent, less its conversation and model. The Session DO writes it when the list changes, at most once an interval with
 // the last state always written, and at each start. A write that fails is logged and left due: the host's heartbeat

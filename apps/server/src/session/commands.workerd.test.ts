@@ -1,5 +1,5 @@
-// The Session's Slash commands through a Session host on real Durable Object storage (docs/spec.md → Client and protocol
-// → Slash commands). workerd's `cloudflare:test` APIs are Promise-based, so this file is too.
+// The Session's Slash commands through a Session host on real Durable Object storage (docs/architecture/client-and-protocol.md →
+// Slash commands). workerd's `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";

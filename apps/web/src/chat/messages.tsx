@@ -53,7 +53,7 @@ const SkillDisclosure = ({ skill, messageId }: { skill: ShownSkill; messageId: s
 /**
  * A page the owner attached, as the transcript shows it: a chip with its title and host, and, if they had text selected
  * in it, that text under a closed disclosure. What the model got is a block of page content the Session added; the chip
- * stands for it (docs/spec.md → Attached pages).
+ * stands for it (docs/architecture/client-and-protocol.md → Attached pages).
  */
 const PageChip = ({ page }: { page: AttachedPage }) => (
   <li className="rounded-md border bg-background px-2.5 py-1.5 text-sm whitespace-normal">

@@ -1,4 +1,4 @@
-// The Changes on the Session socket (docs/spec.md → Diffs and review → Changes): a Workspace lists them
+// The Changes on the Session socket (docs/architecture/diffs-and-review.md → Changes): a Workspace lists them
 // (`Workspace.changes`), and the Session sends each list to every client that watches them. The Session's own
 // Workspace's are one broadcast, and each Subagent Workspace's another (ADR-0024): the conversations that work in one
 // Workspace share its listing. One listing serves every client: a refresh asked for while one runs is folded into one
@@ -213,7 +213,7 @@ export type SessionChangesService = {
   ) => Effect.Effect<ChangeFile, SessionError>;
   /**
    * List the Session's own Changes now, never starting the Container, and answer the list; the last one when the
-   * listing failed. Drafts are made on these Changes only (`docs/spec.md` → Annotations and Reviews).
+   * listing failed. Drafts are made on these Changes only (`docs/architecture/diffs-and-review.md` → Annotations and Reviews).
    */
   readonly fresh: Effect.Effect<ChangesMessage | undefined>;
   /**

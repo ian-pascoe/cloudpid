@@ -1,4 +1,4 @@
-// The tools that wait for the owner's Approval (docs/spec.md → Approval): each asks the owner on a card, with the values
+// The tools that wait for the owner's Approval (docs/architecture/agent-changes.md → Approval): each asks the owner on a card, with the values
 // before and after and the agent's reason, applies the change on Approve against what the owner saw, changes nothing on
 // Decline, and refuses without asking what it would refuse anyway.
 // @effect-diagnostics asyncFunction:off strictEffectProvide:off preferEffectArray:off newPromise:off globalTimers:off

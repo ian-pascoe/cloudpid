@@ -1,5 +1,5 @@
 // The Attachments route over a real Workspace DO: where an upload lands, that a name cannot leave the Session's
-// `.cloudpid/uploads` directory, suffixing, removal and the size limit (`docs/spec.md` → Client and protocol → Attachments).
+// `.cloudpid/uploads` directory, suffixing, removal and the size limit (`docs/architecture/client-and-protocol.md` → Attachments).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";

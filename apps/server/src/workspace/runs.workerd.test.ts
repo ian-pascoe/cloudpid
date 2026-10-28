@@ -1,4 +1,4 @@
-// The Run copies and the Run diff in the Workspace DO (docs/spec.md → Diffs and review → Run diff), over repos real git
+// The Run copies and the Run diff in the Workspace DO (docs/architecture/diffs-and-review.md → Run diff), over repos real git
 // made (`changes.setup.ts`) and written into a Workspace as computer's sync would. The copies are written by
 // isomorphic-git through the Workspace DO's own files, so these tests are the proof that its writes (`mkdir`, `writeFile`)
 // work over computer's provider. The test Worker has no Container: a fake one counts what is asked of it.

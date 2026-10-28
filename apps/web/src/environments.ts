@@ -329,7 +329,7 @@ export const toolchainsFieldProblem = (text: string): string | null => {
 };
 
 /**
- * The line an Environment's card shows of its Build (docs/spec.md → Builds), as of `now`: whether new Workspaces start
+ * The line an Environment's card shows of its Build (docs/architecture/container.md → Builds), as of `now`: whether new Workspaces start
  * from one, and when it was made; one under way or failed says what new Workspaces start from meanwhile.
  */
 export const buildLine = (build: BuildView, now: number): string => {
@@ -451,7 +451,7 @@ export const changeFieldText = (field: string): string => {
 
 /**
  * What a call's card titles its Agent change with: the setting and where it is (`Variable API_URL in Default`), or, for
- * an Environment deleted with the owner's Approval, that it was deleted (`docs/spec.md` → Approval).
+ * an Environment deleted with the owner's Approval, that it was deleted (`docs/architecture/agent-changes.md` → Approval).
  */
 export const changeTitleText = (field: string, where: string): string =>
   field === DELETED_FIELD
@@ -467,7 +467,7 @@ export const fieldValueText = (field: string, value: AgentChange["before"]): str
 
 /**
  * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it) and
- * whether the owner approved it first (`docs/spec.md` → Approval), or the owner, reverting an earlier one.
+ * whether the owner approved it first (`docs/architecture/agent-changes.md` → Approval), or the owner, reverting an earlier one.
  */
 export const changeByline = (change: AgentChange, now: number): string => {
   const when = relativeTime(change.at, now);

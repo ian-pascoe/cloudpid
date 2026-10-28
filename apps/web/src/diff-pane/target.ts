@@ -1,4 +1,4 @@
-// Where the Diff pane is asked to go when something opens it (`docs/spec.md` → Diffs and review → Diff pane): the Session
+// Where the Diff pane is asked to go when something opens it (`docs/architecture/diffs-and-review.md` → Diff pane): the Session
 // details' totals and files, and a Call diff card's "Open in Diff pane". The Pane is one per page (the Session's, or a
 // Subagent page's, each on its own Changes), so its key carries no file: the place is a request beside it, kept by the
 // Changes' key, which the Pane takes once and clears.

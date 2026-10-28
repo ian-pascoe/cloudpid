@@ -1,5 +1,5 @@
 // `browser`: the model's CDP code, run by the Session's browser host in the calling conversation's tab, or in one of the
-// owner's Owner tabs (`docs/spec.md` → Browser). This is the Session's side of `agents/browser`'s `browserTool`: its
+// owner's Owner tabs (`docs/architecture/browser.md`). This is the Session's side of `agents/browser`'s `browserTool`: its
 // description and its results come from the host, shaped here for the transcript, the socket, and the UI. And
 // `browser_owner_tabs`, which tells the agent which Owner tabs are open without running anything.
 import { defineEffectTool } from "@cloudpid/effect-durable";

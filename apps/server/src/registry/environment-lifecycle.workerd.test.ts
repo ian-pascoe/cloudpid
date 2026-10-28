@@ -1,4 +1,4 @@
-// The agent's changes to an Environment's own record over real Durable Object SQLite (docs/spec.md → Agent changes):
+// The agent's changes to an Environment's own record over real Durable Object SQLite (docs/architecture/agent-changes.md):
 // making one, renaming it, adding and removing Repos, asking for a Build, and the owner's revert of each.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off

@@ -1,4 +1,4 @@
-// The owner's draft Annotations as the web app shows them (`docs/spec.md` → Diffs and review → Annotations and Reviews):
+// The owner's draft Annotations as the web app shows them (`docs/architecture/diffs-and-review.md` → Annotations and Reviews):
 // which drafts sit on a diff, where in it, which go to a composer, and what a chip and a lane say of them. Pure.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over the Session's arrays.
 

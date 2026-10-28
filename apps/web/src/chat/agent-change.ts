@@ -1,4 +1,4 @@
-// The Agent changes an `environment_*` or `settings_*` call made (`docs/spec.md` → Agent changes), as its card shows
+// The Agent changes an `environment_*` or `settings_*` call made (`docs/architecture/agent-changes.md`), as its card shows
 // them: the Environment (none for the Settings), the field, and its values before and after, in full (a variable's value
 // is plain).
 
@@ -15,7 +15,7 @@ export const ShownChange = Schema.Struct({
   field: Schema.String,
   before: Schema.NullOr(Schema.Json),
   after: Schema.NullOr(Schema.Json),
-  /** The owner approved the change before it was made (`docs/spec.md` → Approval). */
+  /** The owner approved the change before it was made (`docs/architecture/agent-changes.md` → Approval). */
   approved: Schema.optionalKey(Schema.Literal(true)),
 });
 

@@ -1,4 +1,4 @@
-// The lines a gutter selection in a diff picks for an Annotation (`docs/spec.md` → Diffs and review → Annotations and
+// The lines a gutter selection in a diff picks for an Annotation (`docs/architecture/diffs-and-review.md` → Annotations and
 // Reviews): one side's range and its lines as they read now, the quote the draft keeps. Pure, over @pierre/diffs' parsed
 // file, so it is tested without drawing anything.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over the library's arrays.

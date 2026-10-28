@@ -1,4 +1,4 @@
-// The Settings' Agent changes (docs/spec.md → Agent changes), over an in-memory document table and Agent changes:
+// The Settings' Agent changes (docs/architecture/agent-changes.md), over an in-memory document table and Agent changes:
 // applied as the owner's save is, recorded with the values before and after, and reverted unless changed since.
 import { DEFAULT_OFFERED_TOOLS, DEFAULT_SETTINGS } from "@cloudpid/config";
 import { type AgentChange, MAX_AGENT_CHANGES, SETTINGS_SCOPE } from "@cloudpid/protocol";

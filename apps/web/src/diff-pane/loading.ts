@@ -1,4 +1,4 @@
-// How the Diff pane loads its files' contents (`docs/spec.md` → Diffs and review → Diff pane): `change_file` is asked
+// How the Diff pane loads its files' contents (`docs/architecture/diffs-and-review.md` → Diff pane): `change_file` is asked
 // only for unfolded files near the visible window, the ones in view first, at most 4 at a time (the loader, `loader.ts`,
 // runs them); a file is asked for again when a new list says its change is not the same, or, while it is in view, when it
 // was loaded from an older list; and how many workers the highlighting Worker Pool has.

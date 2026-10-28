@@ -799,7 +799,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   });
 
   /**
-   * Names the Session after its first answer (`docs/spec.md` → Client and protocol → Titles). The root's first message
+   * Names the Session after its first answer (`docs/architecture/client-and-protocol.md` → Titles). The root's first message
    * and answer come from its first entries; a first Run so long that its answer is past them is named by its message.
    */
   const titles = titleTask({
@@ -1529,7 +1529,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   /**
    * `draft` with the pages attached to `prompt`: their block of page content as a text part of its own, before the first
    * image (the pages' screens, then the Attachments' pictures), apart from the owner's words, and the entry that keeps
-   * what was read of them for the transcript's chips (`docs/spec.md` → Attached pages).
+   * what was read of them for the transcript's chips (`docs/architecture/client-and-protocol.md` → Attached pages).
    */
   const draftOf = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> =>
     expandedDraft(prompt).pipe(

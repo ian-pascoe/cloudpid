@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectRecord:off globalDate:off
-// Scrubbing at the Session's model seam (`docs/spec.md` → Secrets): every request a conversation's Harness makes
+// Scrubbing at the Session's model seam (`docs/architecture/agent-capabilities.md` → Secrets): every request a conversation's Harness makes
 // through its `Models` — generations, pi-durable's compaction summaries, a subagent's `compact` summary, and any later
 // small-role call — has its messages scrubbed of the Session's Secrets before it leaves the object.
 import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-works/pi-ai";

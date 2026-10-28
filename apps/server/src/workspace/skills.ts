@@ -1,4 +1,4 @@
-// The Workspace DO's side of skills, Prompt templates and project instructions (docs/spec.md → Filesystem and tools):
+// The Workspace DO's side of skills, Prompt templates and project instructions (docs/architecture/workspace.md → Filesystem and tools):
 // finding them next to the files, so a Session's request is one RPC, and keeping what a Workspace had at the skills'
 // mount before the mount existed.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off

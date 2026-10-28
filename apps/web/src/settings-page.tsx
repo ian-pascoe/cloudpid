@@ -87,7 +87,7 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 );
 
 /**
- * What the agent changed in the Settings, newest first (`docs/spec.md` → Agent changes), each with a revert and a
+ * What the agent changed in the Settings, newest first (`docs/architecture/agent-changes.md`), each with a revert and a
  * dismissal. A revert the Registry refuses (its setting has changed since) says why.
  */
 const AgentChangesSection = () => {

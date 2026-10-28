@@ -1,4 +1,4 @@
-// The line diff of an Agent change's long values (docs/spec.md → Agent changes).
+// The line diff of an Agent change's long values (docs/architecture/agent-changes.md).
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import { changeDiff, diffLines, foldDiff, skillFileDiffs } from "./line-diff.ts";

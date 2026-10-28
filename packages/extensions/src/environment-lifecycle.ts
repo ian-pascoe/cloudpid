@@ -1,4 +1,4 @@
-// The `environment` extension's tools for an Environment's own record (`docs/spec.md` → Agent changes): the agent makes
+// The `environment` extension's tools for an Environment's own record (`docs/architecture/agent-changes.md`): the agent makes
 // an Environment, renames it, adds Repos to it and takes them out, and asks for its Build or a Test Build of proposed
 // changes. Each change is applied as the owner's RPC is and recorded as an Agent change, like the tools for its Container
 // settings; they are the same extension's, built next to those (`EnvironmentTools`) over the same `Environments`. A Test

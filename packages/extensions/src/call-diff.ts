@@ -1,5 +1,5 @@
-// The Call diff of `write`, and of the `edit` and `write` calls a `codemode` script makes (`docs/spec.md` → Diffs and
-// review). A Call diff is what a result's `details` record of a change (`RecordedDiff`, `@cloudpid/protocol/call-diff`): a
+// The Call diff of `write`, and of the `edit` and `write` calls a `codemode` script makes (`docs/architecture/diffs-and-review.md`).
+// A Call diff is what a result's `details` record of a change (`RecordedDiff`, `@cloudpid/protocol/call-diff`): a
 // unified patch with four lines of context, as `edit` records, and flags where there is none to record:
 //
 // - `created`: the file did not exist.

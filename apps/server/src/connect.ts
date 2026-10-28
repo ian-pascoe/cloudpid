@@ -6,7 +6,7 @@ import { REGISTRY_NAME, type Registry } from "./registry/Registry.ts";
 import type { Session } from "./session/Session.ts";
 
 /**
- * Open a client's socket to Session `sessionId` (`docs/spec.md` → Client and protocol): forward the upgrade to its
+ * Open a client's socket to Session `sessionId` (`docs/architecture/client-and-protocol.md`): forward the upgrade to its
  * Session DO, which accepts it. A Session the Registry does not know answers 404, so a stale or mistyped ID fails
  * visibly instead of starting a Session nobody lists.
  */

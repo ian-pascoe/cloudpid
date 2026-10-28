@@ -1,5 +1,5 @@
-// The Session's lifecycle operations on Environments (`@cloudpid/extensions/environment`, `docs/spec.md` → Agent
-// changes): the agent makes, renames, adds Repos to and takes Repos out of an Environment, and asks for its Build. Each
+// The Session's lifecycle operations on Environments (`@cloudpid/extensions/environment`, `docs/architecture/agent-changes.md`):
+// the agent makes, renames, adds Repos to and takes Repos out of an Environment, and asks for its Build. Each
 // is applied and recorded by the Registry (`agentCreateEnvironment` and the rest), as the owner's RPC applies it; then
 // the Session runs the upkeep the main Worker runs after the owner's RPC: the spare Workspace and the Build. No
 // Workspace a Session has is touched, so there is no handover to a Workspace DO as for a Container setting.

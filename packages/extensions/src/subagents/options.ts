@@ -1,4 +1,4 @@
-// What the subagents extension reads from the settings (`docs/spec.md` → Settings): the model roles, the depth cap, and
+// What the subagents extension reads from the settings (`docs/architecture/overview.md` → Settings): the model roles, the depth cap, and
 // the toolsets the `read` and `modify` presets grant. Read at each call, so a change the Session reads applies to the
 // next spawn; existing children keep the launch contract they were created with.
 import type { ModelRef } from "@earendil-works/pi-durable";

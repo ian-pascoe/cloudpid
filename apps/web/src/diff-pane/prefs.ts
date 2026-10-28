@@ -1,4 +1,4 @@
-// The Diff pane's view preferences (`docs/spec.md` → Diffs and review → Diff pane): its layout (Auto, Split or Stacked)
+// The Diff pane's view preferences (`docs/architecture/diffs-and-review.md` → Diff pane): its layout (Auto, Split or Stacked)
 // and whether long lines wrap, kept per device in `localStorage` as the Pane area's width is. They are not Settings.
 
 import * as Atom from "effect/reactivity/Atom";

@@ -1,4 +1,4 @@
-// The Session's task graph as a client's panel shows it (`docs/spec.md` → Client and protocol): pi-durable's
+// The Session's task graph as a client's panel shows it (`docs/architecture/client-and-protocol.md`): pi-durable's
 // `TaskGraph` lists every live task with its internals, so it is boiled down to the Session's subagents and its live
 // background work before it goes on a socket.
 import {

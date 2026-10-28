@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalConsole:off newPromise:off globalTimers:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
 // The browser host: one Durable Object per Session (ADR-0007) with the Session's one Browser Run browser, driven by
 // `agents/browser`'s `browserTool`. The Session DO reaches it over RPC, because the tool needs this Worker's
-// `CodemodeRuntime` facet and the Loader that runs the model's CDP code (`docs/spec.md` → Browser).
+// `CodemodeRuntime` facet and the Loader that runs the model's CDP code (`docs/architecture/browser.md`).
 //
 // `Browser` keeps its record in this object's storage through an explicit store, so no `Lifecycle` is installed: it would
 // take over the object's `fetch`, `alarm`, and WebSocket handlers, and the browser needs none of them. Browser Run

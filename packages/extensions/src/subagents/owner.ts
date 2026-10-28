@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- helpers over pi-durable's Promise-based Harness.
-// What the Session's owner may do to a subagent directly, from its thread in the UI (`docs/spec.md` → Subagents): the
+// What the Session's owner may do to a subagent directly, from its thread in the UI (`docs/architecture/agent-capabilities.md` → Subagents): the
 // conversations that count as agents, and stopping one, or all of them, without going through an agent's tools.
 import type { Context } from "@earendil-works/chord/context";
 import {

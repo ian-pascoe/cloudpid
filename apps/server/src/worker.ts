@@ -77,7 +77,7 @@ const webAssets = Effect.gen(function* () {
 
 /**
  * The Workspace DO namespace, bound for the Session DOs, which reach it with the raw stub `ComputerExecutionEnv` needs
- * (`docs/spec.md` → Durable Objects). The Workspace DO lives in the `Workspaces` Worker; its script name is the Output,
+ * (`docs/architecture/overview.md` → Durable Objects). The Workspace DO lives in the `Workspaces` Worker; its script name is the Output,
  * not a literal, so that Worker deploys first. Only the deploy declares it: the bundle reads the binding from `env`.
  */
 const workspaceBinding = Effect.gen(function* () {

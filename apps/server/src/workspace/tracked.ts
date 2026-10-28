@@ -1,5 +1,5 @@
-// The Workspace stub the DO hands out, with the commands that run on the Container counted (docs/spec.md → Container
-// and Toolchains → idle stop). A command's exec handle lives until its client disposes it (the client always holds it
+// The Workspace stub the DO hands out, with the commands that run on the Container counted (docs/architecture/container.md →
+// idle stop). A command's exec handle lives until its client disposes it (the client always holds it
 // with `using`, and Workers RPC disposes it when the client disconnects), so the command is running from `exec` until
 // then, and the Container is not idle meanwhile.
 // @effect-diagnostics asyncFunction:off globalConsole:off

@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off cryptoRandomUUID:off globalConsole:off
-// The Browser Pane's Owner tabs in the browser host (`docs/spec.md` → Browser, ADR-0013): pages of the Session's one
+// The Browser Pane's Owner tabs in the browser host (`docs/architecture/browser.md`, ADR-0013): pages of the Session's one
 // shared browser (ADR-0007) that the owner opened, apart from the conversations' tabs but sharing their cookies and
 // logins. Each Owner tab is a scope of `agents/browser` of its own (`owner-tab:<id>`), whose record names the tab and the
 // browser it lives in, as a conversation's scope does; this object keeps the list of Owner tabs (by `id`) and the one

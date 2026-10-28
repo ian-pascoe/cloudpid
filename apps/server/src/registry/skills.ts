@@ -1,4 +1,4 @@
-// The Skills kept for an Environment, and for every Environment (ADR-0026, `docs/spec.md` → The Environment's own Skills):
+// The Skills kept for an Environment, and for every Environment (ADR-0026, `docs/architecture/workspace.md` → The Environment's own Skills):
 // kept in the Registry DO's SQLite, each file's text once per content hash (`skill_files`), shared by the Skills kept
 // now (`skills`, by scope, an Environment's id or `*` for every Environment, and name) and the Agent changes that saved
 // or removed one (their files before and after, by hash, under the same scope). Text that neither refers to any more is

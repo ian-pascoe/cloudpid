@@ -1,4 +1,4 @@
-// An attached page (GLOSSARY.md → Messages: Attached page; `docs/spec.md` → Client and protocol → Attached pages): an
+// An attached page (GLOSSARY.md → Messages: Attached page; `docs/architecture/client-and-protocol.md` → Attached pages): an
 // Owner tab the owner attached to a message, so the agent sees what they see without a browser run. The composer names
 // the tabs (`PageRef`); the Session reads each one's URL, title and selected text from the browser, fences them as page
 // content apart from the owner's words (`pageBlock`), and keeps what it read in the owner's entry (`AttachedPage`) for

@@ -49,7 +49,7 @@ export const EXCLUDED_NAMES: readonly string[] = ["node_modules"];
 
 /**
  * Directories never offered, wherever the conversation works: every Session's Attachments, and the Skill set,
- * mounted read-only into every Workspace (AGENTS.md → Skills).
+ * mounted read-only into every Workspace (docs/architecture/workspace.md → The Skill set).
  */
 export const EXCLUDED_ROOTS: readonly string[] = [
   CLOUDPID_ROOT,

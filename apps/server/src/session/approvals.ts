@@ -1,4 +1,4 @@
-// The Session's Approval requests (`docs/spec.md` → Approval): kept in this object's storage, sent to every client over
+// The Session's Approval requests (`docs/architecture/agent-changes.md` → Approval): kept in this object's storage, sent to every client over
 // the Session socket whenever they change, and pushed to the owner, who may not have the page open, as each is made.
 import {
   type ApprovalStorage,

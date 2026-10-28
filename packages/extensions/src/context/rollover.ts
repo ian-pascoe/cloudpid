@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off -- pi-durable commit callbacks and plain string functions.
-// Rollover (`docs/spec.md` → Context management): the agent writes its own Handoff instead of the generated summary of
+// Rollover (`docs/architecture/agent-capabilities.md` → Context management): the agent writes its own Handoff instead of the generated summary of
 // a compaction. `context_rollover` returns `control: { handoff }`, which pi-durable applies once the whole tool round is
 // done: it appends a `pi.reset` entry carrying the Handoff and ends the run, and a follow-up the tool queued continues
 // the task in the new context. The `beforeCompact` hook turns a background threshold compaction into a Rollover request;

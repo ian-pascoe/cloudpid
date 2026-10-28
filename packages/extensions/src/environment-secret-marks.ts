@@ -1,4 +1,4 @@
-// The `environment` extension's tool for the Build mark of a kept Secret (`docs/spec.md` → Agent changes, ADR-0019):
+// The `environment` extension's tool for the Build mark of a kept Secret (`docs/architecture/agent-changes.md`, ADR-0019):
 // `environment_secret_build` marks a Secret kept for an Environment, or for every Environment, as reaching the Build, or
 // takes the mark off. The Registry applies it as the owner's switch on the Environments page does and records it, with the
 // mark before and after, so the owner can revert it. Keeping a Secret is not a tool: only the owner's choice in

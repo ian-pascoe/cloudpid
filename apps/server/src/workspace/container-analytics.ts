@@ -1,4 +1,4 @@
-// Cloudflare's usage analytics of a Workspace's Containers (`docs/spec.md` → Operations → Usage): the GraphQL Analytics
+// Cloudflare's usage analytics of a Workspace's Containers (`docs/architecture/operations.md` → Usage): the GraphQL Analytics
 // API's `containersUsageAdaptiveGroups`, the dataset behind the dashboard's usage estimate, which counts the Container's
 // micro VM too. Each Container is launched with the Workspace's label (`ContainerLaunch`), so one filter on it finds
 // every launch of the Workspace. Needs an API token with Account Analytics Read (`CLOUDPID_ANALYTICS_TOKEN`).

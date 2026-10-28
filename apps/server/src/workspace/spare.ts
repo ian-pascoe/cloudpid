@@ -1,4 +1,4 @@
-// A spare Workspace preparing itself (docs/spec.md → Spare Workspace, ADR-0016). The main Worker registers each
+// A spare Workspace preparing itself (docs/architecture/workspace.md → Spare Workspace, ADR-0016). The main Worker registers each
 // Environment's spare and asks its Durable Object to prepare (`prepareSpare`), but its `waitUntil` lasts far less than a
 // clone, so the object does the work: the request is stored and the object's alarm, shared with the idle stop, starts
 // it. The work readies the Workspace as a Session's readying would (`prepareWorkspace` over the object's own Container:

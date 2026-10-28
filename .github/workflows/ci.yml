@@ -105,7 +105,7 @@ jobs:
           RESULT: ${{ needs.checks.result }}
 
   # Deploys `prod` on push to main with a scoped API token from the `production` environment
-  # (credentials as code: infra/github.ts, AGENTS.md → Infra).
+  # (credentials as code: infra/github.ts, docs/development/infra.md → CI credentials).
   deploy:
     name: Deploy prod
     needs: check

@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a plain function over native arrays, not a combinator.
-// What the Browser Pane says while the agent drives an Owner tab (`docs/spec.md` → Browser → Browser Pane): the
+// What the Browser Pane says while the agent drives an Owner tab (`docs/architecture/browser.md` → Browser Pane): the
 // `browser` calls the Session says work in Owner tabs (`owner_tab_drivers`), for one Owner tab, named as the owner knows
 // each agent: "The agent" for the root agent's, a subagent by its ID and role.
 

@@ -1,4 +1,4 @@
-// The end and the fresh starts of a Workspace's life (`docs/spec.md` → Workspaces from the UI): the main Worker wipes
+// The end and the fresh starts of a Workspace's life (`docs/architecture/workspace.md` → Workspaces from the UI): the main Worker wipes
 // its Durable Object when the owner removes it, after its Sessions are deleted, stops its Container and forgets the
 // saved disk when the owner restarts the Container, and asks the object of a spare Workspace it registered to prepare
 // itself, asks an Environment's Build object for a Build, and has a Workspace carry its clones to a Fork's new one.

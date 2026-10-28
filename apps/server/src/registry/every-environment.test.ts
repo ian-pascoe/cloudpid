@@ -1,4 +1,4 @@
-// The variables kept for every Environment as the Registry reads and saves them (docs/spec.md → Container settings):
+// The variables kept for every Environment as the Registry reads and saves them (docs/architecture/container.md → Container settings):
 // reading is lenient and writing strict, no Environment may be left with more variables than a Workspace takes, and a
 // Workspace is handed an Environment's overrides with the variables kept for every Environment under its own.
 import * as Arr from "effect/Array";

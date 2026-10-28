@@ -1,6 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off globalDate:off preferEffectArray:off -- plain functions over the page's events, storage, clock and DOM fields, not combinators.
 
-// Recovering from a stale build: the one place that explains it, with `docs/spec.md` → UI → Serving and deploys. The main
+// Recovering from a stale build: the one place that explains it, with `docs/architecture/client-and-protocol.md` → UI → Serving and deploys. The main
 // Worker keeps only the current build's files, so a tab left open across a deploy asks for chunks and stylesheets
 // (`/assets/<name>-<hash>.js`) that are gone. Vite then fires `vite:preloadError` on `window`; the page reloads once to
 // fetch the new build, unless a reload has just been made (it would loop) or the owner has typed something a reload

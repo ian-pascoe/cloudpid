@@ -1,5 +1,5 @@
 // The Skill set a Workspace holds (empty until one is handed over) and its repo's skills, through Sessions and the
-// environment (docs/spec.md → Filesystem and tools).
+// environment (docs/architecture/workspace.md → Filesystem and tools).
 // They live in their own file so no file of the `workerd-session` project grows large (#64).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";

@@ -1,4 +1,4 @@
-// Updating installed Skills (ADR-0026, GLOSSARY.md → Skill source, `docs/spec.md` → Installing from GitHub → Updates): a
+// Updating installed Skills (ADR-0026, GLOSSARY.md → Skill source, `docs/architecture/workspace.md` → Installing from GitHub → Updates): a
 // Skill stays as it was fetched until someone updates it. An update fetches the latest commit of each Skill's recorded ref
 // (`../github/skill-fetch.ts`, as an install does) and keeps the files in place of the Skill's, with the new Skill source,
 // as a save keeps a Skill. The agent's update records an Agent change for each Skill moved, with the files and the source

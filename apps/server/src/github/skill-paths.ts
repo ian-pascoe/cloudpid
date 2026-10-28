@@ -1,4 +1,4 @@
-// Which folders of a GitHub repo hold Skills (ADR-0026, `docs/spec.md` → _The Environment's own Skills_ → _Installing from
+// Which folders of a GitHub repo hold Skills (ADR-0026, `docs/architecture/workspace.md` → _The Environment's own Skills_ → _Installing from
 // GitHub_): the `SKILL.md` path rules of the `skills` CLI, ported from `findSkillMdPaths` and `PRIORITY_PREFIXES` in
 // `skills@1.7.4` (`dist/cli.mjs`), the function the CLI runs on a repo's tree from GitHub's Trees API. cloudpid does not
 // run the CLI (it has no library entry point), so the rules are kept here and held to the CLI's own cases

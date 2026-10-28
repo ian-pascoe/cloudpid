@@ -1,4 +1,4 @@
-// The `settings` extension (`docs/spec.md` → Agent changes, ADR-0019): the agent's tools for the Settings the owner edits
+// The `settings` extension (`docs/architecture/agent-changes.md`, ADR-0019): the agent's tools for the Settings the owner edits
 // on the Settings page, one tool for each thing it may change: `settings_get`, `settings_model_set`,
 // `settings_role_set`, `settings_tool_offer`, `settings_tool_defer`, `settings_compaction_set`,
 // `settings_branch_summary_set` and `settings_extension_set`. The Limits (`spendLimit.perSession` and the subagent

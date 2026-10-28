@@ -1,4 +1,4 @@
-// An Effect `Tracer` over Workers tracing (`docs/spec.md` → Operations → Telemetry): each Effect span, and so each pi
+// An Effect `Tracer` over Workers tracing (`docs/architecture/operations.md` → Telemetry): each Effect span, and so each pi
 // span the adapter makes, is a custom span of Workers Observability (`tracing` from `cloudflare:workers`), nested
 // among the runtime's own spans for fetches, bindings and RPC.
 //

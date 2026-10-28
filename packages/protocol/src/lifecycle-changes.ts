@@ -1,4 +1,4 @@
-// What the agent's changes to an Environment's own record are called in the history (`docs/spec.md` → Agent changes):
+// What the agent's changes to an Environment's own record are called in the history (`docs/architecture/agent-changes.md`):
 // its name, its Repos, its creation and the Builds it asks for. Besides the Container settings (`variableField` and
 // the setting names), these are the `field`s of an Agent change. Shared by the server (which writes and reverts them)
 // and the web app (which labels them and offers a revert only where there is one).
@@ -15,7 +15,7 @@ export const NAME_FIELD = "name";
 export const CREATED_FIELD = "environment";
 
 /**
- * The field of the Environment's delete the owner approved (`environment_delete`, `docs/spec.md` → Approval): before it
+ * The field of the Environment's delete the owner approved (`environment_delete`, `docs/architecture/agent-changes.md` → Approval): before it
  * what was deleted, in words, and nothing after. It is shown on the call's card and in the Run's Notification only: the
  * Environment's history is deleted with it.
  */

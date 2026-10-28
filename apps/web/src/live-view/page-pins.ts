@@ -1,6 +1,6 @@
 // @effect-diagnostics globalTimers:off missingPipeableSignature:off -- a repaint waits for the browser's next animation frame; a constructor of a stream, not a combinator.
 
-// Where the Browser Pane's pins go (#243; `docs/spec.md` → Browser → Annotate mode), as atoms (ADR-0011): the drafts'
+// Where the Browser Pane's pins go (#243; `docs/architecture/browser.md` → Annotate mode), as atoms (ADR-0011): the drafts'
 // elements found again on the page shown, read at once, every `LOCATE_EVERY` while the Pane is in view, and
 // `LOCATE_AFTER_MOVE` after the page last scrolled or resized; and a count of the screen's repaints, which move what is
 // drawn over it.

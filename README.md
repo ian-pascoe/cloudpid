@@ -17,10 +17,11 @@ It has a single user: only the owner gets past Cloudflare Access.
 
 ## Docs
 
-- [`docs/spec.md`](docs/spec.md): the settled design, the repository layout, and the milestones.
+- [`docs/architecture/`](docs/architecture/overview.md): the settled design, the repository layout, and the milestones.
+- [`docs/development/`](docs/development/): running, deploying and upgrading the stack.
 - [`GLOSSARY.md`](GLOSSARY.md): the terms used in the code, the docs, and the UI.
 - [`docs/adr/`](docs/adr/): the decisions that are hard to reverse.
-- [`AGENTS.md`](AGENTS.md): how to work in the repo, deploy secrets, CI, and infra.
+- [`AGENTS.md`](AGENTS.md): how to work in the repo.
 
 ## Development
 
@@ -33,7 +34,7 @@ pnpm --filter @cloudpid/infra run dev       # workerd on http://localhost:1337
 pnpm --filter @cloudpid/web run dev         # the web app, proxied to the dev server
 ```
 
-Deploying needs the secrets listed in [`AGENTS.md`](AGENTS.md) → _Infra_:
+Deploying needs the secrets listed in [`docs/development/infra.md`](docs/development/infra.md) → _Secrets and variables_:
 
 ```sh
 pnpm --filter @cloudpid/infra run deploy --stage dev_$USER

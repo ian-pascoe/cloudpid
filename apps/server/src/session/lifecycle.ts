@@ -1,4 +1,4 @@
-// The end of a Session's life (`docs/spec.md` → Client and protocol → Registry): archiving stops everything it runs,
+// The end of a Session's life (`docs/architecture/client-and-protocol.md` → Registry): archiving stops everything it runs,
 // and deleting also closes its browser and its clients' sockets and wipes its storage. The main Worker asks, then
 // updates the Registry.
 import type { BrowserError } from "@cloudpid/extensions/browser";

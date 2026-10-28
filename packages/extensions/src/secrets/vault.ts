@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-// Encryption of Secret values at rest (`docs/spec.md` → Secrets): AES-256-GCM under a key derived with HKDF from the
+// Encryption of Secret values at rest (`docs/architecture/agent-capabilities.md` → Secrets): AES-256-GCM under a key derived with HKDF from the
 // Worker-secret master key and the Session's ID, so a record opens only in the Session that sealed it and only while
 // the deployment holds the same master key. Each record is also bound to its Secret Name and expiry as additional
 // data, so a record moved to another name or given a later expiry fails to open. Secrets kept for Environments, which

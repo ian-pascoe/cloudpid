@@ -1,4 +1,4 @@
-// `container_restart` and `container_resize` (docs/spec.md → Container and Toolchains → Restart by the agent, Resize by
+// `container_restart` and `container_resize` (docs/architecture/container.md → Restart by the agent, Resize by
 // the agent), over a fake Workspace Container.
 // @effect-diagnostics asyncFunction:off
 import type { InstanceType } from "@cloudpid/config";

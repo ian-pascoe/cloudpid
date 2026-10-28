@@ -1,4 +1,4 @@
-// Approval over the Session socket (docs/spec.md → Approval), against real Durable Object storage and a test Registry:
+// Approval over the Session socket (docs/architecture/agent-changes.md → Approval), against real Durable Object storage and a test Registry:
 // a change that needs the owner's yes reaches every client as a card's request, the owner's Approve applies it and
 // records it as approved, a Decline gives the agent the owner's reason, a waiting request survives an eviction, and
 // Stop withdraws it.

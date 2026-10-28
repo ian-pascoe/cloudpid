@@ -1,4 +1,4 @@
-// What the Workspace's Containers have cost (`docs/spec.md` → Operations → Usage), for the Session's header.
+// What the Workspace's Containers have cost (`docs/architecture/operations.md` → Usage), for the Session's header.
 //
 // Cloudflare's usage analytics (`container-analytics.ts`) are the figures, when the deployment has a token for them:
 // they count real CPU time, the micro VM and egress. They trail by minutes, so the time since what they cover is

@@ -1,4 +1,4 @@
-// Reviews (`docs/spec.md` → Diffs and review → Annotations and Reviews): the owner's drafts sent as one message, through
+// Reviews (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): the owner's drafts sent as one message, through
 // the composer's own `submit` (with `annotations`, the drafts' IDs). The Session takes the drafts, refuses the send when
 // one is gone, checks those on the Changes a last time, renders the Markdown the model gets after the summary, and places
 // the message; the drafts are deleted once it is taken, and come back when Stop withdraws it before it was placed. It

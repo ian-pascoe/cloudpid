@@ -1,4 +1,4 @@
-// The `secrets` extension (`docs/spec.md` → Secrets): a port of pi-secret's masked entry, references, and redaction,
+// The `secrets` extension (`docs/architecture/agent-capabilities.md` → Secrets): a port of pi-secret's masked entry, references, and redaction,
 // with values entered on the client and kept encrypted in the Session DO.
 export {
   extensionName,

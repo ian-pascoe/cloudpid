@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
-// A Browser Handoff (`docs/spec.md` → Browser, ADR-0007): the agent gives the owner live control of its browser for a
+// A Browser Handoff (`docs/architecture/browser.md`, ADR-0007): the agent gives the owner live control of its browser for a
 // step it cannot do, and waits. It follows the Secret request's design (`../secrets/store.ts`): the request is stored
 // until its call ends, shown to every client and pushed to the owner, withdrawn when the call is aborted, and found
 // again by a call an eviction cut off, which waits on the same handoff.

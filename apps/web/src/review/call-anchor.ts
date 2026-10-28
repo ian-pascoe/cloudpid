@@ -1,4 +1,4 @@
-// What a Call diff's drafts anchor to (`docs/spec.md` → Diffs and review → Annotations and Reviews): the conversation
+// What a Call diff's drafts anchor to (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): the conversation
 // whose call it is, the call (and the `codemode` call's own number), the tool, and the file; they go to that
 // conversation's composer: a subagent's for its calls, shown in its card, the active branch's for the root's.
 

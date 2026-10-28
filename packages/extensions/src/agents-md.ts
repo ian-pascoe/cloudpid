@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- tool wrappers and commit callbacks are pi-durable's Promise code; plain functions over a request's messages.
-// The `agents-md` extension (docs/spec.md → Filesystem and tools → Project instructions): the `AGENTS.md` files of the
+// The `agents-md` extension (docs/architecture/workspace.md → Filesystem and tools → Project instructions): the `AGENTS.md` files of the
 // Workspace in front of the model, as local pi and codex put them there, without moving the provider's cache prefix.
 //
 // - The `project_context` section holds the instructions of the conversation's `cwd` and of each directory above it up

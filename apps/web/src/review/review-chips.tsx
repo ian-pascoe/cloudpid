@@ -1,4 +1,4 @@
-// The chips of a Review (`docs/spec.md` → Diffs and review → Annotations and Reviews): in a composer, one per draft it
+// The chips of a Review (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): in a composer, one per draft it
 // will send, with a remove button; on a sent Review's message, one per Annotation it sent. Each opens on the quoted code
 // (or, on a page, its crop and text) and the owner's text.
 // @effect-diagnostics preferEffectArray:off -- the drafts are native arrays.

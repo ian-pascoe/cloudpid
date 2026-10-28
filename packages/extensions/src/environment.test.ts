@@ -1,4 +1,4 @@
-// The `environment` extension (docs/spec.md → Agent changes), over fake Environments: what each tool shows and changes,
+// The `environment` extension (docs/architecture/agent-changes.md), over fake Environments: what each tool shows and changes,
 // the refusal of values that hold a Secret, and the Run's record of the changes.
 // @effect-diagnostics asyncFunction:off
 import {

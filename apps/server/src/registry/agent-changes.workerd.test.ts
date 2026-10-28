@@ -1,4 +1,4 @@
-// Agent changes over real Durable Object SQLite (docs/spec.md → Agent changes): applied as the owner's save is,
+// Agent changes over real Durable Object SQLite (docs/architecture/agent-changes.md): applied as the owner's save is,
 // recorded, listed newest first, kept to the last 200 per Environment, and reverted unless changed since.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off

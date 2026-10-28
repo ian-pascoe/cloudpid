@@ -1,4 +1,4 @@
-// The Session's Viewed boxes (`docs/spec.md` → Diffs and review → Comparisons): the files of a pull request the owner ticked,
+// The Session's Viewed boxes (`docs/architecture/diffs-and-review.md` → Comparisons): the files of a pull request the owner ticked,
 // kept in this object's storage and sent whole to every client whenever they change, as the draft Annotations are (and
 // like them, belonging to the Session: a Fork or Clone copies none). A box is keyed by repo, pull request number and path,
 // and records the file's head blob: a push that changes the file brings a new blob, and a refresh of the pull request

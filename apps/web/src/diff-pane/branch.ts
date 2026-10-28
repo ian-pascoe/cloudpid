@@ -1,4 +1,4 @@
-// This branch in the Diff pane (`docs/spec.md` → Diffs and review → Comparisons): which source the Pane shows, the
+// This branch in the Diff pane (`docs/architecture/diffs-and-review.md` → Comparisons): which source the Pane shows, the
 // Comparison as the list of one repo the Pane already draws, what each error state says, and the Comparison's heading.
 // Pure.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over values, called from React.

@@ -1,4 +1,4 @@
-// Takes secrets out of a command's output (docs/spec.md → Git, Secrets): `env`, `printenv`, `set -x` or `gh auth status
+// Takes secrets out of a command's output (docs/architecture/workspace.md → Git, docs/architecture/agent-capabilities.md → Secrets): `env`, `printenv`, `set -x` or `gh auth status
 // --show-token` would otherwise put the GitHub token, or a Secret kept for the Environment, into the Session's history
 // and send it to the model provider. It catches accidents, not exfiltration: a command that encodes one gets past it.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off

@@ -1,4 +1,4 @@
-// The contract of the image's entrypoint, `image/supervise` (docs/spec.md → Container and Toolchains → Exit reports),
+// The contract of the image's entrypoint, `image/supervise` (docs/architecture/container.md → Exit reports),
 // with the Workspace DO, which imports it: no Node built-ins here, since it runs in a Worker. The script repeats these
 // values; `supervisor.test.ts` fails when they differ.
 

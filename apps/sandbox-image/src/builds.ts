@@ -1,4 +1,4 @@
-// An Environment's Build on the Container (docs/spec.md → Builds, ADR-0016): the Build's Durable Object clones each of
+// An Environment's Build on the Container (docs/architecture/container.md → Builds, ADR-0016): the Build's Durable Object clones each of
 // the Environment's Repos into a scratch directory outside `/workspace`, so nothing of them syncs into it, installs
 // their Toolchains, runs the Environment's and the Repos' Setup Scripts there (what they download stays on the
 // Container's disk: pnpm's store, mise's installs, Docker's images), then stops what the scripts left running and

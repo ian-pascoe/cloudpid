@@ -1,4 +1,4 @@
-// The Session's Subagent Workspaces (GLOSSARY.md → Subagent Workspace; `docs/spec.md` → Subagents): the subagents
+// The Session's Subagent Workspaces (GLOSSARY.md → Subagent Workspace; `docs/architecture/agent-capabilities.md` → Subagents): the subagents
 // extension's `SubagentWorkspaces`, over the Registry and the Workspace DOs. A Subagent Workspace is registered by the
 // Registry as the Session's (`createSubagentWorkspace`, which takes the Environment's spare as a new Session's Workspace
 // does, and counts it against the Subagent Workspace limit), readied by the Session when its subagent first works in it

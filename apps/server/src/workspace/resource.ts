@@ -31,14 +31,14 @@ export const DEFAULT_GIT_NAME = "cloudpid";
  * - `CLOUDPID_GITHUB_APP_ID` and `CLOUDPID_GITHUB_APP_PRIVATE_KEY` are deploy-time secrets (`Config.Redacted`, bound as
  *   Worker secrets; a key that is not an RSA PEM fails the deploy): the Workspace DO mints GitHub tokens from them that
  *   the Container's commands get as `GH_TOKEN` and `GITHUB_TOKEN`, so the agent can clone, commit and push with real
- *   git and gh (docs/spec.md → Git, ADR-0025).
+ *   git and gh (docs/architecture/workspace.md → Git, ADR-0025).
  * - `SECRETS_ENCRYPTION_KEY` is the deploy-time master key (`Config.Redacted`, bound as a Worker secret) the Workspace
  *   DO seals its copy of the Environment's kept Secrets under, as the Session DOs and the Registry seal theirs
- *   (docs/spec.md → Secrets).
+ *   (docs/architecture/agent-capabilities.md → Secrets).
  * - `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` set who those commits are by (the owner's email by default).
  * - `CLOUDPID_ANALYTICS_TOKEN` is an optional deploy-time secret: an API token with Account Analytics Read, bound with
  *   the account it reads (`CLOUDFLARE_ACCOUNT_ID`), that the Workspace DO reads its Containers' usage analytics with
- *   (`container-analytics.ts`). Unset or empty, their cost is estimated (docs/spec.md → Operations → Usage).
+ *   (`container-analytics.ts`). Unset or empty, their cost is estimated (docs/architecture/operations.md → Usage).
  * - Under `alchemy dev` the Container runs in local Docker without `/dev/fuse`, where computerd's userspace shim
  *   cannot keep paths container-local: the Workspace DO is told not to ask for it (`CONTAINER_FUSE`).
  */

@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over the Session's drafts and the page's rects.
 
-// Annotations on pages in the Browser Pane (#243; `docs/spec.md` → Browser → Annotate mode): what the Pane asks the page
+// Annotations on pages in the Browser Pane (#243; `docs/architecture/browser.md` → Annotate mode): what the Pane asks the page
 // shown (the element under the pointer, what it is and says, where the drafts' elements are now), which drafts are on
 // the page shown, where their pins go, and the draft a pick makes. Pure, but for the scripts it sends the page.
 

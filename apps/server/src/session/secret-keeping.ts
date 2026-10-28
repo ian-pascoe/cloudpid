@@ -1,4 +1,4 @@
-// Keeping the Secrets the owner chose to keep in a `secret_ask` form (`docs/spec.md` → Secrets, Agent changes): the
+// Keeping the Secrets the owner chose to keep in a `secret_ask` form (`docs/architecture/agent-capabilities.md` → Secrets, `docs/architecture/agent-changes.md`): the
 // Session hands the values to the Registry DO over Durable Object RPC, which seals and records them as the owner's form on
 // the Environments page does; then, as after that form, the Builds' upkeep runs, and each kept Secret goes in the Run's
 // Agent changes for the Notification of its end. The values are in this call's memory only: they reach no storage, log,

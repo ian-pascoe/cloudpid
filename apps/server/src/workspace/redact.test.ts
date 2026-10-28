@@ -1,4 +1,4 @@
-// Taking the GitHub token out of a command's output, however its bytes arrive (docs/spec.md → Git).
+// Taking the GitHub token out of a command's output, however its bytes arrive (docs/architecture/workspace.md → Git).
 // @effect-diagnostics preferEffectArray:off
 import { secretReference } from "@cloudpid/extensions/secrets/core";
 import { describe, expect, it } from "vitest";

@@ -1,4 +1,4 @@
-// The Session's Slash commands (docs/spec.md → Client and protocol → Slash commands): what the composer's menu offers
+// The Session's Slash commands (docs/architecture/client-and-protocol.md → Slash commands): what the composer's menu offers
 // (`catalog`), and `/export`'s Markdown. The commands themselves run in the host (`host.ts`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over the catalog and pi's entries.
 import { byteLength, type PromptTemplate } from "@cloudpid/extensions/prompt-templates";

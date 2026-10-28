@@ -1,4 +1,4 @@
-// The Diff pane's workers (`docs/spec.md` → Diffs and review → Diff pane), made when the Pane opens and shut 30 s after
+// The Diff pane's workers (`docs/architecture/diffs-and-review.md` → Diff pane), made when the Pane opens and shut 30 s after
 // it closes (`keeper.ts`): the `@pierre/diffs` Worker Pool that highlights, sized to half the cores and kept between 2
 // and 4, and the dedicated worker that lines file pairs up (`line-up.worker.ts`). Part of the Pane's lazy chunk.
 import {

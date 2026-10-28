@@ -1,4 +1,4 @@
-// The Session's `Environments` (`@cloudpid/extensions/environment`, `docs/spec.md` → Agent changes): the Registry's
+// The Session's `Environments` (`@cloudpid/extensions/environment`, `docs/architecture/agent-changes.md`): the Registry's
 // Environments, read and changed for the agent. A change is applied and recorded by the Registry (`changeEnvironment`,
 // and `changeEveryEnvironment` for a variable kept for every Environment), as the owner's save is applied; then, as
 // after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),

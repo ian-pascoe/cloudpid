@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off preferEffectArray:off missingPipeableSignature:off -- WebCrypto and `fetch` are Promise APIs and these helpers are plain functions over bytes; the callers wrap them in Effect.
-// Web Push from a Worker (`docs/spec.md` → Client and protocol): message encryption for the `aes128gcm` content coding
+// Web Push from a Worker (`docs/architecture/client-and-protocol.md`): message encryption for the `aes128gcm` content coding
 // (RFC 8291, with RFC 8188's record format) and VAPID (RFC 8292), both on WebCrypto, so nothing here needs Node.
 
 import type * as Schema from "effect/Schema";

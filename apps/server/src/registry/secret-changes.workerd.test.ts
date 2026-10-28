@@ -1,4 +1,4 @@
-// Agent changes to kept Secrets over real Durable Object SQLite (docs/spec.md → Secrets, Agent changes): a Secret the
+// Agent changes to kept Secrets over real Durable Object SQLite (docs/architecture/agent-capabilities.md → Secrets, docs/architecture/agent-changes.md): a Secret the
 // owner keeps in a `secret_ask` form is saved and recorded by name only, the Build mark the agent sets is recorded with
 // the mark before and after, and the history of the Secrets kept for every Environment is the scope `*`.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.

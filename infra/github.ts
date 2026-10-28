@@ -14,7 +14,7 @@
  *   GITHUB_REPOSITORY  owner/name (default: ian-pascoe/cloudpid)
  *
  * Not managed here: the app secrets each environment's deploys bind to the Workers, set by hand on both `production` and
- * `preview` (`gh secret set <NAME> --env <environment>`; AGENTS.md → Infra): MODEL_PROXY_API_KEY (a Commissary API key
+ * `preview` (`gh secret set <NAME> --env <environment>`; docs/development/infra.md → CI credentials): MODEL_PROXY_API_KEY (a Commissary API key
  * minted in Commissary's panel), SECRETS_ENCRYPTION_KEY (`openssl rand -base64 32`), the VAPID triple and the search
  * keys. Give `preview` its own SECRETS_ENCRYPTION_KEY and VAPID pair rather than production's. The GitHub App's
  * CLOUDPID_GITHUB_APP_ID and CLOUDPID_GITHUB_APP_PRIVATE_KEY are written into both by `github-app:setup`

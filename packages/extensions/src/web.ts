@@ -1,4 +1,4 @@
-// The `web` extension (`docs/spec.md` → v1): `web_search` and `web_fetch`, ported from pi-web-tools with an SSRF guard.
+// The `web` extension (`docs/architecture/agent-capabilities.md` → v1): `web_search` and `web_fetch`, ported from pi-web-tools with an SSRF guard.
 import { defineExtension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

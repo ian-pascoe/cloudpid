@@ -1,4 +1,4 @@
-// The Container's side of This branch (docs/spec.md → Diffs and review → Comparisons, ADR-0022): one command that picks
+// The Container's side of This branch (docs/architecture/diffs-and-review.md → Comparisons, ADR-0022): one command that picks
 // the remote and the base, fetches the base into a private ref, takes the merge-base and lists the files, and the
 // fallback that reads blobs. The fetch writes objects and `refs/cloudpid/base/<base>` and nothing else: never
 // `refs/heads`, `refs/remotes`, `FETCH_HEAD`, the index or the tree (`--no-write-fetch-head --no-auto-maintenance

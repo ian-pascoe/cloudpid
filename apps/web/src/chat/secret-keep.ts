@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off
-// What the owner can do with the Secrets they enter in a masked form (`docs/spec.md` → Secrets): hold them for the
+// What the owner can do with the Secrets they enter in a masked form (`docs/architecture/agent-capabilities.md` → Secrets): hold them for the
 // Session, or keep them for its Environment or for every Environment. The agent's `keep` only pre-selects one; the
 // form always offers all three and the owner's choice is final.
 import { SecretKeep, type SecretRequest } from "@cloudpid/protocol";

@@ -1,4 +1,4 @@
-// Changes in the Workspace DO (docs/spec.md → Diffs and review → Changes), over repos real git made (`changes.setup.ts`)
+// Changes in the Workspace DO (docs/architecture/diffs-and-review.md → Changes), over repos real git made (`changes.setup.ts`)
 // and written into a Workspace as computer's sync would. The test Worker has no Container: a listing that needs it
 // either keeps the repo's last list, marked "may be out of date", or (allowed to start it) is counted and refused.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off

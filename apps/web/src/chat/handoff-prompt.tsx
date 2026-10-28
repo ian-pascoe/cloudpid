@@ -18,7 +18,7 @@ import { useShownSessionId } from "./conversation.ts";
 const HostedFailure = ScopedAtom.make(() => Atom.make<string | null>(null));
 
 /**
- * One Browser Handoff (`docs/spec.md` → Browser): the agent asks the owner to take over its browser for a step it cannot
+ * One Browser Handoff (`docs/architecture/browser.md`): the agent asks the owner to take over its browser for a step it cannot
  * do. **Take over** opens the Live View Pane, which connects to the tab with links minted for it; the small **Open in
  * Cloudflare** link mints one the same way and opens Browser Run's hosted page instead (a fallback). The owner presses
  * Done there; the agent resumes by itself, so the card has no answer to give, and it goes away when the handoff ends.

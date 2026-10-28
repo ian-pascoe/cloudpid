@@ -1,4 +1,4 @@
-// The `settings` extension (docs/spec.md → Agent changes), over fake Settings: what each tool shows and changes, the
+// The `settings` extension (docs/architecture/agent-changes.md), over fake Settings: what each tool shows and changes, the
 // refusal of text that holds a Secret, the Settings read again after a change, and the Run's record of the changes.
 // @effect-diagnostics asyncFunction:off
 import {

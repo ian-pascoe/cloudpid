@@ -1,4 +1,4 @@
-// Agent changes (`docs/spec.md` → Agent changes, ADR-0019): what the agent changes in an Environment, applied as the
+// Agent changes (`docs/architecture/agent-changes.md`, ADR-0019): what the agent changes in an Environment, applied as the
 // owner's save is and recorded with when, the Session, the tool, the reason and the values before and after, so the
 // owner can see each one and revert it. Synchronous over the Registry DO's SQLite, as the store is, so a change and its
 // record are one step no other request lands in the middle of. The table is migration 17's (`store.ts`), and deleting
@@ -230,7 +230,7 @@ const toChange = (row: AgentChangeRow): AgentChange => {
     revertedBy: row.reverted_by,
   };
 
-  // Only a change the owner approved says so (`docs/spec.md` → Approval).
+  // Only a change the owner approved says so (`docs/architecture/agent-changes.md` → Approval).
   return row.approved === 1 ? { ...change, approved: true } : change;
 };
 

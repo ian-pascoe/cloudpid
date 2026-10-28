@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off tryCatchInEffectGen:off schemaSync:off preferTypedSchemaDecoder:off globalConsole:off extendsNativeError:off
-// The browser host's side of a Browser Handoff (`docs/spec.md` → Browser): Browser Run's structured handoff. The host
+// The browser host's side of a Browser Handoff (`docs/architecture/browser.md`): Browser Run's structured handoff. The host
 // attaches to the conversation's tab over its own CDP connection, notes the tab's viewport, sends `Cloudflare.handoff`
 // with the agent's instructions, and then hears the owner finish (or the handoff time out) as the
 // `Cloudflare.handoffComplete` event on that same connection, which is how Browser Run's puppeteer and playwright ports

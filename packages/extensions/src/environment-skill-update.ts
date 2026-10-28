@@ -1,4 +1,4 @@
-// `environment_skill_update` (ADR-0026, `docs/spec.md` → Agent changes, and → Installing from GitHub → Updates): move
+// `environment_skill_update` (ADR-0026, `docs/architecture/agent-changes.md`, and → Installing from GitHub → Updates): move
 // installed Skills to the latest commit of their recorded ref. The Registry fetches it as the GitHub App, never the
 // Session or a Container, and keeps the files as an Agent change for each Skill, with the files and the Skill source
 // before and after, so the user's revert brings back the earlier commit and any edits an overwrite replaced. A Skill the

@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
-// The tools whose Agent changes wait for the owner's Approval (`docs/spec.md` → Approval, ADR-0019): those that change a
+// The tools whose Agent changes wait for the owner's Approval (`docs/architecture/agent-changes.md` → Approval, ADR-0019): those that change a
 // Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`, `settings_subagent_workspaces_set`,
 // `environment_container_size_limit_set`) and those no revert can undo (`environment_delete`,
 // `environment_secret_delete`). Each checks what it can first and refuses without asking what it would refuse anyway;

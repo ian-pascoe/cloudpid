@@ -1,4 +1,4 @@
-// Comparisons (GLOSSARY.md → Comparison; `docs/spec.md` → Diffs and review → Comparisons): a branch's commits against the
+// Comparisons (GLOSSARY.md → Comparison; `docs/architecture/diffs-and-review.md` → Comparisons): a branch's commits against the
 // point where it left its base branch, as the Workspace DO lists them and the Session socket carries them
 // (`comparison_sources`, `compare`, `comparison_file`). A Comparison is fixed once its merge-base and head SHAs are, so
 // these are request commands, not a watch. Its files are the same entries Changes lists, with the same caps, and a
@@ -14,7 +14,7 @@ export const ComparisonSourceKind = Schema.Literals(["branch", "pull"]);
 
 export type ComparisonSourceKind = typeof ComparisonSourceKind.Type;
 
-/** One open pull request of a repo, as the picker lists it (GitHub's REST API; `docs/spec.md` → Comparisons). */
+/** One open pull request of a repo, as the picker lists it (GitHub's REST API; `docs/architecture/diffs-and-review.md` → Comparisons). */
 export const PullRequest = Schema.Struct({
   number: Schema.Int,
   title: Schema.String,

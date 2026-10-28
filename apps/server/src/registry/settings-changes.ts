@@ -1,4 +1,4 @@
-// The Settings' Agent changes (`docs/spec.md` → Agent changes, ADR-0019): what the agent changes in the Settings,
+// The Settings' Agent changes (`docs/architecture/agent-changes.md`, ADR-0019): what the agent changes in the Settings,
 // applied as the owner's save is (`writeSettings`: the strict resolution, keeping only what differs from the defaults)
 // and recorded, in the same table as an Environment's under the scope `settings`, with when, the Session, the tool,
 // the reason and the values before and after, so the owner can see each one and revert it. A change names fields of the

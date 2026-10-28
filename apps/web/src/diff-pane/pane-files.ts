@@ -1,4 +1,4 @@
-// The files of the Diff pane, as it shows them (`docs/spec.md` → Diffs and review → Diff pane): each changed file with
+// The files of the Diff pane, as it shows them (`docs/architecture/diffs-and-review.md` → Diff pane): each changed file with
 // the names it shows (its repo in front when the files are grouped by repo), why it starts folded, and what of its change
 // a new list must differ in to load it again.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over values, over native arrays.

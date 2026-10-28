@@ -5,13 +5,13 @@
 export const WORKSPACE_BINDING = "WORKSPACES";
 
 /**
- * The Workspace root: one directory per repo below it (docs/spec.md → Filesystem and tools). Defined in the protocol's
+ * The Workspace root: one directory per repo below it (docs/architecture/workspace.md → Filesystem and tools). Defined in the protocol's
  * `repo` module, which pulls in none of the rest of the protocol, so the Workspaces Worker's bundle stays small.
  */
 export { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
 
 /**
- * Where the Skill set is mounted, read-only, in every Workspace: the Workspace's own `.agents/skills` (docs/spec.md →
+ * Where the Skill set is mounted, read-only, in every Workspace: the Workspace's own `.agents/skills` (docs/architecture/workspace.md →
  * Filesystem and tools).
  */
 export const SKILLS_MOUNT = "/workspace/.agents/skills";
@@ -29,13 +29,13 @@ export const WORKSPACE_CONTAINER = "WorkspaceContainer";
 export const workspaceObjectName = (id: string): string => `ws:${id}`;
 
 /**
- * The name of the Durable Object that makes Environment `id`'s Builds (docs/spec.md → Builds): a Workspace DO of its
+ * The name of the Durable Object that makes Environment `id`'s Builds (docs/architecture/container.md → Builds): a Workspace DO of its
  * own, whose name no Workspace's can be (`ws:` and the eight hex digits of a `WorkspaceId`).
  */
 export const buildObjectName = (environment: string): string => `build:${environment}`;
 
 /**
- * The name of the Durable Object that makes Environment `id`'s Test Builds (docs/spec.md → Builds → Test Builds): a
+ * The name of the Durable Object that makes Environment `id`'s Test Builds (docs/architecture/container.md → Builds → Test Builds): a
  * Workspace DO of its own beside the Build object, so a Test Build never waits for a Build or holds one up.
  */
 export const testBuildObjectName = (environment: string): string => `test-build:${environment}`;

@@ -1,4 +1,4 @@
-// The `subagents` extension (`docs/spec.md` → Subagents): pi-minimal-subagents' six coordinator tools, rebuilt on
+// The `subagents` extension (`docs/architecture/agent-capabilities.md` → Subagents): pi-minimal-subagents' six coordinator tools, rebuilt on
 // pi-durable's background subagents (its example 23). Children are conversations of the same Harness, owned by
 // background anchor tasks; each input to a child is a reporter task that hands its answer to a `subagent_wait` or
 // reports it back as a follow-up; `subagent_wait` blocks on a durable task.

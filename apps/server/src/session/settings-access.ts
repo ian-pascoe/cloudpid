@@ -1,4 +1,4 @@
-// The Session's `SettingsAccess` (`@cloudpid/extensions/settings`, `docs/spec.md` → Agent changes): the Registry's Settings,
+// The Session's `SettingsAccess` (`@cloudpid/extensions/settings`, `docs/architecture/agent-changes.md`): the Registry's Settings,
 // read and changed for the agent. A change is applied and recorded by the Registry (`changeSettings`), as the owner's
 // save is applied; the Session reads the Settings again after it (the tools call `SettingsReload`), so its next request
 // uses them, and other Sessions read them when they next admit input, as after the owner's save.

@@ -1,4 +1,4 @@
-// Fetching Skills from a GitHub repo (ADR-0026, `docs/spec.md` → _Installing from GitHub_): resolve the ref to a commit,
+// Fetching Skills from a GitHub repo (ADR-0026, `docs/architecture/workspace.md` → _Installing from GitHub_): resolve the ref to a commit,
 // list the commit's tree, pick the Skill folders by the `skills` CLI's path rules (`skill-paths.ts`), and read the chosen
 // Skills' files at that commit. It reads GitHub through a `RepoReader` (`contents.ts` is the one that asks GitHub with the
 // GitHub App's tokens), so the rules are tested without a network. Nothing is saved here: the Registry checks what comes

@@ -1,4 +1,4 @@
-// Secrets kept for an Environment, or for every Environment (`docs/spec.md` → Secrets, ADR-0016): what the owner sets
+// Secrets kept for an Environment, or for every Environment (`docs/architecture/agent-capabilities.md` → Secrets, ADR-0016): what the owner sets
 // on the Environments page and what the Registry lists. A value goes in once and never comes back: the Registry keeps
 // it sealed, and lists only names, scopes, build flags and times.
 import * as Schema from "effect/Schema";
@@ -60,7 +60,7 @@ export const EnvironmentSecretRecord = Schema.Struct({
 export type EnvironmentSecretRecord = typeof EnvironmentSecretRecord.Type;
 
 /**
- * Where the owner keeps the Secrets a `secret_ask` form gets (`docs/spec.md` â Secrets): `session` holds them for this
+ * Where the owner keeps the Secrets a `secret_ask` form gets (`docs/architecture/agent-capabilities.md` → Secrets): `session` holds them for this
  * Session for the usual 15 minutes, `environment` keeps them for the Session's Environment and `all` for every
  * Environment, as the Environments page does. The agent's `keep` only pre-selects one; the owner's choice is final.
  */

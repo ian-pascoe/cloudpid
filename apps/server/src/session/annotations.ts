@@ -1,4 +1,4 @@
-// The Session's draft Annotations (`docs/spec.md` → Diffs and review → Annotations and Reviews): kept in this object's
+// The Session's draft Annotations (`docs/architecture/diffs-and-review.md` → Annotations and Reviews): kept in this object's
 // storage, one key a draft, and sent whole to every client whenever they change, as the Approval requests are. A save
 // replaces the draft of its ID, so the last save wins. Text still being typed stays in the browser that types it.
 // Drafts belong to their Session: a Fork or Clone copies none, as it copies only what `fork.ts` names. A page's draft

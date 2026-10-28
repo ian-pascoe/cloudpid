@@ -1,4 +1,4 @@
-// Installing Skills from GitHub into an Environment, or for every Environment (ADR-0026, `docs/spec.md` →
+// Installing Skills from GitHub into an Environment, or for every Environment (ADR-0026, `docs/architecture/workspace.md` →
 // _Installing from GitHub_): fetch the source's Skills at one commit (`../github/skill-fetch.ts`), then keep each as a save keeps a Skill, with its Skill
 // source (repo, the Skill's path, the ref named, the commit). The agent's install records each Skill it keeps as an Agent
 // change; the owner's, from the Environments page, as the owner's save, records none. The fetch is the only part that

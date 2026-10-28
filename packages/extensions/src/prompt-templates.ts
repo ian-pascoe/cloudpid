@@ -1,4 +1,4 @@
-// Prompt templates (docs/spec.md → Client and protocol → Slash commands): Markdown files in a repo's `.agents/prompts`
+// Prompt templates (docs/architecture/client-and-protocol.md → Slash commands): Markdown files in a repo's `.agents/prompts`
 // whose Slash command expands into a message, with the command's arguments filled in. Parsing and argument substitution
 // follow local pi (`core/prompt-templates.ts` and `utils/frontmatter.ts` of pi's coding agent, MIT, © 2025 Mario
 // Zechner), without its file system: the walk goes through the small part of an `ExecutionEnv` that skills discovery

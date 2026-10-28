@@ -1,4 +1,4 @@
-// The `environment` extension (`docs/spec.md` → Agent changes, ADR-0019): the agent's tools for its Environments,
+// The `environment` extension (`docs/architecture/agent-changes.md`, ADR-0019): the agent's tools for its Environments,
 // `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset` (which also keep
 // variables for every Environment, with the id `*`), and one tool for each of the other Container settings
 // (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,

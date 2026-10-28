@@ -1,4 +1,4 @@
-// What the owner did to one Diff pane (`docs/spec.md` → Diffs and review → Diff pane), as long as it is mounted: the
+// What the owner did to one Diff pane (`docs/architecture/diffs-and-review.md` → Diff pane), as long as it is mounted: the
 // files folded or opened by hand, and the place it is held at. A place the Pane is asked to show (`diffTargetAtom`: the
 // Session details, a Call diff, its own file list) opens that file and holds the scroll there, as files above
 // it load and grow, until the owner scrolls.

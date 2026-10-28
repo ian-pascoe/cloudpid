@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- pi-durable commit callbacks are Promise code.
-// `session_context` (`docs/spec.md` → Subagents): a child starts with only its task (`omit`), with its parent's
+// `session_context` (`docs/architecture/agent-capabilities.md` → Subagents): a child starts with only its task (`omit`), with its parent's
 // conversation quoted before the task (`inherit`), or with a summary of it (`compact`). As in pi-minimal-subagents, the
 // parent's turns are quoted rather than replayed, so the child does not take its parent's requests as its own; the
 // parent's reasoning, system prompt, and tool declarations are left out, since the child has its own.

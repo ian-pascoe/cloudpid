@@ -1,4 +1,4 @@
-// Run copies and the Run diff (GLOSSARY.md → Run diff; docs/spec.md → Diffs and review → Run diff; ADR-0022): what the
+// Run copies and the Run diff (GLOSSARY.md → Run diff; docs/architecture/diffs-and-review.md → Run diff; ADR-0022): what the
 // Session's latest writing Run changed in the files of its Workspace's repos, as the Workspace DO keeps it. The Session
 // DO tells it when a Run starts writing (`start`: the first writing call of the Run waits for it) and when the Run ends
 // (`end`), and asks for the Run diff and a file's two sides as it does for the Changes:

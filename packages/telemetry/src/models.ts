@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectRecord:off globalDate:off -- pi-ai's model streams are Promise code, with its own request timestamps.
-// The Session's model seam (`docs/spec.md` → Secrets, Telemetry): a wrapper sees every request a conversation's Harness
+// The Session's model seam (`docs/architecture/agent-capabilities.md` → Secrets, `docs/architecture/operations.md` → Telemetry): a wrapper sees every request a conversation's Harness
 // makes through its `Models`: generations, compaction summaries, a subagent's `compact` summary, and the title call.
 import type {
   Api,
