@@ -76,6 +76,7 @@ describe("the sidebar on the Settings page", () => {
     expect(links(render(false, { scope: "*", view: MODELS }))).toEqual([
       { href: "/", name: "Back to sessions", current: false },
       { href: "/settings/all/general", name: "General", current: false },
+      { href: "/settings/all/instructions", name: "Instructions", current: false },
       { href: "/settings/all/models", name: "Models", current: true },
       { href: "/settings/all/tools", name: "Tools", current: false },
       { href: "/settings/all/limits", name: "Limits", current: false },
@@ -110,11 +111,12 @@ describe("the sidebar on the Settings page", () => {
   });
 
   it("shows the sections' icons on the rail, each named", () => {
-    const rail = links(render(true, { scope: "*", view: MODELS })).slice(0, 12);
+    const rail = links(render(true, { scope: "*", view: MODELS })).slice(0, 13);
 
     expect(rail[0]).toEqual({ href: "/", name: "Back to sessions", current: false });
-    expect(rail.slice(1, 3)).toEqual([
+    expect(rail.slice(1, 4)).toEqual([
       { href: "/settings/all/general", name: "General", current: false },
+      { href: "/settings/all/instructions", name: "Instructions", current: false },
       { href: "/settings/all/models", name: "Models", current: true },
     ]);
   });
@@ -132,7 +134,7 @@ describe("the sidebar on the Settings page", () => {
         ({ name }) => name,
       );
 
-      expect(named.slice(1, 3)).toEqual(["General, unsaved changes", "Models"]);
+      expect(named.slice(1, 4)).toEqual(["General, unsaved changes", "Instructions", "Models"]);
     }),
   );
 

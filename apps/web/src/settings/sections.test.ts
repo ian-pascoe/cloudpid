@@ -15,6 +15,7 @@ describe("the Settings sections of a Scope", () => {
   it("are, at Global, the Settings, the Environments, Skills, Variables, Secrets, Notifications and Agent changes", () => {
     expect(sectionsAt(GLOBAL).map((slug) => sectionLabel(slug, GLOBAL))).toEqual([
       "General",
+      "Instructions",
       "Models",
       "Tools",
       "Limits",

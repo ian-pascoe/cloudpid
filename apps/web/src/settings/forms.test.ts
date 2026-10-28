@@ -31,6 +31,7 @@ import {
   environmentVariablesForm,
   generalForm,
   globalLimitsForm,
+  instructionsForm,
   globalVariablesForm,
   modelsForm,
   setupForm,
@@ -151,6 +152,33 @@ describe("a Settings section's Save", () => {
       }),
   );
 
+  it.effect("saves the Instructions as typed, whitespace and all, over the saved Settings", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = holdingSettings({ ...DEFAULT_SETTINGS, model: HAIKU });
+      const text = "Answer in British English.\n\n- Keep commits small.\n";
+
+      yield* opened(registry, instructionsForm, GLOBAL);
+
+      expect(registry.get(instructionsForm.fields(GLOBAL))).toEqual({ instructions: "" });
+
+      registry.set(instructionsForm.draft(GLOBAL), { instructions: text });
+
+      expect(registry.get(instructionsForm.dirty(GLOBAL))).toBe(true);
+
+      yield* save(registry, instructionsForm, GLOBAL);
+
+      expect(saved).toEqual([
+        overridesFrom({ ...DEFAULT_SETTINGS, model: HAIKU, instructions: text }),
+      ]);
+      expect(registry.get(instructionsForm.fields(GLOBAL))).toEqual({ instructions: text });
+      // A trailing newline is part of the text the agent reads, so it is a change.
+      registry.set(instructionsForm.draft(GLOBAL), { instructions: text.trimEnd() });
+
+      expect(registry.get(instructionsForm.dirty(GLOBAL))).toBe(true);
+      registry.dispose();
+    }),
+  );
+
   it.effect("says why it was refused, and keeps the draft", () =>
     Effect.gen(function* () {
       const { registry, saved } = holdingSettings(DEFAULT_SETTINGS);
@@ -217,6 +245,7 @@ describe("a Settings section's Save", () => {
       roles: DEFAULT_SETTINGS.roles,
     });
     expect(globalLimitsForm.defaults).toEqual({ spendLimit: "" });
+    expect(instructionsForm.defaults).toEqual({ instructions: "" });
     expect(environmentNameForm.defaults).toBeUndefined();
     // A save of the defaults would reset every Global variable, so there is no such button.
     expect(globalVariablesForm.defaults).toBeUndefined();

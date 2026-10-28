@@ -22,6 +22,7 @@ import { EnvironmentListSection, EnvironmentSection } from "./environments.tsx";
 import {
   GeneralSection,
   GlobalLimitsSection,
+  InstructionsSection,
   ModelsSection,
   ToolsSection,
 } from "./global-settings.tsx";
@@ -42,6 +43,8 @@ const GlobalSection = ({ slug }: { slug: SectionSlug }) => {
   switch (slug) {
     case "general":
       return <GeneralSection />;
+    case "instructions":
+      return <InstructionsSection />;
     case "models":
       return <ModelsSection />;
     case "tools":
