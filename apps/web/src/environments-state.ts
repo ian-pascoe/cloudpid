@@ -408,7 +408,7 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
           `agent-changes:${id}`,
           `environment-settings:${id}`,
           `environment-skills:${id}`,
-          "every-environment",
+          "global",
           "environment-secrets",
           "builds",
           "environments",
@@ -515,7 +515,7 @@ export const environmentDraftAtom = Atom.family((id: string) =>
  * which the page hears of no other way.
  */
 export const globalSettingsAtom = RegistryClient.query("getGlobalSettings", undefined, {
-  reactivityKeys: ["every-environment"],
+  reactivityKeys: ["global"],
 }).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
 
 /** Why the settings kept Global could not load, or null. */
@@ -551,7 +551,7 @@ export const saveEveryVariablesAtom = appRuntime.fn(
       }),
     ).pipe(
       Effect.asVoid,
-      changing(["every-environment", "builds"]),
+      changing(["global", "builds"]),
       Effect.tap(() =>
         Effect.sync(() => {
           get.set(globalVariablesDraftAtom, undefined);

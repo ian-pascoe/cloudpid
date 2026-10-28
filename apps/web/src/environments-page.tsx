@@ -584,7 +584,7 @@ const EveryVariablesSection = () => {
     <form onSubmit={submit} className="flex flex-col gap-2">
       <CodeField
         id="variables-global"
-        label="Variables at Global (NAME=value, one per line)"
+        label="Global variables (NAME=value, one per line)"
         rows={3}
         value={text}
         placeholder={"NODE_ENV=development\nCI=1"}
@@ -719,7 +719,7 @@ const StartupFields = ({
     )}
     {inherited.overridden.length > 0 && (
       <p className="text-xs text-muted-foreground">
-        Overriding the one at Global:{" "}
+        Overrides the Global one:{" "}
         <span className="font-mono">{inherited.overridden.join(", ")}</span>
       </p>
     )}
@@ -1937,7 +1937,7 @@ export const EnvironmentsPage = () => {
             URL) belongs in the variables above: a kept secret found on a container's disk stops its
             snapshot.
           </p>
-          <SecretsSection sectionKey={GLOBAL} title="Secrets at Global" empty="None kept Global." />
+          <SecretsSection sectionKey={GLOBAL} title="Global secrets" empty="None kept Global." />
           <SkillsLine id={GLOBAL} />
           <AgentChangesSection
             id={GLOBAL}

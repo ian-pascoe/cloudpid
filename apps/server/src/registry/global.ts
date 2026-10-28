@@ -21,7 +21,7 @@ import { readEnvironmentSettings } from "./environment-settings.ts";
 import type { DocumentStore } from "./settings.ts";
 import type { RegistryStore } from "./store.ts";
 
-/** The name of the document holding the variables kept Global. */
+/** The name of the document holding the variables kept Global: its stored key keeps the old name, so no data moves. */
 export const GLOBAL_DOCUMENT = "every-environment";
 
 /** The settings kept Global in force, and the overrides they come from. */

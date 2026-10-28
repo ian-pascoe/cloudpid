@@ -3,7 +3,7 @@
 // when the Build the Environment wants is of another key.
 import { type ContainerSettings, DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
-import { everyChangeReach, type ReachedEnvironment, wantsNewBuild } from "./agent-changes.ts";
+import { globalChangeReach, type ReachedEnvironment, wantsNewBuild } from "./agent-changes.ts";
 
 const repos = [{ name: "app", url: "https://github.com/o/app.git" }];
 
@@ -49,7 +49,7 @@ describe("wantsNewBuild", () => {
   });
 });
 
-describe("everyChangeReach", () => {
+describe("globalChangeReach", () => {
   const environment = (
     id: string,
     own: Partial<ContainerSettings> = {},
@@ -66,7 +66,7 @@ describe("everyChangeReach", () => {
   const bare = environment("0000000c", {}, false);
 
   it("leaves out an Environment whose own variable of the name wins, and asks a Build of one that inherits it", async () => {
-    const reach = await everyChangeReach(
+    const reach = await globalChangeReach(
       [web, api],
       "API_URL",
       {},
@@ -79,7 +79,7 @@ describe("everyChangeReach", () => {
   });
 
   it("asks no Build of an Environment that has nothing to build", async () => {
-    const reach = await everyChangeReach(
+    const reach = await globalChangeReach(
       [bare],
       "API_URL",
       {},
@@ -91,7 +91,7 @@ describe("everyChangeReach", () => {
   });
 
   it("asks no Build when the merged variables are what they were", async () => {
-    const reach = await everyChangeReach(
+    const reach = await globalChangeReach(
       [web],
       "API_URL",
       { API_URL: "https://all" },
@@ -105,14 +105,14 @@ describe("everyChangeReach", () => {
   it("says whether the change reaches the Environment the caller names", async () => {
     const variables = { API_URL: "https://all" };
 
-    expect((await everyChangeReach([web, api], "API_URL", {}, variables, "0000000a")).own).toBe(
+    expect((await globalChangeReach([web, api], "API_URL", {}, variables, "0000000a")).own).toBe(
       true,
     );
-    expect((await everyChangeReach([web, api], "API_URL", {}, variables, "0000000b")).own).toBe(
+    expect((await globalChangeReach([web, api], "API_URL", {}, variables, "0000000b")).own).toBe(
       false,
     );
     expect(
-      (await everyChangeReach([web, api], "API_URL", {}, variables, undefined)).own,
+      (await globalChangeReach([web, api], "API_URL", {}, variables, undefined)).own,
     ).toBeUndefined();
   });
 });

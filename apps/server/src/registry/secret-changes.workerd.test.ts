@@ -145,7 +145,7 @@ describe("a Secret the owner keeps in a secret_ask form", () => {
     expect(dump).not.toContain(VALUE);
   });
 
-  it("is recorded in the history of Global, scope *, when kept for all of them", async () => {
+  it("is recorded in the history of Global, scope *, when kept Global", async () => {
     const [kept, everyHistory, environmentHistory] = await inRegistry(async ({ keep, changes }) => [
       await keep("NPM_TOKEN", null),
       changes.list(GLOBAL_SCOPE),

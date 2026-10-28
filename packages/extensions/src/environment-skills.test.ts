@@ -1333,7 +1333,7 @@ describe("a rerun after an eviction of a change that went through", () => {
   });
 });
 
-const EVERY_SCOPE = { id: "*", name: "Global" };
+const GLOBAL_SCOPE = { id: "*", name: "Global" };
 
 const INSTALL_ARGS = {
   id: "*",
@@ -1366,7 +1366,7 @@ const previewOf = (
   rejected: ReadonlyArray<{ name: string; path: string; message: string }> = [],
 ) => ({
   status: "previewed" as const,
-  environment: EVERY_SCOPE,
+  environment: GLOBAL_SCOPE,
   repo: "mattpocock/skills",
   ref: null,
   commit: GRILL_COMMIT,
@@ -1377,7 +1377,7 @@ const previewOf = (
 /** What the Registry answers an approved install with. */
 const installedEverywhere = (names: ReadonlyArray<string>) => ({
   status: "installed" as const,
-  environment: EVERY_SCOPE,
+  environment: GLOBAL_SCOPE,
   repo: "mattpocock/skills",
   ref: null,
   commit: GRILL_COMMIT,
@@ -1458,7 +1458,7 @@ describe("environment_skill_install at Global", () => {
     expect(text).toContain("recorded as approved");
     expect(result.details).toMatchObject({
       approval: { approved: true },
-      agentChanges: [{ environment: EVERY_SCOPE, field: "skills.grill-me" }],
+      agentChanges: [{ environment: GLOBAL_SCOPE, field: "skills.grill-me" }],
     });
     expect(logged).toEqual([
       {
@@ -1611,7 +1611,7 @@ describe("environment_skill_install at Global", () => {
 
     answerPreview({
       status: "listed",
-      environment: EVERY_SCOPE,
+      environment: GLOBAL_SCOPE,
       repo: "mattpocock/skills",
       ref: null,
       commit: GRILL_COMMIT,

@@ -385,7 +385,7 @@ export type EveryChangeReach = {
  * Environment with its own variable of the name is not reached, and one that is reached wants a new Build when its
  * Build key changes with the merged variables.
  */
-export const everyChangeReach = async (
+export const globalChangeReach = async (
   environments: ReadonlyArray<ReachedEnvironment>,
   name: string,
   previous: Readonly<Record<string, string>>,

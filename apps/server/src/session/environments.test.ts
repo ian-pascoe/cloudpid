@@ -15,12 +15,12 @@ import { workspacePlacement } from "./workspace.ts";
 
 const DEFAULT = { id: "default", name: "Default", repos: [], createdAt: 0 };
 const OTHER = { id: "0000abcd", name: "Other", repos: [], createdAt: 0 };
-const EVERY_SCOPE = { id: "*", name: "Global" };
+const GLOBAL_SCOPE = { id: "*", name: "Global" };
 const DEFAULT_SCOPE = { id: "default", name: "Default" };
 
 /** The scopes the fake Registry names in an answer, by id. */
 const SCOPES = new Map([
-  ["*", EVERY_SCOPE],
+  ["*", GLOBAL_SCOPE],
   ["default", DEFAULT_SCOPE],
 ]);
 
@@ -60,7 +60,7 @@ const MERGED = { variables: { A: "1", ...EVERY } };
 /** The scopes the fake Registry names, by id. */
 const scopes = new Map([
   ["default", DEFAULT],
-  ["*", EVERY_SCOPE],
+  ["*", GLOBAL_SCOPE],
 ]);
 
 const open = (
@@ -185,7 +185,7 @@ const open = (
 
         return {
           status: "ready" as const,
-          environment: EVERY_SCOPE,
+          environment: GLOBAL_SCOPE,
           name: input.folder,
           description: "Cut a release.",
           current: null,
@@ -198,7 +198,7 @@ const open = (
         return input.name === "release"
           ? {
               status: "removed" as const,
-              environment: input.environment === "*" ? EVERY_SCOPE : DEFAULT_SCOPE,
+              environment: input.environment === "*" ? GLOBAL_SCOPE : DEFAULT_SCOPE,
               change: { ...CHANGE, field: "skills.release", after: null },
               inherited: false,
               overriddenIn:
@@ -242,7 +242,7 @@ const open = (
       Effect.sync(() => {
         skillsAsked.push(input);
 
-        const scope = input.environment === "*" ? EVERY_SCOPE : DEFAULT_SCOPE;
+        const scope = input.environment === "*" ? GLOBAL_SCOPE : DEFAULT_SCOPE;
 
         if (input.environment === "ghost") return { status: "missing" as const };
 
@@ -276,7 +276,7 @@ const open = (
       Effect.sync(() => {
         skillsAsked.push(input);
 
-        return { status: "nothing" as const, environment: EVERY_SCOPE };
+        return { status: "nothing" as const, environment: GLOBAL_SCOPE };
       }),
     agentPreviewSkillInstall: (
       input: Parameters<EnvironmentsRegistry["agentPreviewSkillInstall"]>[0],
@@ -288,7 +288,7 @@ const open = (
           ? ({ status: "missing" } as const)
           : ({
               status: "previewed" as const,
-              environment: input.environment === "*" ? EVERY_SCOPE : DEFAULT,
+              environment: input.environment === "*" ? GLOBAL_SCOPE : DEFAULT,
               repo: "mattpocock/skills",
               ref: null,
               commit: "c0ffee0000000000000000000000000000000001",
@@ -636,7 +636,7 @@ describe("the Session's Environments", () => {
     ]);
     expect(installed).toMatchObject({
       status: "installed",
-      environment: EVERY_SCOPE,
+      environment: GLOBAL_SCOPE,
       handed: true,
     });
     expect(everywhere.skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
@@ -662,7 +662,7 @@ describe("the Session's Environments", () => {
     expect(skillsAsked).toEqual([{ environment: "*", source: "mattpocock/skills" }]);
     expect(previewed).toMatchObject({
       status: "previewed",
-      environment: EVERY_SCOPE,
+      environment: GLOBAL_SCOPE,
       skills: [{ name: "grill-me", unchanged: false, current: null }],
     });
     expect(

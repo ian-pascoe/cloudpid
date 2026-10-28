@@ -68,7 +68,7 @@ import {
   type ContainerFieldChange,
   type EnvironmentChange,
   type GlobalChange,
-  everyChangeReach,
+  globalChangeReach,
   openAgentChanges,
   revertAgentChange,
   wantsNewBuild,
@@ -1039,7 +1039,7 @@ export const RegistryLive = Registry.make(
               }));
 
               const reach = yield* Effect.promise(() =>
-                everyChangeReach(environments, name, previous, variables, environment),
+                globalChangeReach(environments, name, previous, variables, environment),
               );
 
               return {

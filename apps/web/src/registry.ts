@@ -27,7 +27,7 @@ export type RegistryKey =
   | `agent-changes:${string}`
   | `environment-skills:${string}`
   | "skill-badges"
-  | "every-environment"
+  | "global"
   | "environment-secrets"
   | "builds"
   | "settings"

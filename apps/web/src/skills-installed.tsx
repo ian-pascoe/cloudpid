@@ -628,7 +628,7 @@ export const SkillsSection = ({ id }: { id: string }) => {
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-xs font-medium text-muted-foreground">
-        {everywhere ? "Skills at Global" : "Skills"}
+        {everywhere ? "Global skills" : "Skills"}
       </h3>
       {skills === null ? (
         <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
@@ -683,7 +683,7 @@ export const SkillsSection = ({ id }: { id: string }) => {
       )}
       {overridden.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          Overriding the one at Global: <span className="font-mono">{overridden.join(", ")}</span>
+          Overrides the Global one: <span className="font-mono">{overridden.join(", ")}</span>
         </p>
       )}
       <AddSkillsForm id={id} />
