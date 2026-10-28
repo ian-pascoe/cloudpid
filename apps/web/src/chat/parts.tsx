@@ -7,9 +7,12 @@ import { useAtom } from "@effect/atom-react";
 import type { ReactNode } from "react";
 import * as Arr from "effect/Array";
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
+import remarkBreaks from "remark-breaks";
+import { defaultRemarkPlugins } from "streamdown";
 import { Check, ChevronRight, Loader, X } from "lucide-react";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
@@ -28,15 +31,50 @@ import { keepClosedInView } from "./scroller.ts";
 import { toolSummary } from "./tool-summary.ts";
 
 /**
- * The model's markdown. Images are not loaded: the page would fetch whatever URL the model (or text it read from
- * a tool) names, which tells that host the reader's address and when the page was open. Streamdown shows a blocked
- * image as a placeholder.
+ * Images are not loaded: the page would fetch whatever URL the markdown (the model's, or text it read from a tool)
+ * names, which tells that host the reader's address and when the page was open. Streamdown shows a blocked image as a
+ * placeholder.
  */
+const NO_IMAGES = { allowedImagePrefixes: [], allowDataImages: false };
+
+/** How markdown's blocks look in the transcript, on whatever background `code` is the muted one of `codeSurface`. */
+const markdownClass = (codeSurface: string) =>
+  cn(
+    "max-w-none leading-relaxed [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[0.8125rem] [&_code:not(pre_code)]:rounded [&_code:not(pre_code)]:px-1 [&_code:not(pre_code)]:font-mono [&_code:not(pre_code)]:text-[0.85em] [&_p]:my-3 [&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-6 [&_a]:underline [&_a]:underline-offset-2 [&_h1]:mt-6 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:mt-5 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold",
+    codeSurface,
+  );
+
+/** The model's markdown. */
 export const MarkdownText = () => (
   <StreamdownTextPrimitive
     caret="block"
-    security={{ allowedImagePrefixes: [], allowDataImages: false }}
-    className="max-w-none text-[0.9375rem] leading-relaxed [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[0.8125rem] [&_code:not(pre_code)]:rounded [&_code:not(pre_code)]:bg-muted [&_code:not(pre_code)]:px-1 [&_code:not(pre_code)]:font-mono [&_code:not(pre_code)]:text-[0.85em] [&_p]:my-3 [&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-6 [&_a]:underline [&_a]:underline-offset-2 [&_h1]:mt-6 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:mt-5 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold"
+    security={NO_IMAGES}
+    className={cn(
+      "text-[0.9375rem]",
+      markdownClass("[&_pre]:bg-muted [&_code:not(pre_code)]:bg-muted"),
+    )}
+  />
+);
+
+/**
+ * Markdown as people type it in a chat: a line break is one, where CommonMark would join the lines into one paragraph
+ * (GitHub's comments read it the same way).
+ */
+const OWNER_REMARK_PLUGINS = [...Record.values(defaultRemarkPlugins), remarkBreaks];
+
+/**
+ * The owner's message as markdown, in its bubble: the bubble is the muted surface, so code sits on the page's
+ * background, and the blocks' margins are tighter than an answer's.
+ */
+export const OwnerMarkdownText = () => (
+  <StreamdownTextPrimitive
+    mode="static"
+    security={NO_IMAGES}
+    remarkPlugins={OWNER_REMARK_PLUGINS}
+    className={cn(
+      markdownClass("[&_pre]:bg-background [&_code:not(pre_code)]:bg-background"),
+      "[&_ol]:my-2 [&_p]:my-2 [&_ul]:my-2",
+    )}
   />
 );
 
