@@ -433,6 +433,29 @@ export const environmentSkillsAtom = Atom.family((id: string) =>
 /** The Skill of Environment `id` whose Remove dialog is open, by name: null when none is. */
 export const skillDialogAtom = Atom.family((_id: string) => Atom.make<string | null>(null));
 
+/** The Skill of Environment `id` whose Update dialog is open, by name: null when none is. */
+export const skillUpdateDialogAtom = Atom.family((_id: string) => Atom.make<string | null>(null));
+
+/** The Skill of Environment `id` to update, and whether the edits made to it may be replaced (the owner confirmed). */
+export interface SkillUpdateRequest {
+  readonly name: string;
+  readonly overwrite: boolean;
+}
+
+/**
+ * Update Skill `name` of Environment `id` (or `EVERY_ENVIRONMENT`) to the latest commit of its ref, on the owner's word:
+ * no Approval, and no Agent change, so no revert. It answers how the Skill went; the Skills list asks again either way.
+ */
+export const updateSkillAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    ({ name, overwrite }: SkillUpdateRequest) =>
+      RegistryClient.use((registry) =>
+        registry("updateEnvironmentSkills", { environment: id, names: [name], overwrite }),
+      ).pipe(changing([`environment-skills:${id}`])),
+    { concurrent: true },
+  ),
+);
+
 /**
  * Remove Skill `name` from Environment `id`: its Workspaces stop serving it at their next readying. Once it is removed,
  * its dialog closes.

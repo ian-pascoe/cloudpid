@@ -14,7 +14,13 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { ChangeAuthor } from "./environment.ts";
-import type { EnvironmentSkills, SkillPreview, SkillsInstalled } from "./environment-skills.ts";
+import type {
+  EnvironmentSkills,
+  SkillPreview,
+  SkillsInstalled,
+  SkillsUpdated,
+  SkillUpdatesPreview,
+} from "./environment-skills.ts";
 
 /** Skills that fail when called, for a fake that serves the other tools only. */
 export const unusedSkills: EnvironmentSkills = {
@@ -22,6 +28,8 @@ export const unusedSkills: EnvironmentSkills = {
   previewSkill: () => Effect.die("previewSkill is not used here"),
   removeSkill: () => Effect.die("removeSkill is not used here"),
   installSkills: () => Effect.die("installSkills is not used here"),
+  updateSkills: () => Effect.die("updateSkills is not used here"),
+  previewUpdates: () => Effect.die("previewUpdates is not used here"),
 };
 
 /** The description a `SKILL.md`'s frontmatter gives, for a fake that does not parse YAML. */
@@ -70,6 +78,27 @@ export const fakeSkills = () => {
     source: string;
     skills: ReadonlyArray<string> | undefined;
     reason: string;
+  }> = [];
+
+  /** What the Registry answers an update and its preview with, and what each was asked. */
+  let update: SkillsUpdated | undefined;
+  let preview: SkillUpdatesPreview | undefined;
+
+  const updates: Array<{
+    environment: string;
+    names: ReadonlyArray<string> | undefined;
+    overwrite: boolean;
+    pins:
+      | ReadonlyArray<{ name: string; savedAt: number; commit: string; folderHash: string }>
+      | undefined;
+    reason: string;
+    approved: boolean;
+  }> = [];
+
+  const previews: Array<{
+    environment: string;
+    names: ReadonlyArray<string> | undefined;
+    overwrite: boolean;
   }> = [];
 
   const changeOf = (
@@ -246,6 +275,25 @@ export const fakeSkills = () => {
           }
         );
       }),
+    updateSkills: ({ environment, names, overwrite, pins, author }) =>
+      Effect.sync(() => {
+        updates.push({
+          environment,
+          names,
+          overwrite,
+          pins,
+          reason: author.reason,
+          approved: author.approved === true,
+        });
+
+        return update ?? { status: "missing" as const };
+      }),
+    previewUpdates: ({ environment, names, overwrite }) =>
+      Effect.sync(() => {
+        previews.push({ environment, names, overwrite });
+
+        return preview ?? { status: "missing" as const };
+      }),
   };
 
   /** The Skills kept for a scope, as the Registry lists them. */
@@ -268,6 +316,16 @@ export const fakeSkills = () => {
     listed,
     recorded,
     installs,
+    updates,
+    previews,
+    /** Answer the next updates with `answer`. */
+    answerUpdate: (answer: SkillsUpdated) => {
+      update = answer;
+    },
+    /** Answer the next previews of an update with `answer`. */
+    answerPreview: (answer: SkillUpdatesPreview) => {
+      preview = answer;
+    },
     /** Answer the next installs with `answer`. */
     answerInstall: (answer: SkillsInstalled) => {
       installation = answer;

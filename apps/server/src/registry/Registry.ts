@@ -40,6 +40,14 @@ import {
 } from "./skills.ts";
 import { installSkills, type SkillInstallation } from "./skill-install.ts";
 import { githubSkillReader } from "./skill-reader.ts";
+import {
+  previewSkillUpdates,
+  runDailySkillCheck,
+  type SkillUpdatePreview,
+  type SkillUpdates,
+  type UpdatePin,
+  updateSkills,
+} from "./skill-updates.ts";
 import { SETTINGS_SCOPE, type SkillExpectation } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
@@ -488,6 +496,42 @@ export type RegistryMethods = {
     readonly source: string;
     readonly skills?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SkillInstallation>;
+  /**
+   * An Agent change (`docs/spec.md` → Installing from GitHub → Updates): update the Skills `names` (absent: every one marked
+   * update available) kept for `environment` (or `*`) to the latest commit of their recorded ref, fetched here as the GitHub
+   * App. A modified Skill is refused unless `overwrite`. Each Skill moved is recorded with its files and source before and
+   * after; one whose folder is the same records nothing. With `pins` (the owner's Approval of an update for every
+   * Environment), the commits and folders the owner was shown, and only while each Skill was last saved then. The caller
+   * hands the Session's own Workspace the new Skill set after.
+   */
+  readonly agentUpdateSkills: (input: {
+    readonly environment: string;
+    readonly names?: ReadonlyArray<string> | undefined;
+    readonly overwrite: boolean;
+    readonly pins?: ReadonlyArray<UpdatePin> | undefined;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SkillUpdates>;
+  /**
+   * What `agentUpdateSkills` would do, with nothing saved or recorded: the files each Skill would take, for the owner's
+   * Approval card of an update for every Environment.
+   */
+  readonly previewSkillUpdates: (input: {
+    readonly environment: string;
+    readonly names?: ReadonlyArray<string> | undefined;
+    readonly overwrite: boolean;
+  }) => Effect.Effect<SkillUpdatePreview>;
+  /** The owner updates Skills (as `agentUpdateSkills`), recorded as no Agent change and waiting for no Approval. */
+  readonly updateSkills: (input: {
+    readonly environment: string;
+    readonly names?: ReadonlyArray<string> | undefined;
+    readonly overwrite: boolean;
+  }) => Effect.Effect<SkillUpdates>;
+  /**
+   * The daily check of the installed Skills (`checkSkillUpdates`): once a day at most, one request for each repo and ref the
+   * Skills of every scope came from, marking those whose folder changed. Applies nothing, tells nobody, and never fails:
+   * what GitHub refuses is logged and the marks are left as they are.
+   */
+  readonly checkSkillUpdates: () => Effect.Effect<void>;
   /** The Skills kept for `environment` (or `*` for every Environment), by name; null when it is not registered. */
   readonly listSkills: (input: {
     readonly environment: string;
@@ -717,6 +761,48 @@ export const RegistryLive = Registry.make(
               ),
             );
           });
+
+        /** Update `environment`'s Skills: as Agent changes by `author`, or as the owner's save with none. */
+        const updateFromGithub = (input: {
+          readonly environment: string;
+          readonly names: ReadonlyArray<string> | undefined;
+          readonly overwrite: boolean;
+          readonly pins: ReadonlyArray<UpdatePin> | undefined;
+          readonly author: AgentChangeAuthor | null;
+        }) =>
+          Effect.gen(function* () {
+            const hashedBundle = yield* bundle;
+            const now = yield* Clock.currentTimeMillis;
+
+            return yield* Effect.promise(() =>
+              updateSkills(
+                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                skillReader,
+                input,
+              ),
+            );
+          });
+
+        /**
+         * The daily check of the installed Skills, at most once a day (`SKILL_CHECK_DOCUMENT` keeps when it last ran). A
+         * run is claimed before it reads GitHub, so two calls at once make one; one the rate limit ended is tried again in
+         * an hour. Whatever goes wrong is logged and the marks are left alone.
+         */
+        const checkInstalledSkills = Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+
+          const check = yield* Effect.promise(() =>
+            runDailySkillCheck({ skills, documents: store }, skillReader, now),
+          );
+
+          if (check === undefined) return;
+
+          yield* Effect.logInfo(
+            `Skill update check: ${check.checked} Skills compared, ${check.marked} marked update available, ${check.cleared} cleared${check.rateLimited ? ", stopped by GitHub's rate limit" : ""}${check.problems.length === 0 ? "" : `; left alone: ${Arr.join(check.problems, "; ")}`}`,
+          );
+        }).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("The Skill update check failed", cause)),
+        );
 
         /**
          * `environment`'s Skill set before its texts are read: its own Skills over those kept for every Environment,
@@ -1149,15 +1235,31 @@ export const RegistryLive = Registry.make(
             installFromGithub({ environment, source, skills: names, author }),
           installSkills: ({ environment, source, skills: names }) =>
             installFromGithub({ environment, source, skills: names, author: null }),
+          agentUpdateSkills: ({ environment, names, overwrite, pins, author }) =>
+            updateFromGithub({ environment, names, overwrite, pins, author }),
+          updateSkills: ({ environment, names, overwrite }) =>
+            updateFromGithub({ environment, names, overwrite, pins: undefined, author: null }),
+          previewSkillUpdates: ({ environment, names, overwrite }) =>
+            Effect.promise(() =>
+              previewSkillUpdates({ store, skills }, skillReader, {
+                environment,
+                names,
+                overwrite,
+              }),
+            ),
+          checkSkillUpdates: () => checkInstalledSkills,
           listSkills: ({ environment }) =>
             Effect.sync(() =>
               environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
                 ? null
-                : Arr.map(skills.list(environment), ({ name, description, savedAt, source }) => {
-                    const listed = { name, description, savedAt };
+                : Arr.map(
+                    skills.list(environment),
+                    ({ name, description, savedAt, source, modified, updateAvailable }) => {
+                      const listed = { name, description, savedAt, modified, updateAvailable };
 
-                    return source === null ? listed : { ...listed, source };
-                  }),
+                      return source === null ? listed : { ...listed, source };
+                    },
+                  ),
             ),
           removeSkill: ({ environment, name }) =>
             Effect.gen(function* () {

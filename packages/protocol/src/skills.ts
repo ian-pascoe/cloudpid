@@ -52,6 +52,13 @@ export const EnvironmentSkill = Schema.Struct({
   savedAt: Schema.Finite,
   /** Where it was installed from; absent for a Skill that was never installed. A save from a Workspace keeps the source it had. */
   source: Schema.optionalKey(SkillSource),
+  /**
+   * Whether the agent edited it since it was installed (GLOSSARY.md → Skill source): an update refuses it unless asked to
+   * overwrite. Absent when it is not.
+   */
+  modified: Schema.optionalKey(Schema.Boolean),
+  /** Whether the daily check found its folder changed at the ref's head: an update would move it. Absent when not. */
+  updateAvailable: Schema.optionalKey(Schema.Boolean),
 });
 
 export type EnvironmentSkill = typeof EnvironmentSkill.Type;
@@ -73,6 +80,8 @@ export const SkillChangeValue = Schema.Struct({
   files: Schema.Record(Schema.String, Schema.String),
   /** Where the Skill was installed from, when it was (a revert puts it back with the files). */
   source: Schema.optionalKey(SkillSource),
+  /** Whether the Skill was marked modified (a revert puts the mark back with the files). Absent when it was not. */
+  modified: Schema.optionalKey(Schema.Boolean),
 });
 
 export type SkillChangeValue = typeof SkillChangeValue.Type;
@@ -144,3 +153,21 @@ export const SkillSearchResult = Schema.Struct({
 });
 
 export type SkillSearchResult = typeof SkillSearchResult.Type;
+
+/** How the owner's update of one Skill went. */
+export const SkillUpdated = Schema.Struct({
+  name: Schema.String,
+  /**
+   * Moved to the ref's latest commit (`updated`); its folder is the same there (`unchanged`); refused because the agent
+   * edited it and no overwrite was asked (`modified`); or not updated, with why in `message` (`rejected`).
+   */
+  outcome: Schema.Literals(["updated", "unchanged", "modified", "rejected"]),
+  message: Schema.optionalKey(Schema.String),
+});
+
+export type SkillUpdated = typeof SkillUpdated.Type;
+
+/** What an update answers: how each Skill asked for, or marked update available, went. */
+export const SkillUpdate = Schema.Struct({ skills: Schema.Array(SkillUpdated) });
+
+export type SkillUpdate = typeof SkillUpdate.Type;

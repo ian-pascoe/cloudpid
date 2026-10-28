@@ -301,6 +301,15 @@ export const buildUpkeep = (
 
       if (!(yield* keepAll(undefined))) {
         quietUntil = (yield* Clock.currentTimeMillis) + BUILD_QUIET_MS;
+
+        // Alongside the daily look at the Repos: the Registry runs the check of the installed Skills (ADR-0026) at most once
+        // a day, whoever asks, and never fails.
+        yield* registries
+          .getByName(REGISTRY_NAME)
+          .checkSkillUpdates()
+          .pipe(
+            Effect.catchCause((cause) => Effect.logWarning("The Skill update check failed", cause)),
+          );
       }
     }),
     // A Build asked for here is followed by the runs behind the Session list until it ends.

@@ -4,7 +4,7 @@
 // (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,
 // `environment_start_script_set`, `environment_toolchains_set` and `environment_ignore_set`), and
 // `environment_secret_build` for the Build mark of a kept Secret, and `environment_skill_save` and
-// `environment_skill_install` and `environment_skill_remove` for its own Skills and, saved or removed, those kept for
+// `environment_skill_install`, `environment_skill_update` and `environment_skill_remove` for its own Skills and, saved or removed, those kept for
 // every Environment (`environment-skills.ts`; a change to the latter waits for the owner's Approval, so this extension
 // needs the Session's `Approvals`). Each change is an Agent change: the Registry applies
 // it as the owner's save is applied and records it, the Session hands a change to its own Environment to its Workspace
@@ -312,6 +312,8 @@ const skillLines = (skills: ReadonlyArray<EnvironmentSkill>): string =>
           (skill) =>
             `\n  ${skill.name} (saved ${iso(skill.savedAt)}${
               skill.source === undefined ? "" : `, installed from ${skillSourceText(skill.source)}`
+            }${skill.modified === true ? ", modified since installed" : ""}${
+              skill.updateAvailable === true ? ", update available" : ""
             }): ${skill.description}`,
         ),
         "",
@@ -362,7 +364,7 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over those kept for every Environment and the bundle's of the same name; environment_skill_save, environment_skill_install and environment_skill_remove change them): ${skillLines(details.skills)}`,
+      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over those kept for every Environment and the bundle's of the same name; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove change them): ${skillLines(details.skills)}`,
       `Skills for every Environment (id "${EVERY_ENVIRONMENT_ID}"; the Environment's own of the same name win): ${
         details.everySkills.length === 0
           ? "none"
@@ -390,7 +392,7 @@ const describeEveryEnvironment = (details: EveryEnvironmentDetails): string =>
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (served read-only at ${SKILLS_ROOT}/<name> in every Environment's Workspaces, over the bundle's of the same name; an Environment's own of the same name wins there; environment_skill_save and environment_skill_remove with id "${EVERY_ENVIRONMENT_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
+      `Skills (served read-only at ${SKILLS_ROOT}/<name> in every Environment's Workspaces, over the bundle's of the same name; an Environment's own of the same name wins there; environment_skill_save, environment_skill_update and environment_skill_remove with id "${EVERY_ENVIRONMENT_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
     ],
     "\n",
   );
@@ -512,7 +514,7 @@ export const idOrEvery = (kept: string) =>
 export const refuseEveryEnvironment = (id: string | undefined) =>
   id === EVERY_ENVIRONMENT_ID
     ? EnvironmentsError.make({
-        message: `The id "${EVERY_ENVIRONMENT_ID}" names the variables, Secrets and Skills kept for every Environment: only environment_variable_set, environment_variable_unset, environment_get, environment_secret_build, environment_secret_delete, environment_skill_save and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
+        message: `The id "${EVERY_ENVIRONMENT_ID}" names the variables, Secrets and Skills kept for every Environment: only environment_variable_set, environment_variable_unset, environment_get, environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_remove and environment_skill_update take it. Name one Environment with its id (environment_list shows them).`,
       })
     : Effect.void;
 

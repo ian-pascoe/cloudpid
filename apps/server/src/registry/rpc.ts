@@ -883,6 +883,44 @@ export const serveRegistryRpc = <R = never>(
               };
           }
         }),
+      // As the install: fetched by the Registry as the GitHub App, not an Agent change, no Approval even for `*`. Each
+      // Workspace of the Environment is handed its Skill set with the Skills at its next readying.
+      updateEnvironmentSkills: ({ environment, names, overwrite }) =>
+        Effect.gen(function* () {
+          const updates = yield* registry.updateSkills({
+            environment,
+            names,
+            overwrite: overwrite === true,
+          });
+
+          switch (updates.status) {
+            case "missing":
+              return yield* failed(noEnvironment(environment));
+            case "nothing":
+              return { skills: [] };
+            case "done":
+              return {
+                skills: Arr.map(updates.results, (result) => {
+                  switch (result.outcome) {
+                    case "updated":
+                      return { name: result.name, outcome: "updated" as const };
+                    case "changed-since":
+                      return {
+                        name: result.name,
+                        outcome: "rejected" as const,
+                        message: result.message,
+                      };
+                    default:
+                      return {
+                        name: result.name,
+                        outcome: result.outcome,
+                        message: result.message,
+                      };
+                  }
+                }),
+              };
+          }
+        }),
       searchSkills: ({ query }) =>
         Effect.gen(function* () {
           const found = yield* skillSearch(query);

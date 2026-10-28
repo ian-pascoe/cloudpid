@@ -28,7 +28,7 @@
 //
 // The port keeps the CLI's logic and its order of results; it is written in the repo's style (immutable where it reads
 // the same, no mutation of the tree).
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off asyncFunction:off
 
 /** One entry of a repo's tree, as GitHub's Trees API lists it. */
 export type TreeEntry = {
@@ -221,4 +221,40 @@ export const skillFilesIn = (
     .filter((entry) => entry.type === "blob" && entry.path.startsWith(prefix))
     .map((entry) => ({ ...entry, relative: entry.path.slice(prefix.length) }))
     .filter((entry) => isInstallablePath(entry.relative));
+};
+
+/**
+ * The path of the `SKILL.md` of the Skill whose folder is `folder` (`""` for the repo's root) in `tree`, in whatever case
+ * the tree has it (`SKILL.md` first), or undefined when the folder holds none.
+ */
+export const skillMdIn = (
+  tree: { readonly tree: ReadonlyArray<Pick<TreeEntry, "path" | "type">> },
+  folder: string,
+): string | undefined => {
+  const prefix = folder === "" ? "" : `${folder}/`;
+  const wanted = `${prefix}skill.md`;
+
+  const found = tree.tree.filter(
+    (entry) => entry.type === "blob" && entry.path.toLowerCase() === wanted,
+  );
+
+  return (found.find((entry) => entry.path === `${prefix}SKILL.md`) ?? found[0])?.path;
+};
+
+/**
+ * A digest of the Skill's folder at one commit, for telling whether it moved: SHA-256 of the git blob SHA of each file
+ * the folder installs (`skillFilesIn`), by path. The folder's own tree SHA would also move for files an install leaves out
+ * (`metadata.json`, `.git`) and, for a Skill at the repo's root, for any commit at all.
+ */
+export const folderHashOf = async (
+  tree: { readonly tree: ReadonlyArray<TreeEntry> },
+  skillMdPath: string,
+): Promise<string> => {
+  const lines = skillFilesIn(tree, skillMdPath)
+    .map((entry) => `${entry.relative}\0${entry.sha}\n`)
+    .toSorted();
+
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(lines.join("")));
+
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 };

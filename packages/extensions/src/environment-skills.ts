@@ -31,6 +31,7 @@ import {
   savedOutcome,
   type SkillToolDeps,
 } from "./environment-skill-results.ts";
+import { updateTool } from "./environment-skill-update.ts";
 import {
   MAX_CARD_CHARS,
   removeEverywhere,
@@ -45,7 +46,9 @@ export type {
   SkillRemoved,
   SkillSaved,
   SkillsInstalled,
+  SkillsUpdated,
   SkillToolDeps,
+  SkillUpdatesPreview,
 } from "./environment-skill-results.ts";
 
 /** The Workspace's files: a folder elsewhere is the Container's only, and is not read. */
@@ -556,5 +559,7 @@ export const skillTools = ({
       }),
   });
 
-  return Effect.all([save, remove, install]);
+  const update = updateTool({ environments, approvals, log, refuseSecrets, target, notFound });
+
+  return Effect.all([save, remove, install, update]);
 };

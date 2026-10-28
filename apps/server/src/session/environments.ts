@@ -50,6 +50,8 @@ export type EnvironmentsRegistry = Pick<
   | "agentPreviewSkill"
   | "agentRemoveSkill"
   | "agentInstallSkills"
+  | "agentUpdateSkills"
+  | "previewSkillUpdates"
   | "listSkills"
   | "workspaceSkillSet"
   | "getWorkspace"
@@ -408,6 +410,39 @@ export const sessionEnvironments = ({
           }
         }
       }),
+    updateSkills: ({ environment, names, overwrite, pins, author }) =>
+      Effect.gen(function* () {
+        if (session === undefined) return yield* unlisted;
+
+        // The Registry fetches as the GitHub App: no token comes here.
+        const updated = yield* registry.agentUpdateSkills({
+          environment,
+          names,
+          overwrite,
+          pins,
+          author: { session, ...author },
+        });
+
+        switch (updated.status) {
+          case "missing":
+            return updated;
+          case "nothing":
+            return { status: "nothing" as const, environment: updated.environment };
+          case "done": {
+            const moved = Arr.some(updated.results, ({ outcome }) => outcome === "updated");
+
+            return {
+              status: "done" as const,
+              environment: updated.environment,
+              results: updated.results,
+              // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves them now.
+              handed: moved ? yield* handSkillsAfter(environment, []) : false,
+            };
+          }
+        }
+      }),
+    previewUpdates: ({ environment, names, overwrite }) =>
+      registry.previewSkillUpdates({ environment, names, overwrite }),
     markSecret: ({ environment, name, build, author }) =>
       Effect.gen(function* () {
         if (session === undefined) return yield* unlisted;

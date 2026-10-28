@@ -48,6 +48,7 @@ const UNEXPECTED: Handlers = {
   listEnvironmentSkills: unexpected("listEnvironmentSkills"),
   removeEnvironmentSkill: unexpected("removeEnvironmentSkill"),
   installEnvironmentSkills: unexpected("installEnvironmentSkills"),
+  updateEnvironmentSkills: unexpected("updateEnvironmentSkills"),
   searchSkills: unexpected("searchSkills"),
   skillChangeFiles: unexpected("skillChangeFiles"),
   listBuilds: unexpected("listBuilds"),

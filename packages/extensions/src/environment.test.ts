@@ -387,7 +387,7 @@ describe("the environment tools", () => {
     const shown = text(await run(tool("environment_get"), { id: "0000abcd" }));
 
     expect(shown).toContain("npm ERR! missing script");
-    expect(shown.length).toBeLessThan(2_000);
+    expect(shown.length).toBeLessThan(2_300);
   });
 
   it("refuses an id no Environment has, pointing to environment_list", async () => {

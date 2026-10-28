@@ -103,6 +103,7 @@ export const installSkills = async (
       // SAFETY: `hashed` holds one entry for each of `fetched.skills`, in order, and `at` indexes the latter.
       hashed: hashed[at] as (typeof hashed)[number],
       source,
+      folderHash: skill.folderHash,
     };
 
     const kept =

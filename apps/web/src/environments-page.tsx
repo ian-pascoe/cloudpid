@@ -12,6 +12,7 @@ import {
   skillSourceText,
   skillSourceUrl,
   type EnvironmentRecord,
+  type EnvironmentSkill,
   type EnvironmentSecretRecord,
   fieldSkill,
   type SessionRecord,
@@ -34,6 +35,7 @@ import {
   KeyRound,
   Pencil,
   Play,
+  RefreshCw,
   RotateCw,
   Search,
   Trash2,
@@ -84,6 +86,8 @@ import {
   skillChangeFilesAtom,
   skillChangeKey,
   skillDialogAtom,
+  skillUpdateDialogAtom,
+  updateSkillAtom,
   saveSecretAtom,
   setSecretBuildAtom,
   secretDialogAtom,
@@ -123,6 +127,7 @@ import {
   EVERY_ENVIRONMENT,
   inheritedSecrets,
   inheritedSkills,
+  updateOutcomeLines,
   type InheritedVariables,
   inheritedVariables,
   secretDraftProblems,
@@ -1334,6 +1339,76 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
   );
 };
 
+/**
+ * Confirm updating Skill `skill.name` of Environment `id` (or `EVERY_ENVIRONMENT`) to the latest commit of the ref it was
+ * installed from, after saying what follows. It is the owner's own change, so it waits for no Approval, and it is no
+ * agent change, so it has no revert; a Skill the agent edited since it was installed has the edits replaced.
+ */
+const UpdateSkillDialog = ({ id, skill }: { id: string; skill: EnvironmentSkill }) => {
+  const [updated, update] = useAtom(updateSkillAtom(id));
+  const setDialog = useAtomSet(skillUpdateDialogAtom(id));
+  const busy = updated.waiting;
+  const answer = updated.pipe(AsyncResult.value, Option.getOrNull);
+  const modified = skill.modified === true;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (busy || answer !== null) return;
+
+    // The confirm is the owner's word to replace the edits.
+    update({ name: skill.name, overwrite: modified });
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <p className="text-sm">
+        {id === EVERY_ENVIRONMENT
+          ? "Every environment's workspaces serve the new files at their next readying, except those of an environment that keeps its own skill of the same name."
+          : "Its workspaces serve the new files at their next readying."}{" "}
+        Sessions already running keep the old description in their skills list until their next
+        context window.
+      </p>
+      {modified && (
+        <p className="text-sm">
+          The agent edited this skill after it was installed. Updating replaces those edits with the
+          files at the ref's latest commit.
+        </p>
+      )}
+      <p className="text-sm">
+        This cannot be undone: your update is not an agent change, so it has no revert, and a later
+        revert of an earlier agent change to this skill is refused. To go back, ask the agent to
+        install the earlier commit.
+      </p>
+      {answer !== null && (
+        <ul className="flex flex-col gap-1 text-sm" aria-label="Update result">
+          {updateOutcomeLines(answer.skills).map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+      <DialogProblem problem={settledFailureOf(updated)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          {answer === null ? "Cancel" : "Close"}
+        </Button>
+        {answer === null && (
+          <Button type="submit" variant={modified ? "destructive" : "default"} disabled={busy}>
+            {busy ? "Updating…" : modified ? "Replace edits and update" : "Update skill"}
+          </Button>
+        )}
+      </DialogActions>
+    </form>
+  );
+};
+
 /** What an install came to, below the form: the Skills it kept, each pinned to the commit; or the Skills to tick. */
 const InstallAnswer = ({
   id,
@@ -1587,8 +1662,12 @@ const SkillsSection = ({ id }: { id: string }) => {
   const [removing, setRemoving] = useAtom(skillDialogAtom(id));
   const removed = useAtomValue(removeSkillAtom(id));
   const forgetRemove = useAtomSet(removeSkillAtom(id));
+  const [updating, setUpdating] = useAtom(skillUpdateDialogAtom(id));
+  const updated = useAtomValue(updateSkillAtom(id));
+  const forgetUpdate = useAtomSet(updateSkillAtom(id));
   const skills = loaded.pipe(AsyncResult.value, Option.getOrNull);
   const loadError = failureOf(loaded);
+  const updatingSkill = skills?.find((skill) => skill.name === updating);
 
   const { inherited, overridden } =
     everywhere || skills === null
@@ -1639,7 +1718,42 @@ const SkillsSection = ({ id }: { id: string }) => {
                     {skillSourceText(skill.source)}
                   </a>
                 )}
+                {(skill.modified === true || skill.updateAvailable === true) && (
+                  <span className="flex flex-wrap gap-1 text-xs">
+                    {skill.modified === true && (
+                      <span
+                        className="rounded border border-amber-500/60 px-1 text-amber-600 dark:text-amber-400"
+                        title="The agent edited this skill after it was installed. An update replaces the edits."
+                      >
+                        modified
+                      </span>
+                    )}
+                    {skill.updateAvailable === true && (
+                      <span
+                        className="rounded border border-sky-500/60 px-1 text-sky-600 dark:text-sky-400"
+                        title="Its folder changed upstream on the ref it was installed from."
+                      >
+                        update available
+                      </span>
+                    )}
+                  </span>
+                )}
               </span>
+              {skill.source !== undefined && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-8 shrink-0"
+                  aria-label={`Update ${skill.name}`}
+                  title={`Update ${skill.name}`}
+                  onClick={() => {
+                    forgetUpdate(Atom.Reset);
+                    setUpdating(skill.name);
+                  }}
+                >
+                  <RefreshCw />
+                </Button>
+              )}
               <Button
                 size="icon"
                 variant="ghost"
@@ -1678,6 +1792,16 @@ const SkillsSection = ({ id }: { id: string }) => {
         title={`Remove the ${removing ?? ""} skill?`}
       >
         {removing !== null && <RemoveSkillDialog id={id} name={removing} />}
+      </Dialog>
+      <Dialog
+        open={updating !== null}
+        onClose={() => {
+          setUpdating(null);
+        }}
+        dismissible={!updated.waiting}
+        title={`Update the ${updating ?? ""} skill?`}
+      >
+        {updatingSkill !== undefined && <UpdateSkillDialog id={id} skill={updatingSkill} />}
       </Dialog>
     </div>
   );

@@ -29,6 +29,7 @@ import {
   type SessionRecord,
   SkillChangeValue,
   type SkillInstall,
+  type SkillUpdate,
   skillSourceText,
 } from "@cloudpid/protocol";
 import {
@@ -371,6 +372,21 @@ export const installOutcomeLines = (
     }
   });
 
+/** What the owner's update answered, a line for each Skill: moved, the same already, refused for its edits, or refused. */
+export const updateOutcomeLines = (skills: SkillUpdate["skills"]): ReadonlyArray<string> =>
+  Arr.map(skills, ({ name, outcome, message }) => {
+    switch (outcome) {
+      case "updated":
+        return `${name}: updated to the latest commit`;
+      case "unchanged":
+        return `${name}: already up to date, nothing changed`;
+      case "modified":
+        return `${name}: not updated, it was edited since it was installed${message === undefined ? "" : `: ${message}`}`;
+      case "rejected":
+        return `${name}: not updated${message === undefined ? "" : `: ${message}`}`;
+    }
+  });
+
 /**
  * A value an Agent change shows, in full: a Skill's as its files' paths, a variable's, a script's or the Toolchains' as written, a list of paths a line
  * each, another setting's as JSON, and none as not set (an empty text as empty, an empty list as none).
@@ -386,7 +402,7 @@ export const changeValueText = (value: AgentChange["before"]): string => {
     const shown = files.length === 0 ? "no files" : files.join("\n");
 
     return Schema.is(SkillChangeValue)(value) && value.source !== undefined
-      ? `${shown}\nfrom ${skillSourceText(value.source)}`
+      ? `${shown}\nfrom ${skillSourceText(value.source)}${value.modified === true ? " (modified since installed)" : ""}`
       : shown;
   }
 

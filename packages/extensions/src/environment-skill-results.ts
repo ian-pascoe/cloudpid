@@ -10,6 +10,7 @@ import {
   type AgentChange,
   type ListedSkill,
   type SkillExpectation,
+  type SkillSource,
   SKILLS_ROOT,
   skillField,
 } from "@cloudpid/protocol";
@@ -99,6 +100,74 @@ export type SkillsInstalled =
   | { readonly status: "refused"; readonly message: string }
   | { readonly status: "missing" };
 
+/** What became of one Skill an update was asked for. */
+export type SkillUpdateResult =
+  | {
+      readonly name: string;
+      readonly outcome: "updated";
+      readonly from: SkillSource;
+      readonly to: SkillSource;
+      /** Whether the edits the agent made to it were replaced. */
+      readonly overwrote: boolean;
+      readonly change?: AgentChange | undefined;
+    }
+  /** Its folder is the same at the ref's latest commit: nothing was changed or recorded. */
+  | { readonly name: string; readonly outcome: "unchanged"; readonly message: string }
+  /** Refused: it was edited since it was installed and no overwrite was asked. */
+  | { readonly name: string; readonly outcome: "modified"; readonly message: string }
+  /** Not updated: no such Skill, none installed, GitHub gave no answer, or the files fail a save's checks. */
+  | { readonly name: string; readonly outcome: "rejected"; readonly message: string }
+  /** It was saved again since the owner was asked: nothing was changed. */
+  | { readonly name: string; readonly outcome: "changed-since"; readonly message: string };
+
+/** A Skill an update would move, with the files it would take: for the owner's Approval card (nothing applied). */
+export type SkillUpdateReady = {
+  readonly name: string;
+  readonly outcome: "ready";
+  readonly from: SkillSource;
+  readonly to: SkillSource;
+  readonly description: string;
+  readonly files: Readonly<Record<string, string>>;
+  readonly folderHash: string;
+  /** When the Skill kept was last saved: the approved update is made only while it still was then. */
+  readonly savedAt: number;
+  /** The Skill is modified: the update would replace the agent's edits. */
+  readonly overwrites: boolean;
+  readonly current: { readonly description: string; readonly files: ReadonlyArray<string> };
+};
+
+/** How an update of Skills went. */
+export type SkillsUpdated =
+  | {
+      readonly status: "done";
+      readonly environment: ChangedEnvironment;
+      /** Each Skill asked for (or marked update available), in the order it was asked. */
+      readonly results: ReadonlyArray<SkillUpdateResult>;
+      /** Whether this Session's own Workspace serves the new Skill set now. */
+      readonly handed: boolean;
+    }
+  /** No Skill was named and none is marked update available. */
+  | { readonly status: "nothing"; readonly environment: ChangedEnvironment }
+  | { readonly status: "missing" };
+
+/** What an update would do, with nothing applied. */
+export type SkillUpdatesPreview =
+  | {
+      readonly status: "done";
+      readonly environment: ChangedEnvironment;
+      readonly results: ReadonlyArray<SkillUpdateResult | SkillUpdateReady>;
+    }
+  | { readonly status: "nothing"; readonly environment: ChangedEnvironment }
+  | { readonly status: "missing" };
+
+/** The update the owner was shown for a Skill, which an approved update applies exactly. */
+export type SkillUpdatePin = {
+  readonly name: string;
+  readonly savedAt: number;
+  readonly commit: string;
+  readonly folderHash: string;
+};
+
 /** How the removal of a Skill went. */
 export type SkillRemoved =
   | {
@@ -182,6 +251,24 @@ export type EnvironmentSkills = {
     readonly skills?: ReadonlyArray<string> | undefined;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<SkillsInstalled, EnvironmentsError>;
+  /**
+   * Update the Skills `names` (absent: every one marked update available) the scope keeps to the latest commit of their
+   * recorded ref, fetched by the Registry as the GitHub App; a modified Skill is refused unless `overwrite`. With `pins`,
+   * the commits and folders the owner was shown, and only while each Skill was last saved then.
+   */
+  readonly updateSkills: (input: {
+    readonly environment: string;
+    readonly names?: ReadonlyArray<string> | undefined;
+    readonly overwrite: boolean;
+    readonly pins?: ReadonlyArray<SkillUpdatePin> | undefined;
+    readonly author: ChangeAuthor;
+  }) => Effect.Effect<SkillsUpdated, EnvironmentsError>;
+  /** What `updateSkills` would do with the same names, nothing saved or recorded. */
+  readonly previewUpdates: (input: {
+    readonly environment: string;
+    readonly names?: ReadonlyArray<string> | undefined;
+    readonly overwrite: boolean;
+  }) => Effect.Effect<SkillUpdatesPreview, EnvironmentsError>;
 };
 
 /** What the tools need of `EnvironmentTools`: what they build over, and its refusals. */
