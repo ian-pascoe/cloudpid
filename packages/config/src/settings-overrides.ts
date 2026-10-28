@@ -1,5 +1,5 @@
 // An Environment's Settings Overrides (ADR-0027, `docs/architecture/overview.md` → Settings): exactly the fields the owner
-// or the agent set on purpose for the Environment, even one equal to the Global value, kept until a Reset removes it.
+// or the agent set on purpose for the Environment, even one equal to the Global value, kept until a reset removes it.
 // They are the deep partial shape of the Global document, read field by field: a Role is one field (its model and hint
 // as one value), an extension's option is one (`extensions.<extension>.<key>`), and every other setting is one by
 // itself (`model`, `compaction.enabled`, `tools.offered`, `spendLimit.perSession`), replaced whole. An Environment's
@@ -41,7 +41,7 @@ const defaultsOf = (root: string): Settings[keyof Settings] | undefined =>
 const withEntries = (
   value: Schema.JsonObject,
   entries: ReadonlyArray<readonly [string, Schema.Json]>,
-): Schema.JsonObject => Object.fromEntries([...Object.entries(value), ...entries]);
+): Schema.JsonObject => Record.fromEntries([...Record.toEntries(value), ...entries]);
 
 /**
  * How many keys lead to one field below `root`: three for an extension's option, two below a section (a Role, a
@@ -54,6 +54,31 @@ const fieldDepth = (root: string): number => {
 
   return Predicate.isObject(defaults) && !Arr.isArray(defaults) ? 2 : 1;
 };
+
+/**
+ * The Override fields, as `settings_reset` lists them: each setting that is a value, each one below a section (a Role,
+ * a compaction setting, `tools.offered`), and each extension's option as a pattern.
+ */
+export const OVERRIDE_FIELD_NAMES: ReadonlyArray<string> = Arr.flatMap(
+  Record.toEntries(DEFAULT_SETTINGS),
+  ([root, defaults]) => {
+    if (root === "extensions") return ["extensions.<extension>.<key>"];
+
+    // SAFETY: a setting of depth 2 is a section, whose defaults are a plain object of its settings by name.
+    const section = defaults as Readonly<Record<string, unknown>>;
+
+    return fieldDepth(root) === 2
+      ? Arr.map(Record.keys(section), (key) => `${root}.${key}`)
+      : [root];
+  },
+);
+
+/**
+ * Whether giving Override field `field` the value `value` resets it rather than overriding it: null takes an extension's
+ * option away (and an extension's options, given for the extension), so at an Environment it inherits again.
+ */
+export const resetsOverride = (field: string, value: Schema.Json | null): boolean =>
+  value === null && field.startsWith("extensions.");
 
 /**
  * The keys of Override field `field` (`model`, `roles.small`, `compaction.enabled`, `extensions.<extension>.<key>`, whose
@@ -166,8 +191,8 @@ const overriding = (base: Schema.JsonObject, overrides: Schema.Json): Schema.Jso
  * The Overrides `overrides` become with `set` (a deep partial of the settings) given field by field, and the fields of
  * `reset` removed, so they inherit again. A Role set in part is completed from the Role in force (`current`, the
  * Environment's settings now), since a Role is one field; an extension's option set to null is reset (null takes an
- * option away), and so is each option of an extension set to null. Refused for a `reset` that names no field, or a `set` that is not an object; the strict resolution of
- * the result says whether its values are valid.
+ * option away), and so is each option of an extension set to null (`resetsOverride`). Refused for a `reset` that names
+ * no field, or a `set` that is not an object; the strict resolution of the result says whether its values are valid.
  */
 export const withOverrides = (
   overrides: Schema.Json,
@@ -197,7 +222,7 @@ export const withOverrides = (
     (next, { keys, value }) => {
       const [root, name] = keys;
 
-      if (root === "extensions" && value === null) return removeAt(next, keys);
+      if (resetsOverride(Arr.join(keys, "."), value)) return removeAt(next, keys);
 
       if (root === "roles" && name !== undefined && keys.length === 2 && isJsonObject(value)) {
         const role = settingsFieldValue(current, `roles.${name}`) ?? {};
@@ -205,7 +230,7 @@ export const withOverrides = (
         return setAt(
           next,
           keys,
-          isJsonObject(role) ? withEntries(role, Object.entries(value)) : value,
+          isJsonObject(role) ? withEntries(role, Record.toEntries(value)) : value,
         );
       }
 
@@ -298,6 +323,12 @@ export type LenientOverrides = {
   readonly dropped: ReadonlyArray<string>;
 };
 
+/**
+ * How many times a lenient read decodes again after dropping the fields with problems before it gives up on the
+ * Overrides whole: each round drops every field the decode named, so more rounds only follow problems one hides.
+ */
+const MAX_LENIENT_ROUNDS = 8;
+
 /** The keys of the field a problem lies in: a problem with a Role's model drops the Role. */
 const fieldKeysOf = (problem: SettingsProblem): ReadonlyArray<string> => {
   const [root] = problem.keys;
@@ -321,7 +352,7 @@ export const resolveOverridesLeniently = (
   let rest: Schema.JsonObject = isJsonObject(renamed) ? renamed : {};
 
   // Dropping a field settles its problem; a few rounds cover Overrides with several.
-  for (let round = 0; round < 8; round += 1) {
+  for (let round = 0; round < MAX_LENIENT_ROUNDS; round += 1) {
     const result = decodeSettingsOverrides(overriding(inherited.overrides, rest));
 
     if (Result.isSuccess(result)) {

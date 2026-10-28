@@ -5,17 +5,10 @@
 import {
   DEFAULT_OFFERED_TOOLS,
   DEFAULT_SETTINGS,
-  type OverrideFieldChange,
   overrideFields,
-  overrideValue,
   overridesFrom,
-  overridesWithFields,
-  resolveOverrides,
   resolveOverridesLeniently,
-  resolveSettings,
   type Settings,
-  settingsFieldValue,
-  withOverrideFields,
 } from "@cloudpid/config";
 import type { AgentChange } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -28,7 +21,6 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { AgentChangeLog, DeployCredentials, type RunChange } from "./environment.ts";
@@ -47,17 +39,15 @@ import {
   SettingsTools,
   type SettingsView,
 } from "./settings.ts";
+import {
+  changeGlobalSettings,
+  changeSettingsOverrides,
+  resolvedGlobal,
+} from "./settings.fixture.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
-
-const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
-
-const sameOverride = (left: Option.Option<Schema.Json>, right: Option.Option<Schema.Json>) =>
-  Option.isNone(left)
-    ? Option.isNone(right)
-    : Option.isSome(right) && sameJson(left.value, right.value);
 
 /** An Environment as the fake holds it: its name, its Overrides and what was left out of them. */
 type FakeEnvironment = { name: string; overrides: Schema.Json; problem?: string };
@@ -90,13 +80,7 @@ const fakeSettings = (
   let overrides = initial;
   const held: Record<string, FakeEnvironment> = structuredClone({ ...environments });
 
-  const resolved = (): Settings => {
-    const result = resolveSettings(overrides);
-
-    if (Result.isFailure(result)) throw new Error(result.failure.message);
-
-    return result.success;
-  };
+  const resolved = (): Settings => resolvedGlobal(overrides);
 
   const calls: Array<{
     scope: string;
@@ -132,41 +116,13 @@ const fakeSettings = (
     changes: ReadonlyArray<SettingsFieldChange>,
     author: { conversation: number; tool: string; reason: string },
   ): AppliedSettingsChange => {
-    const before = resolved();
-
-    const wanted = Arr.map(changes, (change) =>
-      change.reset === true
-        ? { ...change, value: settingsFieldValue(DEFAULT_SETTINGS, change.field) }
-        : change,
+    const changed = changeGlobalSettings(overrides, changes, (made) =>
+      record({ ...made, ...author }),
     );
 
-    const differing = Arr.filter(
-      wanted,
-      (change) => !sameJson(settingsFieldValue(before, change.field), change.value),
-    );
+    overrides = changed.global;
 
-    if (differing.length === 0) return { status: "unchanged" };
-
-    const next = resolveSettings(overridesWithFields(before, differing));
-
-    if (Result.isFailure(next)) return { status: "rejected", message: next.failure.message };
-
-    overrides = overridesFrom(next.success);
-
-    return {
-      status: "changed",
-      changes: Arr.map(differing, (change) =>
-        record({
-          scope: "settings",
-          conversation: author.conversation,
-          tool: author.tool,
-          reason: author.reason,
-          field: change.field,
-          before: settingsFieldValue(before, change.field),
-          after: settingsFieldValue(next.success, change.field),
-        }),
-      ),
-    };
+    return changed.answer;
   };
 
   const changeEnvironment = (
@@ -175,53 +131,13 @@ const fakeSettings = (
     changes: ReadonlyArray<SettingsFieldChange>,
     author: { conversation: number; tool: string; reason: string },
   ): AppliedSettingsChange => {
-    const known = resolveOverridesLeniently(overrides, environment.overrides);
-
-    const next = withOverrideFields(
-      known.overrides,
-      Arr.map(changes, (change): OverrideFieldChange =>
-        change.reset === true
-          ? { field: change.field, reset: true }
-          : { field: change.field, value: change.value },
-      ),
-      known.settings,
+    const changed = changeSettingsOverrides(overrides, environment.overrides, id, changes, (made) =>
+      record({ ...made, ...author }),
     );
 
-    if (Result.isFailure(next)) return { status: "rejected", message: next.failure.message };
+    environment.overrides = changed.overrides;
 
-    const differing = Arr.filter(
-      changes,
-      (change) =>
-        !sameOverride(
-          overrideValue(known.overrides, change.field),
-          overrideValue(next.success, change.field),
-        ),
-    );
-
-    if (differing.length === 0) return { status: "unchanged" };
-
-    const after = resolveOverrides(overrides, next.success);
-
-    if (Result.isFailure(after)) return { status: "rejected", message: after.failure.message };
-
-    environment.overrides = next.success;
-
-    return {
-      status: "changed",
-      changes: Arr.map(differing, (change) =>
-        record({
-          scope: id,
-          conversation: author.conversation,
-          tool: author.tool,
-          reason: author.reason,
-          field: change.field,
-          before: settingsFieldValue(known.settings, change.field),
-          after: settingsFieldValue(after.success, change.field),
-          beforeInherited: Option.isNone(overrideValue(known.overrides, change.field)),
-          afterInherited: Option.isNone(overrideValue(next.success, change.field)),
-        }),
-      ),
-    };
+    return changed.answer;
   };
 
   const service: SettingsAccessService = {

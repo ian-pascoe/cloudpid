@@ -238,7 +238,7 @@ export const sessionSettingsSource = (
  * By field, the Environments that override it (`SettingsState.overriddenIn`), newest first: each one's Overrides that
  * resolve over Global.
  */
-export const overriddenIn = (store: SettingsStore): SettingsAnswer["overriddenIn"] => {
+export const settingsOverriddenIn = (store: SettingsStore): SettingsAnswer["overriddenIn"] => {
   const global = savedGlobalSettings(store);
   const fields: Record<string, Array<OverridingEnvironment>> = {};
 

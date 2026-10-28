@@ -1,8 +1,8 @@
 // The `settings` extension (`docs/architecture/agent-changes.md`, ADR-0019): the agent's tools for the Settings the owner edits
 // on the Settings page, one tool for each thing it may change: `settings_get`, `settings_model_set`,
 // `settings_role_set`, `settings_tool_offer`, `settings_tool_defer`, `settings_compaction_set`,
-// `settings_branch_summary_set` and `settings_extension_set`. The Limits (`spendLimit.perSession` and the subagent
-// depth) are not among them: their tools wait for the owner's Approval (`./approval-tools.ts`), as `settings_reset` does
+// `settings_branch_summary_set` and `settings_extension_set`. The Limits (`spendLimit.perSession`, the subagent
+// depth and the Subagent Workspace limit) are not among them: their tools wait for the owner's Approval (`./approval-tools.ts`), as `settings_reset` does
 // for a Limit. Every tool takes a required `scope` (ADR-0027): `*` for Global, or an Environment's id, whose Overrides
 // it reads and changes. Each change is an Agent change: the Registry applies it as the owner's save is applied and
 // records it under the Scope, the Session reads the Settings again at once, and the Run's end notifies the owner of the
@@ -14,6 +14,7 @@ import {
   extensionField,
   ModelId,
   overrideValue,
+  resetsOverride,
   ROLE_NAMES,
   type Settings,
   settingsFieldValue,
@@ -1085,7 +1086,9 @@ export const SettingsTools: Effect.Effect<
           view,
           // At an Environment, null is no Override of nothing: the option's Override is removed.
           fields: [
-            value === null && !global ? { field, value: null, reset: true } : { field, value },
+            resetsOverride(field, value) && !global
+              ? { field, value: null, reset: true }
+              : { field, value },
           ],
           texts: [jsonText(value)],
           reason,

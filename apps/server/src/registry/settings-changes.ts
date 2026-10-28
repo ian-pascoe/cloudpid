@@ -13,6 +13,7 @@ import {
   overrideFieldPath,
   overrideValue,
   overridesWithFields,
+  resetsOverride,
   settingsFieldPath,
   settingsFieldValue,
   withOverrideFields,
@@ -382,8 +383,7 @@ export const revertSettingsOverrideChange = (
   const next = withOverrideFields(
     known.overrides,
     [
-      change.beforeInherited === true ||
-      (change.before === null && change.field.startsWith("extensions."))
+      change.beforeInherited === true || resetsOverride(change.field, change.before)
         ? { field: change.field, reset: true }
         : { field: change.field, value: change.before },
     ],

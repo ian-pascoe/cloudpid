@@ -5,17 +5,9 @@
 import {
   type ContainerSettingsOverrides,
   DEFAULT_CONTAINER_SETTINGS,
-  DEFAULT_SETTINGS,
-  type OverrideFieldChange,
-  overrideValue,
   overridesFrom,
-  overridesWithFields,
-  resolveOverrides,
   resolveOverridesLeniently,
-  resolveSettings,
   type Settings,
-  settingsFieldValue,
-  withOverrideFields,
 } from "@cloudpid/config";
 import type { AgentChange } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -29,7 +21,6 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -61,18 +52,16 @@ import {
   SettingsReload,
   type SettingsView,
 } from "./settings.ts";
+import {
+  changeGlobalSettings,
+  changeSettingsOverrides,
+  resolvedGlobal,
+} from "./settings.fixture.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 const HELD = "sk-live-0123456789abcdef";
-
-const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
-
-const sameOverride = (left: Option.Option<Schema.Json>, right: Option.Option<Schema.Json>) =>
-  Option.isNone(left)
-    ? Option.isNone(right)
-    : Option.isSome(right) && sameJson(left.value, right.value);
 
 const change = (fields: Partial<AgentChange>): AgentChange => ({
   id: 1,
@@ -221,60 +210,17 @@ const setUp = async ({
     redact: (value: string) => redactions.redact(value),
   } as SecretsService;
 
-  const globalSettings = (): Settings => {
-    const result = resolveSettings(state.global);
-
-    if (Result.isFailure(result)) throw new Error(result.failure.message);
-
-    return result.success;
-  };
+  const globalSettings = (): Settings => resolvedGlobal(state.global);
 
   /** Global's fields changed as the Registry changes them: a reset to the default, against what the owner saw. */
   const changeGlobal = (changes: ReadonlyArray<SettingsFieldChange>): AppliedSettingsChange => {
-    const before = globalSettings();
-
-    const differing = Arr.filter(
-      Arr.map(changes, (each) =>
-        each.reset === true
-          ? { ...each, value: settingsFieldValue(DEFAULT_SETTINGS, each.field) }
-          : each,
-      ),
-      (each) => !sameJson(settingsFieldValue(before, each.field), each.value),
+    const changed = changeGlobalSettings(state.global, changes, (made) =>
+      change({ ...made, approved: true }),
     );
 
-    if (differing.length === 0) return { status: "unchanged" };
+    state.global = changed.global;
 
-    const moved = differing.find(
-      (each) =>
-        each.expected !== undefined &&
-        !sameJson(settingsFieldValue(before, each.field), each.expected.value),
-    );
-
-    if (moved !== undefined) {
-      return {
-        status: "changed-since",
-        field: moved.field,
-        current: settingsFieldValue(before, moved.field),
-      };
-    }
-
-    const next = resolveSettings(overridesWithFields(before, differing));
-
-    if (Result.isFailure(next)) return { status: "rejected", message: next.failure.message };
-
-    state.global = overridesFrom(next.success);
-
-    return {
-      status: "changed",
-      changes: Arr.map(differing, (each) =>
-        change({
-          field: each.field,
-          before: settingsFieldValue(before, each.field),
-          after: settingsFieldValue(next.success, each.field),
-          approved: true,
-        }),
-      ),
-    };
+    return changed.answer;
   };
 
   /** An Environment's Overrides changed as the Registry changes them, against what the owner saw. */
@@ -283,69 +229,17 @@ const setUp = async ({
     environment: FakeOverrides,
     changes: ReadonlyArray<SettingsFieldChange>,
   ): AppliedSettingsChange => {
-    const known = resolveOverridesLeniently(state.global, environment.overrides);
-
-    const next = withOverrideFields(
-      known.overrides,
-      Arr.map(changes, (each): OverrideFieldChange =>
-        each.reset === true
-          ? { field: each.field, reset: true }
-          : { field: each.field, value: each.value },
-      ),
-      known.settings,
-    );
-
-    if (Result.isFailure(next)) return { status: "rejected", message: next.failure.message };
-
-    const differing = Arr.filter(
+    const changed = changeSettingsOverrides(
+      state.global,
+      environment.overrides,
+      id,
       changes,
-      (each) =>
-        !sameOverride(
-          overrideValue(known.overrides, each.field),
-          overrideValue(next.success, each.field),
-        ),
+      (made) => change({ ...made, approved: true }),
     );
 
-    if (differing.length === 0) return { status: "unchanged" };
+    environment.overrides = changed.overrides;
 
-    const inherited = (field: string) => Option.isNone(overrideValue(known.overrides, field));
-
-    const moved = differing.find(
-      ({ field, expected }) =>
-        expected !== undefined &&
-        (!sameJson(settingsFieldValue(known.settings, field), expected.value) ||
-          (expected.inherited ?? false) !== inherited(field)),
-    );
-
-    if (moved !== undefined) {
-      return {
-        status: "changed-since",
-        field: moved.field,
-        current: settingsFieldValue(known.settings, moved.field),
-        inherited: inherited(moved.field),
-      };
-    }
-
-    const after = resolveOverrides(state.global, next.success);
-
-    if (Result.isFailure(after)) return { status: "rejected", message: after.failure.message };
-
-    environment.overrides = next.success;
-
-    return {
-      status: "changed",
-      changes: Arr.map(differing, ({ field }) =>
-        change({
-          scope: id,
-          field,
-          before: settingsFieldValue(known.settings, field),
-          after: settingsFieldValue(after.success, field),
-          approved: true,
-          beforeInherited: inherited(field),
-          afterInherited: Option.isNone(overrideValue(next.success, field)),
-        }),
-      ),
-    };
+    return changed.answer;
   };
 
   const extension = await Effect.runPromise(

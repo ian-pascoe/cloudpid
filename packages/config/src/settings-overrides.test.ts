@@ -4,11 +4,13 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, resolveLeniently, type Settings } from "./settings.ts";
 import {
+  OVERRIDE_FIELD_NAMES,
   overrideFieldPath,
   overrideFields,
   overrideValue,
   resolveOverrides,
   resolveOverridesLeniently,
+  resetsOverride,
   withOverrideFields,
   withOverrides,
 } from "./settings-overrides.ts";
@@ -224,6 +226,24 @@ describe("the fields an Environment overrides", () => {
       Option.some({ model: OPUS, hint: "h" }),
     );
     expect(overrideValue(overrides, "model")).toEqual(Option.none());
+  });
+
+  it("are listed by name, each one a field", () => {
+    expect(OVERRIDE_FIELD_NAMES).toContain("model");
+    expect(OVERRIDE_FIELD_NAMES).toContain("roles.small");
+    expect(OVERRIDE_FIELD_NAMES).toContain("compaction.enabled");
+    expect(OVERRIDE_FIELD_NAMES).toContain("tools.offered");
+    expect(OVERRIDE_FIELD_NAMES).toContain("extensions.<extension>.<key>");
+
+    for (const field of OVERRIDE_FIELD_NAMES) {
+      if (!field.startsWith("extensions.")) expect(overrideFieldPath(field)).toBeDefined();
+    }
+  });
+
+  it("are reset, not overridden, by null only for an extension's option", () => {
+    expect(resetsOverride("extensions.subagents.readToolset", null)).toBe(true);
+    expect(resetsOverride("extensions.subagents.readToolset", ["read"])).toBe(false);
+    expect(resetsOverride("spendLimit.perSession", null)).toBe(false);
   });
 });
 

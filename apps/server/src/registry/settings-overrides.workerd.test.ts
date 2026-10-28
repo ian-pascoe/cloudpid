@@ -13,11 +13,11 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import {
-  overriddenIn,
   readSettings,
   readSettingsOverrides,
   sessionSettingsSource,
   SETTINGS_DOCUMENT,
+  settingsOverriddenIn,
   updateSettingsOverrides,
   writeSettings,
 } from "./settings.ts";
@@ -169,7 +169,7 @@ describe("an Environment's Settings Overrides", () => {
       saved(update("6b6b6b6b", { set: { model: HAIKU } }));
       saved(update(DEFAULT_ENVIRONMENT, { set: {} }));
 
-      expect(overriddenIn(store)).toEqual({
+      expect(settingsOverriddenIn(store)).toEqual({
         model: [
           { id: "6b6b6b6b", name: "Prod" },
           { id: STAGING, name: "Staging" },
@@ -178,7 +178,7 @@ describe("an Environment's Settings Overrides", () => {
       });
 
       expect(store.deleteEnvironment("6b6b6b6b")).toBe("deleted");
-      expect(overriddenIn(store)["model"]).toEqual([{ id: STAGING, name: "Staging" }]);
+      expect(settingsOverriddenIn(store)["model"]).toEqual([{ id: STAGING, name: "Staging" }]);
     }));
 
   it("leave out an Override a release no longer takes, which then inherits, and say so", () =>
@@ -453,6 +453,11 @@ describe("the Settings stored before Environments had Overrides", () => {
           `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved)
          VALUES ('settings', 3, 'agent', 's-default', 1, 'settings_model_set', 'r', 'model', '"anthropic/claude-opus-5-5"', '"anthropic/claude-sonnet-5-5"', NULL, 0)`,
         );
+        // A Role's model changed at Global before a Role was one field: its own record, `roles.small.model`.
+        sql.exec(
+          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved)
+         VALUES ('settings', 4, 'agent', 's-default', 1, 'settings_role_set', 'r', 'roles.small.model', '"anthropic/claude-sonnet-5-5"', '"anthropic/claude-opus-5-5"', NULL, 0)`,
+        );
 
         const store = openRegistryStore(storage);
         const expected = resolveLeniently(before).settings;
@@ -464,9 +469,25 @@ describe("the Settings stored before Environments had Overrides", () => {
         }
 
         expect(readSettingsOverrides(store, STAGING)?.settings).toEqual(expected);
-        expect(overriddenIn(store)).toEqual({});
+        expect(settingsOverriddenIn(store)).toEqual({});
 
-        const [old] = openAgentChanges(storage).list(SETTINGS_SCOPE);
+        const changes = openAgentChanges(storage);
+        const [role, old] = changes.list(SETTINGS_SCOPE);
+
+        expect(role).toMatchObject({
+          field: "roles.small.model",
+          before: SONNET,
+          after: OPUS,
+        });
+
+        // Its revert still puts the Role's model back, and records the field as it was recorded.
+        expect(
+          revertSettingsChange(storage, store, changes, { id: role?.id ?? 0 }, 6),
+        ).toMatchObject({
+          status: "reverted",
+          change: { field: "roles.small.model", before: OPUS, after: SONNET, actor: "owner" },
+        });
+        expect(readSettings(store).settings.roles.small.model).toBe(SONNET);
 
         expect(old).toEqual({
           id: old?.id,

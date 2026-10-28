@@ -471,13 +471,6 @@ export const AgentChange = Schema.Struct({
    * deleted. Left out for every other change.
    */
   approved: Schema.optionalKey(Schema.Literal(true)),
-  /**
-   * Set on a change of an Environment's field that had no Override of its own before it (ADR-0027): `before` is then the
-   * value it inherited, and a revert resets the field rather than writing that value. Left out (false) otherwise.
-   */
-  beforeInherited: Schema.optionalKey(Schema.Boolean),
-  /** Set on a change that left an Environment's field with no Override of its own (a Reset): `after` is what it inherits. */
-  afterInherited: Schema.optionalKey(Schema.Boolean),
 });
 
 export type AgentChange = typeof AgentChange.Type;
@@ -1049,8 +1042,8 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * Change Environment `environment`'s Overrides: `set`, a deep partial of the settings, overrides each field it holds
-   * (a Role whole, completed from the Role in force; an extension's option by key, null resetting it), even to the
-   * Global value; `reset` names fields (`model`, `roles.small`, `compaction.enabled`, `tools.offered`,
+   * (a Role whole, completed from the Role in force; an extension's option by key, null resetting it, and an extension
+   * set to null resetting each of its options), even to the Global value; `reset` names fields (`model`, `roles.small`, `compaction.enabled`, `tools.offered`,
    * `extensions.<extension>.<key>`) whose Override is removed, so they inherit again. Fails with a `SettingsError`,
    * saving nothing, for values the settings do not take, a field that is not one, or an Environment that does not
    * exist. The Environment's Sessions read them when they next admit input.
@@ -1059,7 +1052,7 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: {
       environment: EnvironmentId,
       set: Schema.optionalKey(Schema.Json),
-      reset: Schema.optionalKey(Schema.Array(Schema.String)),
+      reset: Schema.String.pipe(Schema.Array, Schema.optionalKey),
     },
     success: SettingsOverridesState,
     error: SettingsError,

@@ -200,6 +200,50 @@ describe("Approval over the Session socket", () => {
     );
   });
 
+  it("asks at the Session's Environment too, showing the value it inherits, and applies it as its Override", async () => {
+    const { stub, registry } = await registered();
+
+    await registry.updateSettings({ spendLimit: { perSession: 5 } }, 2);
+    await script(
+      stub,
+      `call:settings_spend_limit_set:${JSON.stringify({ scope: "default", per_session: 25, reason: "This Environment runs migrations" })}`,
+      "Raised.",
+    );
+
+    const owner = await connect(stub);
+
+    owner.send({ type: "submit", id: "go", input: "Raise the limit here" });
+
+    const request = only(await owner.next(isPending));
+
+    expect(request).toMatchObject({
+      tool: "settings_spend_limit_set",
+      target: 'Environment "Default"\'s Settings',
+      change: "Spend limit",
+      before: expect.stringContaining("$5 per Session (inherited from Global)"),
+      after: expect.stringContaining("$25 per Session"),
+    });
+
+    owner.send({ type: "approval_answer", id: "yes", request: request.id, approve: true });
+    expect(await owner.next(isAnswer("yes"))).toMatchObject({ type: "result" });
+    await idle(stub);
+
+    expect((await registry.getSettingsOverrides("default"))?.overrides).toEqual({
+      spendLimit: { perSession: 25 },
+    });
+    expect((await registry.getSettings()).settings.spendLimit.perSession).toBe(5);
+    expect(await registry.listAgentChanges("default")).toMatchObject([
+      {
+        scope: "default",
+        field: "spendLimit.perSession",
+        before: 5,
+        after: 25,
+        beforeInherited: true,
+        approved: true,
+      },
+    ]);
+  });
+
   it("changes nothing on Decline, and gives the agent the owner's reason", async () => {
     const { stub, registry } = await registered();
 

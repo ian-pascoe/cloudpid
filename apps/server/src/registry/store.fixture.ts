@@ -29,12 +29,12 @@ import {
 } from "./agent-changes.ts";
 import { globalSettingsOf } from "./global.ts";
 import {
-  overriddenIn,
   readSettings,
   readSettingsOverrides,
   type SessionSettingsSource,
   sessionSettingsSource,
   type SettingsAnswer,
+  settingsOverriddenIn,
   type SettingsState,
   updateSettingsOverrides,
   writeSettings,
@@ -316,7 +316,7 @@ export class TestRegistry extends DurableObject {
   }
 
   getSettings(): SettingsAnswer {
-    return { ...readSettings(this.#store), overriddenIn: overriddenIn(this.#store) };
+    return { ...readSettings(this.#store), overriddenIn: settingsOverriddenIn(this.#store) };
   }
 
   getSettingsOverrides(environment: string): SettingsOverridesState | null {

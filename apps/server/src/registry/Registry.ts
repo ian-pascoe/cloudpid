@@ -110,12 +110,12 @@ import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
 import {
-  overriddenIn,
   readSettings,
   readSettingsOverrides,
   type SessionSettingsSource,
   sessionSettingsSource,
   type SettingsAnswer,
+  settingsOverriddenIn,
   SettingsUpdate,
   updateSettingsOverrides,
   writeSettings,
@@ -1502,7 +1502,10 @@ export const RegistryLive = Registry.make(
             ),
           forgetLegacy: (object) => Effect.sync(() => store.forgetLegacy(object)),
           getSettings: () =>
-            Effect.sync(() => ({ ...readSettings(store), overriddenIn: overriddenIn(store) })),
+            Effect.sync(() => ({
+              ...readSettings(store),
+              overriddenIn: settingsOverriddenIn(store),
+            })),
           updateSettings: ({ overrides }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now): SettingsUpdate => {
@@ -1510,7 +1513,7 @@ export const RegistryLive = Registry.make(
 
                 return Result.isSuccess(saved)
                   ? SettingsUpdate.Saved({
-                      state: { ...saved.success, overriddenIn: overriddenIn(store) },
+                      state: { ...saved.success, overriddenIn: settingsOverriddenIn(store) },
                     })
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
