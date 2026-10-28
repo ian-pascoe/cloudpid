@@ -1,5 +1,6 @@
-// The Environments page's Edit dialog, rendered with `react-dom/server` over the fake Registry: its Container fields
-// show the Spare Workspace setting as saved, with the trade-off it makes.
+// The Environments page's Edit dialog (`docs/architecture/container.md` → Container settings), rendered with
+// `react-dom/server` over the fake Registry: its Container fields show the Spare Workspace setting as saved, with the
+// trade-off it makes.
 
 import {
   type ContainerSettings,
@@ -74,7 +75,7 @@ describe("the Edit dialog", () => {
 
         expect(spareBox(markup)).toContain('type="checkbox"');
         expect(spareBox(markup)).toContain("checked");
-        expect(markup).toContain("Keep a spare Workspace ready");
+        expect(markup).toContain("Keep a Spare Workspace ready");
         expect(markup).toContain("without waiting for the clones and Setup Scripts");
         expect(markup).toContain("Container time each spare takes to prepare");
       }),

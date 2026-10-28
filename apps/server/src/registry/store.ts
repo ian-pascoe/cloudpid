@@ -442,6 +442,10 @@ const decodeRepos = Schema.decodeUnknownSync(
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 
+/** An Environment's `settings` column: its Container settings overrides. Text that is not JSON (never written so) reads as none. */
+const settingsOverrides = (text: string): Schema.Json =>
+  Option.getOrElse(decodeJson(text), () => ({}));
+
 /** A JSON column the store wrote itself, as `A`; null when it is null or not JSON. */
 const jsonColumn = <A>(text: string | null): A | null => {
   if (text === null) return null;
@@ -1178,8 +1182,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         .exec<{ settings: string }>("SELECT settings FROM environments WHERE id = ?", environment)
         .toArray();
 
-      // Text that is not JSON (never written so) reads as no overrides.
-      return row === undefined ? null : Option.getOrElse(decodeJson(row.settings), () => ({}));
+      return row === undefined ? null : settingsOverrides(row.settings);
     },
 
     putEnvironmentSettings: (environment, overrides) =>
@@ -1270,9 +1273,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
             lastSessionAt !== null && now - lastSessionAt <= SPARE_REFILL_WINDOW_MS;
 
           // Read leniently, as every reader of the settings does: a value that does not resolve leaves the spare on.
-          const spareOn = resolveContainerSettingsLeniently(
-            Option.getOrElse(decodeJson(row.settings), () => ({})),
-          ).settings.spareWorkspace;
+          const spareOn = resolveContainerSettingsLeniently(settingsOverrides(row.settings))
+            .settings.spareWorkspace;
 
           // Turned off: the spare it has is removed, however current, and none is made.
           if (!spareOn) {

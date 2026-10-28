@@ -910,7 +910,7 @@ const ContainerFields = ({
             onSpareWorkspace(event.target.checked);
           }}
         />
-        Keep a spare Workspace ready
+        Keep a Spare Workspace ready
       </label>
       <p className="text-xs text-muted-foreground">
         A new session starts without waiting for the clones and Setup Scripts, at the cost of the

@@ -3,11 +3,10 @@
 // variables for every Environment, with the id `*`), and one tool for each of the other Container settings
 // (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,
 // `environment_start_script_set`, `environment_toolchains_set`, `environment_ignore_set` and
-// `environment_spare_workspace_set`), and
-// `environment_secret_build` for the Build mark of a kept Secret, and `environment_skill_save`,
-// `environment_skill_install`, `environment_skill_update` and `environment_skill_remove` for its own Skills and, saved,
-// installed, updated or removed, those kept for every Environment (`environment-skills.ts`; a change to the latter waits for the owner's Approval, so this
-// extension needs the Session's `Approvals`). Each change is an Agent change: the Registry applies it as the owner's save
+// `environment_spare_workspace_set`), and `environment_secret_build` for the Build mark of a kept Secret, and
+// `environment_skill_save`, `environment_skill_install`, `environment_skill_update` and `environment_skill_remove` for
+// its own Skills and, saved, installed, updated or removed, those kept for every Environment (`environment-skills.ts`; a
+// change to the latter waits for the owner's Approval, so this extension needs the Session's `Approvals`). Each change is an Agent change: the Registry applies it as the owner's save
 // is applied and records it, the Session hands a change to its own Environment to its Workspace
 // at once, and the Run's end notifies the owner of the changes it made (`AgentChangeLog`). They are the root
 // conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when a

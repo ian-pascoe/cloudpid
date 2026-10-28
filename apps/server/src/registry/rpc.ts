@@ -166,7 +166,10 @@ export type Spares = {
    * `of` fails.
    */
   readonly all: Effect.Effect<void>;
-  /** Keep `environment`'s spare current, as after a Session took it, its Repos changed or it has a new Build. */
+  /**
+   * Keep `environment`'s spare current, as after a Session took it, its Repos changed, it has a new Build or its
+   * Container settings were saved (the Spare Workspace setting turns the spare off or on).
+   */
   readonly of: (environment: string) => Effect.Effect<void>;
 };
 

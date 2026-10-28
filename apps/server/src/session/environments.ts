@@ -2,10 +2,9 @@
 // Environments, read and changed for the agent. A change is applied and recorded by the Registry (`changeEnvironment`,
 // and `changeEveryEnvironment` for a variable kept for every Environment), as the owner's save is applied; then, as
 // after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),
-// and the spares' upkeep after a change of its Spare Workspace setting,
-// and a change that reaches the Session's own Environment is handed to its Workspace at once
-// (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
-// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
+// and the spares' upkeep after a change of its Spare Workspace setting; a change that reaches the Session's own
+// Environment is handed to its Workspace at once (`updateContainerSettings`), with the variables kept for every
+// Environment merged in, which applies it at its next Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
 // installed or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentInstallSkills`, `agentRemoveSkill`,
 // `agentPreviewSkill`), for an Environment or, saved or removed, for every Environment (`*`); the Session's own Workspace
 // is handed its Environment's new Skill set at once (`updateSkills`), unless the change is to those kept for every
@@ -589,8 +588,8 @@ export const sessionEnvironments = ({
           );
         }
 
-        // As after the owner's save: the Spare Workspace setting keeps or removes the spare, and the variables are
-        // among what a Build is made with.
+        // The Spare Workspace setting keeps or removes the spare (the owner's save runs this upkeep after any change,
+        // not knowing which field changed). As after that save, the variables are among what a Build is made with.
         if (change.field === SPARE_WORKSPACE_FIELD) yield* spares.of(environment);
 
         yield* builds.of(environment);
