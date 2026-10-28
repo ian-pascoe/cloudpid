@@ -212,17 +212,22 @@ const NotLoaded = <Fields, E>({ form, scope }: { form: SectionForm<Fields, E>; s
  * The form of a section with a Save, at Scope `scope`: `children` renders its fields from what the form shows and sets
  * the draft; the bar under them saves only this section's fields. `invalid` holds Save while a field has a problem.
  * Reset to defaults puts the defaults in the draft, to save or not; a section with no defaults has no such button.
+ * The bar sticks to the foot of the page, as wide as the content column; `inline` puts it right under the fields
+ * instead, for a form that is only part of its section, so it does not seem to save what follows.
  */
 export const SectionFormView = <Fields, E>({
   form,
   scope,
   invalid,
+  inline = false,
   children,
 }: {
   form: SectionForm<Fields, E>;
   scope: string;
   /** Whether `fields` has a problem that keeps it from being saved. */
   invalid: (fields: Fields) => boolean;
+  /** Whether the bar sits under the fields rather than sticking to the foot of the page. */
+  inline?: boolean;
   children: (fields: Fields, set: (fields: Fields) => void) => ReactNode;
 }) => {
   const fields = useAtomValue(form.fields(scope));
@@ -248,7 +253,12 @@ export const SectionFormView = <Fields, E>({
   return (
     <form onSubmit={submit} className="flex flex-col">
       {children(fields, setDraft)}
-      <div className="sticky bottom-0 z-10 -mx-4 mt-2 flex flex-wrap items-center gap-3 border-t bg-background px-4 py-3 md:-mx-8 md:px-8">
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-3",
+          inline ? "pb-6" : "sticky bottom-0 z-10 mt-2 border-t bg-background py-3",
+        )}
+      >
         <Button type="submit" disabled={!dirty || blocked || saving}>
           {saving ? "Saving…" : "Save"}
         </Button>

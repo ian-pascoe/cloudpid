@@ -186,7 +186,10 @@ export const environmentVariablesForm = containerForm({
   same: (left, right) => sameVariables(left.variables, right.variables),
 });
 
-/** Global's Variables, as typed: the variables kept Global. */
+/**
+ * Global's Variables, as typed: the variables kept Global. It has no Reset to defaults: the default is none, so a save
+ * of it would reset every Global variable.
+ */
 export const globalVariablesForm = sectionForm({
   saved: () => globalVariablesResultAtom,
   fieldsOf: (variables: Readonly<Record<string, string>>) => ({
@@ -194,7 +197,6 @@ export const globalVariablesForm = sectionForm({
   }),
   merge: (saved, { variables }) => variablesOf(variables, saved),
   same: (left, right) => sameVariables(left.variables, right.variables),
-  defaults: { variables: "" },
   read: () => readGlobalVariables,
   write: (_scope, before, after) => writeGlobalVariables(before, after),
   keys: () => ["global", "builds"],

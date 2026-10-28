@@ -1,5 +1,8 @@
+// @effect-diagnostics preferEffectArray:off -- the test table is a native array.
+
 // The Settings page, rendered with `react-dom/server` over the fake Registry: the breadcrumb with its Scope picker,
-// what an Environment that is not listed shows, and sections at both Scopes with their Save bar.
+// what an Environment that is not listed shows, sections at both Scopes with their Save bar, and a smoke render of every
+// section at each Scope.
 
 import {
   type ContainerSettings,
@@ -18,6 +21,7 @@ import { registryWith, settled } from "../registry.testing.ts";
 import type { SettingsView } from "../router.ts";
 import { containerSectionForm, modelsForm } from "./forms.ts";
 import { SettingsPage } from "./page.tsx";
+import { sectionLabel, sectionsAt } from "./sections.ts";
 
 const WORK = { id: "work", name: "Work", repos: [], createdAt: 1 };
 const HOME = { id: "home", name: "Home", repos: [], createdAt: 2 };
@@ -29,7 +33,11 @@ const fakeRegistry = (container: ContainerSettings = DEFAULT_CONTAINER_SETTINGS)
     listSessions: () => Effect.succeed([]),
     listWorkspaces: () => Effect.succeed([]),
     getSettings: () =>
-      Effect.succeed({ settings: DEFAULT_SETTINGS, overrides: overridesFrom(DEFAULT_SETTINGS) }),
+      Effect.succeed({
+        settings: DEFAULT_SETTINGS,
+        overrides: overridesFrom(DEFAULT_SETTINGS),
+        overriddenIn: {},
+      }),
     getEnvironmentSettings: () =>
       Effect.succeed({
         settings: container,
@@ -100,7 +108,7 @@ describe("the Settings page's breadcrumb", () => {
     }),
   );
 
-  it.effect("offers Global, then each Environment, in its Scope picker", () =>
+  it.effect("offers Global, then the Environments by name, in its Scope picker", () =>
     Effect.gen(function* () {
       const registry = fakeRegistry();
 
@@ -108,7 +116,7 @@ describe("the Settings page's breadcrumb", () => {
 
       const markup = render(registry, "work", section("container"));
 
-      expect(scopeItems(markup)).toEqual(["Global", "Work ✓", "Home"]);
+      expect(scopeItems(markup)).toEqual(["Global", "Home", "Work ✓"]);
       expect(markup).toContain(">Environments<");
       expect(breadcrumb(markup)).toBe("Settings / Work / Container");
       registry.dispose();
@@ -197,6 +205,56 @@ describe("Global's Models section", () => {
       expect(markup).toContain("Default model");
       expect(markup).toContain("Model roles");
       expect(saveButton(markup)).toContain('disabled=""');
+      registry.dispose();
+    }),
+  );
+});
+
+describe("every section", () => {
+  /** The fake Registry, with every list a section asks for empty. */
+  const everything = () =>
+    registryWith({
+      listEnvironments: () => Effect.succeed([WORK, HOME]),
+      listSessions: () => Effect.succeed([]),
+      listWorkspaces: () => Effect.succeed([]),
+      listBuilds: () => Effect.succeed([]),
+      listEnvironmentSecrets: () => Effect.succeed([]),
+      listAgentChanges: () => Effect.succeed([]),
+      listSettingsChanges: () => Effect.succeed([]),
+      listEnvironmentSkills: () => Effect.succeed([]),
+      listSkillDirectory: () => Effect.succeed({ total: 0, hasMore: false, skills: [] }),
+      getSettings: () =>
+        Effect.succeed({
+          settings: DEFAULT_SETTINGS,
+          overrides: overridesFrom(DEFAULT_SETTINGS),
+          overriddenIn: {},
+        }),
+      getEnvironmentSettings: () =>
+        Effect.succeed({
+          settings: DEFAULT_CONTAINER_SETTINGS,
+          global: DEFAULT_CONTAINER_SETTINGS,
+          overrides: {},
+        }),
+      getGlobalContainerSettings: () =>
+        Effect.succeed({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {}, overriddenIn: {} }),
+    });
+
+  it.effect.each([
+    ...sectionsAt("*").map((slug) => ["*", slug] as const),
+    ...sectionsAt("work").map((slug) => ["work", slug] as const),
+  ])("renders %s's %s section under its heading", ([scope, slug]) =>
+    Effect.gen(function* () {
+      const registry = everything();
+
+      yield* loaded(registry);
+
+      const markup = render(registry, scope, section(slug));
+
+      const heading =
+        slug === "environments" && scope === "work" ? "Work" : sectionLabel(slug, scope);
+
+      expect(markup).toContain(`>${heading}</h1>`);
+      expect(markup).not.toContain("unexpected Registry call");
       registry.dispose();
     }),
   );

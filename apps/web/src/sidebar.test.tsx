@@ -9,6 +9,7 @@ import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { renderToStaticMarkup } from "react-dom/server";
+import { environmentsAtom } from "./environments-state.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import type { SettingsView } from "./router.ts";
 import { generalForm, modelsForm } from "./settings/forms.ts";
@@ -23,7 +24,11 @@ const fakeRegistry = () =>
     listEnvironments: () => Effect.succeed([WORK]),
     listWorkspaces: () => Effect.succeed([]),
     getSettings: () =>
-      Effect.succeed({ settings: DEFAULT_SETTINGS, overrides: overridesFrom(DEFAULT_SETTINGS) }),
+      Effect.succeed({
+        settings: DEFAULT_SETTINGS,
+        overrides: overridesFrom(DEFAULT_SETTINGS),
+        overriddenIn: {},
+      }),
   });
 
 /** The sidebar, collapsed or not, showing the Settings page's navigation when `settings` is given. */
@@ -128,6 +133,22 @@ describe("the sidebar on the Settings page", () => {
       );
 
       expect(named.slice(1, 3)).toEqual(["General, unsaved changes", "Models"]);
+    }),
+  );
+
+  it.effect("lists no sections for an Environment the listing does not have", () =>
+    Effect.gen(function* () {
+      const registry = fakeRegistry();
+
+      registry.mount(environmentsAtom);
+      yield* settled(registry, environmentsAtom);
+
+      const gone = { scope: "gone", view: { kind: "section", section: "container" } } as const;
+
+      // Only the way back to the Sessions, in the list and on the rail.
+      expect(links(render(false, gone, registry)).map(({ name }) => name)).toEqual([
+        "Back to sessions",
+      ]);
     }),
   );
 });

@@ -21,6 +21,7 @@ import {
   EMPTY_SECRET_DRAFT,
   GLOBAL,
   inheritedSecrets,
+  inPickerOrder,
   inheritedVariables,
   secretDraftProblems,
   secretDraftReady,
@@ -105,6 +106,21 @@ describe("groupByEnvironment", () => {
       ["pi", "Pi on Cloudflare"],
       ["gone", "gone"],
     ]);
+  });
+});
+
+describe("inPickerOrder", () => {
+  it("puts Default first, then the rest by name whatever the case", () => {
+    const environment = (id: string, name: string) => ({ id, name, repos: [], createdAt: 1 });
+
+    expect(
+      inPickerOrder([
+        environment("b", "work"),
+        environment("a", "Docs"),
+        environment("default", "Default"),
+        environment("c", "api"),
+      ]).map((known) => known.name),
+    ).toEqual(["Default", "api", "Docs", "work"]);
   });
 });
 

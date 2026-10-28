@@ -1,5 +1,5 @@
 // Web Push in the browser (`docs/architecture/client-and-protocol.md` → Notifications): this device's subscription, kept in the
-// Registry so Sessions can notify it, and turned on and off from the settings page. The browser is the `PushManager`
+// Registry so Sessions can notify it, and turned on and off from Global's Notifications section of the Settings page. The browser is the `PushManager`
 // service and the Registry is the app's client, so the logic runs without either.
 import type { PushSubscription } from "@cloudpid/protocol";
 import * as Context from "effect/Context";
@@ -9,7 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { messageOf, RegistryClient } from "./registry.ts";
 
-/** What the settings page shows of this device's notifications. */
+/** What the Notifications section shows of this device's notifications. */
 export type PushStatus =
   /** This browser cannot do Web Push: no service worker, push manager or notifications. */
   | { readonly kind: "unsupported" }
@@ -240,7 +240,7 @@ export const syncPush: Effect.Effect<void, never, Needs> = Effect.gen(function* 
 
   if (subscription !== null && keep !== undefined) yield* reconcile(subscription, keep);
 }).pipe(
-  // Best effort: the settings page shows the state when the user looks.
+  // Best effort: the Notifications section shows the state when the user looks.
   Effect.ignoreCause,
   Effect.asVoid,
 );

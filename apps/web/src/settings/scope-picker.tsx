@@ -8,7 +8,7 @@ import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import { ChevronDown } from "lucide-react";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "../components/ui/menu.tsx";
-import { environmentListAtom } from "../environments-state.ts";
+import { environmentsInOrderAtom } from "../environments-state.ts";
 import { cn } from "../lib/utils.ts";
 import { navigate, searchAtom, type SettingsView } from "../router.ts";
 import { useScopeName } from "./scope.tsx";
@@ -23,7 +23,7 @@ export const ScopePicker = ({
   view: SettingsView;
   className?: string;
 }) => {
-  const environments = useAtomValue(environmentListAtom);
+  const environments = useAtomValue(environmentsInOrderAtom);
   const search = useAtomValue(searchAtom);
   const name = useScopeName(scope);
 

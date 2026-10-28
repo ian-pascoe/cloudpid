@@ -373,7 +373,7 @@ export const RepoSkill = Schema.Struct({
   description: Schema.String,
   /** Its folder in the repo (empty for a Skill at the repo's root). */
   path: Schema.String,
-  /** What its page's URL (`/skills/:owner/:repo/:skill`) calls it: its folder's name, or its name for a Skill at the root. */
+  /** What its page's URL (`/settings/:scope/skills/:owner/:repo/:skill`) calls it: its folder's name, or its name for a Skill at the root. */
   skillId: Schema.String,
   /** Its installs, all time, when the Skill directory knows the Skill; absent when it does not. */
   installs: Schema.optionalKey(Schema.Finite),
@@ -400,7 +400,7 @@ export const SkillViewFile = Schema.Struct({
 export type SkillViewFile = typeof SkillViewFile.Type;
 
 /**
- * One Skill of a GitHub repo as a Skill's page (`/skills/:owner/:repo/:skill`) shows it: its SKILL.md and the files an
+ * One Skill of a GitHub repo as a Skill's page (`/settings/:scope/skills/:owner/:repo/:skill`) shows it: its SKILL.md and the files an
  * install would take, read at one commit of the ref.
  */
 export const SkillView = Schema.Struct({

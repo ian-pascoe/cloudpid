@@ -33,6 +33,7 @@ import {
   deleteTypedAtom,
   environmentDialogAtom,
   environmentListAtom,
+  environmentsInOrderAtom,
   environmentsErrorAtom,
   newEnvironmentNameAtom,
   removeRepoAtom,
@@ -127,7 +128,7 @@ const EnvironmentRow = ({
 
 /** Global's Environments section: every Environment, and the form that makes another. */
 export const EnvironmentListSection = () => {
-  const environments = useAtomValue(environmentListAtom);
+  const environments = useAtomValue(environmentsInOrderAtom);
   const listError = useAtomValue(environmentsErrorAtom);
   const workspaces = useAtomValue(workspaceListAtom) ?? [];
 
@@ -375,7 +376,7 @@ const DeleteGroup = ({ environment }: { environment: EnvironmentRecord }) => {
   );
 };
 
-/** An Environment's Environment section: its name, Repos, Build, and deletion. */
+/** An Environment's Environment section: its name (with its own Save under it), its Repos, and its deletion. */
 export const EnvironmentSection = ({ environment }: { environment: EnvironmentRecord }) => {
   const { id } = environment;
   const environments = useAtomValue(environmentListAtom) ?? [];
@@ -392,9 +393,10 @@ export const EnvironmentSection = ({ environment }: { environment: EnvironmentRe
         form={environmentNameForm}
         scope={id}
         invalid={(fields) => environmentNameProblem(fields.name, otherNames) !== null}
+        inline
       >
         {(fields, set) => (
-          <Group title="Name">
+          <Group title="Name" className="pb-4">
             <Field
               label="Name"
               htmlFor={`name-${id}`}

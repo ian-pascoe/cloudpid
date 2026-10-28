@@ -26,6 +26,7 @@ import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
 import {
   EMPTY_SECRET_DRAFT,
+  inPickerOrder,
   type SecretDraft,
   secretScopeOf,
   secretsIn,
@@ -46,6 +47,11 @@ export const environmentsAtom = RegistryClient.query("listEnvironments", undefin
 /** The Environments, newest first, as of the last answer; null until the first. */
 export const environmentListAtom = Atom.map(environmentsAtom, (result) =>
   result.pipe(AsyncResult.value, Option.getOrNull),
+);
+
+/** The Environments in the order the pickers and lists show them (`inPickerOrder`); null until the first answer. */
+export const environmentsInOrderAtom = Atom.map(environmentListAtom, (environments) =>
+  environments === null ? null : inPickerOrder(environments),
 );
 
 /** Why the list could not load, or null. */
@@ -88,7 +94,8 @@ export const rebuildEnvironmentAtom = Atom.family((id: string) =>
 );
 
 /** What is typed in the new-Environment form. The page has one. */
-export const newEnvironmentNameAtom = Atom.make("");
+// Kept while the app is open, as a section's draft is, so leaving the section keeps what was typed.
+export const newEnvironmentNameAtom = Atom.make("").pipe(Atom.keepAlive);
 
 /** Make an Environment by name. The form empties once it is made. */
 export const createEnvironmentAtom = appRuntime.fn(
@@ -174,10 +181,10 @@ export const deleteEnvironmentAtom = Atom.family((id: string) =>
 );
 
 /** What is typed in the add-Repo form of Environment `id`: `owner/repo` or an https URL. */
-export const addRepoSourceAtom = Atom.family((_id: string) => Atom.make(""));
+export const addRepoSourceAtom = Atom.family((_id: string) => Atom.make("").pipe(Atom.keepAlive));
 
 /** What is typed in the add-Repo form of Environment `id` as the directory to clone into; empty for the repo's own name. */
-export const addRepoNameAtom = Atom.family((_id: string) => Atom.make(""));
+export const addRepoNameAtom = Atom.family((_id: string) => Atom.make("").pipe(Atom.keepAlive));
 
 /** What the add-Repo form sends: the repo, and the directory as typed (empty for the repo's own name). */
 export interface RepoAdd {
@@ -390,6 +397,8 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
         changing([
           `agent-changes:${id}`,
           `environment-settings:${id}`,
+          // An Environment's Settings Overrides (ADR-0027) are among its Agent changes too.
+          "settings",
           `environment-skills:${id}`,
           "global",
           "environment-secrets",

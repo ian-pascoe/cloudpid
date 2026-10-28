@@ -10,6 +10,8 @@ import {
   branchProblem,
   BUILD_FIELD,
   CREATED_FIELD,
+  DEFAULT_ENVIRONMENT,
+  type EnvironmentRecord,
   GLOBAL_SCOPE,
   DELETED_FIELD,
   type EnvironmentSecretRecord,
@@ -60,6 +62,21 @@ export type EnvironmentGroup = {
   /** Whether any of them is running, so a collapsed group still shows it. */
   readonly running: boolean;
 };
+
+/**
+ * `environments` in the order every picker and list of them shows: Default first, then the rest by name, A to Z
+ * whatever the case. (The Session list orders its groups by their newest Session instead.)
+ */
+export const inPickerOrder = (
+  environments: readonly EnvironmentRecord[],
+): readonly EnvironmentRecord[] =>
+  [...environments].sort((left, right) =>
+    left.id === DEFAULT_ENVIRONMENT
+      ? -1
+      : right.id === DEFAULT_ENVIRONMENT
+        ? 1
+        : left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+  );
 
 /**
  * `sessions` (newest first) grouped by the Environment they were made in: the Environment of the newest Session first,

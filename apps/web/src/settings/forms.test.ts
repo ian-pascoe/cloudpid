@@ -43,6 +43,7 @@ const HAIKU = "anthropic/claude-haiku-5-5";
 const stateOf = (settings: Settings): SettingsState => ({
   settings,
   overrides: overridesFrom(settings),
+  overriddenIn: {},
 });
 
 /** A Registry holding `settings`, keeping each save; a save asking for the "max" thinking level is refused. */
@@ -217,6 +218,8 @@ describe("a Settings section's Save", () => {
     });
     expect(globalLimitsForm.defaults).toEqual({ spendLimit: "" });
     expect(environmentNameForm.defaults).toBeUndefined();
+    // A save of the defaults would reset every Global variable, so there is no such button.
+    expect(globalVariablesForm.defaults).toBeUndefined();
   });
 });
 

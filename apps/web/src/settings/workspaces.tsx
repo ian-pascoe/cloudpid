@@ -19,7 +19,7 @@ import {
   describeWorkspaceWork,
   type EnvironmentDialog,
   environmentDialogAtom,
-  environmentListAtom,
+  environmentsInOrderAtom,
   environmentsErrorAtom,
   removeWorkspaceAtom,
   removeWorkspaceTypedAtom,
@@ -496,7 +496,7 @@ const EnvironmentWorkspaces = ({
 
 /** Global's Workspaces section: every Environment's, under its name. */
 const AllWorkspaces = ({ sessions }: { sessions: readonly SessionRecord[] }) => {
-  const environments = useAtomValue(environmentListAtom);
+  const environments = useAtomValue(environmentsInOrderAtom);
   const listError = useAtomValue(environmentsErrorAtom);
 
   if (environments === null) return <Pending problem={listError} />;

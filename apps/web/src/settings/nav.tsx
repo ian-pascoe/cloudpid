@@ -5,7 +5,9 @@
 // Scope's sections, each with its icon and a dot while it has unsaved changes. Collapsed, the rail shows the sections'
 // icons alone.
 
+import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
+import { environmentListAtom } from "../environments-state.ts";
 import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
 import { settingsPath, type SettingsView } from "../router.ts";
@@ -31,6 +33,21 @@ export const currentSection = (scope: string, view: SettingsView): SectionSlug |
     default:
       return "skills";
   }
+};
+
+/**
+ * The sections the navigation lists at Scope `scope`: none for an Environment the listing does not have, whose page
+ * says it is not found; the Scope's sections otherwise, also while the listing has not answered.
+ */
+const useListedSections = (scope: string): readonly SectionSlug[] => {
+  const environments = useAtomValue(environmentListAtom);
+
+  const unknown =
+    scope !== GLOBAL_SCOPE &&
+    environments !== null &&
+    !environments.some((environment) => environment.id === scope);
+
+  return unknown ? [] : sectionsAt(scope);
 };
 
 /** The dot of a section whose form has unsaved changes, said to assistive technology as part of the link. */
@@ -72,30 +89,34 @@ const UnsavedMark = ({
 };
 
 /** The Scope's sections, as links. */
-const SectionLinks = ({ scope, current }: { scope: string; current: SectionSlug | null }) => (
-  <ul className="flex flex-col gap-0.5">
-    {sectionsAt(scope).map((slug) => {
-      const Icon = sectionIcon(slug);
+const SectionLinks = ({ scope, current }: { scope: string; current: SectionSlug | null }) => {
+  const sections = useListedSections(scope);
 
-      return (
-        <li key={slug}>
-          <InAppLink
-            href={settingsPath(scope, slug)}
-            aria-current={slug === current ? "page" : undefined}
-            className={cn(
-              "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
-              slug === current && "bg-accent font-medium text-accent-foreground",
-            )}
-          >
-            <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="truncate">{sectionLabel(slug, scope)}</span>
-            <UnsavedMark slug={slug} scope={scope} />
-          </InAppLink>
-        </li>
-      );
-    })}
-  </ul>
-);
+  return (
+    <ul className="flex flex-col gap-0.5">
+      {sections.map((slug) => {
+        const Icon = sectionIcon(slug);
+
+        return (
+          <li key={slug}>
+            <InAppLink
+              href={settingsPath(scope, slug)}
+              aria-current={slug === current ? "page" : undefined}
+              className={cn(
+                "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
+                slug === current && "bg-accent font-medium text-accent-foreground",
+              )}
+            >
+              <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="truncate">{sectionLabel(slug, scope)}</span>
+              <UnsavedMark slug={slug} scope={scope} />
+            </InAppLink>
+          </li>
+        );
+      })}
+    </ul>
+  );
+};
 
 /** The navigation in the sidebar's column: the Scope, then its sections. */
 export const SettingsNav = ({ scope, view }: { scope: string; view: SettingsView }) => {
@@ -117,10 +138,11 @@ export const SettingsNav = ({ scope, view }: { scope: string; view: SettingsView
 /** The sections' icons on the collapsed rail, each named by its tooltip and to assistive technology. */
 export const SettingsRailLinks = ({ scope, view }: { scope: string; view: SettingsView }) => {
   const current = currentSection(scope, view);
+  const sections = useListedSections(scope);
 
   return (
     <ul aria-label="Settings sections" className="flex flex-col items-center gap-0.5">
-      {sectionsAt(scope).map((slug) => {
+      {sections.map((slug) => {
         const Icon = sectionIcon(slug);
         const label = sectionLabel(slug, scope);
 

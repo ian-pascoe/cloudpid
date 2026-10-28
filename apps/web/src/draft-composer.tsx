@@ -76,7 +76,7 @@ import {
   draftPlaceAtom,
 } from "./draft-lookups.ts";
 import {
-  environmentListAtom,
+  environmentsInOrderAtom,
   environmentNamesAtom,
   workspaceListAtom,
 } from "./environments-state.ts";
@@ -583,7 +583,7 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
   const [picked, setWorkspace] = useAtom(draftWorkspaceAtom);
   const [base, setBase] = useAtom(draftBaseAtom);
   const [branch, setBranch] = useAtom(draftBranchAtom);
-  const environments = useAtomValue(environmentListAtom);
+  const environments = useAtomValue(environmentsInOrderAtom);
   const names = useAtomValue(environmentNamesAtom);
   const allWorkspaces = useAtomValue(workspaceListAtom);
   const attachments = useAtomValue(draftAttachmentsAtom);

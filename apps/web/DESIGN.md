@@ -251,7 +251,9 @@ Quiet and exact.
 
 ### Navigation
 
-The sidebar: a "Sessions" title and a "New session" outline button on one row, then the Sessions grouped by Workspace under 12 px group labels (the Workspace's name, so not mono), then Workspaces and Settings at the foot above a top border. A Session item is two lines: its title (14 px medium, truncated), then its repo in mono and either a pulsing Run Green dot with "Running" or a relative time. Hover and the current item use the Tinted Wash; the current item also has `aria-current="page"`.
+The sidebar: a "Sessions" title and a "New session" outline button on one row, then the Sessions grouped by Workspace under 12 px group labels (the Workspace's name, so not mono), then Settings at the foot above a top border. A Session item is two lines: its title (14 px medium, truncated), then its repo in mono and either a pulsing Run Green dot with "Running" or a relative time. Hover and the current item use the Tinted Wash; the current item also has `aria-current="page"`.
+
+On the Settings page the sidebar is the page's section nav: "Back to sessions", the Scope's name, then each section as a 16 px icon and its 14 px label, the current one in the Tinted Wash with `aria-current="page"`, and a 6 px Ink dot (with a screen-reader ", unsaved changes") on a section with an unsaved draft; the rail shows the same icons. The page's header is a breadcrumb, Settings / Scope / Section, whose Scope is a picker Menu (Global, then the Environments under a group label); on a phone it starts with a back arrow to the section list. A section with a Save ends in a bar that sticks to the foot of the scroller, as wide as the content column above a hairline: Save (primary), Reset to defaults (ghost, where the section has defaults), and "Saved" or the error.
 
 ### Menu
 
