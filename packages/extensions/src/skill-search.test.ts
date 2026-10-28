@@ -69,11 +69,16 @@ describe("readSkillSearch", () => {
     expect(read).toEqual({
       ok: true,
       results: [FOUND.skills[0], FOUND.skills[1]],
+      listed: FOUND.skills.length,
     });
   });
 
   it("reads an empty list", async () => {
-    expect(await readSkillSearch(json({ skills: [] }))).toEqual({ ok: true, results: [] });
+    expect(await readSkillSearch(json({ skills: [] }))).toEqual({
+      ok: true,
+      results: [],
+      listed: 0,
+    });
   });
 
   it("reports skills.sh's own error, an unexpected status and an answer of another shape", async () => {

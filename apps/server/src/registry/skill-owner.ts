@@ -5,8 +5,13 @@
 // look-alikes, which are left out) and answers at most 200 results, so a prolific owner's list may be incomplete: the
 // answer says when the limit was hit. Each repo's page asks GitHub for the full list, and a repo skills.sh does not list
 // is opened there by name. Not cached: it is one search, as the Skills page's own search is.
-import { MAX_DIRECTORY_LIMIT, queryProblem } from "@cloudpid/extensions/skill-search";
-import type { OwnerRepo, SkillDirectoryError, SkillOwnerListing } from "@cloudpid/protocol";
+import { queryProblem } from "@cloudpid/extensions/skill-search";
+import {
+  type OwnerRepo,
+  type SkillDirectoryError,
+  type SkillOwnerListing,
+  SKILL_SEARCH_LIMIT,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type { DirectoryRow, SkillDirectory } from "./skill-directory.ts";
@@ -32,12 +37,13 @@ const repoOf = (owner: string, source: string): string | undefined => {
 
 /**
  * The repos of `owner` among `rows` (what a search for the owner found): each with the Skills it has there, counted once
- * by ID, and their installs, the most installed repo first (ties by name). `capped` is whether `rows` is as many as a
- * search answers, so that some may be missing.
+ * by ID, and their installs, the most installed repo first (ties by name). `capped` is whether skills.sh answered as many
+ * entries (`listed`, counting any that were not Skills) as a search holds, so that some may be missing.
  */
 export const groupOwnerRepos = (
   owner: string,
   rows: ReadonlyArray<DirectoryRow>,
+  listed: number,
 ): SkillOwnerListing => {
   // By the repo's name in lower case (GitHub's names ignore case); the first spelling is the one shown.
   const repos = new Map<string, { repo: string; skills: Map<string, number> }>();
@@ -55,7 +61,7 @@ export const groupOwnerRepos = (
     repos.set(key, group);
   }
 
-  const listed = Arr.fromIterable(repos.values()).map(({ repo, skills }): OwnerRepo => ({
+  const grouped = Arr.fromIterable(repos.values()).map(({ repo, skills }): OwnerRepo => ({
     repo,
     skills: skills.size,
     installs: Arr.fromIterable(skills.values()).reduce((sum, installs) => sum + installs, 0),
@@ -63,10 +69,10 @@ export const groupOwnerRepos = (
 
   return {
     owner,
-    repos: listed.toSorted(
+    repos: grouped.toSorted(
       (left, right) => right.installs - left.installs || left.repo.localeCompare(right.repo),
     ),
-    capped: rows.length >= MAX_DIRECTORY_LIMIT,
+    capped: listed >= SKILL_SEARCH_LIMIT,
   };
 };
 
@@ -80,6 +86,8 @@ export const skillOwnersOver = (directory: SkillDirectory): SkillOwners => ({
       return Effect.succeed({ owner: name, repos: [], capped: false });
     }
 
-    return directory.search(name).pipe(Effect.map((rows) => groupOwnerRepos(name, rows)));
+    return directory
+      .searchListed(name)
+      .pipe(Effect.map(({ rows, listed }) => groupOwnerRepos(name, rows, listed)));
   },
 });

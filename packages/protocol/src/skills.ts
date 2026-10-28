@@ -265,6 +265,12 @@ export const SkillDirectoryPageNumber = Schema.Int.check(
 /** How many rows skills.sh answers for a leaderboard page, and the most a search finds. */
 export const SKILL_DIRECTORY_PAGE_SIZE = 200;
 
+/**
+ * The most results skills.sh's search answers, however many are asked for. A search that returns this many may have left
+ * more out, so what is built from one (an owner's repos) says it may be incomplete.
+ */
+export const SKILL_SEARCH_LIMIT = 200;
+
 /** The skills.sh failure the Skills page shows plainly: it could not be reached or answered otherwise. */
 export class SkillDirectoryError extends Schema.TaggedError<
   SkillDirectoryError,

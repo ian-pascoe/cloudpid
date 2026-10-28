@@ -97,8 +97,24 @@ describe("Open a repo", () => {
     expect(openRepoPath("o", "r.js")).toEqual({ ok: true, path: "/skills/o/r.js" });
   });
 
-  it("refuses an empty name, another owner's repo and anything with a space or more slashes", () => {
-    for (const typed of ["", "   ", "other/skills", "o/", "/skills", "a b", "o/a/b", "o/a b"]) {
+  it("refuses an empty name, another owner's repo, . and .., and anything GitHub cannot name a repo", () => {
+    for (const typed of [
+      "",
+      "   ",
+      "other/skills",
+      "o/",
+      "/skills",
+      "a b",
+      "o/a/b",
+      "o/a b",
+      ".",
+      "..",
+      "o/..",
+      "a?b",
+      "a#b",
+      "a%2Fb",
+      "x".repeat(101),
+    ]) {
       const opened = openRepoPath("o", typed);
 
       expect(opened.ok, typed).toBe(false);

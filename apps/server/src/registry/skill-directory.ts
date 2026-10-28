@@ -54,6 +54,13 @@ export type SkillDirectory = {
   readonly search: (
     query: string,
   ) => Effect.Effect<ReadonlyArray<DirectoryRow>, SkillDirectoryError>;
+  /** The same search with how many entries skills.sh answered, counting those left out as not Skills (the owner page's limit). */
+  readonly searchListed: (
+    query: string,
+  ) => Effect.Effect<
+    { readonly rows: ReadonlyArray<DirectoryRow>; readonly listed: number },
+    SkillDirectoryError
+  >;
 };
 
 /** The part of the Cache API the leaderboard uses: `caches.default`'s match and put. */
@@ -196,6 +203,23 @@ export const skillDirectoryOver = ({
 
   const searcher = skillSearcher({ ask, limit: MAX_DIRECTORY_LIMIT, max: MAX_DIRECTORY_LIMIT });
 
+  const searchListed: SkillDirectory["searchListed"] = (query) =>
+    searcher(query).pipe(
+      Effect.flatMap((found) =>
+        found.ok
+          ? Effect.succeed({
+              listed: found.listed,
+              rows: Arr.map(found.results, ({ source, skillId, name, installs }) => ({
+                source,
+                skillId,
+                name,
+                installs,
+              })),
+            })
+          : Effect.fail(SkillDirectoryError.make({ message: found.message })),
+      ),
+    );
+
   return {
     leaderboard: (view, page) =>
       Effect.promise(async () => asked(view, page)).pipe(
@@ -205,20 +229,7 @@ export const skillDirectoryOver = ({
             : Effect.fail(SkillDirectoryError.make({ message: read.message })),
         ),
       ),
-    search: (query) =>
-      searcher(query).pipe(
-        Effect.flatMap((found) =>
-          found.ok
-            ? Effect.succeed(
-                Arr.map(found.results, ({ source, skillId, name, installs }) => ({
-                  source,
-                  skillId,
-                  name,
-                  installs,
-                })),
-              )
-            : Effect.fail(SkillDirectoryError.make({ message: found.message })),
-        ),
-      ),
+    searchListed,
+    search: (query) => Effect.map(searchListed(query), ({ rows }) => rows),
   };
 };

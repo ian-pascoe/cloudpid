@@ -126,6 +126,23 @@ describe("an owner's repos", () => {
     expect(listing.repos).toEqual([{ repo: "big", skills: 200, installs: (200 * 201) / 2 }]);
   });
 
+  it("are capped by how many entries skills.sh answered, not by how many were Skills", async () => {
+    // 200 entries, 150 of which are not Skills (no install count): the search still came back full.
+    const entries = [
+      ...Array.from({ length: 50 }, (_, index) => result("oo/big", `skill-${index}`, 1)),
+      ...Array.from({ length: 150 }, (_, index) => ({ source: "oo/big", skillId: `x-${index}` })),
+    ];
+
+    const fake = owners({
+      "https://skills.sh/api/search?q=oo&limit=200": json({ skills: entries }),
+    });
+
+    const listing = await run(fake.owners.list("oo"));
+
+    expect(listing.capped).toBe(true);
+    expect(listing.repos).toEqual([{ repo: "big", skills: 50, installs: 50 }]);
+  });
+
   it("are empty for an owner the directory lists nothing of, and for one too short to search for without asking", async () => {
     const fake = owners({
       "https://skills.sh/api/search?q=nobody&limit=200": json({ skills: [] }),

@@ -7,7 +7,7 @@
 // those skills.sh does not list. An owner the directory lists nothing of says so and still offers it, and skills.sh
 // failing is a plain error with the field still there.
 
-import { type OwnerRepo, type SkillOwnerListing } from "@cloudpid/protocol";
+import { type OwnerRepo, SKILL_SEARCH_LIMIT, type SkillOwnerListing } from "@cloudpid/protocol";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -22,9 +22,6 @@ import { navigate, skillRepoPath, SKILLS_PATH } from "./router.ts";
 import { Credit, DirectoryError } from "./skills-directory.tsx";
 import { SkillsFrame } from "./skills-page.tsx";
 import { openRepoPath, skillOwnerAtom } from "./skills-owner-state.ts";
-
-/** The most results skills.sh's search answers, which the owner's list is built from. */
-const SEARCH_LIMIT = 200;
 
 /**
  * "Open a repo": the repo's name (or `owner/repo`) opens its page, for a repo skills.sh does not list. Whether GitHub has the
@@ -110,8 +107,8 @@ const OwnerRepoRow = ({ owner, repo }: { owner: string; repo: OwnerRepo }) => (
 const SearchLimit = ({ listing }: { listing: SkillOwnerListing }) => (
   <p className="text-xs text-muted-foreground">
     {listing.capped
-      ? `skills.sh's search hit its limit of ${SEARCH_LIMIT} results, so repos and Skills of ${listing.owner} are probably missing here. `
-      : `This list comes from skills.sh's search, which is fuzzy and answers at most ${SEARCH_LIMIT} results, so it may not show every repo or Skill. `}
+      ? `skills.sh's search hit its limit of ${SKILL_SEARCH_LIMIT} results, so repos and Skills of ${listing.owner} are probably missing here. `
+      : `This list comes from skills.sh's search, which is fuzzy and answers at most ${SKILL_SEARCH_LIMIT} results, so it may not show every repo or Skill. `}
     A repo's page lists what GitHub has in it.
   </p>
 );

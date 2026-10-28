@@ -18,6 +18,10 @@ export type OpenRepo =
   | { readonly ok: true; readonly path: string }
   | { readonly ok: false; readonly message: string };
 
+/** Whether `name` can be a GitHub repo's name: letters, digits, `.`, `_` and `-`, at most 100, and neither `.` nor `..`. */
+const isRepoName = (name: string): boolean =>
+  /^[\w.-]{1,100}$/.test(name) && name !== "." && name !== "..";
+
 /**
  * The page of the repo named by `typed` among `owner`'s: the repo's name (`skills`), or with the owner in front
  * (`mattpocock/skills`, as GitHub shows it; the owner's case does not matter). Anything else is not a repo of the owner.
@@ -34,10 +38,10 @@ export const openRepoPath = (owner: string, typed: string): OpenRepo => {
   const withOwner = parts.length === 2 && first?.toLowerCase() === owner.toLowerCase();
   const repo = withOwner ? second : parts.length === 1 ? first : undefined;
 
-  if (repo === undefined || repo === "" || /\s/.test(repo)) {
+  if (repo === undefined || !isRepoName(repo)) {
     return {
       ok: false,
-      message: `“${name}” is not a repo of ${owner}: type its name, such as skills, or ${owner}/skills.`,
+      message: `“${name}” is not a repo name of ${owner}: use letters, digits, “.”, “_” and “-”, as in skills or ${owner}/skills.`,
     };
   }
 

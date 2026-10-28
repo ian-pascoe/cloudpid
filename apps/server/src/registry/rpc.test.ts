@@ -76,6 +76,18 @@ import type {
 } from "./store.ts";
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
+/**
+ * The fake Skill directory's search: it finds `mattpocock/skills/tdd` for any query, except one that starts with `down` (a
+ * skills.sh failure), and says it answered as many entries as it found, 200 for a query that starts with `many`.
+ */
+const fakeDirectorySearch: SkillDirectory["searchListed"] = (query) =>
+  query.startsWith("down")
+    ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh did not answer" }))
+    : Effect.succeed({
+        rows: [{ source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 }],
+        listed: query.startsWith("many") ? 200 : 1,
+      });
+
 const fakeRegistries = () => {
   const sessions: SessionRecord[] = [];
   const workspaces: WorkspaceRecord[] = [];
@@ -1375,6 +1387,7 @@ const fakeRegistries = () => {
           ? ({ ok: false, message: "skills.sh did not answer" } as const)
           : ({
               ok: true,
+              listed: 1,
               results: [
                 {
                   id: "mattpocock/skills/grill-me",
@@ -1412,12 +1425,8 @@ const fakeRegistries = () => {
                     ]
                   : [{ source: "o/other", skillId: "other", name: "other", installs: 3 }],
             }),
-      search: (query) =>
-        query.startsWith("down")
-          ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh did not answer" }))
-          : Effect.succeed([
-              { source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 },
-            ]),
+      search: (query) => Effect.map(fakeDirectorySearch(query), ({ rows }) => rows),
+      searchListed: fakeDirectorySearch,
     } satisfies SkillDirectory,
     /** GitHub's repos: `o/gone` is not found, `o/ref` has no ref `nope`, `o/empty` holds no Skill, the rest hold three. */
     skillRepos: {
@@ -3349,9 +3358,11 @@ it("searches the Skill directory with the same badges, and reports why a list or
 it("lists an owner's repos from the Skill directory's search, and fails when it does not answer", async () => {
   const fake = fakeRegistries();
 
-  // The fake directory finds `mattpocock/skills/tdd` for any search; an owner named `down` has it fail.
+  // The fake directory finds `mattpocock/skills/tdd` for any search; a search that starts with `down` fails, and one that
+  // starts with `many` answers 200 entries.
   const listing = await call(fake, (registry) => registry.listOwnerRepos({ owner: "MattPocock" }));
   const other = await call(fake, (registry) => registry.listOwnerRepos({ owner: "vercel-labs" }));
+  const many = await call(fake, (registry) => registry.listOwnerRepos({ owner: "manyskills" }));
 
   const failed = await call(fake, (registry) =>
     Effect.flip(registry.listOwnerRepos({ owner: "down-owner" })),
@@ -3363,6 +3374,7 @@ it("lists an owner's repos from the Skill directory's search, and fails when it 
     capped: false,
   });
   expect(other).toEqual({ owner: "vercel-labs", repos: [], capped: false });
+  expect(many).toEqual({ owner: "manyskills", repos: [], capped: true });
   expect(failed).toBeInstanceOf(SkillDirectoryError);
   expect(failed.message).toBe("skills.sh did not answer");
 });
