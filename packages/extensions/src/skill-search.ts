@@ -21,6 +21,12 @@ export const MAX_QUERY_LENGTH = 200;
 export const DEFAULT_LIMIT = 10;
 export const MAX_LIMIT = 20;
 
+/** How long a search is waited for. */
+export const SEARCH_TIMEOUT_MS = 15_000;
+
+/** The headers of a search. */
+export const SEARCH_HEADERS = { accept: "application/json", "user-agent": "cloudpid" };
+
 /** The request URL for `query`. */
 export const skillSearchUrl = (query: string, limit = DEFAULT_LIMIT): string =>
   `${SKILLS_SEARCH_URL}?${new URLSearchParams({ q: query, limit: String(Math.min(limit, MAX_LIMIT)) }).toString()}`;

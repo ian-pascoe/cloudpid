@@ -874,10 +874,7 @@ export const serveRegistryRpc = <R = never>(
                 ref: installation.ref,
                 commit: installation.commit,
                 skills: Arr.map(installation.results, ({ name, outcome, message }) => {
-                  const shown = {
-                    name,
-                    outcome: outcome === "saved" ? ("installed" as const) : outcome,
-                  };
+                  const shown = { name, outcome };
 
                   return message === undefined ? shown : { ...shown, message };
                 }),

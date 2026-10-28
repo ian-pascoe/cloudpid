@@ -409,8 +409,8 @@ describe("fetchSkills", () => {
     });
   });
 
-  it("reports an unexpected failure of the read as a failure, not a throw", async () => {
-    const result = await fetchSkills(
+  it("lets a failure that is no GitHub's, a bug, surface instead of reporting it as one", async () => {
+    const bug = fetchSkills(
       {
         commit: async () => {
           throw new TypeError("boom");
@@ -421,10 +421,6 @@ describe("fetchSkills", () => {
       { source: source("o/r") },
     );
 
-    expect(result).toEqual({
-      status: "failed",
-      kind: "failed",
-      message: "GitHub could not be read: boom",
-    });
+    await expect(bug).rejects.toThrow("boom");
   });
 });

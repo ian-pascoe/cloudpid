@@ -59,6 +59,19 @@ const pathProblem = (path: string): string | undefined => {
     : undefined;
 };
 
+/**
+ * Why `name` (a repo's) or `ref` (as decoded) cannot go in a GitHub API path, or undefined. A URL parser resolves a `.`
+ * or `..` segment, escaped or not, and the request carries the owner's token: it would reach another endpoint (`..` as a
+ * repo name is `/repos/commits/HEAD`; a ref of `../../app/installations` is `/app/installations`).
+ */
+const nameProblem = (what: "repo" | "ref", name: string): string | undefined => {
+  const segments = what === "ref" ? name.split("/") : [name];
+
+  return segments.some((segment) => segment === "" || segment === "." || segment === "..")
+    ? `the ${what} may not hold an empty, \`.\` or \`..\` segment`
+    : undefined;
+};
+
 const make = (
   owner: string,
   name: string,
@@ -75,7 +88,8 @@ const make = (
 /**
  * `input` as a source: `owner/repo`, `owner/repo@skill`, or a GitHub URL (`https://github.com/owner/repo`, optionally
  * `/tree/<ref>` and a folder below it). As in the `skills` CLI, the first segment after `tree/` is the ref, so a branch
- * name with a slash cannot be named in a URL; a commit's SHA, a tag or a branch without one can.
+ * name with a slash is written with `%2F` (`tree/feature%2Ffoo/skills`); a commit's SHA, a tag or a branch without one can
+ * be written plainly.
  */
 export const parseSkillSource = (input: string): SkillSourceParse => {
   const text = input.trim();
@@ -91,6 +105,10 @@ export const parseSkillSource = (input: string): SkillSourceParse => {
 
     const segments = (rest ?? "").split("/").filter((segment) => segment !== "");
 
+    const repoProblem = nameProblem("repo", name);
+
+    if (repoProblem !== undefined) return refused(input, repoProblem);
+
     if (segments.length === 0) return { ok: true, source: make(owner, name, {}) };
 
     if (segments[0] !== "tree") {
@@ -100,6 +118,10 @@ export const parseSkillSource = (input: string): SkillSourceParse => {
     const ref = decode(segments[1] ?? "");
 
     if (ref === "") return refused(input, "`/tree/` names no ref");
+
+    const refProblem = nameProblem("ref", ref);
+
+    if (refProblem !== undefined) return refused(input, refProblem);
 
     const path = segments.slice(2).map(decode).join("/");
     const problem = pathProblem(path);
@@ -119,8 +141,13 @@ export const parseSkillSource = (input: string): SkillSourceParse => {
 
   if (skill !== undefined && skill.trim() === "") return refused(input, "`@` names no Skill");
 
+  const repoName = name.replace(/\.git$/, "");
+  const repoProblem = nameProblem("repo", repoName);
+
+  if (repoProblem !== undefined) return refused(input, repoProblem);
+
   return {
     ok: true,
-    source: make(owner, name.replace(/\.git$/, ""), skill === undefined ? {} : { skill }),
+    source: make(owner, repoName, skill === undefined ? {} : { skill }),
   };
 };

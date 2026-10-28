@@ -9,6 +9,7 @@ import {
   MAX_SECRET_NAME_LENGTH,
   parseRepoSource,
   type SkillInstall,
+  skillSourceText,
   skillSourceUrl,
   type EnvironmentRecord,
   type EnvironmentSecretRecord,
@@ -129,7 +130,6 @@ import {
   environmentNameProblem,
   idleMinutesProblem,
   installOutcomeLines,
-  skillSourceText,
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
@@ -1341,8 +1341,9 @@ const InstallAnswer = ({
     return (
       <div className="flex flex-col gap-1 text-xs" role="status">
         <p className="text-muted-foreground">
-          From {answer.repo}
-          {answer.ref === null ? "" : ` at ${answer.ref}`}, commit {answer.commit.slice(0, 7)}:
+          From{" "}
+          {skillSourceText({ repo: answer.repo, path: "", ref: answer.ref, commit: answer.commit })}
+          :
         </p>
         <ul className="flex flex-col gap-0.5">
           {installOutcomeLines(answer.skills).map((line) => (

@@ -28,7 +28,7 @@ import {
   type SessionRecord,
   SkillChangeValue,
   type SkillInstall,
-  type SkillSource,
+  skillSourceText,
 } from "@cloudpid/protocol";
 import {
   DEFAULT_CONTAINER_SETTINGS,
@@ -331,13 +331,6 @@ export const buildLine = (build: BuildView, now: number): string => {
  */
 const skillFilesOf = (value: AgentChange["before"]): readonly string[] | undefined =>
   Schema.is(SkillChangeValue)(value) ? Record.keys(value.files).toSorted() : undefined;
-
-/**
- * Where a Skill came from as the page says it: its folder in the repo, and the commit it was pinned to (with the ref the
- * owner or agent named, when one was): `mattpocock/skills/skills/grill-me at c0ffee0`.
- */
-export const skillSourceText = ({ repo, path, ref, commit }: SkillSource): string =>
-  `${repo}${path === "" ? "" : `/${path}`} at ${ref === null ? "" : `${ref}, `}${commit.slice(0, 7)}`;
 
 /** What an install answered, a line for each Skill it kept, found already kept, or refused (and why). */
 export const installOutcomeLines = (

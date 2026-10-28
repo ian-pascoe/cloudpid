@@ -7,6 +7,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { GitHubTokens } from "./app.ts";
+import { askAsApp, type GithubFetch, messageOf, rateLimitOf } from "./request.ts";
 import { GithubReadError, type RepoReader, type RepoTree, type SkillRepo } from "./skill-fetch.ts";
 
 const API = "https://api.github.com";
@@ -38,38 +39,36 @@ const decodeError = Schema.decodeUnknownOption(ErrorAnswer);
 
 export type GithubContentsOptions = {
   /** GitHub's API; a test replaces it. */
-  readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
+  readonly fetch: GithubFetch;
   /** Where the tokens come from: the GitHub App, with the permissions Skills are fetched with. */
   readonly github: Pick<GitHubTokens, "token" | "invalidate">;
 };
 
+/**
+ * A name that goes in a URL's path as one segment, escaped. A URL parser resolves `.` and `..` (escaped or not), which
+ * would send the request, made with the owner's token, to another endpoint: they and an empty name are refused.
+ */
+const segment = (name: string): string => {
+  if (name === "" || name === "." || name === "..") {
+    throw GithubReadError.of("refused", `${JSON.stringify(name)} is not a name GitHub has`);
+  }
+
+  return encodeURIComponent(name);
+};
+
 /** The path of `repo` in the API. */
 const repoPath = ({ owner, name }: SkillRepo): string =>
-  `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  `/repos/${segment(owner)}/${segment(name)}`;
 
 /** A ref as it goes in a URL: each segment escaped, the slashes of a branch name kept. */
-const refPath = (ref: string): string => ref.split("/").map(encodeURIComponent).join("/");
+const refPath = (ref: string): string => ref.split("/").map(segment).join("/");
 
-/** The token for the installation on `owner`, else the app owner's; and whether the app is installed on `owner`. */
-const tokenFor = async (
-  github: GithubContentsOptions["github"],
-  owner: string,
-): Promise<{ readonly token: string; readonly installed: boolean; readonly problem?: string }> => {
+/** A response's body, or the failure of GitHub's connection while it was read. */
+const bodyOf = async <A>(read: () => Promise<A>): Promise<A> => {
   try {
-    return { token: await github.token(owner), installed: true };
+    return await read();
   } catch (cause) {
-    try {
-      return {
-        token: await github.token(),
-        installed: false,
-        problem: cause instanceof Error ? cause.message : String(cause),
-      };
-    } catch {
-      throw GithubReadError.of(
-        "failed",
-        `No GitHub token: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-    }
+    throw GithubReadError.of("failed", `GitHub could not be reached: ${messageOf(cause)}`);
   }
 };
 
@@ -82,75 +81,55 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
     accept: string,
     notFound: (installed: boolean) => string,
   ): Promise<Response> => {
-    for (let attempt = 1; ; attempt++) {
-      const { token, installed } = await tokenFor(options.github, repo.owner);
+    const answer = await askAsApp(
+      { fetch: options.fetch, github: options.github, timeoutMs: REQUEST_TIMEOUT_MS },
+      repo.owner,
+      `${API}${path}`,
+      { accept },
+    );
 
-      let response: Response;
+    if (answer.status === "no_token") throw GithubReadError.of("failed", answer.message);
 
-      try {
-        response = await options.fetch(`${API}${path}`, {
-          method: "GET",
-          headers: {
-            accept,
-            authorization: `Bearer ${token}`,
-            "user-agent": "cloudpid",
-            "x-github-api-version": "2022-11-28",
-          },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-      } catch (cause) {
-        throw GithubReadError.of(
-          "failed",
-          `GitHub could not be reached: ${cause instanceof Error ? cause.message : String(cause)}`,
-        );
-      }
+    if (answer.status === "unreachable") {
+      throw GithubReadError.of("failed", `GitHub could not be reached: ${answer.message}`);
+    }
 
-      if (response.ok) return response;
+    const { response, installed } = answer;
 
-      if (response.status === 401 && attempt === 1) {
-        options.github.invalidate(token);
-        continue;
-      }
+    if (response.ok) return response;
 
-      const said = Option.getOrUndefined(decodeError(await response.json().catch(() => null)));
-      const retryAfter = Number(response.headers.get("retry-after"));
-      const reset = Number(response.headers.get("x-ratelimit-reset"));
+    const said = Option.getOrUndefined(decodeError(await response.json().catch(() => null)));
+    const limit = rateLimitOf(response);
 
-      if (
-        response.status === 429 ||
-        (response.status === 403 &&
-          (response.headers.get("x-ratelimit-remaining") === "0" ||
-            (Number.isFinite(retryAfter) && retryAfter > 0)))
-      ) {
-        const when =
-          Number.isFinite(retryAfter) && retryAfter > 0
-            ? ` Try again in ${Math.ceil(retryAfter)} seconds.`
-            : Number.isFinite(reset) && reset > 0
-              ? ` It resets at ${new Date(reset * 1000).toISOString()}.`
-              : "";
-
-        throw GithubReadError.of(
-          "rate_limited",
-          `GitHub's rate limit for the GitHub App's token on ${repo.owner} is used up.${when}`,
-        );
-      }
-
-      if (response.status === 404 || response.status === 422) {
-        throw GithubReadError.of("not_found", notFound(installed));
-      }
-
-      if (response.status === 401 || response.status === 403) {
-        throw GithubReadError.of(
-          "refused",
-          `GitHub refused the GitHub App's token for ${repo.owner}/${repo.name} (${response.status}${said === undefined ? "" : `: ${said.message}`}). Check the GitHub App's installation on ${repo.owner}.`,
-        );
-      }
+    if (limit !== undefined) {
+      const when =
+        limit.retryAfterSeconds !== undefined
+          ? ` Try again in ${Math.ceil(limit.retryAfterSeconds)} seconds.`
+          : limit.resetsAt !== undefined
+            ? ` It resets at ${new Date(limit.resetsAt).toISOString()}.`
+            : "";
 
       throw GithubReadError.of(
-        "failed",
-        `GitHub answered ${response.status}${said === undefined ? "" : `: ${said.message}`}`,
+        "rate_limited",
+        `GitHub's rate limit for the GitHub App's token on ${repo.owner} is used up.${when}`,
       );
     }
+
+    if (response.status === 404 || response.status === 422) {
+      throw GithubReadError.of("not_found", notFound(installed));
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw GithubReadError.of(
+        "refused",
+        `GitHub refused the GitHub App's token for ${repo.owner}/${repo.name} (${response.status}${said === undefined ? "" : `: ${said.message}`}). Check the GitHub App's installation on ${repo.owner}.`,
+      );
+    }
+
+    throw GithubReadError.of(
+      "failed",
+      `GitHub answered ${response.status}${said === undefined ? "" : `: ${said.message}`}`,
+    );
   };
 
   const gone = (repo: SkillRepo) => (installed: boolean) =>
@@ -170,7 +149,7 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
             : `${gone(repo)(installed)} Or it has no ref ${JSON.stringify(ref)} (a branch, a tag or a commit).`,
       );
 
-      const sha = (await response.text()).trim();
+      const sha = (await bodyOf(() => response.text())).trim();
 
       if (!/^[0-9a-f]{40}$/.test(sha)) {
         throw GithubReadError.of("failed", "GitHub's answer to the commit was not a SHA");
@@ -202,7 +181,7 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
         gone(repo),
       );
 
-      return new Uint8Array(await response.arrayBuffer());
+      return new Uint8Array(await bodyOf(() => response.arrayBuffer()));
     },
   };
 };

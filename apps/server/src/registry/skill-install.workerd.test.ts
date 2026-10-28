@@ -7,7 +7,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT, type SkillSource } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import type { RepoReader } from "../github/skill-fetch.ts";
+import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { installSkills } from "./skill-install.ts";
 import {
@@ -151,7 +151,9 @@ describe("installing Skills from GitHub", () => {
       repo: "o/skills",
       ref: null,
       commit: COMMIT,
-      results: [{ name: "grill-me", path: "skills/grill-me", outcome: "saved", shadows: false }],
+      results: [
+        { name: "grill-me", path: "skills/grill-me", outcome: "installed", shadows: false },
+      ],
     });
 
     expect(listed).toEqual([
@@ -234,7 +236,7 @@ describe("installing Skills from GitHub", () => {
 
     expect(installed).toMatchObject({
       status: "installed",
-      results: [{ name: "grill-me", outcome: "saved" }],
+      results: [{ name: "grill-me", outcome: "installed" }],
     });
 
     expect(
@@ -259,7 +261,7 @@ describe("installing Skills from GitHub", () => {
     );
 
     expect(again).toMatchObject({ results: [{ name: "grill-me", outcome: "unchanged" }] });
-    expect(moved).toMatchObject({ results: [{ name: "grill-me", outcome: "saved" }] });
+    expect(moved).toMatchObject({ results: [{ name: "grill-me", outcome: "installed" }] });
     expect(listed[0]?.source).toEqual({ ...GRILL_SOURCE, commit: LATER });
     // The install, then the new commit: the unchanged one recorded nothing.
     expect(changes).toHaveLength(2);
@@ -396,7 +398,7 @@ describe("installing Skills from GitHub", () => {
         .sort(([left], [right]) => String(left).localeCompare(String(right))),
     ).toEqual([
       ["Bad_Name", "rejected"],
-      ["fine", "saved"],
+      ["fine", "installed"],
       ["leaky", "rejected"],
     ]);
 
@@ -411,7 +413,7 @@ describe("installing Skills from GitHub", () => {
         {
           ...readerOf(REPO),
           commit: async () => {
-            throw new Error("x");
+            throw GithubReadError.of("not_found", "GitHub has no repo o/skills");
           },
         },
         { source: "o/skills@tdd" },
@@ -425,7 +427,7 @@ describe("installing Skills from GitHub", () => {
     });
     expect(gone).toMatchObject({
       status: "refused",
-      message: expect.stringContaining("could not be read"),
+      message: "GitHub has no repo o/skills",
     });
     expect(missing).toEqual({ status: "missing" });
   });

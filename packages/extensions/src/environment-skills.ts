@@ -8,7 +8,14 @@
 // next readying. The skills list in the prompt changes at the next Context Window.
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import { type AgentChange, type ListedSkill, SKILLS_ROOT, skillField } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  type ListedSkill,
+  SKILLS_ROOT,
+  shortSha,
+  skillField,
+  skillSourceText,
+} from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ExecutionEnv, FileError, Result } from "@earendil-works/pi-durable/env";
@@ -25,7 +32,7 @@ import {
   Reason,
   type RunChange,
 } from "./environment.ts";
-import { MAX_FILE_BYTES, MAX_SKILL_BYTES, problemsIn } from "./skill-checks.ts";
+import { MAX_FILE_BYTES, MAX_SKILL_BYTES, MAX_SKILL_FILES, problemsIn } from "./skill-checks.ts";
 
 /** How the save of a Skill went. */
 export type SkillSaved =
@@ -78,7 +85,7 @@ export type SkillsInstalled =
         readonly name: string;
         /** Its folder in the repo. */
         readonly path: string;
-        readonly outcome: "saved" | "unchanged" | "rejected";
+        readonly outcome: "installed" | "unchanged" | "rejected";
         /** Why it was refused: each problem a line. */
         readonly message?: string | undefined;
         readonly change?: AgentChange | undefined;
@@ -154,11 +161,8 @@ const asJsonValue = (value: AgentChange["before"]): JsonValue | null => value as
 /** The Workspace's files: a folder elsewhere is the Container's only, and is not read. */
 const WORKSPACE_ROOT = "/workspace";
 
-/** The most files a Skill's folder may hold, far above any real one. */
-const MAX_FILES = 500;
-
 /** The most files and folders a listing of a Skill's folder takes. */
-const MAX_ENTRIES = MAX_FILES * 4;
+const MAX_ENTRIES = MAX_SKILL_FILES * 4;
 
 /** What the save reads of the call's environment: the Workspace's files, never a command. */
 type FolderEnv = Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile">;
@@ -222,7 +226,7 @@ const refuseContainerOnly = (
 /**
  * The Skill folder at `path` in the Workspace: its own name and each file's text by its path in it (`.git` and
  * `node_modules` left out). Refused when it is not a folder of the Workspace's files, holds a symbolic link or more than
- * `MAX_FILES` files, or a file that is not text or is too large, each problem a line.
+ * `MAX_SKILL_FILES` files, or a file that is not text or is too large, each problem a line.
  */
 export const readSkillFolder = (
   env: FolderEnv,
@@ -294,9 +298,9 @@ export const readSkillFolder = (
 
     const entries = Arr.filter(listing.value.entries, (entry) => entry.kind === "file");
 
-    if (listing.value.truncated || entries.length > MAX_FILES) {
+    if (listing.value.truncated || entries.length > MAX_SKILL_FILES) {
       return yield* refused(
-        `the folder holds more than ${MAX_FILES} files, or ${MAX_ENTRIES} files and folders`,
+        `the folder holds more than ${MAX_SKILL_FILES} files, or ${MAX_ENTRIES} files and folders`,
       );
     }
 
@@ -361,9 +365,6 @@ export const readSkillFolder = (
 
     return { folder: directory.slice(directory.lastIndexOf("/") + 1), files };
   });
-
-/** A commit's SHA as a result names it: its first seven characters. */
-const shortCommit = (commit: string): string => commit.slice(0, 7);
 
 /** Where a Skill is served in each Workspace of its Environment. */
 const servedAt = (name: string): string => `${SKILLS_ROOT}/${name}`;
@@ -581,7 +582,7 @@ export const skillTools = ({
     description: Arr.join(
       [
         `Install Skills from GitHub for an Environment (this Session's unless id names another): fetched by cloudpid, not by you (no Container, no \`npx skills\`), pinned to the commit the source's ref resolves to, and kept with their Skill source (repo, path, ref, commit). Every Workspace of the Environment then serves each at ${SKILLS_ROOT}/<name>, read-only, over the bundle's Skill of the same name; a Skill of the same name the Environment keeps is replaced.`,
-        "source is owner/repo, owner/repo@skill, or a GitHub URL such as https://github.com/owner/repo/tree/<ref>/<path> (the first segment after tree/ is the ref; without one, the default branch is used). Public repos work, and so do private ones in an account the GitHub App is installed on. Other sources (GitLab, other hosts, well-known indexes) are not fetched here: run `npx skills add <source> --copy` in a Container and save the folder with environment_skill_save.",
+        "source is owner/repo, owner/repo@skill, or a GitHub URL such as https://github.com/owner/repo/tree/<ref>/<path> (the first segment after tree/ is the ref, so write a branch name with a slash as feature%2Ffoo; without one, the default branch is used). Public repos work, and so do private ones in an account the GitHub App is installed on. Other sources (GitLab, other hosts, well-known indexes) are not fetched here: run `npx skills add <source> --copy` in a Container and save the folder with environment_skill_save.",
         'skills names the Skills to install (by name): ["*"] installs every Skill the repo holds. When the repo holds several and you name none, nothing is installed and its Skills are listed; ask the user which they want, or call again with skills. skill_search finds a source on skills.sh.',
         "Each Skill passes the checks of environment_skill_save (the Agent Skills name rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path; a set holds at most 100 Skills and 8 MB). One that fails is reported and the others are still installed. Each is recorded with your reason and the files before and after, and the user can revert it on the Environments page.",
       ],
@@ -636,7 +637,7 @@ export const skillTools = ({
                   type: "text" as const,
                   text: Arr.join(
                     [
-                      `Installed nothing: ${repo} (commit ${shortCommit(commit)}) holds ${available.length} Skills and none was named:`,
+                      `Installed nothing: ${repo} (at ${shortSha(commit)}) holds ${available.length} Skills and none was named:`,
                       ...Arr.map(
                         available,
                         (skill) =>
@@ -656,7 +657,7 @@ export const skillTools = ({
 
           case "installed": {
             const { results, repo, ref, commit } = installed;
-            const saved = Arr.filter(results, (result) => result.outcome === "saved");
+            const saved = Arr.filter(results, (result) => result.outcome === "installed");
             const unchanged = Arr.filter(results, (result) => result.outcome === "unchanged");
             const rejected = Arr.filter(results, (result) => result.outcome === "rejected");
 
@@ -687,7 +688,7 @@ export const skillTools = ({
               });
             }
 
-            const pinned = `${repo}${ref === null ? "" : ` at ${ref}`}, commit ${shortCommit(commit)}`;
+            const pinned = skillSourceText({ repo, path: "", ref, commit });
 
             const listOf = (list: typeof results) =>
               Arr.join(

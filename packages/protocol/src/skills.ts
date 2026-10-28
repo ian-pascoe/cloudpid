@@ -3,6 +3,7 @@
 // lists them and shows a change's files as diffs).
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
+import { shortSha } from "./comparison.ts";
 
 /** Where every Workspace serves its Skill set, read-only: a Skill named `name` is at `<SKILLS_ROOT>/<name>`. */
 export const SKILLS_ROOT = "/workspace/.agents/skills";
@@ -28,6 +29,14 @@ export type SkillSource = typeof SkillSource.Type;
 export const skillSourceUrl = ({ repo, path, commit }: SkillSource): string =>
   `https://github.com/${repo}/tree/${commit}${path === "" ? "" : `/${Arr.join(Arr.map(path.split("/"), encodeURIComponent), "/")}`}`;
 
+/**
+ * Where a Skill came from as the page and the tools say it: its folder in the repo, the ref named (when one was) and the
+ * short commit it was pinned to, as `mattpocock/skills/skills/grill-me at c0ffee0`. A repo with no folder (`path` empty) is
+ * the repo alone.
+ */
+export const skillSourceText = ({ repo, path, ref, commit }: SkillSource): string =>
+  `${repo}${path === "" ? "" : `/${path}`} at ${ref === null ? "" : `${ref}, `}${shortSha(commit)}`;
+
 /** A Skill kept for an Environment, as the Environments page lists it. Times are epoch milliseconds. */
 export const EnvironmentSkill = Schema.Struct({
   /** Its name, from its `SKILL.md` frontmatter: also its folder's under `SKILLS_ROOT`. */
@@ -35,7 +44,7 @@ export const EnvironmentSkill = Schema.Struct({
   description: Schema.String,
   /** When it was last saved. */
   savedAt: Schema.Finite,
-  /** Where it was installed from; absent for a Skill the agent wrote or saved from its Workspace. */
+  /** Where it was installed from; absent for a Skill that was never installed. A save from a Workspace keeps the source it had. */
   source: Schema.optionalKey(SkillSource),
 });
 

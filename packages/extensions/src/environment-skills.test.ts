@@ -445,7 +445,7 @@ describe("environment_skill_install", () => {
         {
           name: "grill-me",
           path: "skills/grill-me",
-          outcome: "saved",
+          outcome: "installed",
           change: installChange(7, "grill-me"),
           shadows: false,
         },
@@ -470,7 +470,7 @@ describe("environment_skill_install", () => {
     const said = text(result);
 
     expect(said).toContain(
-      'Installed grill-me for Environment "Default" (default) from mattpocock/skills, commit c0ffee0.',
+      'Installed grill-me for Environment "Default" (default) from mattpocock/skills at c0ffee0.',
     );
     expect(said).toContain("served now at /workspace/.agents/skills/<name> (read-only)");
     expect(said).toContain("read /workspace/.agents/skills/grill-me/SKILL.md to use one");
@@ -506,7 +506,7 @@ describe("environment_skill_install", () => {
         {
           name: "a",
           path: "skills/a",
-          outcome: "saved",
+          outcome: "installed",
           change: installChange(1, "a"),
           shadows: true,
         },
@@ -525,10 +525,8 @@ describe("environment_skill_install", () => {
     );
 
     expect(said).toContain("Installed a (over the bundle's Skill of that name)");
-    expect(said).toContain("from o/skills at v2, commit c0ffee0");
-    expect(said).toContain(
-      "b was installed from o/skills at v2, commit c0ffee0 already: nothing changed",
-    );
+    expect(said).toContain("from o/skills at v2, c0ffee0");
+    expect(said).toContain("b was installed from o/skills at v2, c0ffee0 already: nothing changed");
     expect(said).toContain(
       "Refused (the others were installed): - c (skills/c): notes.md: a binary file",
     );
@@ -557,7 +555,7 @@ describe("environment_skill_install", () => {
 
     expect(result.isError).not.toBe(true);
     expect(text(result)).toContain(
-      "Installed nothing: mattpocock/skills (commit c0ffee0) holds 2 Skills",
+      "Installed nothing: mattpocock/skills (at c0ffee0) holds 2 Skills",
     );
     expect(text(result)).toContain("- grill-me (skills/grill-me): Interview me");
     expect(text(result)).toContain("- tdd (skills/tdd): Test first");
@@ -683,7 +681,7 @@ describe("environment_get", () => {
     );
 
     expect(shown).toContain(
-      "\n  grill-me (saved 1970-01-01T00:00:00.000Z, installed from mattpocock/skills/skills/grill-me commit c0ffee0): Interview me.",
+      "\n  grill-me (saved 1970-01-01T00:00:00.000Z, installed from mattpocock/skills/skills/grill-me at c0ffee0): Interview me.",
     );
   });
 });

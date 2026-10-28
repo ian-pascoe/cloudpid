@@ -180,7 +180,7 @@ const open = (
                 {
                   name: "grill-me",
                   path: "skills/grill-me",
-                  outcome: "saved" as const,
+                  outcome: "installed" as const,
                   change: {
                     ...CHANGE,
                     field: "skills.grill-me",
@@ -338,7 +338,7 @@ describe("the Session's Environments", () => {
       status: "installed",
       environment: { id: "default", name: "Default" },
       commit: "c0ffee0000000000000000000000000000000001",
-      results: [{ name: "grill-me", outcome: "saved" }],
+      results: [{ name: "grill-me", outcome: "installed" }],
       handed: true,
     });
     expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);

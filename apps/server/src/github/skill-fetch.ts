@@ -4,7 +4,12 @@
 // GitHub App's tokens), so the rules are tested without a network. Nothing is saved here: the Registry checks what comes
 // out as a save does (`checkSkill`) and keeps it with its Skill source.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off missingPipeableSignature:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
-import { MAX_FILE_BYTES, MAX_SKILL_BYTES, problemsIn } from "@cloudpid/extensions/skill-checks";
+import {
+  MAX_FILE_BYTES,
+  MAX_SKILL_BYTES,
+  MAX_SKILL_FILES,
+  problemsIn,
+} from "@cloudpid/extensions/skill-checks";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { readFrontmatter } from "@cloudpid/extensions/skills-discovery";
@@ -102,7 +107,6 @@ export type SkillFetch =
 export const MAX_SKILL_CANDIDATES = 200;
 
 /** The most files a Skill's folder may hold, as a save reads at most this many. */
-const MAX_FILES = 500;
 
 /** The most blobs read at once. */
 const CONCURRENCY = 6;
@@ -375,8 +379,8 @@ export const fetchSkills = async (
       const entries = skillFilesIn({ tree: tree.entries }, candidate.skillMdPath);
       const problems: string[] = [];
 
-      if (entries.length > MAX_FILES) {
-        problems.push(`the folder holds ${entries.length} files, more than ${MAX_FILES}`);
+      if (entries.length > MAX_SKILL_FILES) {
+        problems.push(`the folder holds ${entries.length} files, more than ${MAX_SKILL_FILES}`);
       }
 
       let total = 0;
@@ -445,11 +449,9 @@ export const fetchSkills = async (
       skipped: skipped.toSorted((left, right) => left.path.localeCompare(right.path)),
     };
   } catch (cause) {
+    // Only what the reader says of GitHub is a failure to report; anything else is a bug and surfaces as one.
     if (Schema.is(GithubReadError)(cause)) return failed(cause.kind, cause.message);
 
-    return failed(
-      "failed",
-      `GitHub could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
+    throw cause;
   }
 };

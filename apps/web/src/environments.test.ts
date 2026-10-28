@@ -14,6 +14,7 @@ import {
   type AgentChange,
   DELETED_FIELD,
   type EnvironmentSecretRecord,
+  skillSourceText,
   type SessionRecord,
 } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
@@ -34,7 +35,6 @@ import {
   changeTitleText,
   changeValueText,
   installOutcomeLines,
-  skillSourceText,
   fieldValueText,
   revertible,
   deleteConfirmed,

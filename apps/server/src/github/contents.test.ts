@@ -91,6 +91,30 @@ describe("githubContents", () => {
     expect(calls[0]?.url).toBe("https://api.github.com/repos/acme/skills/commits/feature/a%20b");
   });
 
+  it("never sends a request for a ref or a repo that a URL parser would resolve to another endpoint", async () => {
+    const { reader, calls } = harness([]);
+
+    for (const ref of ["..", "../../app/installations", "a/./b", "a//b", "/a", "a/"]) {
+      const error = await failure(reader.commit(repo, ref));
+
+      expect(error.kind, ref).toBe("refused");
+    }
+
+    for (const bad of [
+      { owner: "acme", name: ".." },
+      { owner: "acme", name: "." },
+      { owner: "..", name: "skills" },
+      { owner: "acme", name: "" },
+    ]) {
+      expect((await failure(reader.commit(bad, null))).kind).toBe("refused");
+      expect((await failure(reader.tree(bad, SHA))).kind).toBe("refused");
+      expect((await failure(reader.blob(bad, SHA))).kind).toBe("refused");
+    }
+
+    // Nothing reached GitHub.
+    expect(calls).toHaveLength(0);
+  });
+
   it("falls back to the app owner's token (public repos) where the app is not installed on the owner", async () => {
     const { reader, asked, calls } = harness([new Response(SHA)]);
 

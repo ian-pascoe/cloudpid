@@ -156,7 +156,7 @@ const fakeRegistries = () => {
       results: Arr.map(named, (name) => ({
         name,
         path: `skills/${name}`,
-        outcome: name === "same" ? ("unchanged" as const) : ("saved" as const),
+        outcome: name === "same" ? ("unchanged" as const) : ("installed" as const),
       })),
     };
   };

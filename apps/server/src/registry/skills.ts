@@ -48,7 +48,7 @@ export type StoredSkill = {
   readonly name: string;
   readonly description: string;
   readonly files: HashedFiles;
-  /** Where it was installed from (migration 23); null for one the agent wrote or saved from its Workspace. */
+  /** Where it was installed from (migration 23); null for one that was never installed. A save from a Workspace keeps the source it had. */
   readonly source: SkillSource | null;
   readonly savedAt: number;
 };

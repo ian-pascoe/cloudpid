@@ -88,4 +88,37 @@ describe("parseSkillSource", () => {
       if (!result.ok) expect(result.message).toContain("owner/repo@skill");
     }
   });
+
+  it("refuses a ref or a repo name a URL parser would resolve to another endpoint", () => {
+    for (const input of [
+      "https://github.com/o/r/tree/..%2F..%2F..%2F..%2Fapp%2Finstallations",
+      "https://github.com/o/r/tree/%2e%2e/x",
+      "https://github.com/o/r/tree/%2E/x",
+      "https://github.com/o/r/tree/feature%2F..%2Fmain",
+      "https://github.com/o/r/tree/a%2F%2Fb",
+      "https://github.com/o/r/tree/%2Fmain",
+      "https://github.com/o/r/tree/main%2F",
+      "o/..",
+      "o/.",
+      "o/..git",
+      "o/...git@skill",
+      "https://github.com/o/..",
+      "https://github.com/o/..git",
+      "https://github.com/o/../tree/main",
+    ]) {
+      const result = parseSkillSource(input);
+
+      expect(result.ok, input).toBe(false);
+
+      if (!result.ok) expect(result.message, input).toContain("segment");
+    }
+  });
+
+  it("keeps a ref whose segments are names, with dots in them", () => {
+    expect(parsed("https://github.com/o/r/tree/release%2Fv1.2.3/skills")).toMatchObject({
+      ref: "release/v1.2.3",
+      path: "skills",
+    });
+    expect(parsed("o/.github")).toMatchObject({ name: ".github" });
+  });
 });

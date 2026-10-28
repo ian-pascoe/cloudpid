@@ -30,6 +30,7 @@ import {
   type EnvironmentRepo,
   type EnvironmentSkill,
   SKILLS_ROOT,
+  skillSourceText,
   variableField,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
@@ -342,7 +343,7 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
                   `\n  ${skill.name} (saved ${iso(skill.savedAt)}${
                     skill.source === undefined
                       ? ""
-                      : `, installed from ${skill.source.repo}/${skill.source.path === "" ? "" : `${skill.source.path} `}commit ${skill.source.commit.slice(0, 7)}`
+                      : `, installed from ${skillSourceText(skill.source)}`
                   }): ${skill.description}`,
               ),
               "",

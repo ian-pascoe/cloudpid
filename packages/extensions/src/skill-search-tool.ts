@@ -14,6 +14,8 @@ import {
   MAX_LIMIT,
   queryProblem,
   readSkillSearch,
+  SEARCH_HEADERS,
+  SEARCH_TIMEOUT_MS,
   skillSearchUrl,
 } from "./skill-search.ts";
 import { WebTransport } from "./web/transport.ts";
@@ -27,9 +29,6 @@ export class SkillSearchError extends Schema.TaggedError<
   SkillSearchError,
   { readonly brand: unique symbol }
 >()("SkillSearchError", { message: Schema.String }) {}
-
-/** How long a search is waited for. */
-export const SEARCH_TIMEOUT_MS = 15_000;
 
 const unable = (why: string) =>
   SkillSearchError.make({ message: `Could not search skills.sh: ${why}` });
@@ -57,12 +56,13 @@ const search = defineEffectTool({
     const response = yield* transport
       .fetch({
         url: skillSearchUrl(query.trim(), limit),
-        headers: { accept: "application/json", "user-agent": "cloudpid" },
+        headers: SEARCH_HEADERS,
       })
       .pipe(
         Effect.timeoutOrElse({
           duration: SEARCH_TIMEOUT_MS,
-          orElse: () => Effect.fail(unable("it did not answer within 15 seconds")),
+          orElse: () =>
+            Effect.fail(unable(`it did not answer within ${SEARCH_TIMEOUT_MS / 1_000} seconds`)),
         }),
         Effect.catchTag("WebToolError", (error) =>
           Effect.fail(unable(`skills.sh could not be reached (${error.message})`)),

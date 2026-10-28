@@ -17,7 +17,7 @@ export type InstalledSkill = {
   readonly name: string;
   /** Its folder in the repo. */
   readonly path: string;
-  readonly outcome: "saved" | "unchanged" | "rejected";
+  readonly outcome: "installed" | "unchanged" | "rejected";
   /** Why it was refused. */
   readonly message?: string;
   /** The Agent change that kept it (the agent's install only). */
@@ -116,7 +116,7 @@ export const installSkills = async (
           const saved = {
             name: skill.name,
             path: skill.path,
-            outcome: "saved" as const,
+            outcome: "installed" as const,
             shadows: kept.shadows,
           };
 
