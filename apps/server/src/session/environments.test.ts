@@ -50,12 +50,12 @@ const CHANGE: AgentChange = {
 type MarkAnswers = { mark: SecretBuildMark };
 
 /** The variables kept Global in the fake Registry. */
-const EVERY = { SHARED: "all" };
+const GLOBAL_VARIABLES = { SHARED: "all" };
 
 /**
  * What the Workspace of the Session's Environment is handed: its own `A`, and the variables kept Global.
  */
-const MERGED = { variables: { A: "1", ...EVERY } };
+const MERGED = { variables: { A: "1", ...GLOBAL_VARIABLES } };
 
 /** The scopes the fake Registry names, by id. */
 const scopes = new Map([
@@ -67,7 +67,7 @@ const open = (
   answer: Effect.Success<
     ReturnType<EnvironmentsRegistry["changeEnvironment"]>
   >["status"] = "changed",
-  everyAnswer: Effect.Success<
+  globalAnswer: Effect.Success<
     ReturnType<EnvironmentsRegistry["changeGlobal"]>
   >["status"] = "changed",
   // Whether the Session's Environment has a variable of its own by the name that changed at Global.
@@ -81,7 +81,7 @@ const open = (
   const upkept: string[] = [];
   const sparesKept: string[] = [];
   const asked: unknown[] = [];
-  const everyAsked: unknown[] = [];
+  const globalAsked: unknown[] = [];
   const markAsked: unknown[] = [];
 
   // The mark the fake Registry answers.
@@ -109,21 +109,24 @@ const open = (
           : null,
       ),
     getGlobalSettings: () =>
-      Effect.succeed({ settings: { variables: EVERY }, overrides: { variables: EVERY } }),
+      Effect.succeed({
+        settings: { variables: GLOBAL_VARIABLES },
+        overrides: { variables: GLOBAL_VARIABLES },
+      }),
     workspaceOverrides: ({ environment }: { readonly environment: string }) =>
       overridesUnreadable
         ? Effect.die("Registry is down")
         : Effect.succeed(environment === "default" ? MERGED : null),
     changeGlobal: (input: Parameters<EnvironmentsRegistry["changeGlobal"]>[0]) =>
       Effect.sync(() => {
-        everyAsked.push(input);
+        globalAsked.push(input);
 
-        switch (everyAnswer) {
+        switch (globalAnswer) {
           case "changed":
             return {
               status: "changed" as const,
               change: { ...CHANGE, scope: "*", field: "variables.SHARED" },
-              variables: EVERY,
+              variables: GLOBAL_VARIABLES,
               overriddenIn: overridesHere ? [{ id: "default", name: "Default" }] : [],
               newBuilds: [{ id: "0000abcd", name: "Other" }],
               own: input.environment === undefined ? undefined : !overridesHere,
@@ -373,7 +376,7 @@ const open = (
     upkept,
     sparesKept,
     asked,
-    everyAsked,
+    globalAsked,
     markAsked,
     setMark: (next: SecretBuildMark) => {
       answers.mark = next;
@@ -446,7 +449,7 @@ describe("the Session's Environments", () => {
     const shared = [{ name: "shared", description: "Shared by all.", savedAt: 5 }];
 
     expect((await Effect.runPromise(environments.get("default")))?.globalSkills).toEqual(shared);
-    expect((await Effect.runPromise(environments.every)).skills).toEqual(shared);
+    expect((await Effect.runPromise(environments.global)).skills).toEqual(shared);
   });
 
   it("hand the Session's own Workspace its Environment's Skill set after a Skill saved at Global", async () => {
@@ -613,10 +616,10 @@ describe("the Session's Environments", () => {
       skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: null }],
     };
 
-    const everywhere = open();
+    const atGlobal = open();
 
     const installed = await Effect.runPromise(
-      everywhere.environments.installSkills({
+      atGlobal.environments.installSkills({
         environment: "*",
         source: "mattpocock/skills",
         skills: ["grill-me"],
@@ -625,7 +628,7 @@ describe("the Session's Environments", () => {
       }),
     );
 
-    expect(everywhere.skillsAsked).toEqual([
+    expect(atGlobal.skillsAsked).toEqual([
       {
         environment: "*",
         source: "mattpocock/skills",
@@ -639,7 +642,7 @@ describe("the Session's Environments", () => {
       environment: GLOBAL_SCOPE,
       handed: true,
     });
-    expect(everywhere.skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
+    expect(atGlobal.skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
 
     // The Session's Environment keeps its own Skill of the name: the Skill does not reach it.
     const hidden = open("changed", "changed", true);
@@ -700,14 +703,16 @@ describe("the Session's Environments", () => {
   it("carry the variables kept Global in an Environment's details", async () => {
     const { environments } = open();
 
-    expect((await Effect.runPromise(environments.get("default")))?.globalVariables).toEqual(EVERY);
+    expect((await Effect.runPromise(environments.get("default")))?.globalVariables).toEqual(
+      GLOBAL_VARIABLES,
+    );
   });
 
   it("show what is kept Global: its variables, and its Secrets by name", async () => {
     const { environments } = open();
 
-    expect(await Effect.runPromise(environments.every)).toEqual({
-      variables: EVERY,
+    expect(await Effect.runPromise(environments.global)).toEqual({
+      variables: GLOBAL_VARIABLES,
       secrets: [
         { name: "API_KEY", scope: "every", build: false },
         { name: "NPM_TOKEN", scope: "every", build: false },
@@ -739,14 +744,14 @@ describe("the Session's Environments", () => {
   });
 
   it("hand a change of a variable kept Global to the Session's Workspace, and keep each Environment's Build current", async () => {
-    const { environments, handedOver, upkept, everyAsked, asked } = open();
+    const { environments, handedOver, upkept, globalAsked, asked } = open();
 
     const applied = await Effect.runPromise(
       environments.change({ environment: "*", change, author }),
     );
 
     expect(asked).toEqual([]);
-    expect(everyAsked).toEqual([
+    expect(globalAsked).toEqual([
       { change, author: { session: "s-1", ...author }, environment: "default" },
     ]);
     expect(applied).toEqual({
@@ -754,7 +759,7 @@ describe("the Session's Environments", () => {
       environment: { id: "*", name: "Global" },
       change: { ...CHANGE, scope: "*", field: "variables.SHARED" },
       newBuild: true,
-      every: {
+      global: {
         overriddenIn: [],
         newBuilds: [{ id: "0000abcd", name: "Other" }],
         own: true,
@@ -785,7 +790,7 @@ describe("the Session's Environments", () => {
 
     expect(applied).toMatchObject({
       status: "changed",
-      every: { overriddenIn: [{ id: "default", name: "Default" }], own: false },
+      global: { overriddenIn: [{ id: "default", name: "Default" }], own: false },
     });
     expect(handedOver).toEqual([]);
     expect(upkept).toEqual(["default", "0000abcd"]);

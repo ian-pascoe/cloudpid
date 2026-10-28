@@ -146,14 +146,16 @@ describe("a Secret the owner keeps in a secret_ask form", () => {
   });
 
   it("is recorded in the history of Global, scope *, when kept Global", async () => {
-    const [kept, everyHistory, environmentHistory] = await inRegistry(async ({ keep, changes }) => [
-      await keep("NPM_TOKEN", null),
-      changes.list(GLOBAL_SCOPE),
-      changes.list(DEFAULT_ENVIRONMENT),
-    ]);
+    const [kept, globalHistory, environmentHistory] = await inRegistry(
+      async ({ keep, changes }) => [
+        await keep("NPM_TOKEN", null),
+        changes.list(GLOBAL_SCOPE),
+        changes.list(DEFAULT_ENVIRONMENT),
+      ],
+    );
 
     expect(kept).toMatchObject({ status: "kept", record: { environment: null } });
-    expect(everyHistory).toMatchObject([
+    expect(globalHistory).toMatchObject([
       { scope: "*", field: "secrets.NPM_TOKEN", before: null, after: "kept" },
     ]);
     expect(environmentHistory).toEqual([]);
@@ -179,13 +181,13 @@ describe("a Secret the owner keeps in a secret_ask form", () => {
   });
 
   it("says when the Environment's own Secret of the name wins over one kept Global", async () => {
-    const [every, own] = await inRegistry(async ({ keep }) => {
+    const [atGlobal, own] = await inRegistry(async ({ keep }) => {
       await keep("API_KEY", DEFAULT_ENVIRONMENT);
 
       return [await keep("API_KEY", null), await keep("OTHER", null)];
     });
 
-    expect(every).toMatchObject({ status: "kept", shadowed: true });
+    expect(atGlobal).toMatchObject({ status: "kept", shadowed: true });
     expect(own).toMatchObject({ status: "kept", shadowed: false });
   });
 
@@ -244,7 +246,7 @@ describe("the agent's change of a kept Secret's Build mark", () => {
   });
 
   it("changes a Secret kept Global with the scope *, recorded in its history", async () => {
-    const [marked, every, own] = await inRegistry(async ({ keep, mark, changes }) => {
+    const [marked, atGlobal, own] = await inRegistry(async ({ keep, mark, changes }) => {
       await keep("NPM_TOKEN", null);
 
       return [
@@ -258,7 +260,7 @@ describe("the agent's change of a kept Secret's Build mark", () => {
       status: "changed",
       environment: { id: "*", name: "Global" },
     });
-    expect(every).toEqual(["secrets.NPM_TOKEN.build", "secrets.NPM_TOKEN"]);
+    expect(atGlobal).toEqual(["secrets.NPM_TOKEN.build", "secrets.NPM_TOKEN"]);
     expect(own).toEqual([]);
   });
 

@@ -31,7 +31,7 @@ import {
   declined,
   withApproval,
 } from "./approvals.ts";
-import { type ChangedEnvironment, EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
+import { type ChangedEnvironment, EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
 import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   asJsonValue,
@@ -112,7 +112,7 @@ const updatedOutcome = (
   },
 ) =>
   Effect.gen(function* () {
-    const everywhere = scope === GLOBAL_ID;
+    const atGlobal = scope === GLOBAL_ID;
 
     switch (updated.status) {
       case "missing":
@@ -167,7 +167,7 @@ const updatedOutcome = (
           });
         }
 
-        const current = everywhere ? yield* environments.current : null;
+        const current = atGlobal ? yield* environments.current : null;
         const overwrote = Arr.filter(moved, (result) => result.overwrote);
         const first = moved[0]?.name ?? same[0]?.name ?? "<name>";
 
@@ -211,8 +211,8 @@ const updatedOutcome = (
               : [
                   updated.handed
                     ? `They are served now at ${SKILLS_ROOT}/<name> (read-only): read ${SKILLS_ROOT}/${first}/SKILL.md to use one.`
-                    : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
-                  everywhere
+                    : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${atGlobal ? "" : " of the Environment"}.`,
+                  atGlobal
                     ? `Each Environment's Workspaces and spares get it at their next readying${updated.handed ? "; this Session's Workspace has it now" : ""}${current === null || updated.handed ? "" : " (or its Environment keeps its own Skill of the name, which hides it there)"}.`
                     : reach(environment, updated.handed, own),
                   PROMPT_NOTE,
@@ -230,7 +230,7 @@ const updatedOutcome = (
             before: asJsonValue(change.before),
             after: asJsonValue(change.after),
           })),
-          own: everywhere ? updated.handed : own,
+          own: atGlobal ? updated.handed : own,
         };
 
         return {
@@ -255,7 +255,7 @@ const leftOut = (
 };
 
 /** Update the Skills kept Global once the owner approves exactly what they are shown. */
-const updateEverywhere = (
+const updateAtGlobal = (
   deps: UpdateDeps,
   {
     names,
@@ -270,7 +270,7 @@ const updateEverywhere = (
 ) =>
   Effect.gen(function* () {
     const { environments, approvals, notFound } = deps;
-    const EVERY: ChangedEnvironment = { id: GLOBAL_ID, name: "Global" };
+    const GLOBAL_TARGET: ChangedEnvironment = { id: GLOBAL_ID, name: "Global" };
 
     /** What the owner's answer comes to: on Approve, the pinned updates made at the commits they were shown. */
     const answered = (answer: ApprovalAnswer) =>
@@ -415,7 +415,7 @@ const updateEverywhere = (
     if (ready.length === 0) {
       return yield* nothing({
         status: "done",
-        environment: EVERY,
+        environment: GLOBAL_TARGET,
         results: Arr.filter(
           results,
           (result): result is SkillUpdateEntry => result.outcome !== "ready",
@@ -500,7 +500,7 @@ export const updateTool = ({
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("the Skills kept Global")),
+      id: Schema.optionalKey(idOrGlobal("the Skills kept Global")),
       names: Schema.optionalKey(
         Schema.Array(Schema.String.check(Schema.isMinLength(1))).annotate({
           description:
@@ -530,11 +530,7 @@ export const updateTool = ({
         ]);
 
         if (id === GLOBAL_ID) {
-          return yield* updateEverywhere(
-            deps,
-            { names, overwrite: overwrite === true, reason },
-            api,
-          );
+          return yield* updateAtGlobal(deps, { names, overwrite: overwrite === true, reason }, api);
         }
 
         const { environment, own } = yield* target(id);

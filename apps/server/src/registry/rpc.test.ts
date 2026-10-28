@@ -3285,7 +3285,7 @@ it("updates Skills for the page as the owner's own save, saying how each went an
     }),
   );
 
-  const everywhere = await call(fake, (registry) =>
+  const atGlobal = await call(fake, (registry) =>
     registry.updateEnvironmentSkills({ environment: "*", names: [], overwrite: true }),
   );
 
@@ -3300,7 +3300,7 @@ it("updates Skills for the page as the owner's own save, saying how each went an
       { name: "tdd", outcome: "modified", message: "it was edited" },
     ],
   });
-  expect(everywhere).toEqual({ skills: [] });
+  expect(atGlobal).toEqual({ skills: [] });
   expect(unknown.message).toBe('Environment "ghost" does not exist');
   // Skills are not part of a Build: nothing else runs. The owner's Update needs no Approval, even for `*`.
   expect(fake.calls.filter((name) => !name.startsWith("updateSkills"))).toEqual([]);

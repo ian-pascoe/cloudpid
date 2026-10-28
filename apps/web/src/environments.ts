@@ -226,9 +226,9 @@ export type InheritedVariables = {
  */
 export const inheritedVariables = (
   own: Readonly<Record<string, string>>,
-  every: Readonly<Record<string, string>>,
+  globalVars: Readonly<Record<string, string>>,
 ): InheritedVariables => {
-  const names = Record.keys(every).toSorted();
+  const names = Record.keys(globalVars).toSorted();
 
   return {
     inherited: names.filter((name) => !Record.has(own, name)),

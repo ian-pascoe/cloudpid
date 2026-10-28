@@ -130,9 +130,9 @@ export const workspaceOverridesOf = (
   if (own === null) return null;
 
   const { settings } = readEnvironmentSettings(own);
-  const every = globalVariablesOf(store);
-  const problem = mergedVariablesProblem(settings.variables, every);
-  const overrides = containerOverridesFrom(withGlobalVariables(settings, every));
+  const globalVars = globalVariablesOf(store);
+  const problem = mergedVariablesProblem(settings.variables, globalVars);
+  const overrides = containerOverridesFrom(withGlobalVariables(settings, globalVars));
 
   return problem === undefined ? { overrides } : { overrides, problem };
 };

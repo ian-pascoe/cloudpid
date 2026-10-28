@@ -480,7 +480,7 @@ const withCurrentInstanceNames = (overrides: Schema.Json): Schema.Json =>
 const decodeOverrides = (overrides: Schema.Json) =>
   decodeCurrentOverrides(withCurrentInstanceNames(overrides));
 
-const decodeEveryOverrides = Schema.decodeUnknownResult(GlobalSettings, {
+const decodeGlobalOverrides = Schema.decodeUnknownResult(GlobalSettings, {
   onExcessProperty: "error",
   errors: "all",
 });
@@ -503,7 +503,7 @@ export const resolveContainerSettings = (
 export const resolveGlobalSettings = (
   overrides: Schema.Json,
 ): Result.Result<GlobalSettings, ContainerSettingsError> =>
-  Result.mapError(decodeEveryOverrides(overrides), settingsError);
+  Result.mapError(decodeGlobalOverrides(overrides), settingsError);
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
@@ -637,20 +637,20 @@ export const resolveContainerSettingsLeniently = (
  * lenient like `resolveContainerSettingsLeniently`.
  */
 export const resolveGlobalSettingsLeniently = (overrides: Schema.Json): LenientGlobalSettings =>
-  resolveLeniently(decodeEveryOverrides, DEFAULT_GLOBAL_SETTINGS, overrides);
+  resolveLeniently(decodeGlobalOverrides, DEFAULT_GLOBAL_SETTINGS, overrides);
 
 /**
  * Why an Environment with the variables `own` cannot also have the ones kept Global, `every`, or
  * undefined when it can: a Workspace is handed both as one set (`withGlobalVariables`), and the Workspace DO
- * refuses more than `MAX_VARIABLES` of them. Counts each name once: an Environment's own wins over the one for every
- * Environment. The words go after a prefix the caller adds.
+ * refuses more than `MAX_VARIABLES` of them. Counts each name once: an Environment's own wins over the one at
+ * Global. The words go after a prefix the caller adds.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a check for callers' own messages, not a combinator.
 export const mergedVariablesProblem = (
   own: Readonly<Record<string, string>>,
-  every: Readonly<Record<string, string>>,
+  globalVars: Readonly<Record<string, string>>,
 ): string | undefined => {
-  const inherited = Arr.filter(Record.keys(every), (name) => !Record.has(own, name)).length;
+  const inherited = Arr.filter(Record.keys(globalVars), (name) => !Record.has(own, name)).length;
   const total = Record.size(own) + inherited;
 
   return total > MAX_VARIABLES
@@ -667,12 +667,12 @@ export const mergedVariablesProblem = (
 // @effect-diagnostics-next-line missingPipeableSignature:off -- called with both arguments at the places that hand settings over.
 export const withGlobalVariables = (
   settings: ContainerSettings,
-  every: Readonly<Record<string, string>>,
+  globalVars: Readonly<Record<string, string>>,
 ): ContainerSettings => {
-  if (Record.isEmptyRecord(every)) return settings;
+  if (Record.isEmptyRecord(globalVars)) return settings;
 
   const inherited = Arr.sort(
-    Arr.filter(Record.keys(every), (name) => !Record.has(settings.variables, name)),
+    Arr.filter(Record.keys(globalVars), (name) => !Record.has(settings.variables, name)),
     Order.String,
   );
 
@@ -682,6 +682,6 @@ export const withGlobalVariables = (
 
   return {
     ...settings,
-    variables: { ...Record.filter(every, (_, name) => kept.has(name)), ...settings.variables },
+    variables: { ...Record.filter(globalVars, (_, name) => kept.has(name)), ...settings.variables },
   };
 };

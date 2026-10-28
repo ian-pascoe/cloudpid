@@ -675,8 +675,8 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * The files before and after Agent change `change` of a Skill of `environment` (or of `*`, the Skills kept for every
-   * Environment; `docs/architecture/agent-changes.md`), with their texts, for the Skills page to show as diffs. Fails
+   * The files before and after Agent change `change` of a Skill of `environment` (or of `*`, the Skills kept
+   * Global; `docs/architecture/agent-changes.md`), with their texts, for the Skills page to show as diffs. Fails
    * with an `EnvironmentError` when the scope has no such change, or it is not a Skill's.
    */
   Rpc.make("skillChangeFiles", {

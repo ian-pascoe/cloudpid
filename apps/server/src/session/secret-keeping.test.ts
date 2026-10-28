@@ -131,12 +131,12 @@ describe("the Session's keeping of Secrets", () => {
 
     expect(own.upkept).toEqual(["default"]);
 
-    const every = open(done([{ name: "API_KEY", status: "kept", shadowed: false }], "*"));
+    const globalKeep = open(done([{ name: "API_KEY", status: "kept", shadowed: false }], "*"));
 
-    await Effect.runPromise(every.keep(request("every")));
+    await Effect.runPromise(globalKeep.keep(request("every")));
     await settle();
 
-    expect(every.upkept).toEqual(["default", "0000abcd"]);
+    expect(globalKeep.upkept).toEqual(["default", "0000abcd"]);
   });
 
   it("does neither when nothing was kept", async () => {

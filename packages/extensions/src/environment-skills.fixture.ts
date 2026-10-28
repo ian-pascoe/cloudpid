@@ -221,18 +221,18 @@ export const fakeSkills = () => {
         kept.set(key, files);
         savedAt.set(key, clock++);
 
-        const everywhere = environment === "*";
-        const hiding = everywhere ? overriding(folder) : [];
+        const atGlobal = environment === "*";
+        const hiding = atGlobal ? overriding(folder) : [];
 
         return {
           status: "saved" as const,
           environment: checked.environment,
           change: changeOf(environment, folder, author, before, files),
           name: folder,
-          inherited: !everywhere && kept.has(`*:${folder}`),
+          inherited: !atGlobal && kept.has(`*:${folder}`),
           overriddenIn: hiding,
           // The Session's own Workspace takes it unless its Environment (default) keeps its own of the name.
-          handed: everywhere
+          handed: atGlobal
             ? !Arr.some(hiding, ({ id }) => id === "default")
             : environment === "default",
         };
@@ -263,16 +263,16 @@ export const fakeSkills = () => {
         kept.delete(key);
         savedAt.delete(key);
 
-        const everywhere = environment === "*";
-        const hiding = everywhere ? overriding(name) : [];
+        const atGlobal = environment === "*";
+        const hiding = atGlobal ? overriding(name) : [];
 
         return {
           status: "removed" as const,
           environment: where,
           change: changeOf(environment, name, author, before, undefined),
-          inherited: !everywhere && kept.has(`*:${name}`),
+          inherited: !atGlobal && kept.has(`*:${name}`),
           overriddenIn: hiding,
-          handed: everywhere
+          handed: atGlobal
             ? !Arr.some(hiding, ({ id }) => id === "default")
             : environment === "default",
         };

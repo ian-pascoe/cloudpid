@@ -2,8 +2,8 @@
 // kept in the Registry DO's SQLite, each file's text once per content hash (`skill_files`), shared by the Skills kept
 // now (`skills`, by scope, an Environment's id or `*` at Global, and name) and the Agent changes that saved
 // or removed one (their files before and after, by hash, under the same scope). Text that neither refers to any more is
-// dropped when the history is pruned. The Registry merges an Environment's own Skills over those kept for every
-// Environment, into the Skill set its Workspaces serve (empty where none is kept), and
+// dropped when the history is pruned. The Registry merges an Environment's own Skills over those kept
+// Global, into the Skill set its Workspaces serve (empty where none is kept), and
 // hands it to a Workspace whose set's hash differs. Synchronous over SQLite, as the store is, but for the hashes, which
 // are made before a transaction.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
@@ -446,8 +446,8 @@ export const skillLayers = (
     : [skills.list(environment), skills.list(GLOBAL_SCOPE)];
 
 /**
- * The Skill set of `layers` (the scopes' Skills, nearest first: an Environment's own, then those kept for every
- * Environment): a Skill of a nearer layer hides the others of its name. Its hash is that of every file's path and
+ * The Skill set of `layers` (the scopes' Skills, nearest first: an Environment's own, then those kept
+ * Global): a Skill of a nearer layer hides the others of its name. Its hash is that of every file's path and
  * content hash, in order, so with no Skill in any layer it is the empty set's (`EMPTY_SKILL_SET_HASH`), and a Workspace
  * that holds the empty set is handed nothing.
  */
@@ -584,18 +584,18 @@ const setProblem = (
   change: Change,
   contents: ReadonlyMap<string, string> = new Map(),
 ): string | undefined => {
-  const every = skills.list(GLOBAL_SCOPE);
+  const globalSkills = skills.list(GLOBAL_SCOPE);
 
   if (scope !== GLOBAL_SCOPE) {
     return sizeProblem(
       skills,
       "The Environment's Skill set",
-      [withChange(skills.list(scope), change), every],
+      [withChange(skills.list(scope), change), globalSkills],
       contents,
     );
   }
 
-  const kept = withChange(every, change);
+  const kept = withChange(globalSkills, change);
 
   // An Environment with none of its own Skills (a new one, or one that removes its override) serves these alone.
   const alone = sizeProblem(
@@ -666,7 +666,7 @@ const decodeChangeValue = Schema.decodeUnknownOption(SkillChangeValue);
  * undefined when it may go on. The Session asks the owner first and passes what they were shown (`expected`, or an
  * install's `pin`), so a call without it is not one that asked: a second guard, for a caller that skips the first.
  */
-export const unapprovedEveryChange = (scope: string, approved: boolean): string | undefined =>
+export const unapprovedGlobalChange = (scope: string, approved: boolean): string | undefined =>
   scope === GLOBAL_SCOPE && !approved
     ? "a change to the Skills kept Global is made only against what the owner approved (no Approval was passed): nothing was changed"
     : undefined;
@@ -972,11 +972,11 @@ const layersAround = (
   scope: string,
   name: string,
 ) => {
-  const everywhere = scope === GLOBAL_SCOPE;
+  const atGlobal = scope === GLOBAL_SCOPE;
 
   return {
-    inherited: !everywhere && skills.get(GLOBAL_SCOPE, name) !== null,
-    overriddenIn: everywhere
+    inherited: !atGlobal && skills.get(GLOBAL_SCOPE, name) !== null,
+    overriddenIn: atGlobal
       ? Arr.flatMap(store.listEnvironments(), ({ id, name: environmentName }) =>
           skills.get(id, name) === null ? [] : [{ id, name: environmentName }],
         )

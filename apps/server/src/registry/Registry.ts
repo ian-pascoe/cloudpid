@@ -38,7 +38,7 @@ import {
   type SkillRemoval,
   type SkillSave,
   skillSetOf,
-  unapprovedEveryChange,
+  unapprovedGlobalChange,
 } from "./skills.ts";
 import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
@@ -366,8 +366,8 @@ export type RegistryMethods = {
     readonly environment?: string | undefined;
   }) => Effect.Effect<GlobalChangeAnswer>;
   /**
-   * The Container settings overrides a Workspace of `environment` is handed: its own with the variables kept for every
-   * Environment under them. Null when the Environment is not registered.
+   * The Container settings overrides a Workspace of `environment` is handed: its own with the variables kept
+   * Global under them. Null when the Environment is not registered.
    */
   readonly workspaceOverrides: (input: {
     readonly environment: string;
@@ -525,8 +525,8 @@ export type RegistryMethods = {
    * An Agent change (`docs/architecture/workspace.md` → Installing from GitHub → Updates): update the Skills `names` (absent: every one marked
    * update available) kept for `environment` (or `*`) to the latest commit of their recorded ref, fetched here as the GitHub
    * App. A modified Skill is refused unless `overwrite`. Each Skill moved is recorded with its files and source before and
-   * after; one whose folder is the same records nothing. With `pins` (the owner's Approval of an update for every
-   * Environment), the commits and folders the owner was shown, and only while each Skill was last saved then. The caller
+   * after; one whose folder is the same records nothing. With `pins` (the owner's Approval of an update at
+   * Global), the commits and folders the owner was shown, and only while each Skill was last saved then. The caller
    * hands the Session's own Workspace the new Skill set after.
    */
   readonly agentUpdateSkills: (
@@ -664,8 +664,8 @@ export type RegistryMethods = {
     readonly name: string;
   }) => Effect.Effect<boolean>;
   /**
-   * The Secrets `environment` uses, with their values, opened here: its own over those of the same name kept for every
-   * Environment. For the main Worker's Builds and spares only: never answered to a client.
+   * The Secrets `environment` uses, with their values, opened here: its own over those of the same name kept
+   * Global. For the main Worker's Builds and spares only: never answered to a client.
    */
   readonly environmentSecrets: (input: {
     readonly environment: string;
@@ -1002,13 +1002,13 @@ export const RegistryLive = Registry.make(
 
               const { previous, ...changed } = outcome;
 
-              const every = globalVariablesOf(store);
+              const globalVars = globalVariablesOf(store);
 
               const newBuild = yield* Effect.promise(() =>
                 wantsNewBuild(
                   outcome.environment.repos,
-                  withGlobalVariables(previous, every),
-                  withGlobalVariables(outcome.state.settings, every),
+                  withGlobalVariables(previous, globalVars),
+                  withGlobalVariables(outcome.state.settings, globalVars),
                 ),
               );
 
@@ -1210,7 +1210,7 @@ export const RegistryLive = Registry.make(
           agentSaveSkill: ({ environment, folder, files, author, expected }) =>
             Effect.gen(function* () {
               // A change to the Skills kept Global is made only against what the owner approved.
-              const unapproved = unapprovedEveryChange(environment, expected !== undefined);
+              const unapproved = unapprovedGlobalChange(environment, expected !== undefined);
 
               if (unapproved !== undefined)
                 return { status: "rejected" as const, message: unapproved };
@@ -1231,7 +1231,7 @@ export const RegistryLive = Registry.make(
             }),
           agentRemoveSkill: ({ environment, name, author, expected }) =>
             Effect.gen(function* () {
-              const unapproved = unapprovedEveryChange(environment, expected !== undefined);
+              const unapproved = unapprovedGlobalChange(environment, expected !== undefined);
 
               if (unapproved !== undefined)
                 return { status: "rejected" as const, message: unapproved };
@@ -1245,7 +1245,7 @@ export const RegistryLive = Registry.make(
             }),
           agentInstallSkills: ({ environment, source, skills: names, author, pin }) =>
             Effect.suspend(() => {
-              const unapproved = unapprovedEveryChange(environment, pin !== undefined);
+              const unapproved = unapprovedGlobalChange(environment, pin !== undefined);
 
               return unapproved === undefined
                 ? installFromGithub({ environment, source, skills: names, author, pin })
@@ -1263,7 +1263,7 @@ export const RegistryLive = Registry.make(
             installFromGithub({ environment, source, skills: names, folders, author: null }),
           agentUpdateSkills: ({ environment, names, overwrite, pins, author }) =>
             Effect.suspend(() => {
-              const unapproved = unapprovedEveryChange(environment, pins !== undefined);
+              const unapproved = unapprovedGlobalChange(environment, pins !== undefined);
 
               return unapproved === undefined
                 ? updateFromGithub({ environment, names, overwrite, pins, author })
@@ -1343,7 +1343,7 @@ export const RegistryLive = Registry.make(
             }),
           buildWork: ({ environments }) =>
             Effect.gen(function* () {
-              const every = globalVariablesOf(store);
+              const globalVars = globalVariablesOf(store);
 
               const wanted = Arr.filterMap(store.listEnvironments(), (environment) => {
                 const recorded = store.getBuild(environment.id);
@@ -1362,7 +1362,7 @@ export const RegistryLive = Registry.make(
                     settings: readEnvironmentSettings(
                       store.getEnvironmentSettings(environment.id) ?? {},
                     ).overrides,
-                    globalVariables: every,
+                    globalVariables: globalVars,
                     recorded,
                     // The values a Build gets, as a keyed digest only: the key is stored and shown in the clear.
                     secrets: digest,

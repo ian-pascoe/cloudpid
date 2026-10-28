@@ -66,7 +66,7 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
             }
           : null,
       ),
-    every: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
+    global: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
     change: ({ environment, change, author }) =>
       Effect.sync(() => {
         if (environment !== DEFAULT.id) return { status: "missing" as const };

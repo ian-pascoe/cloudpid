@@ -608,18 +608,18 @@ export const SkillDialogs = ({
  */
 export const SkillsSection = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSkillsAtom(id));
-  const everywhere = id === GLOBAL;
-  const every = useAtomValue(environmentSkillsAtom(GLOBAL));
+  const atGlobal = id === GLOBAL;
+  const globalSkills = useAtomValue(environmentSkillsAtom(GLOBAL));
   const skills = loaded.pipe(AsyncResult.value, Option.getOrNull);
   const loadError = failureOf(loaded);
   const [viewing, setViewing] = useAtom(skillFilesDialogAtom(id));
 
   const { inherited, overridden } =
-    everywhere || skills === null
+    atGlobal || skills === null
       ? { inherited: [], overridden: [] }
       : inheritedSkills(
           skills,
-          every.pipe(
+          globalSkills.pipe(
             AsyncResult.value,
             Option.getOrElse(() => []),
           ),
@@ -628,13 +628,13 @@ export const SkillsSection = ({ id }: { id: string }) => {
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-xs font-medium text-muted-foreground">
-        {everywhere ? "Global skills" : "Skills"}
+        {atGlobal ? "Global skills" : "Skills"}
       </h3>
       {skills === null ? (
         <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
       ) : skills.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          {everywhere
+          {atGlobal
             ? "None kept Global. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install and the id *, and you approve it in its session."
             : "None of its own: its workspaces serve those kept Global. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install."}
         </p>

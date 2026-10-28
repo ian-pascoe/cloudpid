@@ -28,10 +28,10 @@ export type InheritedSkills = {
  */
 export const inheritedSkills = (
   own: readonly EnvironmentSkill[],
-  every: readonly EnvironmentSkill[],
+  globalSkills: readonly EnvironmentSkill[],
 ): InheritedSkills => {
   const kept = new Set(own.map((skill) => skill.name));
-  const names = every.map((skill) => skill.name).toSorted();
+  const names = globalSkills.map((skill) => skill.name).toSorted();
 
   return {
     inherited: names.filter((name) => !kept.has(name)),
@@ -52,9 +52,9 @@ const skills = (count: number): string => {
  */
 export const skillCountText = (
   own: readonly EnvironmentSkill[],
-  every?: readonly EnvironmentSkill[],
+  globalSkills?: readonly EnvironmentSkill[],
 ): string => {
-  const { inherited } = inheritedSkills(own, every ?? []);
+  const { inherited } = inheritedSkills(own, globalSkills ?? []);
   const total = skills(own.length + inherited.length);
 
   return inherited.length === 0 ? total : `${total}, ${inherited.length} from Global`;
@@ -123,10 +123,10 @@ export const githubSource = (
 export const directoryBadges = (installed: SkillInstalledIn | undefined): ReadonlyArray<string> => {
   if (installed === undefined) return [];
 
-  const { global, environments, updateAvailable } = installed;
+  const { global: atGlobal, environments, updateAvailable } = installed;
   const where = [];
 
-  if (global) where.push("Installed · Global");
+  if (atGlobal) where.push("Installed · Global");
   else if (environments.length > 0) {
     where.push(
       `Installed · in ${environments.length} ${environments.length === 1 ? "environment" : "environments"}`,

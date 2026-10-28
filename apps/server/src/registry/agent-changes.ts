@@ -371,7 +371,7 @@ export type ReachedEnvironment = {
 };
 
 /** Where an Agent change to a variable kept Global goes. */
-export type EveryChangeReach = {
+export type GlobalChangeReach = {
   /** The Environments whose own variable of the name wins, so the change does not reach them. */
   readonly overriddenIn: ReadonlyArray<{ readonly id: string; readonly name: string }>;
   /** The Environments it reaches that want a Build of another key (`wantsNewBuild`). */
@@ -391,7 +391,7 @@ export const globalChangeReach = async (
   previous: Readonly<Record<string, string>>,
   variables: Readonly<Record<string, string>>,
   caller: string | undefined,
-): Promise<EveryChangeReach> => {
+): Promise<GlobalChangeReach> => {
   const overriding = Arr.filter(environments, ({ settings }) =>
     Record.has(settings.variables, name),
   );
@@ -572,7 +572,7 @@ const revertReason = (change: AgentChange): string =>
  * The owner's revert of Agent change `change` of the variable `name` kept Global: its `before` value
  * written back, if the variable still has the change's `after` value.
  */
-const revertEveryVariable = (
+const revertGlobalVariable = (
   store: RegistryStore,
   changes: AgentChanges,
   change: AgentChange,
@@ -627,11 +627,11 @@ export const revertAgentChange = (
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {
     // The Secrets and variables kept Global have a history of their own, in the scope `*`.
-    const every = environment === GLOBAL_SCOPE;
-    const known = every ? null : current(store, environment);
+    const isGlobal = environment === GLOBAL_SCOPE;
+    const known = isGlobal ? null : current(store, environment);
     const change = changes.get(environment, id);
 
-    if (change === null || (known === null && !every)) return { status: "missing" };
+    if (change === null || (known === null && !isGlobal)) return { status: "missing" };
 
     if (change.actor === "owner") {
       return { status: "refused", message: "A revert is not undone: change the setting itself" };
@@ -658,8 +658,8 @@ export const revertAgentChange = (
 
     const variable = fieldVariable(change.field);
 
-    if (every && variable !== null)
-      return revertEveryVariable(store, changes, change, variable, now);
+    if (isGlobal && variable !== null)
+      return revertGlobalVariable(store, changes, change, variable, now);
 
     // A Skill's change reverts in either scope: an Environment's own Skills, and those kept Global.
     if (fieldSkill(change.field) !== null) {

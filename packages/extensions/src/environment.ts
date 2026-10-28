@@ -156,7 +156,7 @@ export type AppliedChange =
       /** Whether the Build upkeep after it asked for a new Build. */
       readonly newBuild: boolean;
       /** Set for a variable kept Global (the environment is then `GLOBAL_ID`). */
-      readonly every?: GlobalChanged;
+      readonly global?: GlobalChanged;
     }
   /** The setting already had the value: nothing was saved or recorded. */
   | {
@@ -192,7 +192,7 @@ export type EnvironmentsService = {
   /** Environment `id`, or null when there is none. */
   readonly get: (id: string) => Effect.Effect<EnvironmentDetails | null, EnvironmentsError>;
   /** What is kept Global: its variables, its Secrets' names and its Skills. */
-  readonly every: Effect.Effect<GlobalDetails, EnvironmentsError>;
+  readonly global: Effect.Effect<GlobalDetails, EnvironmentsError>;
   readonly change: (input: {
     readonly environment: string;
     readonly change: SettingChange;
@@ -434,7 +434,7 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
  * When a change of a variable kept Global applies, whom it does not reach, and whose Build was asked
  * for.
  */
-const describeAppliedEverywhere = ({ overriddenIn, newBuilds, own }: GlobalChanged): string =>
+const describeAppliedGlobal = ({ overriddenIn, newBuilds, own }: GlobalChanged): string =>
   Arr.join(
     [
       overriddenIn.length === 0
@@ -498,7 +498,7 @@ export const Id = Schema.String.annotate({
  * The `id` of a tool that also takes `*`, `kept` saying what that addresses. Built when used: the constant is not there
  * when this module loads first.
  */
-export const idOrEvery = (kept: string) =>
+export const idOrGlobal = (kept: string) =>
   Schema.String.annotate({
     description: `The Environment's id, as environment_list shows it (default: this Session's Environment), or "${GLOBAL_ID}" for ${kept}`,
   });
@@ -598,7 +598,7 @@ export const EnvironmentTools: Effect.Effect<
   const applyChange = <Prepared>({
     tool,
     id,
-    every = false,
+    takesGlobal = false,
     field,
     value,
     texts = [],
@@ -611,7 +611,7 @@ export const EnvironmentTools: Effect.Effect<
   }: {
     readonly tool: string;
     readonly id: string | undefined;
-    readonly every?: boolean;
+    readonly takesGlobal?: boolean;
     readonly field: string;
     readonly value: Schema.Json | null;
     /** The text the value is made of, kept as written: none holds a Secret's value or a credential. */
@@ -630,7 +630,7 @@ export const EnvironmentTools: Effect.Effect<
       readonly own: boolean;
       readonly newBuild: boolean;
       /** Set for a change to the variables kept Global. */
-      readonly every: GlobalChanged | undefined;
+      readonly global: GlobalChanged | undefined;
       readonly prepared: Prepared;
     }) => string;
   }) =>
@@ -648,7 +648,9 @@ export const EnvironmentTools: Effect.Effect<
       }
 
       const { environment, own } =
-        every && id === GLOBAL_ID ? { environment: GLOBAL_ID, own: false } : yield* target(id);
+        takesGlobal && id === GLOBAL_ID
+          ? { environment: GLOBAL_ID, own: false }
+          : yield* target(id);
 
       const prepared = yield* prepare(environment);
 
@@ -687,7 +689,7 @@ export const EnvironmentTools: Effect.Effect<
         case "changed": {
           const { change } = applied;
           // A change at Global reaches the Session's own Workspace unless its Environment overrides it.
-          const reaches = applied.every?.own ?? own;
+          const reaches = applied.global?.own ?? own;
 
           yield* log.record({ tool, environmentName: applied.environment.name, field });
 
@@ -700,7 +702,7 @@ export const EnvironmentTools: Effect.Effect<
                   change,
                   own: reaches,
                   newBuild: applied.newBuild,
-                  every: applied.every,
+                  global: applied.global,
                   prepared,
                 }),
               },
@@ -737,17 +739,17 @@ export const EnvironmentTools: Effect.Effect<
     },
     conversation: number,
   ) => {
-    const everywhere = id === GLOBAL_ID;
-    const preposition = everywhere ? "for" : "in";
+    const atGlobal = id === GLOBAL_ID;
+    const preposition = atGlobal ? "for" : "in";
 
     return applyChange({
       tool,
       id,
-      every: true,
+      takesGlobal: true,
       field: variableField(name),
       value,
       texts: value === null ? [] : [value],
-      refusal: `Nothing was saved: the value holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.${everywhere ? ` If the value is not secret (an email, a URL) and is kept as a Secret only so it is kept Global, ask the user to delete that Secret first (environment_secret_delete asks for their Approval, or they delete it on the Environments page): then this call saves it as a variable at Global.` : ""}`,
+      refusal: `Nothing was saved: the value holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.${atGlobal ? ` If the value is not secret (an email, a URL) and is kept as a Secret only so it is kept Global, ask the user to delete that Secret first (environment_secret_delete asks for their Approval, or they delete it on the Environments page): then this call saves it as a variable at Global.` : ""}`,
       reason,
       conversation,
       prepare: () => Effect.void,
@@ -755,8 +757,8 @@ export const EnvironmentTools: Effect.Effect<
         value === null
           ? `${name} is not set ${preposition} ${where}: nothing changed, and nothing was recorded.`
           : `${name} already has that value ${preposition} ${where}: nothing changed, and nothing was recorded.`,
-      changed: ({ where, change, own, newBuild, every }) =>
-        `${value === null ? `Unset ${name}` : `Set ${name}`} ${preposition} ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${every === undefined ? describeApplied(own, newBuild) : describeAppliedEverywhere(every)}`,
+      changed: ({ where, change, own, newBuild, global }) =>
+        `${value === null ? `Unset ${name}` : `Set ${name}`} ${preposition} ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${global === undefined ? describeApplied(own, newBuild) : describeAppliedGlobal(global)}`,
     });
   };
 
@@ -812,7 +814,7 @@ export const EnvironmentTools: Effect.Effect<
       Effect.gen(function* () {
         const current = yield* environments.current;
         const listed = yield* environments.list;
-        const every = yield* environments.every;
+        const globalDetails = yield* environments.global;
 
         return {
           output: [
@@ -826,7 +828,7 @@ export const EnvironmentTools: Effect.Effect<
                         listingLine(environment, environment.id === current),
                       ),
                       "\n",
-                    )}\nVariables at Global: ${Record.size(every.variables)} (environment_get with id "${GLOBAL_ID}")`,
+                    )}\nVariables at Global: ${Record.size(globalDetails.variables)} (environment_get with id "${GLOBAL_ID}")`,
             },
           ],
           details: { current, environments: Arr.map(listed, ({ id, name }) => ({ id, name })) },
@@ -838,14 +840,14 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_get",
     description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace), the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its variables, the names of its Secrets and its Skills.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("the variables, Secrets and Skills kept Global")),
+      id: Schema.optionalKey(idOrGlobal("the variables, Secrets and Skills kept Global")),
     }),
     replay: "safe",
     execute: ({ id }) =>
       Effect.gen(function* () {
         if (id === GLOBAL_ID) {
           return {
-            output: [{ type: "text" as const, text: describeGlobal(yield* environments.every) }],
+            output: [{ type: "text" as const, text: describeGlobal(yield* environments.global) }],
             details: {
               environment: { id: GLOBAL_ID, name: GLOBAL_NAME },
               current: false,
@@ -877,7 +879,7 @@ export const EnvironmentTools: Effect.Effect<
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a variable kept Global")),
+      id: Schema.optionalKey(idOrGlobal("a variable kept Global")),
       name: VariableName,
       value: Schema.String.annotate({ description: "The value, saved as written" }),
       reason: Reason,
@@ -892,7 +894,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_variable_unset",
     description: `Unset one of an Environment's variables (this Session's Environment unless id names another; id "${GLOBAL_ID}" is a variable kept Global, which no Environment inherits any more, and a new Build is asked for in each that did). The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now. A variable that is not set is left as it is, and nothing is recorded.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a variable kept Global")),
+      id: Schema.optionalKey(idOrGlobal("a variable kept Global")),
       name: VariableName,
       reason: Reason,
     }),
@@ -1136,7 +1138,7 @@ export const EnvironmentTools: Effect.Effect<
     name: "environment_spare_workspace_set",
     description: Arr.join(
       [
-        "Turn an Environment's Spare Workspace on or off (this Session's unless id names another). On (the default), the Environment keeps one Workspace made ahead from its last good Build while it had a Session in the last 3 days: cloned, its Setup Scripts run, its Container snapshotted and stopped, so a new Session takes it and starts without waiting for the clones and the Setup Scripts. Each spare prepared runs a Container for a minute or two and keeps a Snapshot, after every Session that takes one and every new Build.",
+        "Turn an Environment's Spare Workspace on or off (this Session's unless id names another). On (the default), the Environment keeps one Workspace made ahead from its last good Build while it had a Session in the last 3 days: cloned, its Setup Scripts run, its Container snapshotted and stopped, so a new Session takes it and starts without waiting for the clones and the Setup Scripts. Each spare prepared runs a Container for a minute or two and keeps a Snapshot, after every Session that takes one and global new Build.",
         "Off: no spare is prepared, the one there is is removed with its Snapshot, and a new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts as the first Workspace after a Build does. Off saves that Container time for an Environment whose new Sessions can wait; on suits one whose new Sessions should start fast.",
         "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at once: no Container restarts, and no new Build is made.",
       ],

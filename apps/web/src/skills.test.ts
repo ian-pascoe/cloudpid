@@ -22,13 +22,13 @@ describe("the Skills an Environment gets from Global", () => {
   const skill = (name: string) => ({ name, description: `What ${name} does.`, savedAt: 1 });
 
   it("are those kept Global that it keeps none of its own of the name, by name", () => {
-    const every = [skill("review"), skill("release"), skill("triage")];
+    const globalSkills = [skill("review"), skill("release"), skill("triage")];
 
-    expect(inheritedSkills([skill("release")], every)).toEqual({
+    expect(inheritedSkills([skill("release")], globalSkills)).toEqual({
       inherited: ["review", "triage"],
       overridden: ["release"],
     });
-    expect(inheritedSkills([], every)).toEqual({
+    expect(inheritedSkills([], globalSkills)).toEqual({
       inherited: ["release", "review", "triage"],
       overridden: [],
     });

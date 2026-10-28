@@ -535,7 +535,7 @@ describe("resolveContainerSettingsLeniently", () => {
 const variables = (count: number, prefix = "V"): Record<string, string> =>
   Record.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}`, "x"]));
 
-const resolvedEvery = (overrides: Schema.Json): GlobalSettings => {
+const resolvedGlobal = (overrides: Schema.Json): GlobalSettings => {
   const result = resolveGlobalSettings(overrides);
 
   if (Result.isFailure(result)) throw new Error(result.failure.message);
@@ -543,7 +543,7 @@ const resolvedEvery = (overrides: Schema.Json): GlobalSettings => {
   return result.success;
 };
 
-const rejectedEvery = (overrides: Schema.Json): string => {
+const rejectedGlobal = (overrides: Schema.Json): string => {
   const result = resolveGlobalSettings(overrides);
 
   if (Result.isSuccess(result)) throw new Error("Expected the overrides to be rejected");
@@ -554,28 +554,28 @@ const rejectedEvery = (overrides: Schema.Json): string => {
 describe("GlobalSettings", () => {
   it("has no variables by default, which is what no overrides resolve to", () => {
     expect(DEFAULT_GLOBAL_SETTINGS).toEqual({ variables: {} });
-    expect(resolvedEvery({})).toEqual(DEFAULT_GLOBAL_SETTINGS);
+    expect(resolvedGlobal({})).toEqual(DEFAULT_GLOBAL_SETTINGS);
   });
 
   it("takes variables under an Environment's rules", () => {
-    expect(resolvedEvery({ variables: { EMAIL: "a@b.c" } }).variables).toEqual({
+    expect(resolvedGlobal({ variables: { EMAIL: "a@b.c" } }).variables).toEqual({
       EMAIL: "a@b.c",
     });
 
     for (const name of ["PATH", "CLOUDPID_X", "1A"]) {
-      expect(rejectedEvery({ variables: { [name]: "x" } }), name).toContain("variables");
+      expect(rejectedGlobal({ variables: { [name]: "x" } }), name).toContain("variables");
     }
 
-    expect(rejectedEvery({ variables: { A: "a".repeat(4097) } })).toContain("variables");
-    expect(rejectedEvery({ variables: { A: "a\u0000b" } })).toContain("variables");
-    expect(rejectedEvery({ variables: variables(MAX_VARIABLES + 1) })).toContain("variables");
-    expect(resolvedEvery({ variables: variables(MAX_VARIABLES) }).variables).toEqual(
+    expect(rejectedGlobal({ variables: { A: "a".repeat(4097) } })).toContain("variables");
+    expect(rejectedGlobal({ variables: { A: "a\u0000b" } })).toContain("variables");
+    expect(rejectedGlobal({ variables: variables(MAX_VARIABLES + 1) })).toContain("variables");
+    expect(resolvedGlobal({ variables: variables(MAX_VARIABLES) }).variables).toEqual(
       variables(MAX_VARIABLES),
     );
   });
 
   it("refuses a key it does not know when it is saved, and drops only that key when it is read", () => {
-    expect(rejectedEvery({ idleMinutes: 5 })).toContain("idleMinutes");
+    expect(rejectedGlobal({ idleMinutes: 5 })).toContain("idleMinutes");
     expect(resolveGlobalSettingsLeniently({ idleMinutes: 5, variables: { A: "1" } })).toEqual({
       settings: { variables: { A: "1" } },
       dropped: [expect.stringContaining("idleMinutes")],

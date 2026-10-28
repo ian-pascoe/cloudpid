@@ -312,7 +312,9 @@ describe("parseVariables", () => {
   });
 
   it("counts the variables kept Global in the limit, an overridden name once", () => {
-    const every = Record.fromEntries(Array.from({ length: 10 }, (_, i) => [`E${i}`, "x"] as const));
+    const globalVars = Record.fromEntries(
+      Array.from({ length: 10 }, (_, i) => [`E${i}`, "x"] as const),
+    );
 
     const own = (count: number, names: readonly string[] = []) =>
       [
@@ -320,13 +322,15 @@ describe("parseVariables", () => {
         ...names.map((name) => `${name}=y`),
       ].join("\n");
 
-    expect(Result.isSuccess(parseVariables(own(MAX_VARIABLES - 10), every))).toBe(true);
-    expect(problemWith(own(MAX_VARIABLES - 10 + 1), every)).toBe(
+    expect(Result.isSuccess(parseVariables(own(MAX_VARIABLES - 10), globalVars))).toBe(true);
+    expect(problemWith(own(MAX_VARIABLES - 10 + 1), globalVars)).toBe(
       "With the 10 variables at Global it does not override, use at most 50 variables in all",
     );
     // Ten of its own override those ten: 50 in all.
     expect(
-      Result.isSuccess(parseVariables(own(MAX_VARIABLES - 10, Record.keys(every)), every)),
+      Result.isSuccess(
+        parseVariables(own(MAX_VARIABLES - 10, Record.keys(globalVars)), globalVars),
+      ),
     ).toBe(true);
     expect(problem(own(MAX_VARIABLES + 1))).toBe(`Use at most ${MAX_VARIABLES} variables`);
   });

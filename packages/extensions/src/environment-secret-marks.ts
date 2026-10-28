@@ -86,6 +86,10 @@ const asJsonValue = (value: AgentChange["before"]): JsonValue | null => value as
 const where = (named: ChangedEnvironment): string =>
   named.id === GLOBAL_ID ? "Global" : `Environment ${JSON.stringify(named.name)} (${named.id})`;
 
+/** "kept Global", or "kept for" the Environment, as a result says it. */
+const keptIn = (named: ChangedEnvironment): string =>
+  named.id === GLOBAL_ID ? "kept Global" : `kept for ${where(named)}`;
+
 const noEnvironment = (id: string) =>
   EnvironmentsError.make({
     message: `No Environment has the id ${JSON.stringify(id)}. Call environment_list for the Environments and their ids.`,
@@ -153,14 +157,14 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
             return yield* noEnvironment(environment);
           case "absent":
             return yield* EnvironmentsError.make({
-              message: `Nothing was saved: no Secret ${name} is kept for ${where(marked.environment)}. environment_get shows the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}". To keep one, call secret_ask with keep: the user chooses in the form whether to keep it.`,
+              message: `Nothing was saved: no Secret ${name} is ${keptIn(marked.environment)}. environment_get shows the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}". To keep one, call secret_ask with keep: the user chooses in the form whether to keep it.`,
             });
           case "unchanged":
             return {
               output: [
                 {
                   type: "text" as const,
-                  text: `${name}, kept for ${where(marked.environment)}, is ${markWords(marked.build)} already: nothing changed, and nothing was recorded.`,
+                  text: `${name}, ${keptIn(marked.environment)}, is ${markWords(marked.build)} already: nothing changed, and nothing was recorded.`,
                 },
               ],
               details: { unchanged: { environment: marked.environment, name } },
@@ -180,9 +184,9 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
                   type: "text" as const,
                   text: Arr.join(
                     [
-                      `${name}, kept for ${where(marked.environment)}, was ${markWords(change.before === true)} and is ${markWords(build)} now.`,
+                      `${name}, ${keptIn(marked.environment)}, was ${markWords(change.before === true)} and is ${markWords(build)} now.`,
                       build
-                        ? `Every Setup Script of ${where(marked.environment)} gets it as $${secretEnvName(name)}, in the Environment's Build and in the Setup Scripts of each Workspace's Container, from each Workspace's next Container start; a script can print it, so keep the marked Secrets to what a Setup Script needs.`
+                        ? `${marked.environment.id === GLOBAL_ID ? "Every Setup Script of each Environment" : `Every Setup Script of ${where(marked.environment)}`} gets it as $${secretEnvName(name)}, in the Environment's Build and in the Setup Scripts of each Workspace's Container, from each Workspace's next Container start; a script can print it, so keep the marked Secrets to what a Setup Script needs.`
                         : "No Setup Script gets it any more; commands and Sessions still do.",
                       "The Builds' upkeep ran, as after the user's own switch: a new Build is made when the mark changes what the Setup Scripts get (environment_get shows how the Build goes). The change is recorded with your reason, and the user can revert it on the Environments page.",
                     ],

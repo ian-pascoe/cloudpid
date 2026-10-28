@@ -40,12 +40,12 @@ export const readEnvironmentSettings = (overrides: Schema.Json): EnvironmentSett
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a store operation, not a combinator.
 export const writeEnvironmentSettings = (
   overrides: Schema.Json,
-  every: Readonly<Record<string, string>> = {},
+  globalVars: Readonly<Record<string, string>> = {},
 ): Result.Result<EnvironmentSettingsState, string> =>
   Result.flatMap(
     Result.mapError(resolveContainerSettings(overrides), (error) => error.message),
     (settings) => {
-      const merged = mergedVariablesProblem(settings.variables, every);
+      const merged = mergedVariablesProblem(settings.variables, globalVars);
 
       const problem =
         instanceLimitProblem(settings) ??

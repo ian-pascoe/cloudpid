@@ -496,7 +496,7 @@ describe("updating installed Skills", () => {
 
     github.push(REPO, files());
 
-    const [here, everywhere, changes] = await inRegistry(
+    const [here, atGlobal, changes] = await inRegistry(
       async ({ install, update, skills, changes }) => {
         await install(REPO, { owner: true });
         await install(REPO, { owner: true, environment: "*" });
@@ -512,7 +512,7 @@ describe("updating installed Skills", () => {
     );
 
     expect(here).toMatchObject({ results: [{ name: "grill-me", outcome: "updated" }] });
-    expect(everywhere).toMatchObject({
+    expect(atGlobal).toMatchObject({
       environment: { id: "*" },
       results: [{ name: "grill-me", outcome: "updated" }],
     });

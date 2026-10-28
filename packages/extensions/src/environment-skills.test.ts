@@ -83,7 +83,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
-    every: Effect.sync(() => ({ variables: {}, secrets: [], skills: skills.listed("*") })),
+    global: Effect.sync(() => ({ variables: {}, secrets: [], skills: skills.listed("*") })),
     change: () => Effect.die("not used here"),
   };
 
@@ -796,7 +796,7 @@ describe("environment_get", () => {
   });
 });
 
-const EVERY_ARGS = {
+const GLOBAL_ARGS = {
   id: "*",
   path: "/workspace/.cloudpid/tmp/release",
   reason: "Every project cuts releases the same way",
@@ -809,7 +809,7 @@ describe("environment_skill_save at Global", () => {
   it("asks the owner on a card showing the Skill, notifies them once, and saves it only on Approve", async () => {
     const { call, saves, logged, notified, kept, recorded } = await setUp();
 
-    const { result, text, shown } = await call("environment_skill_save", EVERY_ARGS, {
+    const { result, text, shown } = await call("environment_skill_save", GLOBAL_ARGS, {
       approve: true,
       meanwhile: () => {
         // The request waits: nothing is saved yet.
@@ -880,7 +880,7 @@ describe("environment_skill_save at Global", () => {
   it("saves nothing on Decline, and gives the owner's reason", async () => {
     const { call, saves, kept, logged } = await setUp();
 
-    const { result, text } = await call("environment_skill_save", EVERY_ARGS, {
+    const { result, text } = await call("environment_skill_save", GLOBAL_ARGS, {
       approve: false,
       reason: "Not now",
     });
@@ -898,7 +898,7 @@ describe("environment_skill_save at Global", () => {
 
     keep("*", "release", { "SKILL.md": OTHER_MD, "old.md": "Old.\n" });
 
-    const { shown } = await call("environment_skill_save", EVERY_ARGS);
+    const { shown } = await call("environment_skill_save", GLOBAL_ARGS);
 
     expect(shown[0]?.before).toBe(
       "Kept at Global: Cut a different release. (files: SKILL.md, old.md)",
@@ -909,7 +909,7 @@ describe("environment_skill_save at Global", () => {
   it("applies nothing when the Skill was saved again between the request and the answer", async () => {
     const { call, keep, kept, logged } = await setUp();
 
-    const { result, text } = await call("environment_skill_save", EVERY_ARGS, {
+    const { result, text } = await call("environment_skill_save", GLOBAL_ARGS, {
       approve: true,
       meanwhile: () => {
         keep("*", "release", { "SKILL.md": OTHER_MD });
@@ -929,7 +929,7 @@ describe("environment_skill_save at Global", () => {
       (
         await call(
           "environment_skill_save",
-          EVERY_ARGS,
+          GLOBAL_ARGS,
           { approve: true },
           scratch({ "/workspace/.cloudpid/tmp/release/notes.md": "Use sk-live-abcdefghijkl." }),
         )
@@ -938,7 +938,7 @@ describe("environment_skill_save at Global", () => {
 
     refuse("SKILL.md's name: too long");
 
-    const { text, result, shown } = await call("environment_skill_save", EVERY_ARGS);
+    const { text, result, shown } = await call("environment_skill_save", GLOBAL_ARGS);
 
     expect(result.isError).toBe(true);
     expect(text).toContain("Nothing was saved:");
@@ -955,7 +955,7 @@ describe("environment_skill_save at Global", () => {
       "references/steps.md": "1. Tag.\n",
     });
 
-    const { text } = await call("environment_skill_save", EVERY_ARGS);
+    const { text } = await call("environment_skill_save", GLOBAL_ARGS);
 
     expect(text).toContain("keeps the Skill release with these files already: nothing was asked");
     expect(notified).toEqual([]);
@@ -969,7 +969,7 @@ describe("environment_skill_save at Global", () => {
     // The owner approved a request for other files; the rerun reads this folder, which differs.
     await answeredEarlier(7, { savedAt: null, digest: "not-this-folder" });
 
-    const { result, text } = await call("environment_skill_save", EVERY_ARGS, {
+    const { result, text } = await call("environment_skill_save", GLOBAL_ARGS, {
       approve: true,
       task: 7,
     });
@@ -984,14 +984,14 @@ describe("environment_skill_save at Global", () => {
     const { call, answeredEarlier, keep, logged } = await setUp();
 
     // The folder's digest is the one a first call computed for it.
-    const probe = await call("environment_skill_save", EVERY_ARGS, { approve: false });
+    const probe = await call("environment_skill_save", GLOBAL_ARGS, { approve: false });
     // SAFETY: the tool asks with `{ savedAt, digest }`, which this test reads back.
     const asked = probe.shown[0]?.expected as { digest: string };
 
     keep("*", "release", { "SKILL.md": SKILL_MD, "references/steps.md": "1. Tag.\n" });
     await answeredEarlier(9, { savedAt: null, digest: asked.digest });
 
-    const { text } = await call("environment_skill_save", EVERY_ARGS, { approve: true, task: 9 });
+    const { text } = await call("environment_skill_save", GLOBAL_ARGS, { approve: true, task: 9 });
 
     expect(text).toContain("The user approved, and Global keeps the Skill release");
     expect(logged).toEqual([]);
@@ -1003,7 +1003,7 @@ describe("environment_skill_save at Global", () => {
     keep("default", "release", { "SKILL.md": OTHER_MD });
     keep("0000abcd", "release", { "SKILL.md": OTHER_MD });
 
-    const { text, result } = await call("environment_skill_save", EVERY_ARGS);
+    const { text, result } = await call("environment_skill_save", GLOBAL_ARGS);
 
     expect(text).toContain(
       "This Session's Environment keeps its own Skill of that name, which hides it there",
@@ -1219,7 +1219,7 @@ describe("the Approval card of a Skill kept Global", () => {
   it("shows a Skill that fits in full, with no warning", async () => {
     const { call } = await setUp();
 
-    const { shown, text } = await call("environment_skill_save", EVERY_ARGS);
+    const { shown, text } = await call("environment_skill_save", GLOBAL_ARGS);
 
     expect(shown[0]?.after).not.toContain("NOT FULLY SHOWN");
     expect(text).not.toContain("not reviewed");
@@ -1237,7 +1237,7 @@ describe("the Approval card of a Skill kept Global", () => {
 
     const { shown, text } = await call(
       "environment_skill_save",
-      EVERY_ARGS,
+      GLOBAL_ARGS,
       { approve: true },
       env,
     );
@@ -1289,7 +1289,7 @@ describe("environment_skill_remove that would serve a Skill that does not fit", 
       run(tool("environment_skill_remove"), { name: "release", reason: "r" }),
     );
 
-    const every = await call("environment_skill_remove", {
+    const atGlobal = await call("environment_skill_remove", {
       id: "*",
       name: "release",
       reason: "r",
@@ -1297,9 +1297,9 @@ describe("environment_skill_remove that would serve a Skill that does not fit", 
 
     expect(own).toContain("Nothing was removed:");
     expect(own).toContain("more than the 8388608 a set may");
-    expect(every.result.isError).toBe(true);
-    expect(every.text).toContain("The user approved, but nothing was removed:");
-    expect(every.text).toContain("remove another Skill first");
+    expect(atGlobal.result.isError).toBe(true);
+    expect(atGlobal.text).toContain("The user approved, but nothing was removed:");
+    expect(atGlobal.text).toContain("remove another Skill first");
     expect(logged).toEqual([]);
     expect(recorded).toEqual([]);
   });
@@ -1375,7 +1375,7 @@ const previewOf = (
 });
 
 /** What the Registry answers an approved install with. */
-const installedEverywhere = (names: ReadonlyArray<string>) => ({
+const installedAtGlobal = (names: ReadonlyArray<string>) => ({
   status: "installed" as const,
   environment: GLOBAL_SCOPE,
   repo: "mattpocock/skills",
@@ -1397,7 +1397,7 @@ describe("environment_skill_install at Global", () => {
       await setUp();
 
     answerPreview(previewOf([previewedSkill("grill-me")]));
-    answerInstall(installedEverywhere(["grill-me"]));
+    answerInstall(installedAtGlobal(["grill-me"]));
 
     const { result, text, shown } = await call("environment_skill_install", INSTALL_ARGS, {
       approve: true,
@@ -1480,7 +1480,7 @@ describe("environment_skill_install at Global", () => {
         },
       ]),
     );
-    answerInstall(installedEverywhere(["grill-me"]));
+    answerInstall(installedAtGlobal(["grill-me"]));
 
     const { shown } = await call("environment_skill_install", INSTALL_ARGS);
 
@@ -1522,7 +1522,7 @@ describe("environment_skill_install at Global", () => {
         }),
       ]),
     );
-    answerInstall(installedEverywhere(["grill-me", "tdd"]));
+    answerInstall(installedAtGlobal(["grill-me", "tdd"]));
 
     const { shown, text } = await call("environment_skill_install", {
       ...INSTALL_ARGS,
@@ -1556,7 +1556,7 @@ describe("environment_skill_install at Global", () => {
         }),
       ]),
     );
-    answerInstall(installedEverywhere(["grill-me", "tdd"]));
+    answerInstall(installedAtGlobal(["grill-me", "tdd"]));
 
     const { shown, text } = await call("environment_skill_install", {
       ...INSTALL_ARGS,
@@ -1659,7 +1659,7 @@ describe("environment_skill_install at Global", () => {
 
     answerPreview(previewOf([previewedSkill("grill-me")]));
     answerInstall({
-      ...installedEverywhere([]),
+      ...installedAtGlobal([]),
       results: [
         {
           name: "grill-me",
@@ -1689,7 +1689,7 @@ describe("environment_skill_install at Global", () => {
     };
 
     // The preview would fail now (GitHub is unreachable): the rerun does not ask it.
-    answerInstall(installedEverywhere(["grill-me"]));
+    answerInstall(installedAtGlobal(["grill-me"]));
     await answeredEarlier(7, shownEarlier);
 
     const { text } = await call("environment_skill_install", INSTALL_ARGS, {
@@ -1721,7 +1721,7 @@ describe("environment_skill_install at Global", () => {
       ],
     });
     answerInstall({
-      ...installedEverywhere([]),
+      ...installedAtGlobal([]),
       results: [{ name: "grill-me", path: "skills/grill-me", outcome: "unchanged" }],
     });
 
@@ -1740,11 +1740,11 @@ describe("environment_skill_install at Global", () => {
 
     answerPreview(previewOf([previewedSkill("grill-me"), previewedSkill("tdd")]));
     answerInstall({
-      ...installedEverywhere(["grill-me", "tdd"]),
+      ...installedAtGlobal(["grill-me", "tdd"]),
       results: [
-        ...installedEverywhere(["grill-me"]).results,
+        ...installedAtGlobal(["grill-me"]).results,
         {
-          ...installedEverywhere(["tdd"]).results[0]!,
+          ...installedAtGlobal(["tdd"]).results[0]!,
           overriddenIn: [{ id: "0000abcd", name: "Other" }],
         },
       ],
@@ -1994,7 +1994,7 @@ describe("environment_skill_update", () => {
 
 describe("environment_skill_update at Global", () => {
   const NEW_COMMIT = "dec0de0000000000000000000000000000000002";
-  const EVERY = { id: "*", name: "Global" };
+  const GLOBAL_TARGET = { id: "*", name: "Global" };
 
   const from = {
     repo: "mattpocock/skills",
@@ -2026,7 +2026,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdatePreview({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [
         ready({ "SKILL.md": "---\nname: grill-me\ndescription: Interview me.\n---\nNew steps.\n" }),
       ],
@@ -2034,7 +2034,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdate({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [
         {
           name: "grill-me",
@@ -2105,7 +2105,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdatePreview({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [
         ready({
           "SKILL.md": "---\nname: grill-me\ndescription: d\n---\n",
@@ -2115,7 +2115,7 @@ describe("environment_skill_update at Global", () => {
     });
     answerUpdate({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [{ name: "grill-me", outcome: "updated", from, to, overwrote: false }],
       handed: false,
     });
@@ -2132,12 +2132,12 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdatePreview({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [ready({ "SKILL.md": "---\nname: grill-me\ndescription: d\n---\nNew.\n" }, true)],
     });
     answerUpdate({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [{ name: "grill-me", outcome: "updated", from, to, overwrote: true }],
       handed: false,
     });
@@ -2154,7 +2154,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdatePreview({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [ready({ "SKILL.md": "---\nname: grill-me\ndescription: d\n---\n" })],
     });
 
@@ -2177,7 +2177,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdatePreview({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [{ name: "grill-me", outcome: "modified", message: "grill-me was edited." }],
     });
 
@@ -2200,7 +2200,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdate({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [
         {
           name: "grill-me",
@@ -2236,7 +2236,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdate({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [{ name: "grill-me", outcome: "updated", from, to, overwrote: false }],
       handed: false,
     });
@@ -2254,7 +2254,7 @@ describe("environment_skill_update at Global", () => {
 
     answerUpdate({
       status: "done",
-      environment: EVERY,
+      environment: GLOBAL_TARGET,
       results: [
         {
           name: "grill-me",
@@ -2296,7 +2296,7 @@ describe("environment_skill_update at Global", () => {
   it("asks nothing when none is marked update available", async () => {
     const { call, answerUpdatePreview } = await setUp();
 
-    answerUpdatePreview({ status: "nothing", environment: EVERY });
+    answerUpdatePreview({ status: "nothing", environment: GLOBAL_TARGET });
 
     const { shown, text: said } = await call("environment_skill_update", {
       id: "*",

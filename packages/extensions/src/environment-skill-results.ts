@@ -213,7 +213,7 @@ export type SkillToolDeps = {
 };
 
 /** Global, as a change to the Skills kept for it names it. */
-export const EVERY = { id: GLOBAL_ID, name: GLOBAL_NAME };
+export const GLOBAL_TARGET = { id: GLOBAL_ID, name: GLOBAL_NAME };
 
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
 // SAFETY: the two types describe the same values; the details are never mutated.
@@ -244,7 +244,7 @@ export const reach = (environment: ChangedEnvironment, handed: boolean, own: boo
  * and spares at their next readying, this Session's Workspace at once unless its Environment keeps its own Skill of the
  * name, and not the Environments that do.
  */
-const reachEvery = (
+const reachGlobal = (
   handed: boolean,
   overriddenIn: ReadonlyArray<ChangedEnvironment>,
   current: string | null,
@@ -272,9 +272,9 @@ const reachEvery = (
 
 /**
  * What the result of an install of several Skills kept Global says of where it reaches: as
- * `reachEvery`, but for each Skill, since an Environment's own Skill hides only the one of its name.
+ * `reachGlobal`, but for each Skill, since an Environment's own Skill hides only the one of its name.
  */
-const reachInstalledEvery = (
+const reachInstalledGlobal = (
   handed: boolean,
   saved: ReadonlyArray<{
     readonly name: string;
@@ -357,7 +357,7 @@ export const savedOutcome = (
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_save";
-    const everywhere = scope === GLOBAL_ID;
+    const atGlobal = scope === GLOBAL_ID;
 
     switch (saved.status) {
       case "missing":
@@ -398,7 +398,7 @@ export const savedOutcome = (
             };
       case "saved": {
         const { change } = saved;
-        const current = everywhere ? yield* environments.current : null;
+        const current = atGlobal ? yield* environments.current : null;
 
         yield* log.record({
           tool,
@@ -409,7 +409,7 @@ export const savedOutcome = (
         const details = {
           agentChange: changeDetails(saved.environment, change),
           path: servedAt(saved.name),
-          own: everywhere ? saved.handed : own,
+          own: atGlobal ? saved.handed : own,
         };
 
         return {
@@ -421,12 +421,12 @@ export const savedOutcome = (
                   `${approved ? "The user approved: " : ""}${change.before === null ? "Saved the new Skill" : "Saved the Skill"} ${saved.name} for ${named(saved.environment)} (${count} file${count === 1 ? "" : "s"}).`,
                   saved.handed
                     ? `It is served now at ${servedAt(saved.name)} (read-only): read ${servedAt(saved.name)}/SKILL.md to use it.`
-                    : `It is served at ${servedAt(saved.name)} (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
+                    : `It is served at ${servedAt(saved.name)} (read-only) in each Workspace${atGlobal ? "" : " of the Environment"}.`,
                   ...(saved.inherited
                     ? ["It hides the Skill of that name kept Global, in this Environment."]
                     : []),
-                  everywhere
-                    ? reachEvery(saved.handed, saved.overriddenIn, current)
+                  atGlobal
+                    ? reachGlobal(saved.handed, saved.overriddenIn, current)
                     : reach(saved.environment, saved.handed, own),
                   PROMPT_NOTE,
                   `The change is recorded${approved ? " as approved" : ""} with your reason and the files before and after, and the user can revert it on the Skills page.`,
@@ -463,7 +463,7 @@ export const installedOutcome = (
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_install";
-    const everywhere = scope === GLOBAL_ID;
+    const atGlobal = scope === GLOBAL_ID;
 
     switch (installed.status) {
       case "missing":
@@ -544,11 +544,11 @@ export const installedOutcome = (
           );
 
         const first = (saved[0] ?? unchanged[0])?.name ?? "<name>";
-        const current = everywhere ? yield* environments.current : null;
+        const current = atGlobal ? yield* environments.current : null;
 
         const details = {
           agentChanges: Arr.map(changes, (change) => changeDetails(installed.environment, change)),
-          own: everywhere ? installed.handed : own,
+          own: atGlobal ? installed.handed : own,
         };
 
         return {
@@ -575,9 +575,9 @@ export const installedOutcome = (
                     : ["Refused (the others were installed):", ...problems]),
                   installed.handed
                     ? `They are served now at ${SKILLS_ROOT}/<name> (read-only): read ${SKILLS_ROOT}/${first}/SKILL.md to use one.`
-                    : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
-                  everywhere
-                    ? reachInstalledEvery(installed.handed, saved, current)
+                    : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace${atGlobal ? "" : " of the Environment"}.`,
+                  atGlobal
+                    ? reachInstalledGlobal(installed.handed, saved, current)
                     : reach(installed.environment, installed.handed, own),
                   PROMPT_NOTE,
                   ...(saved.length === 0
@@ -612,7 +612,7 @@ export const removedOutcome = (
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_remove";
-    const everywhere = scope === GLOBAL_ID;
+    const atGlobal = scope === GLOBAL_ID;
 
     switch (removed.status) {
       case "missing":
@@ -643,7 +643,7 @@ export const removedOutcome = (
             });
       case "removed": {
         const { change } = removed;
-        const current = everywhere ? yield* environments.current : null;
+        const current = atGlobal ? yield* environments.current : null;
 
         yield* log.record({
           tool,
@@ -653,7 +653,7 @@ export const removedOutcome = (
 
         const details = {
           agentChange: changeDetails(removed.environment, change),
-          own: everywhere ? removed.handed : own,
+          own: atGlobal ? removed.handed : own,
         };
 
         return {
@@ -663,13 +663,13 @@ export const removedOutcome = (
               text: Arr.join(
                 [
                   `${approved ? "The user approved: removed" : "Removed"} the Skill ${name} from ${named(removed.environment)}.`,
-                  everywhere
+                  atGlobal
                     ? `Nothing is served at ${servedAt(name)} any more, where an Environment keeps none of its own.`
                     : removed.inherited
                       ? `The Skill of that name kept Global is served at ${servedAt(name)} instead.`
                       : `Nothing is served at ${servedAt(name)} any more.`,
-                  everywhere
-                    ? reachEvery(removed.handed, removed.overriddenIn, current)
+                  atGlobal
+                    ? reachGlobal(removed.handed, removed.overriddenIn, current)
                     : reach(removed.environment, removed.handed, own),
                   PROMPT_NOTE,
                   `The change is recorded${approved ? " as approved" : ""} with your reason and the files the Skill had, and the user can revert it on the Skills page.`,

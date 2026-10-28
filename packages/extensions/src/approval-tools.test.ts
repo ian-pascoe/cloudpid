@@ -170,7 +170,7 @@ const setUp = async ({
         current: Effect.succeed(current),
         list: Effect.succeed([]),
         get: (id) => Effect.succeed(held[id] ?? null),
-        every: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
+        global: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
         change: ({ environment, change: { field, value }, expected, author }) =>
           Effect.sync(() => {
             calls.environments.push({

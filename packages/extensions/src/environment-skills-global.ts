@@ -26,7 +26,7 @@ import {
 import { EnvironmentsError } from "./environment.ts";
 import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
-  EVERY,
+  GLOBAL_TARGET,
   installedOutcome,
   named,
   refused,
@@ -153,11 +153,11 @@ const SaveAsked = Schema.Struct({ savedAt: Schema.NullOr(Schema.Finite), digest:
 /** What an Approval of a removal was asked against: when the Skill was last saved. */
 const RemoveAsked = Schema.Struct({ savedAt: Schema.NullOr(Schema.Finite) });
 
-type EveryDeps = Pick<SkillToolDeps, "environments" | "approvals" | "log" | "notFound">;
+type GlobalDeps = Pick<SkillToolDeps, "environments" | "approvals" | "log" | "notFound">;
 
 /** Save the folder's Skill at Global once the owner approves it. */
-export const saveEverywhere = (
-  { environments, approvals, log, notFound }: EveryDeps,
+export const saveAtGlobal = (
+  { environments, approvals, log, notFound }: GlobalDeps,
   {
     folder,
     files,
@@ -198,10 +198,10 @@ export const saveEverywhere = (
         output: [
           {
             type: "text" as const,
-            text: `${named(EVERY)} keeps the Skill ${name} with these files already: nothing was asked, changed or recorded. It is at ${servedAt(name)}.`,
+            text: `${named(GLOBAL_TARGET)} keeps the Skill ${name} with these files already: nothing was asked, changed or recorded. It is at ${servedAt(name)}.`,
           },
         ],
-        details: { unchanged: { environment: EVERY, field: skillField(name) } },
+        details: { unchanged: { environment: GLOBAL_TARGET, field: skillField(name) } },
       };
     }
 
@@ -272,14 +272,14 @@ export const saveEverywhere = (
   });
 
 /** Remove the Skill kept Global once the owner approves it. */
-export const removeEverywhere = (
-  { environments, approvals, log, notFound }: EveryDeps,
+export const removeAtGlobal = (
+  { environments, approvals, log, notFound }: GlobalDeps,
   { name, reason }: { readonly name: string; readonly reason: string },
   api: ApprovalCall,
 ) =>
   Effect.gen(function* () {
     const tool = "environment_skill_remove";
-    const { skills } = yield* environments.every;
+    const { skills } = yield* environments.global;
     const kept = Arr.findFirst(skills, (skill) => skill.name === name);
 
     if (Option.isNone(kept) && !(yield* askedBefore(approvals, api))) {
@@ -372,8 +372,8 @@ const InstallAsked = Schema.Struct({
  * A rerun after an eviction that holds the request or its answer reads nothing first (the repo may have moved, or GitHub
  * be unreachable): it waits for the request the owner sees, or takes its answer, and installs what that pinned.
  */
-export const installEverywhere = (
-  { environments, approvals, log, notFound }: EveryDeps,
+export const installAtGlobal = (
+  { environments, approvals, log, notFound }: GlobalDeps,
   {
     source,
     names,

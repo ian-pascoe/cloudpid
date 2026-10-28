@@ -53,7 +53,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
-    every: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
+    global: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
     change: () => Effect.die("not used here"),
   };
 
@@ -177,7 +177,7 @@ describe("environment_secret_build", () => {
       reason: "The Setup Script installs from the private registry",
     });
 
-    expect(text(result)).toContain("kept for Global");
+    expect(text(result)).toContain("kept Global");
     expect(text(result)).toContain(`$${secretEnvName("NPM_TOKEN")}`);
     expect(markOf(kept, "NPM_TOKEN")).toBe(true);
     expect(result.details).toMatchObject({

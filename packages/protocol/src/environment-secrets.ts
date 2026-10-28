@@ -61,8 +61,8 @@ export type EnvironmentSecretRecord = typeof EnvironmentSecretRecord.Type;
 
 /**
  * Where the owner keeps the Secrets a `secret_ask` form gets (`docs/architecture/agent-capabilities.md` → Secrets): `session` holds them for this
- * Session for the usual 15 minutes, `environment` keeps them for the Session's Environment and `all` for every
- * Environment, as the Environments page does. The agent's `keep` only pre-selects one; the owner's choice is final.
+ * Session for the usual 15 minutes, `environment` keeps them for the Session's Environment and `all` at
+ * Global, as the Environments page does. The agent's `keep` only pre-selects one; the owner's choice is final.
  */
 export const SecretKeep = Schema.Literals(["session", "environment", "all"]);
 

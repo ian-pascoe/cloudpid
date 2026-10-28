@@ -10,8 +10,8 @@
 // are asked for (`SecretsOptions.kept`) when first needed and again once `KEPT_REFRESH_MS` has passed, so a change on
 // the Environments page applies soon. An asked Secret of the same name wins, and a kept one cannot be forgotten here.
 //
-// The owner may also choose, in the form, to keep what they enter for the Session's Environment or for every
-// Environment (`SecretsOptions.keep`, which saves through the Registry as the Environments page's form does). A Secret
+// The owner may also choose, in the form, to keep what they enter for the Session's Environment or at
+// Global (`SecretsOptions.keep`, which saves through the Registry as the Environments page's form does). A Secret
 // so kept is not entered for 15 minutes: it is a kept one, which the next ask of the Registry brings back, and it is
 // redacted from the moment it is answered. The answer stored for a rerun holds the scope, never a value.
 import { SecretKeep } from "@cloudpid/protocol";

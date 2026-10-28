@@ -36,8 +36,8 @@ export const fakeSecretMarks = () => {
   const service: SecretMarks = {
     markSecret: ({ environment, name, build, author }) =>
       Effect.sync(() => {
-        const every = environment === GLOBAL_ID;
-        const known = every ? GLOBAL_NAME : names.get(environment);
+        const isGlobal = environment === GLOBAL_ID;
+        const known = isGlobal ? GLOBAL_NAME : names.get(environment);
 
         if (known === undefined) return { status: "missing" as const };
 

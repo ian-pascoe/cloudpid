@@ -475,7 +475,7 @@ describe("the Installed tab", () => {
   it.effect("lists the Skills kept Global, then each Environment's own", () =>
     Effect.gen(function* () {
       const markup = yield* renderSkills("?tab=installed");
-      const every = section(markup, "Global");
+      const globalMarkup = section(markup, "Global");
       const work = section(markup, "Work");
 
       expect(markup.indexOf('aria-label="Global"')).toBeLessThan(
@@ -484,9 +484,9 @@ describe("the Installed tab", () => {
       expect(markup.indexOf('aria-label="Default"')).toBeLessThan(
         markup.indexOf('aria-label="Work"'),
       );
-      expect(every).toContain("grill-me");
-      expect(every).toContain("update available");
-      expect(every).toContain("Add skills from GitHub at Global");
+      expect(globalMarkup).toContain("grill-me");
+      expect(globalMarkup).toContain("update available");
+      expect(globalMarkup).toContain("Add skills from GitHub at Global");
       expect(work).toContain("notes");
       expect(work).toContain("modified");
       expect(work).toContain('aria-label="Update tdd"');
@@ -510,11 +510,11 @@ describe("the Installed tab", () => {
         current: false,
       });
 
-      const every = yield* renderSkills("?environment=*");
+      const globalMarkup = yield* renderSkills("?environment=*");
 
-      expect(section(every, "Global")).toBeDefined();
-      expect(section(every, "Work")).toBeUndefined();
-      expect(every).toContain("Showing the skills of Global only.");
+      expect(section(globalMarkup, "Global")).toBeDefined();
+      expect(section(globalMarkup, "Work")).toBeUndefined();
+      expect(globalMarkup).toContain("Showing the skills of Global only.");
 
       const gone = yield* renderSkills("?tab=installed&environment=gone");
 

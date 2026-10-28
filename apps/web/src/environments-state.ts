@@ -543,7 +543,7 @@ export const globalVariablesDraftAtom = Atom.make<string | undefined>(undefined)
  * Save the variables kept Global, as the whole map, and load them again. Each Environment's Build is
  * made with them, so the Builds ask again too. Once they are saved the form fills in from them again.
  */
-export const saveEveryVariablesAtom = appRuntime.fn(
+export const saveGlobalVariablesAtom = appRuntime.fn(
   (variables: Readonly<Record<string, string>>, get) =>
     RegistryClient.use((registry) =>
       registry("updateGlobalSettings", {

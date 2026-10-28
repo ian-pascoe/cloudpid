@@ -953,7 +953,7 @@ describe("installing Skills from GitHub", () => {
 
 describe("the Skill directory's badges over installed Skills", () => {
   it("find a Skill by its source repo and folder in each scope that keeps it, whatever it is named", async () => {
-    const [every, own, none] = await inRegistry(async ({ install, skills }) => {
+    const [atGlobal, own, none] = await inRegistry(async ({ install, skills }) => {
       await install(readerOf(REPO), { source: "o/skills@grill-me", owner: true, environment: "*" });
       await install(readerOf(REPO), { source: "o/skills@grill-me", owner: true });
       await install(readerOf(REPO), { source: "o/skills@tdd", owner: true });
@@ -967,7 +967,7 @@ describe("the Skill directory's badges over installed Skills", () => {
       ];
     });
 
-    expect(every).toEqual({
+    expect(atGlobal).toEqual({
       global: true,
       environments: [DEFAULT_ENVIRONMENT],
       updateAvailable: false,

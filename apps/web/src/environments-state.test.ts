@@ -54,7 +54,7 @@ import {
   globalSettingsAtom,
   globalVariablesAtom,
   globalVariablesDraftAtom,
-  saveEveryVariablesAtom,
+  saveGlobalVariablesAtom,
   environmentListAtom,
   environmentsAtom,
   newEnvironmentNameAtom,
@@ -1517,9 +1517,9 @@ describe("the variables kept Global", () => {
         yield* settled(registry, globalSettingsAtom);
         yield* settled(registry, buildsAtom);
         registry.set(globalVariablesDraftAtom, "NODE_ENV=test");
-        registry.mount(saveEveryVariablesAtom);
-        registry.set(saveEveryVariablesAtom, { NODE_ENV: "test" });
-        yield* settled(registry, saveEveryVariablesAtom);
+        registry.mount(saveGlobalVariablesAtom);
+        registry.set(saveGlobalVariablesAtom, { NODE_ENV: "test" });
+        yield* settled(registry, saveGlobalVariablesAtom);
         yield* settled(registry, globalSettingsAtom);
 
         expect(saved).toEqual([{ variables: { NODE_ENV: "test" } }]);
@@ -1534,9 +1534,9 @@ describe("the variables kept Global", () => {
     Effect.gen(function* () {
       const { registry, saved } = keeping();
 
-      registry.mount(saveEveryVariablesAtom);
-      registry.set(saveEveryVariablesAtom, {});
-      yield* settled(registry, saveEveryVariablesAtom);
+      registry.mount(saveGlobalVariablesAtom);
+      registry.set(saveGlobalVariablesAtom, {});
+      yield* settled(registry, saveGlobalVariablesAtom);
 
       expect(saved).toEqual([{}]);
       registry.dispose();
@@ -1547,10 +1547,10 @@ describe("the variables kept Global", () => {
     Effect.gen(function* () {
       const { registry, saved } = keeping();
 
-      registry.mount(saveEveryVariablesAtom);
-      registry.set(saveEveryVariablesAtom, { TOO_MANY: "1" });
+      registry.mount(saveGlobalVariablesAtom);
+      registry.set(saveGlobalVariablesAtom, { TOO_MANY: "1" });
 
-      expect(settledFailureOf(yield* settled(registry, saveEveryVariablesAtom))).toBe(
+      expect(settledFailureOf(yield* settled(registry, saveGlobalVariablesAtom))).toBe(
         "variables: with the 50 variables it would have 51",
       );
       expect(saved).toEqual([]);

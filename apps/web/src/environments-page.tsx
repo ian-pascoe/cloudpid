@@ -74,7 +74,7 @@ import {
   globalSettingsErrorAtom,
   globalVariablesAtom,
   globalVariablesDraftAtom,
-  saveEveryVariablesAtom,
+  saveGlobalVariablesAtom,
   newEnvironmentNameAtom,
   rebuildEnvironmentAtom,
   removeRepoAtom,
@@ -446,7 +446,7 @@ const SecretRow = ({
  */
 const VariablesSummary = ({ id }: { id: string }) => {
   const loaded = useAtomValue(environmentSettingsAtom(id));
-  const every = useAtomValue(globalVariablesAtom);
+  const globalVars = useAtomValue(globalVariablesAtom);
 
   const own = loaded.pipe(
     AsyncResult.value,
@@ -459,7 +459,7 @@ const VariablesSummary = ({ id }: { id: string }) => {
     return loadError === null ? null : <DialogProblem problem={loadError} />;
   }
 
-  const { inherited } = inheritedVariables(own.value, every);
+  const { inherited } = inheritedVariables(own.value, globalVars);
   const names = Record.keys(own.value).toSorted();
 
   return (
@@ -557,12 +557,12 @@ const SecretsSection = ({
  * The variables kept Global, a `NAME=value` line each, with the form that saves them. They are plain, as
  * an Environment's own are: an Environment's own variable of the same name wins.
  */
-const EveryVariablesSection = () => {
+const GlobalVariablesSection = () => {
   const loaded = useAtomValue(globalSettingsAtom);
   const loadError = useAtomValue(globalSettingsErrorAtom);
   const saved = useAtomValue(globalVariablesAtom);
   const [draft, setDraft] = useAtom(globalVariablesDraftAtom);
-  const [kept, save] = useAtom(saveEveryVariablesAtom);
+  const [kept, save] = useAtom(saveGlobalVariablesAtom);
   // Until the variables in force are known, `saved` is empty and a save would wipe them.
   const ready = loaded.pipe(AsyncResult.value, Option.isSome);
   const text = draft ?? variablesText(saved);
@@ -1291,21 +1291,21 @@ const SETTING_CHANGES_EMPTY = "The agent has changed nothing here.";
  */
 const SkillsLine = ({ id }: { id: string }) => {
   const own = useAtomValue(environmentSkillsAtom(id));
-  const every = useAtomValue(environmentSkillsAtom(GLOBAL));
+  const globalSkills = useAtomValue(environmentSkillsAtom(GLOBAL));
   const skills = own.pipe(AsyncResult.value, Option.getOrNull);
-  const everywhere = id === GLOBAL;
+  const atGlobal = id === GLOBAL;
   // An Environment's count includes the Skills it gets from Global, so it waits for them too.
-  const inherited = everywhere ? [] : every.pipe(AsyncResult.value, Option.getOrNull);
+  const inherited = atGlobal ? [] : globalSkills.pipe(AsyncResult.value, Option.getOrNull);
 
   return (
     <p className="text-xs text-muted-foreground">
       {skills === null || inherited === null
-        ? (failureOf(own) ?? failureOf(every) ?? "Loading skills…")
-        : skillCountText(skills, everywhere ? undefined : inherited)}
+        ? (failureOf(own) ?? failureOf(globalSkills) ?? "Loading skills…")
+        : skillCountText(skills, atGlobal ? undefined : inherited)}
       {" · "}
       <InAppLink
         href={skillsPath({ tab: "installed", environment: id })}
-        aria-label={`Manage the skills of ${everywhere ? "Global" : "this environment"}`}
+        aria-label={`Manage the skills of ${atGlobal ? "Global" : "this environment"}`}
         className="underline underline-offset-2 hover:text-foreground"
       >
         Manage
@@ -1928,7 +1928,7 @@ export const EnvironmentsPage = () => {
         </p>
         <NewEnvironmentForm names={(environments ?? []).map((known) => known.name)} />
         <section aria-label="Global" className="flex flex-col gap-2 rounded-lg border p-4">
-          <EveryVariablesSection />
+          <GlobalVariablesSection />
           <p className="text-xs text-muted-foreground">
             A secret kept here or on an environment is used by reference in that environment's
             sessions, as one the agent asked for is, but never expires. Its value is not shown

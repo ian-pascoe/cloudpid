@@ -48,7 +48,7 @@ import { resolveTools } from "./subagents/toolsets.ts";
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 
 /** The variables kept Global at the start of a test. */
-const EVERY = { SHARED: "all", NODE_ENV: "prod" };
+const GLOBAL_VARIABLES = { SHARED: "all", NODE_ENV: "prod" };
 
 const DEFAULT: EnvironmentDetails = {
   id: "default",
@@ -60,7 +60,7 @@ const DEFAULT: EnvironmentDetails = {
     { name: "API_KEY", scope: "environment", build: true },
     { name: "NPM_TOKEN", scope: "every", build: false },
   ],
-  globalVariables: EVERY,
+  globalVariables: GLOBAL_VARIABLES,
   skills: [],
   globalSkills: [],
 };
@@ -77,7 +77,7 @@ const OTHER: EnvironmentDetails = {
   },
   settings: DEFAULT_CONTAINER_SETTINGS,
   secrets: [],
-  globalVariables: EVERY,
+  globalVariables: GLOBAL_VARIABLES,
   skills: [],
   globalSkills: [],
 };
@@ -110,7 +110,7 @@ const fakeEnvironments = (current: string | null = "default") => {
   let next = 1;
 
   /** The variables kept Global. */
-  const every: Record<string, string> = { ...EVERY };
+  const globalVars: Record<string, string> = { ...GLOBAL_VARIABLES };
 
   const service: EnvironmentsService = {
     ...unusedLifecycle,
@@ -122,10 +122,10 @@ const fakeEnvironments = (current: string | null = "default") => {
       Effect.sync(() => {
         const found = details.get(id);
 
-        return found === undefined ? null : { ...found, globalVariables: { ...every } };
+        return found === undefined ? null : { ...found, globalVariables: { ...globalVars } };
       }),
-    every: Effect.sync(() => ({
-      variables: { ...every },
+    global: Effect.sync(() => ({
+      variables: { ...globalVars },
       secrets: [{ name: "NPM_TOKEN", scope: "every" as const, build: false }],
       skills: [],
     })),
@@ -134,14 +134,14 @@ const fakeEnvironments = (current: string | null = "default") => {
         // A variable kept Global: the Environments with one of their own by the name do not get it.
         if (environment === GLOBAL.id) {
           const name = fieldVariable(change.field) ?? change.field;
-          const before = every[name] ?? null;
+          const before = globalVars[name] ?? null;
 
           if (sameJson(before, change.value)) {
             return { status: "unchanged", environment: GLOBAL, value: before };
           }
 
-          if (!Predicate.isString(change.value)) delete every[name];
-          else every[name] = change.value;
+          if (!Predicate.isString(change.value)) delete globalVars[name];
+          else globalVars[name] = change.value;
 
           changes.push({ environment, change, tool: author.tool, reason: author.reason });
 
@@ -168,12 +168,12 @@ const fakeEnvironments = (current: string | null = "default") => {
               reason: author.reason,
               field: change.field,
               before,
-              after: every[name] ?? null,
+              after: globalVars[name] ?? null,
               reverts: null,
               revertedBy: null,
             },
             newBuild: inheriting.length > 0,
-            every: {
+            global: {
               overriddenIn: Arr.map(overriding, ({ id, name: each }) => ({ id, name: each })),
               newBuilds: Arr.map(inheriting, ({ id, name: each }) => ({ id, name: each })),
               own: current !== null && !Arr.some(overriding, (each) => each.id === current),
@@ -650,7 +650,9 @@ describe("the variables kept Global", () => {
 
     const said = text(result);
 
-    expect(said).toContain('Set API_URL for Global: it was not set, and is "https://api.test" now.');
+    expect(said).toContain(
+      'Set API_URL for Global: it was not set, and is "https://api.test" now.',
+    );
     expect(said).toContain("No Environment has a variable of its own with that name");
     expect(said).toContain("next Container start of every Workspace");
     expect(said).toContain("This Session's Workspace has the change already: container_restart");

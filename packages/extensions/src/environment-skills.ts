@@ -19,7 +19,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import { EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
+import { EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
 import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   installedOutcome,
@@ -31,10 +31,10 @@ import {
 import { updateTool } from "./environment-skill-update.ts";
 import {
   INSTALL_APPROVAL,
-  installEverywhere,
+  installAtGlobal,
   MAX_CARD_CHARS,
-  removeEverywhere,
-  saveEverywhere,
+  removeAtGlobal,
+  saveAtGlobal,
   SKILL_APPROVAL,
 } from "./environment-skills-global.ts";
 import {
@@ -282,7 +282,7 @@ export const skillTools = ({
       "Why you save, install or remove the Skill, for the user to read in the Environment's Agent changes, such as 'the release steps are the same every time'",
   });
 
-  const every = { environments, approvals, log, notFound };
+  const globalDeps = { environments, approvals, log, notFound };
 
   const save = defineEffectTool({
     name: "environment_skill_save",
@@ -296,7 +296,7 @@ export const skillTools = ({
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a Skill kept Global")),
+      id: Schema.optionalKey(idOrGlobal("a Skill kept Global")),
       path: Schema.String.check(Schema.isMinLength(1)).annotate({
         description: `The Skill's folder in the Workspace, absolute or relative to the working directory, such as ${WORKSPACE_ROOT}/.cloudpid/tmp/release-notes`,
       }),
@@ -312,9 +312,9 @@ export const skillTools = ({
 
         if (api.env === undefined) return yield* refused("no execution environment is configured");
 
-        const everywhere = id === GLOBAL_ID;
+        const atGlobal = id === GLOBAL_ID;
 
-        const { environment, own } = everywhere
+        const { environment, own } = atGlobal
           ? { environment: GLOBAL_ID, own: false }
           : yield* target(id);
 
@@ -325,7 +325,7 @@ export const skillTools = ({
           Arr.map(Record.toEntries(files), ([file, text]) => ({ what: `the file ${file}`, text })),
         );
 
-        if (everywhere) return yield* saveEverywhere(every, { folder, files, path, reason }, api);
+        if (atGlobal) return yield* saveAtGlobal(globalDeps, { folder, files, path, reason }, api);
 
         const saved = yield* environments.saveSkill({
           environment,
@@ -351,7 +351,7 @@ export const skillTools = ({
     name: "environment_skill_remove",
     description: `Remove a Skill the Environment keeps (this Session's Environment unless id names another): its Workspaces stop serving it at ${SKILLS_ROOT}/<name>, and serve the Skill of that name kept Global again if there is one (refused if a Skill set would then hold more than 100 Skills or ${SKILL_SIZES.set}). environment_get lists the Environment's own Skills; those kept Global are not the Environment's and cannot be removed this way. With id "${GLOBAL_ID}" the Skill is removed from those kept Global, which the user must approve: ${SKILL_APPROVAL} The change is recorded with your reason and the files the Skill had, and the user can revert it on the Skills page.`,
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("a Skill kept Global")),
+      id: Schema.optionalKey(idOrGlobal("a Skill kept Global")),
       name: Schema.String.check(Schema.isMinLength(1)).annotate({
         description: "The Skill's name, as environment_get lists it",
       }),
@@ -363,7 +363,7 @@ export const skillTools = ({
       Effect.gen(function* () {
         yield* refuseSecrets([{ what: "the reason", text: reason }]);
 
-        if (id === GLOBAL_ID) return yield* removeEverywhere(every, { name, reason }, api);
+        if (id === GLOBAL_ID) return yield* removeAtGlobal(globalDeps, { name, reason }, api);
 
         const { environment, own } = yield* target(id);
 
@@ -398,7 +398,7 @@ export const skillTools = ({
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(idOrEvery("Skills kept Global")),
+      id: Schema.optionalKey(idOrGlobal("Skills kept Global")),
       source: Schema.String.check(Schema.isMinLength(1)).annotate({
         description:
           "Where to install from: owner/repo, owner/repo@skill, or a GitHub URL (https://github.com/owner/repo/tree/<ref>/<path>)",
@@ -425,7 +425,7 @@ export const skillTools = ({
         ]);
 
         if (id === GLOBAL_ID) {
-          return yield* installEverywhere(every, { source, names, reason }, api);
+          return yield* installAtGlobal(globalDeps, { source, names, reason }, api);
         }
 
         const { environment, own } = yield* target(id);
