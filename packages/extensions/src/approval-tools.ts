@@ -52,12 +52,13 @@ import {
   type DeployCredentials,
   describeApplied,
   describeAppliedGlobal,
-  refuseGlobal,
   Environments,
   EnvironmentsError,
+  environmentTarget,
   Id,
   idOrGlobal,
   MAX_CHANGE_REASON,
+  notFound,
   sizeWords,
 } from "./environment.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
@@ -347,18 +348,7 @@ export const ApprovalTools: Effect.Effect<
               }),
         );
 
-  /** The Environment `id` names (never assumed: a call without one fails to decode), with whether it is this Session's. */
-  const target = (id: string) =>
-    Effect.gen(function* () {
-      yield* refuseGlobal(id);
-
-      return { environment: id, own: id === (yield* environments.current) };
-    });
-
-  const notFound = (id: string) =>
-    EnvironmentsError.make({
-      message: `No Environment has the id ${JSON.stringify(id)}. Call environment_list for the Environments and their ids.`,
-    });
+  const target = environmentTarget(environments);
 
   /** A Limit's value in force at `view`'s Scope, and at an Environment whether it is inherited (it has no Override). */
   const limitNow = (view: SettingsView, limit: SettingsLimit) => ({
@@ -1093,7 +1083,7 @@ export const ApprovalTools: Effect.Effect<
 
         if (Option.isNone(secret) && !(yield* askedBefore(approvals, api))) {
           return yield* EnvironmentsError.make({
-            message: `Nothing was asked or deleted: no Secret ${name} is ${keptIn(scope)}. environment_get lists the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}".`,
+            message: `Nothing was asked or deleted: no Secret ${name} is ${keptIn(scope)}. environment_get with id ${environment} lists the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}".`,
           });
         }
 

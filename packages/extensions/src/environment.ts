@@ -11,7 +11,9 @@
 // at once, and the Run's end notifies the owner of the changes it made (`AgentChangeLog`). They are the root
 // conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when a
 // text it keeps holds a Secret the Session holds or a GitHub credential, or a Secret Reference's placeholder, which these
-// tools do not resolve and no command would (`holdsSecret`).
+// tools do not resolve and no command would (`holdsSecret`). Every tool but `environment_list` and `environment_create`
+// takes a required `id` and none defaults to the Session's own Environment (`docs/architecture/agent-changes.md` → The
+// Scope is named, never assumed; ADR-0027 → The agent names the Scope).
 // @effect-diagnostics missingPipeableSignature:off
 import {
   type ContainerSettings,
@@ -534,9 +536,18 @@ export const pathsLine = (value: Schema.Json | null): string =>
 /** Where a tool's `id` description says to find this Session's own Environment: it is named like any other. */
 const FIND_OWN = "environment_list marks this Session's own";
 
+/** What a tool's `id` description says: where to find the id, and that none is assumed; `more` follows the id's own words. */
+const idDescription = (more = "") =>
+  `The id of the Environment, as environment_list shows it (${FIND_OWN})${more}. Name it on purpose: there is no default`;
+
 /** A tool's required `id`: one Environment, named even when it is this Session's own. */
-export const Id = Schema.String.annotate({
-  description: `The id of the Environment, as environment_list shows it (${FIND_OWN}). Name it on purpose: there is no default`,
+export const Id = Schema.String.check(Schema.isMinLength(1)).annotate({
+  description: idDescription(),
+});
+
+/** The `id` of `environment_setting_reset`: an Environment's, never `*`, since Global inherits nothing. */
+export const IdNotGlobal = Id.annotate({
+  description: `${idDescription()}. Not "*": Global's settings are not reset here`,
 });
 
 /**
@@ -544,8 +555,8 @@ export const Id = Schema.String.annotate({
  * when this module loads first.
  */
 export const idOrGlobal = (kept: string) =>
-  Schema.String.annotate({
-    description: `The id of the Environment, as environment_list shows it (${FIND_OWN}), or "${GLOBAL_ID}" for ${kept}. Name it on purpose: there is no default`,
+  Schema.String.check(Schema.isMinLength(1)).annotate({
+    description: idDescription(`, or "${GLOBAL_ID}" for ${kept}`),
   });
 
 /**
@@ -558,6 +569,21 @@ export const refuseGlobal = (id: string) =>
         message: `The id "${GLOBAL_ID}" names what is kept Global (the Container settings, Secrets and Skills): only environment_get, the Container setting tools (environment_variable_set, environment_variable_unset, environment_container_resize, environment_container_size_limit_set, environment_idle_time_set, environment_ignore_set, environment_setup_script_set, environment_start_script_set, environment_toolchains_set, environment_spare_workspace_set), environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
       })
     : Effect.void;
+
+/** The Environment a tool's `id` names (never assumed: a call without one fails to decode), with whether it is the Session's. */
+export type EnvironmentTarget = (
+  id: string,
+) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
+
+/** The `EnvironmentTarget` over `environments`: it refuses `*`, and only compares the id with the Session's own. */
+export const environmentTarget =
+  (environments: Pick<EnvironmentsService, "current">): EnvironmentTarget =>
+  (id) =>
+    Effect.gen(function* () {
+      yield* refuseGlobal(id);
+
+      return { environment: id, own: id === (yield* environments.current) };
+    });
 
 /** A changing tool's required `reason`, 1 to `MAX_CHANGE_REASON` characters; a tool may annotate its own example. */
 export const Reason = Schema.String.check(
@@ -580,7 +606,8 @@ const PLAIN_VALUES =
 // SAFETY: the two types describe the same values; the details are never mutated.
 const asJsonValue = (value: Schema.Json): JsonValue => value as JsonValue;
 
-const notFound = (id: string) =>
+/** The refusal for an `id` that names no Environment. */
+export const notFound = (id: string) =>
   EnvironmentsError.make({
     message: `No Environment has the id ${JSON.stringify(id)}. Call environment_list for the Environments and their ids.`,
   });
@@ -621,13 +648,7 @@ export const EnvironmentTools: Effect.Effect<
           () => secrets.redact(value) !== value || holdsCredential(value),
         );
 
-  /** The Environment `id` names (never assumed: a call without one fails to decode), with whether it is this Session's. */
-  const target = (id: string) =>
-    Effect.gen(function* () {
-      yield* refuseGlobal(id);
-
-      return { environment: id, own: id === (yield* environments.current) };
-    });
+  const target = environmentTarget(environments);
 
   /**
    * Apply the change of `field` to `value` as `tool`, and say how it went: refused when any of `texts` holds a Secret

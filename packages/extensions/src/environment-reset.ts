@@ -29,6 +29,7 @@ import {
   describeApplied,
   type EnvironmentDetails,
   EnvironmentsError,
+  IdNotGlobal,
   MAX_CHANGE_REASON,
   pathsLine,
   plainValue,
@@ -288,10 +289,7 @@ export const resetTool = ({
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.String.annotate({
-        description:
-          "The id of the Environment, as environment_list shows it (it marks this Session's own). Name it on purpose: there is no default. Not \"*\": Global's settings are not reset here",
-      }),
+      id: IdNotGlobal,
       setting: Schema.Literals(RESETTABLE_SETTINGS).annotate({
         description: "The Container setting that inherits Global's value again",
       }),

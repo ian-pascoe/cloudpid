@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import {
   type ChangeAuthor,
   type ChangedEnvironment,
+  type EnvironmentTarget,
   EnvironmentsError,
   type EnvironmentsService,
   Id,
@@ -245,10 +246,7 @@ export type LifecycleDeps = {
     texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
     outcome?: string,
   ) => Effect.Effect<void, EnvironmentsError>;
-  /** The Environment `id` names (never assumed), with whether it is the Session's own. */
-  readonly target: (
-    id: string,
-  ) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
+  readonly target: EnvironmentTarget;
   readonly notFound: (id: string) => EnvironmentsError;
 };
 
@@ -573,7 +571,7 @@ export const lifecycleTools = ({
           output: [
             {
               type: "text" as const,
-              text: "This call was cut off after it began asking for the Build, so it asks for nothing again (that would record the request twice). environment_get shows whether the Build is under way; call environment_rebuild again if it is not.",
+              text: `This call was cut off after it began asking for the Build, so it asks for nothing again (that would record the request twice). environment_get with id ${id} shows whether the Build is under way; call environment_rebuild again with the same id if it is not.`,
             },
           ],
           details: { rerun: true },
@@ -591,7 +589,7 @@ export const lifecycleTools = ({
 
       if (answer.status === "unchanged") {
         return unchangedResult(
-          `A Build of ${named(answer.environment)} for its current Repos and settings is already under way: nothing was asked for, and nothing was recorded. environment_get shows how it goes.`,
+          `A Build of ${named(answer.environment)} for its current Repos and settings is already under way: nothing was asked for, and nothing was recorded. environment_get with id ${answer.environment.id} shows how it goes.`,
           answer.environment,
         );
       }
@@ -602,7 +600,7 @@ export const lifecycleTools = ({
         "environment_rebuild",
         environment,
         change,
-        `Asked for a new Build of ${named(environment)}: the Build is under way. environment_get shows its state and, when it fails, the end of its reason.`,
+        `Asked for a new Build of ${named(environment)}: the Build is under way. environment_get with id ${environment.id} shows its state and, when it fails, the end of its reason.`,
       );
     });
 
@@ -767,7 +765,7 @@ export const lifecycleTools = ({
           });
         case "gone":
           return yield* EnvironmentsError.make({
-            message: `The Test Build of ${where} is no longer known: it ended and another Test Build took its place, or the Environment was deleted. Nothing was saved; call environment_rebuild with the proposal again to try it.`,
+            message: `The Test Build of ${where} is no longer known: it ended and another Test Build took its place, or the Environment was deleted. Nothing was saved; call environment_rebuild with the same id and the proposal again to try it.`,
           });
       }
     });

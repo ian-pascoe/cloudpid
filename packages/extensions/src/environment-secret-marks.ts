@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
   type ChangedEnvironment,
+  type EnvironmentTarget,
   EnvironmentsError,
   idOrGlobal,
   MAX_CHANGE_REASON,
@@ -73,10 +74,7 @@ export type SecretMarkDeps = {
   readonly refuseSecrets: (
     texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
   ) => Effect.Effect<void, EnvironmentsError>;
-  /** The Environment `id` names (never assumed). */
-  readonly target: (
-    id: string,
-  ) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
+  readonly target: EnvironmentTarget;
 };
 
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
@@ -154,7 +152,7 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
             return yield* noEnvironment(environment);
           case "absent":
             return yield* EnvironmentsError.make({
-              message: `Nothing was saved: no Secret ${name} is ${keptIn(marked.environment)}. environment_get shows the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}". To keep one, call secret_ask with keep: the user chooses in the form whether to keep it.`,
+              message: `Nothing was saved: no Secret ${name} is ${keptIn(marked.environment)}. environment_get with id ${marked.environment.id} shows the Secrets kept (names only); a Secret kept Global is addressed with id "${GLOBAL_ID}". To keep one, call secret_ask with keep: the user chooses in the form whether to keep it.`,
             });
           case "unchanged":
             return {

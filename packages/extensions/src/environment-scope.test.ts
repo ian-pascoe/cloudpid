@@ -1,4 +1,4 @@
-// The `environment` extension's Scope (docs/architecture/agent-changes.md → The Scope is named; ADR-0027 → The agent names
+// The `environment` extension's Scope (docs/architecture/agent-changes.md → The Scope is named, never assumed; ADR-0027 → The agent names
 // the Scope): every tool that reads or changes an Environment or a setting kept at a Scope requires `id`, and the
 // Session's own Environment is never assumed. The Approval tools (`environment_container_size_limit_set`,
 // `environment_delete`, `environment_secret_delete`) are covered in approval-tools.test.ts. The fake Environments fail
@@ -13,7 +13,9 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { Approvals } from "./approvals.ts";
@@ -65,8 +67,11 @@ const api = { conversationId: ROOT_CONVERSATION_ID } as ToolExecutionApi;
 
 const REASON = { reason: "Needed" };
 
-/** Every tool that takes `id`, with the rest of a valid call. */
-const WITH_ID: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+/** The tools that name no Environment, so take no `id`. */
+const WITHOUT_ID = ["environment_list", "environment_create"];
+
+/** The rest of a valid call of each tool that takes `id`. */
+const ARGUMENTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   environment_get: {},
   environment_variable_set: { name: "API_URL", value: "https://api.example.com", ...REASON },
   environment_variable_unset: { name: "API_URL", ...REASON },
@@ -89,19 +94,28 @@ const WITH_ID: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   environment_rebuild: { ...REASON },
 };
 
+/** Every tool of the extension but those that take no `id`: a tool added later is guarded without being listed. */
+const WITH_ID = Arr.filterMap(extension.tools ?? [], ({ name }) =>
+  WITHOUT_ID.includes(name) ? Result.failVoid : Result.succeed(name),
+);
+
 describe("the environment tools' Scope", () => {
-  it.each(Record.keys(WITH_ID))("%s requires id in its parameters", (name) => {
+  it("has arguments for each tool that takes id, so a new tool is tested here", () => {
+    expect(Arr.sort(WITH_ID, Order.String)).toEqual(Arr.sort(Record.keys(ARGUMENTS), Order.String));
+  });
+
+  it.each(WITH_ID)("%s requires id in its parameters", (name) => {
     // SAFETY: the parameters are one JSON Schema object.
     const parameters = tool(name).parameters as { required?: ReadonlyArray<string> };
 
     expect(parameters.required).toContain("id");
   });
 
-  it.each(Record.toEntries(WITH_ID))(
+  it.each(WITH_ID)(
     "%s refuses a call without id, and does not assume this Session's Environment",
-    async (name, args) => {
+    async (name) => {
       // SAFETY: the arguments are the tool's JSON parameters.
-      const result = await tool(name).execute(args as never, api, BACKGROUND_CONTEXT);
+      const result = await tool(name).execute(ARGUMENTS[name] as never, api, BACKGROUND_CONTEXT);
 
       expect(result.isError).toBe(true);
 
@@ -116,7 +130,7 @@ describe("the environment tools' Scope", () => {
   );
 
   it("takes no id on environment_list and environment_create, which name no Environment", () => {
-    for (const name of ["environment_list", "environment_create"]) {
+    for (const name of WITHOUT_ID) {
       // SAFETY: the parameters are one JSON Schema object.
       const parameters = tool(name).parameters as { properties?: Record<string, unknown> };
 
