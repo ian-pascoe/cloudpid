@@ -30,8 +30,9 @@ interface MarkdownNode {
  * A remark plugin that makes the links of a markdown text that lives in a repo absolute against `base` (where the text is
  * on GitHub), as a SKILL.md writes them relative to itself. An anchor in the text stays one, and so does a URL that is
  * complete. It runs before the sanitizing, which blocks a relative URL. It rewrites markdown links and definitions only:
- * a link written as raw HTML (`<a href="docs/x.md">`) is not in the markdown tree, and the sanitizing shows it as plain
- * text, "[blocked]", rather than as a link.
+ * a link written as raw HTML is not in the markdown tree. A path-relative one (`<a href="docs/x.md">`) the sanitizing
+ * shows as plain text, "[blocked]", rather than as a link; a root-relative one (`<a href="/settings">`) stays a link into
+ * cloudpid itself.
  */
 export const relativeLinksTo = (base: string) => () => {
   const visit = (node: MarkdownNode) => {
