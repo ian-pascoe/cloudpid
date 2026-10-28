@@ -1305,7 +1305,7 @@ const SkillsLine = ({ id }: { id: string }) => {
       {" · "}
       <InAppLink
         href={skillsPath({ tab: "installed", environment: id })}
-        aria-label={`Manage the ${atGlobal ? "Global" : "this environment's"} skills`}
+        aria-label={atGlobal ? "Manage the Global skills" : "Manage this environment's skills"}
         className="underline underline-offset-2 hover:text-foreground"
       >
         Manage
