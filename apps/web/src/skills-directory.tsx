@@ -106,7 +106,7 @@ export const SkillsSearchBar = () => {
         autoComplete="off"
         spellCheck={false}
         data-1p-ignore
-        className="pl-9"
+        className="w-full pl-9"
       />
     </form>
   );
