@@ -1,21 +1,33 @@
 // @effect-diagnostics preferEffectArray:off newSchemaClass:off -- in-memory fakes of the Registry over native arrays.
 
-import { type AgentChange, EnvironmentError } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  type DirectorySkill,
+  EnvironmentError,
+  type EnvironmentRecord,
+  SkillDirectoryError,
+} from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { describe, expect, it } from "@effect/vitest";
 import { revertAgentChangeAtom } from "./environments-state.ts";
 import { EVERY_ENVIRONMENT } from "./environments.ts";
 import { settledFailureOf } from "./registry.ts";
-import { registryWith, settled } from "./registry.testing.ts";
+import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
 import { searchAtom } from "./router.ts";
 import {
+  anySkillInstalledAtom,
   environmentSkillsAtom,
   installSkillsAtom,
+  installToTargetAtom,
   keptSkillFilesAtom,
   removeSkillAtom,
   searchSkillsAtom,
   skillChangeFilesAtom,
+  skillDirectoryPageAtom,
+  skillDirectoryPageKey,
+  skillDirectoryPagesAtom,
+  skillDirectorySearchAtom,
   skillChangeKey,
   skillKey,
   skillsTabAtom,
@@ -24,18 +36,369 @@ import {
   updateSkillAtom,
 } from "./skills-state.ts";
 
-describe("the Skills page's tab", () => {
-  it("is the one the query names, and Installed when it names none it knows", () => {
-    const registry = registryWith({});
+const ENVIRONMENTS: ReadonlyArray<EnvironmentRecord> = [
+  { id: "default", name: "Default", repos: [], createdAt: 1 },
+  { id: "work", name: "Work", repos: [], createdAt: 1 },
+];
 
-    expect(registry.get(skillsTabAtom)).toBe("installed");
+describe("the Skills page's tab", () => {
+  it("is the one the query names, without asking the Registry", () => {
+    // No handler: asking for the Skills would fail the test.
+    const registry = registryWith({});
 
     registry.set(searchAtom, "?tab=hot");
     expect(registry.get(skillsTabAtom)).toBe("hot");
 
-    registry.set(searchAtom, "?tab=nope&environment=work");
+    registry.set(searchAtom, "?tab=installed&environment=work");
     expect(registry.get(skillsTabAtom)).toBe("installed");
   });
+
+  it.effect("is Installed by default when any Skill is installed, in any scope", () =>
+    Effect.gen(function* () {
+      const asked: string[] = [];
+
+      const registry = registryWith({
+        listEnvironments: () => Effect.succeed(ENVIRONMENTS),
+        listEnvironmentSkills: ({ environment }) =>
+          Effect.sync(() => {
+            asked.push(environment);
+
+            return environment === "work"
+              ? [{ name: "notes", description: "Notes.", savedAt: 1 }]
+              : [];
+          }),
+      });
+
+      registry.mount(skillsTabAtom);
+
+      yield* settled(registry, anySkillInstalledAtom);
+
+      expect(registry.get(skillsTabAtom)).toBe("installed");
+      expect(asked.toSorted()).toEqual(["*", "default", "work"]);
+      registry.dispose();
+    }),
+  );
+
+  it("has no tab while it is being asked, so that the page does not flash the wrong one", () => {
+    const registry = registryWith({ listEnvironments: () => Effect.never });
+
+    registry.mount(skillsTabAtom);
+
+    expect(registry.get(skillsTabAtom)).toBeNull();
+    registry.dispose();
+  });
+
+  it.effect("is All time by default when no Skill is installed", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        listEnvironments: () => Effect.succeed(ENVIRONMENTS),
+        listEnvironmentSkills: () => Effect.succeed([]),
+      });
+
+      registry.mount(skillsTabAtom);
+      yield* settled(registry, anySkillInstalledAtom);
+
+      expect(registry.get(skillsTabAtom)).toBe("all-time");
+      registry.dispose();
+    }),
+  );
+
+  it.effect("is Installed by default when the Registry cannot say, where the page says why", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        listEnvironments: () => Effect.die("the Registry is down"),
+      });
+
+      registry.mount(skillsTabAtom);
+      yield* settled(registry, anySkillInstalledAtom);
+
+      expect(registry.get(skillsTabAtom)).toBe("installed");
+      registry.dispose();
+    }),
+  );
+
+  it.effect("does not change once chosen, when the owner installs from All time", () =>
+    Effect.gen(function* () {
+      let kept = false;
+
+      const registry = registryWith({
+        listEnvironments: () => Effect.succeed(ENVIRONMENTS),
+        listEnvironmentSkills: () =>
+          Effect.sync(() =>
+            kept ? [{ name: "grill-me", description: "Interview.", savedAt: 1 }] : [],
+          ),
+        installEnvironmentSkills: ({ skills }) =>
+          Effect.sync(() => {
+            kept = true;
+
+            return {
+              status: "installed" as const,
+              repo: "mattpocock/skills",
+              ref: null,
+              commit: "c0ffee0",
+              skills: (skills ?? []).map((name) => ({ name, outcome: "installed" as const })),
+            };
+          }),
+      });
+
+      registry.mount(skillsTabAtom);
+      yield* settled(registry, anySkillInstalledAtom);
+      expect(registry.get(skillsTabAtom)).toBe("all-time");
+
+      registry.mount(installToTargetAtom);
+      registry.set(installToTargetAtom, {
+        target: "*",
+        source: "mattpocock/skills",
+        skills: ["grill-me"],
+      });
+      yield* settled(registry, installToTargetAtom);
+
+      expect(kept).toBe(true);
+      expect(registry.get(skillsTabAtom)).toBe("all-time");
+      registry.dispose();
+    }),
+  );
+});
+
+/** The Skill directory as a fake Registry answers it: an all-time list of two pages, and a Skill installed once it is. */
+const directory = () => {
+  const installs: Array<{ environment: string; source: string; skills: ReadonlyArray<string> }> =
+    [];
+
+  const asked: string[] = [];
+
+  const skills = (page: number): ReadonlyArray<DirectorySkill> =>
+    page === 0
+      ? [
+          {
+            source: "mattpocock/skills",
+            skillId: "grill-me",
+            name: "grill-me",
+            installs: 1_450_000,
+          },
+          { source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 },
+        ].map((row) => {
+          const where = installs.filter(
+            ({ source, skills: named }) => source === row.source && named.includes(row.skillId),
+          );
+
+          return where.length === 0
+            ? row
+            : {
+                ...row,
+                installed: {
+                  everyEnvironment: where.some(({ environment }) => environment === "*"),
+                  environments: where.flatMap(({ environment }) =>
+                    environment === "*" ? [] : [environment],
+                  ),
+                  updateAvailable: false,
+                },
+              };
+        })
+      : [{ source: "o/other", skillId: "other", name: "other", installs: 3 }];
+
+  const handlers = {
+    listSkillDirectory: ({ view, page }: { view: string; page: number }) =>
+      Effect.suspend(() => {
+        asked.push(`${view}/${page}`);
+
+        return view === "hot"
+          ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh answered 503" }))
+          : Effect.succeed({ total: 3, hasMore: page === 0, skills: skills(page) });
+      }),
+    searchSkillDirectory: ({ query }: { query: string }) =>
+      Effect.sync(() => skills(0).filter(({ name }) => name.includes(query))),
+    installEnvironmentSkills: ({
+      environment,
+      source,
+      skills: named = [],
+    }: {
+      environment: string;
+      source: string;
+      skills?: ReadonlyArray<string> | undefined;
+    }) =>
+      Effect.sync(() => {
+        installs.push({ environment, source, skills: named });
+
+        return {
+          status: "installed" as const,
+          repo: source,
+          ref: null,
+          commit: "c0ffee0",
+          skills: named.map((name) => ({ name, outcome: "installed" as const })),
+        };
+      }),
+  } satisfies Partial<RegistryHandlers>;
+
+  return { handlers, installs, asked };
+};
+
+describe("the Skill directory's lists", () => {
+  it.effect("are asked a page at a time, from page 0, and Load more asks the next", () =>
+    Effect.gen(function* () {
+      const { handlers, asked } = directory();
+      const registry = registryWith(handlers);
+      const first = skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0));
+      const second = skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 1));
+
+      expect(registry.get(skillDirectoryPagesAtom("all-time"))).toBe(1);
+
+      registry.mount(first);
+
+      const page = AsyncResult.getOrThrow(yield* settled(registry, first));
+
+      expect(page.hasMore).toBe(true);
+      expect(page.skills.map(({ skillId }) => skillId)).toEqual(["grill-me", "tdd"]);
+
+      // Load more.
+      registry.set(skillDirectoryPagesAtom("all-time"), 2);
+      registry.mount(second);
+
+      const more = AsyncResult.getOrThrow(yield* settled(registry, second));
+
+      expect(more.hasMore).toBe(false);
+      expect(more.skills.map(({ skillId }) => skillId)).toEqual(["other"]);
+      // Another list is another count of pages and other pages.
+      expect(registry.get(skillDirectoryPagesAtom("hot"))).toBe(1);
+      expect(skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0))).toBe(first);
+      expect(skillDirectoryPageAtom(skillDirectoryPageKey("trending", 0))).not.toBe(first);
+      expect(asked).toEqual(["all-time/0", "all-time/1"]);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("say why a list could not load", () =>
+    Effect.gen(function* () {
+      const registry = registryWith(directory().handlers);
+      const hot = skillDirectoryPageAtom(skillDirectoryPageKey("hot", 0));
+
+      registry.mount(hot);
+
+      expect(settledFailureOf(yield* settled(registry, hot))).toBe("skills.sh answered 503");
+      registry.dispose();
+    }),
+  );
+
+  it.effect("are searched by query, each query apart, and say why a search failed", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        ...directory().handlers,
+        searchSkillDirectory: ({ query }) =>
+          query === "down"
+            ? Effect.fail(
+                SkillDirectoryError.make({ message: "skills.sh could not be reached: offline" }),
+              )
+            : Effect.succeed([
+                { source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 9 },
+              ]),
+      });
+
+      const found = skillDirectorySearchAtom("tdd");
+      const down = skillDirectorySearchAtom("down");
+
+      registry.mount(found);
+      registry.mount(down);
+
+      expect(skillDirectorySearchAtom("tdd")).toBe(found);
+      expect(AsyncResult.getOrThrow(yield* settled(registry, found))).toHaveLength(1);
+      expect(settledFailureOf(yield* settled(registry, down))).toBe(
+        "skills.sh could not be reached: offline",
+      );
+      registry.dispose();
+    }),
+  );
+});
+
+describe("installing from the Skill directory", () => {
+  it.effect(
+    "sends `*` for every Environment, and the picked Skill only, and the row's badge follows",
+    () =>
+      Effect.gen(function* () {
+        const { handlers, installs } = directory();
+        const registry = registryWith(handlers);
+        const first = skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0));
+
+        registry.mount(first);
+        registry.mount(installToTargetAtom);
+
+        const before = AsyncResult.getOrThrow(yield* settled(registry, first));
+
+        expect(before.skills.every((skill) => skill.installed === undefined)).toBe(true);
+
+        registry.set(installToTargetAtom, {
+          target: EVERY_ENVIRONMENT,
+          source: "mattpocock/skills",
+          skills: ["grill-me"],
+        });
+
+        const answer = AsyncResult.getOrThrow(yield* settled(registry, installToTargetAtom));
+
+        expect(answer).toMatchObject({ status: "installed", skills: [{ name: "grill-me" }] });
+        // The source holds more Skills; only the picked one is named.
+        expect(installs).toEqual([
+          { environment: "*", source: "mattpocock/skills", skills: ["grill-me"] },
+        ]);
+
+        // The list asks again, so the badge updates.
+        const after = AsyncResult.getOrThrow(yield* settled(registry, first));
+
+        expect(after.skills.find(({ skillId }) => skillId === "grill-me")?.installed).toEqual({
+          everyEnvironment: true,
+          environments: [],
+          updateAvailable: false,
+        });
+        expect(after.skills.find(({ skillId }) => skillId === "tdd")?.installed).toBeUndefined();
+        registry.dispose();
+      }),
+  );
+
+  it.effect("sends the Environment's id for one Environment, and the row says in how many", () =>
+    Effect.gen(function* () {
+      const { handlers, installs } = directory();
+      const registry = registryWith(handlers);
+      const first = skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0));
+
+      registry.mount(first);
+      registry.mount(installToTargetAtom);
+      yield* settled(registry, first);
+
+      registry.set(installToTargetAtom, {
+        target: "work",
+        source: "mattpocock/skills",
+        skills: ["tdd"],
+      });
+      yield* settled(registry, installToTargetAtom);
+
+      const after = AsyncResult.getOrThrow(yield* settled(registry, first));
+
+      expect(installs).toEqual([
+        { environment: "work", source: "mattpocock/skills", skills: ["tdd"] },
+      ]);
+      expect(after.skills.find(({ skillId }) => skillId === "tdd")?.installed).toEqual({
+        everyEnvironment: false,
+        environments: ["work"],
+        updateAvailable: false,
+      });
+      registry.dispose();
+    }),
+  );
+
+  it.effect("says why an install failed", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        installEnvironmentSkills: () =>
+          Effect.fail(new EnvironmentError({ message: 'o/skills has no Skill named "x"' })),
+      });
+
+      registry.mount(installToTargetAtom);
+      registry.set(installToTargetAtom, { target: "*", source: "o/skills", skills: ["x"] });
+
+      expect(settledFailureOf(yield* settled(registry, installToTargetAtom))).toBe(
+        'o/skills has no Skill named "x"',
+      );
+      registry.dispose();
+    }),
+  );
 });
 
 describe("the files kept for a Skill with no Skill source", () => {
