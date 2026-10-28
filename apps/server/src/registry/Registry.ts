@@ -615,7 +615,8 @@ export type RegistryMethods = {
   /**
    * What keeps the spare Workspace of each of `environments` (every Environment when undefined) current, in one call:
    * the stale spares to remove (`forgetSpare`, then their objects), and the spares registered now, each with what its
-   * object prepares itself with. Nothing to do is two empty lists.
+   * object prepares itself with, only for an Environment that had a Session in the last `SPARE_REFILL_WINDOW_MS`.
+   * Nothing to do is two empty lists.
    */
   readonly upkeepSpares: (input: {
     readonly environments?: ReadonlyArray<string> | undefined;

@@ -385,7 +385,6 @@ export const SessionLive = Session.make(
             workspaces: workspaceObjects,
             sessions: { destroy: destroySessionObject(sessions) },
           }).removeSubagentWorkspace,
-          spares,
           builds,
           run: (effect) => runtime.runPromise(effect),
         });

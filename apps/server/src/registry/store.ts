@@ -145,6 +145,13 @@ export type EnvironmentNaming =
 /** How changing an Environment's Repos went. */
 export type RepoChange = "changed" | "missing" | "taken" | "absent";
 
+/**
+ * How long after its last Session was used (made, or its status last changed) an Environment still gets a spare made
+ * (docs/architecture/workspace.md → Spare Workspace): 3 days, over a weekend. Past it, the Environment keeps at most the
+ * spare it has, so one nobody uses costs no Container time for spares.
+ */
+export const SPARE_REFILL_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
 /** A spare registered now: its set-up, and the Environment's last good Build it is prepared with (null for none). */
 export type SpareSetup = WorkspaceSetup & { readonly build: EnvironmentBuild | null };
 
@@ -270,7 +277,9 @@ export type RegistryStore = {
    * Keep a spare for each of `environments` that exists (every one when undefined), in one transaction: an Environment
    * whose spare is stale (other Repos, or another Build than its last good one) has it listed, to remove, and one with
    * none gets one registered, under an id from `newId` that no Workspace has, on `SPARE_BRANCH` with the Environment's
-   * Repos and its last good Build, which the spare records.
+   * Repos and its last good Build, which the spare records. Only an Environment that had a Session within
+   * `SPARE_REFILL_WINDOW_MS` of `now` gets a spare made: another keeps the one it has while a Session can take it (one
+   * of another Build), and has one whose Repos are no longer its own listed but not replaced.
    */
   readonly upkeepSpares: (
     environments: ReadonlyArray<string> | undefined,
@@ -1247,16 +1256,29 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           const snapshot = build?.snapshot.id ?? null;
           const spare = getSpareRow(environment.id);
 
+          // Its Sessions' last use: made, or their status last changed.
+          const lastSessionAt = sql
+            .exec<{ at: number | null }>(
+              "SELECT MAX(updated_at) AS at FROM sessions WHERE environment = ?",
+              environment.id,
+            )
+            .one().at;
+
+          const hadRecentSession =
+            lastSessionAt !== null && now - lastSessionAt <= SPARE_REFILL_WINDOW_MS;
+
           if (spare !== undefined) {
-            if (
-              !sameRepos(decodeRepos(spare.repos), environment.repos) ||
-              spare.spare_build !== snapshot
-            ) {
+            const reposCurrent = sameRepos(decodeRepos(spare.repos), environment.repos);
+
+            // A spare of another Build is still taken, so one nobody uses keeps it rather than make another.
+            if (!reposCurrent || (hadRecentSession && spare.spare_build !== snapshot)) {
               stale.push(spare.id);
             }
 
             continue;
           }
+
+          if (!hadRecentSession) continue;
 
           // Eight hex digits rarely collide; one that does is drawn again.
           let id = newId();

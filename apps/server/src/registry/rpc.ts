@@ -174,7 +174,8 @@ export type Spares = {
 type SpareRun = { readonly busy: boolean; readonly failed: boolean };
 
 /**
- * The upkeep of the Environments' spare Workspaces (ADR-0016): one Registry call says what to do (`upkeepSpares`), a
+ * The upkeep of the Environments' spare Workspaces (ADR-0016): one Registry call says what to do (`upkeepSpares`, which
+ * makes spares only for Environments that had a Session in the last few days: `SPARE_REFILL_WINDOW_MS`), a
  * stale spare's record is forgotten and then, if it was still a spare (not taken meanwhile), its object wiped, and
  * each spare registered is asked to prepare itself (`prepareSpare`), which its object does on its own time: the answer
  * comes at once. A spare removed leaves its Environment without one, so the call is made once more to register the
