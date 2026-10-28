@@ -632,6 +632,16 @@ const changeValue = (files: HashedFiles, source: SkillSource | null = null): Ski
 
 const decodeChangeValue = Schema.decodeUnknownOption(SkillChangeValue);
 
+/**
+ * Why the Registry refuses an agent's change to the Skills kept for every Environment that was made with no Approval, or
+ * undefined when it may go on. The Session asks the owner first and passes what they were shown (`expected`, or an
+ * install's `pin`), so a call without it is not one that asked: a second guard, for a caller that skips the first.
+ */
+export const unapprovedEveryChange = (scope: string, approved: boolean): string | undefined =>
+  scope === EVERY_ENVIRONMENT_SCOPE && !approved
+    ? "a change to the Skills kept for every Environment is made only against what the owner approved (no Approval was passed): nothing was changed"
+    : undefined;
+
 /** The files an Agent change of a Skill records, or null where there were none (or the value is not a Skill's). */
 export const changeFiles = (value: AgentChange["before"]): HashedFiles | null =>
   value === null
@@ -819,7 +829,7 @@ const keepPlanned = (
  */
 export const previewSkillSave = (
   context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
-  input: Omit<SkillToKeep, "source">,
+  input: SkillToKeep,
 ): SkillPreview => {
   const plan = planSave(context, input);
 

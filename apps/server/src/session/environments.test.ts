@@ -57,6 +57,12 @@ const EVERY = { SHARED: "all" };
  */
 const MERGED = { variables: { A: "1", ...EVERY } };
 
+/** The scopes the fake Registry names, by id. */
+const scopes = new Map([
+  ["default", DEFAULT],
+  ["*", EVERY_SCOPE],
+]);
+
 const open = (
   answer: Effect.Success<
     ReturnType<EnvironmentsRegistry["changeEnvironment"]>
@@ -210,7 +216,7 @@ const open = (
           ? ({ status: "missing" } as const)
           : ({
               status: "installed" as const,
-              environment: input.environment === "default" ? DEFAULT : OTHER,
+              environment: scopes.get(input.environment) ?? OTHER,
               repo: "mattpocock/skills",
               ref: null,
               commit: "c0ffee0000000000000000000000000000000001",
@@ -225,8 +231,39 @@ const open = (
                     tool: "environment_skill_install",
                   },
                   shadows: false,
+                  overriddenIn:
+                    input.environment === "*" && overridesHere
+                      ? [{ id: "default", name: "Default" }]
+                      : [],
                 },
               ],
+            } as const);
+      }),
+    agentPreviewSkillInstall: (
+      input: Parameters<EnvironmentsRegistry["agentPreviewSkillInstall"]>[0],
+    ) =>
+      Effect.sync(() => {
+        skillsAsked.push(input);
+
+        return input.environment === "ghost"
+          ? ({ status: "missing" } as const)
+          : ({
+              status: "previewed" as const,
+              environment: input.environment === "*" ? EVERY_SCOPE : DEFAULT,
+              repo: "mattpocock/skills",
+              ref: null,
+              commit: "c0ffee0000000000000000000000000000000001",
+              skills: [
+                {
+                  name: "grill-me",
+                  path: "skills/grill-me",
+                  description: "Interview me.",
+                  files: { "SKILL.md": "---\nname: grill-me\n---\n" },
+                  unchanged: false,
+                  current: null,
+                },
+              ],
+              rejected: [],
             } as const);
       }),
     agentMarkSecretBuild: (input: Parameters<EnvironmentsRegistry["agentMarkSecretBuild"]>[0]) =>
@@ -465,6 +502,69 @@ describe("the Session's Environments", () => {
 
     expect(checked).toMatchObject({ status: "ready", name: "release", current: null });
     expect(skillsAsked).toEqual([{ environment: "*", folder: "release", files }]);
+  });
+
+  it("hand the Session's own Workspace the set after an install for every Environment, unless its own Skills hide all of them, and pass the Approval's pin on", async () => {
+    const pin = {
+      commit: "c0ffee0000000000000000000000000000000001",
+      skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: null }],
+    };
+
+    const everywhere = open();
+
+    const installed = await Effect.runPromise(
+      everywhere.environments.installSkills({
+        environment: "*",
+        source: "mattpocock/skills",
+        skills: ["grill-me"],
+        author: { ...author, approved: true },
+        pin,
+      }),
+    );
+
+    expect(everywhere.skillsAsked).toEqual([
+      {
+        environment: "*",
+        source: "mattpocock/skills",
+        skills: ["grill-me"],
+        author: { session: "s-1", ...author, approved: true },
+        pin,
+      },
+    ]);
+    expect(installed).toMatchObject({
+      status: "installed",
+      environment: EVERY_SCOPE,
+      handed: true,
+    });
+    expect(everywhere.skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
+
+    // The Session's Environment keeps its own Skill of the name: the Skill does not reach it.
+    const hidden = open("changed", "changed", true);
+
+    const kept = await Effect.runPromise(
+      hidden.environments.installSkills({ environment: "*", source: "o/r", author }),
+    );
+
+    expect(kept).toMatchObject({ status: "installed", handed: false });
+    expect(hidden.skillSetsHanded).toEqual([]);
+  });
+
+  it("preview an install for every Environment through the Registry, naming the scope", async () => {
+    const { environments, skillsAsked } = open();
+
+    const previewed = await Effect.runPromise(
+      environments.previewInstall({ environment: "*", source: "mattpocock/skills" }),
+    );
+
+    expect(skillsAsked).toEqual([{ environment: "*", source: "mattpocock/skills" }]);
+    expect(previewed).toMatchObject({
+      status: "previewed",
+      environment: EVERY_SCOPE,
+      skills: [{ name: "grill-me", unchanged: false, current: null }],
+    });
+    expect(
+      await Effect.runPromise(environments.previewInstall({ environment: "ghost", source: "o/r" })),
+    ).toEqual({ status: "missing" });
   });
 
   it("leave the Session's Workspace as it is after an install for another Environment, or for none", async () => {

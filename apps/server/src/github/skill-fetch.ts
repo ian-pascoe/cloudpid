@@ -178,20 +178,35 @@ const namesOf = (candidates: ReadonlyArray<ListedSkill>): string =>
 
 /**
  * Fetch from `source` the Skills `skills` names (by name, or `["*"]` for all of them), else the one the repo holds, else
- * a listing of those it holds. Reads the tree at the commit the source's ref resolves to, so what is fetched is one
- * commit's.
+ * a listing of those it holds. Reads the tree at the commit the source's ref resolves to (or at `commit`, when one
+ * is given), so what is fetched is one commit's.
  */
 export const fetchSkills = async (
   reader: RepoReader,
   {
     source,
     skills,
-  }: { readonly source: SkillSourceInput; readonly skills?: ReadonlyArray<string> | undefined },
+    commit: pinned,
+    folders,
+    limit,
+  }: {
+    readonly source: SkillSourceInput;
+    readonly skills?: ReadonlyArray<string> | undefined;
+    /** Read at this commit, not the one the source's ref resolves to now: what a user was shown and approved. */
+    readonly commit?: string | undefined;
+    /**
+     * Read exactly the Skills in these folders (each with its `SKILL.md`), whatever their names, and none else: what a
+     * user was shown and approved. A folder that holds no Skill is reported as skipped.
+     */
+    readonly folders?: ReadonlyArray<string> | undefined;
+    /** Refuse (`too_many`) before any Skill's files are read when more than this many Skills are chosen. */
+    readonly limit?: number | undefined;
+  },
 ): Promise<SkillFetch> => {
   const repo: SkillRepo = { owner: source.owner, name: source.name };
 
   try {
-    const commit = await reader.commit(repo, source.ref);
+    const commit = await reader.commit(repo, pinned ?? source.ref);
     const tree = await reader.tree(repo, commit);
 
     if (tree.truncated) {
@@ -201,13 +216,23 @@ export const fetchSkills = async (
       );
     }
 
-    const skillMds = findSkillMdPaths({ tree: tree.entries }, source.path || undefined).filter(
-      (path) => basename(path).toLowerCase() === "skill.md",
-    );
+    const skillMds =
+      folders === undefined
+        ? findSkillMdPaths({ tree: tree.entries }, source.path || undefined).filter(
+            (path) => basename(path).toLowerCase() === "skill.md",
+          )
+        : tree.entries
+            .filter(
+              (entry) =>
+                entry.type === "blob" &&
+                basename(entry.path).toLowerCase() === "skill.md" &&
+                folders.includes(skillFolderOf(entry.path)),
+            )
+            .map((entry) => entry.path);
 
     const where = source.path === "" ? source.repo : `${source.repo} under ${source.path}`;
 
-    if (skillMds.length === 0) {
+    if (skillMds.length === 0 && folders === undefined) {
       return failed("no_skills", `${where} holds no Skill (no folder with a SKILL.md).`);
     }
 
@@ -224,7 +249,8 @@ export const fetchSkills = async (
       byFolder.some((path) => slug(basename(skillFolderOf(path))) === slug(name)),
     );
 
-    const toRead = !all && names.length > 0 && folderAnswers ? byFolder : skillMds;
+    const toRead =
+      folders === undefined && !all && names.length > 0 && folderAnswers ? byFolder : skillMds;
 
     if (toRead.length > MAX_SKILL_CANDIDATES) {
       return failed(
@@ -304,7 +330,24 @@ export const fetchSkills = async (
 
     let chosen: ReadonlyArray<Candidate>;
 
-    if (all) {
+    if (folders !== undefined) {
+      skipped.push(...unreadable);
+
+      for (const folder of folders) {
+        if (
+          !candidates.some((candidate) => candidate.path === folder) &&
+          !unreadable.some((skip) => skip.path === folder)
+        ) {
+          skipped.push({
+            name: basename(folder) || source.name,
+            path: folder,
+            message: `no SKILL.md is in the folder ${folder || "(the repo's root)"} at this commit`,
+          });
+        }
+      }
+
+      chosen = candidates;
+    } else if (all) {
       skipped.push(...unreadable);
       chosen = visible;
     } else if (names.length > 0) {
@@ -371,6 +414,13 @@ export const fetchSkills = async (
         taken.add(candidate.name);
         unique.push(candidate);
       }
+    }
+
+    if (limit !== undefined && unique.length > limit) {
+      return failed(
+        "too_many",
+        `${where} holds ${unique.length} Skills for this install (${namesOf(unique)}), more than the ${limit} one request may take: name up to ${limit} of them with skills, then again for the rest.`,
+      );
     }
 
     const fetched: FetchedSkill[] = [];

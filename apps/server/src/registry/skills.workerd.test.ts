@@ -28,6 +28,7 @@ import {
   type SkillFiles,
   skillLayers,
   skillSetOf,
+  unapprovedEveryChange,
 } from "./skills.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
@@ -1045,5 +1046,13 @@ describe("the Agent changes of Skills kept for every Environment", () => {
     expect(left).toEqual([]);
     // The save's change is the only one.
     expect(changes).toBe(1);
+  });
+});
+
+describe("unapprovedEveryChange", () => {
+  it("refuses a change to the Skills kept for every Environment that names no Approval, and no other", () => {
+    expect(unapprovedEveryChange("*", false)).toContain("only against what the owner approved");
+    expect(unapprovedEveryChange("*", true)).toBeUndefined();
+    expect(unapprovedEveryChange("some-environment", false)).toBeUndefined();
   });
 });

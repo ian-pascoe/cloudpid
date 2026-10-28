@@ -4,6 +4,7 @@
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { shortSha } from "./comparison.ts";
+import type { AgentChange } from "./registry.ts";
 
 /**
  * What the owner's Approval of a change to a Skill was asked against: when the Skill of the name was last saved (`null`:
@@ -99,6 +100,105 @@ export const ListedSkill = Schema.Struct({
 });
 
 export type ListedSkill = typeof ListedSkill.Type;
+
+/** A Skill an install of a repo's Skills would keep, as its owner is shown it for their Approval. */
+export type PreviewedSkill = {
+  readonly name: string;
+  /** Its folder in the repo. */
+  readonly path: string;
+  readonly description: string;
+  /** Its files' text, by path in its folder. */
+  readonly files: Readonly<Record<string, string>>;
+  /** A digest of the files, computed by the Registry: what an Approval pins. */
+  readonly digest: string;
+  /** The scope keeps the Skill with these files and this Skill source already: nothing to approve. */
+  readonly unchanged: boolean;
+  /** The Skill of the name the scope keeps now, with its files' paths. Null for a new Skill. */
+  readonly current: {
+    readonly description: string;
+    readonly savedAt: number;
+    readonly files: ReadonlyArray<string>;
+  } | null;
+};
+
+/** How the install of one Skill from GitHub went. */
+export type InstalledSkill = {
+  readonly name: string;
+  /** Its folder in the repo. */
+  readonly path: string;
+  readonly outcome: "installed" | "unchanged" | "rejected";
+  /** Why it was refused: each problem a line. */
+  readonly message?: string | undefined;
+  /** The Agent change that kept it (the agent's install only). */
+  readonly change?: AgentChange | undefined;
+  /** Whether it hides the bundle's Skill of the name. */
+  readonly shadows?: boolean | undefined;
+  /** For a Skill kept for every Environment: the Environments whose own Skill of the name hides it. */
+  readonly overriddenIn?: ReadonlyArray<{ readonly id: string; readonly name: string }> | undefined;
+};
+
+/** How an install of Skills from GitHub went, as the Registry answers it. */
+export type SkillInstallation =
+  | { readonly status: "missing" }
+  /** Nothing was installed: the source is not one, GitHub gave no answer, or the repo holds no such Skill. */
+  | { readonly status: "refused"; readonly message: string }
+  /** The source holds several Skills and none was named: the list, and nothing installed. */
+  | {
+      readonly status: "listed";
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      readonly available: ReadonlyArray<ListedSkill>;
+    }
+  | {
+      readonly status: "installed";
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      /** Each Skill the source gave, in the order the Registry answered. */
+      readonly results: ReadonlyArray<InstalledSkill>;
+    };
+
+/** What an install of GitHub Skills would do, with nothing kept or recorded: what the owner is asked to approve. */
+export type SkillInstallPreview =
+  | Exclude<SkillInstallation, { readonly status: "installed" }>
+  | {
+      readonly status: "previewed";
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      /** The Skills the install would keep, and those the scope keeps already. */
+      readonly skills: ReadonlyArray<PreviewedSkill>;
+      /** The Skills the repo holds that the install would not keep, each with why. */
+      readonly rejected: ReadonlyArray<{
+        readonly name: string;
+        readonly path: string;
+        readonly message: string;
+      }>;
+    };
+
+/**
+ * What the owner's Approval of an install for every Environment was asked against, which the install must still find: the
+ * commit shown, and for each Skill shown its folder, the digest of its files, and when the Skill of its name was last
+ * saved (null: none kept). Exactly those folders are read again at that commit; a Skill whose files are not as shown is
+ * not kept.
+ */
+export const SkillInstallPin = Schema.Struct({
+  commit: Schema.String,
+  skills: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      path: Schema.String,
+      digest: Schema.String,
+      savedAt: Schema.NullOr(Schema.Finite),
+    }),
+  ),
+});
+
+export type SkillInstallPin = typeof SkillInstallPin.Type;
 
 /** How the install of one Skill went. */
 export const SkillInstalled = Schema.Struct({

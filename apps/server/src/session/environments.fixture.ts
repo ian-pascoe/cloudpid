@@ -21,6 +21,7 @@ export const unusedLifecycle: EnvironmentLifecycle & SecretMarks & EnvironmentSk
   previewSkill: unused,
   removeSkill: unused,
   installSkills: unused,
+  previewInstall: unused,
   create: unused,
   rename: unused,
   addRepo: unused,

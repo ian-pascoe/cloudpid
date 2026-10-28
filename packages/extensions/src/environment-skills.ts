@@ -1,9 +1,9 @@
 // The `environment` extension's tools for an Environment's own Skills, and those kept for every Environment (ADR-0026,
 // `docs/spec.md` → Agent changes, and → The Environment's own Skills): `environment_skill_save` reads a Skill's folder
 // from the Workspace (one the agent wrote, or one `npx skills add --copy` made) and saves it for the Environment, in
-// place of one of its name, `environment_skill_install` installs Skills from GitHub (fetched by the Registry, never by the
-// Session or a Container; only for an Environment, not for `*` yet), and `environment_skill_remove` removes one. The Registry checks a save (the Agent Skills name
-// rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path, at most 100
+// place of one of its name, `environment_skill_install` installs Skills from GitHub (fetched by the Registry, never by
+// the Session or a Container; for `*` too, with the owner's Approval), and `environment_skill_remove` removes one. The
+// Registry checks a save (the Agent Skills name rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path, at most 100
 // Skills and 8 MB in the merged set) and records each as an Agent change with the files before and after, so the owner
 // sees the diffs and can revert it. The Session hands its own Workspace the new Skill set at once; the Environment's
 // other Workspaces and its spare get it at their next readying. The skills list in the prompt changes at the next
@@ -12,32 +12,37 @@
 // Skill of the same name wins in that Environment, with no Approval.
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import { SKILLS_ROOT, shortSha, skillSourceText } from "@cloudpid/protocol";
+import { SKILLS_ROOT } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExecutionEnv, FileError, Result } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import { EnvironmentsError, Id, idOrEvery, Reason } from "./environment.ts";
+import { EnvironmentsError, idOrEvery, Reason } from "./environment.ts";
 import { EVERY_ENVIRONMENT_ID } from "./environment-secret-marks.ts";
 import {
-  asJsonValue,
-  named,
-  PROMPT_NOTE,
-  reach,
+  installedOutcome,
   refused,
   removedOutcome,
   savedOutcome,
   type SkillToolDeps,
 } from "./environment-skill-results.ts";
 import {
+  INSTALL_APPROVAL,
+  installEverywhere,
   MAX_CARD_CHARS,
   removeEverywhere,
   saveEverywhere,
   SKILL_APPROVAL,
 } from "./environment-skills-every.ts";
-import { MAX_FILE_BYTES, MAX_SKILL_BYTES, MAX_SKILL_FILES, problemsIn } from "./skill-checks.ts";
+import {
+  MAX_APPROVED_SKILLS,
+  MAX_FILE_BYTES,
+  MAX_SKILL_BYTES,
+  MAX_SKILL_FILES,
+  problemsIn,
+} from "./skill-checks.ts";
 
 export type {
   EnvironmentSkills,
@@ -384,13 +389,14 @@ export const skillTools = ({
       [
         `Install Skills from GitHub for an Environment (this Session's unless id names another): fetched by cloudpid, not by you (no Container, no \`npx skills\`), pinned to the commit the source's ref resolves to, and kept with their Skill source (repo, path, ref, commit). Every Workspace of the Environment then serves each at ${SKILLS_ROOT}/<name>, read-only, over the bundle's Skill of the same name; a Skill of the same name the Environment keeps is replaced.`,
         "source is owner/repo, owner/repo@skill, or a GitHub URL such as https://github.com/owner/repo/tree/<ref>/<path> (the first segment after tree/ is the ref, so write a branch name with a slash as feature%2Ffoo; without one, the default branch is used). Public repos work, and so do private ones in an account the GitHub App is installed on. Other sources (GitLab, other hosts, well-known indexes) are not fetched here: run `npx skills add <source> --copy` in a Container and save the folder with environment_skill_save.",
+        `With id "${EVERY_ENVIRONMENT_ID}" the Skills are kept for every Environment: every Environment's Workspaces serve them at their next readying (this Session's at once, unless its Environment keeps its own Skill of the name). They steer every future Session, so the user must approve the install, reading each Skill on the card: it shows the first ${MAX_CARD_CHARS} characters of each Skill's files and warns the user of what it cuts, so install Skills small enough to review in full, or expect them to be declined. One request shows at most ${MAX_APPROVED_SKILLS} Skills: name fewer with skills, then call again for the rest. The call reads the repo, asks about the Skills it would keep (those kept with the same files and Skill source already are left out), and on Approve installs exactly the commit the user was shown, each Skill only while the Skill of its name is still the one that was shown. ${INSTALL_APPROVAL}`,
         'skills names the Skills to install (by name): ["*"] installs every Skill the repo holds. When the repo holds several and you name none, nothing is installed and its Skills are listed; ask the user which they want, or call again with skills. skill_search finds a source on skills.sh.',
         "Each Skill passes the checks of environment_skill_save (the Agent Skills name rules, text only, 128 KB a file, 1 MB a Skill, nothing that looks like a credential or a local path; a set holds at most 100 Skills and 8 MB). One that fails is reported and the others are still installed. Each is recorded with your reason and the files before and after, and the user can revert it on the Environments page.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Schema.optionalKey(idOrEvery("Skills kept for every Environment")),
       source: Schema.String.check(Schema.isMinLength(1)).annotate({
         description:
           "Where to install from: owner/repo, owner/repo@skill, or a GitHub URL (https://github.com/owner/repo/tree/<ref>/<path>)",
@@ -404,7 +410,10 @@ export const skillTools = ({
       reason: SkillReason,
     }),
     executionMode: "sequential",
-    replay: "unsafe",
+    // A rerun after an eviction waits for the request an install for every Environment made, or takes its answer; one for
+    // an Environment's own Skills runs again: the Skills kept already come back unchanged, and a ref that moved is
+    // installed at its new commit.
+    replay: "safe",
     execute: ({ id, source, skills: names, reason }, api) =>
       Effect.gen(function* () {
         yield* refuseSecrets([
@@ -412,6 +421,10 @@ export const skillTools = ({
           { what: "the source", text: source },
           ...Arr.map(names ?? [], (name) => ({ what: "a Skill name", text: name })),
         ]);
+
+        if (id === EVERY_ENVIRONMENT_ID) {
+          return yield* installEverywhere(every, { source, names, reason }, api);
+        }
 
         const { environment, own } = yield* target(id);
 
@@ -422,137 +435,15 @@ export const skillTools = ({
           author: { conversation: api.conversationId, tool: "environment_skill_install", reason },
         });
 
-        switch (installed.status) {
-          case "missing":
-            return yield* notFound(environment);
-          case "refused":
-            return yield* EnvironmentsError.make({
-              message: `Nothing was installed: ${installed.message}`,
-            });
-          case "listed": {
-            const { available, repo, commit } = installed;
-
-            return {
-              output: [
-                {
-                  type: "text" as const,
-                  text: Arr.join(
-                    [
-                      `Installed nothing: ${repo} (at ${shortSha(commit)}) holds ${available.length} Skills and none was named:`,
-                      ...Arr.map(
-                        available,
-                        (skill) =>
-                          `- ${skill.name}${skill.path === "" ? "" : ` (${skill.path})`}: ${skill.description}`,
-                      ),
-                      'Ask the user which they want, then call environment_skill_install again with the same source and skills set to their names (["*"] for all of them).',
-                    ],
-                    "\n",
-                  ),
-                },
-              ],
-              details: {
-                listed: { repo, commit, skills: Arr.map(available, (skill) => skill.name) },
-              },
-            };
-          }
-
-          case "installed": {
-            const { results, repo, ref, commit } = installed;
-            const saved = Arr.filter(results, (result) => result.outcome === "installed");
-            const unchanged = Arr.filter(results, (result) => result.outcome === "unchanged");
-            const rejected = Arr.filter(results, (result) => result.outcome === "rejected");
-
-            const problems = Arr.map(
-              rejected,
-              (result) =>
-                `- ${result.name}${result.path === "" ? "" : ` (${result.path})`}: ${result.message ?? "refused"}`,
-            );
-
-            if (saved.length === 0 && unchanged.length === 0) {
-              return yield* EnvironmentsError.make({
-                message: Arr.join(
-                  [`Nothing was installed from ${repo}; each Skill was refused:`, ...problems],
-                  "\n",
-                ),
-              });
-            }
-
-            const changes = Arr.flatMap(saved, (result) =>
-              result.change === undefined ? [] : [result.change],
-            );
-
-            for (const change of changes) {
-              yield* log.record({
-                tool: "environment_skill_install",
-                environmentName: installed.environment.name,
-                field: change.field,
-              });
-            }
-
-            const pinned = skillSourceText({ repo, path: "", ref, commit });
-
-            const listOf = (list: typeof results) =>
-              Arr.join(
-                Arr.map(list, (result) => result.name),
-                ", ",
-              );
-
-            const first = (saved[0] ?? unchanged[0])?.name ?? "<name>";
-
-            return {
-              output: [
-                {
-                  type: "text" as const,
-                  text: Arr.join(
-                    [
-                      ...(saved.length === 0
-                        ? []
-                        : [
-                            `Installed ${Arr.join(
-                              Arr.map(
-                                saved,
-                                (result) =>
-                                  `${result.name}${result.shadows === true ? " (over the bundle's Skill of that name)" : ""}`,
-                              ),
-                              ", ",
-                            )} for ${named(installed.environment)} from ${pinned}.`,
-                          ]),
-                      ...(unchanged.length === 0
-                        ? []
-                        : [
-                            `${listOf(unchanged)} ${unchanged.length === 1 ? "was" : "were"} installed from ${pinned} already: nothing changed, and nothing was recorded for ${unchanged.length === 1 ? "it" : "them"}.`,
-                          ]),
-                      ...(problems.length === 0
-                        ? []
-                        : ["Refused (the others were installed):", ...problems]),
-                      installed.handed
-                        ? `They are served now at ${SKILLS_ROOT}/<name> (read-only): read ${SKILLS_ROOT}/${first}/SKILL.md to use one.`
-                        : `They are served at ${SKILLS_ROOT}/<name> (read-only) in each Workspace of the Environment.`,
-                      reach(installed.environment, installed.handed, own),
-                      PROMPT_NOTE,
-                      ...(saved.length === 0
-                        ? []
-                        : [
-                            "Each change is recorded with your reason and the files before and after, and the user can revert it on the Environments page.",
-                          ]),
-                    ],
-                    " ",
-                  ),
-                },
-              ],
-              details: {
-                agentChanges: Arr.map(changes, (change) => ({
-                  id: change.id,
-                  environment: installed.environment,
-                  field: change.field,
-                  before: asJsonValue(change.before),
-                  after: asJsonValue(change.after),
-                })),
-                own,
-              },
-            };
-          }
-        }
+        // An install into an Environment's own Skills is made at once; one for every Environment waits for the Approval.
+        return yield* installedOutcome(installed, {
+          environments,
+          log,
+          notFound,
+          scope: environment,
+          own,
+          approved: false,
+        });
       }),
   });
 

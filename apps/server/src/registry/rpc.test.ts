@@ -24,6 +24,7 @@ import {
   SessionNotFound,
   SETTINGS_SCOPE,
   type SkillChangeFiles,
+  type SkillInstallation,
   skillField,
   workspaceDirectory,
 } from "@cloudpid/protocol";
@@ -54,7 +55,6 @@ import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
 import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
 import type { RegistryMethods } from "./Registry.ts";
-import type { SkillInstallation } from "./skill-install.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -124,7 +124,10 @@ const fakeRegistries = () => {
     environment: string,
     named: ReadonlyArray<string> | undefined,
   ): SkillInstallation => {
-    const found = Arr.findFirst(environments, (item) => item.id === environment);
+    const found =
+      environment === "*"
+        ? Option.some({ id: "*", name: "every Environment" })
+        : Arr.findFirst(environments, (item) => item.id === environment);
 
     if (Option.isNone(found)) return { status: "missing" };
 
@@ -789,6 +792,7 @@ const fakeRegistries = () => {
     agentPreviewSkill: () => Effect.die("The endpoint makes no Agent change"),
     agentRemoveSkill: () => Effect.die("The endpoint makes no Agent change"),
     agentInstallSkills: () => Effect.die("The endpoint makes no Agent change"),
+    agentPreviewSkillInstall: () => Effect.die("The endpoint makes no Agent change"),
     installSkills: ({ environment, source, skills }) =>
       Effect.sync(() => {
         calls.push(`installSkills:${environment}:${source}:${skills?.join(",") ?? ""}`);
@@ -2968,6 +2972,12 @@ it("installs Skills from a source on the owner's word, listing a source that hol
     ),
   );
 
+  // The owner installs for every Environment (`*`) with the same call.
+  await call(fake, (registry) =>
+    registry.installEnvironmentSkills({ environment: "*", source: "mattpocock/skills" }),
+  );
+
+  expect(fake.calls).toContain("installSkills:*:mattpocock/skills:");
   expect(listed).toMatchObject({
     status: "listed",
     repo: "mattpocock/skills",
