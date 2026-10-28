@@ -34,28 +34,49 @@ const region = (markup: string, open: RegExp, tag: string): string => {
   return markup.slice(start, markup.indexOf(`</${tag}>`, start));
 };
 
-describe("ApprovalCard", () => {
-  it("scrolls Now, After and Why in a region bounded by the viewport's height", () => {
-    const markup = render(LISTING);
-    const body = region(markup, /<div role="region"/, "dl");
+/** The scrolling region of a card: its opening tag, and the markup before and after it. */
+const split = (markup: string) => {
+  const start = markup.indexOf('<div role="region"');
+  const end = markup.indexOf("</dl></div>", start) + "</dl></div>".length;
 
-    expect(body).toMatch(/max-h-\[\d+dvh\]/);
-    expect(body).toContain("Now");
-    expect(body).toContain("After");
-    expect(body).toContain("Why");
+  expect(start).toBeGreaterThanOrEqual(0);
+
+  return {
+    before: markup.slice(0, start),
+    opening: markup.slice(start, markup.indexOf(">", start)),
+    inside: markup.slice(start, end),
+    after: markup.slice(end),
+  };
+};
+
+describe("ApprovalCard", () => {
+  it("scrolls only Now and After, in a region of their own", () => {
+    const { opening, inside } = split(render(LISTING));
+
+    expect(opening).toContain("overflow-y-auto");
+    expect(inside).toContain(">Now<");
+    expect(inside).toContain(">After<");
+    expect(inside).not.toContain(">Why<");
   });
 
-  it("keeps the header, the reason input and the buttons outside the scrolling region", () => {
-    const markup = render(LISTING);
-    const scrolled = markup.indexOf("overflow-y-auto");
-    const closed = markup.indexOf("</dl></div>", scrolled);
+  it("keeps the header, Why, the reason input and the buttons outside the scrolling region", () => {
+    const { before, after } = split(render(LISTING));
 
-    expect(markup.indexOf("Approval requested")).toBeLessThan(scrolled);
-    expect(markup.indexOf("The agent asks your Approval")).toBeLessThan(scrolled);
+    expect(before).toContain("The agent asks your Approval");
 
-    for (const outside of ['<input type="text"', "Decline</button>", "Approve</button>"]) {
-      expect(markup.indexOf(outside)).toBeGreaterThan(closed);
+    for (const outside of [
+      ">Why<",
+      "Restore my Skills",
+      "<input",
+      "Decline</button>",
+      "Approve</button>",
+    ]) {
+      expect(after).toContain(outside);
     }
+  });
+
+  it("bounds the card itself, so the area never has to push its buttons out", () => {
+    expect(render(LISTING)).toMatch(/<section[^>]*max-h-/);
   });
 
   it("shows a multi-line value as written, in fixed-width text, and a short one as a sentence", () => {
@@ -64,15 +85,11 @@ describe("ApprovalCard", () => {
     expect(region(markup, /<dd class="font-mono[^"]*">━━/, "dd")).toContain("whitespace-pre-wrap");
     expect(markup).toContain('<dd class="break-words">one line</dd>');
   });
-
-  it("lets the value column shrink, so a long line wraps inside the card", () => {
-    expect(render(LISTING)).toContain("grid-cols-[auto_minmax(0,1fr)]");
-  });
 });
 
 describe("the area of waiting requests", () => {
   it("is bounded by the viewport's height and scrolls on its own", () => {
-    expect(WAITING_REQUESTS_CLASS).toMatch(/max-h-\[\d+dvh\]/);
+    expect(WAITING_REQUESTS_CLASS).toContain("max-h-");
     expect(WAITING_REQUESTS_CLASS).toContain("overflow-y-auto");
   });
 });

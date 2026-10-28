@@ -13,9 +13,16 @@ const CardState = ScopedAtom.make(() =>
   Atom.make<{ readonly reason: string; readonly sent: boolean }>({ reason: "", sent: false }),
 );
 
+/** What a card takes: its request, whether answering is off, and what to do with the owner's answer. */
+type CardProps = {
+  request: ApprovalRequest;
+  disabled: boolean;
+  onAnswer: (approve: boolean, reason: string) => void;
+};
+
 /**
  * The classes of a value on the card: one line as a sentence, several (a Skill's files, as written) in fixed-width
- * text that keeps its lines. The card's body bounds and scrolls them.
+ * text that keeps its lines. The card's values region bounds and scrolls them.
  */
 const valueClass = (value: string): string =>
   value.includes("\n") ? "font-mono text-xs break-words whitespace-pre-wrap" : "break-words";
@@ -25,15 +32,7 @@ const valueClass = (value: string): string =>
  * value before and after (for a delete, what is deleted), and the agent's reason, with Approve and Decline. A Decline
  * may carry the owner's reason to the agent. The card closes when the Session's next list leaves the request out.
  */
-const Card = ({
-  request,
-  disabled,
-  onAnswer,
-}: {
-  request: ApprovalRequest;
-  disabled: boolean;
-  onAnswer: (approve: boolean, reason: string) => void;
-}) => {
+const ApprovalCardBody = ({ request, disabled, onAnswer }: CardProps) => {
   const [{ reason, sent }, setState] = useAtom(CardState.use());
   const off = disabled || sent;
 
@@ -45,32 +44,36 @@ const Card = ({
   return (
     <section
       aria-label="Approval requested"
-      className="mx-auto mb-3 w-full max-w-3xl rounded-lg border bg-card px-4 py-3 shadow-sm"
+      className="mx-auto mt-1 mb-2 flex max-h-[calc(var(--waiting-height,60dvh)-0.75rem)] w-full max-w-3xl flex-col gap-3 rounded-lg border bg-card px-4 py-3 shadow-sm [@media(max-height:32rem)]:gap-2 [@media(max-height:32rem)]:py-2"
     >
-      <div className="flex items-center gap-2 text-sm font-semibold">
-        <ShieldCheck className="size-4 shrink-0" aria-hidden />
-        The agent asks your Approval: {request.change}
+      <div className="shrink-0">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <ShieldCheck className="size-4 shrink-0" aria-hidden />
+          The agent asks your Approval: {request.change}
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {request.target} · <span className="font-mono">{request.tool}</span>
+        </p>
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {request.target} · <span className="font-mono">{request.tool}</span>
-      </p>
-      {/* The values scroll in their own region, so the reason input and the buttons stay in view whatever the size. */}
+      {/* Only Now and After scroll, in the room the card leaves: the rest of the card is never pushed out of view. */}
       <div
         role="region"
         aria-label="What the change does"
         tabIndex={0}
-        className="mt-3 max-h-[30dvh] overflow-y-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        className="min-h-0 flex-1 overflow-y-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+        <dl className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
           <dt className="text-muted-foreground">Now</dt>
           <dd className={valueClass(request.before)}>{request.before}</dd>
           <dt className="text-muted-foreground">After</dt>
           <dd className={valueClass(request.after)}>{request.after}</dd>
-          <dt className="text-muted-foreground">Why</dt>
-          <dd className="break-words">{request.reason}</dd>
         </dl>
       </div>
-      <label className="mt-3 flex flex-col gap-1 text-sm">
+      <dl className="grid max-h-16 shrink-0 grid-cols-[3rem_minmax(0,1fr)] gap-x-3 overflow-y-auto text-sm">
+        <dt className="text-muted-foreground">Why</dt>
+        <dd className="break-words">{request.reason}</dd>
+      </dl>
+      <label className="flex shrink-0 flex-col gap-1 text-sm">
         <span className="text-xs font-medium">
           Reason for a Decline (optional, the agent sees it)
         </span>
@@ -84,10 +87,10 @@ const Card = ({
 
             setState((previous) => ({ ...previous, reason: typed }));
           }}
-          className="h-9 rounded-md border border-input bg-background px-3 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          className="h-9 rounded-md [@media(max-height:32rem)]:h-8 border border-input bg-background px-3 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         />
       </label>
-      <div className="mt-3 flex justify-end gap-2">
+      <div className="flex shrink-0 justify-end gap-2">
         <Button
           type="button"
           variant="outline"
@@ -114,14 +117,10 @@ const Card = ({
   );
 };
 
-/** One card, keyed by its request in the list so that it starts unanswered. */
-export const ApprovalCard = (props: {
-  request: ApprovalRequest;
-  disabled: boolean;
-  onAnswer: (approve: boolean, reason: string) => void;
-}) => (
+/** The card for one Approval request with its own state; the list keys it by request, so each starts unanswered. */
+export const ApprovalCard = (props: CardProps) => (
   <CardState.Provider>
-    <Card {...props} />
+    <ApprovalCardBody {...props} />
   </CardState.Provider>
 );
 
