@@ -43,6 +43,7 @@ import type { Builds } from "./builds.ts";
 import type { DraftBranches } from "./draft-branches.ts";
 import { withInstalled } from "./skill-badges.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
+import { joinRepoSkills, repoSearchQuery, type SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
 import { removals } from "./removal.ts";
@@ -112,6 +113,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly skillSearch: SkillSearcher;
   /** The Skills page's lists and search of the Skill directory (skills.sh), the lists kept about an hour. */
   readonly skillDirectory: SkillDirectory;
+  /** The repo page's listing of the Skills a GitHub repo holds, read as the GitHub App, each `SKILL.md` kept by blob. */
+  readonly skillRepos: SkillRepos;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
@@ -304,6 +307,7 @@ export const serveRegistryRpc = <R = never>(
     branches,
     skillSearch,
     skillDirectory,
+    skillRepos,
     background,
   }: RegistryRpcObjects<R>,
 ) =>
@@ -958,6 +962,25 @@ export const serveRegistryRpc = <R = never>(
           const installed = yield* registry.installedSkills();
 
           return withInstalled(found, installed);
+        }),
+      // GitHub says what the repo holds; the Skill directory only adds installs (blank when it does not answer or does not
+      // know a Skill), and the Registry where each Skill is installed, so an install shows at once.
+      listRepoSkills: ({ owner, repo, ref }) =>
+        Effect.gen(function* () {
+          const rows = yield* skillRepos.list({ owner, repo, ref });
+          const query = repoSearchQuery(rows.repo);
+
+          const [installed, found] = yield* Effect.all(
+            [
+              registry.installedSkills(),
+              rows.skills.length === 0 || query === undefined
+                ? Effect.succeed([])
+                : skillDirectory.search(query).pipe(Effect.orElseSucceed(() => [])),
+            ],
+            { concurrency: "unbounded" },
+          );
+
+          return joinRepoSkills(rows, installed, found);
         }),
       listBuilds: () =>
         registry.listBuilds().pipe(

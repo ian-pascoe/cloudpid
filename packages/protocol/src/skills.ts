@@ -318,6 +318,84 @@ export const SkillDirectoryPage = Schema.Struct({
 
 export type SkillDirectoryPage = typeof SkillDirectoryPage.Type;
 
+/** Why a repo's Skills could not be listed (a repo page, a Skill's page): what GitHub's answer says of the repo or ref. */
+export const SkillRepoErrorKind = Schema.Literals([
+  /**
+   * GitHub has no such repo, or it is private and the GitHub App cannot read it. GitHub answers both with a 404, so
+   * the two cannot be told apart; the message says what to check.
+   */
+  "not_found",
+  /** The repo is readable but has no such branch, tag or commit. */
+  "bad_ref",
+  /** The owner, repo or ref cannot be one GitHub has. */
+  "invalid",
+  "rate_limited",
+  /** GitHub refused the GitHub App's token. */
+  "refused",
+  /** The repo is larger than one listing of its files holds. */
+  "truncated",
+  /** GitHub could not be reached or answered otherwise. */
+  "failed",
+]);
+
+export type SkillRepoErrorKind = typeof SkillRepoErrorKind.Type;
+
+/** The failure a repo's page shows plainly: why GitHub gave no listing of the repo at the ref. */
+export class SkillRepoError extends Schema.TaggedError<
+  SkillRepoError,
+  { readonly brand: unique symbol }
+>()("SkillRepoError", {
+  kind: SkillRepoErrorKind,
+  message: Schema.String,
+}) {}
+
+/** The longest owner, repo or ref a request for a repo's Skills may name. */
+export const MAX_REPO_PART_LENGTH = 255;
+
+/** A Skill a GitHub repo holds, as the repo page lists it. */
+export const RepoSkill = Schema.Struct({
+  /** Its name, from its SKILL.md's frontmatter. */
+  name: Schema.String,
+  /** Its description, from the same. */
+  description: Schema.String,
+  /** Its folder in the repo (empty for a Skill at the repo's root). */
+  path: Schema.String,
+  /** What its page's URL (`/skills/:owner/:repo/:skill`) calls it: its folder's name, or its name for a Skill at the root. */
+  skillId: Schema.String,
+  /** Its installs, all time, when the Skill directory knows the Skill; absent when it does not. */
+  installs: Schema.optionalKey(Schema.Finite),
+  /** Where it is installed here, matched by the repo and the Skill's folder; absent when it is nowhere. */
+  installed: Schema.optionalKey(SkillInstalledIn),
+});
+
+export type RepoSkill = typeof RepoSkill.Type;
+
+/** A `SKILL.md` in a repo that cannot be read as a Skill, and why. */
+export const UnreadableSkill = Schema.Struct({
+  path: Schema.String,
+  message: Schema.String,
+});
+
+export type UnreadableSkill = typeof UnreadableSkill.Type;
+
+/** What GitHub has of a repo at a ref: every Skill the walk the install uses finds, read at one commit. */
+export const SkillRepoListing = Schema.Struct({
+  /** `owner/name`, as asked. */
+  repo: Schema.String,
+  /** The ref asked for; null for the repo's default branch. */
+  ref: Schema.NullOr(Schema.String),
+  /** The commit it was read at, in full. */
+  commit: Schema.String,
+  /** The Skills, those the directory knows by installs first. */
+  skills: Schema.Array(RepoSkill),
+  /** `SKILL.md` files that are not Skills (no name or description, or too large). */
+  unreadable: Schema.Array(UnreadableSkill),
+  /** How many more Skills the repo holds than are listed (the walk reads at most 200). */
+  omitted: Schema.Int,
+});
+
+export type SkillRepoListing = typeof SkillRepoListing.Type;
+
 /** How the owner's update of one Skill went. */
 export const SkillUpdated = Schema.Struct({
   name: Schema.String,

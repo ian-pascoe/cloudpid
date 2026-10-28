@@ -23,6 +23,9 @@ import {
   SkillDirectoryView,
   SkillFile,
   SkillInstall,
+  MAX_REPO_PART_LENGTH,
+  SkillRepoError,
+  SkillRepoListing,
   SkillSearchResult,
   SkillUpdate,
 } from "./skills.ts";
@@ -779,6 +782,24 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { query: Schema.String },
     success: Schema.Array(DirectorySkill),
     error: SkillDirectoryError,
+  }),
+  /**
+   * Every Skill GitHub has in repo `owner`/`repo` at `ref` (a branch, tag or commit; absent: the default branch's head),
+   * as the walk an install uses finds them, read by the main Worker as the GitHub App with a read-only token, so a private
+   * repo the app can read works and a repo skills.sh does not list does too. Each Skill has its description (from its
+   * SKILL.md's frontmatter, kept by blob), its installs when skills.sh knows them, and where it is installed here, matched
+   * by the repo and the Skill's folder. A repo with no Skills answers an empty list. Fails with a `SkillRepoError` when GitHub
+   * gives no listing: no such repo or a private one the app cannot read, a ref the repo does not have, a refused token or the
+   * rate limit.
+   */
+  Rpc.make("listRepoSkills", {
+    payload: {
+      owner: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)),
+      repo: Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH)),
+      ref: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_REPO_PART_LENGTH))),
+    },
+    success: SkillRepoListing,
+    error: SkillRepoError,
   }),
   /**
    * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The
