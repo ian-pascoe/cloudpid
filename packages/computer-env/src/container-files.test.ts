@@ -22,10 +22,15 @@ const hasRg = spawnSync("rg", ["--version"]).status === 0;
 let root: string;
 let running: boolean;
 
+/** Whether each script run was said to write. */
+let writes: boolean[];
+
 const access: ContainerAccess = {
   patterns: async () => ["**/node_modules"],
   running: () => running,
-  run: async (script, env) => {
+  run: async (script, env, options) => {
+    writes.push(options?.writes === true);
+
     const ran = spawnSync("bash", ["-c", script], {
       encoding: "utf8",
       env: { ...process.env, ...env },
@@ -67,6 +72,7 @@ const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "container-files-"));
   running = true;
+  writes = [];
   mkdirSync(join(root, "pkg/node_modules/effect"), { recursive: true });
   writeFileSync(join(root, "pkg/node_modules/effect/package.json"), '{"name":"effect"}\n');
   writeFileSync(join(root, "pkg/index.ts"), "export const a = 1;\nexport const b = 2;\n");
@@ -111,6 +117,20 @@ describe("the Container's file operations", () => {
     await container.writeFile(path, new TextEncoder().encode("two\n"), true);
 
     expect(readFileSync(path, "utf8")).toBe("one\ntwo\n");
+  });
+
+  it("say a write changes the Container's disk, and a read does not", async () => {
+    const container = files();
+    const path = join(root, "pkg/node_modules/new.txt");
+
+    await container.writeFile(path, new TextEncoder().encode("one"), false);
+
+    expect(writes).toEqual([true]);
+
+    await container.readFile(path);
+    await container.info(path, true);
+
+    expect(writes).toEqual([true, false, false]);
   });
 
   it("replace a file read before, keeping its mode", async () => {

@@ -31,10 +31,14 @@ export type ContainerAccess = {
   readonly patterns: () => Promise<readonly string[] | undefined>;
   /** Whether the Container runs now, so a listing may ask it without starting it. */
   readonly running: () => boolean;
-  /** Run a bash script on the Container, starting it if it is stopped, with `env` in its environment. */
+  /**
+   * Run a bash script on the Container, starting it if it is stopped, with `env` in its environment. `writes` is set
+   * for a script that changes a Container-only file (a write), so the Container's idle stop snapshots it.
+   */
   readonly run: (
     script: string,
     env: Readonly<Record<string, string>>,
+    options?: { readonly writes?: boolean | undefined },
   ) => Promise<ContainerScriptRun>;
 };
 
@@ -379,12 +383,13 @@ export class ContainerFiles {
     await this.#stage.write(stage, bytes);
 
     try {
-      await this.#run(path, WRITE_FILE, {
-        P: path,
-        S: stage,
-        APPEND: append ? "1" : "0",
-        EXPECT: expected ?? "",
-      });
+      await this.#run(
+        path,
+        WRITE_FILE,
+        { P: path, S: stage, APPEND: append ? "1" : "0", EXPECT: expected ?? "" },
+        [],
+        true,
+      );
     } finally {
       await this.#stage.remove(stage);
     }
@@ -577,12 +582,16 @@ export class ContainerFiles {
     return `${this.#stageDir}/xfer-${crypto.randomUUID()}`;
   }
 
-  /** Run `script` for an operation on `path`; its standard output, or the failure it ended with, named as the Container's. */
+  /**
+   * Run `script` for an operation on `path` (one that changes a Container-only file when `writes`); its standard output,
+   * or the failure it ended with, named as the Container's.
+   */
   async #run(
     path: string,
     script: string,
     env: Record<string, string>,
     args: readonly string[] = [],
+    writes = false,
   ): Promise<string> {
     const quoted = args.map((arg) => `'${arg.replace(/'/g, `'\\''`)}'`).join(" ");
     const body = args.length === 0 ? script : `set -- ${quoted}\n${script}`;
@@ -590,7 +599,7 @@ export class ContainerFiles {
     let ran: ContainerScriptRun;
 
     try {
-      ran = await this.#access.run(body, env);
+      ran = await this.#access.run(body, env, { writes });
     } catch (cause) {
       throw new HostFailure(
         "unknown",

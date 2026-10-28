@@ -277,7 +277,7 @@ A path whose files only the Workspace's Container has, on its disk and in its Sn
 _Avoid_: Ignored path (computer's term), excluded path
 
 **Snapshot**:
-A saved copy of a Container's disk, restored when a Container starts so what was installed comes back without downloading: a Workspace's, taken when its Container stops for being idle, and an Environment's Build.
+A saved copy of a Container's disk, restored when a Container starts so what was installed comes back without downloading: a Workspace's, taken when its Container stops for being idle (unless nothing that may change its disk ran since its restore), and an Environment's Build.
 _Avoid_: Backup, checkpoint, image (for the saved disk)
 
 **Registry**:

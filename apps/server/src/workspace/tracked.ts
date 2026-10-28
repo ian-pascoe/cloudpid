@@ -2,7 +2,8 @@
 // Idle stop). A command's exec handle lives until its client disposes it (the client always holds it
 // with `using`, and Workers RPC disposes it when the client disconnects), so the command is running from `exec` until
 // then, and the Container is not idle meanwhile. Every command started, on any backend, is activity in the Workspace,
-// which the hold cap counts from: a handle never disposed holds the Container no longer than that.
+// which the hold cap counts from: a handle never disposed holds the Container no longer than that. A command on the
+// Container may change its disk, so its idle stop snapshots it; the Workspace DO's own reads (`writes: false`) do not.
 // @effect-diagnostics asyncFunction:off globalConsole:off
 import {
   type Workspace as ComputerWorkspace,
@@ -63,11 +64,18 @@ class TrackedExecHandle extends RpcTarget {
 class TrackedRuntime extends WorkspaceRuntimeStub {
   readonly #tracker: CommandTracker;
   readonly #containerBackend: string;
+  readonly #writes: boolean;
 
-  constructor(workspace: ComputerWorkspace, tracker: CommandTracker, containerBackend: string) {
+  constructor(
+    workspace: ComputerWorkspace,
+    tracker: CommandTracker,
+    containerBackend: string,
+    writes: boolean,
+  ) {
     super(workspace);
     this.#tracker = tracker;
     this.#containerBackend = containerBackend;
+    this.#writes = writes;
   }
 
   override async exec(source: string, options: { readonly backend?: string } = {}) {
@@ -79,7 +87,7 @@ class TrackedRuntime extends WorkspaceRuntimeStub {
     tracker.noteActivity().catch(log);
 
     // A failed write only shortens the idle time: the alarm works from what was stored before.
-    const hold = onContainer ? tracker.hold() : undefined;
+    const hold = onContainer ? tracker.hold({ writes: this.#writes }) : undefined;
 
     hold?.begun.catch(log);
 
@@ -118,15 +126,23 @@ export class GuardedFilesystem extends WorkspaceFilesystemStub {
   }
 }
 
-/** A Workspace stub whose commands on `containerBackend` are reported to `tracker`. */
+/**
+ * A Workspace stub whose commands on `containerBackend` are reported to `tracker`, as commands that may change the
+ * Container's disk unless `writes` is false (the Workspace DO's own reads).
+ */
 export class TrackedWorkspaceStub extends WorkspaceStub {
   readonly #runtime: TrackedRuntime;
   readonly #fs: GuardedFilesystem;
   #disposed = false;
 
-  constructor(workspace: ComputerWorkspace, tracker: CommandTracker, containerBackend: string) {
+  constructor(
+    workspace: ComputerWorkspace,
+    tracker: CommandTracker,
+    containerBackend: string,
+    writes = true,
+  ) {
     super(workspace);
-    this.#runtime = new TrackedRuntime(workspace, tracker, containerBackend);
+    this.#runtime = new TrackedRuntime(workspace, tracker, containerBackend, writes);
     this.#fs = new GuardedFilesystem(workspace);
   }
 

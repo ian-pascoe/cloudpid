@@ -144,9 +144,11 @@ export type ToolchainOptions = {
   readonly readOnlyDirectories?: readonly string[] | undefined;
   /**
    * Told when a bootstrap begins and ends, so the Container counts as in use while it runs (the idle stop): a Setup
-   * Script can outlast the idle time, and the command that waited for it may have gone.
+   * Script can outlast the idle time, and the command that waited for it may have gone. Told too of what in it may
+   * have changed the disk (`noteWrite`): an install that changed something or failed, and each Setup or Start Script
+   * run, so the idle stop of a Container restored from a snapshot snapshots it again.
    */
-  readonly activity?: Pick<IdleStop, "hold"> | undefined;
+  readonly activity?: Pick<IdleStop, "hold" | "noteWrite"> | undefined;
   /** Where a failed bootstrap or Setup Script is reported (never with the token). */
   readonly warn: (message: string) => void;
   readonly now: () => number;
@@ -373,6 +375,15 @@ export class ToolchainBackend implements WorkspaceBackend {
     return failed.report.note;
   }
 
+  /** Tell the idle stop that the bootstrap may have changed the disk. Never throws. */
+  async #changedDisk(): Promise<void> {
+    await this.#options.activity
+      ?.noteWrite()
+      .catch((cause: unknown) =>
+        this.#options.warn(`idle stop: tracking the bootstrap's changes failed: ${String(cause)}`),
+      );
+  }
+
   /** The after-install hook, which never throws: a snapshot is an optimisation. */
   async #installed(changed: boolean): Promise<void> {
     const { afterInstall, warn } = this.#options;
@@ -440,7 +451,8 @@ export class ToolchainBackend implements WorkspaceBackend {
     const log = (cause: unknown) =>
       warn(`idle stop: tracking the bootstrap failed: ${String(cause)}`);
 
-    const hold = activity?.hold();
+    // Not a write of itself: what it changes, it tells of (`#changedDisk`).
+    const hold = activity?.hold({ writes: false });
 
     await hold?.begun.catch(log);
 
@@ -509,6 +521,9 @@ export class ToolchainBackend implements WorkspaceBackend {
         this.#kept,
       );
 
+      // An install that changed something, or failed partway, may have left the disk unlike the snapshot's.
+      if (ran.changed || ran.code !== 0) await this.#changedDisk();
+
       if (ran.code === 0) {
         const setup = await this.#runSetupScripts(shell, environment.setupScript);
 
@@ -521,6 +536,8 @@ export class ToolchainBackend implements WorkspaceBackend {
 
       failure = this.#failure(ran);
     } catch (cause) {
+      // It may have been cut off partway.
+      await this.#changedDisk();
       failure = this.#couldNotRun(cause);
     }
 
@@ -746,6 +763,9 @@ export class ToolchainBackend implements WorkspaceBackend {
     timeoutSeconds: number,
     timedOutHint: string = "",
   ): Promise<Failure | undefined> {
+    // A script may write anywhere, whether it then succeeds or not.
+    await this.#changedDisk();
+
     try {
       const ran = await runToEnd(
         shell,

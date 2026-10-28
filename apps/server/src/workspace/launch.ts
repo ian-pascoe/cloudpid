@@ -23,7 +23,10 @@
 // - what the files a Container has not changed since it started were shown clean of (`scanned`: the restored snapshot's
 //   scan, then each of its own snapshots') is kept with it, so the scan before its next snapshot searches only the files
 //   changed since (docs/architecture/container.md → Snapshots). One started from the image or a Build has none until
-//   its first snapshot, whose scan searches the whole disk.
+//   its first snapshot, whose scan searches the whole disk;
+// - whether anything that may change the disk has run in it since it was restored from the Workspace's own snapshot
+//   (`diskUnchanged`, cleared by `noteWrite`) is kept with it, so an idle stop of one in which nothing did takes no
+//   snapshot (docs/architecture/container.md → Idle stop). It is in storage, so an eviction keeps it.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import type {
   ContainerLaunchSpec,
@@ -70,6 +73,13 @@ export type LaunchRecord = {
    * from, then of each snapshot taken of it. None for one started from the image or a Build until its first snapshot.
    */
   readonly scanned?: ScanCoverage | undefined;
+  /**
+   * Whether nothing that may change its disk (a command, a Setup or Start Script, a Container-only file write, a
+   * bootstrap that installed something) has run in it since it was restored from the Workspace's own snapshot: its idle
+   * stop then takes none, and that snapshot stays current. Absent once something did, for one started from the image,
+   * a Build or computer's restart, and in older records: those snapshot at their idle stop.
+   */
+  readonly diskUnchanged?: true | undefined;
   /** Epoch milliseconds. */
   readonly launchedAt: number;
 };
@@ -101,8 +111,13 @@ export type ContainerLaunchDeps = {
   readonly ignore: (settings: ContainerSettings) => readonly string[] | undefined;
   readonly snapshots: Pick<
     ContainerSnapshots,
-    "restorable" | "restored" | "forget" | "take" | "capture" | "coverage"
+    "restorable" | "restored" | "forget" | "take" | "capture" | "coverage" | "kept"
   >;
+  /**
+   * Whether something that may change the disk holds the Container now (`IdleStop.writing`): a command that launches a
+   * Container told of its write before the launch was recorded, so that launch is not unchanged.
+   */
+  readonly writing?: (() => boolean) | undefined;
   /** The Environment's Build the Workspace holds, which a launch with no snapshot of its own may start from. */
   readonly builds?: {
     /** The Build, unless this Workspace has given up on it (`failed`). */
@@ -244,13 +259,33 @@ export class ContainerLaunch {
   }
 
   /**
+   * Something that may change the disk ran, or begins, in the Container (`IdleStop`'s `wrote`): its idle stop takes a
+   * snapshot. Kept in storage, so an eviction does not forget it.
+   */
+  async noteWrite(): Promise<void> {
+    await this.#current();
+
+    // The record as it is now, not before the await: a launch may have replaced it meanwhile.
+    const record = this.#record;
+
+    if (record?.diskUnchanged !== true) return;
+
+    const { diskUnchanged: _unchanged, ...changed } = record;
+
+    await this.#remember(changed);
+  }
+
+  /**
    * Snapshot the running Container, labelled with the image it runs. A Container with no record (adopted from before
-   * launches were recorded) has no known image, and gets no snapshot.
+   * launches were recorded) has no known image, and gets no snapshot. At its idle stop, one in which nothing that may
+   * change the disk ran since its restore gets none either: the snapshot it was restored from stays current.
    */
   async snapshot(reason: SnapshotReason): Promise<SnapshotOutcome> {
     const record = await this.#current();
 
     if (record?.image === undefined) return "skipped";
+
+    if (reason === "idle" && (await this.#unchanged(record))) return "skipped";
 
     const outcome = await this.#deps.snapshots.take(
       reason,
@@ -302,6 +337,24 @@ export class ContainerLaunch {
           ignore: record.ignore,
         }
       : { ok: false, reason: captured.reason };
+  }
+
+  /**
+   * Whether `record`'s Container has nothing a snapshot would add: nothing that may change its disk ran since its
+   * restore, nor runs now, and the Workspace still keeps the snapshot it was restored from. Logged when so.
+   */
+  async #unchanged(record: LaunchRecord): Promise<boolean> {
+    if (record.diskUnchanged !== true || this.#deps.writing?.() === true) return false;
+
+    const kept = await this.#deps.snapshots.kept();
+
+    if (kept === undefined || kept !== record.restoredFrom) return false;
+
+    this.#deps.info(
+      `Idle stop: nothing that may change the disk ran in the Container since its restore from snapshot ${kept}: no snapshot taken, that one stays current`,
+    );
+
+    return true;
   }
 
   /** `spec` with the Workspace's labels. computer does not compare labels, so adding them relaunches nothing. */
@@ -461,6 +514,9 @@ export class ContainerLaunch {
       resetStore: build !== undefined,
       // A Build's files were searched for another object's tokens: its first snapshot here searches the whole disk.
       scanned: snapshot?.covered,
+      // Restored from the Workspace's own snapshot, it has nothing new until something writes; unless what launched it
+      // may write (a command), which told of it before this record was made.
+      diskUnchanged: snapshot !== undefined && this.#deps.writing?.() !== true ? true : undefined,
       launchedAt: this.#deps.now(),
     });
 
@@ -508,13 +564,16 @@ export class ContainerLaunch {
       };
     }
 
-    // computer's restart launches from the image with its own environment: no store to reset, and no file its scans
-    // covered.
+    // computer's restart launches from the image with its own environment: no store to reset, no file its scans
+    // covered, and a disk that is not the snapshot's.
     if (
       record !== undefined &&
-      (restoring !== undefined || record.resetStore === true || record.scanned !== undefined)
+      (restoring !== undefined ||
+        record.resetStore === true ||
+        record.scanned !== undefined ||
+        record.diskUnchanged === true)
     ) {
-      const { resetStore: _reset, scanned: _scanned, ...rest } = record;
+      const { resetStore: _reset, scanned: _scanned, diskUnchanged: _unchanged, ...rest } = record;
 
       await this.#remember(rest);
     }

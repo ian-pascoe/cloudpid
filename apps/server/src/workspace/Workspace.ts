@@ -396,6 +396,8 @@ export class Workspace extends ContainerHost {
       load: launchRecord,
       save: (record) => ctx.storage.put(LAUNCH_KEY, record),
       running: () => ctx.container?.running === true,
+      // A command that launches a Container holds it as it may write, before the launch is recorded.
+      writing: () => this.#idle.writing(),
       now: () => Date.now(),
       warn: (message) => console.warn(message),
       info: (message) => console.info(message),
@@ -473,14 +475,16 @@ export class Workspace extends ContainerHost {
       // The one alarm is shared with the spare's preparation and a Build, which the idle stop does not put off.
       setAlarm: async (at) =>
         ctx.storage.setAlarm(await this.#builds.alarmAt(await this.#spare.alarmAt(at))),
-      // The disk is snapshotted while the Container is idle, so the next launch restores the Toolchains. A command that
-      // arrives meanwhile keeps the Container (`IdleStop`). A Build's object keeps no snapshot of its own: each Build
-      // starts from the image.
+      // The disk is snapshotted while the Container is idle, so the next launch restores the Toolchains, unless nothing
+      // that may change it ran since its restore (`ContainerLaunch.snapshot`). A command that arrives meanwhile keeps the
+      // Container (`IdleStop`). A Build's object keeps no snapshot of its own: each Build starts from the image.
       snapshot: async () => {
         if (!(await this.#builds.isBuild())) await launch.snapshot("idle");
       },
       // The size the agent's resize recorded lasts until here.
       stop: () => resizes.stopIdle(),
+      // What may change the Container's disk is kept in its launch record, so its idle stop snapshots it.
+      wrote: () => launch.noteWrite(),
       // A Container held past the hold cap without activity: logged, and kept for the Sessions' notices.
       held: async (stop) => {
         console.warn(
@@ -643,7 +647,9 @@ export class Workspace extends ContainerHost {
         return patterns === undefined ? undefined : withHarnessKept(patterns);
       },
       running: () => ctx.container?.running === true,
-      run: (script, scriptEnv) => this.#runOnContainer(script, scriptEnv),
+      // A write of a Container-only file changes the disk, so the idle stop snapshots it; a read does not.
+      run: (script, scriptEnv, options) =>
+        this.#runOnContainer(script, scriptEnv, { writes: options?.writes === true }),
     });
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
 
@@ -661,7 +667,7 @@ export class Workspace extends ContainerHost {
       files: () => this.#workspace.provider(),
       containerOnly,
       running: () => ctx.container?.running === true,
-      run: (script) => this.#runOnContainer(script, {}),
+      run: (script) => this.#runOnContainer(script, {}, { writes: false }),
       kept: {
         load: async (repo) => ctx.storage.kv.get<KeptChanges>(`${CHANGES_KEY}:${repo}`),
         save: async (repo, changes) => ctx.storage.kv.put(`${CHANGES_KEY}:${repo}`, changes),
@@ -757,9 +763,13 @@ export class Workspace extends ContainerHost {
     return this.ctx.container?.running === true;
   }
 
-  /** Run `script` on the Container, starting it if it is stopped. A test Worker replaces it. */
+  /**
+   * Run `script` on the Container, starting it if it is stopped: the Container's git for the Changes, a Comparison, the
+   * Run diff and the work state, which change nothing a snapshot keeps (the repos' files are synced). A test Worker
+   * replaces it.
+   */
   protected runContainerScript(script: string): Promise<ContainerScriptRun> {
-    return this.#runOnContainer(script, {});
+    return this.#runOnContainer(script, {}, { writes: false });
   }
 
   /** The time in ms, which the pull request list's 60 s are counted by. A test Worker replaces it. */
@@ -777,14 +787,16 @@ export class Workspace extends ContainerHost {
 
   /**
    * Run one of the file tools' scripts on the Container, through this object's own handle, as a command: it starts the
-   * Container if it is stopped and keeps it from its idle stop. Its two streams come back apart.
+   * Container if it is stopped and keeps it from its idle stop, which snapshots the Container only for one that
+   * `writes`. Its two streams come back apart.
    */
   async #runOnContainer(
     script: string,
     scriptEnv: Readonly<Record<string, string>>,
+    options: { readonly writes: boolean },
   ): Promise<ContainerScriptRun> {
     const container = new ComputerExecutionEnv({
-      workspace: this.#ownStub(),
+      workspace: this.#ownStub(options.writes),
       id: `computer:container-files:${this.ctx.id.toString()}`,
       cwd: WORKSPACE_ROOT,
     }).onBackend("container");
@@ -832,12 +844,12 @@ export class Workspace extends ContainerHost {
 
   /**
    * This object as a stub of its own: its file operations and Workspace, with no Skills, templates or instructions,
-   * which its own work never asks for.
+   * which its own work never asks for. Its commands may change the Container's disk unless `writes` is false.
    */
-  #ownStub(): ComputerWorkspaceStub {
+  #ownStub(writes = true): ComputerWorkspaceStub {
     return {
       fileOperation: (request) => this.#fileOperation(request),
-      __getWorkspaceStub: () => this.#getWorkspaceStub(),
+      __getWorkspaceStub: () => this.#getWorkspaceStub(writes),
       skills: async () => [],
       prompts: async () => [],
       instructions: async () => [],
@@ -1071,7 +1083,8 @@ export class Workspace extends ContainerHost {
   async resizeContainer(options: { readonly size: InstanceType }): Promise<ContainerResizeOutcome> {
     this.#spare.noteUse();
 
-    const hold = this.#idle.hold();
+    // It snapshots the Container itself, and changes nothing on its disk.
+    const hold = this.#idle.hold({ writes: false });
 
     await hold.begun;
 
@@ -1456,10 +1469,10 @@ export class Workspace extends ContainerHost {
     return this.#getWorkspaceStub();
   }
 
-  async #getWorkspaceStub(): Promise<WorkspaceStub> {
+  async #getWorkspaceStub(writes = true): Promise<WorkspaceStub> {
     await this.#ready();
 
-    return this.workspaceStub(this.#workspace);
+    return this.workspaceStub(this.#workspace, writes);
   }
 
   /** One of `ComputerExecutionEnv`'s file operations, answered as plain data. */
@@ -1484,8 +1497,11 @@ export class Workspace extends ContainerHost {
     return this.#host.handle(request);
   }
 
-  /** The RPC stub `__getWorkspaceStub()` hands out, its Container commands counted by the idle stop; tests count them too. */
-  protected workspaceStub(workspace: ComputerWorkspace): WorkspaceStub {
-    return new TrackedWorkspaceStub(workspace, this.#idle, CONTAINER_BACKEND_ID);
+  /**
+   * The RPC stub `__getWorkspaceStub()` hands out, its Container commands counted by the idle stop, as commands that may
+   * change the disk unless `writes` is false; tests count them too.
+   */
+  protected workspaceStub(workspace: ComputerWorkspace, writes = true): WorkspaceStub {
+    return new TrackedWorkspaceStub(workspace, this.#idle, CONTAINER_BACKEND_ID, writes);
   }
 }
