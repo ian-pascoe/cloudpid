@@ -159,7 +159,7 @@ The Scope every Environment inherits from.
 _Avoid_: For every Environment, all environments, default (the Default Environment is one Environment)
 
 **Override**:
-An Environment's own value of a setting, set on purpose and shown against the Global value it replaces until it is reset. A field without one is **inherited**. Keyed settings (Variables, Secrets, Skills, Roles) are overridden name by name, every other setting whole.
+An Environment's own value of a setting, set on purpose and shown against the Global value it replaces until it is reset. A field without one is **inherited**. Keyed settings (Variables, Secrets, Skills, Roles, extension options) are overridden name by name, every other setting whole.
 _Avoid_: Local setting, customization
 
 **Variable**:
