@@ -81,6 +81,7 @@ export const AgentsMdDoc = defineDoc<AgentsMdState>({
   history: "latest",
   fork: "current",
   initial: () => ({ shown: {} }),
+  checkpointWhen: () => false,
 });
 
 /** A hash of `text` (cyrb53): it tells whether the context shows a file's current text, so it need not resist anyone. */

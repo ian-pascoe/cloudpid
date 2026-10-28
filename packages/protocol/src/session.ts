@@ -839,7 +839,8 @@ export const GraphBackgroundTask = Schema.Struct({
   /** The agent whose conversation it belongs to: `root` or a subagent's ID. */
   agent: Schema.String,
   conversationId: ConversationId,
-  state: Schema.Literals(["pending", "running", "waiting", "completing"]),
+  /** `sleeping`: holds no invocation until a time, such as a retry backoff's end. */
+  state: Schema.Literals(["pending", "running", "waiting", "sleeping", "completing"]),
   /** Whether an abort was asked of it and is not finished. */
   aborting: Schema.Boolean,
 });

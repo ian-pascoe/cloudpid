@@ -1,8 +1,8 @@
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index ed772b3..c2b08a4 100644
+index d2e37f9..1b243ad 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -190,6 +190,11 @@ declare class Workspace {
+@@ -171,6 +171,11 @@ export declare class Workspace {
    #private;
    constructor(options: WorkspaceOptions);
    ensureMountsIndexed(): Promise<void>;
@@ -15,10 +15,10 @@ index ed772b3..c2b08a4 100644
    get db(): Database;
    get observer(): WorkspaceObserver;
 diff --git a/dist/index.js b/dist/index.js
-index 57c44eb..eb58e81 100644
+index f9aca8a..170aaef 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -5234,6 +5234,13 @@ var MountIndex = class {
+@@ -5236,6 +5236,13 @@ var MountIndex = class {
  		});
  		return this.#inFlight;
  	}
@@ -30,8 +30,8 @@ index 57c44eb..eb58e81 100644
 +		});
 +	}
  };
- //#endregion
- //#region src/mounts/registry.ts
+ // src/mounts/registry.ts
+ function validateRoot(root) {
 @@ -6344,6 +6351,14 @@ var Workspace = class {
  		if (!this.#provider) this.#provider = new SQLiteWorkspaceProvider(this.#db, { now: this.#now });
  		return this.#provider;

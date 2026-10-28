@@ -201,9 +201,11 @@ const outcomeOf = (settled: ReadonlyArray<SubmissionRecord>): PushEvent | undefi
 };
 
 /**
- * What the alarm is armed for. pi-durable 1.3.0 has no `Harness.wake()`, so the host derives `active` from the live
- * tasks. Once `onWake` ships this becomes pi-durable's `Wake` (`{ active, at? }`): `wake` returns `harness.wake()`,
- * `HarnessOptions.onWake` runs `arm`, and `arm` also arms for the earliest sleep `at`.
+ * What the alarm is armed for: `active` while work is live, sleeping tasks included. The host derives it from the live
+ * tasks rather than taking pi-durable's `Harness.wake()`, whose `active` leaves a sleeping task out (it gives its time as
+ * `at`): a Run whose generation sleeps out a retry backoff is still a Run, which the Registry must hear is running and
+ * whose calls `onIdle` must not clear. Without `HarnessOptions.onWake` the Harness keeps a timer for the earliest sleep
+ * itself, and the heartbeat's `resume()` wakes a sleep that came due while the object was evicted.
  */
 type Wake = { readonly active: boolean };
 
@@ -586,7 +588,13 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
       opened === undefined ? undefined : (await sessionTotals(opened, storage.kv)).cost,
   });
 
-  const harnessOptions = { models: limited, settings: harnessSettings(settings) };
+  // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, whose Run stays
+  // busy until it is stopped, a hook or listener that threw) is otherwise dropped. `info` names the task, never content.
+  const onReport: HarnessOptions["onReport"] = (error, info) => {
+    run(Effect.logWarning(`pi-durable reported ${info.type}`, info, error));
+  };
+
+  const harnessOptions = { models: limited, settings: harnessSettings(settings), onReport };
 
   const harness = yield* openHarness(
     piStorage,
@@ -849,8 +857,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         );
 
   /**
-   * Live work keeps the heartbeat, as pi-durable main's `wake()` counts it: a task no installed definition can run
-   * never becomes runnable by waking, and a waiting task counts through the live tasks it waits on.
+   * Live work keeps the heartbeat, as pi-durable's `wake()` counts it, and a sleeping task too (see `Wake`): a task no
+   * installed definition can run, or one the restart limit parked, never becomes runnable by waking, and a waiting task
+   * counts through the live tasks it waits on.
    */
   const wake: Effect.Effect<Wake, SessionError> = inspect.pipe(
     Effect.map(({ tasks }) => ({

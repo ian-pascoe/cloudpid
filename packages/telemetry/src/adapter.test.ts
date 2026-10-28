@@ -183,6 +183,51 @@ describe("effectTelemetry", () => {
     expect(spans[0]!.events.map(([name]) => name)).toEqual(["pi.ai.first_chunk"]);
   });
 
+  it("links a span to the spans it names, at its start and later, settled or not", async () => {
+    const { spans, tracer } = recordingTracer();
+    const telemetry = effectTelemetry(tracer);
+
+    const first = await telemetry.startSpan({ name: "pi.first" }, async (span) => span);
+
+    await telemetry.startSpan({ name: "pi.running" }, (running) =>
+      telemetry.startSpan(
+        {
+          name: "pi.linked",
+          links: [{ context: first, attributes: { why: "input", no: undefined } }],
+        },
+        async (span) => {
+          span.addLink({ context: running });
+        },
+      ),
+    );
+
+    const linked = spans[2]!;
+
+    expect(linked.links.map((link) => link.span.spanId)).toEqual([
+      spans[0]!.spanId,
+      spans[1]!.spanId,
+    ]);
+    expect(linked.links[0]?.attributes).toEqual({ why: "input" });
+    expect(linked.links[1]?.attributes).toEqual({});
+  });
+
+  it("leaves out a link to a context with no span of its own, and a link added after the end", async () => {
+    const { spans, tracer } = recordingTracer();
+    const telemetry = effectTelemetry(tracer);
+
+    const first = await telemetry.startSpan({ name: "pi.first" }, async (span) => span);
+
+    await telemetry.startSpan(
+      { name: "pi.rooted", links: [{ context: telemetry }] },
+      async () => undefined,
+    );
+
+    first.addLink({ context: first });
+
+    expect(spans[1]!.links).toEqual([]);
+    expect(spans[0]!.links).toEqual([]);
+  });
+
   it("rejects with a rejection that is not an Error as it is", async () => {
     const { tracer } = recordingTracer();
     const telemetry = effectTelemetry(tracer);

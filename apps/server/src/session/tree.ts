@@ -38,6 +38,7 @@ export const SessionTreeDoc = defineDoc<SessionTreeState>({
   version: 1,
   scope: "session",
   initial: () => ({ active: ROOT_CONVERSATION_ID, branches: {} }),
+  checkpointWhen: () => false,
 });
 
 /** The state as read outside a commit: the root conversation active, until the first branch. */

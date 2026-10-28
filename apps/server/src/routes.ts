@@ -19,9 +19,7 @@ const pathOf = (request: HttpServerRequest.HttpServerRequest) =>
  * The Session whose socket `request` opens, if it is a `GET /sessions/:sessionId/socket` (`sessionSocketPath`). The
  * Session DO answers the upgrade. Only Session IDs as the Registry makes them (UUIDs) are routed.
  */
-export const sessionSocketId = (
-  request: HttpServerRequest.HttpServerRequest,
-): string | undefined =>
+export const sessionSocketId = (request: HttpServerRequest.HttpServerRequest): string | undefined =>
   request.method === "GET" ? SESSION_SOCKET_PATH.exec(pathOf(request))?.[1] : undefined;
 
 /**

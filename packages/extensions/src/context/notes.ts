@@ -41,6 +41,7 @@ export const ContextDoc = defineDoc<ContextState>({
   history: "latest",
   fork: "current",
   initial: () => ({ notes: [], handoff: null }),
+  checkpointWhen: () => false,
 });
 
 /** The state as read outside a commit: the initial one until the first Note. */

@@ -117,7 +117,13 @@ const refuse = (message: string): never => {
 type CallState<T extends JsonObject> = { result: T | null };
 
 const callDoc = <T extends JsonObject>(kind: string): TaskDocToken<CallState<T>> =>
-  defineDoc<CallState<T>>({ kind, version: 1, scope: "task", initial: () => ({ result: null }) });
+  defineDoc<CallState<T>>({
+    kind,
+    version: 1,
+    scope: "task",
+    initial: () => ({ result: null }),
+    checkpointWhen: () => false,
+  });
 
 /** What an earlier run of this call recorded, if it got that far. */
 const recorded = <T extends JsonObject>(api: ToolExecutionApi, doc: TaskDocToken<CallState<T>>) =>

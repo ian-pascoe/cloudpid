@@ -50,6 +50,7 @@ export const TodoDoc = defineDoc<TodoState>({
   history: "latest",
   fork: "current",
   initial: () => ({ nextId: 1, rev: 0, tasks: [], shown: null, changedBy: [] }),
+  checkpointWhen: () => false,
 });
 
 /** The state as read outside a commit: the initial one until the first change. */

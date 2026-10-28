@@ -1,7 +1,7 @@
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import { AlchemyContext } from "alchemy/AlchemyContext";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

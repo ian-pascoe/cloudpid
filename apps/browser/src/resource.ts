@@ -1,5 +1,5 @@
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import {
   BROWSER_HOST_BINDING,
   CONTAINER_PREVIEWS_BINDING,

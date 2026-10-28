@@ -11,18 +11,18 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.15.30",
+    "@assistant-ui/react": "^0.15.31",
     "@assistant-ui/react-streamdown": "^0.3.20",
     "@cloudpid/config": "workspace:*",
     "@cloudpid/protocol": "workspace:*",
-    "@effect/atom-react": "4.0.5",
-    "@effect/platform-browser": "4.0.5",
+    "@effect/atom-react": "4.0.6",
+    "@effect/platform-browser": "4.0.6",
     "@pierre/diffs": "1.6.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "diff": "9.0.0",
-    "effect": "^4.0.5",
-    "lucide-react": "^1.61.0",
+    "effect": "^4.0.6",
+    "lucide-react": "^1.62.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "rehype-sanitize": "^6.0.0",
@@ -36,7 +36,7 @@
     "unified": "^11.0.5"
   },
   "devDependencies": {
-    "@effect/vitest": "4.0.5",
+    "@effect/vitest": "4.0.6",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

@@ -16,14 +16,14 @@
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261021.1",
+    "@cloudflare/workers-types": "^5.20261027.1",
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-conventional": "21.2.4",
-    "@effect/tsgo": "0.56.0",
+    "@effect/tsgo": "0.59.0",
     "@oxlint/plugins": "1.89.0",
     "husky": "^9.1.7",
     "lint-staged": "17.6.0",
-    "oxfmt": "^0.74.0",
+    "oxfmt": "^0.75.0",
     "oxlint": "1.89.0",
     "oxlint-tsgolint": "7.0.2004",
     "skills": "^1.7.4",
