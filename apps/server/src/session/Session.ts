@@ -447,12 +447,16 @@ export const SessionLive = Session.make(
         // When the browser was last used is kept in this object's storage; the host's alarm closes it once idle.
         const sessionBrowser = browserSessionLayer({ host: browser, storage: kv });
 
-        // The Registry's saved overrides, read before each request is admitted; the last read is kept in storage.
+        // The Registry's saved overrides, Global's and its Environment's Overrides over them (ADR-0027), read before each
+        // request is admitted; the last read is kept in storage. A Session the Registry does not list has Global's.
         const settings = sessionSettingsLayer({
-          read: registries
-            .getByName(REGISTRY_NAME)
-            .getSettings()
-            .pipe(Effect.map((saved) => saved.overrides)),
+          read:
+            name === undefined
+              ? registries
+                  .getByName(REGISTRY_NAME)
+                  .getSettings()
+                  .pipe(Effect.map((saved) => ({ global: saved.overrides, overrides: {} })))
+              : registries.getByName(REGISTRY_NAME).sessionSettings({ session: name }),
           kv,
         });
 

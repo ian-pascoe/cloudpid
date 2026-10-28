@@ -150,6 +150,9 @@ describe("toolSummary", () => {
     expect(
       toolSummary("settings_extension_set", { extension: "subagents", key: "readToolset" }),
     ).toBe("subagents.readToolset");
+    expect(toolSummary("settings_reset", { scope: "*", field: "roles.small", reason: "r" })).toBe(
+      "roles.small",
+    );
     expect(toolSummary("settings_compaction_set", { reason: "more room\nplease" })).toBe(
       "more room",
     );

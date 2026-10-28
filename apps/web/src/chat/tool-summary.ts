@@ -281,6 +281,8 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return text(args, "pattern");
       case "settings_extension_set":
         return extensionOption(args);
+      case "settings_reset":
+        return text(args, "field");
       case "settings_compaction_set":
       case "settings_branch_summary_set":
         return firstLine(args, "reason");

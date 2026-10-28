@@ -55,6 +55,7 @@ import type {
   RunDiff,
   SessionAgent,
   SessionTree,
+  SettingsOverridesState,
   ViewedFile,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
@@ -106,6 +107,7 @@ import {
   reloadSessionExtensions,
   SessionSettings,
   sessionSettingsLayer,
+  type SettingsSource,
   toolSearchSettings,
 } from "./settings.ts";
 import {
@@ -1712,25 +1714,45 @@ export class TestSession extends DurableObject {
 
     return {
       getSettings: () => Effect.promise(() => registry().getSettings()),
-      changeSettings: ({ changes, author }) =>
+      getSettingsOverrides: ({ environment }) =>
         Effect.promise(
           // SAFETY: the stub's RPC result is the plain data the test Registry returned.
           async () =>
-            (await registry().changeSettings(changes, author, Date.now())) as SettingsChange,
+            (await registry().getSettingsOverrides(environment)) as SettingsOverridesState | null,
+        ),
+      getEnvironment: ({ id }) => Effect.promise(() => registry().getEnvironment(id)),
+      sessionSettings: ({ session }) => Effect.promise(() => registry().sessionSettings(session)),
+      changeSettings: ({ environment, changes, author }) =>
+        Effect.promise(
+          // SAFETY: the stub's RPC result is the plain data the test Registry returned.
+          async () =>
+            (await registry().changeSettings(
+              changes,
+              author,
+              Date.now(),
+              environment,
+            )) as SettingsChange,
         ),
     };
   }
 
-  /** The Registry's saved settings overrides; none while no Registry is set. */
-  async #readSettings(): Promise<Schema.Json> {
+  /**
+   * What the Session resolves its settings from, as the Registry answers it for this Session (its name): Global's
+   * overrides and its Environment's Overrides; none while no Registry is set.
+   */
+  async #readSettings(): Promise<SettingsSource> {
     const { kv } = this.ctx.storage;
     const registry = kv.get<string>("registry");
 
-    if (registry === undefined) return {};
+    if (registry === undefined) return { global: {}, overrides: {} };
 
     if (kv.get<string>("settingsMode") === "failing") throw new Error("Registry is down");
 
-    return (await this.env.REGISTRIES.getByName(registry).getSettings()).overrides;
+    const { global, overrides } = await this.env.REGISTRIES.getByName(registry).sessionSettings(
+      this.ctx.id.name ?? "",
+    );
+
+    return { global, overrides };
   }
 
   /** Whether the Registry wants a title for this Session: titles are on, and it has neither a title nor an owner's. */

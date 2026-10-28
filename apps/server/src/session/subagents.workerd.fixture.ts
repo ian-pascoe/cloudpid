@@ -145,7 +145,10 @@ export class TestSubagentSession extends DurableObject {
                 setTitle: () => Effect.void,
               }),
               sessionSettingsLayer({
-                read: Effect.sync(() => ctx.storage.kv.get<Schema.Json>("overrides") ?? {}),
+                read: Effect.sync(() => ({
+                  global: ctx.storage.kv.get<Schema.Json>("overrides") ?? {},
+                  overrides: {},
+                })),
                 kv: ctx.storage.kv,
               }),
             ),

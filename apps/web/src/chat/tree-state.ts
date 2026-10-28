@@ -9,14 +9,18 @@ import {
   SAME_WORKSPACE,
   type TreePoint,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { replying } from "../calls.ts";
 import { changing, RegistryClient } from "../registry.ts";
 import { pathAtom, sessionPath } from "../router.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom, sessionStateAtom } from "../session/atoms.ts";
-import { settingsStateAtom } from "../settings.ts";
+import { sessionListAtom } from "../sessions.ts";
+import { settingsOverridesAtom, settingsStateAtom } from "../settings.ts";
 
 /**
  * What the Session tree is asked again after: the active branch changing or a branch made, a message added or answered
@@ -54,10 +58,25 @@ const prefill = (get: Atom.FnContext, sessionId: string, text: string | null) =>
   get.set(composerPrefillAtom, { ...get(composerPrefillAtom), [sessionId]: text });
 };
 
-/** Whether the settings say not to ask for a summary when a branch is left (`branchSummary.skipPrompt`). */
-export const skipSummaryPromptAtom = Atom.map(
-  settingsStateAtom,
-  (state) => state?.settings.branchSummary.skipPrompt ?? false,
+/**
+ * Whether Session `sessionId`'s settings say not to ask for a summary when a branch is left (`branchSummary.skipPrompt`):
+ * its Environment's (ADR-0027), the Global settings until those are known.
+ */
+export const skipSummaryPromptAtom = Atom.family((sessionId: string) =>
+  Atom.make((get) => {
+    const environment = Option.map(
+      Arr.findFirst(get(sessionListAtom) ?? [], (session) => session.id === sessionId),
+      (session) => session.environment,
+    );
+
+    const own = Option.flatMap(environment, (id) =>
+      AsyncResult.value(get(settingsOverridesAtom(id))),
+    );
+
+    const settings = Option.isSome(own) ? own.value.settings : get(settingsStateAtom)?.settings;
+
+    return settings?.branchSummary.skipPrompt ?? false;
+  }),
 );
 
 /** Where to move the active branch, with what summary of the Session branch left. */
