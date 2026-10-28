@@ -15,6 +15,7 @@ import { Approvals } from "@cloudpid/extensions/approvals";
 import { DeployCredentials, Environments } from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
+import { InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SettingsAccess } from "@cloudpid/extensions/settings";
@@ -66,6 +67,7 @@ import { SessionError } from "./errors.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import {
+  instructionsSettings,
   reloadSessionExtensions,
   sessionSettingsLayer,
   subagentSettings,
@@ -759,6 +761,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(BrowserHost, browser),
                   Effect.provideServiceEffect(SubagentSettings, subagentSettings),
                   Effect.provideServiceEffect(ToolSearchSettings, toolSearchSettings),
+                  Effect.provideServiceEffect(InstructionsSettings, instructionsSettings),
                 ),
                 reload: reloadSessionExtensions,
                 env: workspace.env,

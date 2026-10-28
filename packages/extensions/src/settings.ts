@@ -12,6 +12,7 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,
+  MAX_INSTRUCTIONS_BYTES,
   ModelId,
   overrideValue,
   resetsOverride,
@@ -22,6 +23,7 @@ import {
   type SettingsOverrides,
   THINKING_LEVELS,
   ThinkingLevel,
+  utf8Bytes,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange } from "@cloudpid/protocol";
@@ -197,6 +199,13 @@ export const CHANGE_NOTE =
 
 const MODEL_LIST = Arr.join(SUPPORTED_MODELS, ", ");
 
+/** The size of a text such as the Instructions, as a result says it: its lines and its bytes of UTF-8. */
+export const textSize = (text: string): string => {
+  const lines = text.split("\n").length;
+
+  return `${lines} line${lines === 1 ? "" : "s"}, ${utf8Bytes(text).toLocaleString("en-US")} bytes of UTF-8`;
+};
+
 /** A Role's value, its model and hint. */
 const roleOf = (
   value: Schema.Json | null,
@@ -237,6 +246,7 @@ const SETTING_LABELS: Readonly<Record<string, string>> = {
   "tools.offered": "offered tools",
   "branchSummary.skipPrompt": "skip of the branch summary prompt",
   "spendLimit.perSession": "spend limit per Session",
+  instructions: "Instructions",
 };
 
 /** A settings field as a result names it. */
@@ -366,6 +376,19 @@ export const describeSettings = (view: SettingsView, own: string | null): string
   const depthField = extensionField("subagents", "maxSubagentDepth");
   const workspacesField = extensionField("subagents", "maxSubagentWorkspaces");
 
+  const instructionsText = settings.instructions;
+
+  // An Environment's settings carry Global's Instructions: its Overrides hold none (ADR-0027).
+  const instructionsSource = isGlobalView(view)
+    ? `${instructionsText === "" ? "default" : "Global"}; at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB`
+    : "Global's: an Environment has no Instructions of its own yet";
+
+  const instructionsLine = `Instructions (every conversation's model is shown them from the start of its Context Window, before the Project instructions, which win where the two disagree; settings_instructions_set changes them once the user approves): ${
+    instructionsText === ""
+      ? `none (${isGlobalView(view) ? "default" : instructionsSource})`
+      : `${textSize(instructionsText)} (${instructionsSource})\n<instructions>\n${instructionsText}\n</instructions>`
+  }`;
+
   const header = isGlobalView(view)
     ? [
         `Global Settings (scope "${GLOBAL_SETTINGS_SCOPE}"): what each Environment inherits, field by field, unless it overrides the field. Each value says where it comes from: "default" (nobody sets it) or "Global" (set at Global), and names the Environments that override it, whose Sessions a change at Global does not reach.`,
@@ -415,6 +438,7 @@ export const describeSettings = (view: SettingsView, own: string | null): string
           ),
       )}. A Limit: settings_subagent_workspaces_set changes it once the user approves, at either Scope.`,
       `Extension options: ${options.length === 0 ? "none" : `\n${Arr.join(options, "\n")}`}`,
+      instructionsLine,
       isGlobalView(view)
         ? "settings_reset puts a field back to its default at Global, or removes an Environment's Override of it; for a Limit it waits for the user's Approval."
         : "settings_reset with this Environment's id removes an Override; for a Limit it waits for the user's Approval.",
@@ -654,7 +678,7 @@ export const SettingsTools: Effect.Effect<
 
   const get = yield* defineEffectTool({
     name: "settings_get",
-    description: `Show the Settings of one Scope, which the user edits on the Settings page: the default model and thinking level, the model roles (model and hint), automatic compaction, the offered tools, the branch summary prompt, the Limits (spend limit, subagent depth, Subagent Workspace limit) and the extensions' options, each with where its value comes from, and any problem with the saved overrides. Pass scope "${GLOBAL_SETTINGS_SCOPE}" for Global (each field's value, whether it is the default or set at Global, and the Environments that override it) or an Environment's id (its settings in force, each overridden for it or inherited from Global); there is no default. This Session runs with its own Environment's Settings (its Overrides over Global over the defaults), and the result names that Environment. Use it before a change, to see what there is and where to change it.`,
+    description: `Show the Settings of one Scope, which the user edits on the Settings page: the default model and thinking level, the model roles (model and hint), automatic compaction, the offered tools, the branch summary prompt, the Limits (spend limit, subagent depth, Subagent Workspace limit), the extensions' options and the user's Instructions (whole), each with where its value comes from, and any problem with the saved overrides. Pass scope "${GLOBAL_SETTINGS_SCOPE}" for Global (each field's value, whether it is the default or set at Global, and the Environments that override it) or an Environment's id (its settings in force, each overridden for it or inherited from Global); there is no default. This Session runs with its own Environment's Settings (its Overrides over Global over the defaults), and the result names that Environment. Use it before a change, to see what there is and where to change it.`,
     parameters: Schema.Struct({
       scope: SettingsScope.annotate({
         description: `Whose Settings to show: "${GLOBAL_SETTINGS_SCOPE}" for Global, or an Environment's id as environment_list shows it, for its Overrides over Global. Name it on purpose: there is no default.`,

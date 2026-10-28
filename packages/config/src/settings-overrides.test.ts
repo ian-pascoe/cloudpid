@@ -123,6 +123,53 @@ describe("an Environment's settings", () => {
   });
 });
 
+describe("the Instructions at an Environment", () => {
+  it("are Global's: they add up (ADR-0027), so an Environment does not override them", () => {
+    expect(environment({ instructions: "Global rules." }, {}).instructions).toBe("Global rules.");
+    expect(OVERRIDE_FIELD_NAMES).not.toContain("instructions");
+    expect(overrideFieldPath("instructions")).toBeUndefined();
+  });
+
+  it("are refused as an Override, by a save and by a change", () => {
+    const saved = resolveOverrides({}, { instructions: "Mine." });
+
+    expect(Result.isFailure(saved) && saved.failure.message).toBe(
+      "instructions: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet",
+    );
+
+    const set = withOverrides({}, { set: { instructions: "Mine." } }, DEFAULT_SETTINGS);
+
+    expect(Result.isFailure(set) && set.failure.message).toContain("instructions: not an Override");
+
+    const field = withOverrideFields(
+      {},
+      [{ field: "instructions", value: "Mine." }],
+      DEFAULT_SETTINGS,
+    );
+
+    expect(Result.isFailure(field) && field.failure.message).toContain("instructions");
+
+    const reset = withOverrides({}, { reset: ["instructions"] }, DEFAULT_SETTINGS);
+
+    expect(Result.isFailure(reset)).toBe(true);
+  });
+
+  it("are left out of Overrides that hold them, which then show Global's", () => {
+    const { settings, overrides, dropped } = resolveOverridesLeniently(
+      { instructions: "Global rules." },
+      { instructions: "Mine.", model: SONNET },
+    );
+
+    expect(settings.instructions).toBe("Global rules.");
+    expect(settings.model).toBe(SONNET);
+    expect(overrides).toEqual({ model: SONNET });
+    expect(dropped).toEqual([
+      "instructions: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet",
+    ]);
+    expect(overrideFields({ instructions: "Mine.", model: SONNET })).toEqual(["model"]);
+  });
+});
+
 describe("resolving an Environment's stale Overrides leniently", () => {
   it("drops only the Override that no longer resolves, which then follows Global", () => {
     const { settings, overrides, dropped } = resolveOverridesLeniently(

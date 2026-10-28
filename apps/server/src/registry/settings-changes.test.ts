@@ -315,6 +315,36 @@ describe("the owner's revert of a Settings change", () => {
     expect(registry.changes.get(SETTINGS_SCOPE, 1)?.revertedBy).toBe(2);
   });
 
+  it("writes the Instructions before back whole, and none where there were none", () => {
+    const registry = inRegistry({
+      [SETTINGS_DOCUMENT]: '{"instructions":"Use tabs.\\nBe terse."}',
+    });
+
+    registry.change([set("instructions", "Use spaces.\nBe terse.")]);
+
+    expect(registry.changes.list(SETTINGS_SCOPE)[0]).toMatchObject({
+      field: "instructions",
+      before: "Use tabs.\nBe terse.",
+      after: "Use spaces.\nBe terse.",
+    });
+    expect(registry.revert(1)).toMatchObject({
+      status: "reverted",
+      change: {
+        field: "instructions",
+        before: "Use spaces.\nBe terse.",
+        after: "Use tabs.\nBe terse.",
+      },
+    });
+    expect(registry.saved().overrides).toEqual({ instructions: "Use tabs.\nBe terse." });
+
+    registry.change([set("instructions", "")], 3_000);
+    expect(registry.saved().overrides).toEqual({});
+
+    registry.change([set("instructions", "New.")], 4_000);
+    registry.revert(4, 5_000);
+    expect(registry.saved().overrides).toEqual({});
+  });
+
   it("takes an option away that the change added", () => {
     const registry = inRegistry();
 

@@ -166,11 +166,16 @@ export const skillFileDiffs = ({
 };
 
 /** The fields whose values are long text, which an Agent change shows as a diff. */
-const TEXT_FIELDS: ReadonlySet<string> = new Set(["setupScript", "startScript", "toolchains"]);
+const TEXT_FIELDS: ReadonlySet<string> = new Set([
+  "setupScript",
+  "startScript",
+  "toolchains",
+  "instructions",
+]);
 
 /**
  * The diff to show for an Agent change of `field` from `before` to `after`, or undefined where the two values are shown
- * in full instead: only a script or the Toolchains, which are text (none is the empty text).
+ * in full instead: only a script, the Toolchains or the Instructions, which are text (none is the empty text).
  */
 export const changeDiff = (
   field: string,

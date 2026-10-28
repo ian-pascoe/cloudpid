@@ -20,6 +20,7 @@ import {
 } from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
+import { InstructionsSettings } from "@cloudpid/extensions/instructions";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import { SettingsAccess, type SettingsReload } from "@cloudpid/extensions/settings";
 import {
@@ -159,6 +160,8 @@ export class TestWorkspaceSession extends TestSession {
         closeIfIdle: Effect.void,
       }),
       Effect.provideService(SubagentSettings, { current: () => subagentOptions({}, undefined) }),
+      // The tests of the Workspace keep no Instructions.
+      Effect.provideService(InstructionsSettings, { current: () => ({ global: "" }) }),
       Effect.provideService(SubagentWorkspaces, testSubagentWorkspaces(this.ctx.id.toString())),
       Effect.provide(fixedToolSearchSettings(DEFAULT_OFFERED_TOOLS)),
       // No search keys: the tests script the model, and none searches.
