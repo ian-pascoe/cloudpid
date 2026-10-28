@@ -173,6 +173,21 @@ describe("summarizeTaskGraph", () => {
     ]);
   });
 
+  it("shows a sleeping task as sleeping, and a subagent whose generation sleeps out a backoff as working", () => {
+    const state = stateOf(agent("agent-1", "root", 2, 1));
+    const sleeping = { status: "sleeping", phase: "retry", until: 5_000 } as const;
+
+    const graph = graphOf(
+      node(3, "pi.compaction", 1, { background: true, state: sleeping }),
+      node(4, "pi.generation", 2, { state: sleeping }),
+    );
+
+    const summary = summarizeTaskGraph(graph, state);
+
+    expect(summary.background.map((task) => task.state)).toEqual(["sleeping"]);
+    expect(summary.agents[0]?.status).toBe("working");
+  });
+
   it("keeps only the oldest `MAX_BACKGROUND_TASKS` background tasks", () => {
     const many = Array.from({ length: MAX_BACKGROUND_TASKS + 5 }, (_, index) =>
       node(index + 1, "work", 1, { background: true }),

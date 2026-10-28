@@ -6,11 +6,13 @@
 import type {
   AttributeValue,
   SpanAttributes,
+  SpanLink,
   SpanOptions,
   SpanStatus,
   TelemetryContext,
   TelemetrySpan,
 } from "@earendil-works/pi-telemetry";
+import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -43,12 +45,31 @@ const defined = (attributes: SpanAttributes | undefined): Attributes =>
 
 type Start = (parent: Tracer.AnySpan | undefined) => TelemetryContext["startSpan"];
 
+/** The Effect span under each pi span the adapter gave out, so a link to one can name it. */
+const effectSpans = new WeakMap<TelemetryContext, Tracer.Span>();
+
+/**
+ * `links` as Effect links. A link to a context with no span of this adapter (the root, another adapter's) is left out:
+ * there is no span to name.
+ */
+const effectLinks = (links: ReadonlyArray<SpanLink> | undefined): Tracer.SpanLink[] =>
+  Arr.filterMap(links ?? [], (link) => {
+    const span = effectSpans.get(link.context);
+
+    return span === undefined
+      ? Result.failVoid
+      : Result.succeed({ span, attributes: defined(link.attributes) });
+  });
+
 /** pi's span over one Effect span; once the span has ended, recording is ignored, as pi-telemetry's contract has it. */
 const piSpan = (span: Tracer.Span, clock: Clock.Clock, start: Start): TelemetrySpan => {
   const open = () => Predicate.isTagged(span.status, "Started");
 
-  return {
+  const pi: TelemetrySpan = {
     startSpan: start(span),
+    addLink: (link) => {
+      if (open()) span.addLinks(effectLinks([link]));
+    },
     addEvent: (name, attributes) => {
       if (open()) span.event(name, clock.currentTimeNanosUnsafe(), defined(attributes));
     },
@@ -63,12 +84,17 @@ const piSpan = (span: Tracer.Span, clock: Clock.Clock, start: Start): TelemetryS
       markStatus(span, status);
     },
   };
+
+  effectSpans.set(pi, span);
+
+  return pi;
 };
 
 /**
  * A `TelemetryContext` whose spans are Effect spans made by `tracer`: pass it to pi code that takes one (pi-ai's
- * `telemetryContext`, pi-durable's `HarnessOptions.telemetry` once released). A span started from the context is a
- * root; one started from a span the context gave out is its child.
+ * `telemetry` request option, pi-durable's `HarnessOptions.telemetry`). A span started from the context is a root; one
+ * started from a span the context gave out is its child. A link, given at the start or added later, names the Effect
+ * span of a span the context gave out, settled or not.
  *
  * The callback's return value and rejection come back as they are, a synchronous throw as a rejected promise, and the
  * span ends when the callback's promise settles. The callback runs in the async context of the call that started the
@@ -98,6 +124,7 @@ export const effectTelemetry = (tracer: Tracer.Tracer): TelemetryContext => {
       }).pipe(
         Effect.withSpan(options.name, {
           attributes: defined(options.attributes),
+          links: effectLinks(options.links),
           ...(parent === undefined ? { root: true } : { parent }),
         }),
         Effect.provideService(CallerFrame, captureFrame()),

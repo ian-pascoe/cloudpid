@@ -7,10 +7,10 @@
 //   to a `subagent_wait` blocked on that turn or reports it to the parent once the parent is idle; until then a
 //   `subagent_wait` may still claim it. Request IDs keep a restart from submitting or reporting twice.
 // - A wait task is what `subagent_wait` blocks on. It ends when a commit gives its waiter a result, when a steer is
-//   queued for the caller, or at its deadline, which it sleeps until.
+//   queued for the caller, or at its deadline, which a timer of its invocation marks.
 // @effect-diagnostics asyncFunction:off newPromise:off preferEffectArray:off missingPipeableSignature:off
 import type { Draft } from "@earendil-works/chord";
-import { type Context, withAbortSignal } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord/context";
 import {
   type ConversationId,
   defineTask,
@@ -501,7 +501,7 @@ const endWait = async (tx: Tx, key: string, input: WaitInput, now: number) => {
 };
 
 /** What a task needs of its runtime to block on changes. */
-type Watcher = Pick<WaitRuntime, "signal" | "sleep">;
+type Watcher = Pick<WaitRuntime, "signal" | "setTimer" | "now">;
 
 /** Rejects with the reason when `runtime`'s invocation is signalled; its listener goes when `until` aborts. */
 const signalled = (runtime: Watcher, until: AbortSignal): Promise<never> =>
@@ -512,12 +512,26 @@ const signalled = (runtime: Watcher, until: AbortSignal): Promise<never> =>
     else runtime.signal.addEventListener("abort", reject_, { once: true, signal: until });
   });
 
-/** Block until the Subagents document or the caller's inbox changes, or `deadline`. */
+/**
+ * Resolves around `deadline` on the Harness clock, by a timer of `runtime`'s invocation, which `until` disarms. The
+ * timer is not durable: the wait stays in its phase, where it can watch, and a phase run again after a restart arms
+ * it again for what is left.
+ */
+const timedOut = (runtime: Watcher, deadline: number, until: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    const disarm = runtime.setTimer(resolve, Math.max(0, deadline - runtime.now()));
+
+    until.addEventListener("abort", disarm, { once: true });
+  });
+
+/**
+ * Block until the Subagents document or the caller's inbox changes, or about `deadline`: the caller checks the clock
+ * again.
+ */
 const nextChange = async (
   runtime: Watcher,
   watches: ReadonlyArray<{ start(listener: () => Promise<void>): void } | undefined>,
   deadline: number | null,
-  context: Context,
 ) => {
   const controller = new AbortController();
 
@@ -535,9 +549,7 @@ const nextChange = async (
     await Promise.race([
       changed,
       signalled(runtime, controller.signal),
-      ...(deadline === null
-        ? []
-        : [runtime.sleep(deadline, withAbortSignal(controller.signal, context))]),
+      ...(deadline === null ? [] : [timedOut(runtime, deadline, controller.signal)]),
     ]);
   } finally {
     controller.abort();
@@ -556,7 +568,7 @@ const whenIdle = async (
     try {
       if (live?.value?.run === undefined) return;
 
-      await nextChange(runtime, [live], null, context);
+      await nextChange(runtime, [live], null);
     } finally {
       await live?.stop();
     }
@@ -599,7 +611,7 @@ export const WaitTask = defineTask<WaitInput, { phase: "wait" }, WaitEvent>({
             return;
           }
 
-          await nextChange(runtime, [doc, inbox], deadline, context);
+          await nextChange(runtime, [doc, inbox], deadline);
         } finally {
           await doc?.stop();
           await inbox?.stop();

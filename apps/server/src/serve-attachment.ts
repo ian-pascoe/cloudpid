@@ -1,5 +1,5 @@
 // The main Worker's Attachments route (`attachments.ts`) for a Session the Registry knows, in the Workspace it is bound to.
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";

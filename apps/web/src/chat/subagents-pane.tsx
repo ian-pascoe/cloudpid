@@ -24,6 +24,22 @@ import { AgentStatus, AgentStopButton, AgentSummary } from "./subagent-card.tsx"
 const kindLabel = (kind: string): string =>
   kind === "pi.compaction" ? "Compacting context" : kind;
 
+/** How a background task's state reads: `sleeping` holds until a time, such as a retry backoff's end. */
+const stateLabel = (task: GraphBackgroundTask): string => {
+  if (task.aborting) return "Stopping";
+
+  switch (task.state) {
+    case "waiting":
+      return "Waiting";
+    case "sleeping":
+      return "Sleeping";
+    case "pending":
+    case "running":
+    case "completing":
+      return "Running";
+  }
+};
+
 type RowProps = { agent: GraphAgent; depth: number };
 
 const AgentRow = ({ agent, depth }: RowProps) => {
@@ -53,9 +69,7 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   <li className="flex items-center gap-2 py-1 text-sm">
     <span className="min-w-0 flex-1 truncate">{kindLabel(task.kind)}</span>
     <span className="font-mono text-xs text-muted-foreground">{task.agent}</span>
-    <span className="text-xs text-muted-foreground">
-      {task.aborting ? "Stopping" : task.state === "waiting" ? "Waiting" : "Running"}
-    </span>
+    <span className="text-xs text-muted-foreground">{stateLabel(task)}</span>
   </li>
 );
 

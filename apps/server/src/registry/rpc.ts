@@ -19,7 +19,7 @@ import {
   workspaceDirectory,
 } from "@cloudpid/protocol";
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";

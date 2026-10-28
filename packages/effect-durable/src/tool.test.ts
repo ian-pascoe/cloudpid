@@ -248,8 +248,9 @@ describe("defineEffectTool", () => {
     const result = await lastToolResult();
 
     expect(result).toMatchObject({ isError: true });
+    // Since effect 4.0.6 the failure beside a defect is a defect too, so both are reported, the crash included.
     expect(resultText(result)).toContain("The table broke");
-    expect(resultText(result)).not.toContain("The dice are lost");
+    expect(resultText(result)).toContain("The dice are lost");
   });
 
   it("settles a call that fails while being aborted as aborted", async () => {

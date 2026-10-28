@@ -28,7 +28,7 @@ import {
   workersTelemetry,
   type WorkersTracing,
 } from "@cloudpid/telemetry";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";

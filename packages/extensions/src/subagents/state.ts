@@ -155,6 +155,7 @@ export const SubagentsDoc = defineDoc<SubagentsState>({
   version: 1,
   scope: "session",
   initial: () => ({ agents: {}, conversations: {}, tombstones: [], nextIndex: {}, waiters: {} }),
+  checkpointWhen: () => false,
 });
 
 /** The state as read outside a commit: the initial one until the first spawn. */

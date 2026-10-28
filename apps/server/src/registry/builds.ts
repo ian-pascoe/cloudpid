@@ -11,7 +11,7 @@ import {
   withEveryEnvironmentVariables,
 } from "@cloudpid/config";
 import type { BuildView, EnvironmentRepo } from "@cloudpid/protocol";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

@@ -13,7 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@cloudflare/computer": "^0.6.0",
+    "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@cloudflare/computer": "^0.8.0",
     "@cloudpid/browser": "workspace:*",
     "@cloudpid/codemode-sandbox": "workspace:*",
     "@cloudpid/computer-env": "workspace:*",
@@ -23,19 +24,19 @@
     "@cloudpid/protocol": "workspace:*",
     "@cloudpid/sandbox-image": "workspace:*",
     "@cloudpid/telemetry": "workspace:*",
-    "@earendil-works/chord": "^1.3.0",
-    "@earendil-works/pi-ai": "^1.3.0",
-    "@earendil-works/pi-codemode": "^1.3.0",
-    "@earendil-works/pi-durable": "^1.3.0",
+    "@earendil-works/chord": "^1.4.0",
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-codemode": "^1.4.0",
+    "@earendil-works/pi-durable": "^1.4.0",
     "@platformatic/vfs": "^0.5.0",
-    "alchemy": "2.0.0-beta.83",
+    "alchemy": "2.0.0-beta.84",
     "diff": "^9.0.0",
-    "effect": "^4.0.5",
-    "isomorphic-git": "1.40.0",
+    "effect": "^4.0.6",
+    "isomorphic-git": "1.44.5",
     "just-bash": "^3.6.0",
-    "marked": "^18.1.1"
+    "marked": "^18.1.2"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.6"
+    "@cloudflare/vitest-plugin": "^1.4.8"
   }
 }
