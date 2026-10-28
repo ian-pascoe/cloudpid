@@ -296,7 +296,7 @@ set -u
 root=${shellQuote(root)}
 cd "$root" || exit 1
 
-# Directories the Workspace holds read-only (the bundled skills): the Workspace DO refuses a write there, so one made
+# Directories the Workspace holds read-only (the Skill set): the Workspace DO refuses a write there, so one made
 # here would stay on this Container, which would then differ from the Workspace until it restarts. Make them read-only
 # here too, with a bind mount of each over itself, remounted read-only, which fails a write with EROFS. Best effort: a
 # Container that may not mount (\`alchemy dev\`'s, without FUSE) keeps the directory as it was, and the bootstrap goes on.

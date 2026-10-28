@@ -20,13 +20,7 @@ import {
   SKILL_CHECK_INTERVAL_MS,
   updateSkills,
 } from "./skill-updates.ts";
-import {
-  hashBundle,
-  hashFiles,
-  openSkills,
-  saveSkillAs,
-  type SkillChangeContext,
-} from "./skills.ts";
+import { hashFiles, openSkills, saveSkillAs, type SkillChangeContext } from "./skills.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
 
@@ -35,11 +29,6 @@ const author: AgentChangeAuthor = {
   conversation: 1,
   tool: "environment_skill_update",
   reason: "The user asked for the latest grill-me",
-};
-
-const BUNDLE = {
-  hash: "bundle-version-1",
-  files: { "pr/SKILL.md": "---\nname: pr\ndescription: The bundled pr.\n---\nBundled.\n" },
 };
 
 const REPO = "o/skills";
@@ -94,7 +83,6 @@ const inRegistry = <A>(
       const store = openRegistryStore(state.storage);
       const changes = openAgentChanges(state.storage);
       const skills = openSkills(state.storage);
-      const bundle = await hashBundle(BUNDLE);
 
       store.createEnvironment("0000abcd", "Other", 1_000);
 
@@ -103,7 +91,6 @@ const inRegistry = <A>(
         store,
         skills,
         changes,
-        bundle,
         now,
       });
 
@@ -143,10 +130,7 @@ const inRegistry = <A>(
           });
         },
         revert: (id, at = 3_000, environment = DEFAULT_ENVIRONMENT) =>
-          revertAgentChange(state.storage, store, changes, { environment, id }, at, {
-            skills,
-            bundle,
-          }),
+          revertAgentChange(state.storage, store, changes, { environment, id }, at, { skills }),
         check: () => checkSkillUpdates(skills, github.reader),
         daily: (at) => runDailySkillCheck({ skills, documents: store }, github.reader, at),
       });

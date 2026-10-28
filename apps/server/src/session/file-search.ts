@@ -48,7 +48,7 @@ export const MAX_LISTINGS_IN_FLIGHT = 2;
 export const EXCLUDED_NAMES: readonly string[] = ["node_modules"];
 
 /**
- * Directories never offered, wherever the conversation works: every Session's Attachments, and the bundled Skills,
+ * Directories never offered, wherever the conversation works: every Session's Attachments, and the Skill set,
  * mounted read-only into every Workspace (AGENTS.md → Skills).
  */
 export const EXCLUDED_ROOTS: readonly string[] = [

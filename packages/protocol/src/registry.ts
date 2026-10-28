@@ -692,8 +692,8 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * Remove a Skill kept for an Environment, or for every Environment (`*`): the owner's own save, with no Approval. Its
-   * Workspaces stop serving it at their next readying (the Skill of the name kept for every Environment, else the
-   * bundle's, is served again). Fails with an `EnvironmentError` when the scope keeps no Skill of the name.
+   * Workspaces stop serving it at their next readying (the Skill of the name kept for every Environment, if any, is
+   * served again). Fails with an `EnvironmentError` when the scope keeps no Skill of the name.
    */
   Rpc.make("removeEnvironmentSkill", {
     payload: { environment: AgentChangeScope, name: Schema.String },

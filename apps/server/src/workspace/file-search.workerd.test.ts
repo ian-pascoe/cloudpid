@@ -75,6 +75,12 @@ const workspaceWithRepo = async () => {
     await sessionOn(slug).run(writes.slice(from, from + 5));
   }
 
+  // The Environment's Skill set, mounted read-only below the files.
+  await env.WORKSPACES.getByName(slug).updateSkills({
+    hash: "sha256:environment",
+    files: { "tdd/SKILL.md": "---\nname: tdd\ndescription: Test first.\n---\n\nRed, green.\n" },
+  });
+
   return slug;
 };
 
@@ -166,7 +172,7 @@ describe("a files request", () => {
     expect(pathsOf(await ask("log", "debug.log"))).toEqual([]);
     expect(pathsOf(await ask("dist", "demo/dist"))).toEqual([]);
     expect(pathsOf(await ask("shot", "shot.png"))).toEqual([]);
-    // The bundled Skills are mounted at `/workspace/.agents/skills`.
+    // The Skill set is mounted at `/workspace/.agents/skills`.
     expect(pathsOf(await ask("skill", "SKILL.md"))).toEqual([]);
 
     client.close();

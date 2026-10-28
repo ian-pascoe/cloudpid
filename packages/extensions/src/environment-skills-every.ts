@@ -284,7 +284,7 @@ export const removeEverywhere = (
 
     if (Option.isNone(kept) && !(yield* askedBefore(approvals, api))) {
       return yield* EnvironmentsError.make({
-        message: `Nothing was asked or removed: no Skill named "${name}" is kept for every Environment. environment_get with id "${EVERY_ENVIRONMENT_ID}" lists them; the bundle's are not kept and cannot be removed.`,
+        message: `Nothing was asked or removed: no Skill named "${name}" is kept for every Environment. environment_get with id "${EVERY_ENVIRONMENT_ID}" lists them.`,
       });
     }
 
@@ -302,7 +302,8 @@ export const removeEverywhere = (
         change: `Remove the Skill ${JSON.stringify(name)}`,
         before,
         after:
-          "Removed for every Environment: each Environment serves its own Skill of the name if it has one, else the bundle's",
+          "Removed for every Environment: each Environment serves its own Skill of the name if it has one",
+
         reason,
         expected: {
           savedAt: Option.match(kept, { onNone: () => null, onSome: (skill) => skill.savedAt }),

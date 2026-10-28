@@ -364,7 +364,7 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over those kept for every Environment and the bundle's of the same name; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove change them): ${skillLines(details.skills)}`,
+      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over those kept for every Environment of the same name; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove change them): ${skillLines(details.skills)}`,
       `Skills for every Environment (id "${EVERY_ENVIRONMENT_ID}"; the Environment's own of the same name win): ${
         details.everySkills.length === 0
           ? "none"
@@ -392,7 +392,7 @@ const describeEveryEnvironment = (details: EveryEnvironmentDetails): string =>
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (served read-only at ${SKILLS_ROOT}/<name> in every Environment's Workspaces, over the bundle's of the same name; an Environment's own of the same name wins there; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove with id "${EVERY_ENVIRONMENT_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
+      `Skills (served read-only at ${SKILLS_ROOT}/<name> in every Environment's Workspaces; an Environment's own of the same name wins there; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove with id "${EVERY_ENVIRONMENT_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
     ],
     "\n",
   );

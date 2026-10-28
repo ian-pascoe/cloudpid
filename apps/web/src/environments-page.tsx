@@ -1303,15 +1303,14 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
       {id === EVERY_ENVIRONMENT ? (
         <p className="text-sm">
           Every environment's workspaces stop serving it at their next readying, except those of an
-          environment that keeps its own skill of the same name. Where none does, the bundle's skill
-          of the same name is served again. Sessions already running keep it in their skills list
-          until their next context window.
+          environment that keeps its own skill of the same name. Sessions already running keep it in
+          their skills list until their next context window.
         </p>
       ) : (
         <p className="text-sm">
           Its workspaces stop serving it at their next readying, and the skill of the same name kept
-          for every environment is served again, else the bundle's. Sessions already running keep it
-          in their skills list until their next context window.
+          for every environment, if any, is served again. Sessions already running keep it in their
+          skills list until their next context window.
         </p>
       )}
       <p className="text-sm">
@@ -1692,7 +1691,7 @@ const SkillsSection = ({ id }: { id: string }) => {
         <p className="text-xs text-muted-foreground">
           {everywhere
             ? "None kept for every environment. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install and the id *, and you approve it in its session."
-            : "None of its own: its workspaces serve those kept for every environment and the bundle's. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install."}
+            : "None of its own: its workspaces serve those kept for every environment. Add some from GitHub below, or the agent saves one with environment_skill_save or installs one with environment_skill_install."}
         </p>
       ) : (
         <ul className="flex flex-col gap-1">

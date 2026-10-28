@@ -112,7 +112,7 @@ const GREP_MAX_LINE_LENGTH = 500;
 const IGNORED = ["**/node_modules/**", "**/.git/**"] as const;
 
 /**
- * Directories a search from above them skips: the bundled skills' mount (`@cloudpid/extensions/skills`), and the
+ * Directories a search from above them skips: the Skill set's mount (`@cloudpid/extensions/skills`), and the
  * harness's own files (temp files, spills, Attachments).
  */
 const SKIPPED_FROM_ABOVE = ["/workspace/.agents/skills", "/workspace/.cloudpid"] as const;

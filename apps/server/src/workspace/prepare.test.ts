@@ -7,7 +7,7 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type KeptSecret, secretEnvName } from "@cloudpid/extensions/secrets/core";
 import type { EnvironmentBuild } from "./build-record.ts";
-import type { SkillSet } from "./bundled-skill-set.ts";
+import type { SkillSet } from "./skill-set-schema.ts";
 import {
   CLONE_TIMEOUT_SECONDS,
   prepareWorkspace,

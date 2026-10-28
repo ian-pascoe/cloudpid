@@ -358,7 +358,10 @@ describe("a WebSocket of a Container preview, a carried socket", () => {
     const { events } = await openSocket(stub);
 
     // The page reads nothing more while the dev server keeps sending.
-    for (let at = 0; at < 8; at++) await stub.devServerSend(0, "x".repeat(128 * 1024));
+    // Once the Workspace finds it so it closes the socket, and the sends after that have no socket to go to.
+    for (let at = 0; at < 8; at++) {
+      await stub.devServerSend(0, "x".repeat(128 * 1024)).catch(() => undefined);
+    }
 
     await vi.waitFor(
       async () =>

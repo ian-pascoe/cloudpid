@@ -43,8 +43,6 @@ export type SkillSaved =
       /** The change as the Registry recorded it, with the files before and after by hash. */
       readonly change: AgentChange;
       readonly name: string;
-      /** Whether it hides the bundle's Skill of the name. */
-      readonly bundled: boolean;
       /** Whether it is an Environment's own Skill that hides the one of the name kept for every Environment. */
       readonly inherited: boolean;
       /**
@@ -93,8 +91,6 @@ export type SkillRemoved =
       readonly status: "removed";
       readonly environment: ChangedEnvironment;
       readonly change: AgentChange;
-      /** Whether the bundle's Skill of the name is served in its place. */
-      readonly bundled: boolean;
       /** Whether the Skill of the name kept for every Environment is served in its place, for an Environment's own. */
       readonly inherited: boolean;
       /** For a Skill kept for every Environment: the Environments whose own Skill of the name stays served there. */
@@ -424,7 +420,7 @@ export const savedOutcome = (
               type: "text" as const,
               text: Arr.join(
                 [
-                  `${approved ? "The user approved: " : ""}${change.before === null ? "Saved the new Skill" : "Saved the Skill"} ${saved.name} for ${named(saved.environment)} (${count} file${count === 1 ? "" : "s"})${saved.bundled ? ", over the bundle's Skill of that name" : ""}.`,
+                  `${approved ? "The user approved: " : ""}${change.before === null ? "Saved the new Skill" : "Saved the Skill"} ${saved.name} for ${named(saved.environment)} (${count} file${count === 1 ? "" : "s"}).`,
                   saved.handed
                     ? `It is served now at ${servedAt(saved.name)} (read-only): read ${servedAt(saved.name)}/SKILL.md to use it.`
                     : `It is served at ${servedAt(saved.name)} (read-only) in each Workspace${everywhere ? "" : " of the Environment"}.`,
@@ -569,11 +565,7 @@ export const installedOutcome = (
                     ? []
                     : [
                         `${approved ? "The user approved: installed" : "Installed"} ${Arr.join(
-                          Arr.map(
-                            saved,
-                            (result) =>
-                              `${result.name}${result.shadows === true ? " (over the bundle's Skill of that name)" : ""}`,
-                          ),
+                          Arr.map(saved, (result) => result.name),
                           ", ",
                         )} for ${named(installed.environment)} from ${pinned}.`,
                       ]),
@@ -651,7 +643,7 @@ export const removedOutcome = (
               details: { approval: { approved: true } },
             }
           : yield* EnvironmentsError.make({
-              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}" (if an earlier run of this call removed it before the Session restarted, it is done). environment_get lists the Skills it keeps; those kept for every Environment and the bundle's are not the Environment's.`,
+              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}" (if an earlier run of this call removed it before the Session restarted, it is done). environment_get lists the Skills it keeps; those kept for every Environment are not the Environment's.`,
             });
       case "removed": {
         const { change } = removed;
@@ -676,14 +668,10 @@ export const removedOutcome = (
                 [
                   `${approved ? "The user approved: removed" : "Removed"} the Skill ${name} from ${named(removed.environment)}.`,
                   everywhere
-                    ? removed.bundled
-                      ? `The bundle's Skill of that name is served at ${servedAt(name)} again, where an Environment keeps none of its own.`
-                      : `Nothing is served at ${servedAt(name)} any more, where an Environment keeps none of its own.`
+                    ? `Nothing is served at ${servedAt(name)} any more, where an Environment keeps none of its own.`
                     : removed.inherited
                       ? `The Skill of that name kept for every Environment is served at ${servedAt(name)} instead.`
-                      : removed.bundled
-                        ? `The bundle's Skill of that name is served at ${servedAt(name)} again.`
-                        : `Nothing is served at ${servedAt(name)} any more.`,
+                      : `Nothing is served at ${servedAt(name)} any more.`,
                   everywhere
                     ? reachEvery(removed.handed, removed.overriddenIn, current)
                     : reach(removed.environment, removed.handed, own),

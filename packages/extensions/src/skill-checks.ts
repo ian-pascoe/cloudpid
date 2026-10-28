@@ -1,8 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off
 // What a Skill may hold (ADR-0026, docs/spec.md → The Environment's own Skills): the checks a Skill's files pass before they
-// are saved, by the Registry and by `environment_skill_save`, and the Agent Skills name rules. The bundle in `skills/`
-// passes the same checks: `scripts/sync-skills.mjs` refuses what they forbid at sync time, and
-// `apps/server/src/workspace/bundled-skills.test.ts` in CI, until the bundle is removed. Plain TypeScript with no
+// are saved, by the Registry and by `environment_skill_save`, and the Agent Skills name rules. Plain TypeScript with no
 // imports, which Node runs by type stripping.
 
 /** A Skill's file this large is refused: every Workspace holds a copy of its Skill set. */
@@ -20,9 +18,6 @@ export const MAX_SKILL_FILES = 500;
  * batches, the agent naming them. The Registry refuses a preview of more before it reads their files.
  */
 export const MAX_APPROVED_SKILLS = 10;
-
-/** The bundle in `skills/` as a whole may be this large: the files ship inside the Workspaces Worker's upload. */
-export const MAX_TOTAL_BYTES = 1024 * 1024;
 
 /** The longest name a Skill may have (Agent Skills). */
 export const MAX_SKILL_NAME_LENGTH = 64;

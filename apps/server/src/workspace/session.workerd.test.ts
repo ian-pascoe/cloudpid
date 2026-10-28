@@ -27,7 +27,7 @@ describe("a Session's coding tools", () => {
       "alpha\ngamma\n",
       "notes.txt:2: gamma",
       "notes.txt",
-      // Every Workspace holds the bundled skills, in `.agents/skills`, and the harness's own files, in `.cloudpid`.
+      // Every Workspace mounts its Skill set, empty or not, in `.agents/skills`, and the harness's own files, in `.cloudpid`.
       ".agents/\n.cloudpid/\nnotes.txt",
       "alpha\ngamma\n",
     ]);

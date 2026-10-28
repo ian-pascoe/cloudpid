@@ -26,7 +26,7 @@ import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { ContextManagement } from "./context.ts";
 import {
-  BUNDLED_SKILLS_DIRECTORY,
+  SKILL_SET_DIRECTORY,
   discoverSkills,
   parseSkill,
   Skills,
@@ -230,7 +230,7 @@ describe("skillDirectories", () => {
 });
 
 describe("the skills section", () => {
-  it("lists bundled and repo-local skills with their descriptions, as pi does", async () => {
+  it("lists the Environment's and repo-local skills with their descriptions, as pi does", async () => {
     const section = await skillsSection("/workspace/repo", {
       "/workspace/.agents/skills/tdd/SKILL.md": skillFile("tdd", "Test-driven development."),
       "/workspace/.agents/skills/tdd/tests.md": "# tests\n",
@@ -246,7 +246,7 @@ describe("the skills section", () => {
         "The following skills provide specialized instructions for specific tasks.",
         "Use the read tool to load a skill's file when the task matches its description.",
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
-        "The skills in /workspace/.agents/skills are bundled with the agent and read-only: do not write there.",
+        "The skills in /workspace/.agents/skills are the Environment's (its own, and those kept for every Environment) and read-only: change them with environment_skill_save and the other environment_skill_* tools, not by writing there.",
         "",
         "<available_skills>",
         "  <skill>",
@@ -277,7 +277,7 @@ describe("the skills section", () => {
 
   it("keeps the nearest skill when two have a name, and ignores files inside a skill and dot directories", async () => {
     const section = await skillsSection("/workspace/repo", {
-      "/workspace/.agents/skills/lint/SKILL.md": skillFile("lint", "Bundled lint."),
+      "/workspace/.agents/skills/lint/SKILL.md": skillFile("lint", "Environment lint."),
       "/workspace/repo/.agents/skills/lint/SKILL.md": skillFile("lint", "Repo lint."),
       "/workspace/repo/.agents/skills/lint/examples/inner/SKILL.md": skillFile("inner", "Inside."),
       "/workspace/repo/.agents/skills/.hidden/SKILL.md": skillFile("hidden", "Hidden."),
@@ -288,7 +288,7 @@ describe("the skills section", () => {
     });
 
     expect(section).toContain("Repo lint.");
-    expect(section).not.toContain("Bundled lint.");
+    expect(section).not.toContain("Environment lint.");
     expect(section).not.toContain("Inside.");
     expect(section).not.toContain("Hidden.");
     expect(section).toContain(
@@ -323,7 +323,7 @@ describe("the skills section", () => {
     expect(section).toContain("Load a skill's file when the task matches its description.");
   });
 
-  it("lists no read-only note when no listed skill is bundled", async () => {
+  it("lists no read-only note when no listed skill is in the Environment's directory", async () => {
     const section = await skillsSection("/workspace/repo", {
       "/workspace/repo/.agents/skills/mine/SKILL.md": skillFile("mine", "Mine."),
     });
@@ -432,14 +432,17 @@ describe("the skills section", () => {
     expect(asked).toBe(1);
     expect(section).toContain("<name>deploy</name>");
     expect(section).toContain("<name>tdd</name>");
-    expect(section).toContain("are bundled with the agent and read-only");
+    expect(section).toContain(
+      "are the Environment's (its own, and those kept for every Environment) and read-only",
+    );
+    expect(section).not.toContain("bundled");
   });
 });
 
 describe("discoverSkills with a directory's skills already known", () => {
   const tdd: Skill = {
     name: "tdd",
-    description: "Bundled.",
+    description: "The Environment's.",
     filePath: "/workspace/.agents/skills/tdd/SKILL.md",
     disableModelInvocation: false,
   };
@@ -449,7 +452,7 @@ describe("discoverSkills with a directory's skills already known", () => {
 
     const env = envOf("/workspace/repo", {
       "/workspace/repo/.agents/skills/deploy/SKILL.md": skillFile("deploy", "Ship."),
-      // Not the bundle's: a walk of the root would find it, and the known skills stand in for the walk.
+      // Not the Environment's: a walk of the root would find it, and the known skills stand in for the walk.
       "/workspace/.agents/skills/stray/SKILL.md": skillFile("stray", "Stray."),
     });
 
@@ -462,7 +465,7 @@ describe("discoverSkills with a directory's skills already known", () => {
     };
 
     const found = await Effect.runPromise(
-      discoverSkills(env, new Map([[BUNDLED_SKILLS_DIRECTORY, [tdd]]])),
+      discoverSkills(env, new Map([[SKILL_SET_DIRECTORY, [tdd]]])),
     );
 
     expect(found.map((skill) => skill.name)).toEqual(["deploy", "tdd"]);
@@ -475,7 +478,7 @@ describe("discoverSkills with a directory's skills already known", () => {
         envOf("/workspace/repo", {
           "/workspace/repo/.agents/skills/tdd/SKILL.md": skillFile("tdd", "Repo's own."),
         }),
-        new Map([[BUNDLED_SKILLS_DIRECTORY, [tdd]]]),
+        new Map([[SKILL_SET_DIRECTORY, [tdd]]]),
       ),
     );
 

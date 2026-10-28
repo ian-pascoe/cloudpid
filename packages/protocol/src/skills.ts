@@ -140,8 +140,6 @@ export type InstalledSkill = {
   readonly message?: string | undefined;
   /** The Agent change that kept it (the agent's install only). */
   readonly change?: AgentChange | undefined;
-  /** Whether it hides the bundle's Skill of the name. */
-  readonly shadows?: boolean | undefined;
   /** For a Skill kept for every Environment: the Environments whose own Skill of the name hides it. */
   readonly overriddenIn?: ReadonlyArray<{ readonly id: string; readonly name: string }> | undefined;
 };

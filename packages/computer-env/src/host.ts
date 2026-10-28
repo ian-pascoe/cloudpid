@@ -106,7 +106,7 @@ export type ReadEnv = Pick<ExecutionEnv, "cwd" | "fileInfo" | "listFiles" | "rea
 
 /**
  * `fs.mkdir(path, { recursive: true })`, except that a directory that is already there is left alone. computer refuses
- * the call on any path above a read-only mount (`/workspace`, with the bundled skills mounted below it), though it would
+ * the call on any path above a read-only mount (`/workspace`, with the Skill set mounted below it), though it would
  * change nothing, and every write into the Workspace root makes its parents this way.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a plain async helper, not an Effect combinator.

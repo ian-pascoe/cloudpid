@@ -559,7 +559,6 @@ describe("environment_skill_install", () => {
           path: "skills/grill-me",
           outcome: "installed",
           change: installChange(7, "grill-me"),
-          shadows: false,
         },
       ],
       handed: true,
@@ -620,7 +619,6 @@ describe("environment_skill_install", () => {
           path: "skills/a",
           outcome: "installed",
           change: installChange(1, "a"),
-          shadows: true,
         },
         { name: "b", path: "skills/b", outcome: "unchanged" },
         { name: "c", path: "skills/c", outcome: "rejected", message: "notes.md: a binary file" },
@@ -636,7 +634,8 @@ describe("environment_skill_install", () => {
       }),
     );
 
-    expect(said).toContain("Installed a (over the bundle's Skill of that name)");
+    expect(said).toContain("Installed a for Environment");
+    expect(said).not.toContain("bundle");
     expect(said).toContain("from o/skills at v2, c0ffee0");
     expect(said).toContain("b was installed from o/skills at v2, c0ffee0 already: nothing changed");
     expect(said).toContain(
@@ -758,6 +757,10 @@ describe("environment_get", () => {
       "Skills (its own, served read-only at /workspace/.agents/skills/<name>",
     );
     expect(shown).toContain("\n  release (saved 1970-01-01T00:00:00.000Z): Cut a release.");
+    expect(shown).toContain(
+      "over those kept for every Environment of the same name; environment_skill_save",
+    );
+    expect(shown).not.toContain("bundle");
   });
 
   it("says where an installed Skill came from", () => {
@@ -1190,6 +1193,7 @@ describe("environment_get for every Environment's Skills", () => {
     // What it keeps of its own is listed apart.
     expect(shown).toContain("\n  release (saved 1970-01-01T00:00:00.000Z): Ours.");
     expect(shown).not.toContain("Shared release.");
+    expect(shown).not.toContain("bundle");
   });
 
   it("says none when nothing is kept for every Environment", () => {
@@ -1387,7 +1391,6 @@ const installedEverywhere = (names: ReadonlyArray<string>) => ({
     path: `skills/${name}`,
     outcome: "installed" as const,
     change: { ...installChange(20 + at, name), scope: "*", approved: true as const },
-    shadows: false,
     overriddenIn: [],
   })),
   handed: true,
@@ -1811,6 +1814,17 @@ describe("environment_skill_update", () => {
 
   it("runs alone, is rerun safely, requires a reason, and is the root conversation's only", async () => {
     const { tool } = await setUp();
+
+    // No tool of the Skills says anything of a bundle: cloudpid ships no Skills.
+    for (const name of [
+      "environment_skill_save",
+      "environment_skill_install",
+      "environment_skill_update",
+      "environment_skill_remove",
+    ]) {
+      expect(tool(name).description, name).not.toMatch(/bundle/i);
+      expect(JSON.stringify(tool(name).parameters), name).not.toMatch(/bundle/i);
+    }
 
     // A rerun finds the Skills at the new commit already: unchanged, nothing recorded again.
     expect(tool("environment_skill_update").replay).toBe("safe");

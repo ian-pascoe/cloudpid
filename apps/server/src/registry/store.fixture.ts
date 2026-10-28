@@ -54,12 +54,10 @@ import {
 } from "./store.ts";
 
 /**
- * The Skills `revertAgentChange` takes, for a test whose changes are not a Skill's: the storage's (none kept) over an
- * empty bundle.
+ * The Skills `revertAgentChange` takes, for a test whose changes are not a Skill's: the storage's (none kept).
  */
 export const noSkills = (storage: DurableObjectStorage): KeptSkills => ({
   skills: openSkills(storage),
-  bundle: { set: { hash: "none", files: {} }, names: new Set(), hashes: {}, bytes: new Map() },
 });
 
 export class TestRegistry extends DurableObject {

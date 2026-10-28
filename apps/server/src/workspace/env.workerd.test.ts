@@ -22,7 +22,7 @@ import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
 import { ContainerResizes } from "./resize.ts";
 import { workspaceObjectsRemote } from "./lifecycle.ts";
-import { BUNDLED_SKILL_SET } from "./bundled-skill-set.ts";
+import { EMPTY_SKILL_SET, type SkillSet } from "./skill-set-schema.ts";
 import { skillFile } from "./skills.fixtures.ts";
 import { mountedSkills, PRIOR_SKILLS } from "./skills.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
@@ -37,6 +37,12 @@ declare global {
 }
 
 const context = BACKGROUND_CONTEXT;
+
+/** A Skill set an Environment might hand its Workspaces: one Skill, `tdd`, with a file it refers to. */
+const ENVIRONMENT_SET: SkillSet = {
+  hash: "sha256:environment",
+  files: { "tdd/SKILL.md": skillFile("tdd"), "tdd/tests.md": "# tests\n" },
+};
 
 /** One Workspace for the conformance cases; each case gets its own empty directory in it. */
 const shared = env.WORKSPACES.getByName("conformance");
@@ -532,13 +538,16 @@ describe("skill discovery on the Workspace DO", () => {
       ),
     );
 
+    await env.WORKSPACES.getByName("skills-discovery").updateSkills(ENVIRONMENT_SET);
+
     calls.length = 0;
 
     const found = await executionEnv.discoverSkills(context);
 
     expect(calls).toEqual(["skills"]);
 
-    // Nearest first: the app's skill, the repo's thirty, then the bundled ones.
+    // Nearest first: the app's skill, the repo's thirty, then the Environment's.
+    expect(found).toHaveLength(32);
     expect(found[0]?.name).toBe("near");
     expect(found.filter((skill) => skill.filePath.startsWith("/workspace/repo/")).length).toBe(31);
     expect(found.map((skill) => skill.name)).toContain("tdd");
@@ -546,7 +555,7 @@ describe("skill discovery on the Workspace DO", () => {
       "/workspace/.agents/skills/tdd/SKILL.md",
     );
 
-    // The same skills a walk through the file operations finds, the bundled ones read from the mount's own files.
+    // The same skills a walk through the file operations finds, the Environment's read from the mount's own files.
     const walked = await Effect.runPromise(discoverSkills(executionEnv));
 
     expect(found).toEqual(walked);
@@ -556,9 +565,7 @@ describe("skill discovery on the Workspace DO", () => {
     const workspace = env.WORKSPACES.getByName("skills-handed-over");
     const { calls, env: executionEnv } = countingEnv(workspace, "/workspace/repo");
 
-    expect((await executionEnv.discoverSkills(context)).map((skill) => skill.name)).toContain(
-      "tdd",
-    );
+    expect(await executionEnv.discoverSkills(context)).toEqual([]);
 
     await workspace.updateSkills({
       hash: "sha256:handed",
@@ -645,16 +652,17 @@ describe("skill discovery on the Workspace DO", () => {
   });
 
   it("reads a Skill set's Skills from the set in memory once per hash", () => {
-    const first = mountedSkills(BUNDLED_SKILL_SET);
+    const first = mountedSkills(ENVIRONMENT_SET);
 
     expect(first.length).toBeGreaterThan(0);
-    expect(mountedSkills(BUNDLED_SKILL_SET)).toBe(first);
+    expect(mountedSkills(ENVIRONMENT_SET)).toBe(first);
+    expect(mountedSkills(EMPTY_SKILL_SET)).toEqual([]);
 
     // The same hash at another mount has other paths.
     expect(
-      mountedSkills(BUNDLED_SKILL_SET, "/elsewhere")[0]?.filePath.startsWith("/elsewhere/"),
+      mountedSkills(ENVIRONMENT_SET, "/elsewhere")[0]?.filePath.startsWith("/elsewhere/"),
     ).toBe(true);
-    expect(mountedSkills(BUNDLED_SKILL_SET)[0]?.filePath.startsWith("/workspace/.agents/")).toBe(
+    expect(mountedSkills(ENVIRONMENT_SET)[0]?.filePath.startsWith("/workspace/.agents/")).toBe(
       true,
     );
 
@@ -670,11 +678,11 @@ describe("skill discovery on the Workspace DO", () => {
     ).toEqual(["b"]);
     // Workspaces of an isolate can hold different sets: each keeps its own parse.
     expect(mountedSkills({ hash: "v1", files }, "/m")).toBe(one);
-    expect(mountedSkills(BUNDLED_SKILL_SET)).toBe(first);
+    expect(mountedSkills(ENVIRONMENT_SET)).toBe(first);
   });
 });
 
-describe("a Workspace that had files at the bundled skills' mount before it was mounted", () => {
+describe("a Workspace that had files at the Skill set's mount before it was mounted", () => {
   /** The Workspace `name`, with `files` written into its storage before it ever indexes the mount, as before the mount existed. */
   const seeded = async (name: string, files: Readonly<Record<string, string>>) => {
     const workspace = env.WORKSPACES.getByName(name);
@@ -705,9 +713,8 @@ describe("a Workspace that had files at the bundled skills' mount before it was 
 
     const skills = await executionEnv.discoverSkills(context);
 
-    // The mount is the bundle, and read-only now.
-    expect(skills.map((skill) => skill.name)).toContain("tdd");
-    expect(skills.map((skill) => skill.name)).not.toContain("mine");
+    // The mount is the Skill set held (empty), and read-only now.
+    expect(skills).toEqual([]);
     expect(getOrThrow(await executionEnv.exists("/workspace/.agents/skills/mine", context))).toBe(
       false,
     );
@@ -723,7 +730,7 @@ describe("a Workspace that had files at the bundled skills' mount before it was 
       getOrThrow(await executionEnv.readTextFile(`${PRIOR_SKILLS}/mine/SKILL.md`, context)),
     ).toBe(skillFile("mine"));
 
-    // Reached again by a new instance of the object (an evicted one), nothing more is moved: the mount is the bundle's.
+    // Reached again by a new instance of the object (an evicted one), nothing more is moved: the mount is the set's.
     await evictDurableObject(workspace);
     expect(await workspace.skills("/workspace")).toEqual(skills);
     expect(getOrThrow(await executionEnv.exists(`${PRIOR_SKILLS}-2`, context))).toBe(false);
@@ -750,9 +757,7 @@ describe("a Workspace that had files at the bundled skills' mount before it was 
     const none = await seeded("prior-skills-none", { "/workspace/README.md": "# hi\n" });
 
     for (const { env: executionEnv } of [empty, none]) {
-      expect((await executionEnv.discoverSkills(context)).map((skill) => skill.name)).toContain(
-        "tdd",
-      );
+      expect(await executionEnv.discoverSkills(context)).toEqual([]);
       expect(getOrThrow(await executionEnv.exists(PRIOR_SKILLS, context))).toBe(false);
     }
   });

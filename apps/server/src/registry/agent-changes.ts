@@ -622,7 +622,7 @@ export const revertAgentChange = (
   changes: AgentChanges,
   { environment, id }: { readonly environment: string; readonly id: number },
   now: number,
-  /** The Skills, and the bundle a Skill brought back must fit with, for the revert of a Skill's change. */
+  /** The Skills a Skill brought back must fit with, for the revert of a Skill's change. */
   kept: KeptSkills,
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {

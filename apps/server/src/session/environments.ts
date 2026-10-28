@@ -30,7 +30,7 @@ import type { RegistryMethods } from "../registry/Registry.ts";
 import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
 import type { Builds } from "../registry/builds.ts";
 import type { Placement } from "./workspace.ts";
-import type { SkillSet } from "../workspace/bundled-skill-set.ts";
+import type { SkillSet } from "../workspace/skill-set-schema.ts";
 
 /** What the Session's Environments read and change in the Registry. */
 export type EnvironmentsRegistry = Pick<
@@ -361,7 +361,6 @@ export const sessionEnvironments = ({
               environment: saved.environment,
               change: saved.change,
               name: saved.skill.name,
-              bundled: saved.bundled,
               inherited: saved.inherited,
               overriddenIn: saved.overriddenIn,
               handed: yield* handSkillsAfter(environment, saved.overriddenIn),
@@ -392,7 +391,6 @@ export const sessionEnvironments = ({
               status: "removed",
               environment: removed.environment,
               change: removed.change,
-              bundled: removed.bundled,
               inherited: removed.inherited,
               overriddenIn: removed.overriddenIn,
               handed: yield* handSkillsAfter(environment, removed.overriddenIn),
