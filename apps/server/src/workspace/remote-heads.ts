@@ -2,7 +2,7 @@
 // asked from the Build object itself so that no Container starts when nothing moved. A GitHub repo is asked of GitHub's
 // REST API as the GitHub App (`askAsApp`: a token for the installation on the repo's owner, else the app owner's, which
 // reads any public repo; no token at all where the app is not set up, which reads public repos too). A repo on another
-// host (an https address of a public host: `parseRepoSource`) is asked through git's smart HTTP, as `git ls-remote`
+// host (the https address of a public host, as `parseRepoSource` takes one) is asked through git's smart HTTP, as `git ls-remote`
 // does, without credentials. Either way a repo with no commits yet has no head (null).
 // @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- GitHub and git are asked with `fetch`, a Promise API, over native arrays.
 import type { GitHubTokens } from "../github/app.ts";
@@ -36,16 +36,16 @@ export type RemoteHeadsOptions = {
 
 type Head =
   | { readonly ok: true; readonly head: string | null }
-  | { readonly ok: false; readonly reason: string };
+  | Extract<RemoteHeadsAnswer, { readonly ok: false }>;
 
 const failed = (reason: string): Head => ({ ok: false, reason });
 
-const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+const COMMIT = /^[0-9a-f]{40}$/i;
 
 const NO_COMMIT = /^0+$/;
 
-/** What GitHub's refusal or rate limit or absence of a repo is told as. */
-const refusalOf = (response: Response, repo: string, installed: boolean): string => {
+/** What GitHub's refusal or rate limit or absence of a repo is told as; `installed` is undefined where no App is set up. */
+const refusalOf = (response: Response, repo: string, installed: boolean | undefined): string => {
   const limit = rateLimitOf(response);
 
   if (limit !== undefined) {
@@ -60,6 +60,10 @@ const refusalOf = (response: Response, repo: string, installed: boolean): string
   }
 
   if (response.status === 404) {
+    if (installed === undefined) {
+      return `GitHub has no repo ${repo}, or it is private and no GitHub App is set up to read it`;
+    }
+
     return installed
       ? `GitHub has no repo ${repo}, or the GitHub App's installation does not include it (install it on all repositories)`
       : `GitHub has no repo ${repo}, or it is private and the GitHub App is not installed on its owner (install it there, on all repositories)`;
@@ -83,7 +87,7 @@ const githubHead = async (
   const { github, fetch } = options;
 
   let response: Response;
-  let installed = true;
+  let installed: boolean | undefined;
 
   if (github === undefined) {
     const asked = await askGithub(fetch, url, request, undefined, REQUEST_TIMEOUT_MS);
@@ -113,9 +117,17 @@ const githubHead = async (
   }
 
   // An empty repo has no commit to name.
-  if (response.status === 409) return { ok: true, head: null };
+  if (response.status === 409) {
+    await response.body?.cancel().catch(() => undefined);
 
-  if (!response.ok) return failed(refusalOf(response, name, installed));
+    return { ok: true, head: null };
+  }
+
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+
+    return failed(refusalOf(response, name, installed));
+  }
 
   const commit = (await response.text().catch(() => "")).trim();
 
@@ -133,9 +145,11 @@ const decoder = new TextDecoder();
  */
 const advertisedHead = (bytes: Uint8Array): string | null | undefined => {
   for (let at = 0; at + 4 <= bytes.length;) {
-    const length = Number.parseInt(decoder.decode(bytes.subarray(at, at + 4)), 16);
+    const prefix = decoder.decode(bytes.subarray(at, at + 4));
 
-    if (!Number.isInteger(length)) throw new Error("not git's ref advertisement");
+    if (!/^[0-9a-f]{4}$/i.test(prefix)) throw new Error("not git's ref advertisement");
+
+    const length = Number.parseInt(prefix, 16);
 
     // A flush packet (0000) ends the service announcement.
     if (length < 4) {
@@ -200,7 +214,8 @@ const smartHttpHead = async (options: RemoteHeadsOptions, url: string): Promise<
 
       const chunk = await reader.read();
 
-      if (chunk.done) return { ok: true, head: null };
+      // A repo with no commits still advertises its capabilities, so an answer that ends before a ref line is no answer.
+      if (chunk.done) return failed(`${url}'s ref advertisement ended before any ref`);
 
       const joined = new Uint8Array(bytes.length + chunk.value.length);
 

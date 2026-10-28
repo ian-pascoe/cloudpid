@@ -57,6 +57,9 @@ export const BUILD_REFRESH_MS = 20 * 24 * 60 * 60_000;
 /** How long reading the commits or the clean-up may take, in seconds. */
 const SHORT_STEP_SECONDS = 5 * 60;
 
+/** How long after a daily look begins it is begun again, if the object was evicted before it ended: the alarm that does so. */
+export const CHECK_RESUME_MS = 10 * 60_000;
+
 /** How much of a step's output a failure keeps, from its end. */
 const REPORTED_OUTPUT = 1_000;
 
@@ -420,6 +423,9 @@ export class BuildRunner {
     try {
       const { settings } = resolveContainerSettingsLeniently(request.settings);
       const last = (await deps.load())?.last ?? null;
+
+      // The look holds no Container, which would keep an alarm: this one begins it again should the object be evicted meanwhile.
+      if (request.check === true) await deps.wake(deps.now() + CHECK_RESUME_MS);
 
       if (request.check === true && (await this.#unchanged(request, last))) {
         outcome = { kind: "unchanged" };

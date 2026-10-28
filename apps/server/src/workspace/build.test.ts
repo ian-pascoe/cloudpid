@@ -5,7 +5,13 @@ import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import { describe, expect, it, vi } from "vitest";
 import type { HeldSecrets } from "./environment-secrets.ts";
 import { type BuildRequest, buildKey, type EnvironmentBuild } from "./build-record.ts";
-import { BUILD_ATTEMPTS, BUILD_REFRESH_MS, BuildRunner, type StoredBuilds } from "./build.ts";
+import {
+  BUILD_ATTEMPTS,
+  BUILD_REFRESH_MS,
+  BuildRunner,
+  CHECK_RESUME_MS,
+  type StoredBuilds,
+} from "./build.ts";
 import type { ScriptRun } from "./prepare.ts";
 import type { RemoteHeadsAnswer } from "./remote-heads.ts";
 
@@ -478,6 +484,17 @@ describe("the daily look at the default branches", () => {
     });
     // The next look is due a day after this attempt, as a failed Build is tried again.
     expect(fake.stored?.pending).toBeNull();
+  });
+
+  it("sets an alarm that begins the look again, should the object be evicted before it ends", async () => {
+    const { fake, builds, build } = await built();
+
+    fake.wakes = [];
+    fake.now += DAY;
+    await builds.request(request({ check: true }));
+    await build();
+
+    expect(fake.wakes).toEqual([fake.now, fake.now + CHECK_RESUME_MS]);
   });
 
   it("builds nothing for a Repo with no commits yet that still has none", async () => {

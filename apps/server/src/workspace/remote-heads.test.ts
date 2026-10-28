@@ -9,7 +9,7 @@ const API = "b".repeat(40);
 
 type Call = { readonly url: string; readonly headers: Headers };
 
-/** A network that answers each request with the next answer (or the one `by` url picks), and keeps what was asked. */
+/** A network that answers each request with what `answer` makes of its url and its number, and keeps what was asked. */
 const network = (answer: (url: string, call: number) => Response | Error) => {
   const calls: Call[] = [];
 
@@ -158,6 +158,17 @@ describe("the default branch heads on GitHub", () => {
     ).toMatchObject({ ok: false, reason: expect.stringContaining("rate limit") });
   });
 
+  it("tells a missing repo as private where there is no GitHub App", async () => {
+    const net = network(() => text("", { status: 404 }));
+
+    expect(
+      await remoteHeads({ fetch: net.fetch, github: undefined })([repos[0] ?? never()]),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("no GitHub App is set up"),
+    });
+  });
+
   it("fails when GitHub cannot be reached, or does not answer with a commit", async () => {
     const { github } = app();
 
@@ -279,6 +290,12 @@ describe("the default branch heads on another host", () => {
         reason: expect.stringContaining("smart HTTP"),
       },
     );
+    expect(
+      await asked(text(pkt("# service=git-upload-pack\n"), { headers: ADVERTISED })),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("ended before any ref"),
+    });
     expect(await asked(text("nonsense", { headers: ADVERTISED }))).toMatchObject({
       ok: false,
       reason: expect.stringContaining("not git's ref advertisement"),
