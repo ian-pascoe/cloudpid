@@ -448,9 +448,9 @@ describe("the environment tools", () => {
     expect(listed).toContain('- 0000abcd: "Other"; repos: none; Build: failed');
   });
 
-  it("shows this Session's Environment by default: every setting, the kept Secrets by name, and the Build", async () => {
+  it("shows the Environment id names, marking it as this Session's: every setting, the kept Secrets by name, and the Build", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
-    const shown = text(await run(tool("environment_get"), {}));
+    const shown = text(await run(tool("environment_get"), { id: "default" }));
 
     expect(shown).toContain('Environment "Default" (id default, the Environment of this Session)');
     expect(shown).toContain("Container size (inherited from Global): cpu-1");
@@ -488,12 +488,13 @@ describe("the environment tools", () => {
 });
 
 describe("environment_variable_set", () => {
-  it("saves the variable in this Session's Environment, says when it applies, and records it for the Run", async () => {
+  it("saves the variable in the Environment id names, says when it applies, and records it for the Run", async () => {
     const environments = fakeEnvironments();
     const logged: RunChange[] = [];
     const tool = await toolsOver(environments.service, { logged });
 
     const result = await run(tool("environment_variable_set"), {
+      id: "default",
       name: "API_URL",
       value: "https://api.test",
       reason: "The tests read it",
@@ -547,7 +548,12 @@ describe("environment_variable_set", () => {
 
     expect(
       await failure(
-        run(tool("environment_variable_set"), { name: "PATH", value: "/bin", reason: "r" }),
+        run(tool("environment_variable_set"), {
+          id: "default",
+          name: "PATH",
+          value: "/bin",
+          reason: "r",
+        }),
       ),
     ).toBe('Nothing was saved: variables: "PATH" is reserved: the Container sets it itself');
     expect(logged).toEqual([]);
@@ -564,7 +570,14 @@ describe("environment_variable_set", () => {
 
     for (const value of ["Bearer sk-live-0123456789", btoa("sk-live-0123456789")]) {
       expect(
-        await failure(run(tool("environment_variable_set"), { name: "AUTH", value, reason: "r" })),
+        await failure(
+          run(tool("environment_variable_set"), {
+            id: "default",
+            name: "AUTH",
+            value,
+            reason: "r",
+          }),
+        ),
       ).toContain("Ask the user to keep the value as a Secret for the Environment");
     }
 
@@ -582,6 +595,7 @@ describe("environment_variable_set", () => {
     expect(
       await failure(
         run(tool("environment_variable_set"), {
+          id: "default",
           name: "A",
           value: "1",
           reason: "The key is sk-live-0123456789",
@@ -597,7 +611,12 @@ describe("environment_variable_set", () => {
 
     expect(
       await failure(
-        run(tool("environment_variable_set"), { name: "TOKEN", value: GITHUB_TOKEN, reason: "r" }),
+        run(tool("environment_variable_set"), {
+          id: "default",
+          name: "TOKEN",
+          value: GITHUB_TOKEN,
+          reason: "r",
+        }),
       ),
     ).toContain("GitHub token");
     expect(environments.changes).toEqual([]);
@@ -617,6 +636,7 @@ describe("environment_variable_set", () => {
       expect(
         await failure(
           run(tool("environment_variable_set"), {
+            id: "default",
             name: "TOKEN",
             value: `Bearer ${token}`,
             reason: "r",
@@ -626,6 +646,7 @@ describe("environment_variable_set", () => {
       expect(
         await failure(
           run(tool("environment_variable_set"), {
+            id: "default",
             name: "TOKEN",
             value: "x",
             reason: `it is ${token}`,
@@ -648,13 +669,21 @@ describe("environment_variable_set", () => {
       `Bearer ${secretReference("API_KEY")}`,
     ]) {
       expect(
-        await failure(run(tool("environment_variable_set"), { name: "KEY", value, reason: "r" })),
+        await failure(
+          run(tool("environment_variable_set"), {
+            id: "default",
+            name: "KEY",
+            value,
+            reason: "r",
+          }),
+        ),
       ).toContain("holds a Secret Reference, which these tools do not resolve");
     }
 
     expect(
       await failure(
         run(tool("environment_variable_set"), {
+          id: "default",
           name: "KEY",
           value: "1",
           reason: `Set from ${secretReference("NOT_HELD")}`,
@@ -676,7 +705,7 @@ describe("the variables kept Global", () => {
 
   it("are shown by environment_get after the Environment's own, with the ones its own override named", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
-    const shown = text(await run(tool("environment_get"), {}));
+    const shown = text(await run(tool("environment_get"), { id: "default" }));
 
     expect(shown).toContain(
       'Variables at Global (id "*"; the Environment\'s own of the same name win):',
@@ -890,7 +919,7 @@ describe("the Container settings kept Global", () => {
     });
 
     // The Environment without an Override inherits it; the one with its own keeps its own.
-    expect(text(await run(tool("environment_get"), {}))).toContain(
+    expect(text(await run(tool("environment_get"), { id: "default" }))).toContain(
       "Idle time (inherited from Global): 5 minutes",
     );
     expect(text(await run(tool("environment_get"), { id: "0000abcd" }))).toContain(
@@ -942,9 +971,9 @@ describe("the Container settings kept Global", () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service);
 
-    await run(tool("environment_container_resize"), { size: "cpu-2", reason: "r" });
+    await run(tool("environment_container_resize"), { id: "default", size: "cpu-2", reason: "r" });
 
-    const shown = text(await run(tool("environment_get"), {}));
+    const shown = text(await run(tool("environment_get"), { id: "default" }));
 
     expect(shown).toContain("Container size (overridden here): cpu-2");
     expect(shown).toContain("Idle time (inherited from Global): 2 minutes");
@@ -993,7 +1022,11 @@ describe("environment_variable_unset", () => {
     const logged: RunChange[] = [];
     const tool = await toolsOver(environments.service, { logged });
 
-    const result = await run(tool("environment_variable_unset"), { name: "NODE_ENV", reason: "r" });
+    const result = await run(tool("environment_variable_unset"), {
+      id: "default",
+      name: "NODE_ENV",
+      reason: "r",
+    });
 
     expect(environments.changes[0]?.change).toEqual({ field: "variables.NODE_ENV", value: null });
     expect(text(result)).toContain('it was "test", and is not set now');
@@ -1005,7 +1038,11 @@ describe("environment_variable_unset", () => {
     const logged: RunChange[] = [];
     const tool = await toolsOver(environments.service, { logged });
 
-    const result = await run(tool("environment_variable_unset"), { name: "GHOST", reason: "r" });
+    const result = await run(tool("environment_variable_unset"), {
+      id: "default",
+      name: "GHOST",
+      reason: "r",
+    });
 
     expect(result.isError).not.toBe(true);
     expect(text(result)).toContain("GHOST is not set");
@@ -1020,6 +1057,7 @@ describe("environment_container_resize", () => {
     const tool = await toolsOver(environments.service, { logged });
 
     const result = await run(tool("environment_container_resize"), {
+      id: "default",
       size: "cpu-2",
       reason: "The tests need 6 GiB",
     });
@@ -1059,7 +1097,11 @@ describe("environment_container_resize", () => {
     const tool = await toolsOver(environments.service, { logged });
 
     const message = await failure(
-      run(tool("environment_container_resize"), { size: "standard-3", reason: "r" }),
+      run(tool("environment_container_resize"), {
+        id: "default",
+        size: "standard-3",
+        reason: "r",
+      }),
     );
 
     expect(message).toContain("size limit");
@@ -1073,8 +1115,8 @@ describe("environment_container_resize", () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service);
 
-    await run(tool("environment_container_resize"), { size: "cpu-2", reason: "r" });
-    await run(tool("environment_container_resize"), { size: "basic", reason: "r" });
+    await run(tool("environment_container_resize"), { id: "default", size: "cpu-2", reason: "r" });
+    await run(tool("environment_container_resize"), { id: "default", size: "basic", reason: "r" });
 
     expect(Arr.map(environments.changes, ({ change }) => change.value)).toEqual(["cpu-2", "basic"]);
   });
@@ -1084,6 +1126,7 @@ describe("environment_container_resize", () => {
     const tool = await toolsOver(environments.service);
 
     const result = await run(tool("environment_container_resize"), {
+      id: "default",
       size: "cpu-1",
       reason: "r",
     });
@@ -1112,7 +1155,11 @@ describe("environment_idle_time_set", () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service);
 
-    const result = await run(tool("environment_idle_time_set"), { minutes: 10, reason: "r" });
+    const result = await run(tool("environment_idle_time_set"), {
+      id: "default",
+      minutes: 10,
+      reason: "r",
+    });
 
     expect(environments.changes[0]?.change).toEqual({ field: "idleMinutes", value: 10 });
     expect(text(result)).toContain("it was 2 minutes, and is 10 now");
@@ -1129,7 +1176,7 @@ describe("environment_idle_time_set", () => {
       const tool = await toolsOver(environments.service, { logged });
 
       const message = await failure(
-        run(tool("environment_idle_time_set"), { minutes, reason: "r" }),
+        run(tool("environment_idle_time_set"), { id: "default", minutes, reason: "r" }),
       );
 
       expect(message).toMatch(/^Nothing was saved: idleMinutes: /);
@@ -1146,6 +1193,7 @@ describe("environment_spare_workspace_set", () => {
     const tool = await toolsOver(environments.service, { logged });
 
     const result = await run(tool("environment_spare_workspace_set"), {
+      id: "default",
       enabled: false,
       reason: "Rarely used",
     });
@@ -1179,7 +1227,13 @@ describe("environment_spare_workspace_set", () => {
     const tool = await toolsOver(environments.service);
 
     expect(
-      text(await run(tool("environment_spare_workspace_set"), { enabled: true, reason: "r" })),
+      text(
+        await run(tool("environment_spare_workspace_set"), {
+          id: "default",
+          enabled: true,
+          reason: "r",
+        }),
+      ),
     ).toContain("is on already: nothing changed");
     expect(environments.changes).toEqual([]);
   });
@@ -1221,7 +1275,7 @@ describe.each([
     hint: "mise.toml",
   },
 ])("$name", ({ name, field, what, key, value: content, hint }) => {
-  const args = { [key]: content };
+  const args = { id: "default", [key]: content };
 
   it("saves the whole text, with the old and new values for the card, and records it for the Run", async () => {
     const environments = fakeEnvironments();
@@ -1258,7 +1312,7 @@ describe.each([
 
     await run(tool(name), { ...args, reason: "r" });
 
-    const result = await run(tool(name), { [key]: "", reason: "r" });
+    const result = await run(tool(name), { id: "default", [key]: "", reason: "r" });
 
     expect(text(result)).toContain(`Removed the ${what}`);
     expect(environments.changes[1]?.change.value).toBe("");
@@ -1281,7 +1335,9 @@ describe.each([
     const logged: RunChange[] = [];
     const tool = await toolsOver(environments.service, { logged });
 
-    const message = await failure(run(tool(name), { [key]: "x".repeat(65 * 1024), reason: "r" }));
+    const message = await failure(
+      run(tool(name), { id: "default", [key]: "x".repeat(65 * 1024), reason: "r" }),
+    );
 
     expect(message).toMatch(new RegExp(`^Nothing was saved: ${field}: .*longer than`));
     expect(environments.changes).toEqual([]);
@@ -1293,9 +1349,9 @@ describe.each([
     const tool = await toolsOver(environments.service, { held: { API_KEY: "sk-live-0123456789" } });
 
     for (const leaked of ["sk-live-0123456789", btoa("sk-live-0123456789"), GITHUB_TOKEN]) {
-      expect(await failure(run(tool(name), { [key]: `echo ${leaked}\n`, reason: "r" }))).toContain(
-        "holds the value of a Secret",
-      );
+      expect(
+        await failure(run(tool(name), { id: "default", [key]: `echo ${leaked}\n`, reason: "r" })),
+      ).toContain("holds the value of a Secret");
     }
 
     expect(environments.changes).toEqual([]);
@@ -1315,7 +1371,11 @@ describe("environment_setup_script_set and environment_start_script_set", () => 
   it("say no new Build was asked for when the Environment has nothing to build, and point to container_restart for its own", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
 
-    const own = await run(tool("environment_start_script_set"), { script: SCRIPT, reason: "r" });
+    const own = await run(tool("environment_start_script_set"), {
+      id: "default",
+      script: SCRIPT,
+      reason: "r",
+    });
 
     const other = await run(tool("environment_setup_script_set"), {
       id: "0000abcd",
@@ -1336,6 +1396,7 @@ describe("environment_ignore_set", () => {
     const tool = await toolsOver(environments.service, { logged });
 
     const result = await run(tool("environment_ignore_set"), {
+      id: "default",
       patterns: ["/data", "**/.gradle-cache"],
       reason: "Large generated data",
     });
@@ -1359,7 +1420,7 @@ describe("environment_ignore_set", () => {
     const tool = await toolsOver(environments.service);
 
     expect(
-      text(await run(tool("environment_ignore_set"), { patterns: [], reason: "r" })),
+      text(await run(tool("environment_ignore_set"), { id: "default", patterns: [], reason: "r" })),
     ).toContain("are that list already");
     expect(environments.changes).toEqual([]);
   });
@@ -1369,11 +1430,14 @@ describe("environment_ignore_set", () => {
     const tool = await toolsOver(environments.service);
 
     expect(
-      await failure(run(tool("environment_ignore_set"), { patterns: ["data"], reason: "r" })),
+      await failure(
+        run(tool("environment_ignore_set"), { id: "default", patterns: ["data"], reason: "r" }),
+      ),
     ).toMatch(/^Nothing was saved: ignore\.0: "data" must start with/);
     expect(
       await failure(
         run(tool("environment_ignore_set"), {
+          id: "default",
           patterns: Arr.makeBy(51, (index) => `/dir${index}`),
           reason: "r",
         }),
@@ -1388,7 +1452,11 @@ describe("environment_ignore_set", () => {
 
     expect(
       await failure(
-        run(tool("environment_ignore_set"), { patterns: ["/sk-live-0123456789"], reason: "r" }),
+        run(tool("environment_ignore_set"), {
+          id: "default",
+          patterns: ["/sk-live-0123456789"],
+          reason: "r",
+        }),
       ),
     ).toContain("holds the value of a Secret");
     expect(environments.changes).toEqual([]);

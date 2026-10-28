@@ -28,6 +28,7 @@ import { approvedAlready } from "./approvals.ts";
 import {
   type ChangeAuthor,
   type ChangedEnvironment,
+  type EnvironmentTarget,
   EnvironmentsError,
   type EnvironmentsService,
   type RunChange,
@@ -205,10 +206,7 @@ export type SkillToolDeps = {
   readonly refuseSecrets: (
     texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
   ) => Effect.Effect<void, EnvironmentsError>;
-  /** The Environment `id` names, the Session's own by default. */
-  readonly target: (
-    id: string | undefined,
-  ) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
+  readonly target: EnvironmentTarget;
   readonly notFound: (id: string) => EnvironmentsError;
 };
 
@@ -487,7 +485,7 @@ export const installedOutcome = (
                     (skill) =>
                       `- ${skill.name}${skill.path === "" ? "" : ` (${skill.path})`}: ${skill.description}`,
                   ),
-                  'Ask the user which they want, then call environment_skill_install again with the same source and skills set to their names (["*"] for all of them).',
+                  'Ask the user which they want, then call environment_skill_install again with the same id and source and skills set to their names (["*"] for all of them).',
                 ],
                 "\n",
               ),
@@ -639,7 +637,7 @@ export const removedOutcome = (
               details: { approval: { approved: true } },
             }
           : yield* EnvironmentsError.make({
-              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}" (if an earlier run of this call removed it before the Session restarted, it is done). environment_get lists the Skills it keeps; those kept Global are not the Environment's.`,
+              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}" (if an earlier run of this call removed it before the Session restarted, it is done). environment_get with id ${removed.environment.id} lists the Skills it keeps; those kept Global are not the Environment's.`,
             });
       case "removed": {
         const { change } = removed;

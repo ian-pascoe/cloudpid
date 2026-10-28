@@ -146,6 +146,7 @@ describe("environment_secret_build", () => {
     const { tool, logged, kept, calls } = await setUp();
 
     const result = await run(tool("environment_secret_build"), {
+      id: "default",
       name: "API_KEY",
       build: false,
       reason: "No script needs it any more",
@@ -202,6 +203,7 @@ describe("environment_secret_build", () => {
     const { tool, logged, calls } = await setUp();
 
     const result = await run(tool("environment_secret_build"), {
+      id: "default",
       name: "API_KEY",
       build: true,
       reason: "r",
@@ -216,7 +218,12 @@ describe("environment_secret_build", () => {
     const { tool, logged } = await setUp();
 
     const message = await failure(
-      run(tool("environment_secret_build"), { name: "NPM_TOKEN", build: true, reason: "r" }),
+      run(tool("environment_secret_build"), {
+        id: "default",
+        name: "NPM_TOKEN",
+        build: true,
+        reason: "r",
+      }),
     );
 
     expect(message).toContain("no Secret NPM_TOKEN is kept for Environment");
@@ -246,7 +253,12 @@ describe("environment_secret_build", () => {
     for (const reason of ["because sk-live-abcdefghijkl", `token ${GITHUB_TOKEN}`]) {
       expect(
         await failure(
-          run(tool("environment_secret_build"), { name: "API_KEY", build: false, reason }),
+          run(tool("environment_secret_build"), {
+            id: "default",
+            name: "API_KEY",
+            build: false,
+            reason,
+          }),
         ),
       ).toContain("the reason holds");
     }

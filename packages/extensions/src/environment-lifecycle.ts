@@ -18,8 +18,10 @@ import * as Schema from "effect/Schema";
 import {
   type ChangeAuthor,
   type ChangedEnvironment,
+  type EnvironmentTarget,
   EnvironmentsError,
   type EnvironmentsService,
+  Id,
   MAX_CHANGE_REASON,
   type RunChange,
 } from "./environment.ts";
@@ -153,11 +155,6 @@ export type TestBuildStarted = {
   readonly progress: TestBuildProgress;
 };
 
-const Id = Schema.String.annotate({
-  description:
-    "The Environment's id, as environment_list shows it (default: this Session's Environment)",
-});
-
 const RepoSource = Schema.String.check(Schema.isMinLength(1)).annotate({
   description:
     "The repo to clone: owner/repo (a GitHub repo) or a plain https URL. Never put a credential in it",
@@ -249,10 +246,7 @@ export type LifecycleDeps = {
     texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
     outcome?: string,
   ) => Effect.Effect<void, EnvironmentsError>;
-  /** The Environment `id` names, the Session's own by default, with whether it is the Session's own. */
-  readonly target: (
-    id: string | undefined,
-  ) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
+  readonly target: EnvironmentTarget;
   readonly notFound: (id: string) => EnvironmentsError;
 };
 
@@ -311,7 +305,7 @@ export const lifecycleTools = ({
 
   /** Apply `change` to the Environment `id` names; what it answers for each outcome but a recorded change. */
   const applied = <A extends RecordMade | RecordUnchanged>(
-    id: string | undefined,
+    id: string,
     change: (environment: string) => Effect.Effect<RecordOutcome<A>, EnvironmentsError>,
   ) =>
     Effect.gen(function* () {
@@ -392,9 +386,9 @@ export const lifecycleTools = ({
   const rename = defineEffectTool({
     name: "environment_rename",
     description:
-      "Rename an Environment (this Session's unless id names another): the same name rules as the user's (1 to 80 characters, free among the Environments whatever the case). Its id never changes. The change is recorded with your reason, and the user can see and revert it on the Environments page.",
+      "Rename an Environment (the one id names): the same name rules as the user's (1 to 80 characters, free among the Environments whatever the case). Its id never changes. The change is recorded with your reason, and the user can see and revert it on the Environments page.",
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Id,
       name: Schema.String.annotate({ description: "The new name" }),
       reason: Reason,
     }),
@@ -437,13 +431,13 @@ export const lifecycleTools = ({
     name: "environment_repo_add",
     description: Arr.join(
       [
-        "Add a Repo to an Environment (this Session's unless id names another), for the Workspaces made from then on: the same rules as the user's. It is cloned into /workspace/<name> by a Workspace's first use. The Environment's spare Workspace is made again, and its Build is made with the Repo.",
+        "Add a Repo to an Environment (the one id names), for the Workspaces made from then on: the same rules as the user's. It is cloned into /workspace/<name> by a Workspace's first use. The Environment's spare Workspace is made again, and its Build is made with the Repo.",
         "Only the Environment's record and its spare Workspace change: no Workspace a Session has gets the clone, this Session's included. A new Workspace gets it. The change is recorded with your reason, and the user can see and revert it on the Environments page.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Id,
       url: RepoSource,
       name: Schema.optionalKey(RepoDirectory),
       reason: Reason,
@@ -489,13 +483,13 @@ export const lifecycleTools = ({
     name: "environment_repo_remove",
     description: Arr.join(
       [
-        "Take a Repo out of an Environment (this Session's unless id names another), by its directory name as environment_get shows it: the same rules as the user's. The Environment's spare Workspace is made again, and its Build is made without the Repo.",
+        "Take a Repo out of an Environment (the one id names), by its directory name as environment_get shows it: the same rules as the user's. The Environment's spare Workspace is made again, and its Build is made without the Repo.",
         "Only the Environment's record and its spare Workspace change: no Workspace a Session has loses its clone, this Session's included. A new Workspace does not get one. The change is recorded with your reason, and the user can see and revert it on the Environments page.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Id,
       name: Schema.String.check(Schema.isMinLength(1)).annotate({
         description: "The repo's directory name below /workspace, as environment_get shows it",
       }),
@@ -567,7 +561,7 @@ export const lifecycleTools = ({
   type Proposal = typeof Proposed.Type;
 
   /** Ask for a Build of the saved settings, recorded as an Agent change: once, though the call is run again. */
-  const rebuildSaved = (id: string | undefined, reason: string, api: ToolExecutionApi) =>
+  const rebuildSaved = (id: string, reason: string, api: ToolExecutionApi) =>
     Effect.gen(function* () {
       yield* refuseSecrets([{ what: "the reason", text: reason }]);
 
@@ -577,7 +571,7 @@ export const lifecycleTools = ({
           output: [
             {
               type: "text" as const,
-              text: "This call was cut off after it began asking for the Build, so it asks for nothing again (that would record the request twice). environment_get shows whether the Build is under way; call environment_rebuild again if it is not.",
+              text: `This call was cut off after it began asking for the Build, so it asks for nothing again (that would record the request twice). environment_get with id ${id} shows whether the Build is under way; call environment_rebuild again with the same id if it is not.`,
             },
           ],
           details: { rerun: true },
@@ -595,7 +589,7 @@ export const lifecycleTools = ({
 
       if (answer.status === "unchanged") {
         return unchangedResult(
-          `A Build of ${named(answer.environment)} for its current Repos and settings is already under way: nothing was asked for, and nothing was recorded. environment_get shows how it goes.`,
+          `A Build of ${named(answer.environment)} for its current Repos and settings is already under way: nothing was asked for, and nothing was recorded. environment_get with id ${answer.environment.id} shows how it goes.`,
           answer.environment,
         );
       }
@@ -606,7 +600,7 @@ export const lifecycleTools = ({
         "environment_rebuild",
         environment,
         change,
-        `Asked for a new Build of ${named(environment)}: the Build is under way. environment_get shows its state and, when it fails, the end of its reason.`,
+        `Asked for a new Build of ${named(environment)}: the Build is under way. environment_get with id ${environment.id} shows its state and, when it fails, the end of its reason.`,
       );
     });
 
@@ -644,12 +638,7 @@ export const lifecycleTools = ({
    * memo keeps that it was asked for, so a rerun after an eviction waits for the same one without asking again; a call
    * that is stopped (Stop) cancels it.
    */
-  const testBuild = (
-    id: string | undefined,
-    reason: string,
-    proposed: Proposal,
-    api: ToolExecutionApi,
-  ) =>
+  const testBuild = (id: string, reason: string, proposed: Proposal, api: ToolExecutionApi) =>
     Effect.gen(function* () {
       const fields = Arr.filter(
         Record.keys(SAVING_TOOLS),
@@ -776,7 +765,7 @@ export const lifecycleTools = ({
           });
         case "gone":
           return yield* EnvironmentsError.make({
-            message: `The Test Build of ${where} is no longer known: it ended and another Test Build took its place, or the Environment was deleted. Nothing was saved; call environment_rebuild with the proposal again to try it.`,
+            message: `The Test Build of ${where} is no longer known: it ended and another Test Build took its place, or the Environment was deleted. Nothing was saved; call environment_rebuild with the same id and the proposal again to try it.`,
           });
       }
     });
@@ -785,14 +774,14 @@ export const lifecycleTools = ({
     name: "environment_rebuild",
     description: Arr.join(
       [
-        "Ask for a new Build of an Environment now (this Session's unless id names another), as the user's Rebuild does: its Repos cloned and its Toolchains and Setup Script run on a fresh Container, then snapshotted, for the Workspaces made from then on to start from. A Build already under way for the same Repos and settings is left to finish. An Environment with no Repos, no Setup Script and no Toolchains has nothing to build.",
+        "Ask for a new Build of an Environment now (the one id names), as the user's Rebuild does: its Repos cloned and its Toolchains and Setup Script run on a fresh Container, then snapshotted, for the Workspaces made from then on to start from. A Build already under way for the same Repos and settings is left to finish. An Environment with no Repos, no Setup Script and no Toolchains has nothing to build.",
         "Without proposed it answers at once, with the Build under way: environment_get shows how it goes and, when it fails, the end of its reason. The request is recorded with your reason. It cannot be reverted.",
         "With proposed it makes a Test Build instead, to check a change before saving it: a Build of the Environment's saved Repos and settings with the proposed fields replaced (repos, the full list; variables, the full map; setup_script; toolchains; ignore), made as a Build is, on a Container of its own. The same rules and Secret refusal as the saving tools apply. Nothing is saved or recorded, no Workspace starts from it, and a Build under way goes on beside it. The call waits until it ends, which can take many minutes, then answers the time it took, or the failing step with the end of its output. If it succeeded, save the fields with the setting tools. One Test Build runs per Environment at a time; Stop cancels it.",
       ],
       "\n\n",
     ),
     parameters: Schema.Struct({
-      id: Schema.optionalKey(Id),
+      id: Id,
       reason: Reason,
       proposed: Schema.optionalKey(Proposed),
     }),

@@ -524,6 +524,24 @@ describe("the tools that wait for Approval", () => {
     });
   });
 
+  it("refuse a call without id, asking nothing and never assuming this Session's Environment", async () => {
+    const { call, asked } = await setUp();
+
+    for (const [name, args] of [
+      ["environment_container_size_limit_set", { size: "cpu-2" }],
+      ["environment_delete", {}],
+      ["environment_secret_delete", { name: "NPM_TOKEN" }],
+    ] as const) {
+      const { result, text, pending } = await call(name, { ...args, reason: "Needed" });
+
+      expect(result.isError, name).toBe(true);
+      expect(text, name).toMatch(/\bid\b/);
+      expect(pending, name).toEqual([]);
+    }
+
+    expect(asked).toEqual([]);
+  });
+
   it("refuse a reason that holds a Secret's value, asking nothing", async () => {
     const { call, asked } = await setUp();
 
@@ -1156,7 +1174,11 @@ describe("environment_container_size_limit_set", () => {
   it("asks to make an inherited limit the Environment's own, even at the size it inherits", async () => {
     const { call, asked } = await setUp();
 
-    await call("environment_container_size_limit_set", { size: "cpu-2", reason: "Pin it" });
+    await call("environment_container_size_limit_set", {
+      id: "default",
+      size: "cpu-2",
+      reason: "Pin it",
+    });
 
     expect(asked[0]).toMatchObject({ change: "Size limit", expected: "cpu-2" });
   });
@@ -1167,6 +1189,7 @@ describe("environment_container_size_limit_set", () => {
     });
 
     const { text } = await call("environment_container_size_limit_set", {
+      id: "default",
       size: "cpu-3",
       reason: "Same",
     });
@@ -1183,6 +1206,7 @@ describe("environment_container_size_limit_set", () => {
     });
 
     const { result, text } = await call("environment_container_size_limit_set", {
+      id: "default",
       size: "cpu-2",
       reason: "Cheaper",
     });
@@ -1196,6 +1220,7 @@ describe("environment_container_size_limit_set", () => {
     const { call, calls, asked, logged } = await setUp();
 
     const { result, text } = await call("environment_container_size_limit_set", {
+      id: "default",
       size: "cpu-3",
       reason: "The build needs 9 GiB",
     });
@@ -1347,6 +1372,7 @@ describe("environment_secret_delete", () => {
     const { call, calls, asked, logged } = await setUp();
 
     const { result } = await call("environment_secret_delete", {
+      id: "default",
       name: "API_KEY",
       reason: "The key was rotated",
     });
@@ -1384,7 +1410,7 @@ describe("environment_secret_delete", () => {
 
     const { result, text } = await call(
       "environment_secret_delete",
-      { name: "API_KEY", reason: "The key was rotated" },
+      { id: "default", name: "API_KEY", reason: "The key was rotated" },
       {
         approve: true,
         meanwhile: () => {

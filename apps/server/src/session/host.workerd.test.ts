@@ -232,8 +232,8 @@ describe("a Session host", () => {
 
     await runInDurableObject(stub, async (instance: TestSession) => {
       instance.script([
-        'call:environment_variable_set:{"name":"API_URL","value":"https://api.test","reason":"The tests read it"}',
-        'call:environment_variable_set:{"name":"MODE","value":"ci","reason":"The build reads it"}',
+        'call:environment_variable_set:{"id":"default","name":"API_URL","value":"https://api.test","reason":"The tests read it"}',
+        'call:environment_variable_set:{"id":"default","name":"MODE","value":"ci","reason":"The build reads it"}',
         "Set both.",
       ]);
       await instance.prompt({ requestId: "turn-1", text: "Set them" });
