@@ -159,7 +159,7 @@ One working copy of an Environment that Sessions bind to: its own clones of the 
 _Avoid_: Machine, worktree, checkout, sandbox, environment (for the working copy)
 
 **Spare Workspace**:
-The one Workspace each Environment keeps made ahead from its last good Build (cloned, set up, its Container snapshotted and stopped) and bound to no Session, so the next new Session takes it instead of waiting for a Workspace to be made. Another is made once it is taken, or once the Environment's Repos or its last good Build change.
+The one Workspace each Environment keeps made ahead from its last good Build (cloned, set up, its Container snapshotted and stopped) and bound to no Session, so the next new Session takes it instead of waiting for a Workspace to be made. Another is made once a new Session takes it, or once the Environment's Repos or its last good Build change, but only while the Environment had a Session in the last few days; one a Subagent Workspace takes is not made again then.
 _Avoid_: Pool, warm Workspace, standby
 
 **Build**:

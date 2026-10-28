@@ -11,7 +11,13 @@ import {
   readEveryEnvironment,
   writeEveryEnvironment,
 } from "./every-environment.ts";
-import { MIGRATIONS, migrate, openRegistryStore, type StoredWorkspaceChoice } from "./store.ts";
+import {
+  MIGRATIONS,
+  migrate,
+  openRegistryStore,
+  SPARE_REFILL_WINDOW_MS,
+  type StoredWorkspaceChoice,
+} from "./store.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 
 declare global {
@@ -53,6 +59,19 @@ const environmentWith = async (
     await registry.addRepo(id, { name: repo, url: `https://github.com/o/${repo}.git` });
   }
 };
+
+/** Create Session `id` at `at` in a new Workspace `workspace` of `environment`: the Environment's use then. */
+const sessionIn = (
+  registry: DurableObjectStub<TestRegistry>,
+  id: string,
+  workspace: string,
+  environment: string,
+  at: number,
+) =>
+  registry.createSession(
+    { id, title: null, workspace: newWorkspace(workspace, `cloudpid/${workspace}`, environment) },
+    at,
+  );
 
 describe("the Registry store", () => {
   it("lists a created Session as idle with its title, Environment, Workspace and timestamps", async () => {
@@ -899,10 +918,21 @@ describe("the Registry store", () => {
   });
 
   describe("spare Workspaces", () => {
+    /** A good Build of snapshot `id`. */
+    const build = (id: string) => ({
+      key: "k1",
+      snapshot: { id, size: 1 },
+      image: "img-1",
+      ignore: null,
+      commits: {},
+      finishedAt: 5_000,
+    });
+
     it("makes one spare per Environment on the placeholder branch, with its Repos, and lists it nowhere", async () => {
       const registry = fresh();
 
       await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await sessionIn(registry, "s-0", "0f0f0f0f", "0000abcd", 1_000);
 
       expect(await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000)).toEqual({
         stale: [],
@@ -923,7 +953,9 @@ describe("the Registry store", () => {
         made: [],
       });
       expect(await registry.getSpare("0000abcd")).toBe("5a5a5a5a");
-      expect(await registry.listWorkspaces()).toEqual([]);
+      expect(Arr.map(await registry.listWorkspaces(), (workspace) => workspace.id)).toEqual([
+        "0f0f0f0f",
+      ]);
       expect(await registry.getWorkspace("5a5a5a5a")).toBeNull();
       // No Session can name it.
       expect(
@@ -942,6 +974,7 @@ describe("the Registry store", () => {
         { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d") },
         1_000,
       );
+      await sessionIn(registry, "s-2", "0f0f0f0f", "0000abcd", 1_000);
 
       const work = await registry.upkeepSpares(
         undefined,
@@ -965,6 +998,7 @@ describe("the Registry store", () => {
       const registry = fresh();
 
       await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await sessionIn(registry, "s-0", "0f0f0f0f", "0000abcd", 1_000);
       await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
 
       const created = await registry.createSession(
@@ -983,17 +1017,15 @@ describe("the Registry store", () => {
       );
 
       expect(created).toMatchObject({ workspace: "5a5a5a5a", environment: "0000abcd" });
-      expect(await registry.listWorkspaces()).toEqual([
-        {
-          id: "5a5a5a5a",
-          environment: "0000abcd",
-          branch: "cloudpid/5a5a5a5a",
-          base: "dev",
-          repos: ["app"],
-          directory: "/workspace/app",
-          createdAt: 2_000,
-        },
-      ]);
+      expect(await registry.getWorkspace("5a5a5a5a")).toEqual({
+        id: "5a5a5a5a",
+        environment: "0000abcd",
+        branch: "cloudpid/5a5a5a5a",
+        base: "dev",
+        repos: ["app"],
+        directory: "/workspace/app",
+        createdAt: 2_000,
+      });
       expect(await registry.getSpare("0000abcd")).toBeNull();
 
       // The next spare is taken on the branch the owner names.
@@ -1147,6 +1179,7 @@ describe("the Registry store", () => {
       const registry = fresh();
 
       await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await sessionIn(registry, "s-0", "0f0f0f0f", "0000abcd", 1_000);
       await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
       await registry.addRepo("0000abcd", { name: "api", url: "https://github.com/o/api.git" });
 
@@ -1177,6 +1210,7 @@ describe("the Registry store", () => {
       const registry = fresh();
 
       await environmentWith(registry, "0000abcd", "Cloudpid", ["app", "api"]);
+      await sessionIn(registry, "s-0", "0f0f0f0f", "0000abcd", 1_000);
       await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
       await registry.removeRepo("0000abcd", "app");
       await registry.addRepo("0000abcd", { name: "app", url: "https://github.com/o/app.git" });
@@ -1192,16 +1226,8 @@ describe("the Registry store", () => {
     it("makes a spare from the Environment's last good Build, and reports it stale once there is another", async () => {
       const registry = fresh();
 
-      const build = (id: string) => ({
-        key: "k1",
-        snapshot: { id, size: 1 },
-        image: "img-1",
-        ignore: null,
-        commits: {},
-        finishedAt: 5_000,
-      });
-
       await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await sessionIn(registry, "s-0", "0f0f0f0f", "0000abcd", 1_000);
       await registry.putBuild("0000abcd", { build: build("snap-1"), status: null });
 
       const work = await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
@@ -1256,6 +1282,9 @@ describe("the Registry store", () => {
           "INSERT INTO workspaces (id, environment, branch, base, repos, created_at, spare) VALUES ('5a5a5a5a', '0000abcd', ?, NULL, '[]', 5, 1)",
           SPARE_BRANCH,
         );
+        sql.exec(
+          "INSERT INTO sessions (id, environment, workspace, status, created_at, updated_at) VALUES ('s-1', '0000abcd', '1a2b3c4d', 'idle', 5, 5)",
+        );
 
         const store = openRegistryStore(storage);
 
@@ -1287,11 +1316,162 @@ describe("the Registry store", () => {
       const registry = fresh();
 
       await registry.createEnvironment("0000abcd", "Cloudpid", 1_000);
+      await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 1_000);
       await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+      // Its Session and that Session's Workspace are gone: only the spare is left.
+      await registry.deleteSession("s-1");
+      await registry.deleteWorkspace("1a2b3c4d");
 
       expect(await registry.deleteEnvironment("0000abcd")).toBe("in-use");
       await registry.forgetSpare("5a5a5a5a");
       expect(await registry.deleteEnvironment("0000abcd")).toBe("deleted");
+    });
+
+    describe("refilled only for an Environment that had a Session within the window", () => {
+      it("makes none for an Environment that never had a Session, nor once its last Session is past the window", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+        expect(await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000)).toEqual({
+          stale: [],
+          made: [],
+        });
+
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 2_000);
+        // Past the window: the Environment is not used now.
+        expect(
+          await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 2_001 + SPARE_REFILL_WINDOW_MS),
+        ).toEqual({ stale: [], made: [] });
+        // At the window's end it still is.
+        expect(
+          await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 2_000 + SPARE_REFILL_WINDOW_MS),
+        ).toMatchObject({ stale: [], made: [{ id: "5a5a5a5a", environment: "0000abcd" }] });
+      });
+
+      it("counts a Session's last run as its use", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Cloudpid");
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 1_000);
+        await registry.setSessionStatus("s-1", "running", 9_000);
+
+        const now = 9_000 + SPARE_REFILL_WINDOW_MS;
+
+        expect(await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], now)).toMatchObject({
+          made: [{ id: "5a5a5a5a" }],
+        });
+      });
+
+      it("keeps every Environment's spare when none is named, making one only where a Session was recent", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Recent");
+        await environmentWith(registry, "0000dcba", "Stale");
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000dcba", 1_000);
+        await sessionIn(registry, "s-2", "2b3c4d5e", "0000abcd", 1_000 + SPARE_REFILL_WINDOW_MS);
+
+        const work = await registry.upkeepSpares(
+          undefined,
+          ["00000001", "00000002"],
+          2_000 + SPARE_REFILL_WINDOW_MS,
+        );
+
+        expect(Arr.map(work.made, (made) => [made.environment, made.id])).toEqual([
+          ["0000abcd", "00000001"],
+        ]);
+      });
+
+      it("refills a spare taken by a new Session, and none behind one taken once the Environment is not used", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 1_000);
+        await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+
+        // A new Session takes it: its Environment is used now, so the next is made.
+        expect(await sessionIn(registry, "s-2", "2b3c4d5e", "0000abcd", 2_000)).toMatchObject({
+          workspace: "5a5a5a5a",
+        });
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 2_000)).toMatchObject({
+          made: [{ id: "6b6b6b6b" }],
+        });
+
+        // A Subagent Workspace takes it past the window: no Session was used since, so none is made.
+        const later = 3_000 + SPARE_REFILL_WINDOW_MS;
+
+        expect(
+          await registry.createSubagentWorkspace(
+            {
+              id: "3c4d5e6f",
+              session: "s-2",
+              agent: "agent-1",
+              branch: null,
+              base: null,
+              limit: 3,
+            },
+            later,
+          ),
+        ).toMatchObject({ id: "6b6b6b6b" });
+        expect(await registry.upkeepSpares(["0000abcd"], ["7c7c7c7c"], later)).toEqual({
+          stale: [],
+          made: [],
+        });
+      });
+
+      it("remakes a spare after a new Build in a recent Environment, and keeps a stale Environment's", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 1_000);
+        await registry.putBuild("0000abcd", { build: build("snap-1"), status: null });
+        await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+        await registry.putBuild("0000abcd", { build: build("snap-2"), status: null });
+
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 2_000)).toEqual({
+          stale: ["5a5a5a5a"],
+          made: [],
+        });
+
+        // Past the window it is kept as it is: a Session still takes it.
+        const later = 2_000 + SPARE_REFILL_WINDOW_MS;
+
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], later)).toEqual({
+          stale: [],
+          made: [],
+        });
+        expect(await registry.getSpare("0000abcd")).toBe("5a5a5a5a");
+        expect(await sessionIn(registry, "s-2", "2b3c4d5e", "0000abcd", later)).toMatchObject({
+          workspace: "5a5a5a5a",
+        });
+      });
+
+      it("removes a spare whose Repos changed in a stale Environment, without making another", async () => {
+        const registry = fresh();
+
+        await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+        await sessionIn(registry, "s-1", "1a2b3c4d", "0000abcd", 1_000);
+        await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+        await registry.addRepo("0000abcd", { name: "api", url: "https://github.com/o/api.git" });
+
+        const later = 2_000 + SPARE_REFILL_WINDOW_MS;
+
+        // No Session could take it: it is removed, and none is made in its place.
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], later)).toEqual({
+          stale: ["5a5a5a5a"],
+          made: [],
+        });
+        expect(await registry.forgetSpare("5a5a5a5a")).toBe(true);
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], later)).toEqual({
+          stale: [],
+          made: [],
+        });
+
+        // In a recent Environment it is made again.
+        await sessionIn(registry, "s-2", "2b3c4d5e", "0000abcd", later);
+        expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], later)).toMatchObject({
+          made: [{ id: "6b6b6b6b" }],
+        });
+      });
     });
   });
 

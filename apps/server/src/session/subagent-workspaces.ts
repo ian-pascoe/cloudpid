@@ -1,9 +1,9 @@
 // The Session's Subagent Workspaces (GLOSSARY.md → Subagent Workspace; `docs/architecture/agent-capabilities.md` → Subagents): the subagents
 // extension's `SubagentWorkspaces`, over the Registry and the Workspace DOs. A Subagent Workspace is registered by the
 // Registry as the Session's (`createSubagentWorkspace`, which takes the Environment's spare as a new Session's Workspace
-// does, and counts it against the Subagent Workspace limit), readied by the Session when its subagent first works in it
-// (`sessionWorkspace`), read for what it has not pushed (by its Workspace DO, or its Container), and removed as a
-// Workspace is.
+// does, with no new spare made behind it, and counts it against the Subagent Workspace limit), readied by the Session
+// when its subagent first works in it (`sessionWorkspace`), read for what it has not pushed (by its Workspace DO, or
+// its Container), and removed as a Workspace is.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off
 import type {
   AgentWorkspace,
@@ -15,7 +15,6 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
-import type { Spares } from "../registry/rpc.ts";
 import type { SubagentWorkspaceRefusal, WorkspaceRecord } from "../registry/store.ts";
 import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
@@ -39,8 +38,7 @@ export type SessionSubagentWorkspacesOptions = {
   readonly remove: (
     workspace: WorkspaceRecord,
   ) => Effect.Effect<void, { readonly message: string }>;
-  /** The upkeep that makes the next spare behind a spare taken, and keeps the Build current. */
-  readonly spares: Pick<Spares, "of">;
+  /** The upkeep that keeps the Build current. */
   readonly builds: Pick<Builds, "of">;
   /** Runs the Registry's calls: the Session's runtime. */
   readonly run: <A>(effect: Effect.Effect<A>) => Promise<A>;
@@ -168,13 +166,9 @@ export const sessionSubagentWorkspaces = (
 
       if ("refused" in created) throw new Error(refusalMessage(created, limit, branch ?? null));
 
-      // A spare taken leaves its Environment without one: the next is made ahead, as after a new Session.
-      await run(
-        Effect.all([
-          options.spares.of(created.environment),
-          options.builds.of(created.environment),
-        ]),
-      );
+      // No spare is made behind a Subagent Workspace that took one: a later upkeep makes it, if the Environment had a
+      // Session lately then (docs/architecture/workspace.md → Spare Workspace).
+      await run(options.builds.of(created.environment));
 
       const states = await readState(workspaceObjectName(spawner.id), start, spawner.repos);
 

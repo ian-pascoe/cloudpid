@@ -75,7 +75,6 @@ const setUp = (
       Effect.sync(() => {
         calls.push(`remove:${workspace.id}`);
       }),
-    spares: { of: (environment) => Effect.sync(() => void calls.push(`spares:${environment}`)) },
     builds: { of: (environment) => Effect.sync(() => void calls.push(`builds:${environment}`)) },
     run: Effect.runPromise,
   });
@@ -92,7 +91,7 @@ const request = {
 } as const;
 
 describe("a Session's Subagent Workspaces", () => {
-  it("registers one from the spawner's branch, makes the next spare behind it, and reads the spawner's work on that branch", async () => {
+  it("registers one from the spawner's branch, keeps the Build current but makes no spare behind it, and reads the spawner's work on that branch", async () => {
     const { host, calls, asked } = setUp();
 
     const made = await host.create(request);
@@ -109,11 +108,8 @@ describe("a Session's Subagent Workspaces", () => {
       },
       warnings: [],
     });
-    expect(calls).toEqual([
-      "spares:default",
-      "builds:default",
-      "workState:ws:0a0a0a0a:feature/parent:app",
-    ]);
+    // A spare it took is not made again: a Subagent Workspace is no new Session (docs/architecture/workspace.md).
+    expect(calls).toEqual(["builds:default", "workState:ws:0a0a0a0a:feature/parent:app"]);
   });
 
   it("warns of the spawner's work that does not reach the child: unpushed commits on base, uncommitted changes, a base not on origin", async () => {
