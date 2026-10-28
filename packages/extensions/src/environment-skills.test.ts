@@ -1394,7 +1394,7 @@ const installedEverywhere = (names: ReadonlyArray<string>) => ({
 });
 
 describe("environment_skill_install for every Environment", () => {
-  it("asks the owner on a card showing each Skill, and installs exactly that commit only on Approve", async () => {
+  it("asks the owner on a card showing each Skill, and installs with the commit and Skills it showed only on Approve", async () => {
     const { call, answerPreview, answerInstall, installs, previews, logged, notified } =
       await setUp();
 
@@ -1434,7 +1434,7 @@ describe("environment_skill_install for every Environment", () => {
       {
         environment: "*",
         source: "mattpocock/skills",
-        skills: ["grill-me"],
+        skills: undefined,
         reason: "Every project should grill the plan",
         approved: true,
         pin: {
@@ -1539,7 +1539,12 @@ describe("environment_skill_install for every Environment", () => {
     expect(shown[0]?.after).toContain("grill-me (skills/grill-me)");
     expect(shown[0]?.after).toContain("tdd (skills/tdd)");
     expect(shown[0]?.after).toContain("Red, green.");
-    expect(installs[0]?.skills).toEqual(["grill-me", "tdd"]);
+    // Which Skills are read is the pin's: nothing is chosen again by name.
+    expect(installs[0]?.skills).toBeUndefined();
+    expect(Arr.map(installs[0]?.pin?.skills ?? [], ({ name }) => name)).toEqual([
+      "grill-me",
+      "tdd",
+    ]);
     expect(text).toContain("installed grill-me, tdd for every Environment");
   });
 
@@ -1684,6 +1689,7 @@ describe("environment_skill_install for every Environment", () => {
       commit: "feed0000000000000000000000000000000000f1",
       skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: 5 }],
       unseen: { files: 0, characters: 0 },
+      notKept: [],
     };
 
     // The preview would fail now (GitHub is unreachable): the rerun does not ask it.
@@ -1699,7 +1705,7 @@ describe("environment_skill_install for every Environment", () => {
     expect(installs).toEqual([
       expect.objectContaining({
         approved: true,
-        skills: ["grill-me"],
+        skills: undefined,
         pin: { commit: shownEarlier.commit, skills: shownEarlier.skills },
       }),
     ]);
@@ -1713,6 +1719,10 @@ describe("environment_skill_install for every Environment", () => {
       commit: GRILL_COMMIT,
       skills: [{ name: "grill-me", path: "skills/grill-me", digest: "d1", savedAt: null }],
       unseen: { files: 0, characters: 0 },
+      // What the first call's preview left out: a refusal, which the rerun reports as well.
+      notKept: [
+        { name: "tdd", path: "skills/tdd", outcome: "rejected", message: "SKILL.md: too large" },
+      ],
     });
     answerInstall({
       ...installedEverywhere([]),
@@ -1725,6 +1735,7 @@ describe("environment_skill_install for every Environment", () => {
     });
 
     expect(text).toContain("The user approved, and every Environment keeps grill-me from");
+    expect(text).toContain("Refused: tdd (skills/tdd): SKILL.md: too large");
     expect(result.details).toMatchObject({ approval: { approved: true } });
   });
 

@@ -4,6 +4,7 @@
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { shortSha } from "./comparison.ts";
+import type { AgentChange } from "./registry.ts";
 
 /**
  * What the owner's Approval of a change to a Skill was asked against: when the Skill of the name was last saved (`null`:
@@ -120,12 +121,28 @@ export type PreviewedSkill = {
   } | null;
 };
 
-/** What an install of GitHub Skills would do, with nothing kept or recorded: what the owner is asked to approve. */
-export type SkillInstallPreview =
+/** How the install of one Skill from GitHub went. */
+export type InstalledSkill = {
+  readonly name: string;
+  /** Its folder in the repo. */
+  readonly path: string;
+  readonly outcome: "installed" | "unchanged" | "rejected";
+  /** Why it was refused: each problem a line. */
+  readonly message?: string | undefined;
+  /** The Agent change that kept it (the agent's install only). */
+  readonly change?: AgentChange | undefined;
+  /** Whether it hides the bundle's Skill of the name. */
+  readonly shadows?: boolean | undefined;
+  /** For a Skill kept for every Environment: the Environments whose own Skill of the name hides it. */
+  readonly overriddenIn?: ReadonlyArray<{ readonly id: string; readonly name: string }> | undefined;
+};
+
+/** How an install of Skills from GitHub went, as the Registry answers it. */
+export type SkillInstallation =
   | { readonly status: "missing" }
-  /** The source is not one, GitHub gave no answer, or the repo holds no such Skill. */
+  /** Nothing was installed: the source is not one, GitHub gave no answer, or the repo holds no such Skill. */
   | { readonly status: "refused"; readonly message: string }
-  /** The source holds several Skills and none was named. */
+  /** The source holds several Skills and none was named: the list, and nothing installed. */
   | {
       readonly status: "listed";
       readonly environment: { readonly id: string; readonly name: string };
@@ -134,6 +151,19 @@ export type SkillInstallPreview =
       readonly commit: string;
       readonly available: ReadonlyArray<ListedSkill>;
     }
+  | {
+      readonly status: "installed";
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly repo: string;
+      readonly ref: string | null;
+      readonly commit: string;
+      /** Each Skill the source gave, in the order the Registry answered. */
+      readonly results: ReadonlyArray<InstalledSkill>;
+    };
+
+/** What an install of GitHub Skills would do, with nothing kept or recorded: what the owner is asked to approve. */
+export type SkillInstallPreview =
+  | Exclude<SkillInstallation, { readonly status: "installed" }>
   | {
       readonly status: "previewed";
       readonly environment: { readonly id: string; readonly name: string };
@@ -152,18 +182,23 @@ export type SkillInstallPreview =
 
 /**
  * What the owner's Approval of an install for every Environment was asked against, which the install must still find: the
- * commit shown, and for each Skill shown its folder, the digest of its files, and when the Skill of its name was last saved
- * (null: none kept). The Skills are read again at the commit; one that is not as shown, or that was not shown, is not kept.
+ * commit shown, and for each Skill shown its folder, the digest of its files, and when the Skill of its name was last
+ * saved (null: none kept). Exactly those folders are read again at that commit; a Skill whose files are not as shown is
+ * not kept.
  */
-export type SkillInstallPin = {
-  readonly commit: string;
-  readonly skills: ReadonlyArray<{
-    readonly name: string;
-    readonly path: string;
-    readonly digest: string;
-    readonly savedAt: number | null;
-  }>;
-};
+export const SkillInstallPin = Schema.Struct({
+  commit: Schema.String,
+  skills: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      path: Schema.String,
+      digest: Schema.String,
+      savedAt: Schema.NullOr(Schema.Finite),
+    }),
+  ),
+});
+
+export type SkillInstallPin = typeof SkillInstallPin.Type;
 
 /** How the install of one Skill went. */
 export const SkillInstalled = Schema.Struct({

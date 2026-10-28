@@ -37,12 +37,14 @@ import {
   type SkillRemoval,
   type SkillSave,
   skillSetOf,
+  unapprovedEveryChange,
 } from "./skills.ts";
-import { installSkills, previewSkillInstall, type SkillInstallation } from "./skill-install.ts";
+import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
   SETTINGS_SCOPE,
   type SkillExpectation,
+  type SkillInstallation,
   type SkillInstallPin,
   type SkillInstallPreview,
 } from "@cloudpid/protocol";
@@ -1132,6 +1134,12 @@ export const RegistryLive = Registry.make(
             }),
           agentSaveSkill: ({ environment, folder, files, author, expected }) =>
             Effect.gen(function* () {
+              // A change to the Skills kept for every Environment is made only against what the owner approved.
+              const unapproved = unapprovedEveryChange(environment, expected !== undefined);
+
+              if (unapproved !== undefined)
+                return { status: "rejected" as const, message: unapproved };
+
               const hashed = yield* Effect.promise(() => hashFiles(files));
               const hashedBundle = yield* bundle;
               const now = yield* Clock.currentTimeMillis;
@@ -1153,6 +1161,11 @@ export const RegistryLive = Registry.make(
             }),
           agentRemoveSkill: ({ environment, name, author, expected }) =>
             Effect.gen(function* () {
+              const unapproved = unapprovedEveryChange(environment, expected !== undefined);
+
+              if (unapproved !== undefined)
+                return { status: "rejected" as const, message: unapproved };
+
               const hashedBundle = yield* bundle;
               const now = yield* Clock.currentTimeMillis;
 
@@ -1162,7 +1175,13 @@ export const RegistryLive = Registry.make(
               );
             }),
           agentInstallSkills: ({ environment, source, skills: names, author, pin }) =>
-            installFromGithub({ environment, source, skills: names, author, pin }),
+            Effect.suspend(() => {
+              const unapproved = unapprovedEveryChange(environment, pin !== undefined);
+
+              return unapproved === undefined
+                ? installFromGithub({ environment, source, skills: names, author, pin })
+                : Effect.succeed({ status: "refused" as const, message: unapproved });
+            }),
           agentPreviewSkillInstall: ({ environment, source, skills: names }) =>
             Effect.gen(function* () {
               const hashedBundle = yield* bundle;

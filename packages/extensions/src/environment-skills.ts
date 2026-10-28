@@ -31,13 +31,18 @@ import {
 import {
   INSTALL_APPROVAL,
   installEverywhere,
-  MAX_APPROVED_SKILLS,
   MAX_CARD_CHARS,
   removeEverywhere,
   saveEverywhere,
   SKILL_APPROVAL,
 } from "./environment-skills-every.ts";
-import { MAX_FILE_BYTES, MAX_SKILL_BYTES, MAX_SKILL_FILES, problemsIn } from "./skill-checks.ts";
+import {
+  MAX_APPROVED_SKILLS,
+  MAX_FILE_BYTES,
+  MAX_SKILL_BYTES,
+  MAX_SKILL_FILES,
+  problemsIn,
+} from "./skill-checks.ts";
 
 export type {
   EnvironmentSkills,

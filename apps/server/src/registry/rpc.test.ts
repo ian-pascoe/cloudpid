@@ -24,6 +24,7 @@ import {
   SessionNotFound,
   SETTINGS_SCOPE,
   type SkillChangeFiles,
+  type SkillInstallation,
   skillField,
   workspaceDirectory,
 } from "@cloudpid/protocol";
@@ -54,7 +55,6 @@ import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
 import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
 import type { RegistryMethods } from "./Registry.ts";
-import type { SkillInstallation } from "./skill-install.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";

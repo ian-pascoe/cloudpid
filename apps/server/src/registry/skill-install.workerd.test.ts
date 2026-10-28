@@ -611,7 +611,7 @@ describe("installing Skills from GitHub", () => {
           pin: { ...pinOf(shown, ["tdd"]), commit: LATER },
         });
 
-        // A Skill the card did not show (here, tdd), and one whose files are not the ones shown.
+        // A Skill whose files are not the ones shown. Only the Skills the pin names have a result.
         const third = await install(reader, {
           environment: "*",
           source: "o/skills",
@@ -648,20 +648,101 @@ describe("installing Skills from GitHub", () => {
         {
           name: "grill-me",
           outcome: "rejected",
-          message: expect.stringContaining("not the Skill the user was shown"),
-        },
-        {
-          name: "tdd",
-          outcome: "rejected",
-          message: expect.stringContaining("not the Skill the user was shown"),
+          message: expect.stringContaining("its files are not the ones the user was shown"),
         },
       ],
     });
+    expect(notShown).toMatchObject({ results: [expect.anything()] });
     expect(listed.find((skill) => skill.name === "grill-me")?.source).toEqual({
       ...GRILL_SOURCE,
       commit: LATER,
     });
     expect(listed.find((skill) => skill.name === "tdd")?.description).toBe("What tdd does.");
+  });
+
+  it("reads exactly the folders the owner was shown, never choosing again by name: a folder named foo that holds bar is not the Skill foo", async () => {
+    const swapped = {
+      "x/foo/SKILL.md": skillMd("bar"),
+      "bar/SKILL.md": skillMd("foo"),
+      "skills/secret/SKILL.md": `---\nname: secret\ndescription: Internal.\nmetadata:\n  internal: true\n---\nHidden.\n`,
+    };
+
+    const [done, listed, missing] = await inRegistry(async ({ install, preview, skills }) => {
+      const shown = await preview(readerOf(swapped), {
+        environment: "*",
+        source: "o/skills",
+        skills: ["*"],
+      });
+
+      // The owner approved the Skill foo, which is in the folder bar. Selecting by the name foo finds the folder x/foo.
+      const pin = pinOf(shown, ["foo"]);
+
+      const first = await install(readerOf(swapped), {
+        environment: "*",
+        source: "o/skills@foo",
+        skills: ["foo"],
+        pin,
+      });
+
+      // A pinned folder that holds no Skill at the commit is reported, not dropped.
+      const second = await install(readerOf(swapped), {
+        environment: "*",
+        source: "o/skills",
+        pin: {
+          commit: COMMIT,
+          skills: [...pin.skills, { name: "gone", path: "gone", digest: "x", savedAt: null }],
+        },
+      });
+
+      return [first, skills.list("*"), second];
+    });
+
+    expect(done).toMatchObject({
+      results: [{ name: "foo", path: "bar", outcome: "installed" }],
+    });
+    expect(listed.map((skill) => skill.name)).toEqual(["foo"]);
+    expect(listed[0]?.source).toMatchObject({ path: "bar" });
+    expect(missing).toMatchObject({
+      results: [
+        { name: "foo", path: "bar", outcome: "unchanged" },
+        {
+          name: "gone",
+          path: "gone",
+          outcome: "rejected",
+          message: expect.stringContaining("no SKILL.md is in the folder gone"),
+        },
+      ],
+    });
+  });
+
+  it("refuses a preview of more Skills than one Approval shows, before reading their files", async () => {
+    const many = Object.fromEntries(
+      Array.from({ length: 11 }, (_, at) => [`skills/s${at}/SKILL.md`, skillMd(`s${at}`)]),
+    );
+
+    const reads: string[] = [];
+    const reader = readerOf(many);
+
+    const counted: RepoReader = {
+      ...reader,
+      blob: async (repo, sha) => {
+        reads.push(sha);
+
+        return reader.blob(repo, sha);
+      },
+    };
+
+    const [refused, own] = await inRegistry(async ({ preview, install }) => [
+      await preview(counted, { environment: "*", source: "o/skills", skills: ["*"] }),
+      // An Environment's own install has no such bound.
+      await install(counted, { source: "o/skills", skills: ["*"] }),
+    ]);
+
+    expect(refused).toMatchObject({
+      status: "refused",
+      message: expect.stringContaining("more than the 10 one request may take"),
+    });
+    expect(own).toMatchObject({ status: "installed" });
   });
 
   it("is the owner's install for every Environment: kept with its source, no Agent change, the checks across every Environment's set", async () => {

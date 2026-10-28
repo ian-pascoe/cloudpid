@@ -8,8 +8,8 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   type AgentChange,
-  type ListedSkill,
   type SkillExpectation,
+  type SkillInstallation,
   type SkillInstallPin,
   type SkillInstallPreview,
   shortSha,
@@ -67,46 +67,14 @@ export type SkillSaved =
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
 
-/** How an install of Skills from GitHub went. */
+/**
+ * How an install of Skills from GitHub went: as the Registry answers (`SkillInstallation`), and for one that kept Skills,
+ * whether this Session's own Workspace serves them now (it took the new Skill set: it is the Environment's, or the Skills
+ * are kept for every Environment and its Environment does not hide all of them).
+ */
 export type SkillsInstalled =
-  | {
-      readonly status: "installed";
-      readonly environment: ChangedEnvironment;
-      readonly repo: string;
-      readonly ref: string | null;
-      readonly commit: string;
-      /** Each Skill the source gave, in the order the Registry answered. */
-      readonly results: ReadonlyArray<{
-        readonly name: string;
-        /** Its folder in the repo. */
-        readonly path: string;
-        readonly outcome: "installed" | "unchanged" | "rejected";
-        /** Why it was refused: each problem a line. */
-        readonly message?: string | undefined;
-        readonly change?: AgentChange | undefined;
-        /** Whether it hides the bundle's Skill of the name. */
-        readonly shadows?: boolean | undefined;
-        /** For a Skill kept for every Environment: the Environments whose own Skill of the name hides it. */
-        readonly overriddenIn?: ReadonlyArray<ChangedEnvironment> | undefined;
-      }>;
-      /**
-       * Whether this Session's own Workspace serves them now: it took the new Skill set (it is the Environment's, or the
-       * Skills are kept for every Environment and its Environment does not hide all of them).
-       */
-      readonly handed: boolean;
-    }
-  /** The source holds several Skills and none was named: nothing was installed. */
-  | {
-      readonly status: "listed";
-      readonly environment: ChangedEnvironment;
-      readonly repo: string;
-      readonly ref: string | null;
-      readonly commit: string;
-      readonly available: ReadonlyArray<ListedSkill>;
-    }
-  /** Nothing was installed: the source is not one, GitHub gave no answer, or the repo holds no such Skill. */
-  | { readonly status: "refused"; readonly message: string }
-  | { readonly status: "missing" };
+  | Exclude<SkillInstallation, { readonly status: "installed" }>
+  | (Extract<SkillInstallation, { readonly status: "installed" }> & { readonly handed: boolean });
 
 /** How the removal of a Skill went. */
 export type SkillRemoved =

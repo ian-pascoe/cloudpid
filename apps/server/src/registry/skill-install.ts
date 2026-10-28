@@ -1,14 +1,15 @@
-// Installing Skills from GitHub into an Environment (ADR-0026, `docs/spec.md` → _Installing from GitHub_): fetch the
-// source's Skills at one commit (`../github/skill-fetch.ts`), then keep each as a save keeps a Skill, with its Skill
+// Installing Skills from GitHub into an Environment, or for every Environment (ADR-0026, `docs/spec.md` →
+// _Installing from GitHub_): fetch the source's Skills at one commit (`../github/skill-fetch.ts`), then keep each as a save keeps a Skill, with its Skill
 // source (repo, the Skill's path, the ref named, the commit). The agent's install records each Skill it keeps as an Agent
 // change; the owner's, from the Environments page, as the owner's save, records none. The fetch is the only part that
 // asks GitHub, and runs before any transaction: each Skill is kept in a transaction of its own, so one the checks refuse
-// leaves the others installed.
+// leaves the others installed. An install the owner approved (`pin`) reads exactly the folders they were shown.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
+import { MAX_APPROVED_SKILLS } from "@cloudpid/extensions/skill-checks";
 import type {
-  AgentChange,
-  ListedSkill,
+  InstalledSkill,
   PreviewedSkill,
+  SkillInstallation,
   SkillInstallPin,
   SkillInstallPreview,
   SkillSource,
@@ -25,46 +26,7 @@ import {
   previewSkillSave,
   saveSkillAs,
   type SkillChangeContext,
-  type SkillScope,
 } from "./skills.ts";
-
-/** How the install of one Skill went. */
-export type InstalledSkill = {
-  readonly name: string;
-  /** Its folder in the repo. */
-  readonly path: string;
-  readonly outcome: "installed" | "unchanged" | "rejected";
-  /** Why it was refused. */
-  readonly message?: string;
-  /** The Agent change that kept it (the agent's install only). */
-  readonly change?: AgentChange;
-  /** Whether it hides the bundle's Skill of the name. */
-  readonly shadows?: boolean;
-  /** For a Skill kept for every Environment: the Environments whose own Skill of the name hides it. */
-  readonly overriddenIn?: ReadonlyArray<SkillScope>;
-};
-
-export type SkillInstallation =
-  | { readonly status: "missing" }
-  /** Nothing was installed: the source is not one, GitHub gave no answer, or the repo holds no such Skill. */
-  | { readonly status: "refused"; readonly message: string }
-  /** The source holds several Skills and none was named: the list, and nothing installed. */
-  | {
-      readonly status: "listed";
-      readonly environment: SkillScope;
-      readonly repo: string;
-      readonly ref: string | null;
-      readonly commit: string;
-      readonly available: ReadonlyArray<ListedSkill>;
-    }
-  | {
-      readonly status: "installed";
-      readonly environment: SkillScope;
-      readonly repo: string;
-      readonly ref: string | null;
-      readonly commit: string;
-      readonly results: ReadonlyArray<InstalledSkill>;
-    };
 
 /** A digest of a Skill's files by their content hashes: what an Approval pins of a Skill. */
 const digestOf = (files: HashedFiles): Promise<string> =>
@@ -77,23 +39,31 @@ const SAVED_AGAIN =
   "the Skill of the name was saved again since the user was asked: nothing was installed. Ask again";
 
 const NOT_SHOWN =
-  "it is not the Skill the user was shown (the repo's Skill of that name differs from the one on the card): nothing was installed. Ask again";
+  "its files are not the ones the user was shown (the folder changed since the card): nothing was installed. Ask again";
+
+const NOT_FOUND =
+  "the folder the user was shown holds no Skill at that commit: nothing was installed. Ask again";
 
 /** What an install or its preview is asked for. */
-type Asked = {
+type InstallRequest = {
   readonly environment: string;
   readonly source: string;
   readonly skills?: ReadonlyArray<string> | undefined;
 };
 
 /**
- * Read the Skills `input` asks for through `reader`, at `commit` when one is given, or answer why there are none to
- * keep: no such Environment, a source that is no source, GitHub's refusal, or a list to choose from.
+ * Read the Skills `input` asks for through `reader`, or answer why there are none to keep: no such Environment, a source
+ * that is no source, GitHub's refusal, or a list to choose from. With `pin`, exactly the folders it names are read, at its
+ * commit, and whatever `skills` says is not used to choose; with `limit`, more Skills than that are refused before any
+ * Skill's files are read.
  */
-const fetchFor = async (
+const readSkills = async (
   context: Pick<SkillChangeContext, "store">,
   reader: RepoReader,
-  input: Asked & { readonly commit?: string | undefined },
+  input: InstallRequest & {
+    readonly pin?: SkillInstallPin | undefined;
+    readonly limit?: number | undefined;
+  },
 ) => {
   const scope = scopeOf(input.environment, context.store);
 
@@ -103,10 +73,14 @@ const fetchFor = async (
 
   if (!parsed.ok) return { status: "refused", message: parsed.message } as const;
 
+  const { pin } = input;
+
   const fetched = await fetchSkills(reader, {
     source: parsed.source,
     skills: input.skills,
-    commit: input.commit,
+    commit: pin?.commit,
+    folders: pin?.skills.map(({ path }) => path),
+    limit: input.limit,
   });
 
   if (fetched.status === "failed") return { status: "refused", message: fetched.message } as const;
@@ -133,44 +107,40 @@ const fetchFor = async (
  * one commit. By `author` as Agent changes, or with no author as the owner's install, which records none. The caller
  * hands the Session's own Workspace the new Skill set after.
  *
- * `pin` is what an Approval was asked against: the Skills are read at its `commit`, and a Skill is kept only when it is
- * one the pin names, from the same folder with the same files, and only while the Skill of its name was last saved when the
- * pin says (null: none kept). Anything else the read gives is reported, and kept nowhere.
+ * `pin` is what an Approval was asked against: exactly the folders it names are read, at its commit, and each Skill is
+ * kept only if its name and its files' digest are the ones shown, and only while the Skill of its name was last saved when
+ * the pin says (null: none kept). There is one result for each Skill the pin names, in its order, and none for anything
+ * else the repo holds.
  */
 export const installSkills = async (
   context: SkillChangeContext,
   reader: RepoReader,
-  input: Asked & {
+  input: InstallRequest & {
     readonly author: AgentChangeAuthor | null;
     readonly pin?: SkillInstallPin | undefined;
   },
 ): Promise<SkillInstallation> => {
   const { environment, author, pin } = input;
-  const got = await fetchFor(context, reader, { ...input, commit: pin?.commit });
+  const read = await readSkills(context, reader, input);
 
-  if (got.status !== "fetched") return got;
+  if (read.status !== "fetched") return read;
 
-  const { scope, repo, ref, commit, fetched } = got;
+  const { scope, repo, ref, commit, fetched } = read;
   // Hashing is not synchronous, so every Skill's files are hashed before any is kept.
   const hashed = await Promise.all(fetched.skills.map(async (skill) => hashFiles(skill.files)));
   const digests = await Promise.all(hashed.map(async ({ files }) => digestOf(files)));
-  const results: InstalledSkill[] = [];
 
-  fetched.skills.forEach((skill, at) => {
+  /** The result of keeping fetched Skill `at`, if it may be kept. `savedAt`: what an Approval was asked against. */
+  const keep = (at: number, expected: { readonly savedAt: number | null } | undefined) => {
+    // SAFETY: `fetched.skills`, `hashed` and `digests` have one entry each, in order, and `at` indexes them.
+    const skill = fetched.skills[at] as (typeof fetched.skills)[number];
     const source: SkillSource = { repo, path: skill.path, ref, commit };
-    const shown = pin?.skills.find(({ name }) => name === skill.name);
-
-    if (pin !== undefined && (shown?.path !== skill.path || shown.digest !== digests[at])) {
-      results.push({ name: skill.name, path: skill.path, outcome: "rejected", message: NOT_SHOWN });
-
-      return;
-    }
 
     const toKeep = {
       environment,
       folder: skill.name,
       files: skill.files,
-      // SAFETY: `hashed` holds one entry for each of `fetched.skills`, in order, and `at` indexes the latter.
+      // SAFETY: as above.
       hashed: hashed[at] as (typeof hashed)[number],
       source,
     };
@@ -178,65 +148,72 @@ export const installSkills = async (
     const kept =
       author === null
         ? keepSkillAsOwner(context, toKeep)
-        : saveSkillAs(context, {
-            ...toKeep,
-            author,
-            expected: shown === undefined ? undefined : { savedAt: shown.savedAt },
-          });
+        : saveSkillAs(context, { ...toKeep, author, expected });
+
+    const named = { name: skill.name, path: skill.path };
 
     switch (kept.status) {
-      case "saved":
-        {
-          const saved = {
-            name: skill.name,
-            path: skill.path,
-            outcome: "installed" as const,
-            shadows: kept.bundled,
-            overriddenIn: kept.overriddenIn,
-          };
+      case "saved": {
+        const saved = {
+          ...named,
+          outcome: "installed" as const,
+          shadows: kept.bundled,
+          overriddenIn: kept.overriddenIn,
+        };
 
-          results.push(kept.change === undefined ? saved : { ...saved, change: kept.change });
-        }
+        return kept.change === undefined ? saved : { ...saved, change: kept.change };
+      }
 
-        break;
       case "unchanged":
-        results.push({ name: skill.name, path: skill.path, outcome: "unchanged" });
-        break;
+        return { ...named, outcome: "unchanged" as const };
       case "rejected":
-        results.push({
-          name: skill.name,
-          path: skill.path,
-          outcome: "rejected",
-          message: kept.message,
-        });
-        break;
+        return { ...named, outcome: "rejected" as const, message: kept.message };
       case "changed-since":
-        results.push({
-          name: skill.name,
-          path: skill.path,
-          outcome: "rejected",
-          message: SAVED_AGAIN,
-        });
-        break;
+        return { ...named, outcome: "rejected" as const, message: SAVED_AGAIN };
       // The Environment was removed while the Skills were fetched.
       case "missing":
-        results.push({
-          name: skill.name,
-          path: skill.path,
-          outcome: "rejected",
+        return {
+          ...named,
+          outcome: "rejected" as const,
           message: "the Environment no longer exists",
-        });
-        break;
+        };
     }
-  });
+  };
 
-  for (const skipped of fetched.skipped) {
-    results.push({
-      name: skipped.name,
-      path: skipped.path,
-      outcome: "rejected",
-      message: skipped.message,
+  const results: InstalledSkill[] = [];
+
+  if (pin === undefined) {
+    fetched.skills.forEach((_skill, at) => {
+      results.push(keep(at, undefined));
     });
+
+    for (const skipped of fetched.skipped) {
+      results.push({
+        name: skipped.name,
+        path: skipped.path,
+        outcome: "rejected",
+        message: skipped.message,
+      });
+    }
+  } else {
+    // One result for each Skill the owner was shown, whatever the repo holds now.
+    for (const shown of pin.skills) {
+      const at = fetched.skills.findIndex((skill) => skill.path === shown.path);
+      const skipped = fetched.skipped.find((skip) => skip.path === shown.path);
+      const named = { name: shown.name, path: shown.path };
+
+      if (at < 0) {
+        results.push({
+          ...named,
+          outcome: "rejected",
+          message: skipped === undefined ? NOT_FOUND : skipped.message,
+        });
+      } else if (fetched.skills[at]?.name !== shown.name || digests[at] !== shown.digest) {
+        results.push({ ...named, outcome: "rejected", message: NOT_SHOWN });
+      } else {
+        results.push(keep(at, { savedAt: shown.savedAt }));
+      }
+    }
   }
 
   return { status: "installed", environment: scope, repo, ref, commit, results };
@@ -244,18 +221,19 @@ export const installSkills = async (
 
 /**
  * What `installSkills` would do with the same source and Skills, checked as it checks them, with nothing kept or
- * recorded: the Approval card of an install for every Environment shows it before the owner is asked.
+ * recorded: the Approval card of an install for every Environment shows it before the owner is asked. More than
+ * `MAX_APPROVED_SKILLS` Skills are refused before any Skill's files are read.
  */
 export const previewSkillInstall = async (
   context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
   reader: RepoReader,
-  input: Asked,
+  input: InstallRequest,
 ): Promise<SkillInstallPreview> => {
-  const got = await fetchFor(context, reader, input);
+  const read = await readSkills(context, reader, { ...input, limit: MAX_APPROVED_SKILLS });
 
-  if (got.status !== "fetched") return got;
+  if (read.status !== "fetched") return read;
 
-  const { scope, repo, ref, commit, fetched } = got;
+  const { scope, repo, ref, commit, fetched } = read;
   const hashed = await Promise.all(fetched.skills.map(async (skill) => hashFiles(skill.files)));
   const digests = await Promise.all(hashed.map(async ({ files }) => digestOf(files)));
   const skills: PreviewedSkill[] = [];
