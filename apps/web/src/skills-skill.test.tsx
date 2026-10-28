@@ -298,19 +298,19 @@ describe("a Skill's page", () => {
         ]);
         expect(text(markup)).toContain("feature/x");
         expect(links(markup).map(({ href }) => href)).toContain(
-          "/skills/mattpocock/skills?ref=feature%2Fx",
+          "/settings/all/skills/mattpocock/skills?ref=feature%2Fx",
         );
       }),
   );
 
-  it.effect("links its breadcrumb to the Skills page, its owner and its repo", () =>
+  it.effect("links its breadcrumb to the Skills section, its owner and its repo", () =>
     Effect.gen(function* () {
       const markup = yield* render(() => Effect.succeed(found(view())));
       const hrefs = links(markup).map(({ href }) => href);
 
-      expect(hrefs).toContain("/skills");
-      expect(hrefs).toContain("/skills/mattpocock");
-      expect(hrefs).toContain("/skills/mattpocock/skills");
+      expect(hrefs).toContain("/settings/all/skills");
+      expect(hrefs).toContain("/settings/all/skills/mattpocock");
+      expect(hrefs).toContain("/settings/all/skills/mattpocock/skills");
     }),
   );
 });
@@ -388,7 +388,7 @@ describe("a Skill's page that has no Skill to show", () => {
       expect(markup).toContain('role="alert"');
       expect(text(markup)).toContain("mattpocock/skills has no skill “nope”");
       expect(links(markup)).toContainEqual({
-        href: "/skills/mattpocock/skills",
+        href: "/settings/all/skills/mattpocock/skills",
         text: "See the skills in mattpocock/skills",
       });
       expect(markup).not.toContain("Install</button>");
@@ -416,7 +416,7 @@ describe("a Skill's page that has no Skill to show", () => {
         );
         expect(text(markup)).toContain("The repo has more than 200 skills.");
         expect(links(markup)).toContainEqual({
-          href: "/skills/mattpocock/skills?ref=v1",
+          href: "/settings/all/skills/mattpocock/skills?ref=v1",
           text: "Pick it from the skills in mattpocock/skills",
         });
         expect(markup).not.toContain("Install</button>");
@@ -445,7 +445,7 @@ describe("a Skill's page that has no Skill to show", () => {
 
       expect(text(markup)).toContain("has no branch, tag or commit “nope”");
       expect(links(markup)).toContainEqual({
-        href: "/skills/mattpocock/skills/tdd?path=skills%2Ftdd",
+        href: "/settings/all/skills/mattpocock/skills/tdd?path=skills%2Ftdd",
         text: "Show the Skill on its default branch",
       });
     }),
@@ -485,8 +485,8 @@ describe("a Skill's page that has no Skill to show", () => {
       expect(text(markup)).toContain("2 skills in mattpocock/skills are called “twin”");
       expect(links(markup).map(({ href }) => href)).toEqual(
         expect.arrayContaining([
-          "/skills/mattpocock/skills/twin?ref=v1&path=a%2Ftwin",
-          "/skills/mattpocock/skills/twin?ref=v1&path=",
+          "/settings/all/skills/mattpocock/skills/twin?ref=v1&path=a%2Ftwin",
+          "/settings/all/skills/mattpocock/skills/twin?ref=v1&path=",
         ]),
       );
       expect(markup).not.toContain("Install</button>");

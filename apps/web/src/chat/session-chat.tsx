@@ -66,7 +66,7 @@ type SessionPageProps = {
   problem?: string | null | undefined;
   /** What the composer's Session-wide Slash commands do. */
   commandActions?: SessionCommandActions | undefined;
-  /** Under the title: the Session this one is a Fork or Clone of. */
+  /** Under the title: the Session's Environment, linking to its settings, and the Session this one is a Fork or Clone of. */
   origin?: ReactNode;
 };
 

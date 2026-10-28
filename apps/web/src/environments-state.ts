@@ -1,16 +1,20 @@
-// The Environment list, what the owner does to an Environment in it (create, edit, delete, add and remove Repos, make
-// its Build again, keep Secrets for it) and to its Workspaces (start a Session, remove, restart the Container), the
-// variables and Secrets kept Global, and the state of the Environments page's forms and dialogs.
+// @effect-diagnostics missingPipeableSignature:off -- read and write helpers over an Environment's id, not combinators.
+
+// The Environment list (docs/architecture/workspace.md → Environments from the UI), what the owner does to an
+// Environment in it (create, rename, delete, add and remove Repos, make its Build again, keep Secrets for it) and to its
+// Workspaces (start a Session, remove, restart the Container), reading and saving an Environment's Container settings
+// and the variables kept Global, and the state of the Settings page's forms and dialogs for them. The sections' drafts
+// are `settings/forms.ts`'s, over the read and write helpers here, which save a patch of what a section changed.
 
 import {
   containerPatchBetween,
   DEFAULT_CONTAINER_SETTINGS,
-  type InstanceType,
   type ContainerSettings,
 } from "@cloudpid/config";
 import type {
   BuildView,
   ContainerSettingsState,
+  EnvironmentRecord,
   WorkspaceRecord,
   WorkspaceWork,
 } from "@cloudpid/protocol";
@@ -22,11 +26,11 @@ import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
 import {
   EMPTY_SECRET_DRAFT,
+  inPickerOrder,
   type SecretDraft,
   secretScopeOf,
   secretsIn,
   secretWrite,
-  variablesText,
 } from "./environments.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
@@ -43,6 +47,11 @@ export const environmentsAtom = RegistryClient.query("listEnvironments", undefin
 /** The Environments, newest first, as of the last answer; null until the first. */
 export const environmentListAtom = Atom.map(environmentsAtom, (result) =>
   result.pipe(AsyncResult.value, Option.getOrNull),
+);
+
+/** The Environments in the order the pickers and lists show them (`inPickerOrder`); null until the first answer. */
+export const environmentsInOrderAtom = Atom.map(environmentListAtom, (environments) =>
+  environments === null ? null : inPickerOrder(environments),
 );
 
 /** Why the list could not load, or null. */
@@ -85,7 +94,8 @@ export const rebuildEnvironmentAtom = Atom.family((id: string) =>
 );
 
 /** What is typed in the new-Environment form. The page has one. */
-export const newEnvironmentNameAtom = Atom.make("");
+// Kept while the app is open, as a section's draft is, so leaving the section keeps what was typed.
+export const newEnvironmentNameAtom = Atom.make("").pipe(Atom.keepAlive);
 
 /** Make an Environment by name. The form empties once it is made. */
 export const createEnvironmentAtom = appRuntime.fn(
@@ -102,76 +112,42 @@ export const createEnvironmentAtom = appRuntime.fn(
 );
 
 /**
- * Which of the dialogs of Environment `id`'s card is open, if any: removing a Workspace or restarting its Container
- * names the Workspace's id.
+ * Which of the dialogs of Environment `id` is open, if any: deleting it, and removing one of its Workspaces or
+ * restarting that Workspace's Container, by the Workspace's id.
  */
 export type EnvironmentDialog =
-  | "edit"
   | "delete"
   | { readonly removeWorkspace: string }
   | { readonly restart: string };
 
-/** The dialog of Environment `id`'s card that is open: null when none is. */
+/** The dialog of Environment `id` that is open: null when none is. */
 export const environmentDialogAtom = Atom.family((_id: string) =>
   Atom.make<EnvironmentDialog | null>(null),
 );
 
-/**
- * What changes in Environment `id` when its Edit dialog is saved: a new name, new Container settings, or both. The
- * settings come with the ones the dialog was opened with (`loadedSettingsOf`), so only what the owner changed is sent.
- */
-export interface EnvironmentEdit {
-  readonly name: string | undefined;
-  readonly settings:
-    | { readonly loaded: ContainerSettings; readonly edited: ContainerSettings }
-    | undefined;
-}
+/** The name of Environment `id` in `environments`; `""` for one not listed. */
+const nameIn = (environments: readonly EnvironmentRecord[], id: string): string =>
+  Arr.findFirst(environments, (known) => known.id === id).pipe(
+    Option.map((known) => known.name),
+    Option.getOrElse(() => ""),
+  );
 
-/**
- * The settings the Edit dialog shows: every field as in force, but the variables are the Environment's own, not the ones
- * it gets from Global, so saving them never copies a Global variable into the Environment.
- */
-export const loadedSettingsOf = (state: ContainerSettingsState): ContainerSettings => ({
-  ...state.settings,
-  variables: state.overrides.variables ?? {},
-});
-
-/**
- * Save an edit of Environment `id`: rename it, then save what changed in its Container settings (the fields set, the
- * removed variables reset so they inherit Global again), and load both again. The first the Registry refuses ends it with its own message. It answers with the new settings state when
- * settings were saved. Once saved, the Edit dialog closes. Each Environment has its own, so one's save does not show on
- * another's dialog.
- */
-export const saveEnvironmentAtom = Atom.family((id: string) =>
-  appRuntime.fn(
-    (edit: EnvironmentEdit, get) =>
-      Effect.gen(function* () {
-        const { name, settings } = edit;
-
-        if (name !== undefined)
-          yield* RegistryClient.use((registry) =>
-            registry("renameEnvironment", { environment: id, name }),
-          );
-
-        if (settings === undefined) return undefined;
-
-        return yield* RegistryClient.use((registry) =>
-          registry("updateEnvironmentSettings", {
-            environment: id,
-            ...containerPatchBetween(settings.loaded, settings.edited),
-          }),
-        );
-      }).pipe(
-        changing(["environments", `environment-settings:${id}`]),
-        Effect.tap(() =>
-          Effect.sync(() => {
-            get.set(environmentDialogAtom(id), null);
-          }),
-        ),
-      ),
-    { concurrent: true },
+/** Environment `id`'s name, as the last listing has it; `""` for an Environment not listed. */
+export const environmentNameResultAtom = Atom.family((id: string) =>
+  Atom.map(environmentsAtom, (result) =>
+    AsyncResult.map(result, (environments) => nameIn(environments, id)),
   ),
 );
+
+/** Environment `id`'s name, read from the Registry now; `""` for one it does not list. */
+export const readEnvironmentName = (id: string) =>
+  RegistryClient.use((registry) => registry("listEnvironments", undefined)).pipe(
+    Effect.map((environments) => nameIn(environments, id)),
+  );
+
+/** Rename Environment `id` to `name`; the Registry refuses a name another Environment has, saying so. */
+export const writeEnvironmentName = (id: string, name: string) =>
+  RegistryClient.use((registry) => registry("renameEnvironment", { environment: id, name }));
 
 /** What is typed in the Delete dialog of Environment `id`: its name, to confirm. */
 export const deleteTypedAtom = Atom.family((_id: string) => Atom.make(""));
@@ -205,10 +181,10 @@ export const deleteEnvironmentAtom = Atom.family((id: string) =>
 );
 
 /** What is typed in the add-Repo form of Environment `id`: `owner/repo` or an https URL. */
-export const addRepoSourceAtom = Atom.family((_id: string) => Atom.make(""));
+export const addRepoSourceAtom = Atom.family((_id: string) => Atom.make("").pipe(Atom.keepAlive));
 
 /** What is typed in the add-Repo form of Environment `id` as the directory to clone into; empty for the repo's own name. */
-export const addRepoNameAtom = Atom.family((_id: string) => Atom.make(""));
+export const addRepoNameAtom = Atom.family((_id: string) => Atom.make("").pipe(Atom.keepAlive));
 
 /** What the add-Repo form sends: the repo, and the directory as typed (empty for the repo's own name). */
 export interface RepoAdd {
@@ -262,7 +238,7 @@ export const removeRepoAtom = Atom.family((id: string) =>
 
 /**
  * Start a Session in a Workspace of Environment `id`, by the Workspace's id, and open it (`createSession`). Each
- * Environment has its own, so a refusal shows, with the Registry's message, on the card it was asked on.
+ * Environment has its own, so a refusal shows, with the Registry's message, under that Environment's Workspaces.
  */
 export const startSessionAtom = Atom.family((id: string) =>
   appRuntime.fn((workspace: string, get) => createSession({ environment: id, workspace }, get), {
@@ -421,6 +397,8 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
         changing([
           `agent-changes:${id}`,
           `environment-settings:${id}`,
+          // An Environment's Settings Overrides (ADR-0027) are among its Agent changes too.
+          "settings",
           `environment-skills:${id}`,
           "global",
           "environment-secrets",
@@ -447,87 +425,46 @@ export const dismissAgentChangeAtom = Atom.family((id: string) =>
 );
 
 /**
- * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables,
- * scripts and Toolchains as typed, and whether the Environment keeps a Spare Workspace.
+ * The settings an Environment's sections show and edit: every field as in force, but the variables are the
+ * Environment's own, not the ones it gets from Global, so saving them never copies a Global variable into the
+ * Environment.
  */
-export interface EnvironmentDraft {
-  readonly name: string;
-  /** Undefined until the Environment's settings have answered and nothing was picked. */
-  readonly instance: InstanceType | undefined;
-  /** The size limit; undefined until the Environment's settings have answered and nothing was picked. */
-  readonly maxInstance: InstanceType | undefined;
-  /** Undefined until the Environment's settings have answered and nothing was typed. */
-  readonly idle: string | undefined;
-  /** The extra Container-only paths, one per line; undefined until the settings have answered and nothing was typed. */
-  readonly ignore: string | undefined;
-  /** The variables, a `NAME=value` line each; undefined until the settings have answered and nothing was typed. */
-  readonly variables: string | undefined;
-  /** The Environment's Setup Script; undefined until the settings have answered and nothing was typed. */
-  readonly setupScript: string | undefined;
-  /** The Environment's Start Script; undefined until the settings have answered and nothing was typed. */
-  readonly startScript: string | undefined;
-  /** The Environment's Toolchains (a mise.toml); undefined until the settings have answered and nothing was typed. */
-  readonly toolchains: string | undefined;
-  /** Whether it keeps a Spare Workspace; undefined until the settings have answered and nothing was picked. */
-  readonly spareWorkspace: boolean | undefined;
-}
+export const loadedSettingsOf = (state: ContainerSettingsState): ContainerSettings => ({
+  ...state.settings,
+  variables: state.overrides.variables ?? {},
+});
 
-/** `draft`, with the settings it has not got yet taken from `saved`, the settings in force once they answer. */
-const filledFrom = (
-  draft: EnvironmentDraft,
-  state: ContainerSettingsState | null,
-): EnvironmentDraft => {
-  if (state === null) return draft;
-  const saved = loadedSettingsOf(state);
-
-  return {
-    ...draft,
-    instance: draft.instance ?? saved.instance,
-    maxInstance: draft.maxInstance ?? saved.maxInstance,
-    idle: draft.idle ?? String(saved.idleMinutes),
-    ignore: draft.ignore ?? Arr.join(saved.ignore, "\n"),
-    variables: draft.variables ?? variablesText(saved.variables),
-    setupScript: draft.setupScript ?? saved.setupScript,
-    startScript: draft.startScript ?? saved.startScript,
-    toolchains: draft.toolchains ?? saved.toolchains,
-    spareWorkspace: draft.spareWorkspace ?? saved.spareWorkspace,
-  };
-};
-
-/**
- * The Edit dialog's form of Environment `id`: its name and the Container settings in force, to change. The settings may
- * answer after the dialog opened: what they bring fills in only what has not been picked or typed.
- */
-export const environmentDraftAtom = Atom.family((id: string) =>
-  Atom.writable(
-    (get): EnvironmentDraft => {
-      const saved = get(environmentSettingsAtom(id)).pipe(AsyncResult.value, Option.getOrNull);
-
-      return filledFrom(
-        Option.getOrElse(get.self<EnvironmentDraft>(), () => ({
-          name: get(environmentNamesAtom)[id] ?? "",
-          instance: undefined,
-          maxInstance: undefined,
-          idle: undefined,
-          ignore: undefined,
-          variables: undefined,
-          setupScript: undefined,
-          startScript: undefined,
-          toolchains: undefined,
-          spareWorkspace: undefined,
-        })),
-        saved,
-      );
-    },
-    (ctx, draft: EnvironmentDraft) => {
-      ctx.setSelf(draft);
-    },
-  ),
+/** Environment `id`'s Container settings as its sections edit them (`loadedSettingsOf`), as the last answer has them. */
+export const containerSettingsAtom = Atom.family((id: string) =>
+  Atom.map(environmentSettingsAtom(id), (result) => AsyncResult.map(result, loadedSettingsOf)),
 );
 
+/** Environment `id`'s Container settings as its sections edit them (`loadedSettingsOf`), read from the Registry now. */
+export const readContainerSettings = (id: string) =>
+  RegistryClient.use((registry) => registry("getEnvironmentSettings", { environment: id })).pipe(
+    Effect.map(loadedSettingsOf),
+  );
+
 /**
- * The settings kept Global in force (the variables), which every Workspace applies
- * at its next Container start. Asked again every few seconds while the page is visible: a Session's agent changes them,
+ * Make Environment `id`'s Container settings `before` into `after` (both as `loadedSettingsOf` gives them): each field
+ * that differs is set as its Override, each variable taken out reset so it inherits Global's again, and any other field
+ * keeps whether it is inherited or overridden. The Registry refuses them with its own message.
+ */
+export const writeContainerSettings = (
+  id: string,
+  before: ContainerSettings,
+  after: ContainerSettings,
+) =>
+  RegistryClient.use((registry) =>
+    registry("updateEnvironmentSettings", {
+      environment: id,
+      ...containerPatchBetween(before, after),
+    }),
+  );
+
+/**
+ * The Container settings at Global in force (of which the page edits the variables), which every Workspace of an
+ * Environment that inherits them applies at its next Container start. Asked again every few seconds while the page is visible: a Session's agent changes them,
  * which the page hears of no other way.
  */
 export const globalSettingsAtom = RegistryClient.query("getGlobalContainerSettings", undefined, {
@@ -548,41 +485,33 @@ export const globalVariablesAtom = Atom.map(
     ),
 );
 
-/**
- * What is typed in the form of the variables kept Global, a `NAME=value` line each; undefined until
- * something is, when the form shows the variables in force. It is kept apart from them, so what is typed survives the
- * page asking again.
- */
-export const globalVariablesDraftAtom = Atom.make<string | undefined>(undefined);
+/** The variables kept Global in force, as the last answer has them. */
+export const globalVariablesResultAtom = Atom.map(globalSettingsAtom, (result) =>
+  AsyncResult.map(result, (state) => state.settings.variables),
+);
+
+/** The variables kept Global in force, read from the Registry now. */
+export const readGlobalVariables = RegistryClient.use((registry) =>
+  registry("getGlobalContainerSettings", undefined),
+).pipe(Effect.map((state) => state.settings.variables));
 
 /**
- * Save the variables kept Global: those added or changed are set and those removed are reset, against the ones last
- * loaded, so a variable another save or an agent changed meanwhile is left alone. Each Environment's Build is made with
- * them, so the Builds ask again too. Once they are saved the form fills in from them again.
+ * Make the variables kept Global `before` into `after`: those added or changed are set and those taken out reset, so a
+ * variable neither names is left as it is. The Registry refuses them with its own message.
  */
-export const saveGlobalVariablesAtom = appRuntime.fn(
-  (variables: Readonly<Record<string, string>>, get) =>
-    RegistryClient.use((registry) => {
-      const loaded = get(globalVariablesAtom);
-
-      return registry(
-        "updateGlobalContainerSettings",
-        containerPatchBetween(
-          { ...DEFAULT_CONTAINER_SETTINGS, variables: loaded },
-          { ...DEFAULT_CONTAINER_SETTINGS, variables },
-        ),
-      );
-    }).pipe(
-      Effect.asVoid,
-      changing(["global", "builds"]),
-      Effect.tap(() =>
-        Effect.sync(() => {
-          get.set(globalVariablesDraftAtom, undefined);
-        }),
+export const writeGlobalVariables = (
+  before: Readonly<Record<string, string>>,
+  after: Readonly<Record<string, string>>,
+) =>
+  RegistryClient.use((registry) =>
+    registry(
+      "updateGlobalContainerSettings",
+      containerPatchBetween(
+        { ...DEFAULT_CONTAINER_SETTINGS, variables: before },
+        { ...DEFAULT_CONTAINER_SETTINGS, variables: after },
       ),
     ),
-  { concurrent: true },
-);
+  );
 
 /**
  * Every kept Secret, of Global and of each Environment: names, scopes and build flags, never a value. A

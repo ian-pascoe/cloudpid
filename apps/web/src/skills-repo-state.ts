@@ -1,5 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over the listing, native arrays.
-// The repo page's state (`/skills/:owner/:repo`; ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the
+// The repo page's state (`/settings/:scope/skills/:owner/:repo`; ADR-0026, docs/architecture/client-and-protocol.md →
+// Settings page): the
 // Skills GitHub has in the repo at a ref, with their installs and where each is installed, and which of them are checked
 // for Install selected. The Skill's page (`skills-skill-state.ts`) asks for the repo through the same key and the same failure; the owner's
 // page (`skills-owner-state.ts`) has no GitHub to ask.
@@ -81,7 +82,7 @@ export const checkedSkillsOf = (
 ): ReadonlyArray<RepoSkill> => listing.skills.filter((skill) => checked.has(skill.path));
 
 /**
- * What Install selected opens the target picker for: the checked Skills of the repo, named by the folder that holds each
+ * What Install selected opens the install confirm for: the checked Skills of the repo, named by the folder that holds each
  * (a name does not say which Skill: two folders can declare one, and a name can be another folder's) with their names as
  * labels, from the repo itself (never the whole repo), at the page's `ref` so the install pins to it; null while none is
  * checked.

@@ -19,18 +19,29 @@
 // as the entry's URL holds them. Moving to another page (`navigate`) drops the query: Panes belong to one Session, whose
 // layout on the device (`session-layout-state.ts`) shows them again when the Session is opened without a query.
 //
-// The Skills page (`/skills`) keeps its view in the query too: `?tab=` (`installed`, `all-time`, `trending`, `hot`),
-// `?q=` (the search) and `?environment=` (an Environment's id, or `*` for the Skills kept Global, that
-// the Installed tab shows alone). The tabs are a query, not a path, because the path's first segment after `/skills`
-// is always an owner: `/skills/:owner`, `/skills/:owner/:repo` and `/skills/:owner/:repo/:skill`, so an owner named
-// `installed` is an owner (docs/architecture/client-and-protocol.md → Skills page).
+// The Settings page (docs/architecture/client-and-protocol.md → Settings page) is `/settings/:scope/:section`, the Scope
+// `all` for Global or an Environment's id; `/settings` and `/settings/:scope` are a Scope's list of sections. Its Skills
+// section keeps its view in the query: `?tab=` (`installed`, `all-time`, `trending`, `hot`) and `?q=` (the search).
+// The tabs are a query, not a path, because the path's first segment after `skills` is always an owner of the Skill
+// directory: `…/skills/:owner`, `…/skills/:owner/:repo` and `…/skills/:owner/:repo/:skill`, so an owner named
+// `installed` is an owner.
+//
+// The old pages' addresses (`/environments`, `/skills…`) are replaced in the history by their Settings page equivalent
+// as the page opens or is navigated to (`legacyRedirect`), so a bookmark or an old link still lands.
 
+import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Atom from "effect/reactivity/Atom";
 
 /** Show `path` as a new history entry; `pathAtom` hears of it like a back or forward. */
 export const navigate = (path: string): void => {
   window.history.pushState(null, "", path);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+};
+
+/** Show `path` in place of the history entry's, as a page that leads elsewhere does; `pathAtom` hears of it. */
+export const redirect = (path: string): void => {
+  window.history.replaceState(null, "", path);
   window.dispatchEvent(new PopStateEvent("popstate"));
 };
 
@@ -54,6 +65,7 @@ const locationAtom = (
       if (!("window" in globalThis)) return empty;
 
       const heard = () => {
+        settleLegacy();
         get.setSelf(read(window.location));
       };
 
@@ -61,6 +73,8 @@ const locationAtom = (
       get.addFinalizer(() => {
         window.removeEventListener("popstate", heard);
       });
+
+      settleLegacy();
 
       return read(window.location);
     },
@@ -141,22 +155,24 @@ export const sessionPath = (sessionId: string): string =>
 export const subagentPath = (sessionId: string, agentId: string): string =>
   `${sessionPath(sessionId)}/agents/${encodeURIComponent(agentId)}`;
 
-/** The settings page. */
+/** The Settings page, at Global's list of sections (a wide screen opens its first section). */
 export const SETTINGS_PATH = "/settings";
 
-/** Whether a page path shows the settings. */
-export const isSettingsPath = (path: string): boolean => /^\/settings\/?$/.test(path);
+/** Global's Scope in a Settings page path, in place of the `*` the Registry names it by. */
+export const GLOBAL_SEGMENT = "all";
 
-/** The Environments page: make Environments, add Repos to them, and manage their Workspaces. */
-export const ENVIRONMENTS_PATH = "/environments";
+/** The path segment of Scope `scope` (`*` for Global, or an Environment's id). */
+const scopeSegment = (scope: string): string =>
+  scope === GLOBAL_SCOPE ? GLOBAL_SEGMENT : encodeURIComponent(scope);
 
-/** Whether a page path shows the Environments. */
-export const isEnvironmentsPath = (path: string): boolean => /^\/environments\/?$/.test(path);
+/**
+ * The Settings page at Scope `scope` (`*` for Global, or an Environment's id): section `section` (its slug), or the
+ * Scope's list of sections when none is named.
+ */
+export const settingsPath = (scope: string, section?: string): string =>
+  `${SETTINGS_PATH}/${scopeSegment(scope)}${section === undefined ? "" : `/${section}`}`;
 
-/** The Skills page: the Skills installed in the Environments, and the Skill directory's lists. */
-export const SKILLS_PATH = "/skills";
-
-/** The Skills page's tabs, as the query names them, in the order the tab bar shows them. */
+/** The Skills section's tabs, as the query names them, in the order the tab bar shows them. */
 export const SKILLS_TABS = ["installed", "all-time", "trending", "hot"] as const;
 
 export type SkillsTab = (typeof SKILLS_TABS)[number];
@@ -164,53 +180,51 @@ export type SkillsTab = (typeof SKILLS_TABS)[number];
 const isSkillsTab = (value: string | null): value is SkillsTab =>
   value !== null && Arr.contains(SKILLS_TABS, value);
 
-/** What the Skills page's query names. */
+/** What the Skills section's query names. */
 export interface SkillsParams {
   /** The tab shown; undefined when the query names none (or one that is not a tab), for the page to choose. */
   readonly tab: SkillsTab | undefined;
   /** The search, as typed; `""` for none. */
   readonly query: string;
-  /** The Environment whose Skills the Installed tab shows alone (`*`: those kept Global); undefined for all. */
-  readonly environment: string | undefined;
 }
 
-/** The Skills page's parameters in `search`. */
+/** The Skills section's parameters in `search`. */
 export const skillsParamsOf = (search: string): SkillsParams => {
   const params = new URLSearchParams(search);
   const tab = params.get("tab");
-  const environment = params.get("environment");
 
-  return {
-    tab: isSkillsTab(tab) ? tab : undefined,
-    query: params.get("q") ?? "",
-    environment: environment === null || environment === "" ? undefined : environment,
-  };
+  return { tab: isSkillsTab(tab) ? tab : undefined, query: params.get("q") ?? "" };
 };
 
-/** The Skills page showing `params`: `/skills?tab=…&q=…&environment=…`, leaving out what is not named. */
-export const skillsPath = (params: Partial<SkillsParams> = {}): string => {
+/** `params` as the Skills section's query (`?tab=…&q=…`), leaving out what is not named; `""` for none. */
+export const skillsSearch = (params: Partial<SkillsParams> = {}): string => {
   const query = new URLSearchParams();
 
   if (params.tab !== undefined) query.set("tab", params.tab);
 
   if (params.query !== undefined && params.query !== "") query.set("q", params.query);
 
-  if (params.environment !== undefined) query.set("environment", params.environment);
-
-  return query.size === 0 ? SKILLS_PATH : `${SKILLS_PATH}?${query.toString()}`;
+  return query.size === 0 ? "" : `?${query.toString()}`;
 };
 
-/** The page of a Skill directory's owner (a GitHub user or organization): its repos that hold Skills. */
-export const skillOwnerPath = (owner: string): string =>
-  `${SKILLS_PATH}/${encodeURIComponent(owner)}`;
+/** The Skills section of Scope `scope` showing `params`: `/settings/:scope/skills?tab=…&q=…`. */
+export const skillsPath = (scope: string, params: Partial<SkillsParams> = {}): string =>
+  `${settingsPath(scope, "skills")}${skillsSearch(params)}`;
+
+/**
+ * The page of a Skill directory's owner (a GitHub user or organization), its repos that hold Skills, in the Skills
+ * section of Scope `scope`, where an install from it goes.
+ */
+export const skillOwnerPath = (scope: string, owner: string): string =>
+  `${settingsPath(scope, "skills")}/${encodeURIComponent(owner)}`;
 
 /** `?ref=<ref>` (the branch, tag or commit a repo's page shows), or `""` for the default branch. */
 const refQuery = (ref: string | undefined): string =>
   ref === undefined || ref === "" ? "" : `?ref=${encodeURIComponent(ref)}`;
 
 /** The page of a repo's Skills, at `ref` (a branch, tag or commit) when one is named, else the default branch. */
-export const skillRepoPath = (owner: string, repo: string, ref?: string): string =>
-  `${skillOwnerPath(owner)}/${encodeURIComponent(repo)}${refQuery(ref)}`;
+export const skillRepoPath = (scope: string, owner: string, repo: string, ref?: string): string =>
+  `${skillOwnerPath(scope, owner)}/${encodeURIComponent(repo)}${refQuery(ref)}`;
 
 /** What a Skill's page link names beyond the Skill: the ref, and the folder that holds the Skill. */
 export interface SkillPageTarget {
@@ -225,6 +239,7 @@ export interface SkillPageTarget {
 
 /** The page of one Skill of a repo, at `target.ref` and in the folder `target.path` when they are named. */
 export const skillPagePath = (
+  scope: string,
   owner: string,
   repo: string,
   skill: string,
@@ -236,7 +251,7 @@ export const skillPagePath = (
 
   if (path !== undefined) query.set("path", path);
 
-  return `${skillOwnerPath(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(skill)}${query.size === 0 ? "" : `?${query.toString()}`}`;
+  return `${skillOwnerPath(scope, owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(skill)}${query.size === 0 ? "" : `?${query.toString()}`}`;
 };
 
 /** What a repo's or a Skill's page names in its query. */
@@ -261,8 +276,43 @@ export const skillRepoParamsOf = (search: string): SkillRepoParams => {
   };
 };
 
-/** The Skills page, or a page below it: an owner's, then a repo's, then a Skill's segment. */
-const SKILLS_PAGE = /^\/skills(?:\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?)?\/?$/;
+/** The old Skills page, or a page below it: an owner's, then a repo's, then a Skill's segment. */
+const LEGACY_SKILLS_PAGE = /^\/skills((?:\/[^/]+){0,3})\/?$/;
+
+/** The old Environments page. */
+const LEGACY_ENVIRONMENTS_PAGE = /^\/environments\/?$/;
+
+/**
+ * Where an old page's address (`pathname` and `search`) is now on the Settings page, or undefined for any other address:
+ * `/environments` is Global's Environments section; `/skills` (`?tab=`, `?q=`, `?environment=`) the Skills section of
+ * the Scope `?environment=` named (`*` or none: Global); `/skills/:owner…` the same page of Global's Skill directory,
+ * its query kept.
+ */
+export const legacyRedirect = (pathname: string, search: string): string | undefined => {
+  if (LEGACY_ENVIRONMENTS_PAGE.test(pathname)) return settingsPath(GLOBAL_SCOPE, "environments");
+
+  const skills = LEGACY_SKILLS_PAGE.exec(pathname);
+
+  if (skills === null) return undefined;
+
+  const below = skills[1] ?? "";
+
+  if (below !== "") return `${settingsPath(GLOBAL_SCOPE, "skills")}${below}${search}`;
+
+  const environment = new URLSearchParams(search).get("environment");
+
+  return skillsPath(
+    environment === null || environment === "" ? GLOBAL_SCOPE : environment,
+    skillsParamsOf(search),
+  );
+};
+
+/** Replace an old page's address in the history by its Settings page equivalent (`legacyRedirect`), if it is one. */
+const settleLegacy = (): void => {
+  const to = legacyRedirect(window.location.pathname, window.location.search);
+
+  if (to !== undefined) window.history.replaceState(null, "", to);
+};
 
 /** The draft page: write the first message of a new Session, and choose where it works. */
 export const DRAFT_PATH = "/new";
@@ -284,11 +334,13 @@ const decoded = (encoded: string | undefined): string | undefined => {
 /** A Session's page, or one of its Subagent pages: the Session's ID, then the agent's when it is a Subagent page. */
 const SESSION_PAGE = /^\/sessions\/([^/]+)(?:\/agents\/([^/]+))?\/?$/;
 
-/** What a page path shows. */
-export type Page =
-  | { readonly kind: "settings" }
-  | { readonly kind: "environments" }
-  | { readonly kind: "skills" }
+/**
+ * What the Settings page shows at its Scope: the list of its sections, a section by slug (which the page checks against
+ * the sections the Scope has), or a page of the Skill directory below the Skills section.
+ */
+export type SettingsView =
+  | { readonly kind: "index" }
+  | { readonly kind: "section"; readonly section: string }
   | { readonly kind: "skillOwner"; readonly owner: string }
   | { readonly kind: "skillRepo"; readonly owner: string; readonly repo: string }
   | {
@@ -296,40 +348,68 @@ export type Page =
       readonly owner: string;
       readonly repo: string;
       readonly skill: string;
+    };
+
+/** What a page path shows. */
+export type Page =
+  | {
+      readonly kind: "settings";
+      /** `*` for Global, or an Environment's id (which may name none: the page says so). */
+      readonly scope: string;
+      readonly view: SettingsView;
     }
   | { readonly kind: "draft" }
   | { readonly kind: "session"; readonly sessionId: string }
   | { readonly kind: "subagent"; readonly sessionId: string; readonly agentId: string }
   | { readonly kind: "empty" };
 
-/** The page below `/skills` that `match` (of `SKILLS_PAGE`) names; empty when a segment cannot be decoded. */
-const skillsPageOf = (match: RegExpExecArray): Page => {
-  const [owner, repo, skill] = Arr.map([match[1], match[2], match[3]], decoded);
+/** The Settings page: a Scope, a section, and below the Skills section up to three segments of the Skill directory. */
+const SETTINGS_PAGE = /^\/settings(?:\/([^/]+)(?:\/([^/]+)((?:\/[^/]+){0,3}))?)?\/?$/;
 
-  if (match[1] === undefined) return { kind: "skills" };
+/** What the Settings page view below Scope segment `section` and the `below` segments (`/a/b`) shows, if anything. */
+const settingsViewOf = (section: string | undefined, below: string): SettingsView | undefined => {
+  if (section === undefined) return { kind: "index" };
 
-  if (owner === undefined) return { kind: "empty" };
+  const name = decoded(section);
 
-  if (match[2] === undefined) return { kind: "skillOwner", owner };
+  if (name === undefined) return undefined;
 
-  if (repo === undefined) return { kind: "empty" };
+  if (below === "") return { kind: "section", section: name };
 
-  if (match[3] === undefined) return { kind: "skillRepo", owner, repo };
+  if (name !== "skills") return undefined;
 
-  return skill === undefined ? { kind: "empty" } : { kind: "skill", owner, repo, skill };
+  // `below` is one to three segments, each after a `/`.
+  const segments = Arr.map(Arr.drop(below.split("/"), 1), decoded);
+
+  if (!Arr.every(segments, (segment) => segment !== undefined)) return undefined;
+
+  const [owner = "", repo, skill] = segments;
+
+  if (repo === undefined) return { kind: "skillOwner", owner };
+
+  return skill === undefined
+    ? { kind: "skillRepo", owner, repo }
+    : { kind: "skill", owner, repo, skill };
+};
+
+/** The Settings page `match` (of `SETTINGS_PAGE`) names; empty when a segment cannot be decoded. */
+const settingsPageOf = (match: RegExpExecArray): Page => {
+  const segment = match[1] ?? GLOBAL_SEGMENT;
+  const scope = segment === GLOBAL_SEGMENT ? GLOBAL_SCOPE : decoded(segment);
+  const view = settingsViewOf(match[2], match[3] ?? "");
+
+  return scope === undefined || view === undefined
+    ? { kind: "empty" }
+    : { kind: "settings", scope, view };
 };
 
 /** What `path` shows. */
 export const pageOf = (path: string): Page => {
-  if (isSettingsPath(path)) return { kind: "settings" };
-
-  if (isEnvironmentsPath(path)) return { kind: "environments" };
-
   if (isDraftPath(path)) return { kind: "draft" };
 
-  const skills = SKILLS_PAGE.exec(path);
+  const settings = SETTINGS_PAGE.exec(path);
 
-  if (skills !== null) return skillsPageOf(skills);
+  if (settings !== null) return settingsPageOf(settings);
 
   const match = SESSION_PAGE.exec(path);
   const sessionId = decoded(match?.[1]);
@@ -367,7 +447,7 @@ export const sessionIdAtom = Atom.map(pathAtom, sessionIdOf);
 /** The subagent whose Subagent page is shown, if one is. */
 export const agentIdAtom = Atom.map(pathAtom, agentIdOf);
 
-/** What the Skills page's query names now. */
+/** What the Skills section's query names now. */
 export const skillsParamsAtom = Atom.map(searchAtom, skillsParamsOf);
 
 /** What a repo's or a Skill's page names in its query now. */

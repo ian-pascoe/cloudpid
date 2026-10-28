@@ -1,12 +1,9 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over native arrays, not combinators.
 
-// The Skills page's pure parts (ADR-0026, docs/architecture/workspace.md → Installing from GitHub): which Skills an
-// Environment gets from Global, the lines the Installed tab shows of an install and an update, the line an
-// Environment's card on the Environments page shows of its Skills, and which sections the Installed tab shows.
+// The Skills section's pure parts (ADR-0026, docs/architecture/workspace.md → Installing from GitHub): which Skills an
+// Environment gets from Global, and the lines the Installed tab shows of an install and an update.
 
 import {
-  GLOBAL_SCOPE,
-  type EnvironmentRecord,
   type EnvironmentSkill,
   type SkillInstall,
   type SkillInstalledIn,
@@ -37,40 +34,6 @@ export const inheritedSkills = (
     inherited: names.filter((name) => !kept.has(name)),
     overridden: names.filter((name) => kept.has(name)),
   };
-};
-
-const skills = (count: number): string => {
-  if (count === 0) return "No skills";
-
-  return count === 1 ? "1 skill" : `${count} skills`;
-};
-
-/**
- * How many Skills a card of the Environments page says it has: an Environment keeping `own` serves those and the ones
- * kept Global (`every`) it does not override, and says how many came from Global; the card for
- * Global (no `every`) counts its own.
- */
-export const skillCountText = (
-  own: readonly EnvironmentSkill[],
-  globalSkills?: readonly EnvironmentSkill[],
-): string => {
-  const { inherited } = inheritedSkills(own, globalSkills ?? []);
-  const total = skills(own.length + inherited.length);
-
-  return inherited.length === 0 ? total : `${total}, ${inherited.length} from Global`;
-};
-
-/**
- * The scopes whose Skills the Installed tab shows, in order: those kept Global (`*`), then each
- * Environment's, or only the one `filter` names (`?environment=`); none when it names an Environment not listed.
- */
-export const installedScopes = (
-  environments: readonly EnvironmentRecord[],
-  filter: string | undefined,
-): readonly string[] => {
-  const all = [GLOBAL_SCOPE, ...environments.map((environment) => environment.id)];
-
-  return filter === undefined ? all : all.filter((scope) => scope === filter);
 };
 
 /** What an install answered, a line for each Skill it kept, found already kept, or refused (and why). */
@@ -153,16 +116,20 @@ export const installSource = (source: string, ref?: string): string =>
     : `https://github.com/${source.trim()}/tree/${encodeURIComponent(ref)}`;
 
 /**
- * The page of the Skill an installed copy came from: `/skills/:owner/:repo/:skill` at the ref it was installed from, naming
+ * The page of the Skill an installed copy came from: `/settings/:scope/skills/:owner/:repo/:skill` at the ref it was installed from, naming
  * the Skill's folder (so two Skills of a repo that share a name are not mixed up). Null when the Skill source's repo is
  * not an `owner/repo` of GitHub's.
  */
-export const skillPageOfSource = (name: string, source: SkillSource): string | null => {
+export const skillPageOfSource = (
+  scope: string,
+  name: string,
+  source: SkillSource,
+): string | null => {
   const github = githubSource(source.repo);
 
   return github === null
     ? null
-    : skillPagePath(github.owner, github.repo, name, {
+    : skillPagePath(scope, github.owner, github.repo, name, {
         ref: source.ref ?? undefined,
         path: source.path,
       });

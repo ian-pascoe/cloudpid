@@ -1,9 +1,9 @@
 // @effect-diagnostics preferEffectArray:off globalTimers:off -- JSX lists of rows and pages are native arrays; the search waits a moment after the last keystroke, timed by a React effect.
 
-// The Skills page's Skill directory (ADR-0026, GLOSSARY.md → Skill directory, docs/architecture/client-and-protocol.md →
-// Skills page): the search bar above the tabs, the All time, Trending (24h) and Hot lists that skills.sh ranks, and the
+// The Skills section's Skill directory (ADR-0026, GLOSSARY.md → Skill directory, docs/architecture/client-and-protocol.md →
+// Settings page): the search bar above the tabs, the All time, Trending (24h) and Hot lists that skills.sh ranks, and the
 // results of a search that replace them. Each row shows its rank, name, source, installs (compact) and where the Skill is
-// installed here, links to its pages, and has Install, which opens the target picker. skills.sh being down is a plain
+// installed here, links to its pages in the Scope's Skills section, and has Install, which opens the install confirm. skills.sh being down is a plain
 // error here; the Installed tab does not depend on it.
 
 import {
@@ -26,11 +26,11 @@ import {
   skillOwnerPath,
   skillPagePath,
   skillRepoPath,
-  SKILLS_PATH,
   skillsParamsAtom,
-  skillsPath,
+  skillsSearch,
 } from "./router.ts";
-import { useInstallPicker } from "./skills-install-dialog.tsx";
+import { useSettingsScope } from "./settings/scope.tsx";
+import { useInstallConfirm } from "./skills-install-dialog.tsx";
 import {
   skillDirectoryPageAtom,
   skillDirectoryPageKey,
@@ -77,7 +77,7 @@ export const SkillsSearchBar = () => {
     if (typed === params.query) return undefined;
 
     const timer = setTimeout(() => {
-      replaceSearch(skillsPath({ ...params, query: typed }).slice(SKILLS_PATH.length));
+      replaceSearch(skillsSearch({ ...params, query: typed }));
     }, TYPING_PAUSE_MS);
 
     return () => {
@@ -90,7 +90,7 @@ export const SkillsSearchBar = () => {
       role="search"
       onSubmit={(event) => {
         event.preventDefault();
-        replaceSearch(skillsPath({ ...params, query: typed }).slice(SKILLS_PATH.length));
+        replaceSearch(skillsSearch({ ...params, query: typed }));
       }}
       className="relative"
     >
@@ -123,7 +123,8 @@ export const SkillsSearchBar = () => {
  * the name, source and installs.
  */
 const DirectoryRow = ({ skill, rank }: { skill: DirectorySkill; rank: number | null }) => {
-  const pick = useInstallPicker();
+  const scope = useSettingsScope();
+  const install = useInstallConfirm();
   const github = githubSource(skill.source);
   const badges = directoryBadges(skill.installed);
 
@@ -139,7 +140,7 @@ const DirectoryRow = ({ skill, rank }: { skill: DirectorySkill; rank: number | n
           <span className="truncate font-mono text-sm font-medium">{skill.name}</span>
         ) : (
           <InAppLink
-            href={skillPagePath(github.owner, github.repo, skill.skillId)}
+            href={skillPagePath(scope, github.owner, github.repo, skill.skillId)}
             className="truncate font-mono text-sm font-medium hover:underline"
           >
             {skill.name}
@@ -150,14 +151,14 @@ const DirectoryRow = ({ skill, rank }: { skill: DirectorySkill; rank: number | n
         ) : (
           <span className="truncate font-mono text-xs text-muted-foreground">
             <InAppLink
-              href={skillOwnerPath(github.owner)}
+              href={skillOwnerPath(scope, github.owner)}
               className="hover:text-foreground hover:underline"
             >
               {github.owner}
             </InAppLink>
             /
             <InAppLink
-              href={skillRepoPath(github.owner, github.repo)}
+              href={skillRepoPath(scope, github.owner, github.repo)}
               className="hover:text-foreground hover:underline"
             >
               {github.repo}
@@ -203,7 +204,7 @@ const DirectoryRow = ({ skill, rank }: { skill: DirectorySkill; rank: number | n
         title={github === null ? "Only skills from a GitHub repo can be installed" : undefined}
         aria-label={`Install ${skill.name} from ${skill.source}`}
         onClick={() => {
-          pick({ source: skill.source, skills: [skill.skillId] });
+          install({ source: skill.source, skills: [skill.skillId] });
         }}
       >
         <Download />

@@ -1,10 +1,9 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- in-memory fakes of the Registry over native arrays.
 
-// The Skills page and the Environments page's Skills line, rendered with `react-dom/server` over the fake Registry: the
+// The Skills section of the Settings page at a Scope, rendered with `react-dom/server` over the fake Registry: the
 // queries a page reads are settled first, so the markup shows what they answered.
 
 import {
-  type AgentChange,
   type DirectorySkill,
   type EnvironmentRecord,
   type EnvironmentSkill,
@@ -19,12 +18,12 @@ import type * as Atom from "effect/reactivity/Atom";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { agentChangesAtom, environmentsAtom } from "./environments-state.ts";
-import { EnvironmentsPage } from "./environments-page.tsx";
-import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
-import { searchAtom } from "./router.ts";
-import { sessionsAtom } from "./sessions.ts";
-import { SkillsPage } from "./skills-page.tsx";
+import { environmentsAtom } from "../environments-state.ts";
+import { type RegistryHandlers, registryWith, settled } from "../registry.testing.ts";
+import { searchAtom } from "../router.ts";
+import { sessionsAtom } from "../sessions.ts";
+import { SettingsScope } from "./scope.tsx";
+import { SkillsSettingsSection } from "./skills.tsx";
 import {
   anySkillInstalledAtom,
   environmentSkillsAtom,
@@ -34,7 +33,7 @@ import {
   skillDirectorySearchAtom,
   skillFilesDialogAtom,
   skillKey,
-} from "./skills-state.ts";
+} from "../skills-state.ts";
 
 const COMMIT = "c0ffee0000000000000000000000000000000001";
 
@@ -71,24 +70,6 @@ const SKILLS = new Map<string, ReadonlyArray<EnvironmentSkill>>(
     default: [],
   }),
 );
-
-const change = (id: number, field: string, scope = "work"): AgentChange => ({
-  id,
-  scope,
-  at: 1,
-  actor: "agent",
-  session: null,
-  conversation: 1,
-  tool: field.startsWith("skills.") ? "environment_skill_save" : "environment_variable_set",
-  reason: `Change ${id}`,
-  field,
-  before: null,
-  after: field.startsWith("skills.") ? { files: {} } : "https://api.test",
-  reverts: null,
-  revertedBy: null,
-});
-
-const CHANGES = new Map([["work", [change(2, "skills.notes"), change(1, "variables.API_URL")]]]);
 
 /** The Skill directory's rows, as the Registry answers them. */
 const DIRECTORY: Record<SkillDirectoryView, ReadonlyArray<DirectorySkill>> = {
@@ -138,8 +119,6 @@ const HANDLERS: Partial<RegistryHandlers> = {
   listSessions: () => Effect.succeed([]),
   listEnvironments: () => Effect.succeed(ENVIRONMENTS),
   listEnvironmentSkills: ({ environment }) => Effect.succeed(SKILLS.get(environment) ?? []),
-  listAgentChanges: ({ environment }) => Effect.succeed(CHANGES.get(environment) ?? []),
-  skillChangeFiles: () => Effect.succeed({ before: null, after: [] }),
   environmentSkillFiles: ({ name }) =>
     Effect.succeed([
       { path: "SKILL.md", text: `---\nname: ${name}\n---\nKeep notes.` },
@@ -173,10 +152,8 @@ const settle = (
     return settled(registry, atom);
   });
 
-const scopes = ["*", "default", "work"];
-
 /**
- * `page` rendered at the query `search`, once the Environments, the Sessions, every scope's Skills and Agent changes, and
+ * `page` rendered at the query `search`, once the Environments, the Sessions, the Scope's Skills (and Global's), and
  * the `more` atoms have loaded; `before` sets what the owner has open first.
  */
 const render = (
@@ -186,15 +163,15 @@ const render = (
     more = [],
     before,
     handlers = {},
-    loaded = scopes,
+    scope = "*",
   }: {
     search?: string;
     more?: ReadonlyArray<Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>;
     before?: (registry: AtomRegistry.AtomRegistry) => void;
     /** Handlers in place of the fixture's. */
     handlers?: Partial<RegistryHandlers>;
-    /** The scopes whose Skills are loaded before the render: the others may still be loading. */
-    loaded?: ReadonlyArray<string>;
+    /** The Scope the Settings page shows. */
+    scope?: string;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -203,17 +180,19 @@ const render = (
     registry.set(searchAtom, search);
     before?.(registry);
     yield* settle(registry, [
-      // The Skills page chooses its default tab from every scope's Skills; the Environments page has no tab.
-      ...(page.type === SkillsPage ? [anySkillInstalledAtom] : []),
+      // The section chooses its default tab from the Scope's Skills.
+      anySkillInstalledAtom(scope),
       environmentsAtom,
       sessionsAtom,
-      ...loaded.map((scope) => environmentSkillsAtom(scope)),
-      ...scopes.map((scope) => agentChangesAtom(scope)),
+      environmentSkillsAtom(scope),
+      environmentSkillsAtom("*"),
       ...more,
     ]);
 
     const markup = renderToStaticMarkup(
-      <RegistryContext.Provider value={registry}>{page}</RegistryContext.Provider>,
+      <RegistryContext.Provider value={registry}>
+        <SettingsScope.Provider value={scope}>{page}</SettingsScope.Provider>
+      </RegistryContext.Provider>,
     );
 
     registry.dispose();
@@ -221,8 +200,9 @@ const render = (
     return markup;
   });
 
-/** The Skills page at the query `search`. */
-const renderSkills = (search: string) => render(<SkillsPage />, { search });
+/** The Skills section at the query `search`, at Scope `scope`. */
+const renderSkills = (search: string, scope = "*") =>
+  render(<SkillsSettingsSection />, { search, scope });
 
 /** Each link of `markup`: its address (unescaped), its text, and whether it is the current page. */
 const links = (markup: string) =>
@@ -239,37 +219,37 @@ const section = (markup: string, label: string): string | undefined => {
   return start === -1 ? undefined : markup.slice(start, markup.indexOf("</section>", start));
 };
 
-describe("the Skills page's tabs", () => {
+describe("the Skills section's tabs", () => {
   it.effect("are Installed, All time, Trending (24h) and Hot, Installed shown by default", () =>
     Effect.gen(function* () {
       const tabs = links(yield* renderSkills("")).filter(({ href }) =>
-        href?.startsWith("/skills?tab="),
+        href?.startsWith("/settings/all/skills?tab="),
       );
 
       expect(tabs).toEqual([
-        { href: "/skills?tab=installed", text: "Installed", current: true },
-        { href: "/skills?tab=all-time", text: "All time", current: false },
-        { href: "/skills?tab=trending", text: "Trending (24h)", current: false },
-        { href: "/skills?tab=hot", text: "Hot", current: false },
+        { href: "/settings/all/skills?tab=installed", text: "Installed", current: true },
+        { href: "/settings/all/skills?tab=all-time", text: "All time", current: false },
+        { href: "/settings/all/skills?tab=trending", text: "Trending (24h)", current: false },
+        { href: "/settings/all/skills?tab=hot", text: "Hot", current: false },
       ]);
     }),
   );
 
-  it.effect("keep the search, and the Environment filter for the Installed tab only", () =>
+  it.effect("link within the Environment's Scope at an Environment, keeping the search", () =>
     Effect.gen(function* () {
-      const hrefs = links(yield* renderSkills("?tab=installed&q=grill&environment=work")).map(
+      const hrefs = links(yield* renderSkills("?tab=installed&q=grill", "work")).map(
         ({ href }) => href,
       );
 
-      expect(hrefs).toContain("/skills?tab=installed&q=grill&environment=work");
-      expect(hrefs).toContain("/skills?tab=all-time&q=grill");
-      expect(hrefs).toContain("/skills?tab=hot&q=grill");
+      expect(hrefs).toContain("/settings/work/skills?tab=installed&q=grill");
+      expect(hrefs).toContain("/settings/work/skills?tab=all-time&q=grill");
+      expect(hrefs).toContain("/settings/work/skills?tab=hot&q=grill");
     }),
   );
 
   it.effect("open on All time when no Skill is installed, and on Installed when any is", () =>
     Effect.gen(function* () {
-      const nothing = yield* render(<SkillsPage />, {
+      const nothing = yield* render(<SkillsSettingsSection />, {
         more: [skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0))],
         handlers: { listEnvironmentSkills: () => Effect.succeed([]) },
       });
@@ -281,6 +261,14 @@ describe("the Skills page's tabs", () => {
 
       expect(links(some).find(({ current }) => current)?.text).toBe("Installed");
       expect(some).not.toContain("find-skills");
+
+      // The Scope's own Skills decide: an Environment that keeps none opens on All time, though Global keeps one.
+      const empty = yield* render(<SkillsSettingsSection />, {
+        scope: "default",
+        more: [skillDirectoryPageAtom(skillDirectoryPageKey("all-time", 0))],
+      });
+
+      expect(links(empty).find(({ current }) => current)?.text).toBe("All time");
     }),
   );
 });
@@ -291,7 +279,7 @@ const renderDirectory = (
   view: SkillDirectoryView,
   options: Parameters<typeof render>[1] = {},
 ) =>
-  render(<SkillsPage />, {
+  render(<SkillsSettingsSection />, {
     ...options,
     search,
     more: [skillDirectoryPageAtom(skillDirectoryPageKey(view, 0)), ...(options.more ?? [])],
@@ -320,14 +308,30 @@ describe("the Skill directory's tabs", () => {
       expect(markup).toContain(">1.5M<");
       expect(markup).toContain(">950<");
       expect(links(grill)).toEqual([
-        { href: "/skills/mattpocock/skills/grill-me", text: "grill-me", current: false },
+        {
+          href: "/settings/all/skills/mattpocock/skills/grill-me",
+          text: "grill-me",
+          current: false,
+        },
         // The owner links to the owner's page, the repo to its own.
-        { href: "/skills/mattpocock", text: "mattpocock", current: false },
-        { href: "/skills/mattpocock/skills", text: "skills", current: false },
+        { href: "/settings/all/skills/mattpocock", text: "mattpocock", current: false },
+        { href: "/settings/all/skills/mattpocock/skills", text: "skills", current: false },
       ]);
       expect(grill).toContain('aria-label="Install grill-me from mattpocock/skills"');
       // The Hot tab's change is not on this list.
       expect(markup).not.toContain("Change");
+    }),
+  );
+
+  it.effect("link to the directory pages of the Environment's Scope at an Environment", () =>
+    Effect.gen(function* () {
+      const markup = yield* renderDirectory("?tab=all-time", "all-time", { scope: "work" });
+
+      expect(links(rowOf(markup, "grill-me")).map(({ href }) => href)).toEqual([
+        "/settings/work/skills/mattpocock/skills/grill-me",
+        "/settings/work/skills/mattpocock",
+        "/settings/work/skills/mattpocock/skills",
+      ]);
     }),
   );
 
@@ -389,14 +393,14 @@ describe("the Skill directory's tabs", () => {
       };
 
       const hot = yield* renderDirectory("?tab=hot", "hot", { handlers: down });
-      const installed = yield* renderSkills("?tab=installed");
+      const installed = yield* renderSkills("?tab=installed", "work");
 
       expect(hot).toContain("skills.sh answered 503");
       expect(hot).toContain("Try again");
       expect(hot).toContain("Skills you have installed are not affected.");
       expect(hot).not.toContain("okx-guide");
       expect(links(hot).map(({ text }) => text)).toContain("Installed");
-      expect(installed).toContain("grill-me");
+      expect(installed).toContain("notes");
       expect(installed).toContain('aria-label="Update tdd"');
     }),
   );
@@ -405,7 +409,7 @@ describe("the Skill directory's tabs", () => {
 describe("the search", () => {
   it.effect("replaces the tab's list with skills.sh's results, without ranks", () =>
     Effect.gen(function* () {
-      const markup = yield* render(<SkillsPage />, {
+      const markup = yield* render(<SkillsSettingsSection />, {
         search: "?tab=hot&q=grill",
         more: [skillDirectorySearchAtom("grill")],
       });
@@ -425,7 +429,7 @@ describe("the search", () => {
 
   it.effect("replaces the Installed tab too, and clearing it brings the list back", () =>
     Effect.gen(function* () {
-      const searching = yield* render(<SkillsPage />, {
+      const searching = yield* render(<SkillsSettingsSection />, {
         search: "?tab=installed&q=tdd",
         more: [skillDirectorySearchAtom("tdd")],
       });
@@ -440,14 +444,14 @@ describe("the search", () => {
 
   it.effect("says what a search that finds nothing, is too short, or fails comes to", () =>
     Effect.gen(function* () {
-      const nothing = yield* render(<SkillsPage />, {
+      const nothing = yield* render(<SkillsSettingsSection />, {
         search: "?tab=all-time&q=zzz",
         more: [skillDirectorySearchAtom("zzz")],
       });
 
       const short = yield* renderSkills("?tab=all-time&q=g");
 
-      const down = yield* render(<SkillsPage />, {
+      const down = yield* render(<SkillsSettingsSection />, {
         search: "?tab=all-time&q=down",
         more: [skillDirectorySearchAtom("down")],
       });
@@ -472,79 +476,55 @@ describe("the search", () => {
 });
 
 describe("the Installed tab", () => {
-  it.effect("lists the Skills kept Global, then each Environment's own", () =>
+  it.effect("lists only the Skills kept Global at Global", () =>
     Effect.gen(function* () {
       const markup = yield* renderSkills("?tab=installed");
       const globalMarkup = section(markup, "Global");
-      const work = section(markup, "Work");
 
-      expect(markup.indexOf('aria-label="Global"')).toBeLessThan(
-        markup.indexOf('aria-label="Default"'),
-      );
-      expect(markup.indexOf('aria-label="Default"')).toBeLessThan(
-        markup.indexOf('aria-label="Work"'),
-      );
       expect(globalMarkup).toContain("grill-me");
       expect(globalMarkup).toContain("update available");
       expect(globalMarkup).toContain("Add skills from GitHub at Global");
-      expect(work).toContain("notes");
-      expect(work).toContain("modified");
-      expect(work).toContain('aria-label="Update tdd"');
-      expect(work).toContain('aria-label="Remove notes"');
-      expect(work).toContain("Also from Global");
-      expect(section(markup, "Default")).toContain("Add skills from GitHub");
+      expect(section(markup, "Work")).toBeUndefined();
+      expect(section(markup, "Default")).toBeUndefined();
+      expect(markup).not.toContain("notes");
+      expect(markup).not.toContain("Show all environments");
+      expect(markup).not.toContain("Showing the skills of");
     }),
   );
 
-  it.effect("shows only the Environment ?environment= names, or each Environment's for *", () =>
-    Effect.gen(function* () {
-      const work = yield* renderSkills("?tab=installed&environment=work");
+  it.effect(
+    "lists only the Environment's own Skills at an Environment, and what it gets from Global",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* renderSkills("?tab=installed", "work");
+        const work = section(markup, "Work");
 
-      expect(section(work, "Work")).toBeDefined();
-      expect(section(work, "Global")).toBeUndefined();
-      expect(section(work, "Default")).toBeUndefined();
-      expect(work).toContain("Showing the skills of Work only.");
-      expect(links(work)).toContainEqual({
-        href: "/skills?tab=installed",
-        text: "Show all environments",
+        expect(section(markup, "Global")).toBeUndefined();
+        expect(work).toContain("notes");
+        expect(work).toContain("modified");
+        expect(work).toContain('aria-label="Update tdd"');
+        expect(work).toContain('aria-label="Remove notes"');
+        expect(work).toContain("Also from Global");
+        expect(work).toContain("grill-me");
+        expect(work).not.toContain('aria-label="Remove grill-me"');
+        expect(work).toContain("Add skills from GitHub");
+        expect(work).not.toContain("Add skills from GitHub at Global");
+      }),
+  );
+
+  it.effect("points to Agent changes instead of listing the Skills' changes", () =>
+    Effect.gen(function* () {
+      const atWork = yield* renderSkills("?tab=installed", "work");
+      const atGlobal = yield* renderSkills("?tab=installed");
+
+      expect(links(atWork)).toContainEqual({
+        href: "/settings/work/agent-changes",
+        text: "Agent changes",
         current: false,
       });
-
-      const globalMarkup = yield* renderSkills("?environment=*");
-
-      expect(section(globalMarkup, "Global")).toBeDefined();
-      expect(section(globalMarkup, "Work")).toBeUndefined();
-      expect(globalMarkup).toContain("Showing the skills of Global only.");
-
-      const gone = yield* renderSkills("?tab=installed&environment=gone");
-
-      expect(gone).toContain("No environment has the id gone.");
-      expect(section(gone, "Global")).toBeUndefined();
-    }),
-  );
-
-  it.effect("says why it cannot name the Environment ?environment= names when the list fails", () =>
-    Effect.gen(function* () {
-      const markup = yield* render(<SkillsPage />, {
-        search: "?tab=installed&environment=work",
-        handlers: {
-          listEnvironments: () => Effect.die("Registry down"),
-        },
-      });
-
-      expect(markup).toContain("The environments could not load.");
-      expect(markup).toContain("Registry down");
-      expect(markup).not.toContain("Loading…");
-    }),
-  );
-
-  it.effect("lists the Skills' Agent changes with their Revert, and no other change", () =>
-    Effect.gen(function* () {
-      const work = section(yield* renderSkills("?tab=installed&environment=work"), "Work");
-
-      expect(work).toContain("Skill notes");
-      expect(work).toContain('aria-label="Revert change 2: Skill notes"');
-      expect(work).not.toContain("Variable API_URL");
+      expect(links(atGlobal).map(({ href }) => href)).toContain("/settings/all/agent-changes");
+      expect(atWork).not.toContain('aria-label="Revert');
+      expect(atWork).not.toContain("The agent has changed no skill here.");
     }),
   );
 
@@ -552,10 +532,12 @@ describe("the Installed tab", () => {
     "links a Skill with a Skill source to its page, and opens the kept files of one with none",
     () =>
       Effect.gen(function* () {
-        const work = section(yield* renderSkills("?environment=work"), "Work") ?? "";
+        const work = section(yield* renderSkills("", "work"), "Work") ?? "";
 
-        // The Skill's page, naming its folder and the ref it was installed from, and no longer GitHub at the commit.
-        expect(work).toContain('href="/skills/mattpocock/skills/tdd?path=skills%2Ftdd"');
+        // The Skill's page in the Scope, naming its folder and the ref it was installed from.
+        expect(work).toContain(
+          'href="/settings/work/skills/mattpocock/skills/tdd?path=skills%2Ftdd"',
+        );
         expect(work).not.toContain("github.com/mattpocock/skills/tree");
         expect(work).toContain('aria-label="View the files of notes"');
         expect(work).not.toContain('aria-label="View the files of tdd"');
@@ -573,69 +555,10 @@ describe("the Installed tab", () => {
 
 /** The Installed tab with the files viewer of Skill `name` of `scope` open, once its files have loaded. */
 const viewer = (scope: string, name: string) =>
-  render(<SkillsPage />, {
-    search: `?environment=${scope}`,
+  render(<SkillsSettingsSection />, {
+    scope,
     more: [keptSkillFilesAtom(skillKey(scope, name))],
     before: (registry) => {
       registry.set(skillFilesDialogAtom(scope), name);
     },
   });
-
-describe("the Environments page", () => {
-  const renderEnvironments = render(<EnvironmentsPage />);
-
-  it.effect("has one Skills line per Environment, linking to its Installed tab", () =>
-    Effect.gen(function* () {
-      const markup = yield* renderEnvironments;
-
-      const line = (label: string) => {
-        const shown = section(markup, label) ?? "";
-        const manage = links(shown).find(({ text }) => text === "Manage");
-        const text = /<p[^>]*>([^<]*) · <a [^>]*>Manage<\/a><\/p>/.exec(shown)?.[1];
-
-        return { text, href: manage?.href };
-      };
-
-      expect(line("Work")).toEqual({
-        text: "3 skills, 1 from Global",
-        href: "/skills?tab=installed&environment=work",
-      });
-      expect(line("Default")).toEqual({
-        text: "1 skill, 1 from Global",
-        href: "/skills?tab=installed&environment=default",
-      });
-      expect(line("Global")).toEqual({
-        text: "1 skill",
-        href: "/skills?tab=installed&environment=*",
-      });
-    }),
-  );
-
-  it.effect("counts an Environment's Skills only once those at Global have loaded", () =>
-    Effect.gen(function* () {
-      const markup = yield* render(<EnvironmentsPage />, {
-        handlers: {
-          listEnvironmentSkills: ({ environment }) =>
-            environment === "*" ? Effect.never : Effect.succeed(SKILLS.get(environment) ?? []),
-          // A defect of another call would end the pending one too: the card's settings stay unanswered.
-          getEnvironmentSettings: () => Effect.never,
-        },
-        loaded: ["default", "work"],
-      });
-
-      expect(section(markup, "Work")).toMatch(/Loading skills… · <a [^>]*>Manage<\/a>/);
-      expect(section(markup, "Work")).not.toContain("2 skills");
-    }),
-  );
-
-  it.effect("manages no Skill itself, and lists the Agent changes of the settings only", () =>
-    Effect.gen(function* () {
-      const markup = yield* renderEnvironments;
-
-      expect(markup).not.toContain("Add skills from GitHub");
-      expect(markup).not.toContain('aria-label="Remove notes"');
-      expect(section(markup, "Work")).toContain("Variable API_URL");
-      expect(section(markup, "Work")).not.toContain("Skill notes");
-    }),
-  );
-});

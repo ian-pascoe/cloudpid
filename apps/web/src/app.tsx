@@ -10,18 +10,14 @@ import { SessionChat } from "./chat/session-chat.tsx";
 import { SubagentPage } from "./chat/subagent-page.tsx";
 import { cn } from "./lib/utils.ts";
 import { pushSyncAtom } from "./push-state.ts";
-import { navigate, pageAtom, sessionPath, type Page } from "./router.ts";
+import { InAppLink } from "./in-app-link.tsx";
+import { navigate, pageAtom, sessionPath, settingsPath, type Page } from "./router.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { SessionMenu } from "./session-menu.tsx";
 import { currentSessionAtom, newSessionPlace, sessionListAtom } from "./sessions.ts";
-import { SettingsPage } from "./settings-page.tsx";
-import { Sidebar, sessionTitle, type ShownPage } from "./sidebar.tsx";
+import { SettingsPage } from "./settings/page.tsx";
+import { Sidebar, sessionTitle, type SettingsShown, type ShownPage } from "./sidebar.tsx";
 import { DraftComposer } from "./draft-composer.tsx";
-import { EnvironmentsPage } from "./environments-page.tsx";
-import { SkillsPage } from "./skills-page.tsx";
-import { SkillOwnerPage } from "./skills-owner.tsx";
-import { SkillRepoPage } from "./skills-repo.tsx";
-import { SkillPage } from "./skills-skill.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
 
 /**
@@ -82,7 +78,25 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
           : { unarchive: () => actions.unarchive(session.id) }
       }
       problem={problem}
-      origin={session?.origin === undefined ? undefined : <Origin origin={session.origin} />}
+      origin={
+        // The Environment's name waits for the listing; the Origin shows at once.
+        session === undefined ||
+        (environmentName === undefined && session.origin === undefined) ? undefined : (
+          <>
+            {environmentName !== undefined && (
+              <InAppLink
+                href={settingsPath(session.environment, "environments")}
+                title={`Settings of the ${environmentName} environment`}
+                className="underline-offset-2 hover:text-foreground hover:underline"
+              >
+                {environmentName}
+              </InAppLink>
+            )}
+            {environmentName !== undefined && session.origin !== undefined && " · "}
+            {session.origin !== undefined && <Origin origin={session.origin} />}
+          </>
+        )
+      }
       // The composer's `/new` and `/archive`, for the Session shown.
       commandActions={
         session === undefined
@@ -132,6 +146,10 @@ const shownOf = (page: Page): ShownPage | undefined => {
   return undefined;
 };
 
+/** The Settings page `page` is, for the sidebar's navigation; undefined for any other page. */
+const settingsOf = (page: Page): SettingsShown | undefined =>
+  page.kind === "settings" ? { scope: page.scope, view: page.view } : undefined;
+
 export const App = () => {
   // At startup, a device that already gets notifications is re-told to the Registry.
   useAtomMount(pushSyncAtom);
@@ -141,8 +159,11 @@ export const App = () => {
   useAtomMount(forgetDismissedAtom);
 
   const page = useAtomValue(pageAtom);
-  // On a narrow screen the list is shown alone; any other page takes its place.
-  const listOnly = page.kind === "empty";
+
+  // On a narrow screen the list (of Sessions, or of a Scope's Settings sections) is shown alone; any other page takes
+  // its place.
+  const listOnly =
+    page.kind === "empty" || (page.kind === "settings" && page.view.kind === "index");
 
   return (
     // The document never scrolls: each page scrolls inside itself. An element absolutely placed without a positioned
@@ -154,27 +175,13 @@ export const App = () => {
       {/* On a narrow screen the list and the chat take turns. */}
       <Sidebar
         shown={shownOf(page)}
-        settingsActive={page.kind === "settings"}
-        environmentsActive={page.kind === "environments"}
-        skillsActive={
-          page.kind === "skills" ||
-          page.kind === "skillOwner" ||
-          page.kind === "skillRepo" ||
-          page.kind === "skill"
-        }
+        settings={settingsOf(page)}
         className={cn(listOnly ? "flex" : "hidden md:flex")}
       />
       <main className={cn("min-w-0 flex-1 flex-col", listOnly ? "hidden md:flex" : "flex")}>
         {Match.value(page).pipe(
           Match.discriminatorsExhaustive("kind")({
-            settings: () => <SettingsPage />,
-            environments: () => <EnvironmentsPage />,
-            skills: () => <SkillsPage />,
-            skillOwner: ({ owner }) => <SkillOwnerPage owner={owner} />,
-            skillRepo: ({ owner, repo }) => <SkillRepoPage owner={owner} repo={repo} />,
-            skill: ({ owner, repo, skill }) => (
-              <SkillPage owner={owner} repo={repo} skill={skill} />
-            ),
+            settings: ({ scope, view }) => <SettingsPage scope={scope} view={view} />,
             draft: () => <DraftComposer />,
             // On a wide screen the start page is the draft; a narrow one shows the list alone (`listOnly`).
             empty: () => <DraftComposer />,

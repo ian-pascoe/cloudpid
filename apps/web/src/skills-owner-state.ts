@@ -1,4 +1,4 @@
-// The owner page's state (`/skills/:owner`; ADR-0026, docs/architecture/client-and-protocol.md → Skills page): the owner's
+// The owner page's state (`/settings/:scope/skills/:owner`; ADR-0026, docs/architecture/client-and-protocol.md → Settings page): the owner's
 // repos that the Skill directory (skills.sh) lists Skills of, grouped by the Registry from its search, and what the "Open a
 // repo" field turns what is typed into: a repo page of the owner, for a repo the directory does not list.
 import * as Atom from "effect/reactivity/Atom";
@@ -23,12 +23,12 @@ const isRepoName = (name: string): boolean =>
   /^[\w.-]{1,100}$/.test(name) && name !== "." && name !== "..";
 
 /**
- * The page of the repo named by `typed` among `owner`'s: the repo's name (`skills`), or with the owner in front
+ * The page, in Scope `scope`, of the repo named by `typed` among `owner`'s: the repo's name (`skills`), or with the owner in front
  * (`mattpocock/skills`, as GitHub shows it; the owner's case does not matter). Anything else is not a repo of the owner.
  * Whether GitHub has the repo is for its page to say.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a plain function over what was typed, called from React.
-export const openRepoPath = (owner: string, typed: string): OpenRepo => {
+export const openRepoPath = (scope: string, owner: string, typed: string): OpenRepo => {
   const name = typed.trim();
 
   if (name === "") return { ok: false, message: `Type the name of a repo of ${owner}.` };
@@ -45,5 +45,5 @@ export const openRepoPath = (owner: string, typed: string): OpenRepo => {
     };
   }
 
-  return { ok: true, path: skillRepoPath(owner, repo) };
+  return { ok: true, path: skillRepoPath(scope, owner, repo) };
 };

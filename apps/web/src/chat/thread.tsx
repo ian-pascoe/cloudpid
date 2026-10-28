@@ -353,7 +353,7 @@ export const Thread = ({
   commandActions = NO_ACTIONS,
 }: {
   title: string | undefined;
-  /** A line under the title: the Session this one is a Fork or Clone of. */
+  /** A line under the title: the Session's Environment, and the Session this one is a Fork or Clone of. */
   subtitle?: ReactNode;
   /** Lets the owner rename the Session with `/name`; the "⋯" menu renames it too. */
   rename?: Rename | undefined;

@@ -1,5 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over the Skill's view, native arrays.
-// A Skill's page's state (`/skills/:owner/:repo/:skill`; ADR-0026, docs/architecture/client-and-protocol.md → Skills page):
+// A Skill's page's state (`/settings/:scope/skills/:owner/:repo/:skill`; ADR-0026,
+// docs/architecture/client-and-protocol.md → Settings page):
 // the Skill as GitHub has it at a ref (its SKILL.md and the files an install takes, read by the main Worker as the GitHub
 // App), and where it is installed here, from the Skills each scope keeps. Its failures are the repo page's
 // (`skillRepoFailureOf`): the same `SkillRepoError`, with kind `no_skill` for a repo that has no such Skill.
@@ -61,7 +62,7 @@ export const skillViewAtom = Atom.family(({ owner, repo, skill, path, ref }: Ski
 });
 
 /**
- * What Install opens the target picker for: this Skill of its repo by its folder (a name does not say which Skill: two
+ * What Install opens the install confirm for: this Skill of its repo by its folder (a name does not say which Skill: two
  * folders can declare one), with its name as the label, at the page's `ref` so the install pins to it (never the whole
  * repo).
  */
