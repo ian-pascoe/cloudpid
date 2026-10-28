@@ -10,6 +10,7 @@
 Layout is in `docs/spec.md` → _Repository layout_. Root `typecheck`, `lint`, `test`, and `build` scripts run through Turborepo (`turbo.json`); `pnpm check` runs all but `build`, then `format:check` (oxfmt runs once at the root). Run one package with `pnpm --filter @cloudpid/protocol test`.
 
 **In the cloudpid harness, run focused checks only.** If you are an agent in a cloudpid Workspace (the repo is under `/workspace`, next to `/workspace/.cloudpid`), do not run `pnpm check`, a root `test`, or a whole package's test suite, and do not have your sub-agents run them. CI runs the full suite on every push. Run only:
+
 - the typecheck of the packages you touched;
 - `oxlint` and `oxfmt` on the files you changed;
 - the single test files that cover your change (`pnpm --filter @cloudpid/<pkg> exec vitest run <file>`; for workerd tests, add `--project workerd`).
