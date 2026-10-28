@@ -768,6 +768,16 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE skills ADD COLUMN source TEXT");
   },
+  // 24: updating installed Skills (ADR-0026, GLOSSARY.md → Skill source). `modified`: 1 once the agent saved over a Skill that
+  // has a source (an update then refuses it unless asked to overwrite). `folder_hash`: a digest of the git blob SHAs of the
+  // files the Skill's folder holds at its source's commit (null until it is recorded: at an install or an update, else
+  // lazily at the daily check). `update_available`: 1 when the daily check found that digest changed at the ref's head.
+  // 0 / null for every Skill kept before.
+  (sql) => {
+    sql.exec("ALTER TABLE skills ADD COLUMN modified INTEGER NOT NULL DEFAULT 0");
+    sql.exec("ALTER TABLE skills ADD COLUMN folder_hash TEXT");
+    sql.exec("ALTER TABLE skills ADD COLUMN update_available INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */

@@ -143,6 +143,7 @@ export const installSkills = async (
       // SAFETY: as above.
       hashed: hashed[at] as (typeof hashed)[number],
       source,
+      folderHash: skill.folderHash,
     };
 
     const kept =

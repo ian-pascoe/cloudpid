@@ -1787,3 +1787,568 @@ describe("environment_skill_install for every Environment", () => {
     expect(description).not.toContain("the folder's files changed");
   });
 });
+
+describe("environment_skill_update", () => {
+  const NEW_COMMIT = "dec0de0000000000000000000000000000000002";
+
+  const from = {
+    repo: "mattpocock/skills",
+    path: "skills/grill-me",
+    ref: null,
+    commit: GRILL_COMMIT,
+  };
+
+  const to = { ...from, commit: NEW_COMMIT };
+
+  const updatedGrill = (overwrote = false) => ({
+    name: "grill-me",
+    outcome: "updated" as const,
+    from,
+    to,
+    overwrote,
+    change: installChange(9, "grill-me"),
+  });
+
+  it("runs alone, is rerun safely, requires a reason, and is the root conversation's only", async () => {
+    const { tool } = await setUp();
+
+    // A rerun finds the Skills at the new commit already: unchanged, nothing recorded again.
+    expect(tool("environment_skill_update").replay).toBe("safe");
+    expect(tool("environment_skill_update").executionMode).toBe("sequential");
+    expect(tool("environment_skill_update").description).toContain("modified");
+    expect(tool("environment_skill_update").description).toContain("update available");
+
+    expect(
+      resolveTools(undefined, ["bash", "environment_skill_update"], DEFAULT_TOOLSETS),
+    ).toMatchObject({ success: { tools: ["bash"] } });
+
+    // A reason is required, as for every changing tool.
+    expect(JSON.stringify(tool("environment_skill_update").parameters)).toMatch(
+      /"required":\[[^\]]*"reason"/,
+    );
+  });
+
+  it("updates the named Skills, saying from where to where, and records an Agent change for each", async () => {
+    const { tool, logged, updates, answerUpdate } = await setUp();
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: [updatedGrill()],
+      handed: true,
+    });
+
+    const result = await run(tool("environment_skill_update"), {
+      names: ["grill-me"],
+      reason: "The user asked for the latest grill-me",
+    });
+
+    expect(updates).toEqual([
+      {
+        environment: "default",
+        names: ["grill-me"],
+        overwrite: false,
+        pins: undefined,
+        reason: "The user asked for the latest grill-me",
+        approved: false,
+      },
+    ]);
+
+    const said = text(result);
+
+    expect(said).toContain(
+      'Updated grill-me (mattpocock/skills/skills/grill-me at c0ffee0 → dec0de0) for Environment "Default" (default).',
+    );
+    expect(said).toContain("served now at /workspace/.agents/skills/<name> (read-only)");
+    expect(said).toContain("the user can revert it on the Environments page");
+    expect(result.isError).not.toBe(true);
+    expect(result.details).toMatchObject({ agentChanges: [{ id: 9, field: "skills.grill-me" }] });
+
+    expect(logged).toEqual([
+      { tool: "environment_skill_update", environmentName: "Default", field: "skills.grill-me" },
+    ]);
+  });
+
+  it("updates every Skill marked update available when no names are given, and says when none is", async () => {
+    const { tool, updates, answerUpdate } = await setUp();
+
+    answerUpdate({ status: "nothing", environment: DEFAULT });
+
+    const result = await run(tool("environment_skill_update"), { reason: "Keep Skills current" });
+
+    expect(updates[0]).toMatchObject({ names: undefined });
+    expect(text(result)).toContain(
+      'No Skill kept for Environment "Default" (default) is marked update available',
+    );
+    expect(result.isError).not.toBe(true);
+    expect(result.details).toMatchObject({ updated: [] });
+  });
+
+  it("names the Skills refused for being modified, and the ones left unchanged, while updating the rest", async () => {
+    const { tool, updates, answerUpdate } = await setUp();
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: [
+        updatedGrill(),
+        {
+          name: "tdd",
+          outcome: "modified",
+          message: "tdd was edited since it was installed; set overwrite to replace the edits.",
+        },
+        { name: "pr", outcome: "unchanged", message: "pr is the same." },
+      ],
+      handed: true,
+    });
+
+    const said = text(
+      await run(tool("environment_skill_update"), { reason: "Keep Skills current" }),
+    );
+
+    expect(updates[0]).toMatchObject({ overwrite: false });
+    expect(said).toContain("Updated grill-me");
+    expect(said).toContain(
+      "pr was the same at the ref's latest commit: nothing changed, and nothing was recorded for it.",
+    );
+    expect(said).toContain("- tdd (modified): tdd was edited since it was installed");
+    expect(said).toContain(
+      "tdd was refused because the Skill was edited since it was installed: call again with overwrite set",
+    );
+  });
+
+  it("fails naming the refused Skills when nothing was moved, and says what overwrite replaces", async () => {
+    const { tool, answerUpdate } = await setUp();
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: [
+        { name: "tdd", outcome: "modified", message: "tdd was edited." },
+        { name: "mine", outcome: "rejected", message: "mine has no Skill source." },
+      ],
+      handed: false,
+    });
+
+    const said = await failure(
+      run(tool("environment_skill_update"), { names: ["tdd", "mine"], reason: "Update both" }),
+    );
+
+    expect(said).toContain("Nothing was updated:");
+    expect(said).toContain("- tdd (modified): tdd was edited.");
+    expect(said).toContain("- mine (rejected): mine has no Skill source.");
+    expect(said).toContain("tdd was edited since installed: call again with overwrite set");
+  });
+
+  it("passes overwrite on, and says the replaced edits come back with a revert", async () => {
+    const { tool, updates, answerUpdate } = await setUp();
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: [updatedGrill(true)],
+      handed: true,
+    });
+
+    const said = text(
+      await run(tool("environment_skill_update"), {
+        names: ["grill-me"],
+        overwrite: true,
+        reason: "The user wants the upstream version",
+      }),
+    );
+
+    expect(updates[0]).toMatchObject({ overwrite: true });
+    expect(said).toContain(
+      "The edits made to grill-me were replaced; reverting the update brings them back.",
+    );
+  });
+
+  it("refuses an Environment that is not there, and a Secret in the reason", async () => {
+    const { tool, updates } = await setUp({ API_KEY: "sk-live-0123456789abcdef" });
+
+    expect(
+      await failure(
+        run(tool("environment_skill_update"), { id: "ghost0000", reason: "Keep Skills current" }),
+      ),
+    ).toContain("ghost0000");
+
+    expect(
+      await failure(
+        run(tool("environment_skill_update"), {
+          reason: "Use sk-live-0123456789abcdef to fetch",
+        }),
+      ),
+    ).toContain("Secret");
+
+    expect(updates).toHaveLength(1);
+  });
+});
+
+describe("environment_skill_update for every Environment", () => {
+  const NEW_COMMIT = "dec0de0000000000000000000000000000000002";
+  const EVERY = { id: "*", name: "every Environment" };
+
+  const from = {
+    repo: "mattpocock/skills",
+    path: "skills/grill-me",
+    ref: null,
+    commit: GRILL_COMMIT,
+  };
+
+  const to = { ...from, commit: NEW_COMMIT };
+
+  const ready = (files: Record<string, string>, overwrites = false) => ({
+    name: "grill-me",
+    outcome: "ready" as const,
+    from,
+    to,
+    description: "Interview me.",
+    files,
+    folderHash: "folder-hash-1",
+    savedAt: 1_234,
+    overwrites,
+    current: { description: "Interview me.", files: ["SKILL.md"] },
+  });
+
+  const args = { id: "*", names: ["grill-me"], reason: "The user wants the latest grill-me" };
+
+  it("asks the owner on a card showing the files each Skill would take, and updates only on Approve at the shown commit", async () => {
+    const { call, updates, updatePreviews, notified, logged, answerUpdatePreview, answerUpdate } =
+      await setUp();
+
+    answerUpdatePreview({
+      status: "done",
+      environment: EVERY,
+      results: [
+        ready({ "SKILL.md": "---\nname: grill-me\ndescription: Interview me.\n---\nNew steps.\n" }),
+      ],
+    });
+
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "updated" as const,
+          from,
+          to,
+          overwrote: false,
+          change: installChange(3, "grill-me"),
+        },
+      ],
+      handed: false,
+    });
+
+    const {
+      shown,
+      text: said,
+      result,
+    } = await call("environment_skill_update", args, {
+      approve: true,
+      meanwhile: () => expect(updates).toEqual([]),
+    });
+
+    expect(updatePreviews).toEqual([{ environment: "*", names: ["grill-me"], overwrite: false }]);
+    expect(shown[0]).toMatchObject({
+      tool: "environment_skill_update",
+      target: "every Environment",
+      change: expect.stringContaining('"grill-me"'),
+      reason: args.reason,
+    });
+    expect(shown[0]?.before).toContain(
+      "grill-me: kept for every Environment: mattpocock/skills/skills/grill-me at c0ffee0",
+    );
+    expect(shown[0]?.after).toContain("New steps.");
+    expect(shown[0]?.after).toContain("━━ grill-me (skills/grill-me) at");
+    expect(shown[0]?.after).toContain("── SKILL.md (");
+    expect(shown[0]?.after).not.toContain("NOT FULLY SHOWN");
+    await vi.waitFor(() => expect(notified).toHaveLength(1));
+
+    expect(updates).toEqual([
+      expect.objectContaining({
+        environment: "*",
+        names: ["grill-me"],
+        overwrite: false,
+        approved: true,
+        pins: [
+          { name: "grill-me", savedAt: 1_234, commit: NEW_COMMIT, folderHash: "folder-hash-1" },
+        ],
+      }),
+    ]);
+
+    expect(said).toContain("The user approved: updated grill-me");
+    expect(said).toContain(
+      "Every Environment's Workspaces and spares get it at their next readying",
+    );
+    expect(result.details).toMatchObject({ approval: { approved: true } });
+    expect(logged).toEqual([
+      {
+        tool: "environment_skill_update",
+        environmentName: "every Environment",
+        field: "skills.grill-me",
+      },
+    ]);
+  });
+
+  it("says plainly on the card what it could not show, and tells the agent after Approve", async () => {
+    const { call, answerUpdatePreview, answerUpdate } = await setUp();
+    const long = "Step.\n".repeat(7_000);
+
+    answerUpdatePreview({
+      status: "done",
+      environment: EVERY,
+      results: [
+        ready({
+          "SKILL.md": "---\nname: grill-me\ndescription: d\n---\n",
+          "references/long.md": long,
+        }),
+      ],
+    });
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [{ name: "grill-me", outcome: "updated", from, to, overwrote: false }],
+      handed: false,
+    });
+
+    const { shown, text: said } = await call("environment_skill_update", args);
+
+    expect(shown[0]?.after).toContain("NOT FULLY SHOWN");
+    expect(shown[0]?.after).toContain("CUT");
+    expect(said).toContain("that part was not reviewed");
+  });
+
+  it("marks on the card a Skill whose edits the update would replace, and asks again with the same overwrite", async () => {
+    const { call, updates, answerUpdatePreview, answerUpdate } = await setUp();
+
+    answerUpdatePreview({
+      status: "done",
+      environment: EVERY,
+      results: [ready({ "SKILL.md": "---\nname: grill-me\ndescription: d\n---\nNew.\n" }, true)],
+    });
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [{ name: "grill-me", outcome: "updated", from, to, overwrote: true }],
+      handed: false,
+    });
+
+    const { shown } = await call("environment_skill_update", { ...args, overwrite: true });
+
+    expect(shown[0]?.after).toContain("EDITED since it was installed");
+    expect(shown[0]?.before).toContain("edited since installed");
+    expect(updates[0]).toMatchObject({ overwrite: true });
+  });
+
+  it("updates nothing on Decline, and gives the owner's reason", async () => {
+    const { call, updates, answerUpdatePreview } = await setUp();
+
+    answerUpdatePreview({
+      status: "done",
+      environment: EVERY,
+      results: [ready({ "SKILL.md": "---\nname: grill-me\ndescription: d\n---\n" })],
+    });
+
+    const { text: said } = await call("environment_skill_update", args, {
+      approve: false,
+      reason: "Too big a change",
+    });
+
+    expect(updates).toEqual([]);
+    expect(said).toContain("Too big a change");
+  });
+
+  it("asks nothing when no Skill is ready, passing on why", async () => {
+    const {
+      call,
+      shown: _unused,
+      updates,
+      answerUpdatePreview,
+    } = await setUp().then((s) => ({ ...s, shown: [] }));
+
+    answerUpdatePreview({
+      status: "done",
+      environment: EVERY,
+      results: [{ name: "grill-me", outcome: "modified", message: "grill-me was edited." }],
+    });
+
+    const { result, text: said, shown } = await call("environment_skill_update", args);
+
+    expect(shown).toEqual([]);
+    expect(result.isError).toBe(true);
+    expect(said).toContain("- grill-me (modified): grill-me was edited.");
+    expect(updates).toEqual([]);
+  });
+
+  const pin = { name: "grill-me", savedAt: 1_234, commit: NEW_COMMIT, folderHash: "folder-hash-1" };
+  const asked = { overwrite: false, pins: [pin], unseen: { files: 0, characters: 0 }, notKept: [] };
+
+  it("applies on a rerun what the owner approved, though GitHub shows nothing to ask about now", async () => {
+    const { call, answeredEarlier, updates, updatePreviews, answerUpdate } = await setUp();
+
+    // The owner approved the update before the eviction; the rerun reads nothing, so GitHub's answer now cannot matter.
+    await answeredEarlier(7, asked);
+
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "updated",
+          from,
+          to,
+          overwrote: false,
+          change: installChange(4, "grill-me"),
+        },
+      ],
+      handed: false,
+    });
+
+    const { text: said, pending } = await call("environment_skill_update", args, {
+      approve: true,
+      task: 7,
+    });
+
+    expect(updates).toEqual([expect.objectContaining({ pins: [pin], approved: true })]);
+    expect(updatePreviews).toEqual([]);
+    expect(said).toContain("The user approved: updated grill-me");
+    expect(pending).toEqual([]);
+  });
+
+  it("reports on a rerun the Skills the card left out, and what it could not show", async () => {
+    const { call, answeredEarlier, answerUpdate } = await setUp();
+
+    await answeredEarlier(8, {
+      ...asked,
+      unseen: { files: 2, characters: 900 },
+      notKept: [{ name: "tdd", outcome: "modified", message: "it was edited" }],
+    });
+
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [{ name: "grill-me", outcome: "updated", from, to, overwrote: false }],
+      handed: false,
+    });
+
+    const { text: said } = await call("environment_skill_update", args, { approve: true, task: 8 });
+
+    expect(said).toContain("- tdd (modified): it was edited");
+    expect(said).toContain("900 characters in 2 files were cut or left out");
+  });
+
+  it("reports an approved update a rerun finds made, as approved, with nothing more changed", async () => {
+    const { call, answeredEarlier, logged, updatePreviews, answerUpdate } = await setUp();
+
+    await answeredEarlier(9, asked);
+
+    answerUpdate({
+      status: "done",
+      environment: EVERY,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "unchanged",
+          message: "it already has these files from that commit",
+        },
+      ],
+      handed: false,
+    });
+
+    const { text: said } = await call("environment_skill_update", args, { approve: true, task: 9 });
+
+    expect(said).toContain("The user approved, and the Skills grill-me were updated already");
+    expect(logged).toEqual([]);
+    expect(updatePreviews).toEqual([]);
+  });
+
+  it("asks nothing and says why when the Registry refuses a preview of too many Skills", async () => {
+    const { call, answerUpdatePreview, updates } = await setUp();
+
+    answerUpdatePreview({
+      status: "refused",
+      message:
+        "11 Skills would be updated, and one request for the user's Approval shows at most 10",
+    });
+
+    const {
+      result,
+      text: said,
+      shown,
+    } = await call("environment_skill_update", { id: "*", reason: "Keep current" });
+
+    expect(shown).toEqual([]);
+    expect(result.isError).toBe(true);
+    expect(said).toContain("shows at most 10");
+    expect(updates).toEqual([]);
+  });
+
+  it("asks nothing when none is marked update available", async () => {
+    const { call, answerUpdatePreview } = await setUp();
+
+    answerUpdatePreview({ status: "nothing", environment: EVERY });
+
+    const { shown, text: said } = await call("environment_skill_update", {
+      id: "*",
+      reason: "Keep current",
+    });
+
+    expect(shown).toEqual([]);
+    expect(said).toContain("is marked update available");
+  });
+});
+
+describe("environment_get marks", () => {
+  it("says a Skill is modified since it was installed, and that an update is available", () => {
+    const shown = describeEnvironment(
+      {
+        id: "default",
+        name: "Default",
+        repos: [],
+        build: { status: "none" },
+        settings: DEFAULT_CONTAINER_SETTINGS,
+        secrets: [],
+        everyVariables: {},
+        skills: [
+          {
+            name: "grill-me",
+            description: "Interview me.",
+            savedAt: 0,
+            source: {
+              repo: "mattpocock/skills",
+              path: "skills/grill-me",
+              ref: null,
+              commit: GRILL_COMMIT,
+            },
+            modified: true,
+            updateAvailable: true,
+          },
+          {
+            name: "tdd",
+            description: "Tests first.",
+            savedAt: 0,
+            source: {
+              repo: "mattpocock/skills",
+              path: "skills/tdd",
+              ref: null,
+              commit: GRILL_COMMIT,
+            },
+            modified: false,
+            updateAvailable: false,
+          },
+        ],
+        everySkills: [],
+      },
+      true,
+    );
+
+    expect(shown).toContain(
+      "at c0ffee0, modified since installed, update available): Interview me.",
+    );
+    expect(shown).toContain("skills/tdd at c0ffee0): Tests first.");
+    expect(shown).toContain("environment_skill_update");
+  });
+});

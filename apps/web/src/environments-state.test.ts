@@ -45,6 +45,8 @@ import {
   setSecretBuildAtom,
   environmentSkillsAtom,
   removeSkillAtom,
+  skillUpdateDialogAtom,
+  updateSkillAtom,
   skillChangeFilesAtom,
   skillChangeKey,
   secretDialogAtom,
@@ -1950,6 +1952,78 @@ describe("the Skills an Environment installs from GitHub", () => {
         "GitHub has no repo gone/gone, or the App cannot read it",
       );
       expect(registry.get(skillSourceAtom("work"))).toBe("gone/gone");
+    }),
+  );
+
+  it.effect(
+    "update a Skill on the owner's word, replacing edits only when asked, and list the Skills again",
+    () =>
+      Effect.gen(function* () {
+        let updatedAlready = false;
+        const asked: unknown[] = [];
+
+        const registry = registryWith({
+          listEnvironmentSkills: () =>
+            Effect.sync(() => [
+              {
+                name: "grill-me",
+                description: "Interview me.",
+                savedAt: 1,
+                source: {
+                  repo: "mattpocock/skills",
+                  path: "skills/grill-me",
+                  ref: null,
+                  commit: COMMIT,
+                },
+                modified: !updatedAlready,
+                updateAvailable: !updatedAlready,
+              },
+            ]),
+          updateEnvironmentSkills: (input) =>
+            Effect.sync(() => {
+              asked.push(input);
+              updatedAlready = true;
+
+              return { skills: [{ name: "grill-me", outcome: "updated" as const }] };
+            }),
+        });
+
+        registry.mount(environmentSkillsAtom("work"));
+        expect(
+          AsyncResult.getOrThrow(yield* settled(registry, environmentSkillsAtom("work"))),
+        ).toMatchObject([{ name: "grill-me", modified: true, updateAvailable: true }]);
+
+        registry.mount(updateSkillAtom("work"));
+        registry.set(skillUpdateDialogAtom("work"), "grill-me");
+        registry.set(updateSkillAtom("work"), { name: "grill-me", overwrite: true });
+
+        expect(AsyncResult.getOrThrow(yield* settled(registry, updateSkillAtom("work")))).toEqual({
+          skills: [{ name: "grill-me", outcome: "updated" }],
+        });
+        yield* settled(registry, environmentSkillsAtom("work"));
+
+        expect(asked).toEqual([{ environment: "work", names: ["grill-me"], overwrite: true }]);
+        // The list is asked for again: the marks are gone.
+        expect(AsyncResult.getOrThrow(registry.get(environmentSkillsAtom("work")))).toMatchObject([
+          { modified: false, updateAvailable: false },
+        ]);
+        registry.dispose();
+      }),
+  );
+
+  it.effect("say why an update failed", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        updateEnvironmentSkills: () =>
+          Effect.fail(new EnvironmentError({ message: "The Environment is gone" })),
+      });
+
+      registry.mount(updateSkillAtom("work"));
+      registry.set(updateSkillAtom("work"), { name: "grill-me", overwrite: false });
+
+      expect(settledFailureOf(yield* settled(registry, updateSkillAtom("work")))).toBe(
+        "The Environment is gone",
+      );
     }),
   );
 

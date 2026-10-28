@@ -36,6 +36,7 @@ import {
   changeTitleText,
   changeValueText,
   installOutcomeLines,
+  updateOutcomeLines,
   fieldValueText,
   revertible,
   deleteConfirmed,
@@ -439,6 +440,14 @@ describe("an Agent change", () => {
         source: { repo: "o/r", path: "skills/x", ref: "v2", commit: "c0ffee0000000000" },
       }),
     ).toBe("SKILL.md\nreferences/a.md\nfrom o/r/skills/x at v2, c0ffee0");
+    // An edit over an installed Skill keeps its source and marks it.
+    expect(
+      changeValueText({
+        files: { "SKILL.md": "h1" },
+        source: { repo: "o/r", path: "skills/x", ref: null, commit: "c0ffee0000000000" },
+        modified: true,
+      }),
+    ).toBe("SKILL.md\nfrom o/r/skills/x at c0ffee0 (modified since installed)");
     expect(changeValueText({ files: { "SKILL.md": "h1" } })).toBe("SKILL.md");
     expect(changeValueText("a\nb")).toBe("a\nb");
     expect(changeValueText(30)).toBe("30");
@@ -620,6 +629,30 @@ describe("a Skill's source and the outcome of an install", () => {
       "b: already installed from this commit, nothing changed",
       "c: refused: notes.md: a binary file",
       "d: refused",
+    ]);
+  });
+
+  it("says what each Skill of an update came to", () => {
+    expect(
+      updateOutcomeLines([
+        { name: "a", outcome: "updated" },
+        { name: "b", outcome: "unchanged" },
+        {
+          name: "c",
+          outcome: "modified",
+          message: "it was edited, and an update would replace the edits",
+        },
+        { name: "c2", outcome: "modified" },
+        { name: "d", outcome: "rejected", message: "GitHub's rate limit is used up" },
+        { name: "e", outcome: "rejected" },
+      ]),
+    ).toEqual([
+      "a: updated to the latest commit",
+      "b: already up to date, nothing changed",
+      "c: not updated: it was edited, and an update would replace the edits",
+      "c2: not updated: it was edited since it was installed",
+      "d: not updated: GitHub's rate limit is used up",
+      "e: not updated",
     ]);
   });
 });

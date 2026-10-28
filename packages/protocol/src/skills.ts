@@ -53,6 +53,13 @@ export const EnvironmentSkill = Schema.Struct({
   savedAt: Schema.Finite,
   /** Where it was installed from; absent for a Skill that was never installed. A save from a Workspace keeps the source it had. */
   source: Schema.optionalKey(SkillSource),
+  /**
+   * Whether the agent edited it since it was installed (GLOSSARY.md → Skill source): an update refuses it unless asked to
+   * overwrite. False or absent when it is not.
+   */
+  modified: Schema.optionalKey(Schema.Boolean),
+  /** Whether the daily check found its folder changed at the ref's head: an update would move it. False or absent when not. */
+  updateAvailable: Schema.optionalKey(Schema.Boolean),
 });
 
 export type EnvironmentSkill = typeof EnvironmentSkill.Type;
@@ -74,6 +81,8 @@ export const SkillChangeValue = Schema.Struct({
   files: Schema.Record(Schema.String, Schema.String),
   /** Where the Skill was installed from, when it was (a revert puts it back with the files). */
   source: Schema.optionalKey(SkillSource),
+  /** Whether the Skill was marked modified (a revert puts the mark back with the files). Absent when it was not. */
+  modified: Schema.optionalKey(Schema.Boolean),
 });
 
 export type SkillChangeValue = typeof SkillChangeValue.Type;
@@ -244,3 +253,95 @@ export const SkillSearchResult = Schema.Struct({
 });
 
 export type SkillSearchResult = typeof SkillSearchResult.Type;
+
+/** How the owner's update of one Skill went. */
+export const SkillUpdated = Schema.Struct({
+  name: Schema.String,
+  /**
+   * Moved to the ref's latest commit (`updated`); its folder is the same there (`unchanged`); refused because the agent
+   * edited it and no overwrite was asked (`modified`); or not updated, with why in `message` (`rejected`).
+   */
+  outcome: Schema.Literals(["updated", "unchanged", "modified", "rejected"]),
+  message: Schema.optionalKey(Schema.String),
+});
+
+export type SkillUpdated = typeof SkillUpdated.Type;
+
+/** What an update answers: how each Skill asked for, or marked update available, went. */
+export const SkillUpdate = Schema.Struct({ skills: Schema.Array(SkillUpdated) });
+
+export type SkillUpdate = typeof SkillUpdate.Type;
+
+/**
+ * What the owner's Approval of an update for every Environment was asked for, to apply exactly that: the commit shown, the
+ * digest of the folder at it (`folderHash`), and when the Skill was last saved. The update is made only at that commit,
+ * with those files, while the Skill still was last saved then.
+ */
+export const SkillUpdatePin = Schema.Struct({
+  name: Schema.String,
+  savedAt: Schema.Finite,
+  commit: Schema.String,
+  folderHash: Schema.String,
+});
+
+export type SkillUpdatePin = typeof SkillUpdatePin.Type;
+
+/** What became of one Skill an update was asked for, as the Registry answers it. */
+export type SkillUpdateEntry =
+  | {
+      readonly name: string;
+      readonly outcome: "updated";
+      readonly from: SkillSource;
+      readonly to: SkillSource;
+      /** Whether the edits the agent made to it were replaced. */
+      readonly overwrote: boolean;
+      /** The Agent change that kept it (the agent's update only). */
+      readonly change?: AgentChange | undefined;
+    }
+  /** Its folder is the same at the ref's latest commit: nothing was changed or recorded. */
+  | { readonly name: string; readonly outcome: "unchanged"; readonly message: string }
+  /** Refused: it was edited since it was installed and no overwrite was asked. */
+  | { readonly name: string; readonly outcome: "modified"; readonly message: string }
+  /** Not updated: no such Skill, none installed, GitHub gave no answer, or the files fail a save's checks. */
+  | { readonly name: string; readonly outcome: "rejected"; readonly message: string }
+  /** It was saved again since the owner was asked: nothing was changed. */
+  | { readonly name: string; readonly outcome: "changed-since"; readonly message: string };
+
+/** A Skill an update would move, with the files it would take: for the owner's Approval card (nothing applied). */
+export type SkillUpdateReady = {
+  readonly name: string;
+  readonly outcome: "ready";
+  readonly from: SkillSource;
+  readonly to: SkillSource;
+  readonly description: string;
+  /** Its files' text, by path in its folder. */
+  readonly files: Readonly<Record<string, string>>;
+  /** The digest of its folder at the new commit: what an Approval pins. */
+  readonly folderHash: string;
+  /** When the Skill kept was last saved: an approved update is made only while it still was then. */
+  readonly savedAt: number;
+  /** The Skill is modified: the update would replace the agent's edits. */
+  readonly overwrites: boolean;
+  /** The Skill of the name the scope keeps now, with its files' paths. */
+  readonly current: { readonly description: string; readonly files: ReadonlyArray<string> };
+};
+
+/** How an update of installed Skills went, as the Registry answers it. */
+export type SkillUpdateRun<Entry = SkillUpdateEntry> =
+  | { readonly status: "missing" }
+  /** Nothing was read or changed: more Skills than one Approval shows, or a change for every Environment with no Approval. */
+  | { readonly status: "refused"; readonly message: string }
+  /** No Skill was named and none is marked update available. */
+  | {
+      readonly status: "nothing";
+      readonly environment: { readonly id: string; readonly name: string };
+    }
+  | {
+      readonly status: "done";
+      readonly environment: { readonly id: string; readonly name: string };
+      /** Each Skill asked for (or marked update available), in the order it was asked. */
+      readonly results: ReadonlyArray<Entry>;
+    };
+
+/** What an update would do, with nothing applied: each Skill that would move, with the files it would take. */
+export type SkillUpdatePreview = SkillUpdateRun<SkillUpdateEntry | SkillUpdateReady>;

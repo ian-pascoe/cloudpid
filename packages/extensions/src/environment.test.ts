@@ -387,7 +387,7 @@ describe("the environment tools", () => {
     const shown = text(await run(tool("environment_get"), { id: "0000abcd" }));
 
     expect(shown).toContain("npm ERR! missing script");
-    expect(shown.length).toBeLessThan(2_000);
+    expect(shown.length).toBeLessThan(2_300);
   });
 
   it("refuses an id no Environment has, pointing to environment_list", async () => {
@@ -762,6 +762,19 @@ describe("the variables kept for every Environment", () => {
     }
 
     expect(environments.changes).toEqual([]);
+
+    const refusal = await failure(
+      run(tool("environment_container_resize"), { id: "*", reason: "r", size: "cpu-2" }),
+    );
+
+    for (const taker of [
+      "environment_skill_save",
+      "environment_skill_install",
+      "environment_skill_update",
+      "environment_skill_remove",
+    ]) {
+      expect(refusal, taker).toContain(taker);
+    }
   });
 });
 

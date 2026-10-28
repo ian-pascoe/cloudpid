@@ -149,6 +149,28 @@ describe("githubContents", () => {
     );
   });
 
+  it("lists the tree at a ref's head in one request, the default branch's with HEAD", async () => {
+    const listing = json({
+      sha: "tree",
+      truncated: false,
+      tree: [{ path: "a/SKILL.md", type: "blob", sha: "b1", size: 12 }],
+    });
+
+    const { reader, calls } = harness([listing, listing.clone()]);
+
+    expect(await reader.headTree(repo, null)).toEqual({
+      truncated: false,
+      entries: [{ path: "a/SKILL.md", type: "blob", sha: "b1", size: 12 }],
+    });
+
+    await reader.headTree(repo, "feature/a b");
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.github.com/repos/acme/skills/git/trees/HEAD?recursive=1",
+      "https://api.github.com/repos/acme/skills/git/trees/feature/a%20b?recursive=1",
+    ]);
+  });
+
   it("says a tree GitHub cut short is truncated", async () => {
     const { reader } = harness([json({ sha: "tree", truncated: true, tree: [] })]);
 

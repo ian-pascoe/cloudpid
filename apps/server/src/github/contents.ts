@@ -137,6 +137,24 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
       ? `GitHub has no repo ${repo.owner}/${repo.name}, or the GitHub App's installation on ${repo.owner} does not include it (install it on all repositories).`
       : `GitHub has no repo ${repo.owner}/${repo.name}, or it is private and the GitHub App is not installed on ${repo.owner} (install it there, on all repositories).`;
 
+  /** The recursive tree `at` names (a commit's SHA, or a ref as it goes in a URL). */
+  const treeAt = async (repo: SkillRepo, at: string): Promise<RepoTree> => {
+    const response = await ask(
+      repo,
+      `${repoPath(repo)}/git/trees/${at}?recursive=1`,
+      "application/vnd.github+json",
+      gone(repo),
+    );
+
+    const decoded = decodeTree(await response.json().catch(() => null));
+
+    if (Option.isNone(decoded)) {
+      throw GithubReadError.of("failed", "GitHub's answer to the tree was not a tree");
+    }
+
+    return { truncated: decoded.value.truncated, entries: decoded.value.tree };
+  };
+
   return {
     commit: async (repo, ref) => {
       const response = await ask(
@@ -157,22 +175,9 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
 
       return sha;
     },
-    tree: async (repo, commit): Promise<RepoTree> => {
-      const response = await ask(
-        repo,
-        `${repoPath(repo)}/git/trees/${commit}?recursive=1`,
-        "application/vnd.github+json",
-        gone(repo),
-      );
-
-      const decoded = decodeTree(await response.json().catch(() => null));
-
-      if (Option.isNone(decoded)) {
-        throw GithubReadError.of("failed", "GitHub's answer to the tree was not a tree");
-      }
-
-      return { truncated: decoded.value.truncated, entries: decoded.value.tree };
-    },
+    tree: (repo, commit) => treeAt(repo, commit),
+    // One request, whatever the ref is: GitHub's Trees API takes a branch, a tag or a SHA, and `HEAD` is the default branch.
+    headTree: (repo, ref) => treeAt(repo, ref === null ? "HEAD" : refPath(ref)),
     blob: async (repo, sha) => {
       const response = await ask(
         repo,

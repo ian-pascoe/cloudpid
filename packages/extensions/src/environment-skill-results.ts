@@ -12,6 +12,9 @@ import {
   type SkillInstallation,
   type SkillInstallPin,
   type SkillInstallPreview,
+  type SkillUpdatePin,
+  type SkillUpdatePreview,
+  type SkillUpdateRun,
   shortSha,
   SKILLS_ROOT,
   skillField,
@@ -75,6 +78,14 @@ export type SkillSaved =
 export type SkillsInstalled =
   | Exclude<SkillInstallation, { readonly status: "installed" }>
   | (Extract<SkillInstallation, { readonly status: "installed" }> & { readonly handed: boolean });
+
+/**
+ * How an update of Skills went: as the Registry answers (`SkillUpdateRun`), and for one that was made, whether this
+ * Session's own Workspace serves the new Skill set now.
+ */
+export type SkillsUpdated =
+  | Exclude<SkillUpdateRun, { readonly status: "done" }>
+  | (Extract<SkillUpdateRun, { readonly status: "done" }> & { readonly handed: boolean });
 
 /** How the removal of a Skill went. */
 export type SkillRemoved =
@@ -161,6 +172,24 @@ export type EnvironmentSkills = {
     /** What the owner's Approval was asked against: read at its commit, and a Skill kept only while it still holds. */
     readonly pin?: SkillInstallPin | undefined;
   }) => Effect.Effect<SkillsInstalled, EnvironmentsError>;
+  /**
+   * Update the Skills `names` (absent: every one marked update available) the scope keeps to the latest commit of their
+   * recorded ref, fetched by the Registry as the GitHub App; a modified Skill is refused unless `overwrite`. With `pins`,
+   * the commits and folders the owner was shown, and only while each Skill was last saved then.
+   */
+  readonly updateSkills: (input: {
+    readonly environment: string;
+    readonly names?: ReadonlyArray<string> | undefined;
+    readonly overwrite: boolean;
+    readonly pins?: ReadonlyArray<SkillUpdatePin> | undefined;
+    readonly author: ChangeAuthor;
+  }) => Effect.Effect<SkillsUpdated, EnvironmentsError>;
+  /** What `updateSkills` would do with the same names, nothing saved or recorded. */
+  readonly previewUpdates: (input: {
+    readonly environment: string;
+    readonly names?: ReadonlyArray<string> | undefined;
+    readonly overwrite: boolean;
+  }) => Effect.Effect<SkillUpdatePreview, EnvironmentsError>;
   /** What `installSkills` would do with the same source, nothing kept or recorded. */
   readonly previewInstall: (input: {
     readonly environment: string;

@@ -13,7 +13,13 @@ import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
-import { EnvironmentSkill, SkillChangeFiles, SkillInstall, SkillSearchResult } from "./skills.ts";
+import {
+  EnvironmentSkill,
+  SkillChangeFiles,
+  SkillInstall,
+  SkillSearchResult,
+  SkillUpdate,
+} from "./skills.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -691,6 +697,23 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("removeEnvironmentSkill", {
     payload: { environment: AgentChangeScope, name: Schema.String },
+    error: EnvironmentError,
+  }),
+  /**
+   * Update Skills kept for an Environment, or for every Environment (`*`), to the latest commit of each one's recorded ref
+   * (ADR-0026): `names` the Skills (absent: every one marked update available), each fetched by the Registry as the GitHub
+   * App and kept in place of itself with its new Skill source, unless the agent edited it (**modified**) and `overwrite` is
+   * not set. The owner's own save: not an Agent change, no Approval, not revertible. Answers how each Skill went
+   * (none when none is named and none is marked update available), and fails with an `EnvironmentError` when the
+   * Environment is not there.
+   */
+  Rpc.make("updateEnvironmentSkills", {
+    payload: {
+      environment: AgentChangeScope,
+      names: Schema.optionalKey(Schema.String.pipe(Schema.Array)),
+      overwrite: Schema.optionalKey(Schema.Boolean),
+    },
+    success: SkillUpdate,
     error: EnvironmentError,
   }),
   /**

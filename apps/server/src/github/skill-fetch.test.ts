@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
-import { fetchSkills, GithubReadError, type RepoReader } from "./skill-fetch.ts";
+import { fetchSkills, fetchSkillsAt, GithubReadError, type RepoReader } from "./skill-fetch.ts";
 import { parseSkillSource } from "./skill-source.ts";
 
 const COMMIT = "c0ffee0000000000000000000000000000000001";
@@ -19,21 +19,24 @@ const readerOf = (files: Repo, options: { truncated?: boolean } = {}) => {
   const bytesOf = (value: string | Uint8Array) =>
     Predicate.isString(value) ? new TextEncoder().encode(value) : value;
 
+  const listing = () => ({
+    truncated: options.truncated ?? false,
+    entries: Object.entries(files).map(([path, value]) => ({
+      path,
+      type: "blob" as const,
+      sha: path,
+      size: bytesOf(value).length,
+    })),
+  });
+
   const reader: RepoReader = {
     commit: async (_repo, ref) => {
       asked.push(ref);
 
       return COMMIT;
     },
-    tree: async () => ({
-      truncated: options.truncated ?? false,
-      entries: Object.entries(files).map(([path, value]) => ({
-        path,
-        type: "blob" as const,
-        sha: path,
-        size: bytesOf(value).length,
-      })),
-    }),
+    tree: async () => listing(),
+    headTree: async () => listing(),
     blob: async (_repo, sha) => {
       reads.push(sha);
 
@@ -156,6 +159,7 @@ describe("fetchSkills", () => {
             "SKILL.md": REPO["skills/grill-me/SKILL.md"],
             "references/questions.md": "- why?",
           },
+          folderHash: expect.stringMatching(/^[0-9a-f]{64}$/),
         },
       ],
       skipped: [],
@@ -481,6 +485,7 @@ describe("fetchSkills", () => {
           throw GithubReadError.of("not_found", "GitHub has no repo o/gone");
         },
         tree: async () => ({ entries: [], truncated: false }),
+        headTree: async () => ({ entries: [], truncated: false }),
         blob: async () => new Uint8Array(),
       },
       { source: source("o/gone") },
@@ -500,11 +505,97 @@ describe("fetchSkills", () => {
           throw new TypeError("boom");
         },
         tree: async () => ({ entries: [], truncated: false }),
+        headTree: async () => ({ entries: [], truncated: false }),
         blob: async () => new Uint8Array(),
       },
       { source: source("o/r") },
     );
 
     await expect(bug).rejects.toThrow("boom");
+  });
+});
+
+describe("fetchSkillsAt", () => {
+  const repo = { owner: "o", name: "skills" };
+
+  it("reads installed Skills again at one commit, with one commit and one tree for all of them", async () => {
+    const { reader, reads, asked } = readerOf(REPO);
+
+    const result = await fetchSkillsAt(reader, {
+      repo,
+      ref: "v2",
+      folders: ["skills/grill-me", "skills/tdd"],
+    });
+
+    expect(asked).toEqual(["v2"]);
+    expect(result).toEqual({
+      status: "fetched",
+      commit: COMMIT,
+      skills: [
+        {
+          ok: true,
+          name: "grill-me",
+          description: "Interview me relentlessly",
+          files: {
+            "SKILL.md": REPO["skills/grill-me/SKILL.md"],
+            "references/questions.md": "- why?",
+          },
+          folderHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
+        expect.objectContaining({ ok: true, name: "tdd", files: expect.any(Object) }),
+      ],
+    });
+
+    // metadata.json is left out, as an install leaves it.
+    expect(reads).not.toContain("skills/grill-me/metadata.json");
+  });
+
+  it("tells, for a Skill, that its folder lost its SKILL.md or its name, and still reads the others", async () => {
+    const { reader } = readerOf({
+      "skills/gone/notes.md": "x",
+      "skills/nameless/SKILL.md": "---\ndescription: d\n---\n",
+      "skills/fine/SKILL.md": skillMd("fine"),
+    });
+
+    const result = await fetchSkillsAt(reader, {
+      repo,
+      ref: null,
+      folders: ["skills/gone", "skills/nameless", "skills/fine"],
+    });
+
+    expect(result).toMatchObject({
+      status: "fetched",
+      skills: [
+        { ok: false, message: expect.stringContaining("holds no SKILL.md") },
+        { ok: false, message: expect.stringContaining("sets no name or no description") },
+        { ok: true, name: "fine" },
+      ],
+    });
+  });
+
+  it("fails when GitHub lists only part of the repo, or cannot be read", async () => {
+    const cut = readerOf(REPO, { truncated: true });
+
+    expect(
+      await fetchSkillsAt(cut.reader, { repo, ref: null, folders: ["skills/tdd"] }),
+    ).toMatchObject({
+      status: "failed",
+      kind: "truncated",
+    });
+
+    const { reader } = readerOf(REPO);
+
+    const limited: RepoReader = {
+      ...reader,
+      commit: async () => {
+        throw GithubReadError.of("rate_limited", "GitHub's rate limit is used up.");
+      },
+    };
+
+    expect(await fetchSkillsAt(limited, { repo, ref: null, folders: ["skills/tdd"] })).toEqual({
+      status: "failed",
+      kind: "rate_limited",
+      message: "GitHub's rate limit is used up.",
+    });
   });
 });

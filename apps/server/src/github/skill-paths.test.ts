@@ -5,10 +5,12 @@
 import { describe, expect, it } from "vitest";
 import {
   findSkillMdPaths,
+  folderHashOf,
   isInstallablePath,
   PRIORITY_PREFIXES,
   skillFilesIn,
   skillFolderOf,
+  skillMdIn,
   type TreeEntry,
 } from "./skill-paths.ts";
 
@@ -194,6 +196,61 @@ describe("a Skill's folder and files", () => {
       "SKILL.md",
       "references/a.md",
     ]);
+  });
+
+  it("finds the SKILL.md of a folder in any case, and of the repo's root, preferring SKILL.md", () => {
+    const tree = {
+      tree: [
+        blob("skill.md"),
+        blob("skills/foo/skill.md"),
+        blob("skills/bar/SKILL.md"),
+        blob("skills/bar/skill.md"),
+        blob("skills/baz/notes.md"),
+      ],
+    };
+
+    expect(skillMdIn(tree, "")).toBe("skill.md");
+    expect(skillMdIn(tree, "skills/foo")).toBe("skills/foo/skill.md");
+    expect(skillMdIn(tree, "skills/bar")).toBe("skills/bar/SKILL.md");
+    expect(skillMdIn(tree, "skills/baz")).toBeUndefined();
+    expect(skillMdIn(tree, "skills")).toBeUndefined();
+  });
+
+  it("digests the files a Skill installs and nothing else, whatever the order of the tree", async () => {
+    const files = [
+      blob("skills/foo/SKILL.md"),
+      blob("skills/foo/references/a.md"),
+      blob("skills/foo/metadata.json"),
+    ];
+
+    const hash = await folderHashOf({ tree: files }, "skills/foo/SKILL.md");
+
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(await folderHashOf({ tree: files.toReversed() }, "skills/foo/SKILL.md")).toBe(hash);
+    // Another file of the repo, or one an install leaves out, does not move it.
+    expect(
+      await folderHashOf(
+        {
+          tree: [
+            ...files,
+            blob("README.md"),
+            blob("skills/foo/.git/HEAD"),
+            { ...blob("skills/foo/metadata.json"), sha: "other" },
+          ],
+        },
+        "skills/foo/SKILL.md",
+      ),
+    ).toBe(hash);
+    // A file of the Skill that changed, or one it gained, does.
+
+    const changed = files.map((entry) =>
+      entry.path.endsWith("a.md") ? { ...entry, sha: "new" } : entry,
+    );
+
+    expect(await folderHashOf({ tree: changed }, "skills/foo/SKILL.md")).not.toBe(hash);
+    expect(
+      await folderHashOf({ tree: [...files, blob("skills/foo/more.md")] }, "skills/foo/SKILL.md"),
+    ).not.toBe(hash);
   });
 
   it("takes only the SKILL.md of a Skill at the repo's root (the CLI's root-level rule)", () => {

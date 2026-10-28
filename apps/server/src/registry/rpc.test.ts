@@ -793,6 +793,39 @@ const fakeRegistries = () => {
     agentRemoveSkill: () => Effect.die("The endpoint makes no Agent change"),
     agentInstallSkills: () => Effect.die("The endpoint makes no Agent change"),
     agentPreviewSkillInstall: () => Effect.die("The endpoint makes no Agent change"),
+    agentUpdateSkills: () => Effect.die("The endpoint makes no Agent change"),
+    previewSkillUpdates: () => Effect.die("The endpoint previews no update"),
+    checkSkillUpdates: () =>
+      Effect.sync(() => {
+        calls.push("checkSkillUpdates");
+      }),
+    updateSkills: ({ environment, names, overwrite }) =>
+      Effect.sync(() => {
+        calls.push(`updateSkills:${environment}:${names?.join(",") ?? ""}:${overwrite}`);
+
+        return environment === "ghost"
+          ? { status: "missing" as const }
+          : names?.length === 0
+            ? { status: "nothing" as const, environment: { id: environment, name: "Default" } }
+            : {
+                status: "done" as const,
+                environment: { id: environment, name: "Default" },
+                results: [
+                  {
+                    name: "grill-me",
+                    outcome: "updated" as const,
+                    from: { repo: "o/skills", path: "skills/grill-me", ref: null, commit: "a" },
+                    to: { repo: "o/skills", path: "skills/grill-me", ref: null, commit: "b" },
+                    overwrote: false,
+                  },
+                  {
+                    name: "tdd",
+                    outcome: "modified" as const,
+                    message: "it was edited",
+                  },
+                ],
+              };
+      }),
     installSkills: ({ environment, source, skills }) =>
       Effect.sync(() => {
         calls.push(`installSkills:${environment}:${source}:${skills?.join(",") ?? ""}`);
@@ -2999,6 +3032,39 @@ it("installs Skills from a source on the owner's word, listing a source that hol
   expect(fake.calls.filter((name) => !name.startsWith("installSkills"))).toEqual([]);
 });
 
+it("updates Skills for the page as the owner's own save, saying how each went and running nothing else", async () => {
+  const fake = fakeRegistries();
+
+  const updated = await call(fake, (registry) =>
+    registry.updateEnvironmentSkills({
+      environment: DEFAULT_ENVIRONMENT,
+      names: ["grill-me", "tdd"],
+      overwrite: false,
+    }),
+  );
+
+  const everywhere = await call(fake, (registry) =>
+    registry.updateEnvironmentSkills({ environment: "*", names: [], overwrite: true }),
+  );
+
+  const unknown = await call(fake, (registry) =>
+    // SAFETY: the fake Registry knows no Environment "ghost"; the id's brand is only a type.
+    Effect.flip(registry.updateEnvironmentSkills({ environment: "ghost" as never })),
+  );
+
+  expect(updated).toEqual({
+    skills: [
+      { name: "grill-me", outcome: "updated" },
+      { name: "tdd", outcome: "modified", message: "it was edited" },
+    ],
+  });
+  expect(everywhere).toEqual({ skills: [] });
+  expect(unknown.message).toBe('Environment "ghost" does not exist');
+  // Skills are not part of a Build: nothing else runs. The owner's Update needs no Approval, even for `*`.
+  expect(fake.calls.filter((name) => !name.startsWith("updateSkills"))).toEqual([]);
+  expect(fake.calls).toContain("updateSkills:*::true");
+});
+
 it("searches skills.sh for the page and reports why a search failed", async () => {
   const fake = fakeRegistries();
 
@@ -4168,6 +4234,19 @@ it("keeps the Builds behind the Session list until a run finds nothing to do or 
   }
 
   expect(Arr.filter(fake.calls, (name) => name === "buildWork:*")).toHaveLength(1);
+});
+
+it("asks the Registry to check the installed Skills when the Builds have nothing to do, and not again while they rest", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.listSessions());
+  await fake.runBackground();
+  expect(Arr.filter(fake.calls, (name) => name === "checkSkillUpdates")).toHaveLength(1);
+
+  // The Registry keeps the check to once a day itself; the upkeep rests an hour before it asks again.
+  await call(fake, (registry) => registry.listSessions());
+  await fake.runBackground();
+  expect(Arr.filter(fake.calls, (name) => name === "checkSkillUpdates")).toHaveLength(1);
 });
 
 it("makes an Environment's Build again when the owner asks, though it is current", async () => {

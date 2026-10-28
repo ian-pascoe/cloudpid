@@ -169,6 +169,9 @@ const open = (
             description: "Cut a release.",
             files: {},
             source: null,
+            modified: false,
+            folderHash: null,
+            updateAvailable: false,
             savedAt: 1,
           },
           bundled: false,
@@ -238,6 +241,46 @@ const open = (
                 },
               ],
             } as const);
+      }),
+    agentUpdateSkills: (input: Parameters<EnvironmentsRegistry["agentUpdateSkills"]>[0]) =>
+      Effect.sync(() => {
+        skillsAsked.push(input);
+
+        const scope = input.environment === "*" ? EVERY_SCOPE : DEFAULT_SCOPE;
+
+        if (input.environment === "ghost") return { status: "missing" as const };
+
+        if (input.names?.length === 0) return { status: "nothing" as const, environment: scope };
+
+        const from = { repo: "o/skills", path: "skills/grill-me", ref: null, commit: "aaa" };
+
+        return {
+          status: "done" as const,
+          environment: scope,
+          results:
+            input.names?.[0] === "same"
+              ? [{ name: "same", outcome: "unchanged" as const, message: "its folder is the same" }]
+              : [
+                  {
+                    name: "grill-me",
+                    outcome: "updated" as const,
+                    from,
+                    to: { ...from, commit: "bbb" },
+                    overwrote: false,
+                    change: {
+                      ...CHANGE,
+                      field: "skills.grill-me",
+                      tool: "environment_skill_update",
+                    },
+                  },
+                ],
+        };
+      }),
+    previewSkillUpdates: (input: Parameters<EnvironmentsRegistry["previewSkillUpdates"]>[0]) =>
+      Effect.sync(() => {
+        skillsAsked.push(input);
+
+        return { status: "nothing" as const, environment: EVERY_SCOPE };
       }),
     agentPreviewSkillInstall: (
       input: Parameters<EnvironmentsRegistry["agentPreviewSkillInstall"]>[0],
@@ -455,6 +498,63 @@ describe("the Session's Environments", () => {
     });
     expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
     expect(upkept).toEqual([]);
+  });
+
+  it("hand the Session's own Workspace the Skill set after an update, asking the Registry to fetch as the App", async () => {
+    const { environments, skillSetsHanded, skillsAsked, upkept } = open();
+
+    const updated = await Effect.runPromise(
+      environments.updateSkills({
+        environment: "default",
+        names: ["grill-me"],
+        overwrite: true,
+        author,
+      }),
+    );
+
+    // The Session passes the names on; it holds no token and fetches nothing.
+    expect(skillsAsked).toEqual([
+      {
+        environment: "default",
+        names: ["grill-me"],
+        overwrite: true,
+        author: { session: "s-1", ...author },
+      },
+    ]);
+    expect(updated).toMatchObject({
+      status: "done",
+      environment: { id: "default" },
+      results: [{ name: "grill-me", outcome: "updated", overwrote: false }],
+      handed: true,
+    });
+    expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
+    expect(upkept).toEqual([]);
+  });
+
+  it("hand nothing after an update that moved no Skill, or that found none to update", async () => {
+    const { environments, skillSetsHanded } = open();
+
+    const same = await Effect.runPromise(
+      environments.updateSkills({
+        environment: "default",
+        names: ["same"],
+        overwrite: false,
+        author,
+      }),
+    );
+
+    const nothing = await Effect.runPromise(
+      environments.updateSkills({ environment: "default", names: [], overwrite: false, author }),
+    );
+
+    const missing = await Effect.runPromise(
+      environments.updateSkills({ environment: "ghost", overwrite: false, author }),
+    );
+
+    expect(same).toMatchObject({ status: "done", handed: false });
+    expect(nothing).toMatchObject({ status: "nothing" });
+    expect(missing).toEqual({ status: "missing" });
+    expect(skillSetsHanded).toEqual([]);
   });
 
   it("hand nothing when the Session's Environment keeps its own Skill of the name kept for every Environment", async () => {

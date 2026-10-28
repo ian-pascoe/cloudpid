@@ -92,6 +92,15 @@ const inEnvironment = (args: Args, line: Option.Option<string>): Option.Option<s
     }),
   );
 
+/** The Skills an `environment_skill_update` call names, or that it updates the ones marked update available. */
+const skillNames = (args: Args): Option.Option<string> => {
+  const names = Arr.isArray(args.names) ? Arr.filter(args.names, Predicate.isString) : [];
+
+  return Option.some(
+    names.length > 0 ? Arr.join(names, ", ") : "the Skills marked update available",
+  );
+};
+
 /** Why an `environment_idle_time_set` call sets the idle time, and the minutes. */
 const idleTime = (args: Args): Option.Option<string> =>
   Option.map(firstLine(args, "reason"), (reason) =>
@@ -233,6 +242,8 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return inEnvironment(args, text(args, "path"));
       case "environment_skill_install":
         return inEnvironment(args, text(args, "source"));
+      case "environment_skill_update":
+        return inEnvironment(args, skillNames(args));
       case "skill_search":
         return text(args, "query");
       case "settings_spend_limit_set":

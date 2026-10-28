@@ -78,6 +78,16 @@ describe("toolSummary", () => {
         reason: "r",
       }),
     ).toBe("0000abcd: mattpocock/skills@grill-me");
+    expect(
+      toolSummary("environment_skill_update", {
+        id: "0000abcd",
+        names: ["grill-me", "tdd"],
+        reason: "r",
+      }),
+    ).toBe("0000abcd: grill-me, tdd");
+    expect(toolSummary("environment_skill_update", { reason: "r" })).toBe(
+      "the Skills marked update available",
+    );
     expect(toolSummary("skill_search", { query: "grill" })).toBe("grill");
     expect(toolSummary("environment_skill_remove", { id: "0000abcd", name: "release" })).toBe(
       "release in 0000abcd",

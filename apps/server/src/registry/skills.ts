@@ -55,6 +55,19 @@ export type StoredSkill = {
   readonly files: HashedFiles;
   /** Where it was installed from (migration 23); null for one that was never installed. A save from a Workspace keeps the source it had. */
   readonly source: SkillSource | null;
+  /**
+   * Whether the agent saved over it since it was installed (migration 24): an update refuses it unless asked to
+   * overwrite. Only a Skill with a source is.
+   */
+  readonly modified: boolean;
+  /**
+   * A digest of the git blob SHAs of the files its source's folder holds at the source's commit (`folderHashOf`), what
+   * the daily check compares the ref's head with. Null until it is recorded (an install and an update record it; the
+   * check fills it in for a Skill kept before).
+   */
+  readonly folderHash: string | null;
+  /** Whether the daily check found the folder changed at the ref's head. */
+  readonly updateAvailable: boolean;
   readonly savedAt: number;
 };
 
@@ -63,8 +76,14 @@ type SkillRow = {
   description: string;
   files: string;
   source: string | null;
+  modified: number;
+  folder_hash: string | null;
+  update_available: number;
   saved_at: number;
 };
+
+const COLUMNS =
+  "name, description, files, source, modified, folder_hash, update_available, saved_at";
 
 const decodeFiles = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
@@ -78,6 +97,9 @@ const toSkill = (row: SkillRow): StoredSkill => ({
   // Only ever written from a record of strings.
   files: Option.getOrElse(decodeFiles(row.files), () => ({})),
   source: row.source === null ? null : Option.getOrNull(decodeSource(row.source)),
+  modified: row.modified !== 0,
+  folderHash: row.folder_hash,
+  updateAvailable: row.update_available !== 0,
   savedAt: row.saved_at,
 });
 
@@ -143,10 +165,30 @@ export type Skills = {
   readonly list: (scope: string) => ReadonlyArray<StoredSkill>;
   /** The Skill `name` kept for `scope`, or null. */
   readonly get: (scope: string, name: string) => StoredSkill | null;
-  /** Keep `skill` for `scope` in place of one of its name, with the texts of its files that are not kept yet. */
+  /** Every Skill that has a source, in any scope (an Environment's id, or `*`), for the daily check. */
+  readonly listSourced: () => ReadonlyArray<StoredSkill & { readonly scope: string }>;
+  /**
+   * Record what the daily check or an update found of Skill `name` of `scope`, without touching its files or when it was
+   * saved: the folder's hash at its source's commit, and whether an update is available. Only while the Skill still has
+   * `commit` as its source's (it may have been saved again since the check read it); says whether it did.
+   */
+  readonly recordFound: (
+    scope: string,
+    name: string,
+    commit: string,
+    found: {
+      readonly folderHash?: string | undefined;
+      readonly updateAvailable?: boolean | undefined;
+    },
+  ) => boolean;
+  /**
+   * Keep `skill` for `scope` in place of one of its name, with the texts of its files that are not kept yet. A Skill that
+   * says nothing of its marks and folder hash is kept without them.
+   */
   readonly put: (
     scope: string,
-    skill: Omit<StoredSkill, "savedAt">,
+    skill: Omit<StoredSkill, "savedAt" | "modified" | "folderHash" | "updateAvailable"> &
+      Partial<Pick<StoredSkill, "modified" | "folderHash" | "updateAvailable">>,
     contents: ReadonlyMap<string, string>,
     now: number,
   ) => void;
@@ -163,23 +205,52 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
   list: (scope) =>
     Arr.map(
       sql
-        .exec<SkillRow>(
-          "SELECT name, description, files, source, saved_at FROM skills WHERE scope = ? ORDER BY name",
-          scope,
-        )
+        .exec<SkillRow>(`SELECT ${COLUMNS} FROM skills WHERE scope = ? ORDER BY name`, scope)
         .toArray(),
       toSkill,
     ),
   get: (scope, name) => {
     const [row] = sql
-      .exec<SkillRow>(
-        "SELECT name, description, files, source, saved_at FROM skills WHERE scope = ? AND name = ?",
-        scope,
-        name,
-      )
+      .exec<SkillRow>(`SELECT ${COLUMNS} FROM skills WHERE scope = ? AND name = ?`, scope, name)
       .toArray();
 
     return row === undefined ? null : toSkill(row);
+  },
+  listSourced: () =>
+    Arr.map(
+      sql
+        .exec<SkillRow & { scope: string }>(
+          `SELECT scope, ${COLUMNS} FROM skills WHERE source IS NOT NULL ORDER BY scope, name`,
+        )
+        .toArray(),
+      (row) => ({ scope: row.scope, ...toSkill(row) }),
+    ),
+  recordFound: (scope, name, commit, { folderHash, updateAvailable }) => {
+    const [row] = sql
+      .exec<SkillRow>(`SELECT ${COLUMNS} FROM skills WHERE scope = ? AND name = ?`, scope, name)
+      .toArray();
+
+    if (row === undefined || toSkill(row).source?.commit !== commit) return false;
+
+    if (folderHash !== undefined) {
+      sql.exec(
+        "UPDATE skills SET folder_hash = ? WHERE scope = ? AND name = ?",
+        folderHash,
+        scope,
+        name,
+      );
+    }
+
+    if (updateAvailable !== undefined) {
+      sql.exec(
+        "UPDATE skills SET update_available = ? WHERE scope = ? AND name = ?",
+        updateAvailable ? 1 : 0,
+        scope,
+        name,
+      );
+    }
+
+    return true;
   },
   put: (scope, skill, contents, now) => {
     // One row per text keeps each row far below the 2 MB a row may hold: a file is at most 128 KB.
@@ -192,14 +263,19 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
     }
 
     sql.exec(
-      `INSERT INTO skills (scope, name, description, files, source, saved_at) VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO skills (scope, name, description, files, source, modified, folder_hash, update_available, saved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (scope, name) DO UPDATE SET description = excluded.description, files = excluded.files,
-         source = excluded.source, saved_at = excluded.saved_at`,
+         source = excluded.source, modified = excluded.modified, folder_hash = excluded.folder_hash,
+         update_available = excluded.update_available, saved_at = excluded.saved_at`,
       scope,
       skill.name,
       skill.description,
       JSON.stringify(skill.files),
       skill.source === null ? null : JSON.stringify(skill.source),
+      skill.modified === true ? 1 : 0,
+      skill.folderHash ?? null,
+      skill.updateAvailable === true ? 1 : 0,
       now,
     );
   },
@@ -626,9 +702,22 @@ const refusedToTakeOut = (context: SetContext, scope: string, name: string): str
     : `${problem} once the Skill of the name in the layer below, which ${name} hides, is served instead: remove another Skill first`;
 };
 
-/** A Skill's files, and where it was installed from if it was, as an Agent change records them. */
-const changeValue = (files: HashedFiles, source: SkillSource | null = null): SkillChangeValue =>
-  source === null ? { files: { ...files } } : { files: { ...files }, source };
+/**
+ * A Skill's files, where it was installed from if it was, and whether it was marked modified, as an Agent change records
+ * them: a revert puts all three back.
+ */
+const changeValue = ({
+  files,
+  source,
+  modified,
+}: Pick<StoredSkill, "files" | "source" | "modified">): SkillChangeValue => {
+  const value = { files: { ...files } };
+
+  if (source === null) return value;
+
+  // Only an installed Skill is ever marked.
+  return modified ? { ...value, source, modified } : { ...value, source };
+};
 
 const decodeChangeValue = Schema.decodeUnknownOption(SkillChangeValue);
 
@@ -656,6 +745,15 @@ export const changeSource = (value: AgentChange["before"]): SkillSource | null =
   value === null
     ? null
     : Option.getOrNull(Option.map(decodeChangeValue(value), ({ source }) => source ?? null));
+
+/** Whether an Agent change of a Skill records the Skill as marked modified. */
+export const changeModified = (value: AgentChange["before"]): boolean =>
+  value === null
+    ? false
+    : Option.getOrElse(
+        Option.map(decodeChangeValue(value), ({ modified }) => modified === true),
+        () => false,
+      );
 
 /** How the agent's save of a Skill went. */
 export type SkillSave =
@@ -751,10 +849,13 @@ export type SkillToKeep = {
   readonly files: SkillFiles;
   readonly hashed: Hashed;
   /**
-   * Where it was installed from. Absent for a save from a Workspace, which keeps the source the Skill had (until
-   * modified Skills are marked: docs/spec.md → Installing from GitHub).
+   * Where it was installed from, when it is installed or updated: the Skill is then as its source has it, so it is not
+   * modified, and nothing is waiting for an update. Absent for a save from a Workspace, which keeps the source the Skill
+   * had and marks a Skill that has one **modified**.
    */
   readonly source?: SkillSource | undefined;
+  /** With `source`: the hash of the folder at its commit (`folderHashOf`), which the daily check compares with. */
+  readonly folderHash?: string | undefined;
 };
 
 /** A save of a Skill that was checked: what the scope keeps of the name (`before`) and what the save would keep. */
@@ -793,7 +894,7 @@ const planSave = (
   if (
     before !== null &&
     sameFiles(before.files, hashed.files) &&
-    (source === undefined || sameSource(before.source, source))
+    (source === undefined || (sameSource(before.source, source) && !before.modified))
   ) {
     return { status: "unchanged", environment: scope, name, description, before };
   }
@@ -810,13 +911,35 @@ const planSave = (
     : { status: "rejected", message: refusedToKeep(problem) };
 };
 
-/** Keep the Skill a `ready` plan describes, in place of one of its name (its source kept when none is given). */
+/**
+ * Keep the Skill a `ready` plan describes, in place of one of its name. With a source it is as that source has it: not
+ * modified, no update waiting. Without one the source it had is kept and, if it had one, the Skill is marked modified.
+ */
 const keepPlanned = (
   { skills, now }: Pick<SkillChangeContext, "skills" | "now">,
-  { environment, hashed, source }: SkillToKeep,
+  { environment, hashed, source, folderHash }: SkillToKeep,
   { name, description, before }: Extract<SavePlan, { status: "ready" | "unchanged" }>,
 ): StoredSkill => {
-  const kept = { name, description, files: hashed.files, source: source ?? before?.source ?? null };
+  const kept: Omit<StoredSkill, "savedAt"> =
+    source === undefined
+      ? {
+          name,
+          description,
+          files: hashed.files,
+          source: before?.source ?? null,
+          modified: (before?.source ?? null) !== null,
+          folderHash: before?.folderHash ?? null,
+          updateAvailable: before?.updateAvailable ?? false,
+        }
+      : {
+          name,
+          description,
+          files: hashed.files,
+          source,
+          modified: false,
+          folderHash: folderHash ?? null,
+          updateAvailable: false,
+        };
 
   skills.put(environment, kept, hashed.contents, now);
 
@@ -892,8 +1015,8 @@ export const saveSkillAs = (
       tool: author.tool,
       reason: author.reason,
       field: skillField(skill.name),
-      before: before === null ? null : changeValue(before.files, before.source),
-      after: changeValue(skill.files, skill.source),
+      before: before === null ? null : changeValue(before),
+      after: changeValue(skill),
       reverts: null,
       approved: author.approved,
     });
@@ -1008,7 +1131,7 @@ export const removeSkillAs = (
       tool: author.tool,
       reason: author.reason,
       field: skillField(name),
-      before: changeValue(before.files, before.source),
+      before: changeValue(before),
       after: null,
       reverts: null,
       approved: author.approved,
@@ -1125,6 +1248,7 @@ export const revertSkillChange = (
   const after = changeFiles(change.after);
   const before = changeFiles(change.before);
   const beforeSource = changeSource(change.before);
+  const beforeModified = changeModified(change.before);
 
   const unchanged =
     current === null
@@ -1158,6 +1282,11 @@ export const revertSkillChange = (
 
     const texts = skills.contents(Record.values(before));
 
+    // Back at the same commit (a save's revert) the folder's hash and the mark it has are kept. At another commit what
+    // they would be is not known (the ref may be anywhere from it), so they are left to the next check, which records the
+    // hash again from the tree at that commit and marks the Skill if its ref has moved.
+    const sameCommit = current?.source?.commit === beforeSource?.commit;
+
     skills.put(
       environment,
       {
@@ -1165,6 +1294,9 @@ export const revertSkillChange = (
         description: descriptionOf(texts.get(before["SKILL.md"] ?? "")),
         files: before,
         source: beforeSource,
+        modified: beforeModified,
+        folderHash: sameCommit ? (current?.folderHash ?? null) : null,
+        updateAvailable: sameCommit ? (current?.updateAvailable ?? false) : false,
       },
       texts,
       now,
@@ -1180,8 +1312,11 @@ export const revertSkillChange = (
     tool: null,
     reason: `Reverted change ${change.id}${change.tool === null ? "" : ` (${change.tool})`}`,
     field: change.field,
-    before: current === null ? null : changeValue(current.files, current.source),
-    after: before === null ? null : changeValue(before, beforeSource),
+    before: current === null ? null : changeValue(current),
+    after:
+      before === null
+        ? null
+        : changeValue({ files: before, source: beforeSource, modified: beforeModified }),
     reverts: change.id,
   });
 

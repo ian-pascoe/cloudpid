@@ -28,6 +28,7 @@ import {
   savedOutcome,
   type SkillToolDeps,
 } from "./environment-skill-results.ts";
+import { updateTool } from "./environment-skill-update.ts";
 import {
   INSTALL_APPROVAL,
   installEverywhere,
@@ -50,6 +51,7 @@ export type {
   SkillRemoved,
   SkillSaved,
   SkillsInstalled,
+  SkillsUpdated,
   SkillToolDeps,
 } from "./environment-skill-results.ts";
 
@@ -447,5 +449,7 @@ export const skillTools = ({
       }),
   });
 
-  return Effect.all([save, remove, install]);
+  const update = updateTool({ environments, approvals, log, refuseSecrets, target, notFound });
+
+  return Effect.all([save, remove, install, update]);
 };

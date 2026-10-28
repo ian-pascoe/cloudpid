@@ -50,9 +50,8 @@ const skillMd = (name: string, body = "Steps.") =>
 type Repo = Readonly<Record<string, string>>;
 
 /** A reader over a repo's files, whose default branch's head is `commit`. */
-const readerOf = (files: Repo, commit = COMMIT): RepoReader => ({
-  commit: async () => commit,
-  tree: async () => ({
+const readerOf = (files: Repo, commit = COMMIT): RepoReader => {
+  const listing = async () => ({
     truncated: false,
     entries: Object.entries(files).map(([path, text]) => ({
       path,
@@ -60,9 +59,15 @@ const readerOf = (files: Repo, commit = COMMIT): RepoReader => ({
       sha: path,
       size: text.length,
     })),
-  }),
-  blob: async (_repo, sha) => new TextEncoder().encode(files[sha] ?? ""),
-});
+  });
+
+  return {
+    commit: async () => commit,
+    tree: listing,
+    headTree: listing,
+    blob: async (_repo, sha) => new TextEncoder().encode(files[sha] ?? ""),
+  };
+};
 
 /** What an Approval of the Skills `named` of a preview is asked against. */
 const pinOf = (previewed: SkillInstallPreview, named: ReadonlyArray<string>): SkillInstallPin => {
