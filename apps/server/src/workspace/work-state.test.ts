@@ -1,6 +1,7 @@
 // The work-state module over repos real git made in a temp directory: the Workspace DO's files are that directory (as
 // `/workspace`), and the Container is bash running the real `workStateScript` there, so every answer the Workspace DO
-// gives itself is checked against the Container's.
+// gives itself is checked against the Container's. Its reading through computer's provider, in the Workspace DO, is
+// covered in workerd (`work-state.workerd.test.ts`).
 // @effect-diagnostics asyncFunction:off nodeBuiltinImport:off preferEffectArray:off processEnv:off
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -11,9 +12,8 @@ import { WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { parseWorkState, workStateScript } from "@cloudpid/sandbox-image/workspaces";
 import { afterEach, describe, expect, it } from "vitest";
 import { type ChangesFiles, type ContainerOnly, WorkspaceChangesModule } from "./changes.ts";
+import { WORK_STATE_BRANCH as BRANCH } from "./changes.repos.ts";
 import { porcelainLines, WorkspaceWorkStateModule } from "./work-state.ts";
-
-const BRANCH = "cloudpid/1a2b3c4d";
 
 const env = {
   PATH: process.env.PATH ?? "",
@@ -171,8 +171,12 @@ printf 'y\\n' >> x.txt && git commit -q -am y`);
     write("dirty/src/new/three.ts", "3\n");
     write("dirty/out/ignored.js", "ignored\n");
     write("dirty/debug.log", "ignored\n");
-    sh(`cd dirty && git rm -q --cached .gitignore`);
-    sh(`cd dirty && git rm -q src/lib/lib.ts`);
+
+    // Deletions staged: one file the tree still has, and a directory's last tracked file.
+    clone("removed");
+    write("removed/src/lib/extra.ts", "extra\n");
+    write("removed/src/new/three.ts", "3\n");
+    sh(`cd removed && git rm -q --cached .gitignore && git rm -q src/lib/lib.ts`);
 
     // A clone a set-up left on another branch, and one on a detached HEAD.
     clone("spare");
@@ -205,6 +209,7 @@ printf 'b\\n' > a && git commit -q -am b && printf 'c\\n' > a && git commit -q -
       "ahead",
       "local",
       "dirty",
+      "removed",
       "spare",
       "detached",
       "alone",
@@ -224,8 +229,10 @@ printf 'b\\n' > a && git commit -q -am b && printf 'c\\n' > a && git commit -q -
       { repo: "fresh", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: BRANCH },
       { repo: "ahead", cloned: true, uncommitted: 0, unpushed: 3, onRemote: true, head: BRANCH },
       { repo: "local", cloned: true, uncommitted: 0, unpushed: 2, onRemote: false, head: BRANCH },
-      // a.txt, staged.txt, new.txt, fresh/, src/lib/lib.ts, src/ (no tracked file left in it), .gitignore twice.
-      { repo: "dirty", cloned: true, uncommitted: 8, unpushed: 0, onRemote: false, head: BRANCH },
+      // a.txt, staged.txt, new.txt, fresh/, src/lib/extra.ts, src/new/.
+      { repo: "dirty", cloned: true, uncommitted: 6, unpushed: 0, onRemote: false, head: BRANCH },
+      // .gitignore twice (`D ` and `??`), src/lib/lib.ts, and src/, which has no tracked file left.
+      { repo: "removed", cloned: true, uncommitted: 4, unpushed: 0, onRemote: false, head: BRANCH },
       {
         repo: "spare",
         cloned: true,
@@ -310,18 +317,51 @@ printf 'one\\r\\ntwo\\r\\n' > a.txt`);
     expect(warnings).toEqual([expect.stringMatching(/^work state: isomorphic-git failed in app/u)]);
   });
 
-  it("does not count Container-only paths, which the Workspace DO never holds", async () => {
+  it("reads a repo whose Container-only paths are ignored, and leaves one that tracks files there to the Container", async () => {
     const space = workspace();
 
     space.clone("app");
-    space.write("app/target/built.txt", "built\n");
+    space.clone("api");
+    // Ignored build output, which only the Container has.
+    space.write("app/out/built.js", "built\n");
+    space.write("api/out/built.js", "built\n");
+    // A tracked file there: the Workspace DO cannot tell an edit to it.
+    space.sh(
+      `cd api && git add -f out/built.js && git commit -q -m built && printf 'edited\\n' > out/built.js`,
+    );
 
-    const { workState, container } = module(space, {
-      containerOnly: (path) => path.startsWith("/workspace/app/target/"),
+    const { workState, container, warnings } = module(space, {
+      containerOnly: (path) => /^\/workspace\/[^/]+\/out(?:\/|$)/u.test(path),
     });
 
-    expect(await workState.read(BRANCH, ["app"])).toMatchObject([{ uncommitted: 0 }]);
-    expect(container.scripts).toEqual([]);
+    expect(await workState.read(BRANCH, ["app", "api"])).toEqual(space.onContainer(["app", "api"]));
+    expect(container.scripts).toEqual([workStateScript(["api"], BRANCH)]);
+    expect(warnings).toEqual([expect.stringContaining("tracked files on Container-only paths")]);
+  });
+
+  it("leaves to the Container what git's status would list otherwise: a staged rename, and its settings", async () => {
+    const space = workspace();
+
+    space.clone("moved");
+    space.sh(`cd moved && git mv a.txt b.txt`);
+    space.clone("quiet");
+    space.sh(`cd quiet && git config status.showUntrackedFiles no && printf 'n\\n' > new.txt`);
+    space.clone("plain");
+    space.sh(`cd plain && git config status.showUntrackedFiles normal && printf 'n\\n' > new.txt`);
+
+    const { workState, container, warnings } = module(space);
+    const repos = ["moved", "quiet", "plain"];
+
+    expect(await workState.read(BRANCH, repos)).toEqual(space.onContainer(repos));
+    // One line each for the rename and for nothing listed; the plain one read here.
+    expect((await workState.read(BRANCH, repos)).map((state) => state.uncommitted)).toEqual([
+      1, 0, 1,
+    ]);
+    expect(container.scripts[0]).toBe(workStateScript(["moved", "quiet"], BRANCH));
+    expect(warnings.slice(0, 2)).toEqual([
+      expect.stringContaining("renames"),
+      expect.stringContaining("status.showUntrackedFiles is no"),
+    ]);
   });
 });
 

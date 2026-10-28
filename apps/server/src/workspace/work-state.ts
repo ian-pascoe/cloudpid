@@ -7,9 +7,12 @@
 // - otherwise the Workspace DO reads each repo itself with isomorphic-git, over the files the last sync left, and
 //   starts no Container: `statusMatrix({ refresh: false })` for the uncommitted Changes, counted as `git status
 //   --porcelain` lines, and a walk of the commits for `rev-list --count <branch> --not --remotes`;
-// - a repo the Workspace DO cannot read (the Changes' guard: rules git applies, a big pack, many files; submodules, a
-//   `.git` that is not a directory, a walk past `MAX_WALKED_COMMITS`, or isomorphic-git failing) is read by the
-//   Container's git as before, starting it, and the log says why.
+// - a repo the Workspace DO cannot read as git would is read by the Container's git as before, starting it, and the log
+//   says why: the Changes' guard (rules git applies, a big pack, many files), submodules, a `.git` that is not a
+//   directory, git settings that change what `status` lists, tracked files on Container-only paths (which the Workspace
+//   DO never holds), staged deletions and additions git could pair as renames, a walk past `MAX_WALKED_COMMITS`, or
+//   isomorphic-git failing. Untracked files on Container-only paths that the repo does not ignore are not seen: those
+//   paths hold dependencies and build output, which repos ignore.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off extendsNativeError:off
 import { isRepoName, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import {
@@ -17,6 +20,7 @@ import {
   type RepoWorkState,
   workStateScript,
 } from "@cloudpid/sandbox-image/workspaces";
+import * as Predicate from "effect/Predicate";
 import * as git from "isomorphic-git";
 import {
   type ChangesFiles,
@@ -78,12 +82,12 @@ export class WorkspaceWorkStateModule {
   async read(branch: string, repos: ReadonlyArray<string>): Promise<RepoWorkState[]> {
     if (this.#options.running()) return this.#onContainer(branch, repos);
 
-    const read = new Map<string, RepoWorkState>();
+    const states = new Map<string, RepoWorkState>();
     const fallback: string[] = [];
 
     for (const repo of repos) {
       try {
-        read.set(repo, await this.#readOwn(repo, branch));
+        states.set(repo, await this.#readOwn(repo, branch));
       } catch (cause) {
         this.#options.warn(
           cause instanceof NeedsContainer
@@ -95,10 +99,10 @@ export class WorkspaceWorkStateModule {
     }
 
     if (fallback.length > 0) {
-      for (const state of await this.#onContainer(branch, fallback)) read.set(state.repo, state);
+      for (const state of await this.#onContainer(branch, fallback)) states.set(state.repo, state);
     }
 
-    return repos.map((repo) => read.get(repo) ?? notCloned(repo));
+    return repos.map((repo) => states.get(repo) ?? notCloned(repo));
   }
 
   /** The Container's git's read of `repos` (`workStateScript`), starting it if it is stopped. */
@@ -150,10 +154,24 @@ export class WorkspaceWorkStateModule {
     const fs = readOnly(files);
     const cache: GitCache = {};
 
+    for (const [path, expected] of STATUS_SETTINGS) {
+      const value: unknown = await git.getConfig({ fs, dir, path });
+      // isomorphic-git reads a setting as a string, or a boolean or number where it looks like one.
+      const read = Predicate.isString(value) ? value : JSON.stringify(value);
+
+      if (value !== undefined && read.toLowerCase() !== expected) {
+        throw new NeedsContainer(`its ${path} is ${read}`);
+      }
+    }
+
     // `git symbolic-ref --quiet --short HEAD`: the branch HEAD names, with or without commits; none when detached.
     const head = (await git.currentBranch({ fs, dir, fullname: false })) ?? null;
 
     const matrix = await git.statusMatrix({ fs, dir, cache, refresh: false });
+    const unreadable = needsGitStatus(matrix, (path) => containerOnly(`${dir}/${path}`));
+
+    if (unreadable !== undefined) throw new NeedsContainer(unreadable);
+
     const uncommitted = porcelainLines(matrix, (path) => containerOnly(`${dir}/${path}`));
 
     const tip = await refOid(fs, dir, `refs/heads/${branch}`);
@@ -175,6 +193,12 @@ export class WorkspaceWorkStateModule {
     return { repo, cloned: true, uncommitted, unpushed, onRemote, head };
   }
 }
+
+/** The git settings that change what `git status` lists, and the value the Workspace DO reads as git does. */
+const STATUS_SETTINGS: ReadonlyArray<readonly [string, string]> = [
+  ["status.showUntrackedFiles", "normal"],
+  ["core.sparseCheckout", "false"],
+];
 
 const notCloned = (repo: string): RepoWorkState => ({
   repo,
@@ -239,6 +263,32 @@ const shallowCommits = async (files: ChangesFiles, path: string): Promise<Set<st
 export type StatusRow = readonly [string, number, number, number];
 
 /**
+ * Why `matrix` needs git's own `status` to be counted, or undefined: a tracked file on a Container-only path (`leftOut`),
+ * which the Workspace DO never holds, so it cannot tell an edit there; or a staged deletion beside a staged addition,
+ * which git pairs as one rename when their contents are alike.
+ */
+export const needsGitStatus = (
+  matrix: ReadonlyArray<StatusRow>,
+  leftOut: (path: string) => boolean,
+): string | undefined => {
+  let stagedDeletion = false;
+  let stagedAddition = false;
+
+  for (const [path, head, , index] of matrix) {
+    if ((head !== 0 || index !== 0) && leftOut(path))
+      return "tracked files on Container-only paths";
+
+    if (head === 1 && index === 0) stagedDeletion = true;
+
+    if (head === 0 && index !== 0) stagedAddition = true;
+  }
+
+  return stagedDeletion && stagedAddition
+    ? "staged deletions and additions git may pair as renames"
+    : undefined;
+};
+
+/**
  * How many lines `git status --porcelain` prints for `matrix`: one per path the index or HEAD has that is not as HEAD
  * has it, and one per untracked entry, an untracked file in a directory with no tracked file below it counted once as
  * that directory (git's default `--untracked-files=normal`). A path the index lost but the working tree still has is
@@ -283,11 +333,11 @@ const untrackedEntry = (path: string, trackedDirectories: ReadonlySet<string>): 
   return path;
 };
 
-/** Reached from the branch. */
-const BRANCH = 1;
+/** A commit's mark in the walk: reached from the branch. */
+const FROM_BRANCH = 1;
 
-/** Reached from a remote branch. */
-const REMOTE = 2;
+/** A commit's mark in the walk: reached from a remote branch. */
+const FROM_REMOTE = 2;
 
 type Walked = { flags: number; readonly time: number; readonly parents: readonly string[] };
 
@@ -333,9 +383,9 @@ export const unpushedCommits = async (walk: {
     queue.add(oid);
   };
 
-  await mark(walk.tip, BRANCH);
+  await mark(walk.tip, FROM_BRANCH);
 
-  for (const remote of walk.remotes) await mark(remote, REMOTE);
+  for (const remote of walk.remotes) await mark(remote, FROM_REMOTE);
 
   let oldestCounted = Number.POSITIVE_INFINITY;
 
@@ -349,7 +399,7 @@ export const unpushedCommits = async (walk: {
 
       if (commit === undefined) continue;
 
-      if (commit.flags === BRANCH) branchOnly = true;
+      if (commit.flags === FROM_BRANCH) branchOnly = true;
 
       if (newest === undefined || commit.time > newest.time) {
         next = oid;
@@ -364,14 +414,14 @@ export const unpushedCommits = async (walk: {
 
     queue.delete(next);
 
-    if (newest.flags === BRANCH) oldestCounted = Math.min(oldestCounted, newest.time);
+    if (newest.flags === FROM_BRANCH) oldestCounted = Math.min(oldestCounted, newest.time);
 
     for (const parent of newest.parents) await mark(parent, newest.flags);
   }
 
   let count = 0;
 
-  for (const commit of seen.values()) if (commit.flags === BRANCH) count++;
+  for (const commit of seen.values()) if (commit.flags === FROM_BRANCH) count++;
 
   return count;
 };

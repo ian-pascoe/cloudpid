@@ -1,5 +1,6 @@
-// The repos the Changes tests read, shared by the Node set-up that makes them with real git (`changes.setup.ts`) and
-// the workerd tests that write them into a Workspace (`changes.workerd.test.ts`, `changes.bench.workerd.test.ts`).
+// The repos the Changes tests and the read of unpushed work read, shared by the Node set-up that makes them with real
+// git (`changes.setup.ts`) and the tests that write them into a Workspace (`changes.workerd.test.ts`,
+// `changes.bench.workerd.test.ts`, `work-state.workerd.test.ts`).
 // Nothing here may import Node built-ins: the workerd tests import it too.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 

@@ -66,6 +66,7 @@ import { workerShellGit } from "./git.ts";
 import {
   type ChangeFileRequest,
   type ChangesRequest,
+  type ContainerOnly,
   type KeptChanges,
   WorkspaceChangesModule,
 } from "./changes.ts";
@@ -606,16 +607,19 @@ export class Workspace extends ContainerHost {
     });
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
 
+    // Which absolute paths are Container-only for the launch that runs now, or the next one (ADR-0018).
+    const containerOnly = async (): Promise<ContainerOnly> => {
+      const ignore = await launch.ignore();
+      const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
+
+      return (path) => isContainerOnly(path, patterns);
+    };
+
     // The repos' Changes: read here with isomorphic-git, or by the Container's git for a repo that needs it, which only
     // a call that may start the Container starts (ADR-0022).
     this.#changes = new WorkspaceChangesModule({
       files: () => this.#workspace.provider(),
-      containerOnly: async () => {
-        const ignore = await launch.ignore();
-        const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
-
-        return (path) => isContainerOnly(path, patterns);
-      },
+      containerOnly,
       running: () => ctx.container?.running === true,
       run: (script) => this.#runOnContainer(script, {}),
       kept: {
@@ -650,12 +654,7 @@ export class Workspace extends ContainerHost {
     this.#runs = new WorkspaceRunsModule({
       files: () => this.#workspace.provider(),
       changes: this.#changes,
-      containerOnly: async () => {
-        const ignore = await launch.ignore();
-        const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
-
-        return (path) => isContainerOnly(path, patterns);
-      },
+      containerOnly,
       running: () => this.containerRunning(),
       run: (script) => this.runContainerScript(script),
       store: {
@@ -674,12 +673,7 @@ export class Workspace extends ContainerHost {
     this.#workState = new WorkspaceWorkStateModule({
       files: () => this.#workspace.provider(),
       needsContainer: (repo) => this.#changes.needsContainer(repo),
-      containerOnly: async () => {
-        const ignore = await launch.ignore();
-        const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
-
-        return (path) => isContainerOnly(path, patterns);
-      },
+      containerOnly,
       running: () => this.containerRunning(),
       run: (script) => this.runContainerScript(script),
       warn: (message) => console.warn(message),
