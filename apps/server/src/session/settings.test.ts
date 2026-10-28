@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off
-import { DEFAULT_OFFERED_TOOLS, DEFAULT_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_OFFERED_TOOLS, DEFAULT_SETTINGS, resolveLeniently } from "@cloudpid/config";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -26,9 +26,12 @@ const memoryKv = (): SettingsKv => {
   };
 };
 
-/** A Registry whose saved overrides the test changes, or breaks. */
-const registry = (overrides: Schema.Json = {}) => {
-  const state = { overrides, failing: false, reads: 0 };
+/**
+ * A Registry whose saved overrides the test changes, or breaks: Global's, and the Overrides of the Environment the
+ * Session works in.
+ */
+const registry = (global: Schema.Json = {}, own: Schema.Json = {}) => {
+  const state = { global, own, failing: false, reads: 0 };
 
   return {
     state,
@@ -37,7 +40,7 @@ const registry = (overrides: Schema.Json = {}) => {
 
       return state.failing
         ? Effect.die(new Error("Registry is down"))
-        : Effect.succeed(state.overrides);
+        : Effect.succeed({ global: state.global, overrides: state.own });
     }),
   };
 };
@@ -79,7 +82,7 @@ describe("a Session's settings", () => {
       thinkingLevel: "low",
     });
 
-    source.state.overrides = { compaction: { enabled: false } };
+    source.state.global = { compaction: { enabled: false } };
     await Effect.runPromise(settings.refresh);
     expect(settings.current().agent).toEqual(valuesFrom(DEFAULT_SETTINGS).agent);
     expect(settings.current().compaction.enabled).toBe(false);
@@ -150,6 +153,69 @@ describe("a Session's settings", () => {
     expect(settings.agent.model).toEqual(valuesFrom(DEFAULT_SETTINGS).agent.model);
   });
 
+  it("run a Session in an Environment with its Overrides, and one in another with Global's", async () => {
+    const source = (own: Schema.Json) => registry({ model: "anthropic/claude-sonnet-5-5" }, own);
+    const inA = open(source({ model: "anthropic/claude-haiku-5-5", thinkingLevel: "low" }));
+    const inB = open(source({}));
+
+    await Effect.runPromise(inA.refresh);
+    await Effect.runPromise(inB.refresh);
+
+    expect(inA.current().agent).toEqual({
+      model: { provider: "anthropic", modelId: "claude-haiku-5-5" },
+      thinkingLevel: "low",
+    });
+    expect(inB.current().agent).toEqual({
+      model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+      thinkingLevel: "high",
+    });
+  });
+
+  it("keep an Environment's Override equal to Global when Global changes, until it is reset", async () => {
+    const source = registry(
+      { model: "anthropic/claude-sonnet-5-5" },
+      { model: "anthropic/claude-sonnet-5-5" },
+    );
+
+    const settings = open(source);
+
+    source.state.global = { model: "anthropic/claude-haiku-5-5" };
+    await Effect.runPromise(settings.refresh);
+    expect(settings.current().agent.model.modelId).toBe("claude-sonnet-5-5");
+
+    source.state.own = {};
+    await Effect.runPromise(settings.refresh);
+    expect(settings.current().agent.model.modelId).toBe("claude-haiku-5-5");
+  });
+
+  it("start, after the deploy that gave Environments Overrides, from Global's overrides an earlier release kept, as before", async () => {
+    const kv = memoryKv();
+
+    const before = {
+      model: "anthropic/claude-sonnet-5-5",
+      thinkingLevel: "minimal",
+      tools: { offered: ["read", "restart_container"] },
+      spendLimit: { perSession: 3 },
+    };
+
+    // What a Session of the earlier release kept: Global's overrides alone.
+    kv.put("settings-overrides", before);
+
+    const source = registry();
+
+    source.state.failing = true;
+
+    const settings = open(source, kv);
+
+    expect(settings.current()).toEqual(valuesFrom(resolveLeniently(before).settings));
+
+    // Its first read, from a Registry whose Environments have no Overrides yet, resolves the same.
+    source.state.failing = false;
+    source.state.global = before;
+    await Effect.runPromise(settings.refresh);
+    expect(settings.current()).toEqual(valuesFrom(resolveLeniently(before).settings));
+  });
+
   it("fall back to the defaults when the kept overrides no longer resolve", () => {
     const kv = memoryKv();
 
@@ -173,7 +239,7 @@ describe("the offered tools", () => {
     await Effect.runPromise(settings.refresh);
     expect(offered.current().offered).toEqual(["read", "web_*"]);
 
-    source.state.overrides = {};
+    source.state.global = {};
     await Effect.runPromise(settings.refresh);
     expect(offered.current().offered).toEqual(DEFAULT_OFFERED_TOOLS);
   });
@@ -189,9 +255,24 @@ describe("the spend limit", () => {
     await Effect.runPromise(settings.refresh);
     expect(settings.current().spendLimit).toBe(2.5);
 
-    source.state.overrides = {};
+    source.state.global = {};
     await Effect.runPromise(settings.refresh);
     expect(settings.current().spendLimit).toBeNull();
+  });
+
+  it("is the Environment's own where it overrides Global's, so it stops only that Environment's Sessions", async () => {
+    const global = { spendLimit: { perSession: 10 } };
+    const inA = open(registry(global, { spendLimit: { perSession: 0.5 } }));
+    const inB = open(registry(global));
+    const unlimitedInC = open(registry(global, { spendLimit: { perSession: null } }));
+
+    await Effect.runPromise(inA.refresh);
+    await Effect.runPromise(inB.refresh);
+    await Effect.runPromise(unlimitedInC.refresh);
+
+    expect(inA.current().spendLimit).toBe(0.5);
+    expect(inB.current().spendLimit).toBe(10);
+    expect(unlimitedInC.current().spendLimit).toBeNull();
   });
 });
 
@@ -203,7 +284,7 @@ describe("the Harness's settings", () => {
 
     expect(live.compaction).toEqual(DEFAULT_SETTINGS.compaction);
 
-    source.state.overrides = { compaction: { enabled: false, reserveTokens: 1_000 } };
+    source.state.global = { compaction: { enabled: false, reserveTokens: 1_000 } };
     await Effect.runPromise(settings.refresh);
 
     expect(live.compaction).toEqual({

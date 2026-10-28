@@ -13,18 +13,35 @@ import {
   type PushSubscription,
   SETTINGS_SCOPE,
   type SessionOrigin,
+  type SettingsOverridesState,
 } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { keepSecret, openEnvironmentSecrets, type SecretWrite } from "./environment-secrets.ts";
 import type * as Schema from "effect/Schema";
-import { type AgentChangeAuthor, type AgentChanges, openAgentChanges } from "./agent-changes.ts";
+import {
+  type AgentChangeAuthor,
+  type AgentChangeRevert,
+  type AgentChanges,
+  openAgentChanges,
+  revertAgentChange,
+} from "./agent-changes.ts";
 import { globalSettingsOf } from "./global.ts";
-import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
+import {
+  overriddenIn,
+  readSettings,
+  readSettingsOverrides,
+  sessionSettingsSource,
+  type SettingsAnswer,
+  type SettingsState,
+  updateSettingsOverrides,
+  writeSettings,
+} from "./settings.ts";
 import { openSkills, type Skills } from "./skills.ts";
 import {
   changeSettings,
+  changeSettingsOverrides,
   revertSettingsChange,
   type SettingsChange,
   type SettingsChangeRevert,
@@ -297,8 +314,31 @@ export class TestRegistry extends DurableObject {
     return this.#store.listPushSubscriptions();
   }
 
-  getSettings(): SettingsState {
-    return readSettings(this.#store);
+  getSettings(): SettingsAnswer {
+    return { ...readSettings(this.#store), overriddenIn: overriddenIn(this.#store) };
+  }
+
+  getSettingsOverrides(environment: string): SettingsOverridesState | null {
+    return readSettingsOverrides(this.#store, environment);
+  }
+
+  /** Change an Environment's Overrides, as the Registry DO does; Overrides that do not resolve throw. */
+  updateSettingsOverrides(
+    environment: string,
+    change: { set?: Schema.Json; reset?: ReadonlyArray<string> },
+  ): SettingsOverridesState {
+    const saved = updateSettingsOverrides(this.ctx.storage, this.#store, environment, change);
+
+    if (saved === null) throw new Error(`No Environment ${environment}`);
+
+    if (Result.isFailure(saved)) throw new Error(saved.failure.message);
+
+    return saved.success;
+  }
+
+  /** What Session `session` resolves its Settings from, as the Registry DO answers it. */
+  sessionSettings(session: string): ReturnType<typeof sessionSettingsSource> {
+    return sessionSettingsSource(this.#store, session);
   }
 
   /** Save settings overrides, as the Registry DO does; overrides that do not resolve throw. */
@@ -310,13 +350,38 @@ export class TestRegistry extends DurableObject {
     return saved.success;
   }
 
-  /** An Agent change to the Settings, as the Registry DO makes one. */
+  /** An Agent change to the Settings, Global's or `environment`'s Overrides, as the Registry DO makes one. */
   changeSettings(
     changes: ReadonlyArray<SettingsFieldChange>,
     author: AgentChangeAuthor,
     now: number,
+    environment?: string,
   ): SettingsChange {
-    return changeSettings(this.ctx.storage, this.#store, this.#changes, { changes, author }, now);
+    return environment === undefined
+      ? changeSettings(this.ctx.storage, this.#store, this.#changes, { changes, author }, now)
+      : changeSettingsOverrides(
+          this.ctx.storage,
+          this.#store,
+          this.#changes,
+          { environment, changes, author },
+          now,
+        );
+  }
+
+  listAgentChanges(scope: string): ReadonlyArray<AgentChange> {
+    return this.#changes.list(scope);
+  }
+
+  /** The owner's revert of an Agent change of `environment`, as the Registry DO makes it. */
+  revertAgentChange(environment: string, change: number, now: number): AgentChangeRevert {
+    return revertAgentChange(
+      this.ctx.storage,
+      this.#store,
+      this.#changes,
+      { environment, id: change },
+      now,
+      noSkills(this.ctx.storage),
+    );
   }
 
   listSettingsChanges(): ReadonlyArray<AgentChange> {

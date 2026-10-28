@@ -132,7 +132,7 @@ const script = (stub: DurableObjectStub<TestSession>, ...responses: string[]) =>
 const toolResults = (stub: DurableObjectStub<TestSession>) =>
   runInDurableObject(stub, (instance: TestSession) => instance.toolResults());
 
-const RAISE = `call:settings_spend_limit_set:${JSON.stringify({ per_session: 25, reason: "The migration needs more requests" })}`;
+const RAISE = `call:settings_spend_limit_set:${JSON.stringify({ scope: "*", per_session: 25, reason: "The migration needs more requests" })}`;
 
 describe("Approval over the Session socket", () => {
   it("shows the change on every client, applies it on Approve, and records it as approved", async () => {
@@ -154,7 +154,7 @@ describe("Approval over the Session socket", () => {
       id: expect.any(String),
       conversationId: expect.any(Number),
       tool: "settings_spend_limit_set",
-      target: "the Settings",
+      target: "the Global Settings",
       change: "Spend limit",
       before: expect.any(String),
       after: "$25 per Session",
@@ -193,7 +193,7 @@ describe("Approval over the Session socket", () => {
         ).toContainEqual({
           kind: "input",
           names: [],
-          approval: "Spend limit, the Settings",
+          approval: "Spend limit, the Global Settings",
           reason: "The migration needs more requests",
         }),
       { timeout: 10_000, interval: 50 },

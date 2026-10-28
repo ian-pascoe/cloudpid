@@ -1,7 +1,14 @@
-// What a Session reads from the settings (`docs/architecture/overview.md` → Settings). The overrides live in the Registry DO; the Session
-// keeps the last it read, in its own storage, and hands the Harness live getters over that copy. The Harness reads its
-// settings synchronously, so the Registry is read before a request is admitted (`refresh`), never inside a getter.
-import { DEFAULT_SETTINGS, parseModelId, resolveLeniently, type Settings } from "@cloudpid/config";
+// What a Session reads from the settings (`docs/architecture/overview.md` → Settings). The overrides live in the Registry DO: Global's,
+// and its Environment's Overrides over them (ADR-0027). The Session keeps the last it read, in its own storage, and
+// hands the Harness live getters over that copy. The Harness reads its settings synchronously, so the Registry is read
+// before a request is admitted (`refresh`), never inside a getter.
+import {
+  DEFAULT_SETTINGS,
+  parseModelId,
+  resolveLeniently,
+  resolveOverridesLeniently,
+  type Settings,
+} from "@cloudpid/config";
 import { type SubagentOptions, subagentOptions } from "@cloudpid/extensions/subagents";
 import { reloadToolSearch, type ToolSearchOptions } from "@cloudpid/extensions/tool-search";
 import type {
@@ -103,12 +110,21 @@ export type SettingsKv = {
   put<T>(key: string, value: T): void;
 };
 
-/** Where the overrides last read are kept. */
+/** What a Session resolves its Settings from: Global's overrides, and its Environment's Overrides over them. */
+export type SettingsSource = { readonly global: Schema.Json; readonly overrides: Schema.Json };
+
+/** Where what was last read is kept. */
+const SOURCE_KEY = "settings-source";
+
+/**
+ * Where a Session kept Global's overrides before Environments had Overrides of their own: read when it has nothing kept
+ * under `SOURCE_KEY` yet, as Global's with no Overrides, so it starts as it did.
+ */
 const OVERRIDES_KEY = "settings-overrides";
 
 export type SessionSettingsOptions = {
-  /** The Registry's saved overrides. */
-  readonly read: Effect.Effect<Schema.Json>;
+  /** Global's saved overrides and the Session's Environment's Overrides, from the Registry. */
+  readonly read: Effect.Effect<SettingsSource>;
   /** The object's `storage.kv`, which keeps the overrides last read for an instance that starts with the Registry down. */
   readonly kv: SettingsKv;
   /** Defaults to `SETTINGS_TIMEOUT`. */
@@ -117,9 +133,10 @@ export type SessionSettingsOptions = {
   readonly backoff?: Duration.Input;
 };
 
-/** The settings the overrides give, with what no longer resolves left out and logged. */
-const resolveLogged = (overrides: Schema.Json) => {
-  const { settings, dropped } = resolveLeniently(overrides);
+/** The settings the source gives, with what no longer resolves left out and logged. */
+const resolveLogged = ({ global, overrides }: SettingsSource) => {
+  const { settings, dropped: own } = resolveOverridesLeniently(global, overrides);
+  const dropped = [...resolveLeniently(global).dropped, ...own];
 
   return dropped.length === 0
     ? Effect.succeed(settings)
@@ -136,7 +153,11 @@ export const sessionSettingsLayer = (
     SessionSettings,
     Effect.gen(function* () {
       const { kv } = options;
-      const kept = kv.get<Schema.Json>(OVERRIDES_KEY);
+      const before = kv.get<Schema.Json>(OVERRIDES_KEY);
+
+      const kept =
+        kv.get<SettingsSource>(SOURCE_KEY) ??
+        (before === undefined ? undefined : { global: before, overrides: {} });
 
       let current = valuesFrom(kept === undefined ? DEFAULT_SETTINGS : yield* resolveLogged(kept));
 
@@ -145,11 +166,11 @@ export const sessionSettingsLayer = (
 
       const read = options.read.pipe(
         Effect.timeout(options.timeout ?? SETTINGS_TIMEOUT),
-        Effect.flatMap((overrides) =>
-          resolveLogged(overrides).pipe(
+        Effect.flatMap((source) =>
+          resolveLogged(source).pipe(
             Effect.tap((settings) =>
               Effect.sync(() => {
-                kv.put(OVERRIDES_KEY, overrides);
+                kv.put(SOURCE_KEY, source);
                 current = valuesFrom(settings);
               }),
             ),

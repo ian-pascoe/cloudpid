@@ -264,6 +264,19 @@ export type RegistryStore = {
   readonly getEnvironmentSettings: (environment: string) => Schema.Json | null;
   /** Save an Environment's Container settings overrides; says whether it is registered. */
   readonly putEnvironmentSettings: (environment: string, overrides: Schema.Json) => boolean;
+  /**
+   * An Environment's Settings Overrides (ADR-0027) as saved, `{}` for none, or null when it is not registered. Text that
+   * is not JSON reads as itself, for the reader to report.
+   */
+  readonly getSettingsOverrides: (environment: string) => Schema.Json | null;
+  /** Save an Environment's Settings Overrides; says whether it is registered. */
+  readonly putSettingsOverrides: (environment: string, overrides: Schema.Json) => boolean;
+  /** Every Environment that has Settings Overrides, with them as saved, newest Environment first. */
+  readonly listSettingsOverrides: () => Array<{
+    readonly id: string;
+    readonly name: string;
+    readonly overrides: Schema.Json;
+  }>;
   /** What the Registry knows of an Environment's Build, or null when the Environment is not registered. */
   readonly getBuild: (environment: string) => BuildRecord | null;
   /** Keep what an Environment's Build object answered; says whether the Environment is registered. */
@@ -451,6 +464,13 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
 /** An Environment's `settings` column: its Container settings overrides. Text that is not JSON (never written so) reads as none. */
 const settingsOverrides = (text: string): Schema.Json =>
   Option.getOrElse(decodeJson(text), () => ({}));
+
+/**
+ * An Environment's `settings_overrides` column: its Settings Overrides, none for null. Text that is not JSON (never
+ * written so) reads as the text, which the reader reports as Overrides that are not an object.
+ */
+const savedSettingsOverrides = (text: string | null): Schema.Json =>
+  text === null ? {} : Option.getOrElse(decodeJson(text), () => text);
 
 /** A JSON column the store wrote itself, as `A`; null when it is null or not JSON. */
 const jsonColumn = <A>(text: string | null): A | null => {
@@ -833,6 +853,12 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
         }
       }
     }
+  },
+  // 27: an Environment's Settings Overrides (ADR-0027, `docs/architecture/overview.md` → Settings): JSON, the fields set on
+  // purpose for it (`@cloudpid/config` → `overrideFields`). Null for an Environment stored before: none, so it
+  // inherits Global whole, as each of its Sessions did before. Its Container settings stay in `settings`.
+  (sql) => {
+    sql.exec("ALTER TABLE environments ADD COLUMN settings_overrides TEXT");
   },
 ];
 
@@ -1232,6 +1258,39 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         JSON.stringify(overrides),
         environment,
       ).rowsWritten > 0,
+
+    getSettingsOverrides: (environment) => {
+      const [row] = sql
+        .exec<{ settings_overrides: string | null }>(
+          "SELECT settings_overrides FROM environments WHERE id = ?",
+          environment,
+        )
+        .toArray();
+
+      return row === undefined ? null : savedSettingsOverrides(row.settings_overrides);
+    },
+
+    putSettingsOverrides: (environment, overrides) =>
+      sql.exec(
+        "UPDATE environments SET settings_overrides = ? WHERE id = ?",
+        JSON.stringify(overrides),
+        environment,
+      ).rowsWritten > 0,
+
+    listSettingsOverrides: () =>
+      Arr.map(
+        sql
+          .exec<{ id: string; name: string; settings_overrides: string }>(
+            `SELECT id, name, settings_overrides FROM environments
+             WHERE settings_overrides IS NOT NULL ORDER BY created_at DESC, id`,
+          )
+          .toArray(),
+        (row) => ({
+          id: row.id,
+          name: row.name,
+          overrides: savedSettingsOverrides(row.settings_overrides),
+        }),
+      ),
 
     getBuild: (environment) => {
       const [row] = sql

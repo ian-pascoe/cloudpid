@@ -127,7 +127,8 @@ export class TestWorkspaceSession extends TestSession {
       Effect.provideService(Environments, testEnvironments(this.ctx.storage.kv)),
       // The tests of the Workspace call no `settings_*` tool.
       Effect.provideService(SettingsAccess, {
-        get: Effect.die("No Settings"),
+        get: () => Effect.die("No Settings"),
+        own: Effect.die("No Settings"),
         change: () => Effect.die("No Settings"),
       }),
       Effect.provideService(DeployCredentials, { values: [] }),

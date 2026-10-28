@@ -26,12 +26,22 @@ import {
 const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
   Predicate.isObject(value) && !Arr.isArray(value);
 
-const DEFAULTS: Readonly<Record<string, unknown>> = DEFAULT_SETTINGS;
-
-const SETTINGS_ROOTS: ReadonlySet<string> = new Set(Record.keys(DEFAULTS));
+const SETTINGS_ROOTS: ReadonlySet<string> = new Set(Record.keys(DEFAULT_SETTINGS));
 
 /** The defaults below a setting's root: an object for a section (`roles`, `compaction`), anything else for a value. */
-const defaultsOf = (root: string): unknown => DEFAULTS[root];
+const defaultsOf = (root: string): Settings[keyof Settings] | undefined =>
+  Option.getOrUndefined(
+    Option.map(
+      Arr.findFirst(Record.toEntries(DEFAULT_SETTINGS), ([key]) => key === root),
+      ([, defaults]) => defaults,
+    ),
+  );
+
+/** `value` with `entries` given, each replacing what it held at its key. */
+const withEntries = (
+  value: Schema.JsonObject,
+  entries: ReadonlyArray<readonly [string, Schema.Json]>,
+): Schema.JsonObject => Object.fromEntries([...Object.entries(value), ...entries]);
 
 /**
  * How many keys lead to one field below `root`: three for an extension's option, two below a section (a Role, a
@@ -97,7 +107,10 @@ export const overrideFields = (overrides: Schema.Json): ReadonlyArray<string> =>
   Arr.map(overrideEntries(overrides), ({ keys }) => Arr.join(keys, "."));
 
 /** The Override `overrides` hold at `field`; none where the field inherits. An Override may be null (no spend limit). */
-export const overrideValue = (overrides: Schema.Json, field: string): Option.Option<Schema.Json> => {
+export const overrideValue = (
+  overrides: Schema.Json,
+  field: string,
+): Option.Option<Schema.Json> => {
   const keys = overrideFieldPath(field);
 
   if (keys === undefined) return Option.none();
@@ -121,11 +134,11 @@ const setAt = (
 
   if (head === undefined) return value;
 
-  if (rest.length === 0) return { ...value, [head]: leaf };
+  if (rest.length === 0) return withEntries(value, [[head, leaf]]);
 
   const held = value[head];
 
-  return { ...value, [head]: setAt(isJsonObject(held) ? held : {}, rest, leaf) };
+  return withEntries(value, [[head, setAt(isJsonObject(held) ? held : {}, rest, leaf)]]);
 };
 
 /** `value` without what lies at `keys`, and without an object that is left empty by it. */
@@ -189,7 +202,11 @@ export const withOverrides = (
       if (root === "roles" && name !== undefined && keys.length === 2 && isJsonObject(value)) {
         const role = settingsFieldValue(current, `roles.${name}`) ?? {};
 
-        return setAt(next, keys, { ...(isJsonObject(role) ? role : {}), ...value });
+        return setAt(
+          next,
+          keys,
+          isJsonObject(role) ? withEntries(role, Object.entries(value)) : value,
+        );
       }
 
       return setAt(next, keys, value);
@@ -201,10 +218,46 @@ export const withOverrides = (
   );
 };
 
+/** One field of an Environment's Overrides changed: given `value`, or reset to inherit. */
+export type OverrideFieldChange =
+  | { readonly field: string; readonly value: Schema.Json }
+  | { readonly field: string; readonly reset: true };
+
+/** `withOverrides` for changes given field by field (`overrideFieldPath`), as the agent's tools give them. */
+export const withOverrideFields = (
+  overrides: Schema.Json,
+  changes: ReadonlyArray<OverrideFieldChange>,
+  current: Settings,
+): Result.Result<Schema.Json, SettingsError> => {
+  const unknown = Arr.findFirst(changes, ({ field }) => overrideFieldPath(field) === undefined);
+
+  if (Option.isSome(unknown)) {
+    return Result.fail(
+      SettingsError.make({
+        message: `${unknown.value.field}: not a setting an Environment overrides`,
+      }),
+    );
+  }
+
+  return withOverrides(
+    overrides,
+    {
+      set: Arr.reduce(changes, {}, (set: Schema.JsonObject, change) =>
+        "reset" in change ? set : setAt(set, overrideFieldPath(change.field) ?? [], change.value),
+      ),
+      reset: Arr.filterMap(changes, (change) =>
+        "reset" in change ? Result.succeed(change.field) : Result.failVoid,
+      ),
+    },
+    current,
+  );
+};
+
 /** Global's overrides as they apply: those that resolve, and only what differs from the defaults. */
 const globalApplied = (global: Schema.Json) => {
   const { settings } = resolveLeniently(global);
 
+  // SAFETY: `overridesFrom` answers the encoded deep partial of the settings: always a JSON object.
   return { settings, overrides: overridesFrom(settings) as Schema.JsonObject };
 };
 
@@ -221,7 +274,9 @@ export const resolveOverrides = (
   if (!isJsonObject(overrides)) return Result.fail(SettingsError.make({ message: NOT_AN_OBJECT }));
 
   return Result.mapError(
-    decodeSettingsOverrides(overriding(globalApplied(global).overrides, withRenamedTools(overrides))),
+    decodeSettingsOverrides(
+      overriding(globalApplied(global).overrides, withRenamedTools(overrides)),
+    ),
     (problems) =>
       SettingsError.make({
         message: Arr.join(
@@ -277,7 +332,9 @@ export const resolveOverridesLeniently = (
 
     if (Arr.some(result.failure, (problem) => problem.keys.length === 0)) break;
 
-    rest = Arr.reduce(result.failure, rest, (left, problem) => removeAt(left, fieldKeysOf(problem)));
+    rest = Arr.reduce(result.failure, rest, (left, problem) =>
+      removeAt(left, fieldKeysOf(problem)),
+    );
   }
 
   return { settings: inherited.settings, global: inherited.settings, overrides: {}, dropped };

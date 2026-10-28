@@ -52,6 +52,7 @@ import {
 } from "./skill-updates.ts";
 import {
   SETTINGS_SCOPE,
+  type SettingsOverridesState,
   type SkillExpectation,
   type SkillInstallation,
   type SkillInstallPin,
@@ -108,9 +109,19 @@ import { PushConfig } from "../push/config.ts";
 import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
-import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
+import {
+  overriddenIn,
+  readSettings,
+  readSettingsOverrides,
+  sessionSettingsSource,
+  type SettingsAnswer,
+  SettingsUpdate,
+  updateSettingsOverrides,
+  writeSettings,
+} from "./settings.ts";
 import {
   changeSettings,
+  changeSettingsOverrides,
   revertSettingsChange,
   type SettingsChange,
   type SettingsChangeRevert,
@@ -198,6 +209,22 @@ export type EnvironmentChangeAnswer =
       readonly newBuild: boolean;
     }
   | Exclude<EnvironmentChange, { readonly status: "changed" }>;
+
+/** How the owner's change of an Environment's Settings Overrides went. */
+export type SettingsOverridesUpdate =
+  | { readonly status: "saved"; readonly state: SettingsOverridesState }
+  | { readonly status: "rejected"; readonly message: string }
+  | { readonly status: "missing" };
+
+/** What a Session resolves its Settings from (`sessionSettings`). */
+export type SessionSettingsSource = {
+  /** Global's overrides of the defaults that apply. */
+  readonly global: Schema.Json;
+  /** The Session's Environment, or null for a Session the Registry does not list. */
+  readonly environment: string | null;
+  /** The Environment's Overrides as saved: `{}` for none. */
+  readonly overrides: Schema.Json;
+};
 
 /** The Container settings at Global, with the Environments that override each field (ADR-0027). */
 export type GlobalContainerState = GlobalState & {
@@ -708,18 +735,43 @@ export type RegistryMethods = {
   }) => Effect.Effect<ReadonlyArray<LegacyObject>>;
   /** Forget a legacy object once its Durable Object is wiped. */
   readonly forgetLegacy: (input: LegacyObject) => Effect.Effect<void>;
-  /** The settings in force and the overrides saved over the defaults. */
-  readonly getSettings: () => Effect.Effect<SettingsState>;
+  /**
+   * The Global Settings in force, the overrides saved over the defaults, and the Environments that override each field.
+   */
+  readonly getSettings: () => Effect.Effect<SettingsAnswer>;
   /** Save `overrides` in place of the saved ones if they resolve; otherwise say why not, and save nothing. */
   readonly updateSettings: (input: {
     readonly overrides: Schema.Json;
   }) => Effect.Effect<SettingsUpdate>;
+  /** Environment `environment`'s Settings: its Overrides, Global's, and the two resolved; null when it is not registered. */
+  readonly getSettingsOverrides: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<SettingsOverridesState | null>;
+  /**
+   * The owner's change of Environment `environment`'s Overrides: `set` field by field, then `reset` removed. Says why
+   * not, saving nothing, when they do not resolve; `missing` when the Environment is not registered.
+   */
+  readonly updateSettingsOverrides: (input: {
+    readonly environment: string;
+    readonly set?: Schema.Json | undefined;
+    readonly reset?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<SettingsOverridesUpdate>;
+  /**
+   * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, and its Environment's
+   * Overrides as saved; `{}` and a null Environment for a Session the Registry does not list. For the Session DO only.
+   */
+  readonly sessionSettings: (input: {
+    readonly session: string;
+  }) => Effect.Effect<SessionSettingsSource>;
   /**
    * An Agent change to the Settings (`docs/architecture/agent-changes.md`): give some of their fields new values, by the rules
-   * of `updateSettings`, and record each field that changed with its `author`; none of the values before or after is
-   * recorded for a field that already has its value. Sessions read the new settings when they next admit input.
+   * of `updateSettings` (Global, `environment` absent) or of `updateSettingsOverrides` (an Environment's Overrides), and
+   * record each field that changed with its `author`, under the scope `settings` or the Environment's id; none of the
+   * values before or after is recorded for a field that already has its value. Sessions read the new settings when
+   * they next admit input.
    */
   readonly changeSettings: (input: {
+    readonly environment?: string | undefined;
     readonly changes: ReadonlyArray<SettingsFieldChange>;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<SettingsChange>;
@@ -1456,21 +1508,55 @@ export const RegistryLive = Registry.make(
               Effect.map((now) => store.takeLegacy(limit, now, LEGACY_LEASE_MS)),
             ),
           forgetLegacy: (object) => Effect.sync(() => store.forgetLegacy(object)),
-          getSettings: () => Effect.sync(() => readSettings(store)),
+          getSettings: () =>
+            Effect.sync(() => ({ ...readSettings(store), overriddenIn: overriddenIn(store) })),
           updateSettings: ({ overrides }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now): SettingsUpdate => {
                 const saved = writeSettings(store, overrides, now);
 
                 return Result.isSuccess(saved)
-                  ? SettingsUpdate.Saved({ state: saved.success })
+                  ? SettingsUpdate.Saved({
+                      state: { ...saved.success, overriddenIn: overriddenIn(store) },
+                    })
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
             ),
-          changeSettings: ({ changes: wanted, author }) =>
+          getSettingsOverrides: ({ environment }) =>
+            Effect.sync(() => readSettingsOverrides(store, environment)),
+          updateSettingsOverrides: ({ environment, set, reset }) =>
+            Effect.sync((): SettingsOverridesUpdate => {
+              const saved = updateSettingsOverrides(state.raw.storage, store, environment, {
+                set,
+                reset,
+              });
+
+              if (saved === null) return { status: "missing" };
+
+              return Result.isSuccess(saved)
+                ? { status: "saved", state: saved.success }
+                : { status: "rejected", message: saved.failure.message };
+            }),
+          sessionSettings: ({ session }) =>
+            Effect.sync(() => sessionSettingsSource(store, session)),
+          changeSettings: ({ environment, changes: wanted, author }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
-                changeSettings(state.raw.storage, store, changes, { changes: wanted, author }, now),
+                environment === undefined
+                  ? changeSettings(
+                      state.raw.storage,
+                      store,
+                      changes,
+                      { changes: wanted, author },
+                      now,
+                    )
+                  : changeSettingsOverrides(
+                      state.raw.storage,
+                      store,
+                      changes,
+                      { environment, changes: wanted, author },
+                      now,
+                    ),
               ),
             ),
           listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),

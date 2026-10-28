@@ -9,6 +9,7 @@ import {
   overrideValue,
   resolveOverrides,
   resolveOverridesLeniently,
+  withOverrideFields,
   withOverrides,
 } from "./settings-overrides.ts";
 
@@ -82,8 +83,10 @@ describe("an Environment's settings", () => {
 
   it("replace the offered tools as a whole", () => {
     expect(
-      environment({ tools: { offered: ["read", "bash", "web_fetch"] } }, { tools: { offered: ["read"] } })
-        .tools.offered,
+      environment(
+        { tools: { offered: ["read", "bash", "web_fetch"] } },
+        { tools: { offered: ["read"] } },
+      ).tools.offered,
     ).toEqual(["read"]);
   });
 
@@ -99,8 +102,8 @@ describe("an Environment's settings", () => {
 
   it("take an Override of no spend limit over Global's limit", () => {
     expect(
-      environment({ spendLimit: { perSession: 10 } }, { spendLimit: { perSession: null } }).spendLimit
-        .perSession,
+      environment({ spendLimit: { perSession: 10 } }, { spendLimit: { perSession: null } })
+        .spendLimit.perSession,
     ).toBeNull();
     expect(environment({ spendLimit: { perSession: 10 } }, {}).spendLimit.perSession).toBe(10);
   });
@@ -137,7 +140,10 @@ describe("resolving an Environment's stale Overrides leniently", () => {
       { roles: { small: { model: "anthropic/claude-retired-1", hint: "old" } } },
     );
 
-    expect(settings.roles.small).toEqual({ model: SONNET, hint: DEFAULT_SETTINGS.roles.small.hint });
+    expect(settings.roles.small).toEqual({
+      model: SONNET,
+      hint: DEFAULT_SETTINGS.roles.small.hint,
+    });
   });
 
   it("gives Global for Overrides that are not an object", () => {
@@ -194,7 +200,11 @@ describe("the fields an Environment overrides", () => {
 
   it("name their keys, and refuse what is not one", () => {
     expect(overrideFieldPath("roles.small")).toEqual(["roles", "small"]);
-    expect(overrideFieldPath("extensions.subagents.a.b")).toEqual(["extensions", "subagents", "a.b"]);
+    expect(overrideFieldPath("extensions.subagents.a.b")).toEqual([
+      "extensions",
+      "subagents",
+      "a.b",
+    ]);
     expect(overrideFieldPath("spendLimit.perSession")).toEqual(["spendLimit", "perSession"]);
     expect(overrideFieldPath("roles.small.model")).toBeUndefined();
     expect(overrideFieldPath("roles.tiny")).toBeUndefined();
@@ -204,10 +214,15 @@ describe("the fields an Environment overrides", () => {
   });
 
   it("read an Override, none where the field inherits", () => {
-    const overrides = { spendLimit: { perSession: null }, roles: { small: { model: OPUS, hint: "h" } } };
+    const overrides = {
+      spendLimit: { perSession: null },
+      roles: { small: { model: OPUS, hint: "h" } },
+    };
 
     expect(overrideValue(overrides, "spendLimit.perSession")).toEqual(Option.some(null));
-    expect(overrideValue(overrides, "roles.small")).toEqual(Option.some({ model: OPUS, hint: "h" }));
+    expect(overrideValue(overrides, "roles.small")).toEqual(
+      Option.some({ model: OPUS, hint: "h" }),
+    );
     expect(overrideValue(overrides, "model")).toEqual(Option.none());
   });
 });
@@ -219,7 +234,11 @@ describe("changing an Environment's Overrides", () => {
         { model: SONNET, compaction: { enabled: false } },
         { set: { thinkingLevel: "low", compaction: { reserveTokens: 100 } } },
       ),
-    ).toEqual({ model: SONNET, thinkingLevel: "low", compaction: { enabled: false, reserveTokens: 100 } });
+    ).toEqual({
+      model: SONNET,
+      thinkingLevel: "low",
+      compaction: { enabled: false, reserveTokens: 100 },
+    });
   });
 
   it("keeps a Role whole, filling what the change leaves out from the Role in force", () => {
@@ -234,7 +253,9 @@ describe("changing an Environment's Overrides", () => {
     expect(
       changed(
         { extensions: { web: { searchProvider: "exa" } } },
-        { set: { spendLimit: { perSession: null }, extensions: { web: { searchProvider: null } } } },
+        {
+          set: { spendLimit: { perSession: null }, extensions: { web: { searchProvider: null } } },
+        },
       ),
     ).toEqual({ spendLimit: { perSession: null } });
   });
@@ -242,10 +263,39 @@ describe("changing an Environment's Overrides", () => {
   it("resets a field by removing its Override, and an emptied section with it", () => {
     expect(
       changed(
-        { model: SONNET, roles: { small: { model: OPUS, hint: "h" } }, extensions: { web: { a: 1 } } },
+        {
+          model: SONNET,
+          roles: { small: { model: OPUS, hint: "h" } },
+          extensions: { web: { a: 1 } },
+        },
         { reset: ["roles.small", "extensions.web.a", "thinkingLevel"] },
       ),
     ).toEqual({ model: SONNET });
+  });
+
+  it("takes changes field by field, as the agent's tools give them", () => {
+    const result = withOverrideFields(
+      { model: SONNET, spendLimit: { perSession: 5 } },
+      [
+        { field: "roles.small", value: { model: OPUS } },
+        { field: "extensions.web.a.b", value: 1 },
+        { field: "model", reset: true },
+      ],
+      DEFAULT_SETTINGS,
+    );
+
+    expect(result).toEqual(
+      Result.succeed({
+        spendLimit: { perSession: 5 },
+        roles: { small: { model: OPUS, hint: DEFAULT_SETTINGS.roles.small.hint } },
+        extensions: { web: { "a.b": 1 } },
+      }),
+    );
+    expect(
+      Result.isFailure(
+        withOverrideFields({}, [{ field: "compaction", value: {} }], DEFAULT_SETTINGS),
+      ),
+    ).toBe(true);
   });
 
   it("refuses to reset what is not a field", () => {

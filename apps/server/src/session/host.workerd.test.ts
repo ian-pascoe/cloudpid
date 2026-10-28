@@ -66,6 +66,50 @@ const registered = async (prefix = "session") => {
   return { stub, status, reported, registry };
 };
 
+/** The Environment beside Default that `inTwoEnvironments` makes. */
+const STAGING = "5a5a5a5a";
+
+/**
+ * Two Sessions reporting to one fresh Registry (ADR-0027): one in the Default Environment, and one in a new
+ * Environment, Staging, whose Settings Overrides the test sets.
+ */
+const inTwoEnvironments = async () => {
+  const n = (counter += 1);
+  const registryName = `registry-${n}`;
+  const registry = env.REGISTRIES.getByName(registryName);
+
+  await registry.createEnvironment(STAGING, "Staging", 1);
+
+  const register = async (environment: string, workspace: string) => {
+    const sessionId = `session-${n}-${environment}`;
+    const stub = env.SESSIONS.getByName(sessionId);
+
+    await registry.createSession(
+      {
+        id: sessionId,
+        title: null,
+        workspace: {
+          kind: "new",
+          id: workspace,
+          environment,
+          branch: `cloudpid/${workspace}`,
+          base: null,
+        },
+      },
+      1,
+    );
+    await runInDurableObject(stub, (instance: TestSession) => instance.reportTo(registryName));
+
+    return stub;
+  };
+
+  return {
+    registry,
+    inDefault: await register("default", "0a1b2c3d"),
+    inStaging: await register(STAGING, "0a1b2c3e"),
+  };
+};
+
 describe("a Session host", () => {
   it("resumes a run cut off by an eviction from its heartbeat alarm and answers", async () => {
     const stub = fresh();
@@ -356,6 +400,23 @@ describe("a Session's agent", () => {
   const script = (stub: DurableObjectStub<TestSession>, ...responses: string[]) =>
     runInDurableObject(stub, (instance: TestSession) => instance.script(responses));
 
+  it("runs a Session with its Environment's Overrides, and one in another Environment with Global's", async () => {
+    const { registry, inDefault, inStaging } = await inTwoEnvironments();
+
+    await registry.updateSettings({ model: "anthropic/claude-sonnet-5-5" }, 1);
+    await registry.updateSettingsOverrides(STAGING, {
+      set: { model: "anthropic/claude-haiku-5-5", thinkingLevel: "low" },
+    });
+
+    for (const stub of [inDefault, inStaging]) {
+      await script(stub, "one");
+      await ask(stub, 1);
+    }
+
+    expect(await requests(inDefault)).toEqual([{ model: "claude-sonnet-5-5", thinking: "high" }]);
+    expect(await requests(inStaging)).toEqual([{ model: "claude-haiku-5-5", thinking: "low" }]);
+  });
+
   it("runs a new Session's first request on the default model at the default thinking level", async () => {
     const { stub } = await registered();
 
@@ -419,7 +480,7 @@ describe("a Session's agent", () => {
 
     await script(
       stub,
-      'call:settings_model_set:{"model":"anthropic/claude-sonnet-5-5","thinking_level":"low","reason":"The task is small"}',
+      'call:settings_model_set:{"scope":"*","model":"anthropic/claude-sonnet-5-5","thinking_level":"low","reason":"The task is small"}',
       "Changed.",
     );
     await ask(stub, 1);
@@ -456,7 +517,7 @@ describe("a Session's agent", () => {
 
     await script(
       stub,
-      'call:settings_model_set:{"model":"anthropic/claude-sonnet-5-5","reason":"r"}',
+      'call:settings_model_set:{"scope":"*","model":"anthropic/claude-sonnet-5-5","reason":"r"}',
       "Changed.",
     );
     await runInDurableObject(stub, (instance: TestSession) =>
@@ -476,7 +537,7 @@ describe("a Session's agent", () => {
 
     await script(
       stub,
-      'call:settings_compaction_set:{"reserve_tokens":-1,"reason":"r"}',
+      'call:settings_compaction_set:{"scope":"*","reserve_tokens":-1,"reason":"r"}',
       "Refused.",
     );
     await ask(stub, 1);
@@ -837,6 +898,25 @@ describe("a Session's spend limit", () => {
     await registry.updateSettings({}, 4);
     await runInDurableObject(stub, (instance: TestSession) => instance.script(["third answer"]));
     expect(await ask(stub, 5)).toMatchObject({ status: "answered", text: "third answer" });
+  });
+
+  it("stops only the Sessions of the Environment that overrides it", async () => {
+    const { registry, inDefault, inStaging } = await inTwoEnvironments();
+
+    await registry.updateSettingsOverrides(STAGING, {
+      set: { spendLimit: { perSession: REQUEST_COST } },
+    });
+
+    for (const stub of [inDefault, inStaging]) {
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.script(['call:echo:{"text":"one"}', "done"]),
+      );
+    }
+
+    expect(await ask(inStaging, 1)).toMatchObject({ status: "unanswered", reason: "model_error" });
+    expect(await requests(inStaging)).toHaveLength(1);
+    expect(await ask(inDefault, 1)).toMatchObject({ status: "answered", text: "done" });
+    expect(await requests(inDefault)).toHaveLength(2);
   });
 
   it("is off by default: a Session spends without bound", async () => {

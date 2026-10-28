@@ -1235,8 +1235,45 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         calls.push("getSettings");
 
-        return { settings: DEFAULT_SETTINGS, overrides: {} };
+        return {
+          settings: DEFAULT_SETTINGS,
+          overrides: {},
+          overriddenIn: { model: [{ id: "0a1b2c3d", name: "Staging" }] },
+        };
       }),
+    getSettingsOverrides: ({ environment }) =>
+      Effect.sync(() => {
+        calls.push(`getSettingsOverrides:${environment}`);
+
+        return environment === DEFAULT_ENVIRONMENT
+          ? {
+              environment,
+              settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
+              global: DEFAULT_SETTINGS,
+              overrides: { thinkingLevel: "low" },
+            }
+          : null;
+      }),
+    updateSettingsOverrides: ({ environment, set, reset }) =>
+      Effect.sync(() => {
+        calls.push(`updateSettingsOverrides:${environment}`);
+
+        if (environment !== DEFAULT_ENVIRONMENT) return { status: "missing" as const };
+
+        return set === null
+          ? { status: "rejected" as const, message: "The Overrides to set are not an object" }
+          : {
+              status: "saved" as const,
+              state: {
+                environment,
+                settings: DEFAULT_SETTINGS,
+                global: DEFAULT_SETTINGS,
+                overrides: reset === undefined ? (set ?? {}) : {},
+              },
+            };
+      }),
+    // The Session DO reads what it resolves its Settings from, never the endpoint.
+    sessionSettings: () => Effect.die("The endpoint reads no Session's Settings"),
     getPush: ({ endpoint }) =>
       Effect.sync(() => {
         calls.push("getPush");
@@ -1309,6 +1346,7 @@ const fakeRegistries = () => {
               state: {
                 settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
                 overrides: { thinkingLevel: "low" },
+                overriddenIn: {},
               },
             });
       }),
@@ -1792,8 +1830,71 @@ it("reads the settings from the singleton Registry", async () => {
     fake,
   );
 
-  expect(state).toEqual({ settings: DEFAULT_SETTINGS, overrides: {} });
+  expect(state).toEqual({
+    settings: DEFAULT_SETTINGS,
+    overrides: {},
+    overriddenIn: { model: [{ id: "0a1b2c3d", name: "Staging" }] },
+  });
   expect(fake.names).toEqual(["registry"]);
+});
+
+it("reads an Environment's Settings Overrides, with Global's and the two resolved", async () => {
+  const state = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+
+      return yield* registry.getSettingsOverrides({ environment: DEFAULT_ENVIRONMENT });
+    }),
+  );
+
+  expect(state).toEqual({
+    environment: DEFAULT_ENVIRONMENT,
+    settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
+    global: DEFAULT_SETTINGS,
+    overrides: { thinkingLevel: "low" },
+  });
+});
+
+it("fails the Settings of an Environment that does not exist, naming it", async () => {
+  const errors = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+
+      return yield* Effect.all([
+        Effect.flip(registry.getSettingsOverrides({ environment: "0badc0de" })),
+        Effect.flip(
+          registry.updateSettingsOverrides({ environment: "0badc0de", reset: ["model"] }),
+        ),
+      ]);
+    }),
+  );
+
+  for (const error of errors) {
+    expect(error).toBeInstanceOf(SettingsError);
+    expect(error.message).toContain("0badc0de");
+  }
+});
+
+it("changes an Environment's Overrides, and fails a change the Registry rejects with its message", async () => {
+  const [saved, error] = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+
+      return yield* Effect.all([
+        registry.updateSettingsOverrides({
+          environment: DEFAULT_ENVIRONMENT,
+          set: { model: "anthropic/claude-sonnet-5-5" },
+        }),
+        Effect.flip(
+          registry.updateSettingsOverrides({ environment: DEFAULT_ENVIRONMENT, set: null }),
+        ),
+      ]);
+    }),
+  );
+
+  expect(saved.overrides).toEqual({ model: "anthropic/claude-sonnet-5-5" });
+  expect(error).toBeInstanceOf(SettingsError);
+  expect(error.message).toBe("The Overrides to set are not an object");
 });
 
 it("saves settings overrides in the Registry and answers the settings in force", async () => {

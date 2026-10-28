@@ -323,15 +323,46 @@ export const EnvironmentBuildState = Schema.Struct({
 
 export type EnvironmentBuildState = typeof EnvironmentBuildState.Type;
 
-/** The settings in force, and the overrides saved over the defaults (`docs/architecture/overview.md` → Settings). */
+/** An Environment as a Global setting's "overridden in" names it. */
+export const OverridingEnvironment = Schema.Struct({ id: Schema.String, name: Schema.String });
+
+export type OverridingEnvironment = typeof OverridingEnvironment.Type;
+
+/**
+ * The Global Settings in force, and the overrides saved over the defaults (`docs/architecture/overview.md` → Settings).
+ */
 export const SettingsState = Schema.Struct({
   settings: Settings,
   overrides: Schema.Json,
   /** Why the saved overrides were not used, when they no longer resolve: the settings are then the defaults. */
   problem: Schema.optionalKey(Schema.String),
+  /**
+   * By field (`@cloudpid/config` → `overrideFields`: `model`, `roles.small`, `extensions.<extension>.<key>`), the
+   * Environments that override it, newest first, so a change at Global does nothing for them. A field none overrides
+   * is left out.
+   */
+  overriddenIn: Schema.Record(Schema.String, Schema.Array(OverridingEnvironment)),
 });
 
 export type SettingsState = typeof SettingsState.Type;
+
+/**
+ * An Environment's Settings (ADR-0027): its Overrides, the fields set on purpose for it (a deep partial of the
+ * settings, read field by field with `overrideFields`; a field it does not hold is inherited), Global's settings it
+ * inherits, and the settings it resolves to, its Overrides over Global over the defaults.
+ */
+export const SettingsOverridesState = Schema.Struct({
+  environment: Schema.String,
+  /** The settings in force for the Environment's Sessions. */
+  settings: Settings,
+  /** The Global settings, what each field without an Override has. */
+  global: Settings,
+  overrides: Schema.Json,
+  /** Why some saved Overrides were left out, when they no longer resolve: those fields inherit Global. */
+  problem: Schema.optionalKey(Schema.String),
+});
+
+export type SettingsOverridesState = typeof SettingsOverridesState.Type;
 
 /**
  * An Environment's Container settings in force (`docs/architecture/container.md` → Container settings, ADR-0027): its
@@ -352,11 +383,6 @@ export const ContainerSettingsState = Schema.Struct({
 });
 
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
-
-/** An Environment as a Global setting's "overridden in" names it. */
-export const OverridingEnvironment = Schema.Struct({ id: Schema.String, name: Schema.String });
-
-export type OverridingEnvironment = typeof OverridingEnvironment.Type;
 
 /**
  * The Container settings at Global in force (`docs/architecture/container.md` → Container settings, ADR-0027), and what is
@@ -445,6 +471,13 @@ export const AgentChange = Schema.Struct({
    * deleted. Left out for every other change.
    */
   approved: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * Set on a change of an Environment's field that had no Override of its own before it (ADR-0027): `before` is then the
+   * value it inherited, and a revert resets the field rather than writing that value. Left out (false) otherwise.
+   */
+  beforeInherited: Schema.optionalKey(Schema.Boolean),
+  /** Set on a change that left an Environment's field with no Override of its own (a Reset): `after` is what it inherits. */
+  afterInherited: Schema.optionalKey(Schema.Boolean),
 });
 
 export type AgentChange = typeof AgentChange.Type;
@@ -990,12 +1023,15 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { workspace: WorkspaceId },
     error: EnvironmentError,
   }),
-  /** The settings in force and the overrides they come from. */
+  /**
+   * The Global Settings in force, the overrides of the defaults they come from, and the Environments that override each
+   * field (`overriddenIn`).
+   */
   Rpc.make("getSettings", { success: SettingsState }),
   /**
-   * Replace the saved overrides, a partial of the settings that differs from the defaults. Overrides that do not
+   * Replace the saved Global overrides, a partial of the settings that differs from the defaults. Overrides that do not
    * resolve fail with a `SettingsError` whose message lists each problem, and nothing is saved. A Session reads the
-   * new settings when it next admits input.
+   * new settings when it next admits input, unless its Environment overrides them.
    */
   Rpc.make("updateSettings", {
     payload: { overrides: Schema.Json },
@@ -1003,9 +1039,36 @@ export class RegistryRpcs extends RpcGroup.make(
     error: SettingsError,
   }),
   /**
-   * The Settings' Agent changes (`docs/architecture/agent-changes.md`), newest first: those of the last `MAX_AGENT_CHANGES`
-   * the owner has not dismissed, the owner's reverts among them. Each one's `field` names a setting (`model`, `roles.small.model`, `tools.offered`,
-   * `extensions.<extension>.<key>`).
+   * Environment `environment`'s Settings (ADR-0027): its Overrides, Global's settings it inherits, and the two resolved.
+   * Fails with a `SettingsError` when no Environment has the id.
+   */
+  Rpc.make("getSettingsOverrides", {
+    payload: { environment: EnvironmentId },
+    success: SettingsOverridesState,
+    error: SettingsError,
+  }),
+  /**
+   * Change Environment `environment`'s Overrides: `set`, a deep partial of the settings, overrides each field it holds
+   * (a Role whole, completed from the Role in force; an extension's option by key, null resetting it), even to the
+   * Global value; `reset` names fields (`model`, `roles.small`, `compaction.enabled`, `tools.offered`,
+   * `extensions.<extension>.<key>`) whose Override is removed, so they inherit again. Fails with a `SettingsError`,
+   * saving nothing, for values the settings do not take, a field that is not one, or an Environment that does not
+   * exist. The Environment's Sessions read them when they next admit input.
+   */
+  Rpc.make("updateSettingsOverrides", {
+    payload: {
+      environment: EnvironmentId,
+      set: Schema.optionalKey(Schema.Json),
+      reset: Schema.optionalKey(Schema.Array(Schema.String)),
+    },
+    success: SettingsOverridesState,
+    error: SettingsError,
+  }),
+  /**
+   * The Global Settings' Agent changes (`docs/architecture/agent-changes.md`), newest first: those of the last
+   * `MAX_AGENT_CHANGES` the owner has not dismissed, the owner's reverts among them. Each one's `field` names a setting
+   * (`model`, `roles.small`, `tools.offered`, `extensions.<extension>.<key>`). An Environment's Settings changes are
+   * among its own Agent changes (`listAgentChanges`).
    */
   Rpc.make("listSettingsChanges", { success: Schema.Array(AgentChange) }),
   /**
