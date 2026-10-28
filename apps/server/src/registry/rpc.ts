@@ -106,7 +106,7 @@ export type RegistryRpcObjects<R = never> = {
   readonly lookups: WorkspaceLookups;
   /** The draft's Start from menu: the branches of an Environment's Repos, asked of GitHub. */
   readonly branches: DraftBranches;
-  /** The Environments page's search of skills.sh for Skills to install. */
+  /** The Skills page's search of skills.sh for Skills to install. */
   readonly skillSearch: SkillSearcher;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
@@ -827,6 +827,14 @@ export const serveRegistryRpc = <R = never>(
           .pipe(
             Effect.filterOrFail(Predicate.isNotNull, () =>
               failed(`Environment "${environment}" has no change ${change} of a Skill`),
+            ),
+          ),
+      environmentSkillFiles: ({ environment, name }) =>
+        registry
+          .skillFiles({ environment, name })
+          .pipe(
+            Effect.filterOrFail(Predicate.isNotNull, () =>
+              failed(`The environment keeps no Skill named ${JSON.stringify(name)}`),
             ),
           ),
       listEnvironmentSkills: ({ environment }) =>

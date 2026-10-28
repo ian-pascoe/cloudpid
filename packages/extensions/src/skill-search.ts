@@ -1,7 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off
 // Searching skills.sh for Skills (ADR-0026, `docs/architecture/workspace.md` → _Installing from GitHub_): the request to its undocumented
 // `/api/search` and a reading of its answer, in plain TypeScript so the `skill_search` tool (in the Session DO, through the
-// web transport) and the Environments page (through the main Worker) share them. skills.sh is used for search only: what
+// web transport) and the Skills page (through the main Worker) share them. skills.sh is used for search only: what
 // is installed is fetched from GitHub, and nothing here records anything.
 import { SkillSearchResult } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";

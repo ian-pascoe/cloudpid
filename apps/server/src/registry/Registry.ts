@@ -18,6 +18,7 @@ import type {
   PushSubscription,
   SessionOrigin,
   SkillChangeFiles,
+  SkillFile,
 } from "@cloudpid/protocol";
 import { EMPTY_SKILL_SET_HASH, type SkillSet } from "../workspace/skill-set-schema.ts";
 import {
@@ -30,6 +31,7 @@ import {
   removeSkillAs,
   saveSkillAs,
   skillChangeFiles,
+  keptSkillFiles,
   type SkillPreview,
   type SkillFiles,
   skillLayers,
@@ -558,6 +560,11 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly change: number;
   }) => Effect.Effect<SkillChangeFiles | null>;
+  /** The files kept for Skill `name` of `environment` (or `*`), with their texts, by path; null when it keeps none of the name. */
+  readonly skillFiles: (input: {
+    readonly environment: string;
+    readonly name: string;
+  }) => Effect.Effect<ReadonlyArray<SkillFile> | null>;
   /**
    * The Skill set `environment`'s Workspaces serve: its own Skills over those kept for every Environment. Null
    * when it is not registered.
@@ -1286,6 +1293,8 @@ export const RegistryLive = Registry.make(
 
               return found === null ? null : skillChangeFiles(skills, found);
             }),
+          skillFiles: ({ environment, name }) =>
+            Effect.sync(() => keptSkillFiles(skills, environment, name)),
           workspaceSkillSet: ({ environment }) =>
             Effect.suspend(() =>
               store.getEnvironment(environment) === null

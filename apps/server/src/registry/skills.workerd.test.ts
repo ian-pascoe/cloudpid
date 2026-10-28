@@ -20,6 +20,7 @@ import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./a
 import {
   previewSkillSave,
   hashFiles,
+  keptSkillFiles,
   mergeSkills,
   openSkills,
   removeSkill,
@@ -151,6 +152,35 @@ describe("saving an Environment's Skill", () => {
       "release/references/steps.md": release["references/steps.md"],
     });
     expect(set.hash).not.toBe(EMPTY_SKILL_SET.hash);
+  });
+
+  it("keeps its files, which keptSkillFiles gives back as text by path, for its scope only", async () => {
+    const edited = { ...release, "SKILL.md": skillMd("release", "What release does.", "New.") };
+
+    const [kept, again, elsewhere, absent] = await inRegistry(async ({ save, skills }) => {
+      await save("release", release);
+      const first = keptSkillFiles(skills, DEFAULT_ENVIRONMENT, "release");
+
+      await save("release", edited, 2_000);
+
+      return [
+        first,
+        keptSkillFiles(skills, DEFAULT_ENVIRONMENT, "release"),
+        keptSkillFiles(skills, EVERY_ENVIRONMENT_SCOPE, "release"),
+        keptSkillFiles(skills, DEFAULT_ENVIRONMENT, "review"),
+      ];
+    });
+
+    expect(kept).toEqual([
+      { path: "SKILL.md", text: release["SKILL.md"] },
+      { path: "references/steps.md", text: release["references/steps.md"] },
+    ]);
+    expect(again).toEqual([
+      { path: "SKILL.md", text: edited["SKILL.md"] },
+      { path: "references/steps.md", text: release["references/steps.md"] },
+    ]);
+    expect(elsewhere).toBeNull();
+    expect(absent).toBeNull();
   });
 
   it("is the empty set, under its own hash, while the Environment keeps no Skill", async () => {

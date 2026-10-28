@@ -1875,7 +1875,7 @@ describe("environment_skill_update", () => {
       'Updated grill-me (mattpocock/skills/skills/grill-me at c0ffee0 → dec0de0) for Environment "Default" (default).',
     );
     expect(said).toContain("served now at /workspace/.agents/skills/<name> (read-only)");
-    expect(said).toContain("the user can revert it on the Environments page");
+    expect(said).toContain("the user can revert it on the Skills page");
     expect(result.isError).not.toBe(true);
     expect(result.details).toMatchObject({ agentChanges: [{ id: 9, field: "skills.grill-me" }] });
 

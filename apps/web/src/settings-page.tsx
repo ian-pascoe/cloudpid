@@ -16,7 +16,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "./components/ui/button.tsx";
-import { AgentChangeRow } from "./environments-page.tsx";
+import { AgentChangeRow } from "./agent-change-list.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { modelName } from "./models.ts";
 import { badOfferedEntries, offeredFromText, offeredToText } from "./offered-tools.ts";

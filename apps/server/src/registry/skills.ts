@@ -986,7 +986,7 @@ const layersAround = (
 };
 
 /**
- * The owner installs a Skill from the Environments page: kept as `saveSkillAs` keeps it, and, as the owner's removal,
+ * The owner installs a Skill from the Skills page: kept as `saveSkillAs` keeps it, and, as the owner's removal,
  * not an Agent change.
  */
 export const keepSkillAsOwner = (
@@ -1083,7 +1083,7 @@ export type OwnerRemoval =
   | { readonly status: "rejected"; readonly message: string };
 
 /**
- * The owner removes Skill `name` kept for `environment` (an Environment's id, or `*`) from the Environments page, as an
+ * The owner removes Skill `name` kept for `environment` (an Environment's id, or `*`) from the Skills page, as an
  * owner's save: not an Agent change, and no Approval, but refused as an agent's removal is when it would serve a Skill
  * from the layer below that does not fit. Says whether it was kept; the texts no Skill or change refers to any more are
  * dropped.
@@ -1129,6 +1129,16 @@ const filesOf = (skills: Skills, hashes: HashedFiles | null): ReadonlyArray<Skil
     },
   );
 };
+
+/**
+ * The files the Registry keeps for Skill `name` of `scope` (an Environment's id, or `*`), with their texts, by path; null
+ * when the scope keeps no Skill of the name. It is what the Skills page shows of a Skill with no Skill source.
+ */
+export const keptSkillFiles = (
+  skills: Skills,
+  scope: string,
+  name: string,
+): ReadonlyArray<SkillFile> | null => filesOf(skills, skills.get(scope, name)?.files ?? null);
 
 /** The files before and after Agent change `change` of a Skill, with their texts; null for a change of another field. */
 export const skillChangeFiles = (

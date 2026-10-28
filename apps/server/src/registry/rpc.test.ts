@@ -24,6 +24,7 @@ import {
   SessionNotFound,
   SETTINGS_SCOPE,
   type SkillChangeFiles,
+  type SkillFile,
   type SkillInstallation,
   skillField,
   workspaceDirectory,
@@ -166,6 +167,8 @@ const fakeRegistries = () => {
 
   /** The files before and after each Agent change of a Skill, by `<environment>:<change>`. */
   const skillFiles = new Map<string, SkillChangeFiles>();
+  // The files kept for each Skill, by `<scope>:<name>`.
+  const keptFiles = new Map<string, ReadonlyArray<SkillFile>>();
   /** The Settings' Agent changes recorded, oldest first. */
   const settingsChanges: AgentChange[] = [];
   /** The Agent changes the owner dismissed, each as `<scope>:<id>`. */
@@ -864,6 +867,8 @@ const fakeRegistries = () => {
       }),
     skillChangeFiles: ({ environment, change }) =>
       Effect.sync(() => skillFiles.get(`${environment}:${change}`) ?? null),
+    skillFiles: ({ environment, name }) =>
+      Effect.sync(() => keptFiles.get(`${environment}:${name}`) ?? null),
     workspaceSkillSet: () => Effect.die("The endpoint hands no Skill set"),
     listAgentChanges: ({ environment }) =>
       Effect.sync(() =>
@@ -1280,6 +1285,7 @@ const fakeRegistries = () => {
     agentChanges,
     skillsKept,
     skillFiles,
+    keptFiles,
     settingsChanges,
     sessionObjects,
     workspaceObjects,
@@ -3108,6 +3114,26 @@ it("answers the files before and after a Skill's Agent change, and refuses anoth
     after: [{ path: "SKILL.md", text: "---\nname: release\n---\n" }],
   });
   expect(other.message).toBe('Environment "default" has no change 4 of a Skill');
+});
+
+it("answers the files kept for a Skill, and refuses a Skill the scope does not keep", async () => {
+  const fake = fakeRegistries();
+
+  fake.keptFiles.set("*:release", [{ path: "SKILL.md", text: "---\nname: release\n---\n" }]);
+
+  const files = await call(fake, (registry) =>
+    registry.environmentSkillFiles({ environment: "*", name: "release" }),
+  );
+
+  const absent = await call(fake, (registry) =>
+    Effect.flip(
+      registry.environmentSkillFiles({ environment: DEFAULT_ENVIRONMENT, name: "release" }),
+    ),
+  );
+
+  expect(files).toEqual([{ path: "SKILL.md", text: "---\nname: release\n---\n" }]);
+  expect(absent).toBeInstanceOf(EnvironmentError);
+  expect(absent.message).toBe('The environment keeps no Skill named "release"');
 });
 
 it("reverts a Skill's Agent change without running a Build's upkeep", async () => {

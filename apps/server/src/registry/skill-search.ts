@@ -1,4 +1,4 @@
-// The Environments page's search of skills.sh (ADR-0026): asked by the main Worker, since skills.sh does not answer a
+// The Skills page's search of skills.sh (ADR-0026): asked by the main Worker, since skills.sh does not answer a
 // browser's cross-origin request, with the request and the reading of its answer the `skill_search` tool shares
 // (`@cloudpid/extensions/skill-search`). Records nothing, and installing does not depend on it.
 // @effect-diagnostics asyncFunction:off globalFetch:off globalFetchInEffect:off -- skills.sh is asked with `fetch`, a Promise API.

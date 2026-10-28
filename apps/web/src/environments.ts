@@ -13,7 +13,6 @@ import {
   EVERY_ENVIRONMENT_SCOPE,
   DELETED_FIELD,
   type EnvironmentSecretRecord,
-  type EnvironmentSkill,
   fieldRepo,
   fieldSecret,
   fieldSkill,
@@ -28,8 +27,6 @@ import {
   secretValueProblem,
   type SessionRecord,
   SkillChangeValue,
-  type SkillInstall,
-  type SkillUpdate,
   skillSourceText,
 } from "@cloudpid/protocol";
 import {
@@ -239,29 +236,6 @@ export const inheritedVariables = (
   };
 };
 
-/** The names of the Skills kept for every Environment that an Environment gets, and of its own that override one. */
-export type InheritedSkills = {
-  readonly inherited: readonly string[];
-  readonly overridden: readonly string[];
-};
-
-/**
- * The Skills kept for every Environment (`every`) that an Environment keeping the Skills `own` gets, by name, and the
- * ones of its own that override one: the counterpart of `inheritedVariables`. Its own wins.
- */
-export const inheritedSkills = (
-  own: readonly EnvironmentSkill[],
-  every: readonly EnvironmentSkill[],
-): InheritedSkills => {
-  const kept = new Set(own.map((skill) => skill.name));
-  const names = every.map((skill) => skill.name).toSorted();
-
-  return {
-    inherited: names.filter((name) => !kept.has(name)),
-    overridden: names.filter((name) => kept.has(name)),
-  };
-};
-
 /**
  * The variables typed in the Edit dialog, or why they cannot be saved: a `NAME=value` line each, the value everything
  * after the first `=` as typed, blank lines and lines starting with `#` left out. The server's rules
@@ -356,36 +330,6 @@ export const buildLine = (build: BuildView, now: number): string => {
  */
 const skillFilesOf = (value: AgentChange["before"]): readonly string[] | undefined =>
   Schema.is(SkillChangeValue)(value) ? Record.keys(value.files).toSorted() : undefined;
-
-/** What an install answered, a line for each Skill it kept, found already kept, or refused (and why). */
-export const installOutcomeLines = (
-  skills: Extract<SkillInstall, { readonly status: "installed" }>["skills"],
-): ReadonlyArray<string> =>
-  Arr.map(skills, ({ name, outcome, message }) => {
-    switch (outcome) {
-      case "installed":
-        return `${name}: installed`;
-      case "unchanged":
-        return `${name}: already installed from this commit, nothing changed`;
-      case "rejected":
-        return `${name}: refused${message === undefined ? "" : `: ${message}`}`;
-    }
-  });
-
-/** What the owner's update answered, a line for each Skill: moved, the same already, refused for its edits, or refused. */
-export const updateOutcomeLines = (skills: SkillUpdate["skills"]): ReadonlyArray<string> =>
-  Arr.map(skills, ({ name, outcome, message }) => {
-    switch (outcome) {
-      case "updated":
-        return `${name}: updated to the latest commit`;
-      case "unchanged":
-        return `${name}: already up to date, nothing changed`;
-      case "modified":
-        return `${name}: not updated: ${message ?? "it was edited since it was installed"}`;
-      case "rejected":
-        return `${name}: not updated${message === undefined ? "" : `: ${message}`}`;
-    }
-  });
 
 /**
  * A value an Agent change shows, in full: a Skill's as its files' paths, a variable's, a script's or the Toolchains' as written, a list of paths a line

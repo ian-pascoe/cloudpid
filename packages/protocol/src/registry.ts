@@ -16,6 +16,7 @@ import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./sessio
 import {
   EnvironmentSkill,
   SkillChangeFiles,
+  SkillFile,
   SkillInstall,
   SkillSearchResult,
   SkillUpdate,
@@ -673,7 +674,7 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * The files before and after Agent change `change` of a Skill of `environment` (or of `*`, the Skills kept for every
-   * Environment; `docs/architecture/agent-changes.md`), with their texts, for the Environments page to show as diffs. Fails
+   * Environment; `docs/architecture/agent-changes.md`), with their texts, for the Skills page to show as diffs. Fails
    * with an `EnvironmentError` when the scope has no such change, or it is not a Skill's.
    */
   Rpc.make("skillChangeFiles", {
@@ -688,6 +689,16 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("listEnvironmentSkills", {
     payload: { environment: AgentChangeScope },
     success: Schema.Array(EnvironmentSkill),
+    error: EnvironmentError,
+  }),
+  /**
+   * The files the Registry keeps for Skill `name` of an Environment, or of every Environment (`*`), with their texts, by
+   * path: what the Skills page shows of a Skill with no Skill source. Fails with an `EnvironmentError` when the scope
+   * keeps no Skill of the name.
+   */
+  Rpc.make("environmentSkillFiles", {
+    payload: { environment: AgentChangeScope, name: Schema.String },
+    success: Schema.Array(SkillFile),
     error: EnvironmentError,
   }),
   /**

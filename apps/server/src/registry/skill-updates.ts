@@ -3,7 +3,7 @@
 // (`../github/skill-fetch.ts`, as an install does) and keeps the files in place of the Skill's, with the new Skill source,
 // as a save keeps a Skill. The agent's update records an Agent change for each Skill moved, with the files and the source
 // before and after, so a revert brings back the earlier commit and the edits an overwrite replaced; the owner's, from the
-// Environments page, is the owner's save and records none. The daily check (`checkSkillUpdates`) only reads GitHub, one
+// Skills page, is the owner's save and records none. The daily check (`checkSkillUpdates`) only reads GitHub, one
 // request for each repo and ref, and marks the Skills whose folder changed at the ref's head; it applies nothing.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- GitHub is read through a Promise API, and the reads and the checks run over native arrays.
 import { MAX_APPROVED_SKILLS } from "@cloudpid/extensions/skill-checks";
