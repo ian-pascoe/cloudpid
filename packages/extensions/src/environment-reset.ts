@@ -1,17 +1,20 @@
-// The `environment` extension's `environment_setting_reset` (`docs/architecture/agent-changes.md`): the agent takes an
-// Environment's Override of one Container setting back, so the field inherits the value at Global again. The reset is
-// applied as the owner's reset is (`changeEnvironment` with no value) and recorded as an Agent change whose value after
-// is inherited. A reset of the size limit may raise or lower the largest size the Environment allows, so it is a Limit:
-// it waits for the owner's Approval (`./approvals.ts`), as `environment_container_size_limit_set` does. Global's own
-// settings are not reset here: Global inherits nothing, and its value is changed with the setting's own tool at `*`.
+// The `environment` extension's `environment_setting_reset` (`docs/architecture/agent-changes.md` → Container
+// settings, one tool each, and → Approval; ADR-0027): the agent takes an Environment's Override of one Container setting
+// back, so the field inherits the value at Global again. The reset is applied as the owner's reset is
+// (`changeEnvironment` with no value) and recorded as an Agent change whose value after is inherited. A reset of the
+// size limit may raise or lower the largest size the Environment allows, so it is a Limit: it waits for the owner's
+// Approval (`./approvals.ts`), as `environment_container_size_limit_set` does. Global's own settings are not reset here:
+// Global inherits nothing, and its value is changed with the setting's own tool at `*`.
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
-import { compareInstances, INSTANCE_DESCRIPTIONS, InstanceType } from "@cloudpid/config";
+import {
+  compareInstances,
+  CONTAINER_SETTING_NAMES,
+  type ContainerSettings,
+} from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
   type ApprovalCall,
@@ -27,22 +30,22 @@ import {
   type EnvironmentDetails,
   EnvironmentsError,
   MAX_CHANGE_REASON,
+  pathsLine,
+  plainValue,
+  sizeWords,
+  textSize,
 } from "./environment.ts";
 import type { LifecycleDeps } from "./environment-lifecycle.ts";
+import { asJsonValue, named } from "./environment-skill-results.ts";
 
-/** The Container settings an Environment may override and reset, but its variables (`environment_variable_unset`). */
-export const RESETTABLE_SETTINGS = [
-  "instance",
-  "maxInstance",
-  "idleMinutes",
-  "ignore",
-  "setupScript",
-  "startScript",
-  "toolchains",
-  "spareWorkspace",
-] as const;
+/** A Container setting an Environment may override and reset, but its variables (`environment_variable_unset`). */
+export type ResettableSetting = Exclude<keyof ContainerSettings, "variables">;
 
-export type ResettableSetting = (typeof RESETTABLE_SETTINGS)[number];
+/** The Container settings an Environment may override and reset. */
+export const RESETTABLE_SETTINGS: ReadonlyArray<ResettableSetting> = Arr.filter(
+  CONTAINER_SETTING_NAMES,
+  (name): name is ResettableSetting => name !== "variables",
+);
 
 /** Each setting as a result names it. */
 const SETTING_WORDS: Readonly<Record<ResettableSetting, string>> = {
@@ -61,38 +64,19 @@ const valueWords = (setting: ResettableSetting, value: Schema.Json | null): stri
   switch (setting) {
     case "setupScript":
     case "startScript":
-    case "toolchains": {
-      const text = Predicate.isString(value) ? value : "";
-      const lines = text.replace(/\n$/, "").split("\n").length;
-
-      return text === ""
-        ? "none"
-        : `${lines} line${lines === 1 ? "" : "s"}, ${new TextEncoder().encode(text).length} bytes`;
-    }
-
+    case "toolchains":
+      return textSize(value);
     case "ignore":
-      return Arr.isArray(value) && value.length > 0
-        ? Arr.join(Arr.map(value, String), ", ")
-        : "none";
+      return pathsLine(value);
     case "spareWorkspace":
       return value === true ? "on" : "off";
     case "idleMinutes":
-      return `${JSON.stringify(value)} minutes`;
+      return `${plainValue(value)} minutes`;
     case "instance":
     case "maxInstance":
-      return Predicate.isString(value) ? value : JSON.stringify(value);
+      return plainValue(value);
   }
 };
-
-/** A size limit as the owner reads it on the Approval card. */
-const sizeWords = (size: InstanceType): string => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
-
-/** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
-// SAFETY: the two types describe the same values; the details are never mutated.
-const asJsonValue = (value: Schema.Json | null): JsonValue | null => value as JsonValue | null;
-
-const named = ({ id, name }: ChangedEnvironment): string =>
-  `Environment ${JSON.stringify(name)} (${id})`;
 
 /** The Session's Approvals, which a reset of the size limit asks. */
 export type ResetDeps = LifecycleDeps & { readonly approvals: ApprovalsService };

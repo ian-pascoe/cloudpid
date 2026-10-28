@@ -8,12 +8,7 @@
 // changes nothing, and the result carries the owner's reason. The tools are the root conversation's only
 // (`PARENT_ONLY_TOOL_PREFIXES` has `environment_` and `settings_`), run alone, and are replayed after an eviction: the
 // rerun waits for the same request, or takes the answer given meanwhile.
-import {
-  compareInstances,
-  extensionField,
-  INSTANCE_DESCRIPTIONS,
-  InstanceType,
-} from "@cloudpid/config";
+import { compareInstances, extensionField, InstanceType } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   type AgentChange,
@@ -50,6 +45,7 @@ import {
   Environments,
   EnvironmentsError,
   MAX_CHANGE_REASON,
+  sizeWords,
 } from "./environment.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
@@ -170,9 +166,6 @@ const workspacesOf = (stored: Schema.Json | null): number =>
 /** A stored Subagent Workspace limit as the owner reads it. */
 const storedWorkspacesWords = (stored: Schema.Json | null): string =>
   `${workspacesWords(workspacesOf(stored))}${stored === null ? " (the default)" : ""}`;
-
-/** A size limit as the owner reads it. */
-const sizeWords = (size: InstanceType): string => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
 
 const isInstanceType = Schema.is(InstanceType);
 
@@ -564,6 +557,25 @@ export const ApprovalTools: Effect.Effect<
       };
     });
 
+  /**
+   * The Environments that inherit the size limit at Global and whose size (their own, or Global's `globalSize`) is above
+   * `limit`, each named with its size: what the Registry would refuse the limit for. Before the size raises the limit,
+   * as the Registry checks.
+   */
+  const inheritingAbove = (globalSize: InstanceType, limit: InstanceType) =>
+    Effect.gen(function* () {
+      const listed = yield* environments.list;
+      const each = yield* Effect.forEach(listed, ({ id }) => environments.get(id));
+
+      return Arr.flatMap(each, (details) => {
+        if (details === null || details.overrides.maxInstance !== undefined) return [];
+
+        const size = details.overrides.instance ?? globalSize;
+
+        return compareInstances(size, limit) > 0 ? [`${named(details)}, ${size}`] : [];
+      });
+    });
+
   const sizeLimit = yield* defineEffectTool({
     name: "environment_container_size_limit_set",
     description: Arr.join(
@@ -610,6 +622,15 @@ export const ApprovalTools: Effect.Effect<
               },
             },
           };
+        }
+
+        const above =
+          environment === GLOBAL_ID && size !== kept ? yield* inheritingAbove(instance, size) : [];
+
+        if (above.length > 0) {
+          return yield* EnvironmentsError.make({
+            message: `Nothing was asked or saved: ${size} is below the own size of ${Arr.join(above, ", ")}, which inherit${above.length === 1 ? "s" : ""} the size limit at Global, and the limit cannot be below the size. Give each its own limit with environment_container_size_limit_set, or lower its size first with environment_container_resize.`,
+          });
         }
 
         const change = "Size limit";

@@ -696,14 +696,11 @@ describe("patching Overrides", () => {
     );
   });
 
-  it("resets a field, a variable by its field path, or every variable", () => {
+  it("resets a field, or a variable by its field path", () => {
     expect(patchContainerOverrides(current, { reset: ["idleMinutes", "variables.A"] })).toEqual(
       Result.succeed({ variables: { B: "2" } }),
     );
     expect(patchContainerOverrides(current, { reset: ["variables.A", "variables.B"] })).toEqual(
-      Result.succeed({ idleMinutes: 30 }),
-    );
-    expect(patchContainerOverrides(current, { reset: ["variables"] })).toEqual(
       Result.succeed({ idleMinutes: 30 }),
     );
   });
@@ -711,6 +708,13 @@ describe("patching Overrides", () => {
   it("refuses a reset of what is not a Container setting, and a field both set and reset", () => {
     expect(patchContainerOverrides(current, { reset: ["model"] })).toEqual(
       Result.fail('reset: "model" is not a Container setting'),
+    );
+    // The variables are reset one by one, by their field paths.
+    expect(patchContainerOverrides(current, { reset: ["variables"] })).toEqual(
+      Result.fail('reset: "variables" is not a Container setting'),
+    );
+    expect(patchContainerOverrides(current, { reset: ["variables."] })).toEqual(
+      Result.fail('reset: "variables." is not a Container setting'),
     );
     expect(
       patchContainerOverrides(current, { set: { variables: { A: "x" } }, reset: ["variables.A"] }),

@@ -19,6 +19,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -178,7 +179,14 @@ const setUp = async ({
         ...unusedSecretMarks,
         ...unusedSkills,
         current: Effect.succeed(current),
-        list: Effect.succeed([]),
+        list: Effect.succeed(
+          Arr.map(Record.values(held), ({ id, name, repos, build }) => ({
+            id,
+            name,
+            repos,
+            build,
+          })),
+        ),
         get: (id) => Effect.succeed(held[id] ?? null),
         global: Effect.succeed({
           settings: DEFAULT_CONTAINER_SETTINGS,
@@ -685,6 +693,27 @@ describe("environment_container_size_limit_set", () => {
         field: "maxInstance",
       },
     ]);
+  });
+
+  it("with id * refuses, asking nothing, a limit below the own size of an Environment that inherits it, naming it", async () => {
+    const { call, asked, calls } = await setUp({
+      held: {
+        default: details("default", "Default", { instance: "cpu-2" }),
+        "0000abcd": details("0000abcd", "Other", { instance: "cpu-2", maxInstance: "cpu-2" }),
+      },
+    });
+
+    const { result, text } = await call("environment_container_size_limit_set", {
+      id: "*",
+      size: "cpu-1",
+      reason: "Cheaper",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain('Environment "Default" (default), cpu-2');
+    expect(text).not.toContain("Other");
+    expect(asked).toEqual([]);
+    expect(calls.environments).toEqual([]);
   });
 
   it("with id * refuses, asking nothing, a limit below Global's size", async () => {

@@ -510,8 +510,11 @@ export const describeIdleCost = (minutes: number, instance: InstanceType): strin
   return `A Container that sits unused is billed for its memory until the idle stop: at ${instance} (${memoryMib / 1024} GiB) about ${money(perMinute)} a minute, so up to ${money(perMinute * minutes)} for each idle stretch of ${minutes} minute${minutes === 1 ? "" : "s"}, per Workspace. A shorter idle time costs less but loses the warm Container (the next command starts a new one from the snapshot, several seconds).`;
 };
 
+/** A size as the owner reads it on an Approval card: its name, with its resources. */
+export const sizeWords = (size: InstanceType): string => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
+
 /** A script or Toolchains value as a result sizes it: the card shows the user the difference. */
-const textSize = (value: Schema.Json | null): string => {
+export const textSize = (value: Schema.Json | null): string => {
   const text = Predicate.isString(value) ? value : "";
   const lines = text.replace(/\n$/, "").split("\n").length;
 
@@ -521,11 +524,11 @@ const textSize = (value: Schema.Json | null): string => {
 };
 
 /** A size or a number of minutes as a result says it: a text bare, a number as it is. */
-const plainValue = (value: Schema.Json | null): string =>
+export const plainValue = (value: Schema.Json | null): string =>
   Predicate.isString(value) ? value : JSON.stringify(value);
 
 /** A list of Container-only paths as a result says it. */
-const pathsLine = (value: Schema.Json | null): string =>
+export const pathsLine = (value: Schema.Json | null): string =>
   Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
 /** A tool's `id`: one Environment, the Session's own by default. */

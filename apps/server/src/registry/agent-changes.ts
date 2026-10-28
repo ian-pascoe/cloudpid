@@ -1,8 +1,9 @@
-// Agent changes (`docs/architecture/agent-changes.md`, ADR-0019): what the agent changes in an Environment, applied as the
-// owner's save is and recorded with when, the Session, the tool, the reason and the values before and after, so the
-// owner can see each one and revert it. Synchronous over the Registry DO's SQLite, as the store is, so a change and its
-// record are one step no other request lands in the middle of. The table is migration 17's (`store.ts`), and deleting
-// an Environment deletes its changes.
+// Agent changes (`docs/architecture/agent-changes.md`, ADR-0019, ADR-0027): what the agent changes in an Environment or
+// at Global (the scope `*`), applied as the owner's save is and recorded with when, the Session, the tool, the reason
+// and the values before and after (with whether each was inherited from Global), so the owner can see each one and
+// revert it at either Scope. Synchronous over the Registry DO's SQLite, as the store is, so a change and its record are
+// one step no other request lands in the middle of. The table is migration 17's (`store.ts`; the inherited marks
+// migration 25's), and deleting an Environment deletes its changes.
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- plain functions over SQLite, and a digest.
 import {
   CONTAINER_SETTING_NAMES,

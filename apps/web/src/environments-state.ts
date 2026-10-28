@@ -478,19 +478,19 @@ const filledFrom = (
   state: ContainerSettingsState | null,
 ): EnvironmentDraft => {
   if (state === null) return draft;
-  const saved = { settings: loadedSettingsOf(state) };
+  const saved = loadedSettingsOf(state);
 
   return {
     ...draft,
-    instance: draft.instance ?? saved.settings.instance,
-    maxInstance: draft.maxInstance ?? saved.settings.maxInstance,
-    idle: draft.idle ?? String(saved.settings.idleMinutes),
-    ignore: draft.ignore ?? Arr.join(saved.settings.ignore, "\n"),
-    variables: draft.variables ?? variablesText(saved.settings.variables),
-    setupScript: draft.setupScript ?? saved.settings.setupScript,
-    startScript: draft.startScript ?? saved.settings.startScript,
-    toolchains: draft.toolchains ?? saved.settings.toolchains,
-    spareWorkspace: draft.spareWorkspace ?? saved.settings.spareWorkspace,
+    instance: draft.instance ?? saved.instance,
+    maxInstance: draft.maxInstance ?? saved.maxInstance,
+    idle: draft.idle ?? String(saved.idleMinutes),
+    ignore: draft.ignore ?? Arr.join(saved.ignore, "\n"),
+    variables: draft.variables ?? variablesText(saved.variables),
+    setupScript: draft.setupScript ?? saved.setupScript,
+    startScript: draft.startScript ?? saved.startScript,
+    toolchains: draft.toolchains ?? saved.toolchains,
+    spareWorkspace: draft.spareWorkspace ?? saved.spareWorkspace,
   };
 };
 

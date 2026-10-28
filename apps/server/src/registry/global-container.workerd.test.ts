@@ -3,7 +3,7 @@
 // settings resolve exactly as they did, so a deploy hands every Workspace the same settings and asks for no Build, and
 // the Agent changes recorded before then are marked inherited where they recorded the default (migration 26).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off cryptoRandomUUID:off
 import { runInDurableObject } from "cloudflare:test";
 import {
   resolveContainerOverridesLeniently,

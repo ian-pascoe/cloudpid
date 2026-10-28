@@ -1,9 +1,11 @@
-// An Environment's Container settings (`docs/architecture/container.md` → Container settings): the Container's
-// instance size, how long it may sit unused before its Workspace stops it, the paths it keeps to itself on top of the
-// built-in ones, the variables every command gets, the Environment's own Setup and Start Scripts, and its Toolchains (a
-// mise.toml), and whether it keeps a Spare Workspace. Like the global settings, every field has a decoding default, so
-// decoding the saved overrides gives the resolved settings and the schema's `Encoded` side is the overrides' shape. The
-// Registry keeps them per Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
+// The Container settings (`docs/architecture/container.md` → Container settings, ADR-0027): the Container's instance
+// size, how long it may sit unused before its Workspace stops it, the paths it keeps to itself on top of the built-in
+// ones, the variables every command gets, the Setup and Start Scripts, the Toolchains (a mise.toml), and whether an
+// Environment keeps a Spare Workspace. Every field has a decoding default, so decoding saved overrides of the defaults
+// gives the resolved settings and the schema's `Encoded` side is their shape. The Registry keeps them at two Scopes:
+// at Global (what differs from the defaults) and per Environment, as its explicit Overrides of Global
+// (`ContainerOverrides`, `resolveEnvironmentContainerSettings`). Each Workspace DO holds a copy of its Environment's
+// settings in force, which it reads at each Container launch.
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
@@ -531,7 +533,10 @@ export const DEFAULT_CONTAINER_SETTINGS: ContainerSettings = Schema.decodeSync(C
   {},
 );
 
-/** The overrides that make the defaults into `settings`: only what differs. What a settings form saves. */
+/**
+ * The overrides that make the defaults into `settings`: only what differs. What Global stores, and what a Workspace DO
+ * is handed of an Environment's settings in force.
+ */
 export const containerOverridesFrom = (settings: ContainerSettings): ContainerSettingsOverrides => {
   const overrides: {
     -readonly [K in keyof ContainerSettingsOverrides]: ContainerSettingsOverrides[K];
@@ -688,8 +693,8 @@ export const isContainerField = (field: string): boolean =>
 
 /**
  * A change to some saved settings (an Environment's Overrides, or Global's): `set` merges into them field by field, the
- * variables name by name, and `reset` takes fields out by their field path (`idleMinutes`, `variables.<NAME>`, or
- * `variables` for all of them), which an Environment then inherits from Global, and Global from the defaults.
+ * variables name by name, and `reset` takes fields out by their field path (`idleMinutes`, `variables.<NAME>`: the
+ * variables one by one), which an Environment then inherits from Global, and Global from the defaults.
  */
 export type ContainerPatch = {
   readonly set?: Schema.Json | undefined;
@@ -718,7 +723,7 @@ export const patchContainerOverrides = (
   for (const path of reset) {
     const variable = path.startsWith(VARIABLE_PREFIX) ? path.slice(VARIABLE_PREFIX.length) : null;
 
-    if (variable === null && !isSettingName(path)) {
+    if (!isContainerField(path)) {
       return Result.fail(`reset: ${JSON.stringify(path)} is not a Container setting`);
     }
 
