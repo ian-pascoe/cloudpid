@@ -75,7 +75,6 @@ import type {
   WorkspaceSetup,
 } from "./store.ts";
 
-/** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 /**
  * The fake Skill directory's search: it finds `mattpocock/skills/tdd` for any query, except one that starts with `down` (a
  * skills.sh failure), and says it answered as many entries as it found, 200 for a query that starts with `many`.
@@ -88,6 +87,7 @@ const fakeDirectorySearch: SkillDirectory["searchListed"] = (query) =>
         listed: query.startsWith("many") ? 200 : 1,
       });
 
+/** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
   const sessions: SessionRecord[] = [];
   const workspaces: WorkspaceRecord[] = [];

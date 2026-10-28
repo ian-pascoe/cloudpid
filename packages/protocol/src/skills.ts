@@ -262,7 +262,7 @@ export const SkillDirectoryPageNumber = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: 1_000 }),
 );
 
-/** How many rows skills.sh answers for a leaderboard page, and the most a search finds. */
+/** How many rows skills.sh answers for a leaderboard page (`SKILL_SEARCH_LIMIT` is the most a search finds). */
 export const SKILL_DIRECTORY_PAGE_SIZE = 200;
 
 /**
