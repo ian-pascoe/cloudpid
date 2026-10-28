@@ -309,9 +309,12 @@ const instructionsWords = (text: string): string => (text === "" ? "None" : text
 /** A whole number with its thousands grouped, as the owner reads it. */
 const grouped = (n: number): string => n.toLocaleString("en-US");
 
-/** What a result says of when an approved change of the Instructions applies: never inside a context. */
-const INSTRUCTIONS_APPLY =
-  "from the start of its next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with.";
+/**
+ * What a result says of when an approved change of the Instructions applies, to conversations named by `whose` ("its"
+ * or "their"): never inside a context.
+ */
+const instructionsApply = (whose: "its" | "their"): string =>
+  `from the start of ${whose} next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with.`;
 
 const APPROVAL =
   "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the user changes the same setting meanwhile, the approval does not apply and you are told to ask again.";
@@ -871,8 +874,8 @@ export const ApprovalTools: Effect.Effect<
 
                   const done =
                     text === ""
-                      ? `are removed. Conversations stop being shown them ${INSTRUCTIONS_APPLY.replace("its next", "their next")}`
-                      : `are changed (${textSize(text)} now). Every conversation is shown them ${INSTRUCTIONS_APPLY}`;
+                      ? `are removed. Conversations stop being shown them ${instructionsApply("their")}`
+                      : `are changed (${textSize(text)} now). Every conversation is shown them ${instructionsApply("its")}`;
 
                   return {
                     output: [

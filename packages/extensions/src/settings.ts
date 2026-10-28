@@ -380,7 +380,7 @@ export const describeSettings = (view: SettingsView, own: string | null): string
 
   // An Environment's settings carry Global's Instructions: its Overrides hold none (ADR-0027).
   const instructionsSource = isGlobalView(view)
-    ? `${instructionsText === "" ? "default" : "Global"}; at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB`
+    ? `Global; at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB`
     : "Global's: an Environment has no Instructions of its own yet";
 
   const instructionsLine = `Instructions (every conversation's model is shown them from the start of its Context Window, before the Project instructions, which win where the two disagree; settings_instructions_set changes them once the user approves): ${

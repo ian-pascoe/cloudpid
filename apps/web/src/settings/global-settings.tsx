@@ -7,6 +7,7 @@
 // shows above each.
 
 import {
+  instructionsProblem,
   isModelId,
   MAX_INSTRUCTIONS_BYTES,
   type ModelId,
@@ -114,7 +115,7 @@ export const InstructionsSection = () => (
     <SectionFormView
       form={instructionsForm}
       scope={GLOBAL_SCOPE}
-      invalid={(fields) => utf8Bytes(fields.instructions) > MAX_INSTRUCTIONS_BYTES}
+      invalid={(fields) => instructionsProblem(fields.instructions) !== undefined}
     >
       {(fields, set) => {
         const size = utf8Bytes(fields.instructions);
@@ -128,7 +129,7 @@ export const InstructionsSection = () => (
               hint="An edit applies from each session's next context: a new session, a handoff or a rollover. A context already open keeps the instructions it started with."
               problem={
                 over > 0
-                  ? `${bytes(over)} ${over === 1 ? "byte" : "bytes"} too long: the instructions may be at most 64 KiB of UTF-8.`
+                  ? `${bytes(over)} ${over === 1 ? "byte" : "bytes"} too long: the instructions may be at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8.`
                   : null
               }
             >
@@ -145,7 +146,7 @@ export const InstructionsSection = () => (
                 onChange={(event) => {
                   set({ instructions: event.target.value });
                 }}
-                className={`${CODE_AREA} resize-y`}
+                className={cn(CODE_AREA, "resize-y")}
               />
               <p
                 id="instructions-size"

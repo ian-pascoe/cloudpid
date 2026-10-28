@@ -134,7 +134,7 @@ const BranchSummary = Schema.Struct({
 
 /**
  * The most the Instructions take, in bytes of UTF-8: refused above it, as an `AGENTS.md` is cut at 64 Ki characters
- * (`MAX_INSTRUCTION_CHARACTERS` of `@cloudpid/extensions/agents-md`).
+ * (`MAX_INSTRUCTION_CHARACTERS` in `@cloudpid/extensions`' `agents-md-discovery.ts`).
  */
 export const MAX_INSTRUCTIONS_BYTES = 64 * 1024;
 
