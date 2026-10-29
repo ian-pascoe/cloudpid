@@ -43,7 +43,7 @@ const SETTINGS_ROOTS: ReadonlySet<string> = new Set(
 
 /** Whether `overrides` hold the Instructions. */
 const holdsInstructions = (overrides: Schema.Json | undefined): boolean =>
-  isJsonObject(overrides) && Object.hasOwn(overrides, INSTRUCTIONS_ROOT);
+  isJsonObject(overrides) && Predicate.hasProperty(overrides, INSTRUCTIONS_ROOT);
 
 /** The defaults below a setting's root: an object for a section (`roles`, `compaction`), anything else for a value. */
 const defaultsOf = (root: string): Settings[keyof Settings] | undefined =>

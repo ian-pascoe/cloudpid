@@ -2,6 +2,7 @@
 // extensions on a real Workspace (docs/architecture/workspace.md → Instructions): the Instructions come first, so the
 // Project instructions after them win where the two disagree. workerd's APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
+import * as Record from "effect/Record";
 import { describe, expect, it } from "vitest";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 
@@ -14,7 +15,7 @@ describe("a Session's instruction sections", () => {
     ]);
 
     const { sections } = await sessionOn(slug, "demo").runFull([]);
-    const keys = Object.keys(sections);
+    const keys = Record.keys(sections);
 
     expect(sections["project_context"]).toContain("Run the focused checks only.");
     // The Workspace tests keep no Instructions: the section is there, and empty.
