@@ -35,7 +35,7 @@ import {
   secretVariable,
 } from "../environments.ts";
 import { settledFailureOf } from "../registry.ts";
-import { CODE_AREA, Group, SettingsSection } from "./parts.tsx";
+import { CODE_AREA, Group, MarkedNames, SettingsSection } from "./parts.tsx";
 
 /**
  * The form that keeps a Secret at Scope `scope`: a name and a value. The value's field hides what is typed where the
@@ -283,12 +283,7 @@ export const SecretsSection = ({ scope }: { scope: string }) => {
             ))}
           </ul>
         )}
-        {inherited.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            Also from Global:{" "}
-            <span className="font-mono">{inherited.map((record) => record.name).join(", ")}</span>
-          </p>
-        )}
+        <MarkedNames kind="inherited" names={inherited.map((record) => record.name)} />
         <DialogProblem problem={loadError} />
         <DialogProblem problem={settledFailureOf(switched)} />
       </Group>

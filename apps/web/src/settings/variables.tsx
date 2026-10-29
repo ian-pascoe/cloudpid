@@ -1,17 +1,33 @@
 // The Variables section of the Settings page: the variables kept Global, or an Environment's own, a `NAME=value` line
 // each (docs/architecture/container.md → Container settings). They are plain, as the agent can read them; an
 // Environment's own variable wins over Global's of the same name. Each Scope's saves only its own variables
-// (`forms.ts`).
+// (`forms.ts`). As the other sections' fields are (ADR-0027), an Environment's list marks the names it inherits and
+// those it overrides, and Global's names the Environments that override each of its variables.
 
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { fieldVariable, GLOBAL_SCOPE } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
+import * as Option from "effect/Option";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as Record from "effect/Record";
 import { DialogProblem } from "../components/ui/dialog.tsx";
-import { globalSettingsErrorAtom, globalVariablesAtom } from "../environments-state.ts";
+import {
+  globalSettingsAtom,
+  globalSettingsErrorAtom,
+  globalVariablesAtom,
+} from "../environments-state.ts";
 import { inheritedVariables, parseVariables } from "../environments.ts";
+import { settingsPath } from "../router.ts";
 import { environmentVariablesForm, globalVariablesForm } from "./forms.ts";
-import { CodeField, Group, SectionFormView, SettingsSection } from "./parts.tsx";
+import {
+  CodeField,
+  Group,
+  MarkedNames,
+  OverriddenIn,
+  SectionFormView,
+  SettingsSection,
+} from "./parts.tsx";
 
 /** Why `text` cannot be saved as variables (beside `inherited`, which count toward the limit), or null. */
 const problemOf = (text: string, inherited?: Readonly<Record<string, string>>): string | null => {
@@ -20,8 +36,23 @@ const problemOf = (text: string, inherited?: Readonly<Record<string, string>>): 
   return Result.isFailure(parsed) ? parsed.failure : null;
 };
 
+/** At Global, each variable that Environments override, with them: `variables.NAME` fields of the saved state. */
+const useOverriddenVariables = () =>
+  useAtomValue(globalSettingsAtom).pipe(
+    AsyncResult.value,
+    Option.map((state) =>
+      Arr.filterMap(Record.toEntries(state.overriddenIn), ([field, environments]) => {
+        const name = fieldVariable(field);
+
+        return name === null ? Result.failVoid : Result.succeed({ name, environments });
+      }),
+    ),
+    Option.getOrElse(() => []),
+  );
+
 const GlobalVariables = () => {
   const loadError = useAtomValue(globalSettingsErrorAtom);
+  const overridden = useOverriddenVariables();
 
   return (
     <>
@@ -45,6 +76,14 @@ const GlobalVariables = () => {
                 set({ variables });
               }}
             />
+            {Arr.map(overridden, ({ name, environments }) => (
+              <OverriddenIn
+                key={name}
+                subject={<span className="font-mono text-foreground">{name}: </span>}
+                environments={environments}
+                pathAt={(environment) => settingsPath(environment, "variables")}
+              />
+            ))}
           </Group>
         )}
       </SectionFormView>
@@ -79,17 +118,8 @@ const EnvironmentVariables = ({ scope }: { scope: string }) => {
                 set({ variables });
               }}
             />
-            {inherited.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Also from Global: <span className="font-mono">{Arr.join(inherited, ", ")}</span>
-              </p>
-            )}
-            {overridden.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Overrides the Global one:{" "}
-                <span className="font-mono">{Arr.join(overridden, ", ")}</span>
-              </p>
-            )}
+            <MarkedNames kind="inherited" names={inherited} />
+            <MarkedNames kind="overridden" names={overridden} />
           </Group>
         );
       }}

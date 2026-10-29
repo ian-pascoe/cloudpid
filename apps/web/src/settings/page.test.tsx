@@ -21,6 +21,7 @@ import { registryWith, settled } from "../registry.testing.ts";
 import type { SettingsView } from "../router.ts";
 import { containerSectionForm, instructionsForm, modelsForm } from "./forms.ts";
 import { SettingsPage } from "./page.tsx";
+import { overriding } from "./scoped-view.tsx";
 import { sectionLabel, sectionsAt } from "./sections.ts";
 
 const WORK = { id: "work", name: "Work", repos: [], createdAt: 1 };
@@ -46,6 +47,13 @@ const fakeRegistry = (container: ContainerSettings = DEFAULT_CONTAINER_SETTINGS)
       }),
     getGlobalContainerSettings: () =>
       Effect.succeed({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {}, overriddenIn: {} }),
+    getSettingsOverrides: ({ environment }) =>
+      Effect.succeed({
+        environment,
+        settings: DEFAULT_SETTINGS,
+        global: DEFAULT_SETTINGS,
+        overrides: {},
+      }),
   });
 
 /** Wait for what the page reads first: the Environments, the Settings, and Work's Container settings. */
@@ -147,7 +155,8 @@ const saveButton = (markup: string): string =>
   /<button[^>]*type="submit"[^>]*>Save<\/button>/.exec(markup)?.[0] ?? "";
 
 /** The Spare Workspace checkbox's own tag in `markup`. */
-const spareBox = (markup: string): string => /<input id="spare-work"[^>]*>/.exec(markup)?.[0] ?? "";
+const spareBox = (markup: string): string =>
+  /<input id="spare-workspace"[^>]*>/.exec(markup)?.[0] ?? "";
 
 describe("an Environment's Container section", () => {
   it.effect(
@@ -166,6 +175,7 @@ describe("an Environment's Container section", () => {
         expect(saveButton(markup)).toContain('disabled=""');
         // A field the Environment does not override inherits Global's, so there are no defaults to reset to.
         expect(markup).not.toContain("Reset to defaults");
+        expect(markup).toContain("Reset all to Global…");
         registry.dispose();
       }),
   );
@@ -175,12 +185,12 @@ describe("an Environment's Container section", () => {
       const registry = fakeRegistry();
 
       yield* loaded(registry);
-      registry.set(containerSectionForm.draft("work"), {
-        instance: DEFAULT_CONTAINER_SETTINGS.instance,
-        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
-        ignore: "",
-        spareWorkspace: false,
-      });
+
+      const fields = registry.get(containerSectionForm.fields("work"));
+
+      if (fields === null) return expect.fail("the fields are not loaded");
+
+      registry.set(containerSectionForm.draft("work"), overriding(fields, "spareWorkspace", false));
 
       const markup = render(registry, "work", section("container"));
 
@@ -223,7 +233,9 @@ describe("Global's Instructions section", () => {
 
         yield* loaded(registry);
         registry.mount(instructionsForm.fields("*"));
-        registry.set(instructionsForm.draft("*"), { instructions: "Answer in British English." });
+        registry.set(instructionsForm.draft("*"), {
+          instructions: { value: "Answer in British English.", inherited: false },
+        });
 
         const markup = render(registry, "*", section("instructions"));
 
@@ -249,7 +261,9 @@ describe("Global's Instructions section", () => {
       yield* loaded(registry);
       registry.mount(instructionsForm.fields("*"));
       // Each "é" is two bytes of UTF-8: 32,769 of them are 65,538 bytes.
-      registry.set(instructionsForm.draft("*"), { instructions: "é".repeat(32_769) });
+      registry.set(instructionsForm.draft("*"), {
+        instructions: { value: "é".repeat(32_769), inherited: false },
+      });
 
       const markup = render(registry, "*", section("instructions"));
 
@@ -289,6 +303,13 @@ describe("every section", () => {
         }),
       getGlobalContainerSettings: () =>
         Effect.succeed({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {}, overriddenIn: {} }),
+      getSettingsOverrides: ({ environment }) =>
+        Effect.succeed({
+          environment,
+          settings: DEFAULT_SETTINGS,
+          global: DEFAULT_SETTINGS,
+          overrides: {},
+        }),
     });
 
   it.effect.each([

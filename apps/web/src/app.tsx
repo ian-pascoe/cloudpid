@@ -85,7 +85,7 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
           <>
             {environmentName !== undefined && (
               <InAppLink
-                href={settingsPath(session.environment, "environments")}
+                href={settingsPath(session.environment, "general")}
                 title={`Settings of the ${environmentName} environment`}
                 className="underline-offset-2 hover:text-foreground hover:underline"
               >

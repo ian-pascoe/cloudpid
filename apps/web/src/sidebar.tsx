@@ -224,7 +224,7 @@ const SessionGroup = ({
           )}
         </button>
         <InAppLink
-          href={settingsPath(group.environment, "environments")}
+          href={settingsPath(group.environment, "general")}
           aria-label={`Settings of the ${group.name} environment`}
           title="Environment settings"
           className="absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors group-focus-within/header:opacity-100 group-hover/header:opacity-100 hover:bg-background hover:text-foreground focus-visible:opacity-100 pointer-coarse:opacity-100 [&_svg]:size-3.5"

@@ -26,6 +26,7 @@ import { InAppLink } from "./in-app-link.tsx";
 import { relativeTime } from "./format.ts";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { settingsPath } from "./router.ts";
+import { MarkedNames } from "./settings/parts.tsx";
 import { useScopeName, useSettingsScope } from "./settings/scope.tsx";
 import { GLOBAL } from "./environments.ts";
 import {
@@ -673,16 +674,8 @@ export const SkillsSection = ({ id }: { id: string }) => {
           ))}
         </ul>
       )}
-      {inherited.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          Also from Global: <span className="font-mono">{inherited.join(", ")}</span>
-        </p>
-      )}
-      {overridden.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          Overrides the Global one: <span className="font-mono">{overridden.join(", ")}</span>
-        </p>
-      )}
+      <MarkedNames kind="inherited" names={inherited} />
+      <MarkedNames kind="overridden" names={overridden} />
       <AddSkillsForm id={id} />
       <SkillDialogs id={id} skills={skills} />
       <Dialog

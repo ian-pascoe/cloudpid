@@ -342,6 +342,18 @@ export const extensionField = (extension: string, key: string): string =>
   `extensions.${extension}.${key}`;
 
 /**
+ * The subagent depth (a Limit, GLOSSARY.md): levels of subagents allowed below the root conversation when
+ * `extensions.subagents.maxSubagentDepth` is not set; `1` permits the root's children, `2` their children too.
+ */
+export const DEFAULT_MAX_SUBAGENT_DEPTH = 2;
+
+/**
+ * The Subagent Workspace limit (a Limit, GLOSSARY.md): Subagent Workspaces one Session may have at once when
+ * `extensions.subagents.maxSubagentWorkspaces` is not set.
+ */
+export const DEFAULT_MAX_SUBAGENT_WORKSPACES = 1;
+
+/**
  * The keys a settings field leads through (`docs/architecture/agent-changes.md`): a setting's dotted path (`thinkingLevel`,
  * `roles.small.model`), or `extensions.<extension>.<key>` for an extension's option, whose key may hold dots (the
  * extension's name may not). Undefined for a path that does not start at a setting or has an empty part.

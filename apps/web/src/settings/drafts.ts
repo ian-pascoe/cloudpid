@@ -63,6 +63,9 @@ export interface SectionForm<Fields, E> {
   readonly defaults: Fields | undefined;
 }
 
+/** The fields of section form `Form`, as its draft holds them. */
+export type FormFields<Form> = Form extends SectionForm<infer Fields, infer _E> ? Fields : never;
+
 const sameAsJson = <Fields>(left: Fields, right: Fields): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 

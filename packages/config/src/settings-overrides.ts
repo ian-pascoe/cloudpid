@@ -301,6 +301,43 @@ export const withOverrideFields = (
   );
 };
 
+/** A change to an Environment's Overrides, as `updateSettingsOverrides` takes it. */
+export type OverridesPatch = {
+  readonly set?: Schema.JsonObject;
+  readonly reset?: ReadonlyArray<string>;
+};
+
+/**
+ * The change that makes an Environment's Overrides `before` into `after`: each field `after` holds that `before` does
+ * not, or holds otherwise, set (a Role whole), and each field only `before` holds reset, so it inherits again. A field
+ * both hold alike is left out, so a save of it keeps what the agent did to the others meanwhile.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a diff of two values, not a combinator.
+export const overridesPatchBetween = (before: Schema.Json, after: Schema.Json): OverridesPatch => {
+  const was = new Map(
+    Arr.map(overrideEntries(before), ({ keys, value }) => [Arr.join(keys, "."), value] as const),
+  );
+
+  const set = Arr.reduce(overrideEntries(after), {}, (next: Schema.JsonObject, { keys, value }) => {
+    const held = was.get(Arr.join(keys, "."));
+
+    return held !== undefined && JSON.stringify(held) === JSON.stringify(value)
+      ? next
+      : setAt(next, keys, value);
+  });
+
+  const kept = new Set(overrideFields(after));
+  const reset = Arr.filter([...was.keys()], (field) => !kept.has(field));
+
+  const patch: { -readonly [K in keyof OverridesPatch]: OverridesPatch[K] } = {};
+
+  if (!Record.isEmptyRecord(set)) patch.set = set;
+
+  if (reset.length > 0) patch.reset = reset;
+
+  return patch;
+};
+
 /** Global's overrides as they apply: those that resolve, and only what differs from the defaults. */
 const globalApplied = (global: Schema.Json) => {
   const { settings } = resolveLeniently(global);

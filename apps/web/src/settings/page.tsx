@@ -17,20 +17,20 @@ import { SkillRepoPage } from "../skills-repo.tsx";
 import { SkillPage } from "../skills-skill.tsx";
 import { AgentChangesSettingsSection } from "./agent-changes.tsx";
 import { SettingsBreadcrumb } from "./breadcrumb.tsx";
-import { ContainerSection, EnvironmentLimitsSection, SetupSection } from "./container.tsx";
+import { ContainerSection, SetupSection } from "./container.tsx";
 import { EnvironmentListSection, EnvironmentSection } from "./environments.tsx";
-import {
-  GeneralSection,
-  GlobalLimitsSection,
-  InstructionsSection,
-  ModelsSection,
-  ToolsSection,
-} from "./global-settings.tsx";
+import { InstructionsSection } from "./instructions.tsx";
 import { NotificationsSection } from "./notifications.tsx";
 import { Pending } from "./parts.tsx";
 import { SettingsScope } from "./scope.tsx";
 import { SecretsSection } from "./secrets.tsx";
 import { isSectionAt, leadOnPath, type SectionSlug } from "./sections.ts";
+import {
+  GeneralSection,
+  LimitsSection,
+  ModelsSection,
+  ToolsSection,
+} from "./settings-sections.tsx";
 import { SkillsSettingsSection } from "./skills.tsx";
 import { VariablesSection } from "./variables.tsx";
 import { WorkspacesSection } from "./workspaces.tsx";
@@ -41,16 +41,8 @@ const WIDE = "(min-width: 48rem)";
 /** Global's section `slug`. */
 const GlobalSection = ({ slug }: { slug: SectionSlug }) => {
   switch (slug) {
-    case "general":
-      return <GeneralSection />;
     case "instructions":
       return <InstructionsSection />;
-    case "models":
-      return <ModelsSection />;
-    case "tools":
-      return <ToolsSection />;
-    case "limits":
-      return <GlobalLimitsSection />;
     case "environments":
       return <EnvironmentListSection />;
     case "notifications":
@@ -71,12 +63,6 @@ const EnvironmentScopeSection = ({
   switch (slug) {
     case "environments":
       return <EnvironmentSection environment={environment} />;
-    case "container":
-      return <ContainerSection scope={environment.id} />;
-    case "setup":
-      return <SetupSection scope={environment.id} />;
-    case "limits":
-      return <EnvironmentLimitsSection scope={environment.id} />;
     default:
       return <SharedSection slug={slug} scope={environment.id} />;
   }
@@ -85,6 +71,18 @@ const EnvironmentScopeSection = ({
 /** A section both Scopes have, shown at Scope `scope`. */
 const SharedSection = ({ slug, scope }: { slug: SectionSlug; scope: string }) => {
   switch (slug) {
+    case "general":
+      return <GeneralSection scope={scope} />;
+    case "models":
+      return <ModelsSection scope={scope} />;
+    case "tools":
+      return <ToolsSection scope={scope} />;
+    case "limits":
+      return <LimitsSection scope={scope} />;
+    case "container":
+      return <ContainerSection scope={scope} />;
+    case "setup":
+      return <SetupSection scope={scope} />;
     case "workspaces":
       return <WorkspacesSection scope={scope} />;
     case "skills":
@@ -156,6 +154,46 @@ const useLeadOn = (scope: string, view: SettingsView) => {
   }, [scope, view]);
 };
 
+/** How long the page looks for the field a link names (`#field-model`) while its section loads. */
+const FIELD_WAIT_MS = 3000;
+
+/**
+ * Bring the field the address names after `#` into view (a link from Global's "Overridden in" names one), once its
+ * section has rendered it: a section shows its fields only once its saved value has answered.
+ */
+const useFieldInView = (scope: string, view: SettingsView) => {
+  useEffect(() => {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+
+    if (id === "") return;
+
+    const show = (): boolean => {
+      const field = document.getElementById(id);
+
+      field?.scrollIntoView({ block: "center" });
+
+      return field !== null;
+    };
+
+    if (show()) return;
+
+    const watch = new MutationObserver(() => {
+      if (show()) watch.disconnect();
+    });
+
+    watch.observe(document.body, { childList: true, subtree: true });
+
+    const giveUp = window.setTimeout(() => {
+      watch.disconnect();
+    }, FIELD_WAIT_MS);
+
+    return () => {
+      watch.disconnect();
+      window.clearTimeout(giveUp);
+    };
+  }, [scope, view]);
+};
+
 /** The Settings page at Scope `scope` (`*` for Global, or an Environment's id), showing `view`. */
 export const SettingsPage = ({ scope, view }: { scope: string; view: SettingsView }) => {
   const environments = useAtomValue(environmentListAtom);
@@ -167,6 +205,7 @@ export const SettingsPage = ({ scope, view }: { scope: string; view: SettingsVie
   );
 
   useLeadOn(scope, view);
+  useFieldInView(scope, view);
 
   const body = atGlobal ? (
     <ViewBody scope={scope} view={view} environment={null} />

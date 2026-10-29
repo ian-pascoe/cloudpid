@@ -6,7 +6,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./workspaces.ts";
+import { DEFAULT_MAX_SUBAGENT_DEPTH, DEFAULT_MAX_SUBAGENT_WORKSPACES } from "@cloudpid/config";
 
 /** A model role: its model, and the hint that tells an agent when to pick it. */
 export type SubagentRole = { readonly model: ModelRef; readonly hint: string };
@@ -34,8 +34,8 @@ export type SubagentOptions = {
   readonly toolsets: Toolsets;
 };
 
-/** pi-minimal-subagents' defaults: root → child → grandchild, and its read and modify presets. */
-export const DEFAULT_MAX_SUBAGENT_DEPTH = 2;
+/** pi-minimal-subagents' defaults: root → child → grandchild (kept in `@cloudpid/config`, which the Settings page reads). */
+export { DEFAULT_MAX_SUBAGENT_DEPTH };
 
 /** Every child may keep its own Todo List, whatever preset it was given. */
 

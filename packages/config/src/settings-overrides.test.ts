@@ -8,6 +8,7 @@ import {
   overrideFieldPath,
   overrideFields,
   overrideValue,
+  overridesPatchBetween,
   resolveOverrides,
   resolveOverridesLeniently,
   resetsOverride,
@@ -369,5 +370,39 @@ describe("changing an Environment's Overrides", () => {
     const result = withOverrides({}, { reset: ["roles.small.model"] }, DEFAULT_SETTINGS);
 
     expect(Result.isFailure(result) && result.failure.message).toContain("roles.small.model");
+  });
+});
+
+describe("the change between two sets of an Environment's Overrides", () => {
+  it("sets each field added or changed, whole, and resets each taken out", () => {
+    expect(
+      overridesPatchBetween(
+        {
+          model: SONNET,
+          roles: { small: { model: OPUS, hint: "h" }, large: { model: OPUS, hint: "l" } },
+          spendLimit: { perSession: 5 },
+        },
+        {
+          model: SONNET,
+          roles: { small: { model: HAIKU, hint: "h" }, large: { model: OPUS, hint: "l" } },
+          thinkingLevel: "low",
+          extensions: { subagents: { maxSubagentDepth: 3 } },
+        },
+      ),
+    ).toEqual({
+      set: {
+        roles: { small: { model: HAIKU, hint: "h" } },
+        thinkingLevel: "low",
+        extensions: { subagents: { maxSubagentDepth: 3 } },
+      },
+      reset: ["spendLimit.perSession"],
+    });
+  });
+
+  it("keeps an Override of no spend limit as a value, and is empty when nothing changed", () => {
+    expect(overridesPatchBetween({}, { spendLimit: { perSession: null } })).toEqual({
+      set: { spendLimit: { perSession: null } },
+    });
+    expect(overridesPatchBetween({ model: SONNET }, { model: SONNET })).toEqual({});
   });
 });

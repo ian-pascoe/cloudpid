@@ -12,13 +12,15 @@ import {
 const GLOBAL = "*";
 
 describe("the Settings sections of a Scope", () => {
-  it("are, at Global, the Settings, the Environments, Skills, Variables, Secrets, Notifications and Agent changes", () => {
+  it("are, at Global, the Settings, the Container settings, the Environments, Skills, Variables, Secrets, Notifications and Agent changes", () => {
     expect(sectionsAt(GLOBAL).map((slug) => sectionLabel(slug, GLOBAL))).toEqual([
       "General",
       "Instructions",
       "Models",
       "Tools",
       "Limits",
+      "Container",
+      "Setup",
       "Environments",
       "Workspaces",
       "Skills",
@@ -29,40 +31,41 @@ describe("the Settings sections of a Scope", () => {
     ]);
   });
 
-  it("are, at an Environment, the Environment first, then what it keeps of its own", () => {
+  it("are, at an Environment, Global's in the same order, but Notifications", () => {
     expect(sectionsAt("1a2b3c4d").map((slug) => sectionLabel(slug, "1a2b3c4d"))).toEqual([
-      "Environment",
+      "General",
+      "Models",
+      "Tools",
+      "Limits",
       "Container",
       "Setup",
-      "Limits",
+      "Environment",
       "Workspaces",
       "Skills",
       "Variables",
       "Secrets",
       "Agent changes",
     ]);
-    expect(sectionsAt("1a2b3c4d")[0]).toBe("environments");
+    expect(sectionsAt("1a2b3c4d")).not.toContain("notifications");
+    expect(sectionsAt("1a2b3c4d")).not.toContain("instructions");
   });
 
-  it("open on General at Global and on the Environment at an Environment", () => {
+  it("open on General at both Scopes", () => {
     expect(defaultSection(GLOBAL)).toBe("general");
-    expect(defaultSection("default")).toBe("environments");
+    expect(defaultSection("default")).toBe("general");
   });
 });
 
 describe("where the page leads on", () => {
   it("leads the list of sections to the Scope's first section on a wide screen, and keeps it on a narrow one", () => {
     expect(leadOnPath(GLOBAL, { kind: "index" }, true)).toBe("/settings/all/general");
-    expect(leadOnPath("work", { kind: "index" }, true)).toBe("/settings/work/environments");
+    expect(leadOnPath("work", { kind: "index" }, true)).toBe("/settings/work/general");
     expect(leadOnPath("work", { kind: "index" }, false)).toBeNull();
   });
 
   it("leads a section the Scope lacks to its first section, whatever the screen", () => {
-    expect(leadOnPath("work", { kind: "section", section: "models" }, false)).toBe(
-      "/settings/work/environments",
-    );
-    expect(leadOnPath(GLOBAL, { kind: "section", section: "container" }, true)).toBe(
-      "/settings/all/general",
+    expect(leadOnPath("work", { kind: "section", section: "notifications" }, false)).toBe(
+      "/settings/work/general",
     );
     expect(leadOnPath(GLOBAL, { kind: "section", section: "nonsense" }, false)).toBe(
       "/settings/all/general",
@@ -70,8 +73,8 @@ describe("where the page leads on", () => {
   });
 
   it("stays on a section the Scope has, and on a Skill directory page", () => {
-    expect(leadOnPath("work", { kind: "section", section: "container" }, true)).toBeNull();
-    expect(leadOnPath(GLOBAL, { kind: "section", section: "models" }, false)).toBeNull();
+    expect(leadOnPath("work", { kind: "section", section: "models" }, true)).toBeNull();
+    expect(leadOnPath(GLOBAL, { kind: "section", section: "container" }, false)).toBeNull();
     expect(leadOnPath("work", { kind: "skillRepo", owner: "o", repo: "r" }, true)).toBeNull();
   });
 });
@@ -81,17 +84,20 @@ describe("switching the Scope", () => {
     expect(scopeSwitchPath({ kind: "section", section: "limits" }, "", "work")).toBe(
       "/settings/work/limits",
     );
+    expect(scopeSwitchPath({ kind: "section", section: "models" }, "", "work")).toBe(
+      "/settings/work/models",
+    );
+    expect(scopeSwitchPath({ kind: "section", section: "setup" }, "", GLOBAL)).toBe(
+      "/settings/all/setup",
+    );
     expect(scopeSwitchPath({ kind: "section", section: "environments" }, "", GLOBAL)).toBe(
       "/settings/all/environments",
     );
   });
 
   it("opens the new Scope's first section when it lacks the section", () => {
-    expect(scopeSwitchPath({ kind: "section", section: "models" }, "", "work")).toBe(
-      "/settings/work/environments",
-    );
-    expect(scopeSwitchPath({ kind: "section", section: "container" }, "", GLOBAL)).toBe(
-      "/settings/all/general",
+    expect(scopeSwitchPath({ kind: "section", section: "notifications" }, "", "work")).toBe(
+      "/settings/work/general",
     );
     expect(scopeSwitchPath({ kind: "index" }, "", "work")).toBe("/settings/work");
   });
