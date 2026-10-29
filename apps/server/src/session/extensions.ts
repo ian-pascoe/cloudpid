@@ -120,7 +120,7 @@ export const sessionExtensions: Effect.Effect<
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),
 ]).pipe(
-  // Last, so its hooks see every other extension's results; only these tools' arguments resolve Secrets.
+  // After the others but `ResultBounds`, so its hooks see their results; only these tools' arguments resolve Secrets.
   Effect.flatMap((extensions) => {
     const [coding, files, web] = extensions;
 

@@ -63,6 +63,9 @@ const CUT_MARKER = "… [cut]";
 /** Bytes kept back for the note that ends cut diagnostics, and its separator. */
 const NOTE_BYTES = 256;
 
+/** The least room a message is cut to: with less, it and the diagnostics after it are left out. */
+const MIN_MESSAGE_BYTES = 2 + CUT_MARKER.length * 3 + 64;
+
 /** The call whose result is bounded. */
 export type BoundedCall = {
   /** The tool's name. */
@@ -71,16 +74,35 @@ export type BoundedCall = {
   readonly nested: boolean;
 };
 
-const kib = (size: number) => `${size / 1024} KiB`;
+const formatKib = (size: number) => `${size / 1024} KiB`;
 
-const bytes = (size: number) => `${size.toLocaleString("en-US")} bytes`;
+const formatBytes = (size: number) => `${size.toLocaleString("en-US")} bytes`;
 
-/** `diagnostics` within `MAX_RESULT_DIAGNOSTICS_BYTES`, ending with a note when any was shortened or left out. */
-const boundDiagnostics = (diagnostics: readonly ToolDiagnostic[]): readonly ToolDiagnostic[] => {
-  if (storedBytes(diagnostics) <= MAX_RESULT_DIAGNOSTICS_BYTES) return diagnostics;
+/**
+ * The diagnostics a tool reported followed by those `added` here, within `MAX_RESULT_DIAGNOSTICS_BYTES` together: the
+ * reported ones are cut to the room the added ones leave, ending with a note when any was shortened or left out.
+ * `reported` itself when nothing is added or cut.
+ */
+const boundDiagnostics = (
+  reported: readonly ToolDiagnostic[],
+  added: readonly ToolDiagnostic[],
+): readonly ToolDiagnostic[] => {
+  // The added diagnostics, each with its separator.
+  const budget = MAX_RESULT_DIAGNOSTICS_BYTES - storedBytes(added) + 2 - added.length;
 
+  if (storedBytes(reported) <= budget)
+    return added.length === 0 ? reported : [...reported, ...added];
+
+  return [...cutDiagnostics(reported, budget), ...added];
+};
+
+/** `diagnostics` within `budget` stored bytes, ending with a note saying how many were shortened or left out. */
+const cutDiagnostics = (
+  diagnostics: readonly ToolDiagnostic[],
+  budget: number,
+): readonly ToolDiagnostic[] => {
   // The array's brackets and the note are kept back from the start.
-  let remaining = MAX_RESULT_DIAGNOSTICS_BYTES - 2 - NOTE_BYTES;
+  let remaining = budget - 2 - NOTE_BYTES;
   let shortened = 0;
   const kept: ToolDiagnostic[] = [];
 
@@ -90,7 +112,7 @@ const boundDiagnostics = (diagnostics: readonly ToolDiagnostic[]): readonly Tool
     const room = Math.min(MAX_DIAGNOSTIC_MESSAGE_BYTES, remaining - frame);
 
     // Too little room left for a message worth reading: the rest are left out.
-    if (room < 2 + CUT_MARKER.length * 3 + 64) break;
+    if (room < MIN_MESSAGE_BYTES) break;
 
     const message = cutStored(diagnostic.message, room, CUT_MARKER);
 
@@ -105,7 +127,7 @@ const boundDiagnostics = (diagnostics: readonly ToolDiagnostic[]): readonly Tool
   kept.push({
     severity: "warn",
     code: "diagnostics_truncated",
-    message: `Diagnostics were cut to fit one tool result (${kib(MAX_RESULT_DIAGNOSTICS_BYTES)} at most): ${shortened} shortened and ${leftOut} left out, of ${diagnostics.length}.`,
+    message: `Diagnostics were cut to fit one tool result (${formatKib(MAX_RESULT_DIAGNOSTICS_BYTES)} at most): ${shortened} shortened and ${leftOut} left out, of ${diagnostics.length}.`,
   });
 
   return kept;
@@ -121,12 +143,6 @@ export const boundToolResult = (
 ): ToolExecutionResult => {
   let bounded = result;
 
-  if (result.diagnostics !== undefined) {
-    const diagnostics = boundDiagnostics(result.diagnostics);
-
-    if (diagnostics !== result.diagnostics) bounded = { ...bounded, diagnostics };
-  }
-
   const detailsCap =
     call.tool === "codemode" ? MAX_CODEMODE_DETAILS_BYTES : MAX_RESULT_DETAILS_BYTES;
 
@@ -136,7 +152,7 @@ export const boundToolResult = (
     bounded = {
       ...bounded,
       details: {
-        omitted: `Details of ${bytes(detailsSize)} were left out: one ${call.tool} result holds at most ${kib(detailsCap)} of them.`,
+        omitted: `Details of ${formatBytes(detailsSize)} were left out: one ${call.tool} result holds at most ${formatKib(detailsCap)} of them.`,
       },
     };
   }
@@ -144,25 +160,24 @@ export const boundToolResult = (
   // A model-issued call's structured output is never stored: only programs read it.
   const structuredSize = call.nested ? storedBytes(result.structuredOutput) : 0;
 
+  const added: ToolDiagnostic[] = [];
+
   if (structuredSize > MAX_NESTED_STRUCTURED_OUTPUT_BYTES) {
     const { structuredOutput: _left, ...rest } = bounded;
 
     // An error result needs no structured output, so the Harness's schema check lets this one through.
-    bounded = {
-      ...rest,
-      isError: true,
-      diagnostics: [
-        ...(bounded.diagnostics ?? []),
-        {
-          severity: "error",
-          code: "structured_output_too_large",
-          message: `${call.tool} returned structured output of ${bytes(structuredSize)}, over the ${kib(MAX_NESTED_STRUCTURED_OUTPUT_BYTES)} one nested call's result holds, so it was left out. Ask for less at once.`,
-        },
-      ],
-    };
+    bounded = { ...rest, isError: true };
+    added.push({
+      severity: "error",
+      code: "structured_output_too_large",
+      message: `${call.tool} returned structured output of ${formatBytes(structuredSize)}, over the ${formatKib(MAX_NESTED_STRUCTURED_OUTPUT_BYTES)} one nested call's result holds, so it was left out. Ask for less at once.`,
+    });
   }
 
-  return bounded;
+  const reported = result.diagnostics ?? [];
+  const diagnostics = boundDiagnostics(reported, added);
+
+  return diagnostics === reported ? bounded : { ...bounded, diagnostics };
 };
 
 /** Every tool result held to `boundToolResult`'s caps before it is stored: a call's own, and a nested one's. */

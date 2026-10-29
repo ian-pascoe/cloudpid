@@ -54,8 +54,6 @@ export const BINARY_SCAN_BYTES = 8000;
  */
 export const MAX_CODEMODE_DIFF_BYTES = 256 * 1024;
 
-export { byteLength, storedBytes } from "./stored-bytes.ts";
-
 /** What a `write` finds at its path. */
 export type OldFile =
   | { readonly kind: "missing" }
@@ -232,8 +230,9 @@ export const capturedDiffs = (
         if (found === undefined) continue;
 
         const key = String(call.id);
-        const entry = (diff: RecordedDiff) => storedBytes(key) + 2 + storedBytes(diff);
-        const fits = (diff: RecordedDiff) => spent + entry(diff) <= MAX_CODEMODE_DIFF_BYTES;
+        // Its key, quoted, a colon, the diff, and a comma.
+        const entryBytes = (diff: RecordedDiff) => storedBytes(key) + 2 + storedBytes(diff);
+        const fits = (diff: RecordedDiff) => spent + entryBytes(diff) <= MAX_CODEMODE_DIFF_BYTES;
         const { patch, ...rest } = found;
 
         // A patch too long on its own, or past the budget, is dropped and the call marked `tooLarge`; a call whose
@@ -245,7 +244,7 @@ export const capturedDiffs = (
 
         if (!fits(diff)) break;
 
-        spent += entry(diff);
+        spent += entryBytes(diff);
         diffs[key] = diff;
       }
 

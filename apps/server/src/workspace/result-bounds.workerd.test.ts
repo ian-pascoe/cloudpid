@@ -1,8 +1,6 @@
-// The parts of a tool result besides its text and images, through a Session's `codemode` on a real Workspace: a script
-// that makes thousands of nested calls lists them in its result's details, which code mode stores in its run's document
-// and in the result entry, each one SQLite row (docs/architecture/workspace.md → The rest of one tool result). miniflare's
-// SQLite does not enforce Cloudflare's 2 MB row cap, so the sizes are what is checked.
-// workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
+// A script's call list, held to its bound in the details of its result (docs/architecture/workspace.md → The rest of one
+// tool result), through a Session's `codemode` on a real Workspace. miniflare's SQLite does not enforce the 2 MB row
+// cap, so the sizes are checked. workerd's `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off
 import { MAX_CODEMODE_CALLS_BYTES } from "@cloudpid/extensions/result-bounds";
 import { runInDurableObject } from "cloudflare:test";
@@ -37,6 +35,7 @@ describe("a tool result's details", () => {
 
       expect(answer).toMatchObject({ status: "answered", text: "done" });
 
+      // The run's document is retired, its value dropped, once the call ends; its result came from the same `details()`.
       const [details] = await instance.toolResultDetails();
       const [result] = await instance.toolResults();
 

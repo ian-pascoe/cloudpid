@@ -89,6 +89,26 @@ describe("boundToolResult", () => {
     });
   });
 
+  it("keeps the diagnostics to their cap with the one saying the structured output was left out", () => {
+    const diagnostics = Array.from({ length: 40 }, (_, index) => ({
+      severity: "warn" as const,
+      message: `${index}: ${"w".repeat(1000)}`,
+    }));
+
+    const bounded = boundToolResult(
+      {
+        output: [],
+        structuredOutput: "z".repeat(MAX_NESTED_STRUCTURED_OUTPUT_BYTES),
+        diagnostics,
+      },
+      { tool: "web_fetch", nested: true },
+    );
+
+    expect(storedBytes(bounded.diagnostics)).toBeLessThanOrEqual(MAX_RESULT_DIAGNOSTICS_BYTES);
+    expect(bounded.diagnostics?.at(-2)?.code).toBe("diagnostics_truncated");
+    expect(bounded.diagnostics?.at(-1)?.code).toBe("structured_output_too_large");
+  });
+
   it("leaves a model-issued call's structured output, which is never stored", () => {
     const result = {
       output: [],

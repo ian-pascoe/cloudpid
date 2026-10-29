@@ -1,5 +1,5 @@
 // The tool call card, rendered with `react-dom/server`: the calls of a code mode script it lists, and the note on those its
-// result left out (GLOSSARY.md → Tool call).
+// result left out (docs/architecture/workspace.md → The rest of one tool result).
 
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";

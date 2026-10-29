@@ -7,16 +7,15 @@ import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durabl
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BINARY_SCAN_BYTES,
-  byteLength,
   capturedDiffs,
   MAX_CODEMODE_DIFF_BYTES,
   MAX_DIFF_INPUT_BYTES,
   MAX_EDIT_LENGTH,
   MAX_PATCH_BYTES,
   oldFile,
-  storedBytes,
   writeDetails,
 } from "./call-diff.ts";
+import { byteLength, storedBytes } from "./stored-bytes.ts";
 
 const lines = (count: number, prefix = "line"): string =>
   Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}\n`).join("");
