@@ -32,7 +32,7 @@ FROM --platform=linux/amd64 ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd
 # The everyday tools agents and scripts expect (#169; some from exe.dev's exeuntu list), build-essential and the
 # headers native npm and pip packages build against, Docker for Start Scripts' services, and earlyoom, the memory guard
 # the supervisor runs. Versioned Toolchains
-# (Node, Python, pnpm, git, gh) are mise's, never apt's: mise's shims come first on PATH anyway, so a git an apt
+# (Node, pnpm, Bun, Python, git, gh) are mise's, never apt's: mise's shims come first on PATH anyway, so a git an apt
 # package pulled in would not shadow mise's. fd's binary is fdfind here; it gets its own name too.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

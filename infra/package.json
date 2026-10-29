@@ -8,7 +8,7 @@
     "deploy": "alchemy deploy",
     "ci:setup": "alchemy deploy --config github.ts --stage ci --profile admin",
     "github-app:setup": "node github-app-setup.ts",
-    "typecheck": "tsc",
+    "typecheck": "effect-tsgo tsrs",
     "lint": "oxlint",
     "test": "vitest run"
   },

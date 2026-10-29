@@ -4,7 +4,7 @@
 // stands still while code runs. The heap is sampled from outside (`scripts/heap-poll.mjs`), so each phase is logged
 // with its start and end and kept apart by idle gaps:
 //
-//   CHANGES_BENCH=1 pnpm exec vitest run --project workerd-workspace --inspect --no-file-parallelism \
+//   CHANGES_BENCH=1 bun vitest run --project workerd-workspace --inspect --no-file-parallelism \
 //     src/workspace/changes.bench.workerd.test.ts
 //   node scripts/heap-poll.mjs core:user:vitest-plugin-runner-workerd-workspace 20 > heap.log
 // @effect-diagnostics asyncFunction:off globalConsole:off globalDate:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off

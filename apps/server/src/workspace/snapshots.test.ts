@@ -7,7 +7,11 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PNPM_STORE_DIRECTORY_NAME, TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
+import {
+  BUN_DIRECTORY_NAME,
+  PNPM_STORE_DIRECTORY_NAME,
+  TOOLCHAIN_IGNORE,
+} from "@cloudpid/sandbox-image/toolchains";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import type { LiveToken } from "../github/app.ts";
 import type { HeldSecrets } from "./environment-secrets.ts";
@@ -1053,10 +1057,15 @@ describe("scanContainerDisk", () => {
         expect(paths((await since()).hits)).toEqual([join(root, "root/copied")]);
       });
 
-      it("still skips pnpm's stores", async () => {
+      it("still skips pnpm's and Bun's stores", async () => {
         await start();
         write(`root/${PNPM_STORE_DIRECTORY_NAME}/v11/files/ab/cdef`, SECRET);
         write("workspace/repo/node_modules/.pnpm/pkg@1.0.0/node_modules/pkg/index.js", SECRET);
+        write(`root/${BUN_DIRECTORY_NAME}/install/cache/pkg@1.0.0@@@1/index.js`, SECRET);
+        write(
+          `workspace/repo/node_modules/${BUN_DIRECTORY_NAME}/pkg@1.0.0/node_modules/pkg/index.js`,
+          SECRET,
+        );
 
         expect((await since()).hits).toEqual([]);
       });
@@ -1140,6 +1149,23 @@ describe("scanContainerDisk", () => {
         SECRET,
       );
       write("root/.local/share/mise/installs/node/24/lib/x.js", "clean");
+
+      expect(await scan(root)).toEqual([]);
+    });
+
+    it("skips Bun's cache, with its global store, and the isolated linker's store in node_modules", async () => {
+      write(
+        `root/${BUN_DIRECTORY_NAME}/install/cache/pkg@1.0.0@@@1/index.js`,
+        `registry file ${SECRET}`,
+      );
+      write(
+        `root/${BUN_DIRECTORY_NAME}/install/cache/links/pkg@1.0.0-0123abcd/node_modules/pkg/index.js`,
+        SECRET,
+      );
+      write(
+        `workspace/repo/node_modules/${BUN_DIRECTORY_NAME}/pkg@1.0.0/node_modules/pkg/index.js`,
+        SECRET,
+      );
 
       expect(await scan(root)).toEqual([]);
     });

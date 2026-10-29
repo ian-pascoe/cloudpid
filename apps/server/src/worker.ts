@@ -64,7 +64,7 @@ const webAssets = Effect.gen(function* () {
   const webDirectory = fileURLToPath(new URL("../../web/", import.meta.url).href);
 
   const build = yield* Command.Build("WebBuild", {
-    command: "pnpm run build",
+    command: "bun run build",
     cwd: webDirectory,
     outdir: "dist",
     // The app imports the protocol package's source, which the default scope (the app's own files) would miss.

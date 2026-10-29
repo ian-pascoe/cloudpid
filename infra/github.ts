@@ -6,7 +6,7 @@
  * Deployed once from a workstation with a profile that may create API tokens, and again to rotate the token or change
  * its permissions:
  *
- *   pnpm --filter @cloudpid/infra run ci:setup   # alchemy deploy --config github.ts --profile admin --stage ci
+ *   bun --cwd infra run ci:setup   # alchemy deploy --config github.ts --profile admin --stage ci
  *
  * Optional settings, read from the environment (never committed):
  *

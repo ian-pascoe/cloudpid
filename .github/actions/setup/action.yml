@@ -1,49 +1,57 @@
-name: Set up pnpm and dependencies
+name: Set up Bun and dependencies
 description: >-
-  pnpm (the version in package.json's `packageManager`), Node LTS, the pnpm store from the Actions cache, and
-  `pnpm install --frozen-lockfile`. The store is keyed by the lockfile and falls back to the newest store of any lockfile,
-  so a lockfile change downloads only what changed. With `save-cache: false` the cache is only read, for jobs that hold
-  deploy credentials.
+  Bun (the version in package.json's `packageManager`), Node LTS (Vitest and alchemy run on Node), the packages of the
+  lockfile from the Actions cache, and `bun install --frozen-lockfile`. The cache is keyed by the lockfile and falls
+  back to the newest one of any lockfile, so a lockfile change downloads only what changed. With `save-cache: false`
+  the cache is only read, for jobs that hold deploy credentials.
 
 inputs:
   save-cache:
-    description: Write the store back to the cache when the lockfile's key missed (`false` only restores).
+    description: Write the cache back when the lockfile's key missed (`false` only restores).
     default: "true"
 
 runs:
   using: composite
   steps:
-    # Version comes from `packageManager` in package.json.
-    - uses: pnpm/action-setup@v6
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: package.json
 
     - uses: actions/setup-node@v7
       with:
         node-version: lts/*
 
-    - id: store
+    # One file of the cache entries the lockfile needs (`bun pm cache pack`), not Bun's cache directory: it holds exactly
+    # this lockfile's packages, so a save never carries forward the ones an older lockfile dropped.
+    - id: pack
       shell: bash
-      run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      run: echo "path=$RUNNER_TEMP/bun-cache.pack" >> "$GITHUB_OUTPUT"
 
     - id: cache
       if: inputs.save-cache == 'true'
       uses: actions/cache@v6
       with:
-        path: ${{ steps.store.outputs.path }}
-        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-        restore-keys: pnpm-store-${{ runner.os }}-
+        path: ${{ steps.pack.outputs.path }}
+        key: bun-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+        restore-keys: bun-cache-${{ runner.os }}-
 
     - if: inputs.save-cache != 'true'
       uses: actions/cache/restore@v6
       with:
-        path: ${{ steps.store.outputs.path }}
-        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-        restore-keys: pnpm-store-${{ runner.os }}-
+        path: ${{ steps.pack.outputs.path }}
+        key: bun-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+        restore-keys: bun-cache-${{ runner.os }}-
 
     - shell: bash
-      run: pnpm install --frozen-lockfile
+      run: |
+        [ ! -f "$PACK" ] || bun pm cache unpack "$PACK"
+        bun install --frozen-lockfile
+      env:
+        PACK: ${{ steps.pack.outputs.path }}
 
-    # A store restored from another lockfile's key still holds the packages that lockfile dropped; drop them before the
-    # job saves it under this lockfile's key, so the cache does not grow with every dependency change.
+    # A pack restored from another lockfile's key lacks what changed; write this lockfile's before the job saves it.
     - if: inputs.save-cache == 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
-      run: pnpm store prune
+      run: bun pm cache pack "$PACK"
+      env:
+        PACK: ${{ steps.pack.outputs.path }}

@@ -42,6 +42,9 @@ const files = (extra: Files = {}, body = "Steps."): Files => ({
   ...extra,
 });
 
+/** How a test installs Skills: the Environment (the default one unless given), as the owner or the agent, when. */
+type InstallOptions = { environment?: string; owner?: boolean; at?: number; reader?: RepoReader };
+
 /** Run `body` over a fresh Registry's store, Skills and Agent changes, with a fake GitHub. */
 const inRegistry = <A>(
   body: (registry: {
@@ -50,10 +53,7 @@ const inRegistry = <A>(
     readonly changes: ReturnType<typeof openAgentChanges>;
     readonly storage: DurableObjectStorage;
     readonly context: (at: number) => SkillChangeContext;
-    readonly install: (
-      source: string,
-      options?: { environment?: string; owner?: boolean; at?: number; reader?: RepoReader },
-    ) => Promise<void>;
+    readonly install: (source: string, options?: InstallOptions) => Promise<void>;
     readonly update: (
       request: Omit<Parameters<typeof updateSkills>[2], "author" | "overwrite"> & {
         overwrite?: boolean;
@@ -101,7 +101,10 @@ const inRegistry = <A>(
         changes,
         storage: state.storage,
         context,
-        install: async (source, { environment, owner = false, at = 1_000, reader } = {}) => {
+        install: async (
+          source,
+          { environment, owner = false, at = 1_000, reader }: InstallOptions = {},
+        ) => {
           // The Skills kept Global are installed by the owner here: no Approval is part of the test.
           await installSkills(context(at), reader ?? github.reader, {
             environment: environment ?? DEFAULT_ENVIRONMENT,

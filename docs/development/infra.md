@@ -6,8 +6,8 @@ How to run the stack locally, deploy it, and keep its secrets and CI credentials
 
 The alchemy stack is `infra/alchemy.run.ts`; its scripts run alchemy from `infra/`:
 
-- `pnpm --filter @cloudpid/infra run dev` serves workerd on `http://localhost:1337`.
-- `pnpm --filter @cloudpid/infra run deploy --stage dev_$USER` deploys to Cloudflare. Use `run` (bare `pnpm deploy` is pnpm's built-in) and no `--` (pnpm forwards it literally); add `--dry-run` to only plan.
+- `bun --cwd infra run dev` serves workerd on `http://localhost:1337`.
+- `bun --cwd infra run deploy --stage dev_$USER` deploys to Cloudflare; add `--dry-run` to only plan. Arguments after the script's name reach alchemy as they are, with no `--`.
 
 It authenticates with the local alchemy profile (`alchemy profile edit --add Cloudflare`) and keeps state with `Cloudflare.state()`. Alchemy records the Worker's absolute `main` path in state, but a deploy from another checkout path plans no change, so CI and local deploys can alternate.
 
@@ -25,7 +25,7 @@ Every deploy and `alchemy dev` builds the Container's image (`apps/sandbox-image
 
 ## Web UI development
 
-Run `pnpm --filter @cloudpid/web run dev` next to `alchemy dev`: Vite proxies `/rpc` and the Session socket to `localhost:1337`. On a cloudpid Container its watcher needs no polling: the Workspace DO gives the Container's watchers a file-change signal for the agent's edits ([_File-change signals_](../architecture/container.md)).
+Run `bun --cwd apps/web run dev` next to `alchemy dev`: Vite proxies `/rpc` and the Session socket to `localhost:1337`. On a cloudpid Container its watcher needs no polling: the Workspace DO gives the Container's watchers a file-change signal for the agent's edits ([_File-change signals_](../architecture/container.md)).
 
 ## Secrets and variables
 
@@ -52,14 +52,14 @@ Every deploy, `alchemy dev` and a preview's destroy (which evaluates the stack) 
 
   The layer checks the three at startup (subject, key lengths, and that the two are a pair), so a malformed secret fails a deploy or `alchemy dev` at once. Rotating the pair strands every device's subscription (a push service refuses a subscription made with another key, so each push is logged as a failure); a device replaces its own the next time the app is opened, if it still allows notifications.
 
-- **GitHub App**: `pnpm --filter @cloudpid/infra run github-app:setup` (`infra/github-app-setup.ts`) creates the app through GitHub's manifest flow (one confirmation in the browser), writes the ID and key into `production`, `preview` and `~/.config/cloudpid/dev.env` with `gh secret set`, sends the owner to install the app (All repositories) on their account and each organization, and checks each installation by minting a GitHub token. GitHub shows the key only then: to rotate or replace it, generate one in the app's settings and set it by hand in both environments.
+- **GitHub App**: `bun --cwd infra run github-app:setup` (`infra/github-app-setup.ts`) creates the app through GitHub's manifest flow (one confirmation in the browser), writes the ID and key into `production`, `preview` and `~/.config/cloudpid/dev.env` with `gh secret set`, sends the owner to install the app (All repositories) on their account and each organization, and checks each installation by minting a GitHub token. GitHub shows the key only then: to rotate or replace it, generate one in the app's settings and set it by hand in both environments.
 - **`CLOUDPID_ANALYTICS_TOKEN`**: CI's tokens are made by `infra/github.ts` (below); for local deploys, mint one in the dashboard.
 
 ## CI
 
-`.github/workflows/ci.yml` runs what `pnpm check` runs on every PR and push to `main`, split over parallel jobs (`checks`: typecheck, lint, format and the web build; the tests of every package but the server; the server's tests in three `vitest --shard`s), and a `Check` job that passes only when all of them did, the status the `main` ruleset requires.
+`.github/workflows/ci.yml` runs what `bun run check` runs on every PR and push to `main`, split over parallel jobs (`checks`: typecheck, lint, format and the web build; the tests of every package but the server; the server's tests in three `vitest --shard`s), and a `Check` job that passes only when all of them did, the status the `main` ruleset requires.
 
-- **Caches:** `checks` and `preview` set up through `.github/actions/setup`: pnpm, Node, the pnpm store cached by lockfile with a fallback to the newest store and pruned before it is saved, then the install. `preview`, which holds deploy credentials, only reads the cache, and the `prod` deploy uses none. Each part of `checks` also caches turbo's `.turbo/cache` under its own key, pruned to the entries its tasks used.
+- **Caches:** `checks` and `preview` set up through `.github/actions/setup`: Bun, Node, the lockfile's packages cached by lockfile with a fallback to the newest cache (one `bun pm cache pack` file, so it holds only the packages of the lockfile it was saved with), then the install. `preview`, which holds deploy credentials, only reads the cache, and the `prod` deploy uses none. Each part of `checks` also caches turbo's `.turbo/cache` under its own key, pruned to the entries its tasks used.
 - **`prod`:** on push to `main`, CI deploys stage `prod` in the GitHub environment `production` (deployments from `main` only).
 - **Previews:** each pull request from a branch of this repository (not a fork, which gets no secrets) gets stage `pr-<number>` once `check` passes, deployed by the `preview` job in the GitHub environment `preview` (any branch). `infra/alchemy.run.ts` posts its URL as one PR comment (`GitHub.Comment`, with the workflow's `GITHUB_TOKEN`) that each push updates; closing or merging the PR runs `alchemy destroy --stage pr-<number>` from the PR's head commit. Deploys and the destroy of one PR never overlap or cancel midway (job concurrency `preview-<number>`). A preview whose secret is missing fails its deploy and its destroy.
   - **Container application:** the stage's Container application (`cloudpid-<…>-pr-<number>`, the Workspace DO's, which Cloudflare keeps with no instances if nothing deletes it) is part of the teardown. A deploy asks GitHub whether the PR is still open before it starts, and does nothing if it was closed meanwhile: the deploy of the last push waits for `check`, the destroy does not, so a PR closed within those minutes was destroyed while still empty and then deployed, leaving its stage behind (#328). After the destroy, the job lists the account's Container applications and **fails** if one named for this stage is left, so a leftover shows as a red Preview job. Never delete by hand an application outside `pr-<number>` (`prod`, a dev stage or another project's).
@@ -70,8 +70,8 @@ They are code: `infra/github.ts` (stack `cloudpid-github`, stage `ci`) creates t
 
 Any branch can use `preview`'s token, and Workers Scripts Write covers every Worker on the account, `prod`'s included, so whoever can push a branch can reach `prod`.
 
-- **Deploy or change permissions:** from a workstation with the `admin` alchemy profile (the Cloudflare Global API Key and `gh`): `pnpm --filter @cloudpid/infra run ci:setup`. Rerun it after pulling a change to `infra/github.ts`.
-- **Rotate the token:** `pnpm --filter @cloudpid/infra exec alchemy destroy --config github.ts --stage ci --profile admin`, then `ci:setup` again. The `production` environment is retained on destroy, so the hand-set secrets and the `main` branch policy survive; only the token, its secret and the variables are replaced.
+- **Deploy or change permissions:** from a workstation with the `admin` alchemy profile (the Cloudflare Global API Key and `gh`): `bun --cwd infra run ci:setup`. Rerun it after pulling a change to `infra/github.ts`.
+- **Rotate the token:** `bun --cwd infra alchemy destroy --config github.ts --stage ci --profile admin`, then `ci:setup` again. The `production` environment is retained on destroy, so the hand-set secrets and the `main` branch policy survive; only the token, its secret and the variables are replaced.
 - **Hand-set secrets:** the stack does not manage `MODEL_PROXY_API_KEY`, `SECRETS_ENCRYPTION_KEY`, the VAPID three, `EXA_API_KEY` or `PARALLEL_API_KEY`. Set each in both environments with `gh secret set <NAME> --env production` and `--env preview`, giving `preview` an encryption key and VAPID pair of its own (the dev ones from `~/.config/cloudpid/dev.env` will do), since the previews share them.
 
 Workers Scripts Write also covers what rides on the script upload: observability (`WORKER_OBSERVABILITY`) and the Images binding need no extra permission.
@@ -80,5 +80,5 @@ Workers Scripts Write also covers what rides on the script upload: observability
 
 - **A Container end to end:** deploy your own stage and give the Workspaces Worker a temporary `workersDev` route that runs a command through `ComputerExecutionEnv.onBackend("container")` (and can destroy the Container, to check snapshots: a restore and the idle stop only exist deployed). `kill 1` in the Container restarts it (PID 1 is the image's supervisor, which stops computerd and sends no exit report); `pkill -KILL -x computerd` makes it log one (`workspace.container.output` in the Workspaces Worker's logs). An old Workspace DO instance keeps its old code until it is evicted, so start a Session in a new Workspace after a redeploy.
 - **Traces:** in the dashboard (Workers → Observability → Traces) or through the telemetry query API (`POST /accounts/{id}/workers/observability/telemetry/query`, `view: "traces"`), whose `traces` view lists summaries only: span names and attributes are in the dashboard. To see what a span is made of while debugging, log from inside it: a log line carries the trace and span ID it ran under.
-- **Web tools:** `WEB_TOOLS_LIVE=1 pnpm --filter @cloudpid/extensions exec vitest run src/web/live.test.ts` checks `web_search` and `web_fetch` against the real network and providers.
+- **Web tools:** `WEB_TOOLS_LIVE=1 bun --cwd packages/extensions vitest run src/web/live.test.ts` checks `web_search` and `web_fetch` against the real network and providers.
 - **Images quota:** every account is on the Images Free plan by default: 5,000 unique transformations a month, after which the binding answers error 9422 and `read` leaves the image out with a note.
