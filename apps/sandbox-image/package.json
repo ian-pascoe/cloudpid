@@ -12,7 +12,8 @@
     "./builds": "./src/builds.ts",
     "./changes": "./src/changes.ts",
     "./comparison": "./src/comparison.ts",
-    "./runs": "./src/runs.ts"
+    "./runs": "./src/runs.ts",
+    "./notify": "./src/notify.ts"
   },
   "scripts": {
     "typecheck": "tsc",
