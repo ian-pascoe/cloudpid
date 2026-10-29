@@ -2,7 +2,6 @@
 // stand-in tools, driven by a scripted model whose requests are recorded. Time is a `TestClock`, so a test can pass a
 // Secret's lifetime at once. pi-durable's Harness and the faux provider are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off globalRandom:off preferSchemaOverJson:off strictEffectProvide:off
-import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -24,7 +23,6 @@ import {
   type JsonObject,
   MemoryStorage,
   ToolResultEntry,
-  type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
 import {
   type ExecutionEnv,
@@ -36,9 +34,9 @@ import {
 } from "@earendil-works/pi-durable/env";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { codingToolsWith } from "../coding-tools.ts";
+import { programExtension } from "../program.fixture.ts";
 import { secretsExtension } from "./extension.ts";
 import { scrubbingModels } from "./models.ts";
 import type { KeptSecret } from "./kept.ts";
@@ -133,31 +131,6 @@ const usingSecrets = (recorded: JsonObject[]) =>
     ],
   });
 
-const ProgramResult = Schema.Struct({ isError: Schema.Boolean, structuredOutput: Schema.Unknown });
-
-/** A stand-in for code mode: a tool that calls `tool` as a script would, and returns what the script got. */
-const Program = defineEffectTool({
-  name: "program",
-  description: "Call a tool the way a program does",
-  parameters: Schema.Struct({
-    tool: Schema.String,
-    args: Schema.Record(Schema.String, Schema.Json),
-  }),
-  execute: Effect.fnUntraced(function* ({ tool, args }, api: ToolExecutionApi) {
-    const chord = yield* ChordContext;
-
-    // SAFETY: the decoded arguments are JSON.
-    const result = yield* Effect.promise(() => api.executeTool(tool, args as JsonObject, chord));
-
-    const got = yield* Schema.encodeEffect(Schema.fromJsonString(ProgramResult))({
-      isError: result.isError === true,
-      structuredOutput: result.structuredOutput,
-    }).pipe(Effect.orDie);
-
-    return { output: [{ type: "text", text: got }] };
-  }),
-});
-
 /** A response that calls tool `name` with `args`. */
 export const call = (name: string, args: ToolCall["arguments"]): AssistantMessage =>
   fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${name}-${Math.random()}` })], {
@@ -220,14 +193,12 @@ export const openSecretsHarness = async (
   const resolving = usingSecrets(recorded);
   const coding = codingToolsWith({});
 
-  const extensions = await runtime.runPromise(
-    Effect.all([
-      Program,
-      secretsExtension([...(coding.tools ?? []), ...(resolving.tools ?? [])]),
-    ]).pipe(Effect.provideService(Secrets, secrets)),
+  const secretsExt = await runtime.runPromise(
+    secretsExtension([...(coding.tools ?? []), ...(resolving.tools ?? [])]).pipe(
+      Effect.provideService(Secrets, secrets),
+    ),
   );
 
-  const [program, secretsExt] = extensions;
   const faux = fauxProvider();
   const models = createModels();
   const tools = createRegistry();
@@ -246,7 +217,7 @@ export const openSecretsHarness = async (
   );
   tools.install(coding);
   tools.install(resolving);
-  tools.install(defineExtension({ name: "program", tools: [program] }));
+  tools.install(programExtension);
 
   for (const extension of beside) tools.install(extension);
 

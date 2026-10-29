@@ -70,11 +70,11 @@ import {
   CancelOutput,
   DeleteOutput,
   MessageOutput,
-  outputSchema,
   SpawnOutput,
   StatusOutput,
   WaitOutput,
 } from "./outputs.ts";
+import { outputSchema } from "../outputs.ts";
 import {
   Anchor,
   AGENT_INPUT_KIND,

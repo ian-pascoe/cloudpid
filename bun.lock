@@ -226,8 +226,15 @@
   },
   "trustedDependencies": [
     "typescript",
+    "esbuild",
+    "@google/genai",
     "oxlint",
+    "core-js-pure",
+    "protobufjs",
+    "node-liblzma",
+    "@mongodb-js/zstd",
     "oxlint-tsgolint",
+    "workerd",
   ],
   "patchedDependencies": {
     "@cloudflare/computer@0.8.0": "patches/@cloudflare__computer@0.8.0.patch",

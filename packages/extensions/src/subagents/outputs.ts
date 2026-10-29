@@ -4,17 +4,13 @@
 // error. A child's answer is cut to `MAX_CHILD_OUTPUT_BYTES` stored, since a nested call's result is one SQLite row.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Schema from "effect/Schema";
-import { cutStored } from "../stored-bytes.ts";
+import { boundText } from "../outputs.ts";
 
 /** The most a child's answer weighs stored in a structured output, so it fits one nested call's result. */
 export const MAX_CHILD_OUTPUT_BYTES = 1024 * 1024;
 
 /** `text` cut to `MAX_CHILD_OUTPUT_BYTES` stored, and whether it was. */
-export const boundChildOutput = (text: string) => {
-  const cut = cutStored(text, MAX_CHILD_OUTPUT_BYTES, "");
-
-  return { text: cut, truncated: cut !== text };
-};
+export const boundChildOutput = (text: string) => boundText(text, MAX_CHILD_OUTPUT_BYTES);
 
 const AgentId = Schema.String.annotate({ description: "Canonical agent ID" });
 
@@ -141,7 +137,3 @@ export const DeleteOutput = Schema.Struct({
   agent_id: AgentId,
   deleted_agent_ids: Schema.Array(Schema.String),
 });
-
-/** A schema as a tool's `structuredOutputSchema`. */
-export const outputSchema = <S extends Schema.Top>(schema: S) =>
-  Schema.toJsonSchemaDocument(schema).schema;
