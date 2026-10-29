@@ -725,9 +725,11 @@ describe("ContainerSnapshots.take, within its time", () => {
     vi.useFakeTimers();
 
     try {
+      // No fingerprints: their digest is real crypto, which fake timers do not wait for, so the limit could pass first.
       const { state, snapshots } = open({
         timeoutMs: SNAPSHOT_TIMEOUT_MS,
         buildTimeoutMs: BUILD_SNAPSHOT_TIMEOUT_MS,
+        fingerprint: null,
       });
 
       state.scanGate = new Promise((resolve) => setTimeout(resolve, 150_000));
@@ -748,9 +750,11 @@ describe("ContainerSnapshots.take, within its time", () => {
     vi.useFakeTimers();
 
     try {
+      // No fingerprints: their digest is real crypto, which fake timers do not wait for, so the limit could pass first.
       const { state, snapshots } = open({
         timeoutMs: SNAPSHOT_TIMEOUT_MS,
         buildTimeoutMs: BUILD_SNAPSHOT_TIMEOUT_MS,
+        fingerprint: null,
       });
 
       state.scanGate = new Promise((resolve) => setTimeout(resolve, 150_000));
