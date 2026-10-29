@@ -899,6 +899,28 @@ describe("browser_handoff", () => {
     }
   });
 
+  it("cuts a long list of windows the tab left open, and the call still succeeds", async () => {
+    const windowOrigins = Array.from(
+      { length: 6000 },
+      (_, index) => `https://window-${index}-${"w".repeat(40)}.example`,
+    );
+
+    const { extension } = await handingOver([{ state: "complete", success: true }], {
+      windowOrigins,
+    });
+
+    const [got] = await runSized([extension], [["browser_handoff", { instructions: "Sign in" }]]);
+
+    // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
+    expect(got).toMatchObject({
+      isError: false,
+      truncated: { windows_truncated: true },
+    });
+    expect(got?.lengths.windows).toBeGreaterThan(0);
+    expect(got?.lengths.windows).toBeLessThan(windowOrigins.length);
+    expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
+  });
+
   it("gives a program no windows list when the host could not say which are open, and cuts a long reason", async () => {
     const { host } = fakeHandoffHost([
       { state: "complete", success: false, reason: "R".repeat(400_000) },

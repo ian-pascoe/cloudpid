@@ -46,7 +46,7 @@ export const SkillSearchOutput = Schema.Struct({
       }),
       name: Schema.String.annotate({ description: "The Skill's name" }),
       installs: Schema.Finite.annotate({ description: "How many times it was installed" }),
-    }),
+    }).annotate({ description: "A Skill skills.sh found" }),
   ).annotate({ description: "The Skills found, in skills.sh's order; empty when it found none" }),
   results_truncated: Schema.Boolean.annotate({
     description: "The list was cut to stay within the size bound of a value",

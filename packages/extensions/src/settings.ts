@@ -8,8 +8,10 @@
 // records it under the Scope, the Session reads the Settings again at once, and the Run's end notifies the owner of the
 // changes it made (`AgentChangeLog`). They are the root conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as
 // `secret_ask` is. Values are plain: a change is refused when its reason or its text holds a Secret the Session holds
-// or a GitHub credential. Each tool gives programs the outcome as a `structuredOutput` (`./settings-outputs.ts`): the Scope,
-// the Agent changes made and the fields that already had their value, or, for `settings_get`, the Settings by field.
+// or a GitHub credential. Each tool gives programs its result
+// (`docs/architecture/agent-capabilities.md` → Values for programs) as a `structuredOutput` (`./settings-outputs.ts`,
+// `./outputs.ts`): the Scope, the Agent changes made and the fields that already had their value, or, for
+// `settings_get`, the Settings by field.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,

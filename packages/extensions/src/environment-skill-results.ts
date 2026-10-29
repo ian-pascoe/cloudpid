@@ -2,7 +2,7 @@
 // the Session's `EnvironmentSkills` service they call, what each call can come to (`SkillSaved`,
 // `SkillRemoved`), and the results they give for each, shared by a change to an Environment's own Skills and one to those
 // kept Global (which waits for the owner's Approval first: `./environment-skills-global.ts`). Each result also carries the
-// value a program gets (`./environment-lifecycle-outputs.ts`), besides its text and details, which are unchanged.
+// value a program gets (`docs/architecture/agent-capabilities.md` → Values for programs; `./environment-lifecycle-outputs.ts`), besides its text and details, which are unchanged.
 //
 // `environment.ts` imports `./environment-skills.ts`, which imports this file, so what it takes from `environment.ts` is
 // used inside functions only: its exports are not there yet when this module loads.
@@ -35,12 +35,12 @@ import {
   type RunChange,
 } from "./environment.ts";
 import {
-  approvalOutput,
   skillInstalledOutput,
   skillRemovedOutput,
   skillSavedOutput,
 } from "./environment-lifecycle-outputs.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
+import { APPROVED } from "./outputs.ts";
 
 /** How the save of a Skill went. */
 export type SkillSaved =
@@ -314,10 +314,6 @@ const reachInstalledGlobal = (
 export const PROMPT_NOTE =
   "The skills list in your system prompt changes at the next Context Window (after a Handoff, or in a new Session).";
 
-/** The owner's Approval of a change as a value gives it: approved when they were asked and said yes; null when none was asked. */
-export const approvalOf = (approved: boolean) =>
-  approvalOutput(approved ? { approved: true } : null);
-
 /** The agent change a result carries as its details, with the files before and after by hash. */
 const changeDetails = (environment: ChangedEnvironment, change: AgentChange) => ({
   id: change.id,
@@ -387,7 +383,7 @@ export const savedOutcome = (
           skill: saved.name,
           change: null,
           unchanged: true,
-          approval: approvalOf(approved),
+          approval: approved ? APPROVED : null,
           handed: false,
           overriddenIn: [],
           servedAt: servedAt(saved.name),
@@ -443,7 +439,7 @@ export const savedOutcome = (
             skill: saved.name,
             change,
             unchanged: false,
-            approval: approvalOf(approved),
+            approval: approved ? APPROVED : null,
             handed: saved.handed,
             overriddenIn: saved.overriddenIn,
             servedAt: servedAt(saved.name),
@@ -517,7 +513,7 @@ export const installedOutcome = (
             source: { repo, ref: installed.ref, commit },
             results: [],
             listed: available,
-            approval: approvalOf(approved),
+            approval: approved ? APPROVED : null,
             handed: false,
           }),
           output: [
@@ -601,7 +597,7 @@ export const installedOutcome = (
             source: { repo, ref, commit },
             results,
             listed: [],
-            approval: approvalOf(approved),
+            approval: approved ? APPROVED : null,
             handed: installed.handed,
           }),
           output: [
@@ -693,7 +689,7 @@ export const removedOutcome = (
                 skill: name,
                 change: null,
                 unchanged: true,
-                approval: approvalOf(approved),
+                approval: approved ? APPROVED : null,
                 handed: false,
                 overriddenIn: [],
                 globalServed: false,
@@ -724,7 +720,7 @@ export const removedOutcome = (
             skill: name,
             change,
             unchanged: false,
-            approval: approvalOf(approved),
+            approval: approved ? APPROVED : null,
             handed: removed.handed,
             overriddenIn: removed.overriddenIn,
             globalServed: removed.inherited,

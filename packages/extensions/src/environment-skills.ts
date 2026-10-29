@@ -10,7 +10,7 @@
 // Context Window. With `id: "*"` the Skill is kept Global, and the change waits for the owner's Approval
 // (`./environment-skills-global.ts`), as a change to a Limit does: it steers every future Session. An Environment's own
 // Skill of the same name wins in that Environment, with no Approval. Each tool also gives a program its outcome
-// (`./environment-lifecycle-outputs.ts`): the Scope, whether anything changed, the Agent changes recorded, and the owner's
+// (`docs/architecture/agent-capabilities.md` → Values for programs; `./environment-lifecycle-outputs.ts`): the Scope, whether anything changed, the Agent changes recorded, and the owner's
 // Approval for a change kept Global (approved, or declined with their reason).
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";

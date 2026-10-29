@@ -3,7 +3,8 @@
 // changes. Each change is applied as the owner's RPC is and recorded as an Agent change, like the tools for its Container
 // settings; they are the same extension's, built next to those (`EnvironmentTools`) over the same `Environments`. A Test
 // Build saves and records nothing. Each tool also gives a program its outcome (`./environment-lifecycle-outputs.ts`): the
-// Environment, whether anything changed, the Agent change recorded, and whether a new Build was asked for.
+// Environment, whether anything changed and the Agent change recorded, and for a Build whether a new one was asked for
+// (`docs/architecture/agent-capabilities.md` → Values for programs).
 // @effect-diagnostics missingPipeableSignature:off
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
 import {
@@ -333,31 +334,13 @@ export const lifecycleTools = ({
     environment: ChangedEnvironment,
     change: AgentChange | null,
     field: string,
-    newBuild: boolean,
-  ) =>
-    asOutput(
-      RecordChangeOutput,
-      recordOutput({ environment, change, unchanged: [field], newBuild }),
-    );
+  ) => asOutput(RecordChangeOutput, recordOutput({ environment, change, unchanged: [field] }));
 
   /** The Environment `environment` names, by id and name: the id again when the Registry does not show it. */
   const environmentNamed = (environment: string) =>
     environments.get(environment).pipe(
       Effect.map((details) => ({ id: environment, name: details?.name ?? environment })),
       Effect.orElseSucceed(() => ({ id: environment, name: environment })),
-    );
-
-  /** Whether a Build has anything to build in `environment`: a Repo, a Setup Script or Toolchains. */
-  const buildsAnything = (environment: string) =>
-    environments.get(environment).pipe(
-      Effect.map(
-        (details) =>
-          details === null ||
-          details.repos.length > 0 ||
-          details.settings.setupScript !== "" ||
-          details.settings.toolchains !== "",
-      ),
-      Effect.orElseSucceed(() => true),
     );
 
   /** Apply `change` to the Environment `id` names; what it answers for each outcome but a recorded change. */
@@ -441,7 +424,6 @@ export const lifecycleTools = ({
             environment,
             repos: held,
             change: made.change,
-            newBuild: held.length > 0,
           }),
         );
       }),
@@ -478,7 +460,7 @@ export const lifecycleTools = ({
           return unchangedResult(
             `${named(answer.environment)} already has that name: nothing changed, and nothing was recorded.`,
             answer.environment,
-            recordValue(answer.environment, null, NAME_FIELD, false),
+            recordValue(answer.environment, null, NAME_FIELD),
           );
         }
 
@@ -489,7 +471,7 @@ export const lifecycleTools = ({
           environment,
           change,
           `Renamed "${shown(change.before)}" to "${shown(change.after)}": ${named(environment)}. Its id is the same.`,
-          recordValue(environment, change, change.field, false),
+          recordValue(environment, change, change.field),
         );
       }),
   });
@@ -544,7 +526,6 @@ export const lifecycleTools = ({
                     onFailure: () => url,
                   }),
               ),
-              false,
             ),
           );
         }
@@ -556,7 +537,7 @@ export const lifecycleTools = ({
           environment,
           change,
           `Added the repo ${fieldRepo(change.field) ?? ""} (${shown(change.after)}) to ${named(environment)}. ${WORKSPACES_UNTOUCHED} A new Workspace made from the Environment gets the clone.`,
-          recordValue(environment, change, change.field, true),
+          recordValue(environment, change, change.field),
         );
       }),
   });
@@ -602,8 +583,7 @@ export const lifecycleTools = ({
           environment,
           change,
           `Took the repo ${name} (${shown(change.before)}) out of ${named(environment)}. ${WORKSPACES_UNTOUCHED} A new Workspace made from the Environment does not get the clone.`,
-          // The Build upkeep asks for one unless the last Repo went with nothing else to build.
-          recordValue(environment, change, change.field, yield* buildsAnything(environment.id)),
+          recordValue(environment, change, change.field),
         );
       }),
   });
@@ -660,7 +640,7 @@ export const lifecycleTools = ({
             },
           ],
           structuredOutput: rebuildOutput({
-            environment: yield* environmentNamed((yield* target(id)).environment),
+            environment: yield* environmentNamed(id),
             change: null,
             unchanged: [],
             rerun: true,

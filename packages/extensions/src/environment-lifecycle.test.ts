@@ -763,17 +763,18 @@ describe("the lifecycle tools from a program", () => {
       unchanged: [],
       approval: null,
       changed: true,
-      new_build: true,
       repos: [{ name: "api", url: "https://github.com/acme/api.git" }],
       repos_truncated: false,
     });
+
+    // Only environment_rebuild says whether a Build was asked for: the Registry's upkeep decides for the others.
+    expect(decodeCreated(made)).not.toHaveProperty("new_build");
 
     expect(decodeRecord(renamed)).toMatchObject({
       scope: { id: "0000abcd", name: "Renamed" },
       changes: [{ field: "name", before: "Other", after: "Renamed" }],
       unchanged: [],
       changed: true,
-      new_build: false,
     });
 
     expect(decodeRecord(same)).toMatchObject({
@@ -782,28 +783,26 @@ describe("the lifecycle tools from a program", () => {
       unchanged: ["name"],
       approval: null,
       changed: false,
-      new_build: false,
     });
 
     expect(decodeRecord(added)).toMatchObject({
       scope: { id: "0000abcd" },
       changes: [{ field: "repos.web", before: null, after: "https://github.com/acme/web.git" }],
       changed: true,
-      new_build: true,
     });
 
     expect(decodeRecord(kept)).toMatchObject({
       changes: [],
       unchanged: ["repos.web"],
       changed: false,
-      new_build: false,
     });
 
-    // Nothing is left to build in the Environment: the upkeep asks for no Build.
     expect(decodeRecord(removed)).toMatchObject({
       changes: [{ field: "repos.web", before: "https://github.com/acme/web.git", after: null }],
       changed: true,
     });
+
+    expect(decodeRecord(removed)).not.toHaveProperty("new_build");
 
     expect(decodeRebuild(rebuilt)).toMatchObject({
       scope: { id: "default", name: "Default" },

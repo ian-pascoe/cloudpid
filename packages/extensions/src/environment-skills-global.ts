@@ -4,7 +4,8 @@
 // prompt-injected agent would plant instructions: the owner reads the Skill's files on the card (which says plainly what it could
 // not show), and the change is made only against what they were shown (a save's folder digest, an install's commit and
 // each Skill's folder and digest, and when the Skill of the name was last saved). A declined request gives a program
-// its value too (`./environment-lifecycle-outputs.ts`), with the owner's reason, built here around `declined`.
+// its value too (`docs/architecture/agent-capabilities.md` → Values for programs; `./environment-lifecycle-outputs.ts`), with the
+// owner's reason, built with `declinedWith`.
 //
 // `environment.ts` imports this module through `./environment-skills.ts`, so what it takes from `environment.ts` is used
 // inside functions only: its exports are not there yet when this module loads.
@@ -21,12 +22,11 @@ import {
   type ApprovalCall,
   approvedAlready,
   askedBefore,
-  declined,
+  declinedWith,
   withApproval,
 } from "./approvals.ts";
 import { EnvironmentsError } from "./environment.ts";
 import {
-  approvalOutput,
   skillInstalledOutput,
   skillRemovedOutput,
   skillSavedOutput,
@@ -42,6 +42,7 @@ import {
   servedAt,
   type SkillToolDeps,
 } from "./environment-skill-results.ts";
+import { APPROVED } from "./outputs.ts";
 import { MAX_APPROVED_SKILLS } from "./skill-checks.ts";
 
 /**
@@ -246,20 +247,19 @@ export const saveAtGlobal = (
       (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
-            return {
-              ...declined(answer, `saving the Skill ${name} at Global`),
-              structuredOutput: skillSavedOutput({
+            return declinedWith(answer, `saving the Skill ${name} at Global`, (approval) =>
+              skillSavedOutput({
                 scope: GLOBAL_TARGET,
                 skill: name,
                 change: null,
                 unchanged: false,
-                approval: approvalOutput(answer),
+                approval,
                 handed: false,
                 overriddenIn: [],
                 servedAt: null,
                 hidesGlobal: false,
               }),
-            };
+            );
           }
 
           const asked = Schema.decodeUnknownOption(SaveAsked)(answer.expected);
@@ -341,19 +341,18 @@ export const removeAtGlobal = (
       (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
-            return {
-              ...declined(answer, `removing the Skill ${name} from Global`),
-              structuredOutput: skillRemovedOutput({
+            return declinedWith(answer, `removing the Skill ${name} from Global`, (approval) =>
+              skillRemovedOutput({
                 scope: GLOBAL_TARGET,
                 skill: name,
                 change: null,
                 unchanged: false,
-                approval: approvalOutput(answer),
+                approval,
                 handed: false,
                 overriddenIn: [],
                 globalServed: false,
               }),
-            };
+            );
           }
 
           const asked = Schema.decodeUnknownOption(RemoveAsked)(answer.expected);
@@ -436,17 +435,16 @@ export const installAtGlobal = (
     const answered = (answer: ApprovalAnswer, what: string) =>
       Effect.gen(function* () {
         if (!answer.approved) {
-          return {
-            ...declined(answer, what),
-            structuredOutput: skillInstalledOutput({
+          return declinedWith(answer, what, (approval) =>
+            skillInstalledOutput({
               scope: GLOBAL_TARGET,
               source: null,
               results: [],
               listed: [],
-              approval: approvalOutput(answer),
+              approval,
               handed: false,
             }),
-          };
+          );
         }
 
         const asked = Schema.decodeUnknownOption(InstallAsked)(answer.expected);
@@ -507,7 +505,7 @@ export const installAtGlobal = (
                 source: { repo: installed.repo, ref: installed.ref, commit: installed.commit },
                 results,
                 listed: [],
-                approval: approvalOutput({ approved: true }),
+                approval: APPROVED,
                 handed: false,
               }),
               details: { approval: { approved: true } },

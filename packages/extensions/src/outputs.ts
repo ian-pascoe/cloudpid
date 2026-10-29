@@ -28,15 +28,16 @@ export const outputSchema = <S extends Schema.Top>(schema: S) => {
 };
 
 /**
- * The most one list or text in a tool's value weighs stored, far under the cap of a nested call's value
- * (`MAX_NESTED_STRUCTURED_OUTPUT_BYTES`, 1.5 MiB), so a value with a few of them still fits.
+ * The most one part of a tool's value (a list, or a text without a bound) weighs stored by default, far under the cap
+ * of a nested call's value (`MAX_NESTED_STRUCTURED_OUTPUT_BYTES`, 1.5 MiB), so a value with a few of them still fits.
+ * A value with more parts gives each a smaller bound, so that together they stay under 1 MiB.
  */
-export const MAX_LIST_BYTES = 256 * 1024;
+export const MAX_PART_BYTES = 256 * 1024;
 
 /** The first of `items` while they fit `maxBytes` stored together, and whether any were left out. */
 export const boundItems = <A extends Stored>(
   items: ReadonlyArray<A>,
-  maxBytes: number = MAX_LIST_BYTES,
+  maxBytes: number = MAX_PART_BYTES,
 ) => {
   // The brackets of the array, then each item and the comma before it.
   let used = 2;
@@ -58,7 +59,7 @@ export const boundItems = <A extends Stored>(
 };
 
 /** `text` cut to `maxBytes` stored, and whether it was. */
-export const boundText = (text: string, maxBytes: number = MAX_LIST_BYTES) => {
+export const boundText = (text: string, maxBytes: number = MAX_PART_BYTES) => {
   const cut = cutStored(text, maxBytes, "");
 
   return { text: cut, truncated: cut !== text };
@@ -72,13 +73,22 @@ export const asOutput = <S extends Schema.Top>(_schema: S, value: S["Type"]): Js
 /** An Environment, or Global (id `*`), by id and name. */
 export const ScopeRef = Schema.Struct({
   id: Schema.String.annotate({ description: 'The Environment\'s id, or "*" for Global' }),
-  name: Schema.String,
+  name: Schema.String.annotate({ description: 'The Environment\'s name, or "Global"' }),
 });
+
+/** An Environment or Global, by id and name, as a value gives it. */
+export const scopeRef = ({
+  id,
+  name,
+}: {
+  readonly id: string;
+  readonly name: string;
+}): typeof ScopeRef.Type => ({ id, name });
 
 /** The owner's answer to a change that waits for their Approval; null for a change that does not. */
 export const ApprovalOutcome = Schema.NullOr(
   Schema.Struct({
-    approved: Schema.Boolean,
+    approved: Schema.Boolean.annotate({ description: "The owner approved the change" }),
     reason: Schema.NullOr(Schema.String).annotate({
       description: "Why the owner declined; null when they approved or gave none",
     }),
@@ -91,6 +101,17 @@ export const ApprovalOutcome = Schema.NullOr(
  * list without a bound, such as an Environment's Repos.
  */
 export const MAX_CHANGE_VALUE_BYTES = 128 * 1024;
+
+/** The owner approved. */
+export const APPROVED: typeof ApprovalOutcome.Type = { approved: true, reason: null };
+
+/** The owner's answer as a value gives it: approved, or declined with their reason (null when they gave none). */
+export const approvalOutput = (
+  answer:
+    | { readonly approved: true }
+    | { readonly approved: false; readonly reason?: string | undefined },
+): typeof ApprovalOutcome.Type =>
+  answer.approved ? APPROVED : { approved: false, reason: answer.reason ?? null };
 
 /** One Agent change, as the Registry recorded it. */
 export const AgentChangeOutput = Schema.Struct({
@@ -141,7 +162,7 @@ export const agentChangeOutput = (change: AgentChange): typeof AgentChangeOutput
   };
 };
 
-/** `changes` as a value gives them: the first that fit `MAX_LIST_BYTES`, and whether any were left out. */
+/** `changes` as a value gives them: the first that fit `MAX_PART_BYTES`, and whether any were left out. */
 export const changesOutput = (changes: ReadonlyArray<AgentChange>) => {
   const { items, truncated } = boundItems(Arr.map(changes, agentChangeOutput));
 
@@ -183,8 +204,14 @@ export const EnvironmentChangeOutput = Schema.Struct({
       overridden_in: Schema.Array(ScopeRef).annotate({
         description: "The Environments that override the field, so the change does not reach them",
       }),
+      overridden_in_truncated: Schema.Boolean.annotate({
+        description: "More Environments override it than fit this value: the first are listed",
+      }),
       new_builds: Schema.Array(ScopeRef).annotate({
         description: "The Environments in which a new Build was asked for",
+      }),
+      new_builds_truncated: Schema.Boolean.annotate({
+        description: "More Builds were asked for than fit this value: the first are listed",
       }),
     }),
   ).annotate({ description: "For a change at Global, how it reached the Environments; else null" }),

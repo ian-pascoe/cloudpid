@@ -6,7 +6,8 @@
 // that already had their value, the owner's Approval) with whether anything changed and what the tool adds. A Skill
 // change kept Global waits for the owner's Approval, so its value says which way it went, with the reason of a decline.
 // The lists that can grow (a repo's Skills, the Environments an own Skill hides one from) are cut as `boundItems` cuts
-// them, with a `<field>_truncated` flag. This module imports no tool, so both tool files and their result builders can
+// them, with a `<field>_truncated` flag. The shapes are the Environment tools' shared ones (`./environment-outputs.ts`,
+// `./outputs.ts`) where there is one. This module imports no tool, so both tool files and their result builders can
 // share it.
 // @effect-diagnostics missingPipeableSignature:off
 import {
@@ -14,49 +15,31 @@ import {
   type EnvironmentRepo,
   type InstalledSkill,
   type ListedSkill,
-  type SkillSource,
   type SkillUpdateEntry,
   skillField,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
+import { RepoOutput, SkillSourceOutput, skillSourceOutput } from "./environment-outputs.ts";
 import {
   changesOutput,
   type ApprovalOutcome,
   asOutput,
   boundItems,
   ChangeOutputFields,
-  type ScopeRef,
-  ScopeRef as ScopeRefSchema,
+  scopeRef,
+  ScopeRef,
 } from "./outputs.ts";
 
 /** An Environment, or Global, as the tool's result names it. */
 type Scope = { readonly id: string; readonly name: string };
 
-const scopeRef = ({ id, name }: Scope): typeof ScopeRef.Type => ({ id, name });
-
 const changed = Schema.Boolean.annotate({
   description: "Whether anything changed: false when the call found everything as asked already",
 });
 
-/**
- * The owner's answer as a value gives it: approved, or declined with their reason (null when they gave none); null for a
- * change that waits for no Approval.
- */
-export const approvalOutput = (
-  answer:
-    | { readonly approved: true }
-    | { readonly approved: false; readonly reason?: string | undefined }
-    | null,
-): typeof ApprovalOutcome.Type =>
-  answer === null
-    ? null
-    : answer.approved
-      ? { approved: true, reason: null }
-      : { approved: false, reason: answer.reason ?? null };
-
 const OverriddenIn = {
-  overridden_in: Schema.Array(ScopeRefSchema).annotate({
+  overridden_in: Schema.Array(ScopeRef).annotate({
     description:
       "The Environments whose own Skill of the name hides the one kept Global, so the change does not reach them; empty for a change to an Environment's own Skills",
   }),
@@ -76,10 +59,6 @@ const overriddenInOutput = (environments: ReadonlyArray<Scope>) => {
 const RecordFields = {
   ...ChangeOutputFields,
   changed,
-  new_build: Schema.Boolean.annotate({
-    description:
-      "A new Build was asked for: the Registry's upkeep makes one when the Repos changed and the Environment has anything to build, and environment_rebuild asks for one",
-  }),
 };
 
 /** `environment_rename`, `environment_repo_add` and `environment_repo_remove`: a change to the Environment's record. */
@@ -88,14 +67,7 @@ export const RecordChangeOutput = Schema.Struct(RecordFields);
 /** `environment_create`: the Environment made, with its Repos. */
 export const EnvironmentCreateOutput = Schema.Struct({
   ...RecordFields,
-  repos: Schema.Array(
-    Schema.Struct({
-      name: Schema.String.annotate({
-        description: "The directory below /workspace it is cloned into",
-      }),
-      url: Schema.String.annotate({ description: "The https URL it is cloned from" }),
-    }),
-  ).annotate({ description: "The Repos the new Environment holds" }),
+  repos: Schema.Array(RepoOutput).annotate({ description: "The Repos the new Environment holds" }),
   repos_truncated: Schema.Boolean.annotate({
     description: "More Repos than fit this value: the first are listed",
   }),
@@ -104,6 +76,10 @@ export const EnvironmentCreateOutput = Schema.Struct({
 /** `environment_rebuild`: a Build asked for, or a Test Build of proposed changes. */
 export const RebuildOutput = Schema.Struct({
   ...RecordFields,
+  new_build: Schema.Boolean.annotate({
+    description:
+      "A new Build was asked for now; false when one was under way already for the same Repos and settings, and for a Test Build",
+  }),
   rerun: Schema.Boolean.annotate({
     description:
       "The call was cut off after it began asking for the Build and ran again: it asked for nothing, since the first run may have",
@@ -132,19 +108,16 @@ export const recordOutput = ({
   environment,
   change,
   unchanged,
-  newBuild,
 }: {
   readonly environment: Scope;
   readonly change: AgentChange | null;
   readonly unchanged: ReadonlyArray<string>;
-  readonly newBuild: boolean;
 }): typeof RecordChangeOutput.Type => ({
   scope: scopeRef(environment),
   ...changesOutput(change === null ? [] : [change]),
   unchanged: change === null ? [...unchanged] : [],
   approval: null,
   changed: change !== null,
-  new_build: change !== null && newBuild,
 });
 
 /** The value of `environment_create`. */
@@ -152,17 +125,15 @@ export const createdOutput = ({
   environment,
   repos,
   change,
-  newBuild,
 }: {
   readonly environment: Scope;
   readonly repos: ReadonlyArray<EnvironmentRepo>;
   readonly change: AgentChange;
-  readonly newBuild: boolean;
 }) => {
   const kept = boundItems(Arr.map(repos, ({ name, url }) => ({ name, url })));
 
   return asOutput(EnvironmentCreateOutput, {
-    ...recordOutput({ environment, change, unchanged: [], newBuild }),
+    ...recordOutput({ environment, change, unchanged: [] }),
     repos: kept.items,
     repos_truncated: kept.truncated,
   });
@@ -183,7 +154,8 @@ export const rebuildOutput = ({
   readonly testBuild?: { readonly proposed: ReadonlyArray<string>; readonly tookMs: number } | null;
 }) =>
   asOutput(RebuildOutput, {
-    ...recordOutput({ environment, change, unchanged, newBuild: true }),
+    ...recordOutput({ environment, change, unchanged }),
+    new_build: change !== null,
     rerun,
     test_build:
       testBuild === null ? null : { proposed: [...testBuild.proposed], took_ms: testBuild.tookMs },
@@ -224,33 +196,16 @@ export const SkillRemoveOutput = Schema.Struct({
   }),
 });
 
-/** A Skill's source, as the install and update tools keep it. */
-const SkillSourceOutput = Schema.Struct({
-  repo: Schema.String.annotate({ description: "owner/name of the GitHub repo" }),
-  path: Schema.String.annotate({
-    description: "The Skill's folder in the repo; empty for the root",
-  }),
-  ref: Schema.NullOr(Schema.String).annotate({
-    description: "The ref named; null when the repo's default branch was used",
-  }),
-  commit: Schema.String.annotate({ description: "The commit it resolved to, in full" }),
-});
-
-const skillSourceOutput = ({ repo, path, ref, commit }: SkillSource) => ({
-  repo,
-  path,
-  ref,
-  commit,
-});
-
 /** `environment_skill_install`. */
 export const SkillInstallOutput = Schema.Struct({
   ...ChangeOutputFields,
   changed,
   source: Schema.NullOr(
     Schema.Struct({
-      repo: Schema.String,
-      ref: Schema.NullOr(Schema.String),
+      repo: Schema.String.annotate({ description: "owner/name of the GitHub repo" }),
+      ref: Schema.NullOr(Schema.String).annotate({
+        description: "The ref named; null when the repo's default branch was used",
+      }),
       commit: Schema.String.annotate({
         description: "The commit the Skills were read at, in full",
       }),
@@ -260,7 +215,7 @@ export const SkillInstallOutput = Schema.Struct({
   }),
   installed: Schema.Array(
     Schema.Struct({
-      name: Schema.String,
+      name: Schema.String.annotate({ description: "The Skill's name" }),
       path: Schema.String.annotate({ description: "The Skill's folder in the repo" }),
     }),
   ).annotate({
@@ -272,8 +227,8 @@ export const SkillInstallOutput = Schema.Struct({
   }),
   refused: Schema.Array(
     Schema.Struct({
-      name: Schema.String,
-      path: Schema.String,
+      name: Schema.String.annotate({ description: "The Skill's name" }),
+      path: Schema.String.annotate({ description: "The Skill's folder in the repo" }),
       message: Schema.String.annotate({ description: "Why it was refused, each problem a line" }),
     }),
   ).annotate({ description: "The Skills the checks refused; the others were still installed" }),
@@ -282,8 +237,10 @@ export const SkillInstallOutput = Schema.Struct({
   }),
   listed: Schema.Array(
     Schema.Struct({
-      name: Schema.String,
-      description: Schema.String,
+      name: Schema.String.annotate({ description: "The Skill's name" }),
+      description: Schema.String.annotate({
+        description: "What the Skill does and when to use it",
+      }),
       path: Schema.String.annotate({ description: "The Skill's folder in the repo" }),
     }),
   ).annotate({
@@ -306,7 +263,7 @@ export const SkillUpdateOutput = Schema.Struct({
   changed,
   updated: Schema.Array(
     Schema.Struct({
-      name: Schema.String,
+      name: Schema.String.annotate({ description: "The Skill's name" }),
       from: SkillSourceOutput.annotate({ description: "Where it came from before" }),
       to: SkillSourceOutput.annotate({ description: "Where it comes from now" }),
       overwrote: Schema.Boolean.annotate({ description: "The edits made to it were replaced" }),
@@ -317,12 +274,12 @@ export const SkillUpdateOutput = Schema.Struct({
   }),
   refused: Schema.Array(
     Schema.Struct({
-      name: Schema.String,
+      name: Schema.String.annotate({ description: "The Skill's name" }),
       outcome: Schema.Literals(["modified", "rejected", "changed-since"]).annotate({
         description:
           "modified: edited since installed, and overwrite was not set; rejected: not updated (no source, no answer, or a failed check); changed-since: saved again since the owner was asked",
       }),
-      message: Schema.String,
+      message: Schema.String.annotate({ description: "Why it was not updated" }),
     }),
   ).annotate({ description: "The Skills not updated; the others were" }),
   refused_truncated: Schema.Boolean.annotate({

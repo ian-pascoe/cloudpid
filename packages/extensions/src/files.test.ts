@@ -17,7 +17,7 @@ import {
   type GrepMatch,
   WorkspaceFiles,
 } from "./files.ts";
-import { MAX_LIST_BYTES } from "./outputs.ts";
+import { MAX_PART_BYTES } from "./outputs.ts";
 import { runProgram, runSized } from "./program.fixture.ts";
 import { storedBytes } from "./stored-bytes.ts";
 
@@ -361,7 +361,7 @@ describe("what the file tools cut", () => {
     ]);
     expect(sized?.lengths["entries"]).toBeGreaterThan(0);
     expect(sized?.lengths["entries"]).toBeLessThan(10_000);
-    expect(sized?.bytes).toBeLessThanOrEqual(MAX_LIST_BYTES + 200);
+    expect(sized?.bytes).toBeLessThanOrEqual(MAX_PART_BYTES + 200);
 
     // The entries kept are the first ones, as the direct call shows.
     const listed = await direct(fake, "ls", { limit: 10_000 });

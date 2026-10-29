@@ -548,6 +548,23 @@ describe("secrets", () => {
       expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
     });
 
+    it("cuts a long list of names forgotten, and the call still succeeds", async () => {
+      const session = await openSecretsHarness();
+
+      const names = Array.from(
+        { length: 4000 },
+        (_, index) => `NAME_${String(index).padStart(5, "0")}_${"X".repeat(60)}`,
+      );
+
+      const [got] = await runSized([session.extension], [["secret_forget", { names }]]);
+
+      // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
+      expect(got).toMatchObject({ isError: false, truncated: { secrets_truncated: true } });
+      expect(got?.lengths.secrets).toBeGreaterThan(0);
+      expect(got?.lengths.secrets).toBeLessThan(names.length);
+      expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
+    });
+
     // The program stand-in's own result is redacted too, which would hide a value left in the nested one: so the nested
     // call's whole result is kept by a stand-in that calls the tool beside it.
     it("redacts a Secret's value from a tool's structured output before the program sees it", async () => {

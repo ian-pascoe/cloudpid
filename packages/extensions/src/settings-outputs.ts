@@ -2,8 +2,7 @@
 // programs): each tool's `structuredOutput`, declared as its `structuredOutputSchema` (`./outputs.ts`). The Settings'
 // changing tools (and `settings_reset`) answer with `ChangeOutput`, the Scope, the Agent changes made, the fields that
 // already had their value and the owner's Approval; `settings_get` answers with the Settings at a Scope, field by field,
-// each with where its value comes from; `environment_delete` and `environment_secret_delete` say whether the delete was
-// made. What can grow is cut as `./outputs.ts` says, with a `*_truncated` flag: the fields, the Environments that
+// each with where its value comes from. What can grow is cut as `./outputs.ts` says, with a `*_truncated` flag: the fields, the Environments that
 // override one, the Instructions and a value too long to show (an Agent change's values are cut by `./outputs.ts`).
 // @effect-diagnostics missingPipeableSignature:off
 import type { AgentChange } from "@cloudpid/protocol";
@@ -17,8 +16,9 @@ import {
   boundText,
   ChangeOutput,
   changesOutput,
-  MAX_LIST_BYTES,
+  MAX_PART_BYTES,
   ScopeRef,
+  scopeRef,
 } from "./outputs.ts";
 import type { SettingsView } from "./settings.ts";
 import { storedBytes } from "./stored-bytes.ts";
@@ -35,21 +35,11 @@ const MAX_PROBLEM_BYTES = 16 * 1024;
 /** The most the list of the Environments that override one field weighs stored in a value. */
 const MAX_OVERRIDDEN_IN_BYTES = 16 * 1024;
 
-/** The owner's answer as `ChangeOutput` carries it. */
-export type ApprovalValue = typeof ApprovalOutcome.Type;
-
-/** The owner approved. */
-export const APPROVED: ApprovalValue = { approved: true, reason: null };
-
-/** The owner declined, with their reason if they gave one. */
-export const declinedOutcome = (reason: string | undefined): ApprovalValue => ({
-  approved: false,
-  reason: reason ?? null,
-});
-
 /** The Scope of a view, by id and name. */
-export const scopeRefOf = (view: SettingsView): typeof ScopeRef.Type =>
-  "name" in view ? { id: view.scope, name: view.name } : { id: GLOBAL_ID, name: GLOBAL_NAME };
+export const scopeRefOf = (view: SettingsView) =>
+  scopeRef(
+    "name" in view ? { id: view.scope, name: view.name } : { id: GLOBAL_ID, name: GLOBAL_NAME },
+  );
 
 /**
  * What a Settings tool answers: `changes` made at `view`'s Scope, the `unchanged` fields that already had their value, and
@@ -64,7 +54,7 @@ export const settingsChangeOutput = ({
   readonly view: SettingsView;
   readonly changes: ReadonlyArray<AgentChange>;
   readonly unchanged: ReadonlyArray<string>;
-  readonly approval: ApprovalValue;
+  readonly approval: typeof ApprovalOutcome.Type;
 }) =>
   asOutput(ChangeOutput, {
     scope: scopeRefOf(view),
@@ -115,7 +105,9 @@ const InstructionsOutput = Schema.Struct({
 
 /** `settings_get`: the Settings at a Scope. */
 export const SettingsGetOutput = Schema.Struct({
-  scope: ScopeRef,
+  scope: ScopeRef.annotate({
+    description: "The Scope the settings are of: Global, or an Environment",
+  }),
   own_environment: Schema.NullOr(Schema.String).annotate({
     description:
       "The id of this Session's own Environment, whose Settings its requests run with; null when the Registry does not list it",
@@ -136,7 +128,7 @@ export const SettingsGetOutput = Schema.Struct({
       description:
         "At an Environment, its own Instructions, which add to Global's and win where they disagree; null at Global",
     }),
-  }),
+  }).annotate({ description: "The user's Instructions, which every conversation is shown" }),
   problem: Schema.NullOr(Schema.String).annotate({
     description:
       "Why some saved overrides were left out, when a later release no longer accepts them; null for none",
@@ -178,7 +170,7 @@ export const settingsGetOutput = (
     readonly settings: ReadonlyArray<typeof SettingOutput.Type>;
   },
 ) => {
-  const settings = boundItems(output.settings, MAX_LIST_BYTES);
+  const settings = boundItems(output.settings, MAX_PART_BYTES);
   const problem = output.problem === null ? null : boundText(output.problem, MAX_PROBLEM_BYTES);
 
   return asOutput(SettingsGetOutput, {
@@ -189,36 +181,3 @@ export const settingsGetOutput = (
     problem_truncated: problem?.truncated ?? false,
   });
 };
-
-/** What deleting an Environment took, as the owner was asked about it. */
-export const FootprintOutput = Schema.Struct({
-  workspaces: Schema.Finite.annotate({ description: "Its Workspaces, but its spare" }),
-  sessions: Schema.Finite.annotate({ description: "The Sessions in them, archived ones too" }),
-  secrets: Schema.Finite.annotate({ description: "The Secrets kept for it alone" }),
-});
-
-/** `environment_delete`: whether the Environment was deleted, and what that took. */
-export const EnvironmentDeleteOutput = Schema.Struct({
-  environment: ScopeRef,
-  deleted: Schema.Boolean.annotate({
-    description:
-      "The Environment is deleted (false: the owner declined, or it was gone already when they approved)",
-  }),
-  footprint: Schema.NullOr(FootprintOutput).annotate({
-    description: "What the delete took, as the owner approved it; null when nothing was deleted",
-  }),
-  approval: ApprovalOutcome,
-});
-
-/** `environment_secret_delete`: whether the kept Secret was deleted. */
-export const EnvironmentSecretDeleteOutput = Schema.Struct({
-  scope: ScopeRef.annotate({
-    description: 'The Environment the Secret is kept for, or Global (id "*")',
-  }),
-  name: Schema.String.annotate({ description: "The Secret's name" }),
-  deleted: Schema.Boolean.annotate({
-    description:
-      "The Secret is deleted (false: the owner declined, or it was gone already when they approved)",
-  }),
-  approval: ApprovalOutcome,
-});

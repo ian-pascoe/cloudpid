@@ -1614,18 +1614,36 @@ describe("the environment tools from a program", () => {
     });
   });
 
-  it("cuts what can grow: Environments, long scripts, lists of paths and variables", async () => {
-    const huge = fakeEnvironments("default", {
+  it("cuts what can grow: Environments, scripts, paths, variables, Secrets, Skills, Repos and overriding Environments", async () => {
+    // Variables: Global's holds the Environment's own names, which it hides, and large ones it inherits.
+    const names = Arr.makeBy(3_000, (index) => `V${index}`);
+
+    const ownVariables = Record.fromEntries(Arr.map(names, (name) => [name, "v"] as const));
+
+    const bigGlobal: ContainerSettings = {
       ...DEFAULT_CONTAINER_SETTINGS,
       setupScript: "echo setup\n".repeat(20_000),
+      startScript: "echo start\n".repeat(20_000),
+      toolchains: `# ${"t".repeat(40_000)}`,
       ignore: Arr.makeBy(3_000, (index) => `/${"d".repeat(100)}${index}`),
-      variables: Record.fromEntries(
-        Arr.makeBy(200, (index) => [`VAR_${index}`, "v".repeat(4_000)] as const),
-      ),
-    });
+      variables: {
+        ...ownVariables,
+        ...Record.fromEntries(
+          Arr.makeBy(200, (index) => [`VAR_${index}`, "v".repeat(4_000)] as const),
+        ),
+      },
+    };
+
+    const base = fakeEnvironments("default", bigGlobal).service;
+
+    const skills = Arr.makeBy(2_000, (index) => ({
+      name: `skill-${index}`,
+      description: "d".repeat(100),
+      savedAt: 1,
+    }));
 
     const crowded: EnvironmentsService = {
-      ...huge.service,
+      ...base,
       list: Effect.succeed(
         Arr.makeBy(4_000, (index) => ({
           id: `env-${index}`,
@@ -1634,10 +1652,45 @@ describe("the environment tools from a program", () => {
           build: { status: "none" as const },
         })),
       ),
+      get: (id) =>
+        Effect.map(base.get(id), (found) =>
+          found === null
+            ? null
+            : {
+                ...found,
+                repos: Arr.makeBy(1_000, (index) => ({
+                  name: `repo-${index}`,
+                  url: `https://github.com/o/${"r".repeat(60)}.git`,
+                })),
+                secrets: Arr.makeBy(2_000, (index) => ({
+                  name: `SECRET_${index}`,
+                  scope: "environment" as const,
+                  build: false,
+                })),
+                skills,
+                globalSkills: skills,
+                overrides: { ...found.overrides, variables: ownVariables },
+                problem: "p".repeat(20_000),
+              },
+        ),
+      global: Effect.map(base.global, (kept) => ({
+        ...kept,
+        overriddenIn: {
+          ...kept.overriddenIn,
+          instance: Arr.makeBy(1_000, (index) => ({ id: `env-${index}`, name: "n".repeat(40) })),
+        },
+        skills,
+        secrets: Arr.makeBy(2_000, (index) => ({
+          name: `SECRET_${index}`,
+          scope: "every" as const,
+          build: false,
+        })),
+      })),
     };
 
     // Called as a program does: a value this big does not fit a tool result's text, so what comes back is how large it
-    // is and which of its lists were cut. Each must be a value (no error) under what a nested call holds.
+    // is, which of its lists were cut and how long each is. Each must be a value (no error) under what a nested call
+    // holds. The only diagnostics are of the text, which the Harness cuts for the model.
     const sized = await runSized(
       [await extensionOver(crowded)],
       [
@@ -1648,25 +1701,54 @@ describe("the environment tools from a program", () => {
     );
 
     expect(Arr.map(sized, (each) => each.isError)).toEqual([false, false, false]);
-    // The only diagnostics are of the text, which the Harness cuts for the model.
 
     for (const each of sized) expect(each.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
 
-    expect(sized[0]?.truncated).toMatchObject({ environments_truncated: true });
-    expect(sized[1]?.truncated).toMatchObject({ variables_truncated: true });
-    expect(sized[2]?.truncated).toMatchObject({ variables_truncated: true });
+    const [list, global, own] = sized;
 
-    // The cuts inside the settings, which a script gets as `value_truncated`.
+    // `environment_get`'s worst case is stated in `environment-outputs.ts`: far under the cap.
+    expect(global?.bytes).toBeLessThan(1024 * 1024);
+    expect(own?.bytes).toBeLessThan(1024 * 1024);
+
+    expect(list?.truncated).toMatchObject({ environments_truncated: true });
+    expect(list?.lengths.environments).toBeLessThan(4_000);
+
+    expect(global?.truncated).toMatchObject({
+      variables_truncated: true,
+      secrets_truncated: true,
+      skills_truncated: true,
+    });
+    expect(global?.lengths.variables).toBeLessThan(3_200);
+    expect(global?.lengths.secrets).toBeLessThan(2_000);
+    expect(global?.lengths.skills).toBeLessThan(2_000);
+
+    expect(own?.truncated).toMatchObject({
+      repos_truncated: true,
+      variables_truncated: true,
+      secrets_truncated: true,
+      skills_truncated: true,
+      problem_truncated: true,
+    });
+    expect(own?.lengths.repos).toBeLessThan(1_000);
+    expect(own?.lengths.secrets).toBeLessThan(2_000);
+    // The names Global's variables and Skills have that the Environment's own hide are cut too.
+    expect(own?.lengths.overridden_global_variables).toBeLessThan(3_000);
+    expect(own?.lengths.overridden_global_skills).toBeLessThan(2_000);
+
+    // The cuts inside the settings, which a script gets as `value_truncated` and `overridden_in_truncated`.
     const tool = await toolsOver(crowded);
 
     for (const id of ["*", "default"]) {
       const result = await run(tool("environment_get"), { id });
+      const output = Schema.decodeUnknownSync(EnvironmentGetOutput)(result.structuredOutput);
 
-      expect(Schema.decodeUnknownSync(EnvironmentGetOutput)(result.structuredOutput)).toMatchObject(
-        {
-          settings: { setup_script: { value_truncated: true }, ignore: { value_truncated: true } },
-        },
-      );
+      expect(output.settings).toMatchObject({
+        setup_script: { value_truncated: true },
+        start_script: { value_truncated: true },
+        toolchains: { value_truncated: true },
+        ignore: { value_truncated: true },
+      });
+      expect(output.settings.instance.overridden_in_truncated).toBe(id === "*");
     }
   });
 });

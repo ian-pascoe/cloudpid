@@ -2,7 +2,8 @@
 // owner's Owner tabs (`docs/architecture/browser.md`). This is the Session's side of `agents/browser`'s `browserTool`: its
 // description and its results come from the host, shaped here for the transcript, the socket, and the UI. And
 // `browser_owner_tabs`, which tells the agent which Owner tabs are open without running anything. Those two tools declare
-// an output schema (`./outputs.ts`); `browser` does not, since its result is what the caller's own code returned.
+// an output schema (`./outputs.ts`; `docs/architecture/agent-capabilities.md` → Values for programs); `browser` does not,
+// since its result is what the caller's own code returned.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";

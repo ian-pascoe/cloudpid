@@ -11,9 +11,11 @@
 // the change as the other tools do (applied, recorded with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
 // changes nothing, and the result carries the owner's reason. The tools are the root conversation's only
 // (`PARENT_ONLY_TOOL_PREFIXES` has `environment_` and `settings_`), run alone, and are replayed after an eviction: the
-// rerun waits for the same request, or takes the answer given meanwhile. Each gives programs the outcome as a
-// `structuredOutput` (`./settings-outputs.ts`): the Scope or Environment, the Agent changes made, and the owner's
-// Approval, approved or declined with their reason (null where no one was asked, as when the target has the value).
+// rerun waits for the same request, or takes the answer given meanwhile. Each gives programs the outcome
+// (`docs/architecture/agent-capabilities.md` → Values for programs) as a `structuredOutput`: the Scope or Environment,
+// the Agent changes made, and the owner's Approval, approved or declined with their reason (null where no one was
+// asked, as when the target has the value). The shapes are in `./settings-outputs.ts` (the Settings),
+// `./environment-outputs.ts` (the Environments) and `./outputs.ts` (the parts they share).
 import {
   compareInstances,
   DEFAULT_SETTINGS,
@@ -45,12 +47,11 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
-  type ApprovalAnswer,
   type ApprovalCall,
   Approvals,
   approvedAlready,
   askedBefore,
-  declined,
+  declinedWith,
   withApproval,
 } from "./approvals.ts";
 import {
@@ -64,7 +65,6 @@ import {
   Environments,
   EnvironmentsError,
   environmentTarget,
-  type GlobalChanged,
   Id,
   idOrGlobal,
   MAX_CHANGE_REASON,
@@ -73,11 +73,19 @@ import {
 } from "./environment.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import {
+  changeOutput,
+  declinedOutput,
+  EnvironmentDeleteOutput,
+  EnvironmentSecretDeleteOutput,
+  unchangedOutput,
+} from "./environment-outputs.ts";
+import {
+  APPROVED,
   asOutput,
-  changesOutput,
   ChangeOutput,
   EnvironmentChangeOutput,
   outputSchema,
+  scopeRef,
 } from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -102,14 +110,7 @@ import {
   SettingsScope,
   type SettingsView,
 } from "./settings.ts";
-import {
-  APPROVED,
-  type ApprovalValue,
-  declinedOutcome,
-  EnvironmentDeleteOutput,
-  EnvironmentSecretDeleteOutput,
-  settingsChangeOutput,
-} from "./settings-outputs.ts";
+import { settingsChangeOutput } from "./settings-outputs.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
 import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 
@@ -189,50 +190,6 @@ export class EnvironmentRemoval extends Context.Service<
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
 // SAFETY: the two types describe the same values; the details are never mutated.
 const asJsonValue = (value: Schema.Json | null): JsonValue | null => value as JsonValue | null;
-
-/** The result of a declined request: its text and details, and the structured outcome `build` makes of the owner's answer. */
-const declinedWith = (
-  answer: Extract<ApprovalAnswer, { readonly approved: false }>,
-  what: string,
-  build: (approval: ApprovalValue) => JsonValue,
-) => ({ ...declined(answer, what), structuredOutput: build(declinedOutcome(answer.reason)) });
-
-/**
- * What `environment_container_size_limit_set` gives programs: the Environment (or Global) and the change made to its
- * size limit, how it reached this Session's Workspace and the Builds, and the owner's Approval.
- */
-const sizeLimitOutput = ({
-  environment,
-  change,
-  unchanged,
-  approval,
-  own = false,
-  newBuild = false,
-  global = null,
-}: {
-  readonly environment: ChangedEnvironment;
-  readonly change?: AgentChange | undefined;
-  readonly unchanged: ReadonlyArray<string>;
-  readonly approval: ApprovalValue;
-  readonly own?: boolean;
-  readonly newBuild?: boolean;
-  readonly global?: GlobalChanged | null;
-}) =>
-  asOutput(EnvironmentChangeOutput, {
-    scope: { id: environment.id, name: environment.name },
-    ...changesOutput(change === undefined ? [] : [change]),
-    unchanged,
-    approval,
-    own,
-    new_build: newBuild,
-    global:
-      global === null
-        ? null
-        : {
-            overridden_in: Arr.map(global.overriddenIn, ({ id, name }) => ({ id, name })),
-            new_builds: Arr.map(global.newBuilds, ({ id, name }) => ({ id, name })),
-          },
-  });
 
 /** US dollars as the owner reads them. */
 const dollars = (amount: number): string =>
@@ -1112,11 +1069,10 @@ export const ApprovalTools: Effect.Effect<
                 text: `The size limit of ${where} is ${size} already: nothing was asked, changed or recorded.`,
               },
             ],
-            structuredOutput: sizeLimitOutput({
-              environment: details,
-              unchanged: ["maxInstance"],
-              approval: null,
-            }),
+            structuredOutput: asOutput(
+              EnvironmentChangeOutput,
+              unchangedOutput(details, "maxInstance"),
+            ),
             details: {
               unchanged: {
                 environment: { id: details.id, name: details.name },
@@ -1155,7 +1111,8 @@ export const ApprovalTools: Effect.Effect<
                 return declinedWith(
                   answer,
                   `the size limit of ${where} from ${maxInstance} to ${size}`,
-                  (approval) => sizeLimitOutput({ environment: details, unchanged: [], approval }),
+                  (approval) =>
+                    asOutput(EnvironmentChangeOutput, declinedOutput(details, approval)),
                 );
               }
 
@@ -1193,11 +1150,10 @@ export const ApprovalTools: Effect.Effect<
                         text: approvedAlready(`the size limit of ${where} is ${size}`),
                       },
                     ],
-                    structuredOutput: sizeLimitOutput({
-                      environment: details,
-                      unchanged: ["maxInstance"],
-                      approval: APPROVED,
-                    }),
+                    structuredOutput: asOutput(
+                      EnvironmentChangeOutput,
+                      unchangedOutput(details, "maxInstance", APPROVED),
+                    ),
                     details: { approval: { approved: true } },
                   };
                 case "changed":
@@ -1214,15 +1170,10 @@ export const ApprovalTools: Effect.Effect<
                         text: `The user approved: the size limit of ${named(applied.environment)} was ${maxInstance}, and is ${size} now. environment_container_resize and container_resize may now use sizes up to ${size}. ${applied.global === undefined ? describeApplied(own, applied.newBuild) : describeAppliedGlobal("maxInstance", applied.global)} The change is recorded as approved, with your reason; the user can revert it on the Environments page.`,
                       },
                     ],
-                    structuredOutput: sizeLimitOutput({
-                      environment: applied.environment,
-                      change: applied.change,
-                      unchanged: [],
-                      approval: APPROVED,
-                      own: applied.global === undefined ? own : applied.global.own,
-                      newBuild: applied.newBuild,
-                      global: applied.global ?? null,
-                    }),
+                    structuredOutput: asOutput(
+                      EnvironmentChangeOutput,
+                      changeOutput(applied, own, APPROVED),
+                    ),
                     details: {
                       approval: { approved: true },
                       agentChange: {
@@ -1312,7 +1263,7 @@ export const ApprovalTools: Effect.Effect<
               if (!answer.approved) {
                 return declinedWith(answer, `deleting ${where}`, (approval) =>
                   asOutput(EnvironmentDeleteOutput, {
-                    environment: { id: environment.id, name: environment.name },
+                    environment: scopeRef(environment),
                     deleted: false,
                     footprint: null,
                     approval,
@@ -1326,7 +1277,7 @@ export const ApprovalTools: Effect.Effect<
                 return {
                   output: [{ type: "text" as const, text: approvedAlready(`${where} is gone`) }],
                   structuredOutput: asOutput(EnvironmentDeleteOutput, {
-                    environment: { id: environment.id, name: environment.name },
+                    environment: scopeRef(environment),
                     deleted: true,
                     footprint: null,
                     approval: APPROVED,
@@ -1365,7 +1316,7 @@ export const ApprovalTools: Effect.Effect<
                   },
                 ],
                 structuredOutput: asOutput(EnvironmentDeleteOutput, {
-                  environment: { id: now.details.id, name: now.details.name },
+                  environment: scopeRef(now.details),
                   deleted: true,
                   footprint: approved.value,
                   approval: APPROVED,
@@ -1453,7 +1404,7 @@ export const ApprovalTools: Effect.Effect<
               if (!answer.approved) {
                 return declinedWith(answer, `deleting ${before}`, (approval) =>
                   asOutput(EnvironmentSecretDeleteOutput, {
-                    scope: { id: scope.id, name: scope.name },
+                    scope: scopeRef(scope),
                     name,
                     deleted: false,
                     approval,
@@ -1489,7 +1440,7 @@ export const ApprovalTools: Effect.Effect<
                       },
                     ],
                     structuredOutput: asOutput(EnvironmentSecretDeleteOutput, {
-                      scope: { id: deleted.environment.id, name: deleted.environment.name },
+                      scope: scopeRef(deleted.environment),
                       name,
                       deleted: true,
                       approval: APPROVED,
@@ -1515,7 +1466,7 @@ export const ApprovalTools: Effect.Effect<
                       },
                     ],
                     structuredOutput: asOutput(EnvironmentSecretDeleteOutput, {
-                      scope: { id: deleted.environment.id, name: deleted.environment.name },
+                      scope: scopeRef(deleted.environment),
                       name,
                       deleted: true,
                       approval: APPROVED,

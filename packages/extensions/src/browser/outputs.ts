@@ -2,7 +2,7 @@
 // programs): each tool's `structuredOutput`, declared as its `structuredOutputSchema`. It holds what the tool's text
 // tells the model, as data: an Owner tab by ID, title and origin (never its URL, which may carry a token), and how a
 // handoff ended with the origins of the windows the tab left open (never a URL or a Live View link). A list or text that
-// can grow is cut to `MAX_LIST_BYTES` stored, with a `<field>_truncated` flag.
+// can grow is cut to `MAX_PART_BYTES` stored, with a `<field>_truncated` flag.
 // `browser` has none: its result is what the caller's own code returned.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Schema from "effect/Schema";
@@ -17,7 +17,7 @@ export const OwnerTabOutput = Schema.Struct({
     description: 'The page\'s origin, never its URL; "" when it has no address',
   }),
   shown: Schema.Boolean.annotate({ description: "The Browser Pane shows this tab" }),
-});
+}).annotate({ description: "One of the user's Owner tabs" });
 
 /** `browser_owner_tabs`: the Owner tabs open. */
 export const OwnerTabsOutput = Schema.Struct({
@@ -29,7 +29,9 @@ export const OwnerTabsOutput = Schema.Struct({
   }),
 });
 
-const Origins = Schema.Array(Schema.String);
+const Origins = Schema.Array(
+  Schema.String.annotate({ description: "A window's origin, never its URL" }),
+);
 
 /** `browser_handoff`: how the handoff ended. */
 export const HandoffOutput = Schema.Struct({

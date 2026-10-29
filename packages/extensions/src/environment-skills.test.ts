@@ -2904,4 +2904,89 @@ describe("the Skill tools from a program", () => {
       changes_truncated: false,
     });
   });
+
+  it("cuts the Skills refused, the Environments that hide an install, and the Skills an update moved or refused, saying so, without failing", async () => {
+    const { extension, answerInstall, answerUpdate } = await setUp();
+    const many = Arr.makeBy(2_000, (at) => `skill-${at}`);
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      results: [
+        {
+          name: "grill-me",
+          path: "skills/grill-me",
+          outcome: "installed" as const,
+          change: installChange(7, "grill-me"),
+          overriddenIn: Arr.makeBy(3_000, (index) => ({
+            id: `env-${index}`,
+            name: `Environment ${"e".repeat(100)}${index}`,
+          })),
+        },
+        ...Arr.map(many, (name) => ({
+          name,
+          path: `skills/${name}`,
+          outcome: "rejected" as const,
+          message: "m".repeat(300),
+        })),
+      ],
+      handed: true,
+    });
+
+    const [installed] = await runSized(
+      [extension],
+      [
+        [
+          "environment_skill_install",
+          { id: "default", source: "mattpocock/skills", skills: ["*"], reason },
+        ],
+      ],
+    );
+
+    expect(installed?.isError).toBe(false);
+    expect(installed?.truncated["refused_truncated"]).toBe(true);
+    expect(installed?.lengths["refused"]).toBeGreaterThan(0);
+    expect(installed?.lengths["refused"]).toBeLessThan(2_000);
+    expect(installed?.truncated["overridden_in_truncated"]).toBe(true);
+    expect(installed?.lengths["overridden_in"]).toBeGreaterThan(0);
+    expect(installed?.lengths["overridden_in"]).toBeLessThan(3_000);
+    expect(installed?.bytes).toBeLessThan(1.5 * 1024 * 1024);
+
+    const long = { ...FROM, path: `skills/${"p".repeat(300)}` };
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: [
+        ...Arr.map(many, (name) => ({
+          name,
+          outcome: "updated" as const,
+          from: long,
+          to: { ...long, commit: TO.commit },
+          overwrote: false,
+        })),
+        ...Arr.map(many, (name) => ({
+          name: `edited-${name}`,
+          outcome: "modified" as const,
+          message: "m".repeat(300),
+        })),
+      ],
+      handed: true,
+    });
+
+    const [updated] = await runSized(
+      [extension],
+      [["environment_skill_update", { id: "default", reason }]],
+    );
+
+    expect(updated?.isError).toBe(false);
+    expect(updated?.truncated["updated_truncated"]).toBe(true);
+    expect(updated?.lengths["updated"]).toBeLessThan(2_000);
+    expect(updated?.truncated["refused_truncated"]).toBe(true);
+    expect(updated?.lengths["refused"]).toBeLessThan(2_000);
+    expect(updated?.bytes).toBeLessThan(1.5 * 1024 * 1024);
+  });
 });

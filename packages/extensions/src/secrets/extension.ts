@@ -3,7 +3,8 @@
 // ../../NOTICE.md): `secret_ask`, `secret_list`, and `secret_forget`; a `beforeTool` hook that blocks calls referencing
 // a Secret the Session does not hold; an `afterTool` hook that redacts every result, its text, details, diagnostics and
 // `structuredOutput` (the value of a nested call) alike; and wraps that resolve references
-// in the tools that use Secrets. Provider requests are scrubbed at the Session's model seam (`./models.ts`), which the
+// in the tools that use Secrets. The three tools declare output schemas (`./outputs.ts`; `docs/architecture/agent-capabilities.md`
+// → Values for programs): how to reference each Secret, never a value. Provider requests are scrubbed at the Session's model seam (`./models.ts`), which the
 // host installs, so every model call is covered, not only generations.
 //
 // Values never enter durable state. pi-durable records the arguments a `beforeTool` hook returns (in the call's intent

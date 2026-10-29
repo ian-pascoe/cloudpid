@@ -1,16 +1,13 @@
 // What the coordinator tools return to programs (`docs/architecture/agent-capabilities.md` → Subagents): each tool's
-// `structuredOutput`, which a `codemode` script gets from its call, declared as the tool's `structuredOutputSchema`.
+// `structuredOutput`, which a `codemode` script gets from its call, declared as the tool's `structuredOutputSchema`
+// (`docs/architecture/agent-capabilities.md` → Values for programs).
 // pi-durable checks a nested call's structured output against it, and turns one from a tool that declares none into an
 // error. A child's answer is cut to `MAX_CHILD_OUTPUT_BYTES` stored, since a nested call's result is one SQLite row.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Schema from "effect/Schema";
-import { boundText } from "../outputs.ts";
 
 /** The most a child's answer weighs stored in a structured output, so it fits one nested call's result. */
 export const MAX_CHILD_OUTPUT_BYTES = 1024 * 1024;
-
-/** `text` cut to `MAX_CHILD_OUTPUT_BYTES` stored, and whether it was. */
-export const boundChildOutput = (text: string) => boundText(text, MAX_CHILD_OUTPUT_BYTES);
 
 const AgentId = Schema.String.annotate({ description: "Canonical agent ID" });
 

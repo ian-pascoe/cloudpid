@@ -5,7 +5,7 @@
 // agent edited since it was installed (**modified**) is refused unless `overwrite` is set, and the result names it.
 // With `id: "*"` the update waits for the owner's Approval (`./environment-skills-global.ts`), which shows the files each
 // Skill would take and is made at exactly the commits they were shown. Each result also gives a program its value
-// (`./environment-lifecycle-outputs.ts`).
+// (`docs/architecture/agent-capabilities.md` → Values for programs; `./environment-lifecycle-outputs.ts`).
 //
 // `environment.ts` imports this module through `./environment-skills.ts`, so what it takes from `environment.ts` is used
 // inside functions only: its exports are not there yet when this module loads.
@@ -29,18 +29,13 @@ import {
   type ApprovalCall,
   approvedAlready,
   askedBefore,
-  declined,
+  declinedWith,
   withApproval,
 } from "./approvals.ts";
 import { type ChangedEnvironment, EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
-import {
-  approvalOutput,
-  SkillUpdateOutput,
-  skillUpdatedOutput,
-} from "./environment-lifecycle-outputs.ts";
+import { SkillUpdateOutput, skillUpdatedOutput } from "./environment-lifecycle-outputs.ts";
 import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
-  approvalOf,
   asJsonValue,
   named,
   PROMPT_NOTE,
@@ -49,7 +44,7 @@ import {
   type SkillsUpdated,
 } from "./environment-skill-results.ts";
 import { cardOf, MAX_CARD_CHARS, SKILL_APPROVAL } from "./environment-skills-global.ts";
-import { outputSchema } from "./outputs.ts";
+import { APPROVED, outputSchema } from "./outputs.ts";
 import { SKILL_SIZES } from "./skill-checks.ts";
 
 const TOOL = "environment_skill_update";
@@ -134,7 +129,7 @@ const updatedOutcome = (
           structuredOutput: skillUpdatedOutput({
             scope: updated.environment,
             results: [],
-            approval: approvalOf(approved),
+            approval: approved ? APPROVED : null,
             handed: false,
             nothingMarked: true,
           }),
@@ -253,7 +248,7 @@ const updatedOutcome = (
           structuredOutput: skillUpdatedOutput({
             scope: environment,
             results,
-            approval: approvalOf(approved),
+            approval: approved ? APPROVED : null,
             handed: updated.handed,
           }),
           details: approved ? { approval: { approved: true }, ...details } : details,
@@ -297,15 +292,9 @@ const updateAtGlobal = (
     const answered = (answer: ApprovalAnswer) =>
       Effect.gen(function* () {
         if (!answer.approved) {
-          return {
-            ...declined(answer, "updating the Skills kept Global"),
-            structuredOutput: skillUpdatedOutput({
-              scope: GLOBAL_TARGET,
-              results: [],
-              approval: approvalOutput(answer),
-              handed: false,
-            }),
-          };
+          return declinedWith(answer, "updating the Skills kept Global", (approval) =>
+            skillUpdatedOutput({ scope: GLOBAL_TARGET, results: [], approval, handed: false }),
+          );
         }
 
         const asked = Schema.decodeUnknownOption(UpdateAsked)(answer.expected);
@@ -362,7 +351,7 @@ const updateAtGlobal = (
             structuredOutput: skillUpdatedOutput({
               scope: GLOBAL_TARGET,
               results,
-              approval: approvalOf(true),
+              approval: APPROVED,
               handed: false,
             }),
             details: { approval: { approved: true } },

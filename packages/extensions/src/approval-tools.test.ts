@@ -39,6 +39,7 @@ import {
   Environments,
   type RunChange,
 } from "./environment.ts";
+import { EnvironmentDeleteOutput, EnvironmentSecretDeleteOutput } from "./environment-outputs.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
@@ -61,7 +62,6 @@ import {
   changeSettingsOverrides,
   resolvedGlobal,
 } from "./settings.fixture.ts";
-import { EnvironmentDeleteOutput, EnvironmentSecretDeleteOutput } from "./settings-outputs.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 

@@ -12,11 +12,13 @@
 //
 // `withApproval` is the way a tool waits: one request per call (its task's id), settled when the call ends however it
 // ends. It is shared by the tools that change a Limit or delete, by those that change the Skills kept Global, and meant for the Guardian (#38) too.
+import type { JsonValue } from "@earendil-works/chord";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { type ApprovalOutcome, approvalOutput } from "./outputs.ts";
 
 /** The Durable Object's synchronous key-value storage, as the requests use it. */
 export type ApprovalStorage = {
@@ -316,6 +318,16 @@ export const declined = (answer: Extract<ApprovalAnswer, { approved: false }>, w
   // The reason is null when the owner gave none.
   details: { approval: { approved: false, reason: answer.reason ?? null } },
 });
+
+/**
+ * The result of a declined request with the value it gives programs: `value` makes it of the owner's answer as a value
+ * gives it (`approvalOutput`), for a tool that declares `structuredOutputSchema`.
+ */
+export const declinedWith = (
+  answer: Extract<ApprovalAnswer, { approved: false }>,
+  what: string,
+  value: (approval: typeof ApprovalOutcome.Type) => JsonValue,
+) => ({ ...declined(answer, what), structuredOutput: value(approvalOutput(answer)) });
 
 /**
  * What a change the owner approved says when the target has the value already: this call made it before the Session

@@ -4,9 +4,10 @@
 // (`changeEnvironment` with no value) and recorded as an Agent change whose value after is inherited. A reset of the
 // size limit may raise or lower the largest size the Environment allows, so it is a Limit: it waits for the owner's
 // Approval (`./approvals.ts`), as `environment_container_size_limit_set` does. Global's own settings are not reset here:
-// Global inherits nothing, and its value is changed with the setting's own tool at `*`. Its `structuredOutput` is the
-// outcome of the change (`EnvironmentChangeOutput`), with the owner's answer for a reset of the size limit, approved
-// or declined with their reason.
+// Global inherits nothing, and its value is changed with the setting's own tool at `*`. Its `structuredOutput`
+// (`docs/architecture/agent-capabilities.md` → Values for programs; `environment-outputs.ts`) is the outcome of the
+// change (`EnvironmentChangeOutput`), with the owner's answer for a reset of the size limit, approved or declined with
+// their reason.
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
 import {
   compareInstances,
@@ -23,7 +24,7 @@ import {
   type ApprovalsService,
   approvedAlready,
   askedBefore,
-  declined,
+  declinedWith,
   withApproval,
 } from "./approvals.ts";
 import {
@@ -42,7 +43,7 @@ import {
 import type { LifecycleDeps } from "./environment-lifecycle.ts";
 import { changeOutput, declinedOutput, unchangedOutput } from "./environment-outputs.ts";
 import { asJsonValue, named } from "./environment-skill-results.ts";
-import { asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
+import { APPROVED, asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
 
 /** A Container setting an Environment may override and reset, but its variables (`environment_variable_unset`). */
 export type ResettableSetting = Exclude<keyof ContainerSettings, "variables">;
@@ -137,7 +138,7 @@ export const resetTool = ({
           output: [{ type: "text" as const, text }],
           structuredOutput: asOutput(
             EnvironmentChangeOutput,
-            changeOutput(applied, own, approved ? { approved: true, reason: null } : null),
+            changeOutput(applied, own, approved ? APPROVED : null),
           ),
           details: approved
             ? {
@@ -220,7 +221,7 @@ export const resetTool = ({
                 ],
                 structuredOutput: asOutput(
                   EnvironmentChangeOutput,
-                  unchangedOutput(applied.environment, setting, { approved: true, reason: null }),
+                  unchangedOutput(applied.environment, setting, APPROVED),
                 ),
                 details: { approval: { approved: true } },
               }
@@ -282,16 +283,14 @@ export const resetTool = ({
                 api,
                 expected: { value: answer.expected },
               })
-            : Effect.succeed({
-                ...declined(
+            : Effect.succeed(
+                declinedWith(
                   answer,
                   `the reset of the size limit of ${where} from ${maxInstance} to Global's ${inherited}`,
+                  (approval) =>
+                    asOutput(EnvironmentChangeOutput, declinedOutput(details, approval)),
                 ),
-                structuredOutput: asOutput(
-                  EnvironmentChangeOutput,
-                  declinedOutput(details, answer.reason ?? null),
-                ),
-              }),
+              ),
       );
     });
 

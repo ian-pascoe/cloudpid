@@ -22,6 +22,7 @@ import {
   Harness,
   type JsonObject,
   MemoryStorage,
+  type NestedToolExecutionResult,
   type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -58,29 +59,50 @@ export const summarized = (value: JsonValue | undefined): JsonValue | undefined 
   );
 };
 
+/**
+ * A stand-in tool `name` that calls `tool` with `args` as a script does, and answers with the JSON text `answer` makes
+ * of the nested call's result.
+ */
+const standIn = <
+  S extends Schema.Top & { readonly DecodingServices: never; readonly EncodingServices: never },
+>(
+  name: string,
+  description: string,
+  answer: S,
+  of: (result: NestedToolExecutionResult) => S["Type"],
+) =>
+  defineEffectTool({
+    name,
+    description,
+    parameters: Schema.Struct({
+      tool: Schema.String,
+      args: Schema.Record(Schema.String, Schema.Json),
+    }),
+    execute: Effect.fnUntraced(function* ({ tool, args }, api: ToolExecutionApi) {
+      const chord = yield* ChordContext;
+
+      // SAFETY: the decoded arguments are JSON.
+      const result = yield* Effect.promise(() => api.executeTool(tool, args as JsonObject, chord));
+
+      const text = yield* Schema.encodeEffect(Schema.fromJsonString(answer))(of(result)).pipe(
+        Effect.orDie,
+      );
+
+      return { output: [{ type: "text", text }] };
+    }),
+  });
+
 /** The `program` tool: calls `tool` with `args` as a script does, and answers with what the script got. */
-export const Program = defineEffectTool({
-  name: "program",
-  description: "Call a tool the way a program does",
-  parameters: Schema.Struct({
-    tool: Schema.String,
-    args: Schema.Record(Schema.String, Schema.Json),
+export const Program = standIn(
+  "program",
+  "Call a tool the way a program does",
+  ProgramCall,
+  (result) => ({
+    isError: result.isError === true,
+    structuredOutput: summarized(result.structuredOutput),
+    diagnostics: result.diagnostics.map(({ message }) => ({ message })),
   }),
-  execute: Effect.fnUntraced(function* ({ tool, args }, api: ToolExecutionApi) {
-    const chord = yield* ChordContext;
-
-    // SAFETY: the decoded arguments are JSON.
-    const result = yield* Effect.promise(() => api.executeTool(tool, args as JsonObject, chord));
-
-    const got = yield* Schema.encodeEffect(Schema.fromJsonString(ProgramCall))({
-      isError: result.isError === true,
-      structuredOutput: summarized(result.structuredOutput),
-      diagnostics: result.diagnostics.map(({ message }) => ({ message })),
-    }).pipe(Effect.orDie);
-
-    return { output: [{ type: "text", text: got }] };
-  }),
-});
+);
 
 /** An extension that brings only `program`. */
 export const programExtension = defineExtension({
@@ -104,22 +126,15 @@ export const SizedCall = Schema.Struct({
 const decodeSizedCall = Schema.decodeUnknownSync(Schema.fromJsonString(SizedCall));
 
 /** `program_sized`: calls `tool` as `program` does, and answers with how large its value is, not the value. */
-const Sized = defineEffectTool({
-  name: "program_sized",
-  description: "Call a tool the way a program does, and say how large its value is",
-  parameters: Schema.Struct({
-    tool: Schema.String,
-    args: Schema.Record(Schema.String, Schema.Json),
-  }),
-  execute: Effect.fnUntraced(function* ({ tool, args }, api: ToolExecutionApi) {
-    const chord = yield* ChordContext;
-
-    // SAFETY: the decoded arguments are JSON.
-    const result = yield* Effect.promise(() => api.executeTool(tool, args as JsonObject, chord));
+const Sized = standIn(
+  "program_sized",
+  "Call a tool the way a program does, and say how large its value is",
+  SizedCall,
+  (result) => {
     const value = result.structuredOutput;
     const entries = Predicate.isObject(value) && !Array.isArray(value) ? Object.entries(value) : [];
 
-    const got = yield* Schema.encodeEffect(Schema.fromJsonString(SizedCall))({
+    return {
       isError: result.isError === true,
       diagnostics: result.diagnostics.map(({ message }) => ({ message })),
       bytes: storedBytes(value),
@@ -131,11 +146,9 @@ const Sized = defineEffectTool({
       lengths: Object.fromEntries(
         entries.flatMap(([key, item]) => (Array.isArray(item) ? [[key, item.length]] : [])),
       ),
-    }).pipe(Effect.orDie);
-
-    return { output: [{ type: "text", text: got }] };
-  }),
-});
+    };
+  },
+);
 
 const sizedExtension = defineExtension({ name: "program-sized", tools: [Effect.runSync(Sized)] });
 

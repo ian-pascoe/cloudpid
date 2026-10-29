@@ -10,9 +10,9 @@
 // (ADR-0018, which replaced ADR-0008's "never starts the Container" for these paths).
 //
 // Each tool gives programs the entries its text shows, as a value (docs/architecture/agent-capabilities.md → Values for
-// programs): the same entries under the same limits, with the flags `details` sets as snake_case fields. A list the text
-// does not cut but the value's own bound does (`MAX_LIST_BYTES`: a short name weighs more as an entry than as a line)
-// says so in `structured_truncated`.
+// programs; the schemas are below, with `outputs.ts`'s bounds): the same entries under the same limits, with the flags
+// `details` sets as snake_case fields. A list the text does not cut but the value's own bound does (`MAX_PART_BYTES`: a
+// short name weighs more as an entry than as a line) says so in `structured_truncated`.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
@@ -260,12 +260,63 @@ const relativeTo = (base: string, path: string): string => {
 const anywhere = (glob: string): string =>
   glob.startsWith("**/") || glob === "**" ? glob : `**/${glob}`;
 
-const textResult = (
-  text: string,
-  details: Record<string, JsonValue>,
-  structuredOutput: JsonValue,
-): ToolExecutionResult => {
-  const output = [{ type: "text" as const, text }];
+/** A note on a result: what its text says, and the flag its `details` set for it. */
+type Note = { readonly notice: string; readonly detail: readonly [string, JsonValue] };
+
+/**
+ * The result of a tool that lists items: `lines`, one per item, cut to `MAX_BYTES` as its text, or `emptyText` when
+ * `isEmpty`; `notes` as notices and details, those of `lateNotes` after the byte limit's. Its value is what `output`
+ * makes of the first items whose lines the text shows whole, that fit what a value may weigh.
+ */
+const listResult = <A extends JsonValue>(spec: {
+  readonly isEmpty: boolean;
+  readonly emptyText: string;
+  readonly items: ReadonlyArray<A>;
+  readonly lines: ReadonlyArray<string>;
+  readonly notes: ReadonlyArray<Note>;
+  readonly lateNotes?: ReadonlyArray<Note>;
+  readonly output: (shown: {
+    readonly items: ReadonlyArray<A>;
+    /** The text hit `MAX_BYTES`. */
+    readonly truncated: boolean;
+    /** The value's own bound cut the items. */
+    readonly structuredTruncated: boolean;
+  }) => JsonValue;
+}): ToolExecutionResult => {
+  if (spec.isEmpty) {
+    const structuredOutput = spec.output({
+      items: [],
+      truncated: false,
+      structuredTruncated: false,
+    });
+
+    return { output: [{ type: "text", text: spec.emptyText }], structuredOutput };
+  }
+
+  const truncation = cutHead(spec.lines);
+  const bounded = boundItems(Arr.take(spec.items, truncation.count));
+  const notices: string[] = [];
+  const details: Record<string, JsonValue> = {};
+
+  const note = ({ notice, detail }: Note) => {
+    notices.push(notice);
+    details[detail[0]] = detail[1];
+  };
+
+  Arr.forEach(spec.notes, note);
+
+  if (truncation.truncated)
+    note({ notice: `${sizeOf(MAX_BYTES)} limit reached`, detail: ["truncated", true] });
+
+  Arr.forEach(spec.lateNotes ?? [], note);
+
+  const structuredOutput = spec.output({
+    items: bounded.items,
+    truncated: truncation.truncated,
+    structuredTruncated: bounded.truncated,
+  });
+
+  const output = [{ type: "text" as const, text: withNotices(truncation.content, notices) }];
 
   return Record.isEmptyRecord(details)
     ? { output, structuredOutput }
@@ -279,13 +330,6 @@ const TruncatedField = Schema.Boolean.annotate({
 const StructuredTruncatedField = Schema.Boolean.annotate({
   description: "The list was cut to fit the size a value may have, beyond the text's own limit",
 });
-
-/** The first of `items` the text shows (`shown` of them) that fit a value's size, and whether either cut them. */
-const shownItems = <A extends JsonValue>(items: ReadonlyArray<A>, shown: number) => {
-  const bounded = boundItems(Arr.take(items, shown));
-
-  return { items: bounded.items, structuredTruncated: bounded.truncated };
-};
 
 const LsOutput = Schema.Struct({
   entries: Schema.Array(
@@ -314,7 +358,9 @@ const FindOutput = Schema.Struct({
       path: Schema.String.annotate({
         description: "The path relative to the search directory, without a trailing slash",
       }),
-      type: Schema.Literals(["file", "directory"]),
+      type: Schema.Literals(["file", "directory"]).annotate({
+        description: "A directory, or a file",
+      }),
     }),
   ).annotate({ description: "The paths the text lists, in its order" }),
   result_limit_reached: Schema.NullOr(Schema.Int).annotate({
@@ -412,52 +458,31 @@ const Ls = defineEffectTool({
       });
     }
 
-    if (listed.length === 0) {
-      const empty = {
-        entries: [],
-        entry_limit_reached: null,
-        truncated: false,
-        structured_truncated: false,
-      };
-
-      return textResult("(empty directory)", {}, asOutput(LsOutput, empty));
-    }
-
-    const truncation = cutHead(
-      Arr.map(listed, (entry) => {
+    return listResult({
+      isEmpty: listed.length === 0,
+      emptyText: "(empty directory)",
+      items: listed,
+      lines: Arr.map(listed, (entry) => {
         const name = entry.type === "directory" ? `${entry.name}/` : entry.name;
 
         return entry.container_only ? `${name} (container-only)` : name;
       }),
-    );
-
-    const notices: string[] = [];
-    const details: Record<string, JsonValue> = {};
-
-    if (entryLimitReached) {
-      notices.push(
-        `${effectiveLimit} entries limit reached. Use limit=${effectiveLimit * 2} for more`,
-      );
-      details["entryLimitReached"] = effectiveLimit;
-    }
-
-    if (truncation.truncated) {
-      notices.push(`${sizeOf(MAX_BYTES)} limit reached`);
-      details["truncated"] = true;
-    }
-
-    const shown = shownItems(listed, truncation.count);
-
-    return textResult(
-      withNotices(truncation.content, notices),
-      details,
-      asOutput(LsOutput, {
-        entries: shown.items,
-        entry_limit_reached: entryLimitReached ? effectiveLimit : null,
-        truncated: truncation.truncated,
-        structured_truncated: shown.structuredTruncated,
-      }),
-    );
+      notes: entryLimitReached
+        ? [
+            {
+              notice: `${effectiveLimit} entries limit reached. Use limit=${effectiveLimit * 2} for more`,
+              detail: ["entryLimitReached", effectiveLimit],
+            },
+          ]
+        : [],
+      output: (shown) =>
+        asOutput(LsOutput, {
+          entries: shown.items,
+          entry_limit_reached: entryLimitReached ? effectiveLimit : null,
+          truncated: shown.truncated,
+          structured_truncated: shown.structuredTruncated,
+        }),
+    });
   }),
 });
 
@@ -490,53 +515,36 @@ const Find = defineEffectTool({
       }),
     );
 
-    if (found.length === 0) {
-      const none = {
-        paths: [],
-        result_limit_reached: null,
-        truncated: false,
-        structured_truncated: false,
-      };
-
-      return textResult("No files found matching pattern", {}, asOutput(FindOutput, none));
-    }
-
     const paths = Arr.map(found, (entry) => ({
       path: relativeTo(directory, entry.path),
       type: entry.type === "dir" ? ("directory" as const) : ("file" as const),
     }));
 
-    const truncation = cutHead(
-      Arr.map(paths, (entry) => (entry.type === "directory" ? `${entry.path}/` : entry.path)),
-    );
+    const limitReached = found.length >= effectiveLimit;
 
-    const notices: string[] = [];
-    const details: Record<string, JsonValue> = {};
-
-    if (found.length >= effectiveLimit) {
-      notices.push(
-        `${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-      );
-      details["resultLimitReached"] = effectiveLimit;
-    }
-
-    if (truncation.truncated) {
-      notices.push(`${sizeOf(MAX_BYTES)} limit reached`);
-      details["truncated"] = true;
-    }
-
-    const shown = shownItems(paths, truncation.count);
-
-    return textResult(
-      withNotices(truncation.content, notices),
-      details,
-      asOutput(FindOutput, {
-        paths: shown.items,
-        result_limit_reached: found.length >= effectiveLimit ? effectiveLimit : null,
-        truncated: truncation.truncated,
-        structured_truncated: shown.structuredTruncated,
-      }),
-    );
+    return listResult({
+      isEmpty: found.length === 0,
+      emptyText: "No files found matching pattern",
+      items: paths,
+      lines: Arr.map(paths, (entry) =>
+        entry.type === "directory" ? `${entry.path}/` : entry.path,
+      ),
+      notes: limitReached
+        ? [
+            {
+              notice: `${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+              detail: ["resultLimitReached", effectiveLimit],
+            },
+          ]
+        : [],
+      output: (shown) =>
+        asOutput(FindOutput, {
+          paths: shown.items,
+          result_limit_reached: limitReached ? effectiveLimit : null,
+          truncated: shown.truncated,
+          structured_truncated: shown.structuredTruncated,
+        }),
+    });
   }),
 });
 
@@ -598,18 +606,6 @@ const Grep = defineEffectTool({
       }),
     );
 
-    if (matches.length === 0) {
-      const none = {
-        lines: [],
-        match_limit_reached: null,
-        lines_truncated: false,
-        truncated: false,
-        structured_truncated: false,
-      };
-
-      return textResult("No matches found", {}, asOutput(GrepOutput, none));
-    }
-
     let linesTruncated = false;
 
     const shown = (text: string): string => {
@@ -640,49 +636,42 @@ const Grep = defineEffectTool({
       }));
     });
 
-    const truncation = cutHead(
-      Arr.map(
+    const limitReached = matches.length >= effectiveLimit;
+
+    return listResult({
+      isEmpty: matches.length === 0,
+      emptyText: "No matches found",
+      items: lines,
+      lines: Arr.map(
         lines,
         (line) =>
           `${line.path}${line.match ? ":" : "-"}${line.line}${line.match ? ":" : "-"} ${line.text}`,
       ),
-    );
-
-    const notices: string[] = [];
-    const details: Record<string, JsonValue> = {};
-
-    if (matches.length >= effectiveLimit) {
-      notices.push(
-        `${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-      );
-      details["matchLimitReached"] = effectiveLimit;
-    }
-
-    if (truncation.truncated) {
-      notices.push(`${sizeOf(MAX_BYTES)} limit reached`);
-      details["truncated"] = true;
-    }
-
-    if (linesTruncated) {
-      notices.push(
-        `Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`,
-      );
-      details["linesTruncated"] = true;
-    }
-
-    const kept = shownItems(lines, truncation.count);
-
-    return textResult(
-      withNotices(truncation.content, notices),
-      details,
-      asOutput(GrepOutput, {
-        lines: kept.items,
-        match_limit_reached: matches.length >= effectiveLimit ? effectiveLimit : null,
-        lines_truncated: linesTruncated,
-        truncated: truncation.truncated,
-        structured_truncated: kept.structuredTruncated,
-      }),
-    );
+      notes: limitReached
+        ? [
+            {
+              notice: `${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+              detail: ["matchLimitReached", effectiveLimit],
+            },
+          ]
+        : [],
+      lateNotes: linesTruncated
+        ? [
+            {
+              notice: `Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`,
+              detail: ["linesTruncated", true],
+            },
+          ]
+        : [],
+      output: (kept) =>
+        asOutput(GrepOutput, {
+          lines: kept.items,
+          match_limit_reached: limitReached ? effectiveLimit : null,
+          lines_truncated: linesTruncated,
+          truncated: kept.truncated,
+          structured_truncated: kept.structuredTruncated,
+        }),
+    });
   }),
 });
 
