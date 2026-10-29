@@ -66,6 +66,16 @@ import {
   workspaceOf,
 } from "./state.ts";
 import {
+  boundChildOutput,
+  CancelOutput,
+  DeleteOutput,
+  MessageOutput,
+  outputSchema,
+  SpawnOutput,
+  StatusOutput,
+  WaitOutput,
+} from "./outputs.ts";
+import {
   Anchor,
   AGENT_INPUT_KIND,
   envelope,
@@ -493,6 +503,7 @@ const Spawn = defineEffectTool({
   description:
     "Create a persistent nested agent asynchronously. Returns its canonical agent ID, active turn ID, and resolved model and tools immediately. Root-child IDs omit the root prefix; nested IDs retain the parent path. Children start without your conversation unless session_context opts in, so the task must be self-contained. Its final response is delivered automatically unless you claim it with subagent_wait. To continue an idle child later, send it agent_message; that starts a new turn you can wait on.",
   parameters: SpawnParameters,
+  structuredOutputSchema: outputSchema(SpawnOutput),
   // A spawn must be registered before a wait or message in the same batch can target it.
   executionMode: "sequential",
   replay: "safe",
@@ -768,6 +779,7 @@ const Message = defineEffectTool({
   description:
     "Send one coordination message to a direct parent, direct sibling, or direct child. The result says whether it was delivered through an active wait, queued into the recipient's active turn, or started a new turn on an idle child (with its turn_id).",
   parameters: MessageParameters,
+  structuredOutputSchema: outputSchema(MessageOutput),
   replay: "safe",
   execute: Effect.fnUntraced(function* (
     { agent_id, message }: typeof MessageParameters.Type,
@@ -931,6 +943,7 @@ const Wait = defineEffectTool({
   description:
     "Wait for one direct child's turn: by default its oldest running turn, else its latest, or an exact retained turn_id. Returns event=turn with the result when the turn settles; event=message when the child messages you first; event=timeout after timeout_ms (the child keeps working); or event=steered when a message is queued for you (wait again to resume). A result already delivered to you automatically is not repeated unless you pass its turn_id.",
   parameters: WaitParameters,
+  structuredOutputSchema: outputSchema(WaitOutput),
   // A rerun after a restart finds the wait it started and keeps waiting.
   replay: "safe",
   execute: Effect.fnUntraced(function* (
@@ -1071,9 +1084,16 @@ const Wait = defineEffectTool({
         ),
       ));
 
+    // A program gets the child's answer cut to what one nested call's result holds.
+    const bounded = event.output === null ? null : boundChildOutput(event.output);
+
     return {
       output: text(waitText(event)),
-      structuredOutput: event,
+      structuredOutput: {
+        ...event,
+        output: bounded?.text ?? null,
+        output_truncated: bounded?.truncated ?? false,
+      } satisfies typeof WaitOutput.Type,
       details: { agent_id: target, conversation_id: agent.conversationId },
     };
   }),
@@ -1130,6 +1150,7 @@ const Status = defineEffectTool({
   description:
     "List direct children when agent_id is omitted, or inspect one direct child's launch contract, turns, latest output, and usage. Without verbose, the task and latest output are short previews. The root may inspect any descendant.",
   parameters: StatusParameters,
+  structuredOutputSchema: outputSchema(StatusOutput),
   replay: "safe",
   execute: Effect.fnUntraced(function* (
     { agent_id, verbose }: typeof StatusParameters.Type,
@@ -1180,6 +1201,7 @@ const Status = defineEffectTool({
     const busy = yield* isBusy(api, agent);
     const usage = yield* usageOf(api, agent);
     const output = yield* latestOutput(api, agent);
+    const latest = boundChildOutput(output);
     const full = verbose === true;
     const { contract } = agent;
 
@@ -1203,7 +1225,8 @@ const Status = defineEffectTool({
         status: turn.status,
         delivery: turn.delivery,
       })),
-      latest_output: output,
+      latest_output: latest.text,
+      latest_output_truncated: latest.truncated,
       usage,
       workspace:
         agent.workspace === undefined
@@ -1296,6 +1319,7 @@ const Cancel = defineEffectTool({
   description:
     "Abort active work for one direct child while keeping it for later continuation. Recursive cancellation includes its subtree and defaults to true.",
   parameters: CancelParameters,
+  structuredOutputSchema: outputSchema(CancelOutput),
   execute: Effect.fnUntraced(function* (
     { agent_id, recursive }: typeof CancelParameters.Type,
     api: ToolExecutionApi,
@@ -1442,6 +1466,7 @@ const Delete = defineEffectTool({
   description:
     "Delete one direct child, stopping its work, and tombstone its ID so it is never reused. Recursive deletion includes its subtree and defaults to true. A deleted child's Subagent Workspace is removed with it; while one in the subtree has commits not pushed or uncommitted changes, the delete is refused naming them, unless discard is true.",
   parameters: DeleteParameters,
+  structuredOutputSchema: outputSchema(DeleteOutput),
   // A rerun after an eviction past the delete's commit finishes it: the Subagent Workspaces it took out are removed.
   replay: "safe",
   execute: Effect.fnUntraced(function* (

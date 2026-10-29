@@ -1,7 +1,17 @@
 // The subagent tools through real runs: a scripted model drives the root and its children in one Harness.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
+import type { JsonValue } from "@earendil-works/chord";
+import {
+  defineExtension,
+  type JsonObject,
+  ROOT_CONVERSATION_ID,
+  type ToolExecutionApi,
+} from "@earendil-works/pi-durable";
+import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   answer,
@@ -12,6 +22,7 @@ import {
   openSubagentHarness,
 } from "./subagents/harness.fixture.ts";
 import type { SubagentWorkspaceHost } from "./subagents.ts";
+import { MAX_CHILD_OUTPUT_BYTES } from "./subagents/outputs.ts";
 import { deleteAgent, isAgentConversation, stopConversation } from "./subagents/owner.ts";
 import { conversationWorkspace, SubagentsDoc } from "./subagents/state.ts";
 
@@ -1299,6 +1310,157 @@ describe("Subagent Workspaces", () => {
     ).toEqual({
       deleted: [],
       kept: [],
+    });
+  });
+});
+
+describe("the coordinator tools from a program", () => {
+  const Called = Schema.Struct({
+    isError: Schema.Boolean,
+    structuredOutput: Schema.Unknown,
+    diagnostics: Schema.Array(Schema.Struct({ message: Schema.String })),
+  });
+
+  // @effect-diagnostics-next-line schemaSync:off -- the test reads a tool result it holds.
+  const decodeCalled = Schema.decodeUnknownSync(Schema.fromJsonString(Called));
+
+  /** `value` with each string longer than 1,000 characters as its length, so a long answer fits a tool result. */
+  const summarized = (value: JsonValue | undefined): JsonValue | undefined => {
+    if (Predicate.isString(value))
+      return value.length > 1000 ? `<${value.length} characters>` : value;
+
+    if (Array.isArray(value)) return value.map((item) => summarized(item) ?? null);
+
+    if (!Predicate.isObject(value)) return value;
+
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, summarized(item) ?? null]),
+    );
+  };
+
+  // A stand-in for code mode: calls `tool` as a script does, and answers with what the script got.
+  const Program = Effect.runSync(
+    defineEffectTool({
+      name: "program",
+      description: "Call a tool the way a program does",
+      parameters: Schema.Struct({
+        tool: Schema.String,
+        args: Schema.Record(Schema.String, Schema.Json),
+      }),
+      execute: Effect.fnUntraced(function* ({ tool, args }, api: ToolExecutionApi) {
+        const chord = yield* ChordContext;
+
+        // SAFETY: the decoded arguments are JSON.
+        const result = yield* Effect.promise(() =>
+          api.executeTool(tool, args as JsonObject, chord),
+        );
+
+        const got = yield* Schema.encodeEffect(Schema.fromJsonString(Called))({
+          isError: result.isError === true,
+          structuredOutput: summarized(result.structuredOutput),
+          diagnostics: result.diagnostics.map(({ message }) => ({ message })),
+        }).pipe(Effect.orDie);
+
+        return { output: [{ type: "text", text: got }] };
+      }),
+    }),
+  );
+
+  /** Run `steps` as one program call each from the root, its child answering `reply`; what the program got of each. */
+  const runProgram = async (
+    steps: ReadonlyArray<readonly [string, JsonObject]>,
+    reply = "The answer is 42.",
+  ) => {
+    let step = 0;
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer(reply);
+
+        const last = request.messages.findLast((message) => message.role !== "system");
+
+        // A child's report arriving as a follow-up is not one of the steps.
+        if (last?.role !== "toolResult" && request.text !== "Go") return answer("Noted.");
+
+        const next = steps[step++];
+
+        return next === undefined
+          ? answer("Done.")
+          : call(["program", { tool: next[0], args: next[1] }]);
+      },
+      {},
+      [defineExtension({ name: "program", tools: [Program] })],
+    );
+
+    await session.prompt("Go");
+    await session.settle();
+
+    return (await session.texts("toolResult")).map((text) => decodeCalled(text));
+  };
+
+  it("gets each coordinator tool's structured output, as its schema declares", async () => {
+    const steps: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["subagent", { task: "Find the answer" }],
+      ["subagent_wait", { agent_id: "agent-1" }],
+      ["subagent_status", {}],
+      ["subagent_status", { agent_id: "agent-1" }],
+      ["agent_message", { agent_id: "agent-1", message: "Once more" }],
+      ["subagent_cancel", { agent_id: "agent-1" }],
+      ["subagent_delete", { agent_id: "agent-1" }],
+    ];
+
+    const called = await runProgram(steps);
+
+    expect(called.map((each) => each.diagnostics)).toEqual(steps.map(() => []));
+    expect(called.map((each) => each.isError)).toEqual(steps.map(() => false));
+
+    const [spawn, wait, list, status, message, cancel, deleted] = called.map(
+      (each) => each.structuredOutput,
+    );
+
+    expect(spawn).toMatchObject({ agent_id: "agent-1", turn_id: "turn-1", workspace: null });
+    expect(wait).toMatchObject({
+      event: "turn",
+      agent_id: "agent-1",
+      status: "completed",
+      output: "The answer is 42.",
+      output_truncated: false,
+    });
+    expect(list).toMatchObject({ agents: [{ agent_id: "agent-1", state: "idle", turns: 1 }] });
+    expect(status).toMatchObject({
+      agent_id: "agent-1",
+      parent_id: "root",
+      latest_output: "The answer is 42.",
+      latest_output_truncated: false,
+      turns: [{ turn_id: "turn-1", status: "completed", delivery: "wait" }],
+    });
+    expect(message).toMatchObject({ agent_id: "agent-1", disposition: "started-turn" });
+    expect(cancel).toMatchObject({ agent_id: "agent-1" });
+    expect(deleted).toEqual({ agent_id: "agent-1", deleted_agent_ids: ["agent-1"] });
+  });
+
+  it("gets a child's answer cut to what one nested call's result holds, and says so", async () => {
+    const reply = "a".repeat(MAX_CHILD_OUTPUT_BYTES + 10);
+
+    const [, wait, status] = await runProgram(
+      [
+        ["subagent", { task: "Write a lot" }],
+        ["subagent_wait", { agent_id: "agent-1" }],
+        ["subagent_status", { agent_id: "agent-1" }],
+      ],
+      reply,
+    );
+
+    // The cut text, as stored, is a quoted string of at most the bound.
+    const kept = `<${MAX_CHILD_OUTPUT_BYTES - 2} characters>`;
+
+    // Only the text for the model is cut by the Harness, which says so; the structured output passes its schema.
+    expect(wait).toMatchObject({ isError: false });
+    expect(wait?.structuredOutput).toMatchObject({ output: kept, output_truncated: true });
+    expect(status).toMatchObject({ isError: false });
+    expect(status?.structuredOutput).toMatchObject({
+      latest_output: kept,
+      latest_output_truncated: true,
     });
   });
 });
