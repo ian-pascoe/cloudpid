@@ -40,6 +40,22 @@ import type { HeldSecrets } from "./environment-secrets.ts";
  */
 export const SNAPSHOT_TIMEOUT_MS = 2 * 60_000;
 
+/**
+ * How long a Build's snapshot, its scan included, may take. Nothing waits on a Build (it runs on its object's alarm, and
+ * new Workspaces start from the last good one meanwhile), and its scan searches the whole disk, the image's files
+ * included, so it gets more time than a Workspace's snapshot, which holds commands or a Container at full memory.
+ */
+export const BUILD_SNAPSHOT_TIMEOUT_MS = 5 * 60_000;
+
+/** How long the scan before a Workspace's snapshot may take before the snapshot is given up on. */
+export const SCAN_TIMEOUT_MS = 30_000;
+
+/**
+ * How long the scan before a Build's snapshot may take: a search of the whole disk of a Container started from the
+ * image, which missed `SCAN_TIMEOUT_MS` again and again.
+ */
+export const BUILD_SCAN_TIMEOUT_MS = 3 * 60_000;
+
 /** A snapshot lives 30 days from its creation or latest restore; one older than this is not trusted to still be there. */
 export const SNAPSHOT_MAX_AGE_MS = 29 * 24 * 60 * 60_000;
 
@@ -83,6 +99,9 @@ export type ScanCoverage = {
 /** Whether the scan searches only the files whose status changed since the Container started, or the whole disk. */
 export type ScanOptions = { readonly sinceStart: boolean };
 
+/** What the scan before a snapshot is asked for: what `ScanOptions` says, and why the snapshot is taken. */
+export type SnapshotScanOptions = ScanOptions & { readonly reason: SnapshotReason };
+
 /**
  * The files the scan found, and whether it searched only those changed since the Container started (it searches the
  * whole disk when asked to, or when it finds no marker of the start).
@@ -104,6 +123,8 @@ export type ContainerSnapshotDeps = {
   readonly secrets?: (() => Promise<HeldSecrets>) | undefined;
   /** How long a snapshot, its scan included, may take before it is given up on (`SNAPSHOT_TIMEOUT_MS`). */
   readonly timeoutMs: number;
+  /** The same for a Build's snapshot (`BUILD_SNAPSHOT_TIMEOUT_MS`); `timeoutMs` without it. */
+  readonly buildTimeoutMs?: number | undefined;
   /** The reference of the image a Container launched now would run. */
   readonly image: () => string | undefined;
   readonly running: () => boolean;
@@ -116,9 +137,13 @@ export type ContainerSnapshotDeps = {
   readonly fingerprint?: ((text: string) => Promise<string>) | undefined;
   /**
    * The files on the Container's disk whose content holds any of `groups` (`scanGroups`), and which: of those whose
-   * status changed since the Container started only, with `sinceStart`.
+   * status changed since the Container started only, with `sinceStart`. `reason` sets how long it may take
+   * (`SCAN_TIMEOUT_MS`, `BUILD_SCAN_TIMEOUT_MS`).
    */
-  readonly scan: (groups: ReadonlyArray<ScanGroup>, options: ScanOptions) => Promise<ScanResult>;
+  readonly scan: (
+    groups: ReadonlyArray<ScanGroup>,
+    options: SnapshotScanOptions,
+  ) => Promise<ScanResult>;
   readonly load: () => Promise<SnapshotRecord | undefined>;
   readonly save: (record: SnapshotRecord) => Promise<void>;
   readonly clear: () => Promise<void>;
@@ -269,7 +294,7 @@ export class ContainerSnapshots {
     const started = deps.now();
 
     try {
-      const taken = await this.#within(async () => {
+      const taken = await this.#within(reason, async () => {
         const held = (await deps.secrets?.()) ?? { ok: true, secrets: [] };
 
         if (!held.ok) return { leaked: true, reason: held.reason } as const;
@@ -292,7 +317,10 @@ export class ContainerSnapshots {
         let scope: ScanScope = "none";
 
         if (groups.length > 0) {
-          const { hits, sinceStart: searchedSinceStart } = await deps.scan(groups, { sinceStart });
+          const { hits, sinceStart: searchedSinceStart } = await deps.scan(groups, {
+            sinceStart,
+            reason,
+          });
 
           if (hits.length > 0) return { leaked: true, reason: leakReason(hits) } as const;
 
@@ -415,9 +443,13 @@ export class ContainerSnapshots {
     return "taken";
   }
 
-  /** `work`, unless it takes longer than the time allowed. */
-  #within<A>(work: () => Promise<A>): Promise<A> {
-    const { timeoutMs } = this.#deps;
+  /** `work`, unless it takes longer than the time allowed a snapshot taken for `reason`. */
+  #within<A>(reason: SnapshotReason, work: () => Promise<A>): Promise<A> {
+    const timeoutMs =
+      reason === "build"
+        ? (this.#deps.buildTimeoutMs ?? this.#deps.timeoutMs)
+        : this.#deps.timeoutMs;
+
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const expired = new Promise<never>((_, reject) => {

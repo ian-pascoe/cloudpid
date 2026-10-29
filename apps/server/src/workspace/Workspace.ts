@@ -127,7 +127,10 @@ import {
 import { runAlarmSteps } from "./alarm.ts";
 import { SparePreparation, type SpareRequest } from "./spare.ts";
 import {
+  BUILD_SCAN_TIMEOUT_MS,
+  BUILD_SNAPSHOT_TIMEOUT_MS,
   ContainerSnapshots,
+  SCAN_TIMEOUT_MS,
   SNAPSHOT_TIMEOUT_MS,
   type SnapshotRecord,
   scanContainerDisk,
@@ -231,9 +234,6 @@ const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
 
 /** How long carrying the clones to a Fork's new Workspace may take, in seconds: a Container start, then pushes. */
 const CARRY_TIMEOUT_SECONDS = 15 * 60;
-
-/** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
-const SCAN_TIMEOUT_MS = 30_000;
 
 /**
  * How long computer waits for a launched Container to answer, in all, split between its launch and its one restart.
@@ -351,6 +351,7 @@ export class Workspace extends ContainerHost {
       // What a snapshot's scan searched for, under the Workspaces' key (never a value in the clear).
       fingerprint: async (text) => Effect.runPromise((await vault()).digest(text)),
       timeoutMs: SNAPSHOT_TIMEOUT_MS,
+      buildTimeoutMs: BUILD_SNAPSHOT_TIMEOUT_MS,
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       running: () => ctx.container?.running === true,
       snapshot: (name) => {
@@ -358,10 +359,13 @@ export class Workspace extends ContainerHost {
 
         return ctx.container.snapshotContainer({ name });
       },
-      scan: (groups, { sinceStart }) => {
+      scan: (groups, { sinceStart, reason }) => {
         if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
 
-        return scanContainerDisk(ctx.container, groups, { sinceStart, timeoutMs: SCAN_TIMEOUT_MS });
+        return scanContainerDisk(ctx.container, groups, {
+          sinceStart,
+          timeoutMs: reason === "build" ? BUILD_SCAN_TIMEOUT_MS : SCAN_TIMEOUT_MS,
+        });
       },
       load: () => ctx.storage.get<SnapshotRecord>(SNAPSHOT_KEY),
       save: (record) => ctx.storage.put(SNAPSHOT_KEY, record),
