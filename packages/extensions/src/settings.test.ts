@@ -465,6 +465,30 @@ describe("settings_get", () => {
     );
   });
 
+  it("shows the Instructions whole, Global's at an Environment too, and the tool that changes them", async () => {
+    const tool = await toolsOver(
+      fakeSettings({ instructions: "Answer in French.\nBe terse." }).service,
+    );
+
+    const global = text(await run(tool("settings_get"), { scope: "*" }));
+
+    expect(global).toContain(
+      "Instructions (every conversation's model is shown them from the start of its Context Window, before the Project instructions, which win where the two disagree; settings_instructions_set changes them once the user approves): 2 lines, 27 bytes of UTF-8 (Global; at most 64 KiB)\n<instructions>\nAnswer in French.\nBe terse.\n</instructions>",
+    );
+
+    const environment = text(await run(tool("settings_get"), { scope: "env-a" }));
+
+    expect(environment).toContain(
+      "2 lines, 27 bytes of UTF-8 (Global's: an Environment has no Instructions of its own yet)\n<instructions>\nAnswer in French.\nBe terse.\n</instructions>",
+    );
+
+    const none = await toolsOver(fakeSettings().service);
+
+    expect(text(await run(none("settings_get"), { scope: "*" }))).toContain(
+      "settings_instructions_set changes them once the user approves): none (default)",
+    );
+  });
+
   it("says what is wrong with the saved overrides", async () => {
     const tool = await toolsOver(
       fakeSettings({}, { problem: "These saved overrides no longer apply:\nmodel: gone" }).service,

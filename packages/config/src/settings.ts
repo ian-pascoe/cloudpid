@@ -132,6 +132,31 @@ const BranchSummary = Schema.Struct({
   skipPrompt: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 });
 
+/**
+ * The most the Instructions take, in bytes of UTF-8: refused above it, as an `AGENTS.md` is cut at 64 Ki characters
+ * (`MAX_INSTRUCTION_CHARACTERS` in `@cloudpid/extensions`' `agents-md-discovery.ts`).
+ */
+export const MAX_INSTRUCTIONS_BYTES = 64 * 1024;
+
+const utf8 = new TextEncoder();
+
+/** How many bytes of UTF-8 `text` is: what the cap on the Instructions counts. */
+export const utf8Bytes = (text: string): number => utf8.encode(text).length;
+
+/** The size of a long text such as the Instructions, as a result or a refusal says it: its lines and bytes of UTF-8. */
+export const textSize = (text: string): string => {
+  const lines = text.split("\n").length;
+
+  return `${lines.toLocaleString("en-US")} line${lines === 1 ? "" : "s"}, ${utf8Bytes(text).toLocaleString("en-US")} bytes of UTF-8`;
+};
+
+/** Why `text` cannot be the Instructions, or undefined when it can. */
+export const instructionsProblem = (text: string): string | undefined =>
+  // A character is at most 3 bytes of UTF-8 (a pair of surrogates 4): only a long text needs encoding.
+  text.length > MAX_INSTRUCTIONS_BYTES / 3 && utf8Bytes(text) > MAX_INSTRUCTIONS_BYTES
+    ? `is longer than ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8`
+    : undefined;
+
 /** The role hints are those of `~/.pi/agent/settings.json`. */
 const Roles = Schema.Struct({
   small: role(
@@ -165,6 +190,14 @@ export const Settings = Schema.Struct({
   tools: Tools.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   spendLimit: SpendLimit.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   branchSummary: BranchSummary.pipe(Schema.withDecodingDefaultKey(allDefaults)),
+  /**
+   * The owner's Instructions (`GLOSSARY.md` → Instructions), Markdown that every conversation's model is shown from the
+   * start of its Context Window, before the Project instructions; empty for none. An Environment does not override
+   * them: they add up (ADR-0027, `./settings-overrides.ts`).
+   */
+  instructions: Schema.String.check(Schema.makeFilter(instructionsProblem)).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("")),
+  ),
   extensions: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Json)).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed({})),
   ),

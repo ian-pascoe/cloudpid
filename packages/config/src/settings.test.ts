@@ -6,6 +6,7 @@ import {
   DEFAULT_OFFERED_TOOLS,
   DEFAULT_SETTINGS,
   extensionField,
+  MAX_INSTRUCTIONS_BYTES,
   overridesFrom,
   overridesWithFields,
   resolveLeniently,
@@ -99,6 +100,35 @@ describe("the spend limit", () => {
     expect(overridesFrom(resolved({ spendLimit: { perSession: 5 } }))).toEqual({
       spendLimit: { perSession: 5 },
     });
+  });
+});
+
+describe("the Instructions", () => {
+  it("are empty by default, and saved only when they are not", () => {
+    expect(DEFAULT_SETTINGS.instructions).toBe("");
+    expect(overridesFrom(resolved({ instructions: "" }))).toEqual({});
+    expect(overridesFrom(resolved({ instructions: "Answer in French.\n" }))).toEqual({
+      instructions: "Answer in French.\n",
+    });
+  });
+
+  it("take at most 64 KiB of UTF-8, as an AGENTS.md is cut at 64 Ki characters, and are refused above", () => {
+    expect(MAX_INSTRUCTIONS_BYTES).toBe(65_536);
+    expect(resolved({ instructions: "a".repeat(65_536) }).instructions).toHaveLength(65_536);
+    // Three bytes of UTF-8 each: 21,846 of them are 65,538 bytes, though only 21,846 characters.
+    expect(rejected({ instructions: "€".repeat(21_846) })).toBe(
+      "instructions: is longer than 64 KiB of UTF-8",
+    );
+    expect(rejected({ instructions: "a".repeat(65_537) })).toBe(
+      "instructions: is longer than 64 KiB of UTF-8",
+    );
+  });
+
+  it("are a field of their own", () => {
+    expect(settingsFieldPath("instructions")).toEqual(["instructions"]);
+    expect(settingsFieldValue(resolved({ instructions: "Be terse." }), "instructions")).toBe(
+      "Be terse.",
+    );
   });
 });
 

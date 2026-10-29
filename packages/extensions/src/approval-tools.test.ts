@@ -136,6 +136,8 @@ type Start = {
   readonly spendLimit?: number | null;
   /** Global's extension options. */
   readonly extensions?: Settings["extensions"];
+  /** Global's Instructions. */
+  readonly instructions?: string;
   /** The Environments' Settings Overrides by id: Default and Other (0000abcd), with none, by default. */
   readonly overrides?: Readonly<Record<string, FakeOverrides>>;
   readonly held?: Readonly<Record<string, EnvironmentDetails>>;
@@ -158,6 +160,7 @@ const setUp = async ({
   current = "default",
   spendLimit = 5,
   extensions = {},
+  instructions = "",
   held = { default: details("default", "Default"), "0000abcd": details("0000abcd", "Other") },
   footprint = { workspaces: 2, sessions: 3, secrets: 1 },
   kept = { default: [{ name: "API_KEY", build: true, updatedAt: 1 }], "*": [] },
@@ -174,7 +177,7 @@ const setUp = async ({
   const notified: ApprovalAsk[] = [];
 
   const state: FakeState = {
-    global: { spendLimit: { perSession: spendLimit }, extensions },
+    global: { spendLimit: { perSession: spendLimit }, extensions, instructions },
     environments: structuredClone({ ...overrides }),
     footprint,
     kept,
@@ -508,6 +511,7 @@ const NAMES = [
   "environment_delete",
   "environment_secret_delete",
   "settings_reset",
+  "settings_instructions_set",
 ];
 
 describe("the tools that wait for Approval", () => {
@@ -1075,7 +1079,202 @@ describe("settings_reset", () => {
     expect(text).toContain("roles.small.model is not a setting settings_reset takes");
     expect(text).toContain("roles.small, roles.medium");
     expect(text).toContain("extensions.<extension>.<key>");
+    expect(text).not.toContain("instructions");
     expect(calls.settings).toEqual([]);
+  });
+
+  it("refuses the Instructions, pointing to settings_instructions_set, which asks the owner", async () => {
+    const { call, calls, asked } = await setUp({ instructions: "Be terse." });
+
+    const { result, text } = await call("settings_reset", {
+      scope: "*",
+      field: "instructions",
+      reason: "r",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toBe(
+      "Nothing was asked or saved: settings_reset does not take the Instructions. settings_instructions_set with an empty text removes them, once the user approves.",
+    );
+    expect(asked).toEqual([]);
+    expect(calls.settings).toEqual([]);
+  });
+});
+
+describe("settings_instructions_set", () => {
+  const BEFORE = "Answer in French.\nKeep commits small.";
+  const AFTER = "Answer in French.\nKeep commits small and signed.";
+
+  it("asks the owner with the Instructions before and after, and sets them on Approve as a revertible Agent change", async () => {
+    const { call, calls, asked, state, logged } = await setUp({ instructions: BEFORE });
+
+    const { result, text, pending } = await call("settings_instructions_set", {
+      scope: "*",
+      text: AFTER,
+      reason: "The user asked for signed commits",
+    });
+
+    expect(asked).toEqual([
+      {
+        id: "1",
+        conversationId: ROOT_CONVERSATION_ID,
+        tool: "settings_instructions_set",
+        target: "the Global Settings",
+        change: "Instructions",
+        before: BEFORE,
+        after: AFTER,
+        reason: "The user asked for signed commits",
+        expected: BEFORE,
+      },
+    ]);
+    expect(calls.settings).toEqual([
+      {
+        scope: "*",
+        changes: [{ field: "instructions", value: AFTER, expected: { value: BEFORE } }],
+        author: {
+          conversation: ROOT_CONVERSATION_ID,
+          tool: "settings_instructions_set",
+          reason: "The user asked for signed commits",
+          approved: true,
+        },
+      },
+    ]);
+    expect(state.global).toMatchObject({ instructions: AFTER });
+    expect(result.isError).not.toBe(true);
+    expect(text).toBe(
+      "The user approved: the Instructions at Global are changed (2 lines, 48 bytes of UTF-8 now). Every conversation is shown them from the start of its next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with. The change is recorded as approved, with your reason; the user can revert it on the Settings page.",
+    );
+    // The record keeps both texts whole: the Settings page shows them as a line diff, and its Revert writes the first back.
+    expect(result.details).toEqual({
+      scope: "*",
+      approval: { approved: true },
+      agentChanges: [{ id: 1, scope: "*", field: "instructions", before: BEFORE, after: AFTER }],
+    });
+    expect(logged).toEqual([{ tool: "settings_instructions_set", field: "instructions" }]);
+    expect(calls.reloads).toBe(1);
+    expect(pending).toEqual([]);
+  });
+
+  it("asks to remove them with an empty text, which the card shows as none", async () => {
+    const { call, asked, state } = await setUp({ instructions: BEFORE });
+
+    const { text } = await call("settings_instructions_set", {
+      scope: "*",
+      text: "",
+      reason: "The user wants none",
+    });
+
+    expect(asked[0]).toMatchObject({ before: BEFORE, after: "None", expected: BEFORE });
+    expect(state.global).not.toHaveProperty("instructions");
+    expect(text).toContain("The user approved: the Instructions at Global are removed.");
+  });
+
+  it("changes nothing on Decline, and gives the owner's reason", async () => {
+    const { call, calls, state, logged } = await setUp({ instructions: BEFORE });
+
+    const { result, text } = await call(
+      "settings_instructions_set",
+      { scope: "*", text: AFTER, reason: "r" },
+      { approve: false, reason: "Not signed" },
+    );
+
+    expect(text).toContain("The user declined");
+    expect(text).toContain("Not signed");
+    expect(result.details).toEqual({ approval: { approved: false, reason: "Not signed" } });
+    expect(calls.settings).toEqual([]);
+    expect(logged).toEqual([]);
+    expect(state.global).toMatchObject({ instructions: BEFORE });
+  });
+
+  it("applies nothing when the owner edited the Instructions between the request and the answer", async () => {
+    const { call, state } = await setUp({ instructions: BEFORE });
+
+    const { result, text } = await call(
+      "settings_instructions_set",
+      { scope: "*", text: AFTER, reason: "r" },
+      {
+        approve: true,
+        meanwhile: () => {
+          state.global = { instructions: "Edited on the Settings page." };
+        },
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain("changed since they were asked");
+    expect(state.global).toEqual({ instructions: "Edited on the Settings page." });
+  });
+
+  it("asks nothing when the Instructions already have the text", async () => {
+    const { call, asked, calls } = await setUp({ instructions: BEFORE });
+
+    const { result, text } = await call("settings_instructions_set", {
+      scope: "*",
+      text: BEFORE,
+      reason: "r",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(text).toBe(
+      "The Instructions at Global have that text already: nothing was asked, changed or recorded.",
+    );
+    expect(asked).toEqual([]);
+    expect(calls.settings).toEqual([]);
+  });
+
+  it("refuses more than 64 KiB of UTF-8, asking nothing", async () => {
+    const { call, asked, calls } = await setUp();
+
+    const { result, text } = await call("settings_instructions_set", {
+      scope: "*",
+      text: "é".repeat(32_769),
+      reason: "r",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toBe(
+      "Nothing was asked or saved: the Instructions are 65,538 bytes of UTF-8, and may be at most 65,536 (64 KiB). Make them shorter.",
+    );
+    expect(asked).toEqual([]);
+    expect(calls.settings).toEqual([]);
+  });
+
+  it("refuses an Environment's id, asking nothing: Environment Instructions come later", async () => {
+    const { call, asked, calls } = await setUp();
+
+    const { result, text } = await call("settings_instructions_set", {
+      scope: "0000abcd",
+      text: "Mine.",
+      reason: "r",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toBe(
+      'Nothing was asked or saved: an Environment has no Instructions of its own yet (they come with cloudpid#352). Give scope "*" for the Global Instructions, which every Session\'s conversations are shown.',
+    );
+    expect(asked).toEqual([]);
+    expect(calls.settings).toEqual([]);
+  });
+
+  it("refuses a text that holds a Secret's value or a Secret Reference, asking nothing", async () => {
+    const { call, asked } = await setUp();
+
+    for (const held of [
+      `Use the key ${HELD}.`,
+      `Use ${"{{"}secret:API_KEY${"}}"}.`,
+      GITHUB_TOKEN,
+    ]) {
+      const { result, text } = await call("settings_instructions_set", {
+        scope: "*",
+        text: held,
+        reason: "r",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(text).toContain("Nothing was asked or saved");
+    }
+
+    expect(asked).toEqual([]);
   });
 });
 

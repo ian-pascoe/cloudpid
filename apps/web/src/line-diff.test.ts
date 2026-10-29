@@ -81,6 +81,19 @@ describe("changeDiff", () => {
     expect(shown(changeDiff("startScript", "a", "b")!)).toEqual(["-a", "+b"]);
   });
 
+  it("is for the Instructions, line by line", () => {
+    expect(
+      shown(
+        changeDiff(
+          "instructions",
+          "Answer in French.\nUse tabs.",
+          "Answer in French.\nUse spaces.",
+        )!,
+      ),
+    ).toEqual([" Answer in French.", "-Use tabs.", "+Use spaces."]);
+    expect(shown(changeDiff("instructions", "Be terse.", "")!)).toEqual(["-Be terse."]);
+  });
+
   it("is not for the other settings or values that are not text", () => {
     expect(changeDiff("idleMinutes", 2, 3)).toBeUndefined();
     expect(changeDiff("ignore", [], ["/a"])).toBeUndefined();

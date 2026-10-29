@@ -63,7 +63,7 @@ const registered = async (prefix = "session") => {
   const status = async () => (await registry.listSessions())[0]?.status;
   const reported = () => runInDurableObject(stub, (instance: TestSession) => instance.reported());
 
-  return { stub, status, reported, registry };
+  return { stub, status, reported, registry, registryName };
 };
 
 /** The Environment beside Default that `inTwoEnvironments` makes. */
@@ -415,6 +415,51 @@ describe("a Session's agent", () => {
 
     expect(await requests(inDefault)).toEqual([{ model: "claude-sonnet-5-5", thinking: "high" }]);
     expect(await requests(inStaging)).toEqual([{ model: "claude-haiku-5-5", thinking: "low" }]);
+  });
+
+  it("shows the Global Instructions from a Session's first request, keeps them as shown when they are edited, and shows the edit to a new Session", async () => {
+    const { stub, registry, registryName } = await registered("instructions");
+
+    const shown = (session: DurableObjectStub<TestSession>) =>
+      runInDurableObject(
+        session,
+        (instance: TestSession) => instance.sections()["owner_instructions"],
+      );
+
+    await registry.updateSettings({ instructions: "Answer in French." }, 1);
+    await script(stub, "one", "two");
+    await ask(stub, 1);
+
+    expect(await shown(stub)).toContain(
+      '<instructions scope="Global">\nAnswer in French.\n</instructions>',
+    );
+
+    // The owner's edit reaches the Session's settings at its next input, but not the context it began.
+    await registry.updateSettings({ instructions: "Answer in German." }, 2);
+    await ask(stub, 2);
+
+    // The Session has read the edit: the Settings it resolves from hold the new text.
+    expect(
+      await runInDurableObject(
+        stub,
+        (_instance: TestSession, state) =>
+          state.storage.kv.get<{ global: { instructions?: string } }>("settings-source")?.global
+            .instructions,
+      ),
+    ).toBe("Answer in German.");
+    expect(await shown(stub)).toContain("Answer in French.");
+    expect(await shown(stub)).not.toContain("Answer in German.");
+
+    // A new Session's first Context Window reads them again.
+    const nextId = `instructions-next-${(counter += 1)}`;
+    const next = env.SESSIONS.getByName(nextId);
+
+    await registry.createSession({ id: nextId, title: null, workspace: NEW_IN_DEFAULT }, 3);
+    await runInDurableObject(next, (instance: TestSession) => instance.reportTo(registryName));
+    await script(next, "one");
+    await ask(next, 1);
+
+    expect(await shown(next)).toContain("Answer in German.");
   });
 
   it("runs a new Session's first request on the default model at the default thinking level", async () => {

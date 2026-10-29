@@ -20,6 +20,7 @@ import {
 } from "@cloudpid/extensions/environment";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
+import { Instructions, type InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
   type SettingsAccess,
@@ -49,7 +50,9 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * whose list is a conversation document that a hook puts back in front of the model after a Handoff or compaction; and the secret tools
  * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
  * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query); the `skills` section, which lists
- * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); the `project_context`
+ * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); the
+ * `owner_instructions` section, the owner's Instructions as the Session last read its Settings (`InstructionsSettings`,
+ * `@cloudpid/extensions/instructions`), just before the Project instructions; the `project_context`
  * section and the wraps of `read`, `edit` and `write` that put the Workspace's `AGENTS.md` files in front of the model
  * (`@cloudpid/extensions/agents-md`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`), or in one of the owner's Owner tabs, told to the
@@ -62,8 +65,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * (`AgentChangeLog`), the root conversation's only (`docs/architecture/agent-changes.md`); the `settings_*` tools, which read
  * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
  * after a change (`SettingsReload`); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
- * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `environment_container_size_limit_set`,
- * `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
+ * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `settings_instructions_set`,
+ * `environment_container_size_limit_set`, `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
  * (`docs/architecture/agent-changes.md` → Approval); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/architecture/agent-capabilities.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
@@ -79,6 +82,7 @@ export const sessionExtensions: Effect.Effect<
   | CodemodeSandbox
   | SubagentSettings
   | ToolSearchSettings
+  | InstructionsSettings
   | Harness
   | Secrets
   | BrowserHost
@@ -104,6 +108,8 @@ export const sessionExtensions: Effect.Effect<
   Skills,
   // `skill_search`: skills.sh, over the same network as the web tools.
   SkillSearchTools,
+  // The owner's Instructions, just before the Project instructions, which win where the two disagree.
+  Instructions,
   // Before the secrets extension, whose wraps then run first: a path's Secret references are resolved when it looks.
   AgentsMd,
   ContainerTools,

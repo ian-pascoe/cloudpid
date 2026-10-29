@@ -19,7 +19,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { environmentsAtom, globalSettingsAtom } from "../environments-state.ts";
 import { registryWith, settled } from "../registry.testing.ts";
 import type { SettingsView } from "../router.ts";
-import { containerSectionForm, modelsForm } from "./forms.ts";
+import { containerSectionForm, instructionsForm, modelsForm } from "./forms.ts";
 import { SettingsPage } from "./page.tsx";
 import { sectionLabel, sectionsAt } from "./sections.ts";
 
@@ -204,6 +204,58 @@ describe("Global's Models section", () => {
       expect(markup).toContain("<h1");
       expect(markup).toContain("Default model");
       expect(markup).toContain("Model roles");
+      expect(saveButton(markup)).toContain('disabled=""');
+      registry.dispose();
+    }),
+  );
+});
+
+/** The Instructions' text area's own tag in `markup`. */
+const instructionsArea = (markup: string): string =>
+  /<textarea id="instructions"[^>]*>/.exec(markup)?.[0] ?? "";
+
+describe("Global's Instructions section", () => {
+  it.effect(
+    "shows the saved Instructions in a monospace box, their size against 64 KiB, and when an edit applies",
+    () =>
+      Effect.gen(function* () {
+        const registry = fakeRegistry();
+
+        yield* loaded(registry);
+        registry.mount(instructionsForm.fields("*"));
+        registry.set(instructionsForm.draft("*"), { instructions: "Answer in British English." });
+
+        const markup = render(registry, "*", section("instructions"));
+
+        expect(breadcrumb(markup)).toBe("Settings / Global / Instructions");
+        expect(instructionsArea(markup)).toContain("font-mono");
+        expect(instructionsArea(markup)).toContain(
+          'aria-describedby="instructions-size instructions-note"',
+        );
+        expect(markup).toContain('<p id="instructions-note"');
+        expect(markup).toContain(">Answer in British English.</textarea>");
+        expect(markup).toContain("26 / 65,536 bytes");
+        expect(markup).toContain("applies from each session&#x27;s next context");
+        expect(saveButton(markup)).not.toContain('disabled=""');
+        expect(markup).toContain("Reset to defaults");
+        registry.dispose();
+      }),
+  );
+
+  it.effect("holds Save while the Instructions are over 64 KiB of UTF-8, and says why", () =>
+    Effect.gen(function* () {
+      const registry = fakeRegistry();
+
+      yield* loaded(registry);
+      registry.mount(instructionsForm.fields("*"));
+      // Each "é" is two bytes of UTF-8: 32,769 of them are 65,538 bytes.
+      registry.set(instructionsForm.draft("*"), { instructions: "é".repeat(32_769) });
+
+      const markup = render(registry, "*", section("instructions"));
+
+      expect(markup).toContain("65,538 / 65,536 bytes");
+      expect(instructionsArea(markup)).toContain('aria-invalid="true"');
+      expect(markup).toContain("2 bytes too long");
       expect(saveButton(markup)).toContain('disabled=""');
       registry.dispose();
     }),

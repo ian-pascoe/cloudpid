@@ -2,8 +2,10 @@
 // The tools whose Agent changes wait for the owner's Approval (`docs/architecture/agent-changes.md` → Approval,
 // ADR-0019): those that change a Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`,
 // `settings_subagent_workspaces_set`, `environment_container_size_limit_set`, and `settings_reset` of a Limit) and
-// those no revert can undo (`environment_delete`, `environment_secret_delete`). The Settings' Limits are kept at both Scopes (ADR-0027): their tools and `settings_reset` take a required `scope`, `*` for
-// Global or an Environment's id, and ask at either. `settings_reset` lives here for its Limits, but a reset of any other
+// those no revert can undo (`environment_delete`, `environment_secret_delete`), and `settings_instructions_set`, since
+// the Instructions steer every conversation unasked (ADR-0027). The Settings' Limits are kept at both Scopes
+// (ADR-0027): their tools and `settings_reset` take a required `scope`, `*` for Global or an Environment's id, and ask
+// at either. `settings_reset` lives here for its Limits, but a reset of any other
 // field is made at once, without asking, as the `settings` tools make a change. Each checks what it can first and
 // refuses without asking what it would refuse anyway; then it asks the owner (`withApproval`), and on Approve makes
 // the change as the other tools do (applied, recorded with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
@@ -15,10 +17,14 @@ import {
   DEFAULT_SETTINGS,
   extensionField,
   InstanceType,
+  instructionsProblem,
+  MAX_INSTRUCTIONS_BYTES,
   OVERRIDE_FIELD_NAMES,
   overrideFieldPath,
   overrideValue,
   settingsFieldValue,
+  textSize,
+  utf8Bytes,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
@@ -295,13 +301,29 @@ const Reason = Schema.String.check(
     "Why you make the change, shown to the user on the Approval card and kept with the change, such as 'the test suite needs 12 GiB of memory'",
 });
 
+/** The field of the Instructions in the Settings. */
+const INSTRUCTIONS_FIELD = "instructions";
+
+/** The Instructions as a card shows them: as written, or none. */
+const instructionsWords = (text: string): string => (text === "" ? "None" : text);
+
+/** A whole number with its thousands grouped, as the owner reads it. */
+const grouped = (n: number): string => n.toLocaleString("en-US");
+
+/**
+ * What a result says of when an approved change of the Instructions applies, to conversations named by `whose` ("its"
+ * or "their"): never inside a context.
+ */
+const instructionsApply = (whose: "its" | "their"): string =>
+  `from the start of ${whose} next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with.`;
+
 const APPROVAL =
   "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the user changes the same setting meanwhile, the approval does not apply and you are told to ask again.";
 
 /**
  * The tools that wait for the owner's Approval: over the Session's `Environments`, `EnvironmentRemoval` and
- * `SettingsAccess`, asking through its `Approvals`, refusing a reason that holds a Secret (`Secrets`) or a deploy-time
- * credential (`DeployCredentials`), and telling the Session of each change for the Run's Notification (`AgentChangeLog`).
+ * `SettingsAccess`, asking through its `Approvals`, refusing a reason or an Instructions text that holds a Secret
+ * (`Secrets`) or a deploy-time credential (`DeployCredentials`), and telling the Session of each change for the Run's Notification (`AgentChangeLog`).
  */
 export const ApprovalTools: Effect.Effect<
   Extension,
@@ -327,26 +349,26 @@ export const ApprovalTools: Effect.Effect<
   const { apply: applySettings, reach } = yield* SettingsChanges;
 
   /**
-   * Fails, asking nothing, when the reason holds a Secret the Session holds, a deploy-time credential, or a Secret
-   * Reference's placeholder, which these tools do not resolve (the card and the history would show the reference's
-   * text).
+   * Fails, asking nothing, when `text` (`what`: the reason, or the Instructions' text) holds a Secret the Session holds,
+   * a deploy-time credential, or a Secret Reference's placeholder, which these tools do not resolve (the card and the
+   * history would show the reference's text); `fix` says what to do instead.
    */
-  const plainReason = (reason: string) =>
-    holdsPlaceholder(reason)
+  const plainText = (text: string, what: string, fix: string) =>
+    holdsPlaceholder(text)
       ? Effect.fail(
           EnvironmentsError.make({
-            message:
-              "Nothing was asked or saved: the reason holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. Say why without it.",
+            message: `Nothing was asked or saved: ${what} holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. ${fix}`,
           }),
         )
       : Effect.flatMap(secrets.refresh, () =>
-          secrets.redact(reason) === reason && !holdsCredential(reason)
+          secrets.redact(text) === text && !holdsCredential(text)
             ? Effect.void
             : EnvironmentsError.make({
-                message:
-                  "Nothing was asked or saved: the reason holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Say why without it.",
+                message: `Nothing was asked or saved: ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. ${fix}`,
               }),
         );
+
+  const plainReason = (reason: string) => plainText(reason, "the reason", "Say why without it.");
 
   const target = environmentTarget(environments);
 
@@ -661,6 +683,14 @@ export const ApprovalTools: Effect.Effect<
       Effect.gen(function* () {
         yield* plainReason(reason);
 
+        // Clearing them steers every conversation as much as writing them: their own tool asks the owner first.
+        if (field === INSTRUCTIONS_FIELD) {
+          return yield* SettingsAccessError.make({
+            message:
+              "Nothing was asked or saved: settings_reset does not take the Instructions. settings_instructions_set with an empty text removes them, once the user approves.",
+          });
+        }
+
         if (overrideFieldPath(field) === undefined) {
           return yield* SettingsAccessError.make({
             message: `Nothing was asked or saved: ${field} is not a setting settings_reset takes. The settings are: ${RESET_FIELDS}.`,
@@ -716,6 +746,155 @@ export const ApprovalTools: Effect.Effect<
           changed: ({ changes, reach: reached }) =>
             `Reset the ${label} ${scopeWhere(view)}${global ? " to its default" : ": it inherits Global again"}:\n${changedLines(changes)}\n${reached.text} ${RECORDED}`,
         });
+      }),
+  });
+
+  const instructions = yield* defineEffectTool({
+    name: "settings_instructions_set",
+    description: Arr.join(
+      [
+        `Set the user's Instructions: Markdown that every conversation's model (each Session's root and its subagents) is shown in its system prompt from the start of its Context Window, before the Project instructions of the AGENTS.md files, which win where the two disagree. They are what the user wants of every Session; what only one repo needs belongs in its Project instructions (AGENTS.md). Give the whole text: it replaces the Instructions there, and an empty text removes them. At most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8. settings_get shows them.`,
+        "They steer every conversation unasked, so the user must approve each change; set them only when the user asks. An approved change applies from each conversation's next Context Window (a new Session, a Handoff or a Rollover), never inside one: a context that has begun, this one included, keeps showing the Instructions it started with.",
+        `Give scope "${GLOBAL_SETTINGS_SCOPE}": the Instructions are Global, and an Environment has none of its own yet.`,
+        APPROVAL,
+        "The change is recorded with your reason, and the user can see it as a line diff and revert it on the Settings page.",
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      scope: SettingsScope,
+      text: Schema.String.annotate({
+        description: `The whole Instructions, as Markdown (at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8); empty removes them`,
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    // The wait survives an eviction: the rerun finds the same request, or the answer given meanwhile.
+    replay: "safe",
+    execute: ({ scope, text, reason }, api) =>
+      Effect.gen(function* () {
+        const tool = "settings_instructions_set";
+
+        yield* plainReason(reason);
+
+        if (scope !== GLOBAL_SETTINGS_SCOPE) {
+          return yield* SettingsAccessError.make({
+            message: `Nothing was asked or saved: an Environment has no Instructions of its own yet (they come with cloudpid#352). Give scope "${GLOBAL_SETTINGS_SCOPE}" for the Global Instructions, which every Session's conversations are shown.`,
+          });
+        }
+
+        if (instructionsProblem(text) !== undefined) {
+          return yield* SettingsAccessError.make({
+            message: `Nothing was asked or saved: the Instructions are ${grouped(utf8Bytes(text))} bytes of UTF-8, and may be at most ${grouped(MAX_INSTRUCTIONS_BYTES)} (${MAX_INSTRUCTIONS_BYTES / 1024} KiB). Make them shorter.`,
+          });
+        }
+
+        yield* plainText(
+          text,
+          "the text",
+          "The Instructions are plain and every conversation is shown them: say it without the value.",
+        );
+
+        const view = yield* access.get(scope);
+        const before = view.settings.instructions;
+        const where = scopeWhere(view);
+
+        if (before === text && !(yield* askedBefore(approvals, api))) {
+          return {
+            output: [
+              {
+                type: "text" as const,
+                text: `The Instructions ${where} have that text already: nothing was asked, changed or recorded.`,
+              },
+            ],
+            details: { scope: view.scope, unchanged: [INSTRUCTIONS_FIELD], agentChanges: [] },
+          };
+        }
+
+        return yield* withApproval(
+          approvals,
+          api,
+          {
+            tool,
+            target: settingsTarget(view),
+            change: "Instructions",
+            before: instructionsWords(before),
+            after: instructionsWords(text),
+            reason,
+            expected: before,
+          },
+          (answer) =>
+            Effect.gen(function* () {
+              if (!answer.approved) {
+                return declined(
+                  answer,
+                  text === ""
+                    ? `removing the Instructions ${where}`
+                    : `the new text of the Instructions ${where}`,
+                );
+              }
+
+              const applied = yield* access.change({
+                scope: view.scope,
+                changes: [
+                  { field: INSTRUCTIONS_FIELD, value: text, expected: { value: answer.expected } },
+                ],
+                author: { conversation: api.conversationId, tool, reason, approved: true },
+              });
+
+              switch (applied.status) {
+                case "rejected":
+                  return yield* SettingsAccessError.make({
+                    message: `The user approved, but nothing was saved: ${applied.message}`,
+                  });
+                case "changed-since":
+                  return yield* SettingsAccessError.make({
+                    message: changedSince(
+                      `the Instructions ${where}`,
+                      Predicate.isString(applied.current) && applied.current !== ""
+                        ? `${textSize(applied.current)} long`
+                        : "none",
+                    ),
+                  });
+                case "unchanged":
+                  return {
+                    output: [
+                      {
+                        type: "text" as const,
+                        text: approvedAlready(`the Instructions ${where} have that text`),
+                      },
+                    ],
+                    details: { scope: view.scope, approval: { approved: true }, agentChanges: [] },
+                  };
+                case "changed": {
+                  for (const made of applied.changes) {
+                    yield* log.record(loggedChange(view, tool, made.field));
+                  }
+
+                  yield* reload.apply;
+
+                  const done =
+                    text === ""
+                      ? `are removed. Conversations stop being shown them ${instructionsApply("their")}`
+                      : `are changed (${textSize(text)} now). Every conversation is shown them ${instructionsApply("its")}`;
+
+                  return {
+                    output: [
+                      {
+                        type: "text" as const,
+                        text: `The user approved: the Instructions ${where} ${done} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
+                      },
+                    ],
+                    details: {
+                      scope: view.scope,
+                      approval: { approved: true },
+                      agentChanges: agentChangeDetails(view, applied.changes),
+                    },
+                  };
+                }
+              }
+            }),
+        );
       }),
   });
 
@@ -1184,6 +1363,7 @@ export const ApprovalTools: Effect.Effect<
       deleteEnvironment,
       deleteSecret,
       reset,
+      instructions,
     ],
   });
 });

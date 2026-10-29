@@ -1,30 +1,43 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of options and Roles are native arrays.
 
 // Global's sections of the Settings (docs/architecture/client-and-protocol.md → Settings page): General (the Session
-// tree's prompt), Models (the default model and thinking level, and the Roles), Tools (the offered tools) and Limits
+// tree's prompt), Instructions (what every conversation's agent is told; docs/architecture/workspace.md →
+// Instructions), Models (the default model and thinking level, and the Roles), Tools (the offered tools) and Limits
 // (the spend limit). Each saves only its own fields (`forms.ts`); the Settings' problem, if the Registry reports one,
 // shows above each.
 
 import {
+  instructionsProblem,
   isModelId,
+  MAX_INSTRUCTIONS_BYTES,
   type ModelId,
   ROLE_NAMES,
   type RoleName,
   type Settings,
   SUPPORTED_MODELS,
   THINKING_LEVELS,
+  utf8Bytes,
 } from "@cloudpid/config";
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import { NativeSelect } from "../components/ui/native-select.tsx";
 import { DialogProblem } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { cn } from "../lib/utils.ts";
 import { modelName } from "../models.ts";
 import { badOfferedEntries, offeredFromText } from "../offered-tools.ts";
 import { settingsStateAtom } from "../settings.ts";
 import { spendLimitFromText } from "../spend-limit.ts";
-import { generalForm, globalLimitsForm, modelsForm, toolsForm } from "./forms.ts";
-import { CODE_AREA, Field, Group, SectionFormView, SettingsSection, TEXT_AREA } from "./parts.tsx";
+import { generalForm, globalLimitsForm, instructionsForm, modelsForm, toolsForm } from "./forms.ts";
+import {
+  CODE_AREA,
+  Field,
+  Group,
+  noteId,
+  SectionFormView,
+  SettingsSection,
+  TEXT_AREA,
+} from "./parts.tsx";
 
 /** The problem the Registry reports with the Settings, if any. */
 const SettingsProblem = () => {
@@ -88,6 +101,74 @@ export const GeneralSection = () => (
           </label>
         </Group>
       )}
+    </SectionFormView>
+  </SettingsSection>
+);
+
+const bytes = (count: number): string => count.toLocaleString("en-US");
+
+/** Instructions: Global's, which every session's agent reads at the start of each context. */
+export const InstructionsSection = () => (
+  <SettingsSection
+    title="Instructions"
+    description={
+      <>
+        What the agent is told in every session. A repository's own instructions (
+        <code>AGENTS.md</code>) win where the two disagree. The agent can propose a change too,
+        which you approve in its session.
+      </>
+    }
+  >
+    <SettingsProblem />
+    <SectionFormView
+      form={instructionsForm}
+      scope={GLOBAL_SCOPE}
+      invalid={(fields) => instructionsProblem(fields.instructions) !== undefined}
+    >
+      {(fields, set) => {
+        const size = utf8Bytes(fields.instructions);
+        const over = size - MAX_INSTRUCTIONS_BYTES;
+
+        return (
+          <Group>
+            <Field
+              label="Global instructions"
+              htmlFor="instructions"
+              hint="An edit applies from each session's next context: a new session, a handoff or a rollover. A context already open keeps the instructions it started with."
+              problem={
+                over > 0
+                  ? `${bytes(over)} ${over === 1 ? "byte" : "bytes"} too long: the instructions may be at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8.`
+                  : null
+              }
+            >
+              <textarea
+                id="instructions"
+                rows={18}
+                value={fields.instructions}
+                placeholder={"Answer in British English.\nUse Conventional Commits."}
+                spellCheck={false}
+                autoComplete="off"
+                data-1p-ignore
+                aria-invalid={over > 0}
+                aria-describedby={`instructions-size ${noteId("instructions")}`}
+                onChange={(event) => {
+                  set({ instructions: event.target.value });
+                }}
+                className={cn(CODE_AREA, "resize-y")}
+              />
+              <p
+                id="instructions-size"
+                className={cn(
+                  "self-end text-xs tabular-nums",
+                  over > 0 ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                {bytes(size)} / {bytes(MAX_INSTRUCTIONS_BYTES)} bytes
+              </p>
+            </Field>
+          </Group>
+        );
+      }}
     </SectionFormView>
   </SettingsSection>
 );

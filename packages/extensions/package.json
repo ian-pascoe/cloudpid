@@ -24,6 +24,7 @@
     "./environment-skills": "./src/environment-skills.ts",
     "./agents-md": "./src/agents-md.ts",
     "./agents-md-discovery": "./src/agents-md-discovery.ts",
+    "./instructions": "./src/instructions.ts",
     "./prompt-templates": "./src/prompt-templates.ts",
     "./coding-tools": "./src/coding-tools.ts",
     "./container": "./src/container.ts",

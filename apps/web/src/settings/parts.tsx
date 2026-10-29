@@ -13,6 +13,9 @@ import { cn } from "../lib/utils.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import type { SectionForm } from "./drafts.ts";
 
+/** The id of the hint, or the problem, under the field whose control is `htmlFor`. */
+export const noteId = (htmlFor: string): string => `${htmlFor}-note`;
+
 /** A section's frame: its heading, the line that says what it is for, and its groups. */
 export const SettingsSection = ({
   title,
@@ -60,7 +63,7 @@ export const Group = ({
 
 /**
  * A field: its label (with `mark` beside it, where a field says where its value comes from), the control, and its hint,
- * or its problem in place of the hint.
+ * or its problem in place of the hint, which a control can name in its `aria-describedby` as `noteId(htmlFor)`.
  */
 export const Field = ({
   label,
@@ -86,9 +89,15 @@ export const Field = ({
     </div>
     {children}
     {problem === null ? (
-      hint !== undefined && <p className="max-w-prose text-xs text-muted-foreground">{hint}</p>
+      hint !== undefined && (
+        <p id={noteId(htmlFor)} className="max-w-prose text-xs text-muted-foreground">
+          {hint}
+        </p>
+      )
     ) : (
-      <p className="text-xs text-destructive">{problem}</p>
+      <p id={noteId(htmlFor)} className="text-xs text-destructive">
+        {problem}
+      </p>
     )}
   </div>
 );

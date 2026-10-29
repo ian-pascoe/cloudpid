@@ -9,6 +9,7 @@ import {
   resolveOverridesLeniently,
   type Settings,
 } from "@cloudpid/config";
+import type { InstructionsInForce } from "@cloudpid/extensions/instructions";
 import { type SubagentOptions, subagentOptions } from "@cloudpid/extensions/subagents";
 import { reloadToolSearch, type ToolSearchOptions } from "@cloudpid/extensions/tool-search";
 import type {
@@ -49,6 +50,8 @@ export type SessionSettingsValues = {
   readonly toolSearch: ToolSearchOptions;
   /** US dollars the Session may spend on model requests; `null` for no limit. */
   readonly spendLimit: number | null;
+  /** The owner's Instructions, which every conversation's model is shown from the start of its Context Window. */
+  readonly instructions: InstructionsInForce;
 };
 
 /** The parts of `settings` a Session uses. */
@@ -61,6 +64,8 @@ export const valuesFrom = (settings: Settings): SessionSettingsValues => ({
   ),
   toolSearch: { offered: settings.tools.offered },
   spendLimit: settings.spendLimit.perSession,
+  // An Environment's settings carry Global's Instructions: its Overrides hold none (ADR-0027).
+  instructions: { global: settings.instructions },
 });
 
 export type SessionSettingsService = {
@@ -98,6 +103,11 @@ export const reloadSessionExtensions = (
   sameTools(values.toolSearch.offered, previous.toolSearch.offered)
     ? []
     : [reloadToolSearch(installed, values.toolSearch)];
+
+/** What the instructions extension reads of the Session's settings: the Instructions, as last read. */
+export const instructionsSettings = Effect.map(SessionSettings, (settings) => ({
+  current: () => settings.current().instructions,
+}));
 
 /** What the tool search extension reads of the Session's settings: the offered tools, as last read. */
 export const toolSearchSettings = Effect.map(SessionSettings, (settings) => ({

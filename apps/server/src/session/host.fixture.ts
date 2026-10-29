@@ -34,6 +34,7 @@ import {
 } from "@cloudpid/extensions/environment";
 import { ApprovalTools, EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
 import { Approvals } from "@cloudpid/extensions/approvals";
+import { Instructions, InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/extensions/settings";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
@@ -104,6 +105,7 @@ import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import {
+  instructionsSettings,
   reloadSessionExtensions,
   SessionSettings,
   sessionSettingsLayer,
@@ -475,9 +477,10 @@ export class TestSession extends DurableObject {
    * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
    * tools, the browser tools over a test browser host, and `todo`; for a Session whose name starts with
    * `environment-`, the `environment_*` tools over `testEnvironments`; for one whose name starts with `settings-`,
-   * the `settings_*` tools and those that wait for Approval over the test Registry's Settings; and, for one whose name
-   * starts with `tool-search-`, `tool_search` over the Registry's offered tools, which is installed again when they
-   * change.
+   * the `settings_*` tools and those that wait for Approval over the test Registry's Settings; for one whose name
+   * starts with `instructions-`, the `owner_instructions` section over the Instructions the Session last read; and, for
+   * one whose name starts with `tool-search-`, `tool_search` over the Registry's offered tools, which is installed
+   * again when they change.
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
@@ -497,6 +500,7 @@ export class TestSession extends DurableObject {
     const searching = this.#searching();
     const changing = this.ctx.id.name?.startsWith("environment-") === true;
     const configuring = this.ctx.id.name?.startsWith("settings-") === true;
+    const instructing = this.ctx.id.name?.startsWith("instructions-") === true;
     const settingsRegistry = this.#settingsRegistry();
     const session = this.ctx.id.name;
 
@@ -542,9 +546,18 @@ export class TestSession extends DurableObject {
 
       const writer = writing ? [defineExtension({ name: "writer", tools: [yield* Write] })] : [];
 
+      const instructions = instructing
+        ? [
+            yield* Instructions.pipe(
+              Effect.provideServiceEffect(InstructionsSettings, instructionsSettings),
+            ),
+          ]
+        : [];
+
       const extensions = [
         echo,
         ...writer,
+        ...instructions,
         ...environment,
         ...settings,
         yield* secretsExtension([tool]),

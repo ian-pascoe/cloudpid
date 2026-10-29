@@ -8,6 +8,7 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   harnessSettings,
+  instructionsSettings,
   SessionSettings,
   sessionSettingsLayer,
   type SettingsKv,
@@ -273,6 +274,26 @@ describe("the spend limit", () => {
     expect(inA.current().spendLimit).toBe(0.5);
     expect(inB.current().spendLimit).toBe(10);
     expect(unlimitedInC.current().spendLimit).toBeNull();
+  });
+});
+
+describe("the Instructions", () => {
+  it("are none until the Registry has been read, then Global's, whatever an Environment's Overrides hold", async () => {
+    const source = registry({ instructions: "Answer in French." }, { instructions: "Mine." });
+    const settings = open(source);
+
+    const instructions = Effect.runSync(
+      instructionsSettings.pipe(Effect.provideService(SessionSettings, settings)),
+    );
+
+    expect(instructions.current()).toEqual({ global: "" });
+
+    await Effect.runPromise(settings.refresh);
+    expect(instructions.current()).toEqual({ global: "Answer in French." });
+
+    source.state.global = {};
+    await Effect.runPromise(settings.refresh);
+    expect(instructions.current()).toEqual({ global: "" });
   });
 });
 

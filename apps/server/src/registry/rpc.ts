@@ -1,4 +1,4 @@
-import { isContainerField, SettingsError, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
+import { isContainerField, SettingsError, SPARE_WORKSPACE_FIELD, textSize } from "@cloudpid/config";
 import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
@@ -289,9 +289,19 @@ export const spareUpkeep = (
   };
 };
 
-/** A setting's value as a refusal shows it: JSON, or "not set" for none. */
+/** The longest one-line text a refusal shows whole. */
+const SHOWN_TEXT_CHARACTERS = 200;
+
+/**
+ * A setting's value as a refusal shows it: "not set" for none, a long text (the Instructions, a script, up to 64 KiB)
+ * by its size, and anything else as JSON.
+ */
 const shownValue = (value: Schema.Json | null): string =>
-  value === null ? "not set" : JSON.stringify(value);
+  value === null
+    ? "not set"
+    : Predicate.isString(value) && (value.includes("\n") || value.length > SHOWN_TEXT_CHARACTERS)
+      ? textSize(value)
+      : JSON.stringify(value);
 
 /**
  * The main Worker's `RegistryRpcs` endpoint (`docs/architecture/client-and-protocol.md`): Effect RPC over HTTP with JSON

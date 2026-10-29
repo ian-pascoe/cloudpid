@@ -18,6 +18,7 @@ import {
   History,
   KeyRound,
   type LucideIcon,
+  ScrollText,
   SlidersHorizontal,
   Sparkles,
   SquareTerminal,
@@ -34,6 +35,7 @@ import {
 /** Each section's slug, as its path names it. */
 export type SectionSlug =
   | "general"
+  | "instructions"
   | "models"
   | "tools"
   | "limits"
@@ -62,6 +64,7 @@ const named = (label: string, icon: LucideIcon): SectionLook => ({
 
 const SECTIONS: Readonly<Record<SectionSlug, SectionLook>> = {
   general: named("General", SlidersHorizontal),
+  instructions: named("Instructions", ScrollText),
   models: named("Models", Brain),
   tools: named("Tools", Wrench),
   limits: named("Limits", Gauge),
@@ -80,6 +83,7 @@ const SECTIONS: Readonly<Record<SectionSlug, SectionLook>> = {
 /** Global's sections, in the navigation's order. */
 const GLOBAL_SECTIONS: readonly SectionSlug[] = [
   "general",
+  "instructions",
   "models",
   "tools",
   "limits",

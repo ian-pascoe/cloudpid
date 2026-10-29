@@ -1,7 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off -- lookups by section and Scope, not combinators.
 
 // The forms of the Settings page's sections that have a Save (docs/architecture/client-and-protocol.md → Settings page →
-// Saving), each over the part of one saved value it edits: General, Models, Tools and Limits the Settings; an
+// Saving), each over the part of one saved value it edits: General, Instructions, Models, Tools and Limits the Settings; an
 // Environment's Container, Setup, Limits (its size limit) and Variables its Container settings; Global's Variables the
 // variables kept Global; an Environment's Environment section its name. `formOf` names the form of a section at a
 // Scope, for the navigation's unsaved mark.
@@ -51,6 +51,12 @@ const settingsForm = <Fields extends object>(
 export const generalForm = settingsForm({
   fieldsOf: (settings) => ({ skipPrompt: settings.branchSummary.skipPrompt }),
   merge: (settings, { skipPrompt }) => ({ ...settings, branchSummary: { skipPrompt } }),
+});
+
+/** Instructions: Global's, as typed; their whitespace is part of what the agent reads, so they are compared exactly. */
+export const instructionsForm = settingsForm({
+  fieldsOf: ({ instructions }) => ({ instructions }),
+  merge: (settings, { instructions }) => ({ ...settings, instructions }),
 });
 
 /** Models: the default model and thinking level, and the Roles. */
@@ -218,6 +224,7 @@ type AnyForm = Pick<SectionForm<never, never>, "dirty">;
 
 const GLOBAL_FORMS: Partial<Readonly<Record<SectionSlug, AnyForm>>> = {
   general: generalForm,
+  instructions: instructionsForm,
   models: modelsForm,
   tools: toolsForm,
   limits: globalLimitsForm,

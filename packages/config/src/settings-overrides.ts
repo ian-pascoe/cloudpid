@@ -3,7 +3,8 @@
 // They are the deep partial shape of the Global document, read field by field: a Role is one field (its model and hint
 // as one value), an extension's option is one (`extensions.<extension>.<key>`), and every other setting is one by
 // itself (`model`, `compaction.enabled`, `tools.offered`, `spendLimit.perSession`), replaced whole. An Environment's
-// settings are its Overrides over Global over the defaults.
+// settings are its Overrides over Global over the defaults. The Instructions are no Override (`INSTRUCTIONS_ROOT`):
+// they add up, Global's then the Environment's, so the Overrides do not hold them.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -26,7 +27,23 @@ import {
 const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
   Predicate.isObject(value) && !Arr.isArray(value);
 
-const SETTINGS_ROOTS: ReadonlySet<string> = new Set(Record.keys(DEFAULT_SETTINGS));
+/**
+ * The Instructions' setting, which adds up rather than being overridden (ADR-0027): the model is shown Global's, then
+ * the Environment's. It is no Override field, an Environment's Overrides may not hold it, and an Environment's settings
+ * carry Global's value of it. An Environment's own Instructions are kept apart (#352).
+ */
+export const INSTRUCTIONS_ROOT = "instructions";
+
+/** Why Overrides that hold the Instructions are refused. */
+const INSTRUCTIONS_OVERRIDE_PROBLEM = `${INSTRUCTIONS_ROOT}: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet`;
+
+const SETTINGS_ROOTS: ReadonlySet<string> = new Set(
+  Arr.filter(Record.keys(DEFAULT_SETTINGS), (root) => root !== INSTRUCTIONS_ROOT),
+);
+
+/** Whether `overrides` hold the Instructions. */
+const holdsInstructions = (overrides: Schema.Json | undefined): boolean =>
+  isJsonObject(overrides) && Predicate.hasProperty(overrides, INSTRUCTIONS_ROOT);
 
 /** The defaults below a setting's root: an object for a section (`roles`, `compaction`), anything else for a value. */
 const defaultsOf = (root: string): Settings[keyof Settings] | undefined =>
@@ -62,6 +79,8 @@ const fieldDepth = (root: string): number => {
 export const OVERRIDE_FIELD_NAMES: ReadonlyArray<string> = Arr.flatMap(
   Record.toEntries(DEFAULT_SETTINGS),
   ([root, defaults]) => {
+    if (root === INSTRUCTIONS_ROOT) return [];
+
     if (root === "extensions") return ["extensions.<extension>.<key>"];
 
     // SAFETY: a setting of depth 2 is a section, whose defaults are a plain object of its settings by name.
@@ -119,11 +138,11 @@ const entriesBelow = (
         entriesBelow(entry, [...keys, key], depth),
       );
 
-/** Each field `overrides` hold, with its keys and its value, in the order they hold them. */
+/** Each field `overrides` hold, with its keys and its value, in the order they hold them; none that adds up. */
 const overrideEntries = (overrides: Schema.Json): ReadonlyArray<OverrideEntry> =>
   isJsonObject(overrides)
     ? Arr.flatMap(Record.toEntries(overrides), ([root, value]) =>
-        entriesBelow(value, [root], fieldDepth(root)),
+        root === INSTRUCTIONS_ROOT ? [] : entriesBelow(value, [root], fieldDepth(root)),
       )
     : [];
 
@@ -204,6 +223,10 @@ export const withOverrides = (
 ): Result.Result<Schema.Json, SettingsError> => {
   if (set !== undefined && !isJsonObject(set)) {
     return Result.fail(SettingsError.make({ message: "The Overrides to set are not an object" }));
+  }
+
+  if (holdsInstructions(set)) {
+    return Result.fail(SettingsError.make({ message: INSTRUCTIONS_OVERRIDE_PROBLEM }));
   }
 
   const unknown = Arr.findFirst(reset, (field) => overrideFieldPath(field) === undefined);
@@ -298,6 +321,10 @@ export const resolveOverrides = (
 ): Result.Result<Settings, SettingsError> => {
   if (!isJsonObject(overrides)) return Result.fail(SettingsError.make({ message: NOT_AN_OBJECT }));
 
+  if (holdsInstructions(overrides)) {
+    return Result.fail(SettingsError.make({ message: INSTRUCTIONS_OVERRIDE_PROBLEM }));
+  }
+
   return Result.mapError(
     decodeSettingsOverrides(
       overriding(globalApplied(global).overrides, withRenamedTools(overrides)),
@@ -350,6 +377,11 @@ export const resolveOverridesLeniently = (
   const dropped: string[] = isJsonObject(overrides) ? [] : [NOT_AN_OBJECT];
   const renamed = withRenamedTools(overrides);
   let rest: Schema.JsonObject = isJsonObject(renamed) ? renamed : {};
+
+  if (holdsInstructions(rest)) {
+    dropped.push(INSTRUCTIONS_OVERRIDE_PROBLEM);
+    rest = removeAt(rest, [INSTRUCTIONS_ROOT]);
+  }
 
   // Dropping a field settles its problem; a few rounds cover Overrides with several.
   for (let round = 0; round < MAX_LENIENT_ROUNDS; round += 1) {
