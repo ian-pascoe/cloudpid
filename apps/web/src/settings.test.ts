@@ -93,7 +93,11 @@ describe("the Settings' Agent changes", () => {
         expect(AsyncResult.getOrThrow(yield* settled(registry, settingsChangesAtom))).toEqual([
           change(1),
         ]);
-        expect(registry.get(modelsForm.fields("*"))?.model).toBe("anthropic/claude-haiku-5-5");
+        // A field holds its value with its mark; at Global every value is Global's own.
+        expect(registry.get(modelsForm.fields("*"))?.model).toEqual({
+          value: "anthropic/claude-haiku-5-5",
+          inherited: false,
+        });
 
         registry.mount(revertSettingsChangeAtom);
         registry.set(revertSettingsChangeAtom, 1);
@@ -103,7 +107,10 @@ describe("the Settings' Agent changes", () => {
 
         expect(reverted).toEqual([{ change: 1 }]);
         expect(AsyncResult.getOrThrow(registry.get(settingsChangesAtom))).toEqual([change(1, 2)]);
-        expect(registry.get(modelsForm.fields("*"))?.model).toBe(DEFAULT_SETTINGS.model);
+        expect(registry.get(modelsForm.fields("*"))?.model).toEqual({
+          value: DEFAULT_SETTINGS.model,
+          inherited: false,
+        });
         registry.dispose();
       }),
   );
