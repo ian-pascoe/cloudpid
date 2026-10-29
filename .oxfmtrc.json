@@ -13,7 +13,6 @@
     ".roo/**",
     ".windsurf/**",
     ".repos/**",
-    "tools/oxlint/anti-slop/**",
-    "pnpm-workspace.yaml"
+    "tools/oxlint/anti-slop/**"
   ]
 }

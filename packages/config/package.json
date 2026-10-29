@@ -9,7 +9,7 @@
     "./tsconfig/base.json": "./tsconfig/base.json"
   },
   "scripts": {
-    "typecheck": "tsc",
+    "typecheck": "effect-tsgo tsrs",
     "lint": "oxlint",
     "test": "vitest run"
   },

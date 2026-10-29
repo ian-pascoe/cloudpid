@@ -82,7 +82,7 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](../ad
 
 ## Repository layout
 
-The repo is a Turborepo with pnpm workspaces. Internal packages are just-in-time: `exports` point at `src/*.ts`, and the Workers' bundlers compile them.
+The repo is a Turborepo with Bun workspaces ([ADR-0028](../adr/0028-bun-for-installs-and-scripts-and-tsrs-for-typecheck.md)). Internal packages are just-in-time: `exports` point at `src/*.ts`, and the Workers' bundlers compile them.
 
 ```
 infra/                    alchemy stack (alchemy.run.ts): Workers, DOs, Container, Access, secrets

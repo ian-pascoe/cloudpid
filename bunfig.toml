@@ -1,0 +1,11 @@
+# Bun's settings for this repo (docs/adr/0028-bun-for-installs-and-scripts-and-tsrs-for-typecheck.md).
+
+[install]
+# A pnpm-style layout: packages see only what they declare. The global store keeps one copy of each package in Bun's
+# cache and links every checkout (each worktree, a cloudpid Container's repo) to it, so `node_modules` is mostly
+# symlinks.
+linker = "isolated"
+globalStore = true
+# Leave a release a day before installing it, against packages hijacked and republished; vetted versions are exempt.
+minimumReleaseAge = 86400
+minimumReleaseAgeExcludes = ["@pierre/diffs@1.6.2", "@pierre/highlights@0.3.0"]

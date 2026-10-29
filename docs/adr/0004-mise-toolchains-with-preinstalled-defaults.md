@@ -10,6 +10,8 @@ A second revision moved the image from `debian:stable-slim` to Ubuntu LTS, with 
 
 A third revision moved the image from Ubuntu 24.04 to 26.04 LTS. computerd 0.8.0 (the version `@cloudflare/computer` 0.8.0 speaks to) links libfuse 3.17 or newer and exits at start without it (`computerd needs libfuse 3.17 or newer`), and 24.04 carries 3.14; 26.04 carries 3.18. libfuse 2 (`libfuse2t64`) went with it: computerd no longer links it. The newer libfuse is also what FUSE passthrough and native roots for the Container-only paths need, which also need Linux 6.9 or newer on the host.
 
+A fourth revision added Bun to the short list, against "a Toolchain not on the list is never added": it is a JavaScript package manager as pnpm is, and this repo moved to it (ADR-0028), so the Workspaces that build cloudpid itself, and JavaScript projects that use Bun, would otherwise download it at every cold start. The bootstrap gives it the same treatment as pnpm, its packages off the mount (docs/architecture/container.md → Package managers and Turborepo off the mount). The bar for the list stays what the revision above set: a Toolchain nearly every JavaScript or Python Workspace uses.
+
 ## Considered Options
 
 - **Persist Toolchain binaries in the synced Workspace.** computerd keeps the synced tree in container memory and re-pushes all of it after every container restart. Node alone is 213 MB in 4,750 files. That costs cold-start time and RAM in proportion to its size, and eats into the Durable Object's 10 GB SQLite cap. FUSE is also roughly 2× slower than ext4 for package installs.

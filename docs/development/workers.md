@@ -30,7 +30,7 @@ The browser and codemode sandbox Workers have `workersDev: false` and no routes:
 
 ## workerd tests
 
-Tests that need workerd (Durable Object storage, alarms, eviction) are `src/**/*.workerd.test.ts`, run by the package's `workerd` Vitest project through `@cloudflare/vitest-plugin` (see `apps/server/vitest.config.ts`): `pnpm exec vitest run --project workerd <file>`. Give miniflare what the code under test binds:
+Tests that need workerd (Durable Object storage, alarms, eviction) are `src/**/*.workerd.test.ts`, run by the package's `workerd` Vitest project through `@cloudflare/vitest-plugin` (see `apps/server/vitest.config.ts`): `bun --cwd <package dir> vitest run --project workerd <file>`. Give miniflare what the code under test binds:
 
 - **Browser host:** the facet class as a Durable Object too (`CODEMODE_RUNTIME`, else `ctx.exports.CodemodeRuntime` is not a class), `workerLoaders: { LOADER: {} }`, and a stand-in Workspaces Worker for `CONTAINER_PREVIEWS` (an auxiliary `workers` entry; see `apps/browser/vitest.config.ts`).
 - **Codemode sandbox:** `modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }]`.

@@ -12,9 +12,9 @@
 //   store and the disk's copies of those paths are laid out for them, so a launch with others starts from the image.
 // - A snapshot lives 30 days from its creation or latest restore, so one that is near that is not restored.
 // - The disk is searched for the GitHub token and the Environment's kept Secrets before a snapshot
-//   (`scanContainerDisk`: everything but the pseudo file systems, the Workspace mount and pnpm's stores, for each as it
-//   is and in base64: `scanGroups`), and a snapshot that cannot be shown clean is not taken, nor one of a Workspace
-//   that cannot show which Secrets to search for. The bootstrap keeps the token off disk (git reads it from the
+//   (`scanContainerDisk`: everything but the pseudo file systems, the Workspace mount and pnpm's and Bun's stores, for
+//   each as it is and in base64: `scanGroups`), and a snapshot that cannot be shown clean is not taken, nor one of a
+//   Workspace that cannot show which Secrets to search for. The bootstrap keeps the token off disk (git reads it from the
 //   environment), so this is for what a command wrote; a value encoded some other way is not found. The warning for a
 //   refused snapshot names, per file, what it holds: "a GitHub token" or "the Secret `NAME`", never a value.
 // - A Container restored from a snapshot whose scan searched for all that is searched for now (`ScanCoverage`) has
@@ -23,7 +23,11 @@
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import { CONTAINER_START_MARKER } from "@cloudpid/sandbox-image/supervisor";
-import { base64, PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
+import {
+  base64,
+  BUN_DIRECTORY_NAME,
+  PNPM_STORE_DIRECTORY_NAME,
+} from "@cloudpid/sandbox-image/toolchains";
 import type { LiveToken } from "../github/app.ts";
 import type { HeldSecrets } from "./environment-secrets.ts";
 
@@ -515,6 +519,10 @@ const SCAN_SINCE_START_VARIABLE = "CLOUDPID_SCAN_SINCE_START";
  * the store at the mount's root and a virtual store in `node_modules`, took 62 s, 7 s without them). The rest of `node_modules` (`.cache`, `.vite`, what a command wrote there) is
  * searched.
  *
+ * Directories named `.bun` are not searched either, for the same reason: Bun's cache (`/root/.bun/install/cache`, with
+ * the global store the Container's global Bun configuration switches on, `links`) and the isolated linker's project
+ * store in `node_modules` (`.bun`, `BUN_DIRECTORY_NAME`) hold only the packages Bun installed.
+ *
  * The patterns reach grep as a pattern file on its standard input, read from the environment, so they are in no command
  * line. One search over all of them finds the files; then, for the first `ATTRIBUTED_FILES` of those only, a search per
  * group tells which group holds each. A line of the output is the groups' numbers, separated by commas (none for a
@@ -538,12 +546,12 @@ const SCAN_SCRIPT = [
   "  echo '#since-start'",
   '  search() { grep -lF -f <(patterns) -- "$@"; [ "$?" -le 1 ]; }',
   "  export -f patterns search",
-  `  found=$(set -o pipefail; find "$@" -type d \\( -name ${PNPM_STORE_DIRECTORY_NAME} -o -name .pnpm \\) -prune -o -type f -newercc "$marker" -print0 | xargs -0 -r bash -c 'search "$@"' _)`,
+  `  found=$(set -o pipefail; find "$@" -type d \\( -name ${PNPM_STORE_DIRECTORY_NAME} -o -name .pnpm -o -name ${BUN_DIRECTORY_NAME} \\) -prune -o -type f -newercc "$marker" -print0 | xargs -0 -r bash -c 'search "$@"' _)`,
   '  [ "$?" -ne 0 ] && exit 2',
   "  status=0",
   "else",
   "  echo '#whole'",
-  `  found=$(patterns | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@")`,
+  `  found=$(patterns | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm --exclude-dir=${BUN_DIRECTORY_NAME} -f - -- "$@")`,
   "  status=$?",
   '  [ "$status" -gt 1 ] && exit "$status"',
   "fi",

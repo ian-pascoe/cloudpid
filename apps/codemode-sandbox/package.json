@@ -8,7 +8,7 @@
     "./binding": "./src/binding.ts"
   },
   "scripts": {
-    "typecheck": "tsc",
+    "typecheck": "effect-tsgo tsrs",
     "lint": "oxlint",
     "test": "vitest run"
   },

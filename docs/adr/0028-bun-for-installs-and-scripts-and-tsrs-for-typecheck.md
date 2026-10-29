@@ -1,0 +1,28 @@
+# Bun installs and runs scripts, tsrs typechecks, and Vitest stays on Node
+
+The repo installs its dependencies with Bun instead of pnpm, and its scripts run through `bun run`. `bun.lock` replaces `pnpm-lock.yaml`; the workspaces, the patched dependencies and the packages allowed to run install scripts (`trustedDependencies`) are in the root `package.json`, and `bunfig.toml` holds the rest: the isolated linker (a pnpm-style layout, where a package sees only what it declares), the global store (one copy of each package in Bun's cache, which every checkout's `node_modules` links into) and the minimum release age (a day, as pnpm's default was). Bun's version is `packageManager`'s, pinned again in the repo's `mise.toml` for mise, locally and on a cloudpid Container.
+
+Each package's `typecheck` is `effect-tsgo tsrs` instead of `tsc`: tsrs, the native TypeScript checker that `@effect/tsgo` ships with the Effect language service built in, so every Effect diagnostic the shared tsconfig sets still fails the check. The patched `tsc` stays installed for editors.
+
+Vitest and Vite keep running on Node: `bun run` starts a package's binary with the interpreter its first line names, which for them is `node`. alchemy's CLI hands itself to Bun when Bun launched it (it reads `npm_execpath`), so deploys and `alchemy dev` run on Bun, with `@effect/platform-bun` in `infra`'s dependencies; it pulls `@effect/platform-node-shared`, which the root `overrides` holds at the `effect` version, since its newest release wants a newer `effect`.
+
+Measured on an 8-core Apple Silicon laptop (2026-10-29), one run each unless noted:
+
+- **Typecheck**, every package one after another: `tsc` 41 s of CPU and 9.1 GB of peak memory summed over the packages; tsrs 12.6 s and 3.4 GB. The server alone: 2.8 s wall and 1.9 GB against 1.0 s and 0.67 GB. All of it through Turborepo, uncached: 3.3 s.
+- **Install** with a warm cache and no `node_modules`, the `prepare` script included (reference repositories skipped): pnpm 2.4 s wall, 4.9 s CPU, 265 MB; Bun with the global store 0.85 s, 0.5 s, 18 MB. `node_modules` is 369 MB of real files, the rest links.
+- **Vitest under Bun** (`bun --bun vitest`): the server's Node project 33 s → 28 s, but its workerd projects took twice as long (`workerd-session` 33 s → 72 s, `workerd-workspace` 25 s → 35 s), one of their tests failed every time (`codemode.workerd.test.ts`, resuming a script an eviction cut off), and running all the server's projects at once found no test files at all. The workerd tests are most of CI's time, so Vitest stays on Node.
+
+## Consequences
+
+- tsrs is TypeScript 7.1 (a beta, at tsrs 0.20) and the editors' `tsc` is 7.0. 7.1 reported three new errors, fixed with the switch (a parameter's binding elements left implicitly `any`, and an infinitely circular instantiation from the type of a dynamic import of all of `cloudflare:workers`, now imported through `apps/server/src/session/workers-tracing.ts`). An editor can miss an error the check reports until `typescript` moves to 7.1.
+- `effect-tsgo patch` patches files of `typescript`, `oxlint` and `oxlint-tsgolint` in place. Under the global store those files are shared by every project on the machine that resolves the same versions, so the three are in `trustedDependencies`, which keeps a package and its dependencies in the project's own `node_modules/.bun`.
+- `trustedDependencies` replaces Bun's default list, so it names only the three patched packages, whose scripts are none. esbuild's and workerd's install scripts only check their platform binaries, which Bun installs without them; `@google/genai`'s and `protobufjs`'s do nothing the repo needs; `core-js-pure`'s stays blocked, as it was under pnpm. The native builds of `just-bash`'s optional compressors (`@mongodb-js/zstd`, `node-liblzma`), which pnpm ran, serve only its Node command line, which the repo does not use; trusted, they kept their packages in the project and downloaded or built again at every fresh install (3 s of this repo's 4).
+- On a cloudpid Container, Bun gets what pnpm got (docs/architecture/container.md → Package managers and Turborepo off the mount): the image preinstalls it (a fourth revision of ADR-0004), the bootstrap switches the global store on in Bun's global configuration, so `node_modules` is mostly symlinks into Bun's cache on the Container's disk, and the token scan before a snapshot skips Bun's directories. Bun keeps patched and trusted packages, and what links to a workspace package, in the project, so more of this repo's install crosses the mount than under pnpm's global virtual store.
+- CI caches one `bun pm cache pack` file of the lockfile's packages, which needs no pruning: it never holds a package the lockfile dropped. Bun trusts its cache where pnpm checked each package against the lockfile's hash, so the jobs that hold deploy credentials still only read it, and only this repository's `check` jobs write it.
+
+## Considered Options
+
+- **`bun check` for typecheck.** Bun's own checker, a little faster than tsrs (8.7 s of CPU and 3.6 GB over the packages), but it runs no Effect diagnostics: a file `tsc` and tsrs fail with `unnecessaryEffectGen` passed.
+- **Bun as Vitest's runtime too**, for one runtime everywhere. See the measurements above.
+- **Bun without the global store.** Simpler, with nothing shared to patch in place, but every checkout (each worktree, each Container's repo) then copies every package, and on a Container that copy goes through the FUSE mount.
+- **Keeping pnpm and switching only the checker.** tsrs is most of the gain; the install's is a second per install. Bun was chosen for one tool to install, run scripts and pin, and for its lower memory.

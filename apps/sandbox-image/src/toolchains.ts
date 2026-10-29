@@ -14,6 +14,14 @@ export const WORKSPACE_ROOT = "/workspace";
 export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
 
 /**
+ * The name of the directories Bun installs packages into: its cache under the Container's home directory
+ * (`/root/.bun/install/cache`, with the global store in `links`) and the isolated linker's per-project store
+ * (`node_modules/.bun`). The token scan before a snapshot skips directories of this name (`SCAN_SCRIPT`,
+ * `apps/server/src/workspace/snapshots.ts`), since they hold only what Bun installed.
+ */
+export const BUN_DIRECTORY_NAME = ".bun";
+
+/**
  * Paths computer keeps container-local (computerd's `MOUNT_IGNORE`): they are never recorded in the Workspace DO's
  * file system, so dependency trees, build output and caches cost no DO storage and no sync. The patterns are computer's:
  * `/…` from the mount root, `**` + `/…` at any depth.
@@ -99,6 +107,20 @@ export const PNPM_GLOBAL_CONFIG: ReadonlyArray<readonly [key: string, value: str
 ];
 
 /**
+ * What the bootstrap puts in the `[install]` table of the Container's global Bun configuration (`.bunfig.toml` in
+ * `$XDG_CONFIG_HOME` or the home directory) unless the file already sets the key: the global store, so a repo's
+ * `node_modules` under the isolated linker is mostly symlinks into Bun's cache on the Container's disk
+ * (`$HOME/.bun/install/cache/links`, on one filesystem with the cache, so Bun still hard-links), as pnpm's global virtual
+ * store does for pnpm. It applies to the isolated linker only (a hoisted install is as before), and Bun keeps a
+ * patched or trusted package, what links to one, and what links to a workspace package in the project's
+ * `node_modules/.bun`. A repo's own `bunfig.toml` wins over this file; `BUN_INSTALL_GLOBAL_STORE` would win over the
+ * repo's, so it is not set as one. The values are TOML.
+ */
+export const BUN_GLOBAL_INSTALL_CONFIG: ReadonlyArray<readonly [key: string, value: string]> = [
+  ["globalStore", "true"],
+];
+
+/**
  * Turborepo's cache directory in a command's environment, on the Container's disk next to mise's cache. Its default is
  * `.turbo/cache` in the repo, a Container-only path that FUSE still serves. The environment variable wins over a
  * repo's `turbo.json` `cacheDir` (`--cache-dir` wins over both).
@@ -109,7 +131,7 @@ export const TURBO_CACHE_DIR = "/root/.cache/turbo";
 export const ROOT_MISE_TOML = `${WORKSPACE_ROOT}/mise.toml`;
 
 /**
- * What the Workspace declares when it declares nothing: git and gh, and Node, pnpm, Python and uv. These are the
+ * What the Workspace declares when it declares nothing: git and gh, and Node, pnpm, Bun, Python and uv. These are the
  * versions the image preinstalls in mise's system directory: the image holds a copy of this file (`image/mise.toml`;
  * a test keeps the two equal) and installs its tools, so a new Workspace downloads none of them (ADR-0004). They are
  * exact: mise locks a prefix such as `"24"` to the newest release, which the image would soon not have. The Workspace
@@ -124,6 +146,7 @@ lockfile_platforms = ["linux-x64"]
 
 [tools]
 "conda:git" = "2.56.0"
+bun = "1.4.4"
 gh = "2.103.0"
 node = "24.22.1"
 pnpm = "12.15.0"
@@ -245,6 +268,14 @@ const pnpmConfigSteps = PNPM_GLOBAL_CONFIG.map(
     `has_pnpm_setting '${key}|${kebab(key)}' || add_pnpm_setting "${key}: ${value.replaceAll('"', '\\"')}"`,
 ).join("\n");
 
+/**
+ * The bash lines that write `BUN_GLOBAL_INSTALL_CONFIG`'s keys to `$bun_config` where it does not have them, in the
+ * `[install]` table or dotted (`install.globalStore`), quoted or not.
+ */
+const bunConfigSteps = BUN_GLOBAL_INSTALL_CONFIG.map(
+  ([key, value]) => `has_bun_setting '${key}' || add_bun_setting '${key} = ${value}'`,
+).join("\n");
+
 /** The bash function `has_mise_config <dir>`: whether `dir` has a file mise reads a Toolchain declaration from. */
 export const HAS_MISE_CONFIG = `# Every file mise reads a Toolchain declaration from (mise.<env>.toml aside).
 has_mise_config() {
@@ -277,7 +308,8 @@ has_mise_config() {
  *    Container's global config has one, and points git's credentials for github.com at the token for the repo's owner
  *    (`$CLOUDPID_GITHUB_TOKENS`, else `$GITHUB_TOKEN`) at the time git asks. Those go to the Container's
  *    `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds a token,
- * 5. writes the Container's global pnpm configuration (`PNPM_GLOBAL_CONFIG`), each key only when the file does not have it,
+ * 5. writes the Container's global pnpm configuration (`PNPM_GLOBAL_CONFIG`) and the `[install]` table of its global
+ *    Bun configuration (`BUN_GLOBAL_INSTALL_CONFIG`), each key only when the file does not have it,
  * 6. ends its output with `BOOTSTRAP_CHANGED` when a step set `changed=1` (step 3 does when mise's installs differ
  *    from before it).
  */
@@ -397,6 +429,22 @@ add_pnpm_setting() {
   { [ ! -s "$pnpm_config" ] || [ -z "$(tail -c 1 "$pnpm_config")" ] || echo; printf '%s\\n' "$1"; } >>"$pnpm_config" 2>/dev/null
 }
 ${pnpmConfigSteps}
+
+# Bun's global configuration (BUN_GLOBAL_INSTALL_CONFIG), where Bun reads it: a key the file has is the Container's own.
+# Best effort: Bun then works as it does, with each project's packages in its node_modules on the mount.
+bun_config="\${XDG_CONFIG_HOME:-$HOME}/.bunfig.toml"
+mkdir -p "\${bun_config%/*}" 2>/dev/null
+has_bun_setting() { grep -qsE "^[[:space:]]*([\\"']?install[\\"']?[[:space:]]*\\.[[:space:]]*)?[\\"']?$1[\\"']?[[:space:]]*=" "$bun_config"; }
+# Under the file's [install] header when it has one, else in a new [install] table at its end.
+add_bun_setting() {
+  if grep -qsE '^[[:space:]]*\\[[[:space:]]*install[[:space:]]*\\][[:space:]]*(#.*)?$' "$bun_config"; then
+    awk -v line="$1" '{ print } !done && /^[[:space:]]*\\[[[:space:]]*install[[:space:]]*\\][[:space:]]*(#.*)?$/ { print line; done = 1 }' \\
+      "$bun_config" >"$bun_config.tmp" 2>/dev/null && mv "$bun_config.tmp" "$bun_config" 2>/dev/null
+  else
+    { [ ! -s "$bun_config" ] || [ -z "$(tail -c 1 "$bun_config")" ] || echo; printf '[install]\\n%s\\n' "$1"; } >>"$bun_config" 2>/dev/null
+  fi
+}
+${bunConfigSteps}
 
 [ "$changed" -eq 1 ] && echo ${shellQuote(BOOTSTRAP_CHANGED)}
 

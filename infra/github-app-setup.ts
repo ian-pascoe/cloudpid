@@ -2,7 +2,7 @@
  * Registers cloudpid's GitHub App (ADR-0025) through GitHub's manifest flow and hands its secrets to the deploys. Run
  * from a workstation with `gh` signed in as the owner, and a browser:
  *
- *   pnpm --filter @cloudpid/infra run github-app:setup [--name cloudpid] [--repo owner/name]
+ *   bun --cwd infra run github-app:setup [--name cloudpid] [--repo owner/name]
  *
  * 1. It serves a page on 127.0.0.1 that posts the manifest (`githubAppManifest`) to GitHub; you confirm the app's name
  *    there, and GitHub sends you back with a code the app's ID and private key are fetched with. GitHub shows the key

@@ -1,5 +1,5 @@
 # Whole-project typecheck, lint, and format check: what staged-file hooks cannot
 # cover, such as type errors in files that were not changed. Tests run in CI.
-pnpm run typecheck
-pnpm run lint
-pnpm run format:check
+bun run typecheck
+bun run lint
+bun run format:check

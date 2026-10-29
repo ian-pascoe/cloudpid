@@ -3,7 +3,7 @@
 // measurements use (`changes.setup.ts`), ten files edited before the Run and ten during it. Skipped unless
 // `CHANGES_BENCH=1`. Times are taken here, around each call: workerd's clock stands still while code runs.
 //
-//   CHANGES_BENCH=1 pnpm exec vitest run --project workerd-workspace --no-file-parallelism \
+//   CHANGES_BENCH=1 bun vitest run --project workerd-workspace --no-file-parallelism \
 //     src/workspace/runs.bench.workerd.test.ts
 // @effect-diagnostics asyncFunction:off globalConsole:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { env } from "cloudflare:workers";

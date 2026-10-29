@@ -23,6 +23,8 @@ import {
   BASE_MISE_TOML,
   BOOTSTRAP_CHANGED,
   bootstrapScript,
+  BUN_DIRECTORY_NAME,
+  BUN_GLOBAL_INSTALL_CONFIG,
   ENVIRONMENT_SETUP_RECORD,
   environmentSetupScript,
   environmentStartScriptRun,
@@ -148,9 +150,9 @@ describe("the image's preinstalled Toolchains", () => {
   // The image installs the tools of its copy of the base mise.toml (`image/mise.toml`) into mise's system directory.
   const image = readFileSync(join(sandboxImageContext, "mise.toml"), "utf8");
 
-  it("are the common ones: Node, pnpm, Python and uv, besides git and gh", () => {
+  it("are the common ones: Node, pnpm, Bun, Python and uv, besides git and gh", () => {
     expect([...toolsOf(image).keys()].toSorted()).toEqual(
-      ["conda:git", "gh", "node", "pnpm", "python", "uv"].toSorted(),
+      ["bun", "conda:git", "gh", "node", "pnpm", "python", "uv"].toSorted(),
     );
   });
 
@@ -224,6 +226,12 @@ describe("a command's environment", () => {
     // An environment variable (`pnpm_config_*`) wins over a repo's pnpm-workspace.yaml: the Container's pnpm settings
     // are in pnpm's global config.yaml, which the repo wins over.
     expect(JSON.stringify(toolchainEnv())).not.toMatch(/pnpm/i);
+  });
+
+  it("sets nothing that would override a repo's own Bun settings", () => {
+    // `BUN_*` variables win over a repo's bunfig.toml: the Container's Bun settings are in the global .bunfig.toml,
+    // which the repo wins over.
+    expect(Object.keys(toolchainEnv()).filter((name) => name.startsWith("BUN_"))).toEqual([]);
   });
 
   it("sets only names an Environment's variable may not have, so none overrides it", () => {
@@ -656,6 +664,105 @@ describe("the Container's global pnpm configuration", () => {
     const { run } = sandbox();
 
     expect(run().stdout).not.toContain(BOOTSTRAP_CHANGED);
+  });
+});
+
+describe("the Container's global Bun configuration", () => {
+  const configOf = (home: string) => join(home, ".bunfig.toml");
+
+  it("switches the global store on, so a repo's node_modules links into Bun's cache on the Container's disk", () => {
+    const { home, run } = sandbox();
+
+    expect(run().status).toBe(0);
+    expect(readFileSync(configOf(home), "utf8")).toBe("[install]\nglobalStore = true\n");
+  });
+
+  it("names Bun's directories with a name the token scan skips", () => {
+    expect(BUN_DIRECTORY_NAME).toBe(".bun");
+    expect(BUN_GLOBAL_INSTALL_CONFIG).toEqual([["globalStore", "true"]]);
+  });
+
+  it("adds the key under the file's own [install] table, keeping the rest", () => {
+    const { home, run } = sandbox();
+
+    writeFileSync(
+      configOf(home),
+      [
+        'registry = "https://example.test/"',
+        "",
+        "[install]",
+        "exact = true",
+        "",
+        "[run]",
+        "bun = true",
+        "",
+      ].join("\n"),
+    );
+
+    run();
+
+    expect(readFileSync(configOf(home), "utf8")).toBe(
+      [
+        'registry = "https://example.test/"',
+        "",
+        "[install]",
+        "globalStore = true",
+        "exact = true",
+        "",
+        "[run]",
+        "bun = true",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("adds an [install] table on a new line when the file has none and does not end with a newline", () => {
+    const { home, run } = sandbox();
+
+    writeFileSync(configOf(home), "[run]\nbun = true");
+
+    run();
+
+    expect(readFileSync(configOf(home), "utf8")).toBe(
+      "[run]\nbun = true\n[install]\nglobalStore = true\n",
+    );
+  });
+
+  it("keeps a setting the file has, in its table or dotted, quoted or not", () => {
+    for (const own of [
+      "[install]\nglobalStore = false\n",
+      '[install]\n  "globalStore" = false\n',
+      "install.globalStore = false\n",
+    ]) {
+      const { home, run } = sandbox();
+
+      writeFileSync(configOf(home), own);
+      run();
+
+      expect(readFileSync(configOf(home), "utf8")).toBe(own);
+    }
+  });
+
+  it("is written once: a second start leaves the file as it is", () => {
+    const { home, run } = sandbox();
+
+    run();
+
+    const first = readFileSync(configOf(home), "utf8");
+
+    run();
+
+    expect(readFileSync(configOf(home), "utf8")).toBe(first);
+  });
+
+  it("is written where Bun looks for it when XDG_CONFIG_HOME is set", () => {
+    const { base, home, run } = sandbox();
+    const xdg = join(base, "xdg");
+
+    run({ XDG_CONFIG_HOME: xdg });
+
+    expect(existsSync(join(xdg, ".bunfig.toml"))).toBe(true);
+    expect(existsSync(configOf(home))).toBe(false);
   });
 });
 

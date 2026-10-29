@@ -5,8 +5,8 @@
 
 # Reinstall when dependencies differ; `prepare` then syncs the reference
 # repositories, so sync directly only when no install ran.
-if ! git diff --quiet "$1" "$2" -- pnpm-lock.yaml 2>/dev/null; then
-  pnpm install --frozen-lockfile
+if ! git diff --quiet "$1" "$2" -- bun.lock 2>/dev/null; then
+  bun install --frozen-lockfile
 else
   ./scripts/sync-reference-repos.sh
 fi

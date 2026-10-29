@@ -109,7 +109,7 @@ import { ReportError, SessionRegistry } from "./status.ts";
  * the module loads: the stack imports this module under Node, which has no such module.
  */
 const workersTracing = (): Promise<WorkersTracing | undefined> =>
-  import("cloudflare:workers").then(
+  import("./workers-tracing.ts").then(
     (workers) => workers.tracing,
     () => undefined,
   );

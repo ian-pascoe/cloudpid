@@ -25,17 +25,17 @@ It has a single user: only the owner gets past Cloudflare Access.
 
 ## Development
 
-You need Node, pnpm (the version in `package.json`'s `packageManager`), and Docker with `buildx` to build the Container image.
+You need Node, Bun (the version in `package.json`'s `packageManager`, which `mise.toml` pins too), and Docker with `buildx` to build the Container image.
 
 ```sh
-pnpm install
-pnpm check                                  # typecheck, lint, test, format check
-pnpm --filter @cloudpid/infra run dev       # workerd on http://localhost:1337
-pnpm --filter @cloudpid/web run dev         # the web app, proxied to the dev server
+bun install
+bun run check                               # typecheck, lint, test, format check
+bun --cwd infra run dev                     # workerd on http://localhost:1337
+bun --cwd apps/web run dev                  # the web app, proxied to the dev server
 ```
 
 Deploying needs the secrets listed in [`docs/development/infra.md`](docs/development/infra.md) → _Secrets and variables_:
 
 ```sh
-pnpm --filter @cloudpid/infra run deploy --stage dev_$USER
+bun --cwd infra run deploy --stage dev_$USER
 ```

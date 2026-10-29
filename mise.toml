@@ -1,0 +1,4 @@
+# The tools this repo pins, for mise (locally, and on a cloudpid Container, whose bootstrap installs a repo's).
+# Bun's version is the one in package.json's `packageManager`; keep the two equal.
+[tools]
+bun = "1.4.4"
