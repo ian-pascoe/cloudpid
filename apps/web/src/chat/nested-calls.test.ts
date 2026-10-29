@@ -1,7 +1,7 @@
 import type { NestedTool } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
-import { liveCalls, settledCalls } from "./nested-calls.ts";
+import { liveCalls, omittedCalls, settledCalls } from "./nested-calls.ts";
 
 const nested = (change: Partial<NestedTool>): NestedTool => ({
   callId: "c1/c1",
@@ -76,6 +76,33 @@ describe("the calls a script made", () => {
       ["3", { patch: "--- b\n+++ b\n" }],
       ["4", { unavailable: true, created: true }],
       ["5", undefined],
+    ]);
+  });
+
+  it("reads how many calls a result's details left out, and how many of them failed", () => {
+    expect(omittedCalls({ calls: [], omittedCalls: { count: 1234, failed: 1200 } })).toEqual({
+      count: 1234,
+      failed: 1200,
+    });
+    expect(omittedCalls({ calls: [], omittedCalls: { count: 3, failed: 0 } })).toEqual({
+      count: 3,
+      failed: 0,
+    });
+  });
+
+  it("finds no omitted calls when the details have none or a bad one, and still lists their calls", () => {
+    const calls = [{ id: 1, name: "read", args: "{}", status: "ok" }];
+
+    expect(omittedCalls(undefined)).toBeUndefined();
+    expect(omittedCalls({ calls })).toBeUndefined();
+    expect(omittedCalls({ calls, omittedCalls: "many" })).toBeUndefined();
+    expect(omittedCalls({ calls, omittedCalls: { count: 2 } })).toBeUndefined();
+    expect(omittedCalls({ calls, omittedCalls: { count: -1, failed: 0 } })).toBeUndefined();
+    expect(omittedCalls({ calls, omittedCalls: { count: 1.5, failed: 0 } })).toBeUndefined();
+    expect(omittedCalls({ calls, omittedCalls: { count: 0, failed: 0 } })).toBeUndefined();
+
+    expect(settledCalls({ calls, omittedCalls: "many" })).toEqual([
+      { id: "1", name: "read", args: {}, status: "ok" },
     ]);
   });
 

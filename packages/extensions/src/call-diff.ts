@@ -18,6 +18,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { decodeRecordedDiff, type RecordedDiff } from "@cloudpid/protocol/call-diff";
 import * as Diff from "diff";
+import { byteLength, storedBytes } from "./stored-bytes.ts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
@@ -46,18 +47,14 @@ export const MAX_EDIT_LENGTH = 1000;
 export const BINARY_SCAN_BYTES = 8000;
 
 /**
- * The patches the nested calls of one `codemode` result record, together (as stored, see `MAX_PATCH_BYTES`). The result
- * is one row, with room for the text of the script's output and its images (`images/results.ts`), so a script that
- * changes many files cannot fill it: the calls past this are `tooLarge`.
+ * The diffs the nested calls of one `codemode` result record, together, each counted whole as stored (its key, path and
+ * patch; see `MAX_PATCH_BYTES`). The result is one row, with room for the text of the script's output, its images
+ * (`images/results.ts`) and its call list (`result-bounds.ts`), so a script that changes many files cannot fill it: a
+ * call whose patch is past this is `tooLarge`, and once not even that fits, the calls after have none.
  */
 export const MAX_CODEMODE_DIFF_BYTES = 256 * 1024;
 
-const encoder = new TextEncoder();
-
-export const byteLength = (text: string): number => encoder.encode(text).length;
-
-/** What `text` weighs in a stored result: its JSON string, quotes included, in UTF-8 bytes. */
-export const storedBytes = (text: string): number => byteLength(JSON.stringify(text));
+export { byteLength, storedBytes } from "./stored-bytes.ts";
 
 /** What a `write` finds at its path. */
 export type OldFile =
@@ -213,7 +210,8 @@ const DIFFING_TOOLS: ReadonlySet<string> = new Set(["edit", "write"]);
 /**
  * The Call diffs of the `edit` and `write` calls a `codemode` result lists in its `details`, keyed by the call's number
  * in the script (the `id` of its row): the diff of each call that finished, from `detailsOf` its number. A patch past
- * 512 KiB, or past the budget the result's patches share, is recorded as `tooLarge`.
+ * 512 KiB, or past the budget the result's diffs share, is recorded as `tooLarge`; past the budget even so, the call and
+ * those after it have none.
  */
 export const capturedDiffs = (
   details: JsonValue | undefined,
@@ -223,7 +221,8 @@ export const capturedDiffs = (
     onNone: () => Promise.resolve({}),
     onSome: async ({ calls }) => {
       const diffs: Record<string, RecordedDiff> = {};
-      let spent = 0;
+      // The braces of the record; each entry adds its key, its diff, and a separator.
+      let spent = 2;
 
       for (const call of calls) {
         if (!DIFFING_TOOLS.has(call.name) || call.status !== "ok") continue;
@@ -232,19 +231,22 @@ export const capturedDiffs = (
 
         if (found === undefined) continue;
 
-        const size = found.patch === undefined ? 0 : storedBytes(found.patch);
+        const key = String(call.id);
+        const entry = (diff: RecordedDiff) => storedBytes(key) + 2 + storedBytes(diff);
+        const fits = (diff: RecordedDiff) => spent + entry(diff) <= MAX_CODEMODE_DIFF_BYTES;
+        const { patch, ...rest } = found;
 
-        if (
-          found.patch !== undefined &&
-          (size > MAX_PATCH_BYTES || spent + size > MAX_CODEMODE_DIFF_BYTES)
-        ) {
-          const { patch: _left, ...rest } = found;
+        // A patch too long on its own, or past the budget, is dropped and the call marked `tooLarge`; a call whose
+        // record does not fit even so has none, as the calls after it.
+        const diff =
+          patch === undefined || (storedBytes(patch) <= MAX_PATCH_BYTES && fits(found))
+            ? found
+            : { ...rest, tooLarge: true };
 
-          diffs[String(call.id)] = { ...rest, tooLarge: true };
-        } else {
-          spent += size;
-          diffs[String(call.id)] = found;
-        }
+        if (!fits(diff)) break;
+
+        spent += entry(diff);
+        diffs[key] = diff;
       }
 
       return diffs;

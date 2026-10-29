@@ -21,6 +21,7 @@ import {
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { Instructions, type InstructionsSettings } from "@cloudpid/extensions/instructions";
+import { ResultBounds } from "@cloudpid/extensions/result-bounds";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
   type SettingsAccess,
@@ -146,6 +147,9 @@ export const sessionExtensions: Effect.Effect<
       (toolSearch) => [...extensions, toolSearch],
     ),
   ),
+  // Last of all, after the Secrets' redaction: every tool result's diagnostics, nested structured output and details
+  // held to their caps before it is stored, so no Secret is cut before it is redacted.
+  Effect.map((extensions) => [...extensions, ResultBounds]),
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(WebNetworkLive),
 );

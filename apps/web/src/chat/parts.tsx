@@ -27,7 +27,7 @@ import { decodeCardDiff, diffTotals } from "../call-diff.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
-import { NestedCall } from "./nested-calls.ts";
+import { NestedCall, OmittedCalls } from "./nested-calls.ts";
 import { keepClosedInView } from "./scroller.ts";
 import { toolSummary } from "./tool-summary.ts";
 
@@ -203,6 +203,15 @@ const decodeNested = Schema.decodeUnknownOption(
   Schema.Struct({ nested: Schema.Array(NestedCall) }),
 );
 
+const decodeOmitted = Schema.decodeUnknownOption(Schema.Struct({ omittedCalls: OmittedCalls }));
+
+/** What a card says of the calls its script's result left out of the list: "1,234 more calls, 1,200 failed". */
+const omittedText = ({ count, failed }: OmittedCalls): string => {
+  const more = `${count.toLocaleString("en-US")} more ${count === 1 ? "call" : "calls"}`;
+
+  return failed > 0 ? `${more}, ${failed.toLocaleString("en-US")} failed` : more;
+};
+
 /** The mark of a call's state, as on a tool card's own line. */
 const StateIcon = ({ status }: { status: NestedCall["status"] }) => {
   switch (status) {
@@ -239,15 +248,18 @@ const NestedLine = ({ call, path }: { call: NestedCall; path?: string | undefine
 
 /**
  * The calls a tool made, such as a script's, in the order they started: live while it runs, then as it recorded them.
- * An `edit` or `write` of a script that ended has its change on its line, and opens to its diff in place.
+ * An `edit` or `write` of a script that ended has its change on its line, and opens to its diff in place. A result that
+ * capped its list says after the last line how many calls it left out.
  */
 const NestedCalls = ({
   parentId,
   calls,
+  omitted,
 }: {
   /** The call that made them: its `callId` keeps which of them are open. */
   parentId: string;
   calls: readonly NestedCall[];
+  omitted?: OmittedCalls | undefined;
 }) => {
   // A line that opens has a chevron before it; the others keep its place.
   const opens = Arr.some(calls, (call) => call.diff !== undefined);
@@ -311,6 +323,12 @@ const NestedCalls = ({
             </li>
           );
         })}
+        {omitted !== undefined && (
+          // Under the names of the lines above, past the mark of their state.
+          <li className={cn("text-xs text-muted-foreground", opens ? "ml-11" : "ml-5.5")}>
+            {omittedText(omitted)}
+          </li>
+        )}
       </ul>
     </div>
   );
@@ -372,6 +390,11 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
     () => [],
   );
 
+  // A script's result caps its list of calls: how many it left out, and how many of those failed.
+  const omitted = Option.getOrUndefined(
+    Option.map(decodeOmitted(artifact), (found) => found.omittedCalls),
+  );
+
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
   const changes = changesOf(artifact);
 
@@ -396,7 +419,9 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       {Arr.map(changes, (change) => (
         <Change key={change.field} change={change} />
       ))}
-      {calls.length > 0 && <NestedCalls parentId={toolCallId} calls={calls} />}
+      {(calls.length > 0 || omitted !== undefined) && (
+        <NestedCalls parentId={toolCallId} calls={calls} omitted={omitted} />
+      )}
       {streamed !== undefined && result === undefined && <Output label="Output" text={streamed} />}
       {result !== undefined && (
         <Output

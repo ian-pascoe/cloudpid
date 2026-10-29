@@ -1392,6 +1392,26 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /** The `details` of each tool result in the root transcript, as stored, oldest first. */
+  toolResultDetails(): Promise<ReadonlyArray<unknown>> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+        const root = yield* harness.root({});
+
+        const page = yield* callDurable("entries", (context) =>
+          root.entries({ order: "ascending" }, 100, undefined, context),
+        );
+
+        return Arr.flatMap(page.items, (entry) => {
+          const message = ToolResultEntry.is(entry) ? entry.model?.[0] : undefined;
+
+          return message?.role === "toolResult" ? [message.details] : [];
+        });
+      }),
+    );
+  }
+
   /** The images of the tool results in the root transcript, as stored, oldest first: each one's type and base64 length. */
   toolResultImages(): Promise<
     ReadonlyArray<{ readonly mimeType: string; readonly characters: number }>
