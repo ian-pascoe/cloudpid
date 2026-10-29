@@ -1,12 +1,14 @@
 // `container_restart` and `container_resize` (docs/architecture/container.md → Restart by the agent, Resize by
 // the agent), over a fake Workspace Container.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off schemaSync:off
 import type { InstanceType } from "@cloudpid/config";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
+import type { JsonObject } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   type ContainerControl,
@@ -14,8 +16,11 @@ import {
   ContainerTools,
   describeRestart,
   MAX_CONTAINER_REASON,
+  RestartOutput,
+  ResizeOutput,
   WorkspaceContainer,
 } from "./container.ts";
+import { runProgram } from "./program.fixture.ts";
 
 /**
  * A Workspace Container that records each restart and resize, answers `wasRunning` to a restart and `resized` to a
@@ -391,5 +396,114 @@ describe("container_resize", () => {
     }
 
     expect(container.resizes).toEqual([]);
+  });
+});
+
+describe("what programs get from the container tools", () => {
+  /** What a program got of calling `tool` with `args`, over a Container the fake answers. */
+  const nested = async (control: ContainerControl, tool: string, args: JsonObject) => {
+    const extension = await Effect.runPromise(
+      ContainerTools.pipe(Effect.provideService(WorkspaceContainer, control)),
+    );
+
+    const [got] = await runProgram([extension], [[tool, args]]);
+
+    if (got === undefined) throw new Error("no call result");
+
+    return got;
+  };
+
+  it("gives a program whether a restart was fresh and stopped a container", async () => {
+    const decode = Schema.decodeUnknownSync(RestartOutput);
+
+    for (const [wasRunning, fresh] of [
+      [true, false],
+      [false, true],
+    ] as const) {
+      const got = await nested(fakeContainer(wasRunning).control, "container_restart", {
+        reason: "hung",
+        fresh,
+      });
+
+      expect(got).toMatchObject({ isError: false, diagnostics: [] });
+      expect(decode(got.structuredOutput)).toEqual({ fresh, was_running: wasRunning });
+    }
+  });
+
+  it("gives a program the size before and after a resize, and what it stopped", async () => {
+    const decode = Schema.decodeUnknownSync(ResizeOutput);
+
+    const resized = await nested(fakeContainer(true).control, "container_resize", {
+      size: "cpu-2",
+      reason: "memory",
+    });
+
+    expect(resized).toMatchObject({ isError: false, diagnostics: [] });
+    expect(decode(resized.structuredOutput)).toEqual({
+      outcome: "resized",
+      size: "cpu-2",
+      previous: "cpu-1",
+      next: "cpu-2",
+      environment: "cpu-1",
+      was_running: true,
+      stopped: true,
+      snapshotted: true,
+      disk_smaller: false,
+    });
+
+    const idle = await nested(fakeContainer(false).control, "container_resize", {
+      size: "cpu-2",
+      reason: "memory",
+    });
+
+    expect(decode(idle.structuredOutput)).toMatchObject({
+      outcome: "resized",
+      was_running: false,
+      stopped: false,
+      snapshotted: false,
+    });
+
+    const unchanged = await nested(
+      fakeContainer(true, undefined, { outcome: "unchanged", size: "cpu-2" }).control,
+      "container_resize",
+      { size: "cpu-2", reason: "memory" },
+    );
+
+    expect(unchanged).toMatchObject({ isError: false, diagnostics: [] });
+    expect(decode(unchanged.structuredOutput)).toMatchObject({
+      outcome: "unchanged",
+      previous: "cpu-2",
+      next: "cpu-2",
+      environment: null,
+      stopped: false,
+    });
+  });
+
+  it("says the new size's disk is smaller, and gives a refused resize no value", async () => {
+    const decode = Schema.decodeUnknownSync(ResizeOutput);
+
+    const smaller = await nested(
+      fakeContainer(true, undefined, {
+        outcome: "resized",
+        wasRunning: true,
+        previous: "standard-4",
+        next: "cpu-1",
+        environment: "standard-4",
+        snapshotted: true,
+      }).control,
+      "container_resize",
+      { size: "cpu-1", reason: "done" },
+    );
+
+    expect(decode(smaller.structuredOutput).disk_smaller).toBe(true);
+
+    const refused = await nested(
+      fakeContainer(true, undefined, { outcome: "refused", limit: "cpu-2" }).control,
+      "container_resize",
+      { size: "standard-4", reason: "more memory" },
+    );
+
+    expect(refused.isError).toBe(true);
+    expect(refused).not.toHaveProperty("structuredOutput");
   });
 });

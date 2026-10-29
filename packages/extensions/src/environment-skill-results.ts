@@ -1,7 +1,8 @@
 // What `environment_skill_save` and `environment_skill_remove` are built over and say (ADR-0026, `docs/architecture/agent-changes.md`):
 // the Session's `EnvironmentSkills` service they call, what each call can come to (`SkillSaved`,
 // `SkillRemoved`), and the results they give for each, shared by a change to an Environment's own Skills and one to those
-// kept Global (which waits for the owner's Approval first: `./environment-skills-global.ts`).
+// kept Global (which waits for the owner's Approval first: `./environment-skills-global.ts`). Each result also carries the
+// value a program gets (`./environment-lifecycle-outputs.ts`), besides its text and details, which are unchanged.
 //
 // `environment.ts` imports `./environment-skills.ts`, which imports this file, so what it takes from `environment.ts` is
 // used inside functions only: its exports are not there yet when this module loads.
@@ -33,6 +34,12 @@ import {
   type EnvironmentsService,
   type RunChange,
 } from "./environment.ts";
+import {
+  approvalOutput,
+  skillInstalledOutput,
+  skillRemovedOutput,
+  skillSavedOutput,
+} from "./environment-lifecycle-outputs.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 
 /** How the save of a Skill went. */
@@ -307,6 +314,10 @@ const reachInstalledGlobal = (
 export const PROMPT_NOTE =
   "The skills list in your system prompt changes at the next Context Window (after a Handoff, or in a new Session).";
 
+/** The owner's Approval of a change as a value gives it: approved when they were asked and said yes; null when none was asked. */
+export const approvalOf = (approved: boolean) =>
+  approvalOutput(approved ? { approved: true } : null);
+
 /** The agent change a result carries as its details, with the files before and after by hash. */
 const changeDetails = (environment: ChangedEnvironment, change: AgentChange) => ({
   id: change.id,
@@ -370,7 +381,19 @@ export const savedOutcome = (
         return yield* EnvironmentsError.make({
           message: `${approved ? "The user approved, but the" : "The"} Skill ${folder} kept for ${named(saved.environment)} was saved again since the user was asked: nothing was saved. Ask again if the Skill is still needed.`,
         });
-      case "unchanged":
+      case "unchanged": {
+        const kept = skillSavedOutput({
+          scope: saved.environment,
+          skill: saved.name,
+          change: null,
+          unchanged: true,
+          approval: approvalOf(approved),
+          handed: false,
+          overriddenIn: [],
+          servedAt: servedAt(saved.name),
+          hidesGlobal: false,
+        });
+
         return approved
           ? {
               output: [
@@ -381,6 +404,7 @@ export const savedOutcome = (
                   ),
                 },
               ],
+              structuredOutput: kept,
               details: { approval: { approved: true } },
             }
           : {
@@ -390,10 +414,13 @@ export const savedOutcome = (
                   text: `${named(saved.environment)} keeps the Skill ${saved.name} with these files already: nothing was changed or recorded now (if an earlier run of this call saved it before the Session restarted, it is done). It is at ${servedAt(saved.name)}.`,
                 },
               ],
+              structuredOutput: kept,
               details: {
                 unchanged: { environment: saved.environment, field: skillField(saved.name) },
               },
             };
+      }
+
       case "saved": {
         const { change } = saved;
         const current = atGlobal ? yield* environments.current : null;
@@ -411,6 +438,17 @@ export const savedOutcome = (
         };
 
         return {
+          structuredOutput: skillSavedOutput({
+            scope: saved.environment,
+            skill: saved.name,
+            change,
+            unchanged: false,
+            approval: approvalOf(approved),
+            handed: saved.handed,
+            overriddenIn: saved.overriddenIn,
+            servedAt: servedAt(saved.name),
+            hidesGlobal: saved.inherited,
+          }),
           output: [
             {
               type: "text" as const,
@@ -474,6 +512,14 @@ export const installedOutcome = (
         const { available, repo, commit } = installed;
 
         return {
+          structuredOutput: skillInstalledOutput({
+            scope: installed.environment,
+            source: { repo, ref: installed.ref, commit },
+            results: [],
+            listed: available,
+            approval: approvalOf(approved),
+            handed: false,
+          }),
           output: [
             {
               type: "text" as const,
@@ -550,6 +596,14 @@ export const installedOutcome = (
         };
 
         return {
+          structuredOutput: skillInstalledOutput({
+            scope: installed.environment,
+            source: { repo, ref, commit },
+            results,
+            listed: [],
+            approval: approvalOf(approved),
+            handed: installed.handed,
+          }),
           output: [
             {
               type: "text" as const,
@@ -634,6 +688,16 @@ export const removedOutcome = (
                   ),
                 },
               ],
+              structuredOutput: skillRemovedOutput({
+                scope: removed.environment,
+                skill: name,
+                change: null,
+                unchanged: true,
+                approval: approvalOf(approved),
+                handed: false,
+                overriddenIn: [],
+                globalServed: false,
+              }),
               details: { approval: { approved: true } },
             }
           : yield* EnvironmentsError.make({
@@ -655,6 +719,16 @@ export const removedOutcome = (
         };
 
         return {
+          structuredOutput: skillRemovedOutput({
+            scope: removed.environment,
+            skill: name,
+            change,
+            unchanged: false,
+            approval: approvalOf(approved),
+            handed: removed.handed,
+            overriddenIn: removed.overriddenIn,
+            globalServed: removed.inherited,
+          }),
           output: [
             {
               type: "text" as const,

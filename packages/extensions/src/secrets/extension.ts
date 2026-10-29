@@ -1,7 +1,8 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
 // The `secrets` extension (`docs/architecture/agent-capabilities.md` → Secrets), ported from pi-secret's `pi-secret-extension.ts` (see
 // ../../NOTICE.md): `secret_ask`, `secret_list`, and `secret_forget`; a `beforeTool` hook that blocks calls referencing
-// a Secret the Session does not hold; an `afterTool` hook that redacts every result; and wraps that resolve references
+// a Secret the Session does not hold; an `afterTool` hook that redacts every result, its text, details, diagnostics and
+// `structuredOutput` (the value of a nested call) alike; and wraps that resolve references
 // in the tools that use Secrets. Provider requests are scrubbed at the Session's model seam (`./models.ts`), which the
 // host installs, so every model call is covered, not only generations.
 //
@@ -33,6 +34,15 @@ import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { BackendEnv } from "../coding-tools.ts";
 import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
+import { asOutput, boundItems, outputSchema } from "../outputs.ts";
+import {
+  AskOutput,
+  ForgetOutput,
+  ListOutput,
+  type AskedSecret,
+  type ForgottenSecret,
+  type HeldSecretOutput,
+} from "./outputs.ts";
 import {
   isSecretName,
   referencedSecretNames,
@@ -45,6 +55,7 @@ import type { KeptScope } from "./kept.ts";
 import {
   type AskOutcome,
   type ForgetOutcome,
+  type HeldSecret,
   type SecretAsk,
   Secrets,
   type SecretsService,
@@ -323,13 +334,71 @@ const forgetLine = ({ name, forgotten, kept }: ForgetOutcome): string => {
     : `${name}: ${keptWhere(kept)}, which a Session cannot forget; the user removes it on the Environments page.`;
 };
 
-/** A tool result of `lines`, with `secrets` as its details; never a value. */
+/** A tool result of `lines`, with `secrets` as its details and `structuredOutput` as its value; never a Secret value. */
 const result = (
   lines: ReadonlyArray<string>,
   secrets: ReadonlyArray<{ readonly [key: string]: DetailsJson }>,
+  structuredOutput: DetailsJson,
 ) => ({
   output: [{ type: "text" as const, text: lines.join("\n") }],
   details: { secrets: [...secrets] },
+  structuredOutput,
+});
+
+/** What `secret_ask` tells programs of one outcome: the same as its details, with a null for what the outcome lacks. */
+const askedSecret = (outcome: AskOutcome): typeof AskedSecret.Type => {
+  const none = {
+    env: null,
+    reference: null,
+    scope: null,
+    expires_at: null,
+    not_kept: null,
+  };
+
+  switch (outcome.status) {
+    case "provided":
+      return {
+        ...none,
+        name: outcome.name,
+        status: outcome.status,
+        env: secretEnvName(outcome.name),
+        reference: secretReference(outcome.name),
+        expires_at: iso(outcome.expiresAt),
+        not_kept: outcome.notKept ?? null,
+      };
+    case "kept":
+      return {
+        ...none,
+        name: outcome.name,
+        status: outcome.status,
+        env: secretEnvName(outcome.name),
+        reference: secretReference(outcome.name),
+        scope: outcome.scope,
+      };
+    default:
+      return { ...none, name: outcome.name, status: outcome.status };
+  }
+};
+
+/** What `secret_list` tells programs of one held Secret. */
+const heldSecret = (secret: HeldSecret): typeof HeldSecretOutput.Type => ({
+  name: secret.name,
+  status: secret.kept === undefined ? "held" : "kept",
+  scope: secret.kept ?? null,
+  env: secretEnvName(secret.name),
+  reference: secretReference(secret.name),
+  expires_at: secret.kept === undefined ? iso(secret.expiresAt) : null,
+});
+
+/** What `secret_forget` tells programs of one name. */
+const forgottenSecret = ({
+  name,
+  forgotten,
+  kept,
+}: ForgetOutcome): typeof ForgottenSecret.Type => ({
+  name,
+  status: forgotten ? "forgotten" : kept === undefined ? "not_held" : "kept",
+  scope: kept ?? null,
 });
 
 /** The outcome as details: JSON, with the expiry as an ISO time and the scope of a kept Secret. */
@@ -378,6 +447,7 @@ export const secretsExtension = (
       description:
         "Ask the user to enter Secrets (API keys, passwords, tokens) in a masked form in their browser. Waits for the answer and returns how to reference each one; never its value. The form lets the user keep what they enter for this Session only (the default, 15 minutes), for this Session's Environment or Global, where it does not expire; keep only suggests one of the three, and the answer says which the user chose. A Secret kept this way is recorded in the Environment's Agent changes by name, and listed in the Run's Notification.",
       parameters: AskParameters,
+      structuredOutputSchema: outputSchema(AskOutput),
       executionMode: "sequential",
       // An eviction cuts the wait off; the rerun waits for the same request, which the user still sees.
       replay: "safe",
@@ -406,7 +476,11 @@ export const secretsExtension = (
             ...outcomes.map(askLine),
           ];
 
-          return result(lines, outcomes.map(outcomeDetails));
+          return result(
+            lines,
+            outcomes.map(outcomeDetails),
+            asOutput(AskOutput, { secrets: outcomes.map(askedSecret), cancelled }),
+          );
         }),
     });
 
@@ -415,6 +489,7 @@ export const secretsExtension = (
       description:
         "List the Secrets this Session holds: those the user entered, with when each expires, and those kept for the Environment; never their values.",
       parameters: ListParameters,
+      structuredOutputSchema: outputSchema(ListOutput),
       replay: "safe",
       execute: ({ query }) =>
         Effect.gen(function* () {
@@ -427,8 +502,13 @@ export const secretsExtension = (
           );
 
           if (held.length === 0) {
-            return result(["No Secrets are held. Call secret_ask to request one."], []);
+            return result(["No Secrets are held. Call secret_ask to request one."], [], {
+              secrets: [],
+              secrets_truncated: false,
+            });
           }
+
+          const listed = boundItems(held.map(heldSecret));
 
           return result(
             held.map(
@@ -452,6 +532,10 @@ export const secretsExtension = (
                     reference: secretReference(secret.name),
                   },
             ),
+            asOutput(ListOutput, {
+              secrets: listed.items,
+              secrets_truncated: listed.truncated,
+            }),
           );
         }),
     });
@@ -460,18 +544,25 @@ export const secretsExtension = (
       name: "secret_forget",
       description: "Forget Secrets now, before their lifetime ends.",
       parameters: ForgetParameters,
+      structuredOutputSchema: outputSchema(ForgetOutput),
       replay: "safe",
       execute: ({ names }) =>
-        Effect.map(secrets.forget(names), (forgotten) =>
-          result(
+        Effect.map(secrets.forget(names), (forgotten) => {
+          const listed = boundItems(forgotten.map(forgottenSecret));
+
+          return result(
             forgotten.map(forgetLine),
             forgotten.map(({ name, forgotten: was, kept }) =>
               kept === undefined
                 ? { name, status: was ? "forgotten" : "not_held" }
                 : { name, status: was ? "forgotten" : "kept", scope: kept },
             ),
-          ),
-        ),
+            asOutput(ForgetOutput, {
+              secrets: listed.items,
+              secrets_truncated: listed.truncated,
+            }),
+          );
+        }),
     });
 
     const tools = yield* effectHook(ToolTask, {

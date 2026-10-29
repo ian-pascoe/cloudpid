@@ -1,6 +1,6 @@
 // The `environment` extension (docs/architecture/agent-changes.md), over fake Environments: what each tool shows and changes,
 // the refusal of values that hold a Secret, and the Run's record of the changes.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off schemaSync:off
 import {
   compareInstances,
   type ContainerSettings,
@@ -15,6 +15,7 @@ import {
 import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  type JsonObject,
   ROOT_CONVERSATION_ID,
   type ToolExecutionApi,
   type ToolRegistration,
@@ -40,8 +41,12 @@ import {
 import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
+import { EnvironmentGetOutput, EnvironmentListOutput } from "./environment-outputs.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
+import { EnvironmentChangeOutput } from "./outputs.ts";
+import { runProgram, runSized } from "./program.fixture.ts";
+import { MAX_NESTED_STRUCTURED_OUTPUT_BYTES } from "./result-bounds.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { secretEnvName, secretReference } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
@@ -87,6 +92,9 @@ const OTHER: Kept = {
 };
 
 const GLOBAL = { id: "*", name: "Global" };
+
+/** What `environment_get` with id `*` names of the Environment that overrides a field of Global's. */
+const GLOBAL_OVERRIDER = { id: "default", name: "Default" };
 
 const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
@@ -345,14 +353,14 @@ const heldSecrets = (values: Readonly<Record<string, string>>): SecretsService =
   return used as SecretsService;
 };
 
-const toolsOver = async (
+const extensionOver = (
   environments: EnvironmentsService,
   {
     held = {},
     logged = [],
   }: { held?: Readonly<Record<string, string>>; logged?: RunChange[] } = {},
-) => {
-  const extension = await Effect.runPromise(
+) =>
+  Effect.runPromise(
     EnvironmentTools.pipe(
       Effect.provideService(Environments, environments),
       Effect.provideService(AgentChangeLog, {
@@ -366,6 +374,12 @@ const toolsOver = async (
       Effect.provideService(Approvals, unusedApprovals),
     ),
   );
+
+const toolsOver = async (
+  environments: EnvironmentsService,
+  options: { held?: Readonly<Record<string, string>>; logged?: RunChange[] } = {},
+) => {
+  const extension = await extensionOver(environments, options);
 
   return (name: string): ToolRegistration => {
     const found = Arr.findFirst(extension.tools ?? [], (tool) => tool.name === name);
@@ -1460,5 +1474,199 @@ describe("environment_ignore_set", () => {
       ),
     ).toContain("holds the value of a Secret");
     expect(environments.changes).toEqual([]);
+  });
+});
+
+describe("the environment tools from a program", () => {
+  it("gets the Environments, each Environment's settings and the setters' outcomes, as their schemas declare", async () => {
+    const reason = "to try it";
+
+    const steps: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["environment_list", {}],
+      ["environment_get", { id: "default" }],
+      ["environment_get", { id: "0000abcd" }],
+      ["environment_get", { id: "*" }],
+      ["environment_variable_set", { id: "default", name: "API_URL", value: "https://x", reason }],
+      ["environment_variable_set", { id: "default", name: "API_URL", value: "https://x", reason }],
+      ["environment_variable_unset", { id: "default", name: "API_URL", reason }],
+      ["environment_container_resize", { id: "default", size: "cpu-2", reason }],
+      ["environment_idle_time_set", { id: "default", minutes: 10, reason }],
+      ["environment_setup_script_set", { id: "default", script: "npm ci", reason }],
+      ["environment_start_script_set", { id: "default", script: "docker compose up -d", reason }],
+      ["environment_toolchains_set", { id: "default", mise_toml: '[tools]\nnode = "22"', reason }],
+      ["environment_ignore_set", { id: "default", patterns: ["/data"], reason }],
+      ["environment_spare_workspace_set", { id: "default", enabled: false, reason }],
+      ["environment_variable_set", { id: "*", name: "NEW_VAR", value: "1", reason }],
+    ];
+
+    const called = await runProgram([await extensionOver(fakeEnvironments().service)], steps);
+
+    expect(Arr.map(called, (each) => each.diagnostics)).toEqual(Arr.map(steps, () => []));
+    expect(Arr.map(called, (each) => each.isError)).toEqual(Arr.map(steps, () => false));
+
+    const [list, own, other, global, ...setters] = Arr.map(called, (each) => each.structuredOutput);
+
+    expect(Schema.decodeUnknownSync(EnvironmentListOutput)(list)).toMatchObject({
+      environments: [
+        {
+          id: "default",
+          name: "Default",
+          current: true,
+          repos: [{ name: "app", url: "https://github.com/o/app.git" }],
+          build: { status: "ready", at: Date.UTC(2026, 9, 20), reason: null },
+        },
+        { id: "0000abcd", current: false, repos: [], build: { status: "failed" } },
+      ],
+      environments_truncated: false,
+      global_variables: 2,
+    });
+
+    // The settings in force, each marked own or inherited; the Secrets by name, never a value.
+    expect(Schema.decodeUnknownSync(EnvironmentGetOutput)(own)).toMatchObject({
+      scope: { id: "default", name: "Default" },
+      current: true,
+      build: { status: "ready" },
+      settings: {
+        instance: { value: "cpu-1", source: "inherited" },
+        idle_minutes: { value: 2, source: "inherited" },
+        spare_workspace: { value: true, source: "inherited" },
+      },
+      variables: [
+        { name: "NODE_ENV", value: "test", source: "own" },
+        { name: "SHARED", value: "all", source: "inherited" },
+      ],
+      overridden_global_variables: ["NODE_ENV"],
+      secrets: [
+        { name: "API_KEY", scope: "environment", build: true, env_var: secretEnvName("API_KEY") },
+        { name: "NPM_TOKEN", scope: "every", build: false },
+      ],
+      skills: [],
+      problem: null,
+    });
+
+    // The end of the failed Build's reason, as the text shows it.
+    expect(Schema.decodeUnknownSync(EnvironmentGetOutput)(other)).toMatchObject({
+      current: false,
+      build: { status: "failed", at: 0, last_good_at: null, reason_truncated: true },
+    });
+    expect(Schema.decodeUnknownSync(EnvironmentGetOutput)(other).build?.reason).toMatch(
+      /^x+npm ERR! missing script$/,
+    );
+
+    // Global's settings, with the Environments that override each.
+    expect(Schema.decodeUnknownSync(EnvironmentGetOutput)(global)).toMatchObject({
+      scope: GLOBAL,
+      current: false,
+      repos: [],
+      build: null,
+      settings: { instance: { value: "cpu-1", source: "global", overridden_in: [] } },
+      variables: [
+        { name: "SHARED", value: "all", source: "global", overridden_in: [] },
+        { name: "NODE_ENV", value: "prod", source: "global", overridden_in: [GLOBAL_OVERRIDER] },
+      ],
+      secrets: [{ name: "NPM_TOKEN", scope: "every" }],
+    });
+
+    const [set, again, unset, resize, idle, setup, start, toolchains, ignore, spare, atGlobal] =
+      Arr.map(setters, (each) => Schema.decodeUnknownSync(EnvironmentChangeOutput)(each));
+
+    const scope = { id: "default", name: "Default" };
+
+    expect(set).toMatchObject({
+      scope,
+      changes: [
+        { field: "variables.API_URL", before: null, after: "https://x", before_inherited: false },
+      ],
+      unchanged: [],
+      approval: null,
+      own: true,
+      new_build: true,
+      global: null,
+    });
+    expect(again).toMatchObject({
+      scope,
+      changes: [],
+      unchanged: ["variables.API_URL"],
+      own: false,
+      new_build: false,
+    });
+    expect(unset).toMatchObject({ changes: [{ field: "variables.API_URL", after: null }] });
+    expect(resize).toMatchObject({
+      changes: [{ field: "instance", before: "cpu-1", after: "cpu-2" }],
+    });
+    expect(idle).toMatchObject({ changes: [{ field: "idleMinutes", before: 2, after: 10 }] });
+    expect(setup).toMatchObject({
+      changes: [{ field: "setupScript", before: "", after: "npm ci" }],
+    });
+    expect(start).toMatchObject({ changes: [{ field: "startScript" }] });
+    expect(toolchains).toMatchObject({ changes: [{ field: "toolchains" }] });
+    expect(ignore).toMatchObject({ changes: [{ field: "ignore", after: ["/data"] }] });
+    expect(spare).toMatchObject({
+      changes: [{ field: "spareWorkspace", before: true, after: false }],
+    });
+
+    // At Global: whom it reached, where a Build was asked for.
+    expect(atGlobal).toMatchObject({
+      scope: GLOBAL,
+      changes: [{ field: "variables.NEW_VAR", before: null, after: "1" }],
+      own: true,
+      global: { overridden_in: [], new_builds: [scope] },
+    });
+  });
+
+  it("cuts what can grow: Environments, long scripts, lists of paths and variables", async () => {
+    const huge = fakeEnvironments("default", {
+      ...DEFAULT_CONTAINER_SETTINGS,
+      setupScript: "echo setup\n".repeat(20_000),
+      ignore: Arr.makeBy(3_000, (index) => `/${"d".repeat(100)}${index}`),
+      variables: Record.fromEntries(
+        Arr.makeBy(200, (index) => [`VAR_${index}`, "v".repeat(4_000)] as const),
+      ),
+    });
+
+    const crowded: EnvironmentsService = {
+      ...huge.service,
+      list: Effect.succeed(
+        Arr.makeBy(4_000, (index) => ({
+          id: `env-${index}`,
+          name: `${"n".repeat(200)}${index}`,
+          repos: [{ name: "app", url: `https://github.com/o/${"a".repeat(100)}.git` }],
+          build: { status: "none" as const },
+        })),
+      ),
+    };
+
+    // Called as a program does: a value this big does not fit a tool result's text, so what comes back is how large it
+    // is and which of its lists were cut. Each must be a value (no error) under what a nested call holds.
+    const sized = await runSized(
+      [await extensionOver(crowded)],
+      [
+        ["environment_list", {}],
+        ["environment_get", { id: "*" }],
+        ["environment_get", { id: "default" }],
+      ],
+    );
+
+    expect(Arr.map(sized, (each) => each.isError)).toEqual([false, false, false]);
+    // The only diagnostics are of the text, which the Harness cuts for the model.
+
+    for (const each of sized) expect(each.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
+
+    expect(sized[0]?.truncated).toMatchObject({ environments_truncated: true });
+    expect(sized[1]?.truncated).toMatchObject({ variables_truncated: true });
+    expect(sized[2]?.truncated).toMatchObject({ variables_truncated: true });
+
+    // The cuts inside the settings, which a script gets as `value_truncated`.
+    const tool = await toolsOver(crowded);
+
+    for (const id of ["*", "default"]) {
+      const result = await run(tool("environment_get"), { id });
+
+      expect(Schema.decodeUnknownSync(EnvironmentGetOutput)(result.structuredOutput)).toMatchObject(
+        {
+          settings: { setup_script: { value_truncated: true }, ignore: { value_truncated: true } },
+        },
+      );
+    }
   });
 });

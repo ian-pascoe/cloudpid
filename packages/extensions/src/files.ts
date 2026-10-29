@@ -8,6 +8,11 @@
 // `fileInfo`). Neither can run a command of the tool's choosing: both are the Workspace DO's file operations, which
 // answer from the Workspace's files, and, for a Container-only path, from the Container through scripts of the DO's own
 // (ADR-0018, which replaced ADR-0008's "never starts the Container" for these paths).
+//
+// Each tool gives programs the entries its text shows, as a value (docs/architecture/agent-capabilities.md → Values for
+// programs): the same entries under the same limits, with the flags `details` sets as snake_case fields. A list the text
+// does not cut but the value's own bound does (`MAX_LIST_BYTES`: a short name weighs more as an entry than as a line)
+// says so in `structured_truncated`.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
@@ -25,6 +30,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { type ConversationTarget, conversationTarget } from "./conversation-target.ts";
+import { asOutput, boundItems, outputSchema } from "./outputs.ts";
 
 export type { ConversationTarget } from "./conversation-target.ts";
 
@@ -160,6 +166,29 @@ const truncateHead = (text: string) => {
   return { content: Arr.join(kept, "\n"), truncated: true };
 };
 
+/**
+ * The text of `lines`, one per entry, cut to `MAX_BYTES` by `truncateHead`, and how many entries it shows whole: a last
+ * entry only partly shown (a name with a newline in it) is not counted.
+ */
+const cutHead = (lines: ReadonlyArray<string>) => {
+  const truncation = truncateHead(Arr.join(lines, "\n"));
+
+  if (!truncation.truncated) return { ...truncation, count: lines.length };
+
+  const available = truncation.content === "" ? 0 : truncation.content.split("\n").length;
+  let used = 0;
+  let count = 0;
+
+  for (const line of lines) {
+    used += line.split("\n").length;
+
+    if (used > available) break;
+    count++;
+  }
+
+  return { ...truncation, count };
+};
+
 /** `text` and its notices, as local pi appends them: `\n\n[notice. notice]`. */
 const withNotices = (text: string, notices: ReadonlyArray<string>): string =>
   notices.length === 0 ? text : `${text}\n\n[${Arr.join(notices, ". ")}]`;
@@ -231,11 +260,95 @@ const relativeTo = (base: string, path: string): string => {
 const anywhere = (glob: string): string =>
   glob.startsWith("**/") || glob === "**" ? glob : `**/${glob}`;
 
-const textResult = (text: string, details: Record<string, JsonValue>): ToolExecutionResult => {
+const textResult = (
+  text: string,
+  details: Record<string, JsonValue>,
+  structuredOutput: JsonValue,
+): ToolExecutionResult => {
   const output = [{ type: "text" as const, text }];
 
-  return Record.isEmptyRecord(details) ? { output } : { output, details };
+  return Record.isEmptyRecord(details)
+    ? { output, structuredOutput }
+    : { output, details, structuredOutput };
 };
+
+const TruncatedField = Schema.Boolean.annotate({
+  description: `The text hit its ${MAX_BYTES / 1024}KB limit, and the list holds only the entries that fit`,
+});
+
+const StructuredTruncatedField = Schema.Boolean.annotate({
+  description: "The list was cut to fit the size a value may have, beyond the text's own limit",
+});
+
+/** The first of `items` the text shows (`shown` of them) that fit a value's size, and whether either cut them. */
+const shownItems = <A extends JsonValue>(items: ReadonlyArray<A>, shown: number) => {
+  const bounded = boundItems(Arr.take(items, shown));
+
+  return { items: bounded.items, structuredTruncated: bounded.truncated };
+};
+
+const LsOutput = Schema.Struct({
+  entries: Schema.Array(
+    Schema.Struct({
+      name: Schema.String.annotate({ description: "The entry's name, without a trailing slash" }),
+      type: Schema.Literals(["file", "directory"]).annotate({
+        description: "A directory, or a file (a link is what it points to)",
+      }),
+      container_only: Schema.Boolean.annotate({
+        description: "Only the running Container listed it",
+      }),
+    }),
+  ).annotate({
+    description: "The entries the text lists, in its order: alphabetical, ignoring case",
+  }),
+  entry_limit_reached: Schema.NullOr(Schema.Int).annotate({
+    description: "The entry limit, when the directory held more entries than it; else null",
+  }),
+  truncated: TruncatedField,
+  structured_truncated: StructuredTruncatedField,
+});
+
+const FindOutput = Schema.Struct({
+  paths: Schema.Array(
+    Schema.Struct({
+      path: Schema.String.annotate({
+        description: "The path relative to the search directory, without a trailing slash",
+      }),
+      type: Schema.Literals(["file", "directory"]),
+    }),
+  ).annotate({ description: "The paths the text lists, in its order" }),
+  result_limit_reached: Schema.NullOr(Schema.Int).annotate({
+    description: "The result limit, when the search found as many as it allowed; else null",
+  }),
+  truncated: TruncatedField,
+  structured_truncated: StructuredTruncatedField,
+});
+
+const GrepOutput = Schema.Struct({
+  lines: Schema.Array(
+    Schema.Struct({
+      path: Schema.String.annotate({
+        description:
+          "The file's path below the searched directory, or its own name when a file was searched",
+      }),
+      line: Schema.Int.annotate({ description: "The line's number in the file, from 1" }),
+      text: Schema.String.annotate({
+        description: `The line, cut to ${GREP_MAX_LINE_LENGTH} characters with "... [truncated]" after them when longer`,
+      }),
+      match: Schema.Boolean.annotate({
+        description: "The line matches; false for a context line around a match",
+      }),
+    }),
+  ).annotate({ description: "The lines the text lists, in its order" }),
+  match_limit_reached: Schema.NullOr(Schema.Int).annotate({
+    description: "The match limit, when the search found as many as it allowed; else null",
+  }),
+  lines_truncated: Schema.Boolean.annotate({
+    description: `Some line was cut to ${GREP_MAX_LINE_LENGTH} characters`,
+  }),
+  truncated: TruncatedField,
+  structured_truncated: StructuredTruncatedField,
+});
 
 /** A count of at least one, as `limit` is for `ls`, `find`, and `grep`: a call with anything else fails to decode. */
 const optionalLimit = (description: string) =>
@@ -255,6 +368,7 @@ const Ls = defineEffectTool({
   name: "ls",
   description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LS_LIMIT} entries or ${MAX_BYTES / 1024}KB (whichever is hit first). A directory only the container has (outside /workspace, or such as node_modules inside it) is listed on the container, starting it if needed; in other directories, the container-only entries (marked "(container-only)") are listed only while the container runs.`,
   replay: "safe",
+  structuredOutputSchema: outputSchema(LsOutput),
   parameters: Schema.Struct({
     path: Schema.optionalKey(
       Schema.String.annotate({ description: "Directory to list (default: current directory)" }),
@@ -271,7 +385,7 @@ const Ls = defineEffectTool({
 
     const sorted = Arr.sort(entries, byName);
 
-    const listed: string[] = [];
+    const listed: Array<(typeof LsOutput.Type.entries)[number]> = [];
     let entryLimitReached = false;
 
     for (const entry of sorted) {
@@ -291,14 +405,32 @@ const Ls = defineEffectTool({
         isDirectory = kind === "directory";
       }
 
-      const name = isDirectory ? `${entry.name}/` : entry.name;
-
-      listed.push(entry.containerOnly === true ? `${name} (container-only)` : name);
+      listed.push({
+        name: entry.name,
+        type: isDirectory ? "directory" : "file",
+        container_only: entry.containerOnly === true,
+      });
     }
 
-    if (listed.length === 0) return textResult("(empty directory)", {});
+    if (listed.length === 0) {
+      const empty = {
+        entries: [],
+        entry_limit_reached: null,
+        truncated: false,
+        structured_truncated: false,
+      };
 
-    const truncation = truncateHead(Arr.join(listed, "\n"));
+      return textResult("(empty directory)", {}, asOutput(LsOutput, empty));
+    }
+
+    const truncation = cutHead(
+      Arr.map(listed, (entry) => {
+        const name = entry.type === "directory" ? `${entry.name}/` : entry.name;
+
+        return entry.container_only ? `${name} (container-only)` : name;
+      }),
+    );
+
     const notices: string[] = [];
     const details: Record<string, JsonValue> = {};
 
@@ -314,7 +446,18 @@ const Ls = defineEffectTool({
       details["truncated"] = true;
     }
 
-    return textResult(withNotices(truncation.content, notices), details);
+    const shown = shownItems(listed, truncation.count);
+
+    return textResult(
+      withNotices(truncation.content, notices),
+      details,
+      asOutput(LsOutput, {
+        entries: shown.items,
+        entry_limit_reached: entryLimitReached ? effectiveLimit : null,
+        truncated: truncation.truncated,
+        structured_truncated: shown.structuredTruncated,
+      }),
+    );
   }),
 });
 
@@ -322,6 +465,7 @@ const Find = defineEffectTool({
   name: "find",
   description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Skips node_modules and .git below the search directory, and the container-only directories below a synced one. Output is truncated to ${DEFAULT_FIND_LIMIT} results or ${MAX_BYTES / 1024}KB (whichever is hit first). ${CONTAINER_NOTE}`,
   replay: "safe",
+  structuredOutputSchema: outputSchema(FindOutput),
   parameters: Schema.Struct({
     pattern: Schema.String.annotate({
       description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
@@ -346,15 +490,26 @@ const Find = defineEffectTool({
       }),
     );
 
-    if (found.length === 0) return textResult("No files found matching pattern", {});
+    if (found.length === 0) {
+      const none = {
+        paths: [],
+        result_limit_reached: null,
+        truncated: false,
+        structured_truncated: false,
+      };
 
-    const lines = Arr.map(found, (entry) => {
-      const relative = relativeTo(directory, entry.path);
+      return textResult("No files found matching pattern", {}, asOutput(FindOutput, none));
+    }
 
-      return entry.type === "dir" ? `${relative}/` : relative;
-    });
+    const paths = Arr.map(found, (entry) => ({
+      path: relativeTo(directory, entry.path),
+      type: entry.type === "dir" ? ("directory" as const) : ("file" as const),
+    }));
 
-    const truncation = truncateHead(Arr.join(lines, "\n"));
+    const truncation = cutHead(
+      Arr.map(paths, (entry) => (entry.type === "directory" ? `${entry.path}/` : entry.path)),
+    );
+
     const notices: string[] = [];
     const details: Record<string, JsonValue> = {};
 
@@ -370,7 +525,18 @@ const Find = defineEffectTool({
       details["truncated"] = true;
     }
 
-    return textResult(withNotices(truncation.content, notices), details);
+    const shown = shownItems(paths, truncation.count);
+
+    return textResult(
+      withNotices(truncation.content, notices),
+      details,
+      asOutput(FindOutput, {
+        paths: shown.items,
+        result_limit_reached: found.length >= effectiveLimit ? effectiveLimit : null,
+        truncated: truncation.truncated,
+        structured_truncated: shown.structuredTruncated,
+      }),
+    );
   }),
 });
 
@@ -378,6 +544,7 @@ const Grep = defineEffectTool({
   name: "grep",
   description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Skips node_modules and .git below the search path, and the container-only directories below a synced one. Output is truncated to ${DEFAULT_GREP_LIMIT} matches or ${MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars. ${CONTAINER_NOTE}`,
   replay: "safe",
+  structuredOutputSchema: outputSchema(GrepOutput),
   parameters: Schema.Struct({
     pattern: Schema.String.annotate({ description: "Search pattern (regex or literal string)" }),
     path: Schema.optionalKey(
@@ -431,7 +598,17 @@ const Grep = defineEffectTool({
       }),
     );
 
-    if (matches.length === 0) return textResult("No matches found", {});
+    if (matches.length === 0) {
+      const none = {
+        lines: [],
+        match_limit_reached: null,
+        lines_truncated: false,
+        truncated: false,
+        structured_truncated: false,
+      };
+
+      return textResult("No matches found", {}, asOutput(GrepOutput, none));
+    }
 
     let linesTruncated = false;
 
@@ -452,17 +629,25 @@ const Grep = defineEffectTool({
         : (match.path.split("/").pop() ?? "");
 
       if (match.context === undefined || contextLines === 0) {
-        return [`${name}:${match.line}: ${shown(match.text)}`];
+        return [{ path: name, line: match.line, text: shown(match.text), match: true }];
       }
 
-      return Arr.map(match.context, (line) =>
-        line.isMatch
-          ? `${name}:${line.line}: ${shown(line.text)}`
-          : `${name}-${line.line}- ${shown(line.text)}`,
-      );
+      return Arr.map(match.context, (line) => ({
+        path: name,
+        line: line.line,
+        text: shown(line.text),
+        match: line.isMatch,
+      }));
     });
 
-    const truncation = truncateHead(Arr.join(lines, "\n"));
+    const truncation = cutHead(
+      Arr.map(
+        lines,
+        (line) =>
+          `${line.path}${line.match ? ":" : "-"}${line.line}${line.match ? ":" : "-"} ${line.text}`,
+      ),
+    );
+
     const notices: string[] = [];
     const details: Record<string, JsonValue> = {};
 
@@ -485,7 +670,19 @@ const Grep = defineEffectTool({
       details["linesTruncated"] = true;
     }
 
-    return textResult(withNotices(truncation.content, notices), details);
+    const kept = shownItems(lines, truncation.count);
+
+    return textResult(
+      withNotices(truncation.content, notices),
+      details,
+      asOutput(GrepOutput, {
+        lines: kept.items,
+        match_limit_reached: matches.length >= effectiveLimit ? effectiveLimit : null,
+        lines_truncated: linesTruncated,
+        truncated: truncation.truncated,
+        structured_truncated: kept.structuredTruncated,
+      }),
+    );
   }),
 });
 

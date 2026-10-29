@@ -4,7 +4,9 @@
 // (`changeEnvironment` with no value) and recorded as an Agent change whose value after is inherited. A reset of the
 // size limit may raise or lower the largest size the Environment allows, so it is a Limit: it waits for the owner's
 // Approval (`./approvals.ts`), as `environment_container_size_limit_set` does. Global's own settings are not reset here:
-// Global inherits nothing, and its value is changed with the setting's own tool at `*`.
+// Global inherits nothing, and its value is changed with the setting's own tool at `*`. Its `structuredOutput` is the
+// outcome of the change (`EnvironmentChangeOutput`), with the owner's answer for a reset of the size limit, approved
+// or declined with their reason.
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
 import {
   compareInstances,
@@ -25,6 +27,7 @@ import {
   withApproval,
 } from "./approvals.ts";
 import {
+  type AppliedChange,
   type ChangedEnvironment,
   describeApplied,
   type EnvironmentDetails,
@@ -37,7 +40,9 @@ import {
   textSize,
 } from "./environment.ts";
 import type { LifecycleDeps } from "./environment-lifecycle.ts";
+import { changeOutput, declinedOutput, unchangedOutput } from "./environment-outputs.ts";
 import { asJsonValue, named } from "./environment-skill-results.ts";
+import { asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
 
 /** A Container setting an Environment may override and reset, but its variables (`environment_variable_unset`). */
 export type ResettableSetting = Exclude<keyof ContainerSettings, "variables">;
@@ -113,29 +118,33 @@ export const resetTool = ({
     after: asJsonValue(change.after),
   });
 
-  /** The result of a reset made: what it says, and what the card shows. */
+  /** The result of a reset made: what it says, what the card shows, and what a program gets. */
   const resetResult = (
     setting: ResettableSetting,
-    environment: ChangedEnvironment,
-    change: AgentChange,
+    applied: Extract<AppliedChange, { readonly status: "changed" }>,
+    own: boolean,
     text: string,
     approved: boolean,
   ) =>
     log
       .record({
         tool: "environment_setting_reset",
-        environmentName: environment.name,
+        environmentName: applied.environment.name,
         field: setting,
       })
       .pipe(
         Effect.as({
           output: [{ type: "text" as const, text }],
+          structuredOutput: asOutput(
+            EnvironmentChangeOutput,
+            changeOutput(applied, own, approved ? { approved: true, reason: null } : null),
+          ),
           details: approved
             ? {
                 approval: { approved: true },
-                agentChange: agentChangeOf(setting, environment, change),
+                agentChange: agentChangeOf(setting, applied.environment, applied.change),
               }
-            : { agentChange: agentChangeOf(setting, environment, change) },
+            : { agentChange: agentChangeOf(setting, applied.environment, applied.change) },
         }),
       );
 
@@ -151,6 +160,7 @@ export const resetTool = ({
         text: `The ${SETTING_WORDS[setting]} of ${named(environment)} is inherited from Global already (${valueWords(setting, value)}): nothing changed, and nothing was recorded.`,
       },
     ],
+    structuredOutput: asOutput(EnvironmentChangeOutput, unchangedOutput(environment, setting)),
     details: { unchanged: { environment, field: setting } },
   });
 
@@ -208,14 +218,18 @@ export const resetTool = ({
                     ),
                   },
                 ],
+                structuredOutput: asOutput(
+                  EnvironmentChangeOutput,
+                  unchangedOutput(applied.environment, setting, { approved: true, reason: null }),
+                ),
                 details: { approval: { approved: true } },
               }
             : inheritedAlready(setting, applied.environment, applied.value);
         case "changed":
           return yield* resetResult(
             setting,
-            applied.environment,
-            applied.change,
+            applied,
+            own,
             `${approved ? "The user approved: r" : "R"}eset the ${SETTING_WORDS[setting]} of ${named(applied.environment)}: it was ${valueWords(setting, applied.change.before)} (its own), and inherits Global's ${valueWords(setting, applied.change.after)} now, and each change of it at Global. ${describeApplied(own, applied.newBuild)} The change is recorded${approved ? " as approved" : ""} with your reason; the user can revert it on the Environments page.`,
             approved,
           );
@@ -268,12 +282,16 @@ export const resetTool = ({
                 api,
                 expected: { value: answer.expected },
               })
-            : Effect.succeed(
-                declined(
+            : Effect.succeed({
+                ...declined(
                   answer,
                   `the reset of the size limit of ${where} from ${maxInstance} to Global's ${inherited}`,
                 ),
-              ),
+                structuredOutput: asOutput(
+                  EnvironmentChangeOutput,
+                  declinedOutput(details, answer.reason ?? null),
+                ),
+              }),
       );
     });
 
@@ -295,6 +313,7 @@ export const resetTool = ({
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     // A rerun after an eviction finds the field inherited already and records nothing; the size limit's waits for the
     // same Approval request.

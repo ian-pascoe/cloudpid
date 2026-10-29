@@ -8,6 +8,7 @@
 // @effect-diagnostics missingPipeableSignature:off
 import type { AgentChange } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
+import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { cutStored, type Stored, storedBytes } from "./stored-bytes.ts";
@@ -84,14 +85,31 @@ export const ApprovalOutcome = Schema.NullOr(
   }),
 ).annotate({ description: "The owner's Approval; null for a change that does not wait for it" });
 
+/**
+ * The most an Agent change's `before` or `after` weighs stored in a value. The values a tool sets are mostly far
+ * smaller (a script or the Instructions are at most 64 KiB of text, which escapes to more), but one change can hold a
+ * list without a bound, such as an Environment's Repos.
+ */
+export const MAX_CHANGE_VALUE_BYTES = 128 * 1024;
+
 /** One Agent change, as the Registry recorded it. */
 export const AgentChangeOutput = Schema.Struct({
   id: Schema.Finite.annotate({ description: "The Agent change's number in the Registry" }),
   field: Schema.String.annotate({
     description: "What changed: a setting's path, or variables.<NAME> for a variable",
   }),
-  before: Schema.NullOr(Schema.Json).annotate({ description: "Its value before; null for none" }),
-  after: Schema.NullOr(Schema.Json).annotate({ description: "Its value after; null for none" }),
+  before: Schema.NullOr(Schema.Json).annotate({
+    description: "Its value before; null for none, or when before_truncated",
+  }),
+  before_truncated: Schema.Boolean.annotate({
+    description: "The value before was too large to give (over 128 KiB), so before is null",
+  }),
+  after: Schema.NullOr(Schema.Json).annotate({
+    description: "Its value after; null for none, or when after_truncated",
+  }),
+  after_truncated: Schema.Boolean.annotate({
+    description: "The value after was too large to give (over 128 KiB), so after is null",
+  }),
   before_inherited: Schema.Boolean.annotate({
     description: "At an Environment, the value before was inherited from Global",
   }),
@@ -100,15 +118,35 @@ export const AgentChangeOutput = Schema.Struct({
   }),
 });
 
-/** `change` as a value gives it. */
-export const agentChangeOutput = (change: AgentChange): typeof AgentChangeOutput.Type => ({
-  id: change.id,
-  field: change.field,
-  before: change.before,
-  after: change.after,
-  before_inherited: change.beforeInherited === true,
-  after_inherited: change.afterInherited === true,
-});
+/** `value`, or null with a flag when it weighs more than `MAX_CHANGE_VALUE_BYTES` stored. */
+const changeValue = (value: Schema.Json | null) =>
+  storedBytes(value) > MAX_CHANGE_VALUE_BYTES
+    ? { value: null, truncated: true }
+    : { value, truncated: false };
+
+/** `change` as a value gives it, each of its values left out when too large. */
+export const agentChangeOutput = (change: AgentChange): typeof AgentChangeOutput.Type => {
+  const before = changeValue(change.before);
+  const after = changeValue(change.after);
+
+  return {
+    id: change.id,
+    field: change.field,
+    before: before.value,
+    before_truncated: before.truncated,
+    after: after.value,
+    after_truncated: after.truncated,
+    before_inherited: change.beforeInherited === true,
+    after_inherited: change.afterInherited === true,
+  };
+};
+
+/** `changes` as a value gives them: the first that fit `MAX_LIST_BYTES`, and whether any were left out. */
+export const changesOutput = (changes: ReadonlyArray<AgentChange>) => {
+  const { items, truncated } = boundItems(Arr.map(changes, agentChangeOutput));
+
+  return { changes: items, changes_truncated: truncated };
+};
 
 /**
  * What a tool that makes Agent changes at one Scope gives programs: the Scope, the changes it made, the fields that
@@ -119,6 +157,9 @@ export const ChangeOutputFields = {
   scope: ScopeRef,
   changes: Schema.Array(AgentChangeOutput).annotate({
     description: "The Agent changes made; empty when nothing changed",
+  }),
+  changes_truncated: Schema.Boolean.annotate({
+    description: "Some changes were left out, the list being too large to give",
   }),
   unchanged: Schema.Array(Schema.String).annotate({
     description: "The fields that already had their value, so nothing was saved for them",

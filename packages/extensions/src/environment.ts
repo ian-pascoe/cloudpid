@@ -11,7 +11,11 @@
 // at once, and the Run's end notifies the owner of the changes it made (`AgentChangeLog`). They are the root
 // conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when a
 // text it keeps holds a Secret the Session holds or a GitHub credential, or a Secret Reference's placeholder, which these
-// tools do not resolve and no command would (`holdsSecret`). Every tool but `environment_list` and `environment_create`
+// tools do not resolve and no command would (`holdsSecret`). Each tool of this file and of `environment-reset.ts` and
+// `environment-secret-marks.ts` declares a `structuredOutputSchema` and returns a matching `structuredOutput`, built
+// from the same data as its text (`environment-outputs.ts`; `docs/architecture/agent-capabilities.md` → Values for
+// programs): `environment_list` and `environment_get` give the Environments and their settings, each setter the outcome
+// of the change (an unchanged field says so, as its text does). Every tool but `environment_list` and `environment_create`
 // takes a required `id` and none defaults to the Session's own Environment (`docs/architecture/agent-changes.md` → The
 // Scope is named, never assumed; ADR-0027 → The agent names the Scope).
 // @effect-diagnostics missingPipeableSignature:off
@@ -52,6 +56,16 @@ import * as Schema from "effect/Schema";
 import { Approvals } from "./approvals.ts";
 import { SIZE_LINES } from "./container.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
+import {
+  changeOutput,
+  EnvironmentGetOutput,
+  EnvironmentListOutput,
+  environmentGetOutput,
+  environmentListOutput,
+  FAILED_REASON_TAIL,
+  globalGetOutput,
+  unchangedOutput,
+} from "./environment-outputs.ts";
 import { resetTool } from "./environment-reset.ts";
 import {
   GLOBAL_ID,
@@ -61,6 +75,7 @@ import {
 } from "./environment-secret-marks.ts";
 import { type EnvironmentSkills, skillTools } from "./environment-skills.ts";
 import { holdsGitHubToken } from "./github-tokens.ts";
+import { asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -261,9 +276,6 @@ export const credentialCheck: Effect.Effect<(text: string) => boolean, never, De
 export const MAX_CHANGE_REASON = 500;
 
 const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));
-
-/** The last characters of a failed Build's reason that `environment_get` shows. */
-const FAILED_REASON_TAIL = 1_000;
 
 /** Where a Build stands, in a line. */
 export const describeBuild = (build: BuildView): string => {
@@ -741,6 +753,10 @@ export const EnvironmentTools: Effect.Effect<
                 text: unchanged(where),
               },
             ],
+            structuredOutput: asOutput(
+              EnvironmentChangeOutput,
+              unchangedOutput(applied.environment, field),
+            ),
             details: { unchanged: { environment: applied.environment, field } },
           };
         }
@@ -770,6 +786,7 @@ export const EnvironmentTools: Effect.Effect<
                 }),
               },
             ],
+            structuredOutput: asOutput(EnvironmentChangeOutput, changeOutput(applied, own)),
             details: {
               agentChange: {
                 id: change.id,
@@ -888,6 +905,7 @@ export const EnvironmentTools: Effect.Effect<
     description:
       "List the Environments: each one's id, name, Repos and Build, marking this Session's own, and how many variables are kept Global. An Environment is what a Workspace is made from: its Repos and its Container settings. Use environment_get with an id to see an Environment's settings.",
     parameters: Schema.Struct({}),
+    structuredOutputSchema: outputSchema(EnvironmentListOutput),
     replay: "safe",
     execute: () =>
       Effect.gen(function* () {
@@ -910,6 +928,10 @@ export const EnvironmentTools: Effect.Effect<
                     )}\nVariables at Global: ${Record.size(globalDetails.settings.variables)} (environment_get with id "${GLOBAL_ID}" shows them and the other Container settings at Global)`,
             },
           ],
+          structuredOutput: asOutput(
+            EnvironmentListOutput,
+            environmentListOutput(listed, current, Record.size(globalDetails.settings.variables)),
+          ),
           details: { current, environments: Arr.map(listed, ({ id, name }) => ({ id, name })) },
         };
       }),
@@ -921,12 +943,19 @@ export const EnvironmentTools: Effect.Effect<
     parameters: Schema.Struct({
       id: idOrGlobal("the Container settings, Secrets and Skills kept Global"),
     }),
+    structuredOutputSchema: outputSchema(EnvironmentGetOutput),
     replay: "safe",
     execute: ({ id }) =>
       Effect.gen(function* () {
         if (id === GLOBAL_ID) {
+          const kept = yield* environments.global;
+
           return {
-            output: [{ type: "text" as const, text: describeGlobal(yield* environments.global) }],
+            output: [{ type: "text" as const, text: describeGlobal(kept) }],
+            structuredOutput: asOutput(
+              EnvironmentGetOutput,
+              globalGetOutput(kept, { id: GLOBAL_ID, name: GLOBAL_NAME }),
+            ),
             details: {
               environment: { id: GLOBAL_ID, name: GLOBAL_NAME },
               current: false,
@@ -941,6 +970,7 @@ export const EnvironmentTools: Effect.Effect<
 
         return {
           output: [{ type: "text" as const, text: describeEnvironment(details, own) }],
+          structuredOutput: asOutput(EnvironmentGetOutput, environmentGetOutput(details, own)),
           details: { environment: { id: details.id, name: details.name }, current: own },
         };
       }),
@@ -963,6 +993,7 @@ export const EnvironmentTools: Effect.Effect<
       value: Schema.String.annotate({ description: "The value, saved as written" }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     // A rerun after an eviction would record the change again, against the value it set.
     replay: "unsafe",
@@ -977,6 +1008,7 @@ export const EnvironmentTools: Effect.Effect<
       name: VariableName,
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: (args, api) =>
@@ -1000,6 +1032,7 @@ export const EnvironmentTools: Effect.Effect<
       size: InstanceType.annotate({ description: "The size of the Environment's next Containers" }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, size, reason }, api) =>
@@ -1045,6 +1078,7 @@ export const EnvironmentTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, minutes, reason }, api) =>
@@ -1082,6 +1116,7 @@ export const EnvironmentTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, script, reason }, api) =>
@@ -1118,6 +1153,7 @@ export const EnvironmentTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, script, reason }, api) =>
@@ -1154,6 +1190,7 @@ export const EnvironmentTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, mise_toml, reason }, api) =>
@@ -1190,6 +1227,7 @@ export const EnvironmentTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, patterns, reason }, api) =>
@@ -1228,6 +1266,7 @@ export const EnvironmentTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, enabled, reason }, api) =>

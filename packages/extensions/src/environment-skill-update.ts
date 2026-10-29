@@ -4,7 +4,8 @@
 // before and after, so the user's revert brings back the earlier commit and any edits an overwrite replaced. A Skill the
 // agent edited since it was installed (**modified**) is refused unless `overwrite` is set, and the result names it.
 // With `id: "*"` the update waits for the owner's Approval (`./environment-skills-global.ts`), which shows the files each
-// Skill would take and is made at exactly the commits they were shown.
+// Skill would take and is made at exactly the commits they were shown. Each result also gives a program its value
+// (`./environment-lifecycle-outputs.ts`).
 //
 // `environment.ts` imports this module through `./environment-skills.ts`, so what it takes from `environment.ts` is used
 // inside functions only: its exports are not there yet when this module loads.
@@ -32,8 +33,14 @@ import {
   withApproval,
 } from "./approvals.ts";
 import { type ChangedEnvironment, EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
+import {
+  approvalOutput,
+  SkillUpdateOutput,
+  skillUpdatedOutput,
+} from "./environment-lifecycle-outputs.ts";
 import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
+  approvalOf,
   asJsonValue,
   named,
   PROMPT_NOTE,
@@ -42,6 +49,7 @@ import {
   type SkillsUpdated,
 } from "./environment-skill-results.ts";
 import { cardOf, MAX_CARD_CHARS, SKILL_APPROVAL } from "./environment-skills-global.ts";
+import { outputSchema } from "./outputs.ts";
 import { SKILL_SIZES } from "./skill-checks.ts";
 
 const TOOL = "environment_skill_update";
@@ -123,6 +131,13 @@ const updatedOutcome = (
         });
       case "nothing":
         return {
+          structuredOutput: skillUpdatedOutput({
+            scope: updated.environment,
+            results: [],
+            approval: approvalOf(approved),
+            handed: false,
+            nothingMarked: true,
+          }),
           output: [
             {
               type: "text" as const,
@@ -235,6 +250,12 @@ const updatedOutcome = (
 
         return {
           output: [{ type: "text" as const, text }],
+          structuredOutput: skillUpdatedOutput({
+            scope: environment,
+            results,
+            approval: approvalOf(approved),
+            handed: updated.handed,
+          }),
           details: approved ? { approval: { approved: true }, ...details } : details,
         };
       }
@@ -276,7 +297,15 @@ const updateAtGlobal = (
     const answered = (answer: ApprovalAnswer) =>
       Effect.gen(function* () {
         if (!answer.approved) {
-          return declined(answer, "updating the Skills kept Global");
+          return {
+            ...declined(answer, "updating the Skills kept Global"),
+            structuredOutput: skillUpdatedOutput({
+              scope: GLOBAL_TARGET,
+              results: [],
+              approval: approvalOutput(answer),
+              handed: false,
+            }),
+          };
         }
 
         const asked = Schema.decodeUnknownOption(UpdateAsked)(answer.expected);
@@ -330,6 +359,12 @@ const updateAtGlobal = (
                 text: `${approvedAlready(`the Skills ${namesOf(updated.results)} were updated`)}${problems.length === 0 ? "" : ` Not part of it:\n${Arr.join(problems, "\n")}`}`,
               },
             ],
+            structuredOutput: skillUpdatedOutput({
+              scope: GLOBAL_TARGET,
+              results,
+              approval: approvalOf(true),
+              handed: false,
+            }),
             details: { approval: { approved: true } },
           };
         }
@@ -518,6 +553,7 @@ export const updateTool = ({
           "Why you update the Skills, for the user to read in the Environment's Agent changes, such as 'the user asked for the latest grill-me'",
       }),
     }),
+    structuredOutputSchema: outputSchema(SkillUpdateOutput),
     executionMode: "sequential",
     // A rerun after an eviction waits for the request an update at Global made, or takes its answer; one for
     // an Environment's own Skills finds the Skills already at the new commit (unchanged) and records nothing again.

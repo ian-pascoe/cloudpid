@@ -3,7 +3,8 @@
 // `environment_skill_install` with `id: "*"`. A Skill there steers every future Session, so it is where a
 // prompt-injected agent would plant instructions: the owner reads the Skill's files on the card (which says plainly what it could
 // not show), and the change is made only against what they were shown (a save's folder digest, an install's commit and
-// each Skill's folder and digest, and when the Skill of the name was last saved).
+// each Skill's folder and digest, and when the Skill of the name was last saved). A declined request gives a program
+// its value too (`./environment-lifecycle-outputs.ts`), with the owner's reason, built here around `declined`.
 //
 // `environment.ts` imports this module through `./environment-skills.ts`, so what it takes from `environment.ts` is used
 // inside functions only: its exports are not there yet when this module loads.
@@ -24,6 +25,12 @@ import {
   withApproval,
 } from "./approvals.ts";
 import { EnvironmentsError } from "./environment.ts";
+import {
+  approvalOutput,
+  skillInstalledOutput,
+  skillRemovedOutput,
+  skillSavedOutput,
+} from "./environment-lifecycle-outputs.ts";
 import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   GLOBAL_TARGET,
@@ -201,6 +208,17 @@ export const saveAtGlobal = (
             text: `${named(GLOBAL_TARGET)} keeps the Skill ${name} with these files already: nothing was asked, changed or recorded. It is at ${servedAt(name)}.`,
           },
         ],
+        structuredOutput: skillSavedOutput({
+          scope: GLOBAL_TARGET,
+          skill: name,
+          change: null,
+          unchanged: true,
+          approval: null,
+          handed: false,
+          overriddenIn: [],
+          servedAt: servedAt(name),
+          hidesGlobal: false,
+        }),
         details: { unchanged: { environment: GLOBAL_TARGET, field: skillField(name) } },
       };
     }
@@ -228,7 +246,20 @@ export const saveAtGlobal = (
       (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
-            return declined(answer, `saving the Skill ${name} at Global`);
+            return {
+              ...declined(answer, `saving the Skill ${name} at Global`),
+              structuredOutput: skillSavedOutput({
+                scope: GLOBAL_TARGET,
+                skill: name,
+                change: null,
+                unchanged: false,
+                approval: approvalOutput(answer),
+                handed: false,
+                overriddenIn: [],
+                servedAt: null,
+                hidesGlobal: false,
+              }),
+            };
           }
 
           const asked = Schema.decodeUnknownOption(SaveAsked)(answer.expected);
@@ -310,7 +341,19 @@ export const removeAtGlobal = (
       (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
-            return declined(answer, `removing the Skill ${name} from Global`);
+            return {
+              ...declined(answer, `removing the Skill ${name} from Global`),
+              structuredOutput: skillRemovedOutput({
+                scope: GLOBAL_TARGET,
+                skill: name,
+                change: null,
+                unchanged: false,
+                approval: approvalOutput(answer),
+                handed: false,
+                overriddenIn: [],
+                globalServed: false,
+              }),
+            };
           }
 
           const asked = Schema.decodeUnknownOption(RemoveAsked)(answer.expected);
@@ -392,7 +435,19 @@ export const installAtGlobal = (
     /** What the owner's answer comes to: on Approve, the pinned Skills read again at the commit shown. */
     const answered = (answer: ApprovalAnswer, what: string) =>
       Effect.gen(function* () {
-        if (!answer.approved) return declined(answer, what);
+        if (!answer.approved) {
+          return {
+            ...declined(answer, what),
+            structuredOutput: skillInstalledOutput({
+              scope: GLOBAL_TARGET,
+              source: null,
+              results: [],
+              listed: [],
+              approval: approvalOutput(answer),
+              handed: false,
+            }),
+          };
+        }
 
         const asked = Schema.decodeUnknownOption(InstallAsked)(answer.expected);
 
@@ -447,6 +502,14 @@ export const installAtGlobal = (
                   )}${refused.length === 0 ? "" : ` Refused: ${Arr.join(refused, "; ")}.`}`,
                 },
               ],
+              structuredOutput: skillInstalledOutput({
+                scope: GLOBAL_TARGET,
+                source: { repo: installed.repo, ref: installed.ref, commit: installed.commit },
+                results,
+                listed: [],
+                approval: approvalOutput({ approved: true }),
+                handed: false,
+              }),
               details: { approval: { approved: true } },
             };
           }

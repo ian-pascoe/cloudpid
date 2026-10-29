@@ -3,7 +3,8 @@
 // (its undocumented `/api/search`) for Skills and returns each one's ID, source and install count. It records nothing and
 // needs no GitHub token, so it runs in the Session DO; installing does not depend on it, and a failure of the search is
 // the tool's error result and breaks nothing else. Root conversation only (`PARENT_ONLY_TOOLS`), and deferred unless the
-// settings offer it.
+// settings offer it. It declares an output schema (`docs/architecture/agent-capabilities.md` → Values for programs): the
+// results as data, each with its ID, source, Skill name and install count.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { defineExtension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -18,6 +19,7 @@ import {
   SEARCH_TIMEOUT_MS,
   skillSearchUrl,
 } from "./skill-search.ts";
+import { asOutput, boundItems, outputSchema } from "./outputs.ts";
 import { WebTransport } from "./web/transport.ts";
 
 export const extensionName = "skill-search";
@@ -29,6 +31,27 @@ export class SkillSearchError extends Schema.TaggedError<
   SkillSearchError,
   { readonly brand: unique symbol }
 >()("SkillSearchError", { message: Schema.String }) {}
+
+/** `skill_search`: what skills.sh found, in its order. */
+export const SkillSearchOutput = Schema.Struct({
+  results: Schema.Array(
+    Schema.Struct({
+      id: Schema.String.annotate({ description: "The Skill's ID, owner/repo/skill" }),
+      source: Schema.String.annotate({
+        description: "owner/repo: what environment_skill_install takes as source",
+      }),
+      skill_id: Schema.String.annotate({
+        description:
+          "The last part of its ID: the Skill's name for environment_skill_install's skills",
+      }),
+      name: Schema.String.annotate({ description: "The Skill's name" }),
+      installs: Schema.Finite.annotate({ description: "How many times it was installed" }),
+    }),
+  ).annotate({ description: "The Skills found, in skills.sh's order; empty when it found none" }),
+  results_truncated: Schema.Boolean.annotate({
+    description: "The list was cut to stay within the size bound of a value",
+  }),
+});
 
 const unable = (why: string) =>
   SkillSearchError.make({ message: `Could not search skills.sh: ${why}` });
@@ -47,6 +70,7 @@ const search = defineEffectTool({
       }),
     ),
   }),
+  structuredOutputSchema: outputSchema(SkillSearchOutput),
   execute: Effect.fnUntraced(function* ({ query, limit }) {
     const transport = yield* WebTransport;
     const problem = queryProblem(query);
@@ -89,9 +113,23 @@ const search = defineEffectTool({
             "\n",
           );
 
+    const listed = boundItems(
+      Arr.map(found.results, ({ id, source, skillId, name, installs }) => ({
+        id,
+        source,
+        skill_id: skillId,
+        name,
+        installs,
+      })),
+    );
+
     return {
       output: [{ type: "text" as const, text }],
       details: { query, found: found.results.length },
+      structuredOutput: asOutput(SkillSearchOutput, {
+        results: listed.items,
+        results_truncated: listed.truncated,
+      }),
     };
   }),
 });

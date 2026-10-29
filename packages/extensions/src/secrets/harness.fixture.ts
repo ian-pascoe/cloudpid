@@ -296,6 +296,8 @@ export const openSecretsHarness = async (
   };
 
   return {
+    /** The secrets extension, to install in a Harness of another runner (`runSized`) over this Session's Secrets. */
+    extension: secretsExt,
     prompt,
     enter,
     registry,

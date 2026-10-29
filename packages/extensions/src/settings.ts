@@ -8,7 +8,8 @@
 // records it under the Scope, the Session reads the Settings again at once, and the Run's end notifies the owner of the
 // changes it made (`AgentChangeLog`). They are the root conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as
 // `secret_ask` is. Values are plain: a change is refused when its reason or its text holds a Secret the Session holds
-// or a GitHub credential.
+// or a GitHub credential. Each tool gives programs the outcome as a `structuredOutput` (`./settings-outputs.ts`): the Scope,
+// the Agent changes made and the fields that already had their value, or, for `settings_get`, the Settings by field.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,
@@ -24,6 +25,7 @@ import {
   THINKING_LEVELS,
   ThinkingLevel,
   textSize,
+  utf8Bytes,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange } from "@cloudpid/protocol";
@@ -44,9 +46,19 @@ import {
   MAX_CHANGE_REASON,
 } from "./environment.ts";
 import { formatScope } from "./instructions.ts";
+import { ChangeOutput, outputSchema } from "./outputs.ts";
 import { matchesPattern } from "./patterns.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
+import {
+  instructionsOutput,
+  overriddenInOutput,
+  scopeRefOf,
+  settingsChangeOutput,
+  SettingsGetOutput,
+  settingsGetOutput,
+  settingValues,
+} from "./settings-outputs.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH, SUBAGENT_TOOLSET_OPTIONS } from "./subagents/options.ts";
 import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 import { ALWAYS_OFFERED } from "./tool-search.ts";
@@ -459,6 +471,91 @@ export const describeSettings = (view: SettingsView, own: string | null): string
   );
 };
 
+/** What `settings_get` gives programs: the settings in force at the Scope, each with where its value comes from. */
+export const settingsOutput = (view: SettingsView, own: string | null) => {
+  const { settings } = view;
+
+  /** One setting: its value in force, read from the settings, and where it comes from. */
+  const entry = (field: string, value: (each: Settings) => Schema.Json | null) => {
+    if (isGlobalView(view)) {
+      return {
+        field,
+        ...settingValues(value(settings), null),
+        source: Option.isSome(overrideValue(view.overrides, field))
+          ? ("global" as const)
+          : ("default" as const),
+        ...overriddenInOutput(view.overriddenIn[field] ?? []),
+      };
+    }
+
+    return {
+      field,
+      ...settingValues(value(settings), value(view.global)),
+      source: Option.isSome(overrideValue(view.overrides, field))
+        ? ("override" as const)
+        : ("inherited" as const),
+      ...overriddenInOutput([]),
+    };
+  };
+
+  const field =
+    (name: string) =>
+    (each: Settings): Schema.Json | null =>
+      settingsFieldValue(each, name);
+
+  const depthField = extensionField("subagents", "maxSubagentDepth");
+  const workspacesField = extensionField("subagents", "maxSubagentWorkspaces");
+
+  // The Limits show their defaults where they are not set; they are not listed again among the options.
+  const options = Arr.flatMap(Record.toEntries(settings.extensions), ([extension, entries]) =>
+    Arr.flatMap(Record.keys(entries), (key) => {
+      const name = extensionField(extension, key);
+
+      return name === depthField || name === workspacesField ? [] : [entry(name, field(name))];
+    }),
+  );
+
+  const instructions = isGlobalView(view)
+    ? {
+        global: instructionsOutput(settings.instructions, utf8Bytes(settings.instructions)),
+        environment: null,
+      }
+    : {
+        global: instructionsOutput(settings.instructions, utf8Bytes(settings.instructions)),
+        environment: instructionsOutput(view.instructions, utf8Bytes(view.instructions)),
+      };
+
+  return settingsGetOutput({
+    scope: scopeRefOf(view),
+    own_environment: own,
+    is_own: !isGlobalView(view) && view.scope === own,
+    settings: [
+      entry("model", field("model")),
+      entry("thinkingLevel", field("thinkingLevel")),
+      ...Arr.map(ROLE_NAMES, (role) => entry(`roles.${role}`, field(`roles.${role}`))),
+      ...Arr.map(
+        ["enabled", "reserveTokens", "keepRecentTokens", "backgroundTokens"] as const,
+        (key) => entry(`compaction.${key}`, field(`compaction.${key}`)),
+      ),
+      entry("tools.offered", field("tools.offered")),
+      entry("branchSummary.skipPrompt", field("branchSummary.skipPrompt")),
+      entry("spendLimit.perSession", field("spendLimit.perSession")),
+      entry(
+        depthField,
+        (each) => each.extensions.subagents?.maxSubagentDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH,
+      ),
+      entry(
+        workspacesField,
+        (each) =>
+          each.extensions.subagents?.maxSubagentWorkspaces ?? DEFAULT_MAX_SUBAGENT_WORKSPACES,
+      ),
+      ...options,
+    ],
+    instructions,
+    problem: view.problem ?? null,
+  });
+};
+
 const encodeJsonText = Schema.encodeOption(Schema.fromJsonString(Schema.Json));
 
 /**
@@ -622,6 +719,12 @@ export const SettingsChanges = Effect.gen(function* () {
         case "unchanged":
           return {
             output: [{ type: "text" as const, text: unchanged }],
+            structuredOutput: settingsChangeOutput({
+              view,
+              changes: [],
+              unchanged: Arr.map(fields, (field) => field.field),
+              approval: null,
+            }),
             details: {
               scope: view.scope,
               unchanged: Arr.map(fields, (field) => field.field),
@@ -652,6 +755,16 @@ export const SettingsChanges = Effect.gen(function* () {
                 text: `${changed({ changes: answer.changes, applied, reach: reached })}${forgot}`,
               },
             ],
+            structuredOutput: settingsChangeOutput({
+              view,
+              changes: answer.changes,
+              // Fields that already had their value are not among the changes the Registry recorded.
+              unchanged: Arr.filter(
+                Arr.map(fields, (field) => field.field),
+                (name) => !Arr.some(answer.changes, (change) => change.field === name),
+              ),
+              approval: null,
+            }),
             details: {
               scope: view.scope,
               unchanged: [],
@@ -689,6 +802,7 @@ export const SettingsTools: Effect.Effect<
         description: `Whose Settings to show: "${GLOBAL_SETTINGS_SCOPE}" for Global, or an Environment's id as environment_list shows it, for its Overrides over Global. Name it on purpose: there is no default.`,
       }),
     }),
+    structuredOutputSchema: outputSchema(SettingsGetOutput),
     replay: "safe",
     execute: ({ scope }) =>
       Effect.gen(function* () {
@@ -697,6 +811,7 @@ export const SettingsTools: Effect.Effect<
 
         return {
           output: [{ type: "text" as const, text: describeSettings(view, own) }],
+          structuredOutput: settingsOutput(view, own),
           details: { scope: view.scope, problem: view.problem ?? null },
         };
       }),
@@ -721,6 +836,7 @@ export const SettingsTools: Effect.Effect<
       ),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     // A rerun after an eviction would record the change again, against the value it set.
     replay: "unsafe",
@@ -804,6 +920,7 @@ export const SettingsTools: Effect.Effect<
       ),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ scope, role, model, hint, reason }, api) =>
@@ -859,6 +976,7 @@ export const SettingsTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ scope, pattern, reason }, api) =>
@@ -870,6 +988,12 @@ export const SettingsTools: Effect.Effect<
         if (Arr.contains(current, pattern)) {
           return {
             output: [{ type: "text" as const, text: already }],
+            structuredOutput: settingsChangeOutput({
+              view,
+              changes: [],
+              unchanged: ["tools.offered"],
+              approval: null,
+            }),
             details: { scope: view.scope, unchanged: ["tools.offered"], agentChanges: [] },
           };
         }
@@ -908,6 +1032,7 @@ export const SettingsTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ scope, pattern, reason }, api) =>
@@ -929,6 +1054,12 @@ export const SettingsTools: Effect.Effect<
                 }`,
               },
             ],
+            structuredOutput: settingsChangeOutput({
+              view,
+              changes: [],
+              unchanged: ["tools.offered"],
+              approval: null,
+            }),
             details: { scope: view.scope, unchanged: ["tools.offered"], agentChanges: [] },
           };
         }
@@ -971,6 +1102,7 @@ export const SettingsTools: Effect.Effect<
       background_tokens: Schema.optionalKey(Schema.Finite),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: (args, api) =>
@@ -1031,6 +1163,7 @@ export const SettingsTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ scope, skip_prompt, reason }, api) =>
@@ -1077,6 +1210,7 @@ export const SettingsTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ scope, extension, key, value, reason }, api) =>

@@ -1,7 +1,7 @@
 // The `settings` extension (docs/architecture/agent-changes.md), over fake Settings at two Scopes (ADR-0027): what each
 // tool shows and changes at Global and at an Environment, the refusal of text that holds a Secret, the Settings read
 // again after a change, whether a change reaches this Session, and the Run's record of the changes.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import {
   DEFAULT_OFFERED_TOOLS,
   DEFAULT_SETTINGS,
@@ -13,6 +13,7 @@ import {
 import type { AgentChange } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  type JsonObject,
   ROOT_CONVERSATION_ID,
   type ToolExecutionApi,
   type ToolRegistration,
@@ -24,12 +25,15 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { AgentChangeLog, DeployCredentials, type RunChange } from "./environment.ts";
+import { ChangeOutput } from "./outputs.ts";
+import { runProgram, runSized } from "./program.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { secretReference } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
   type AppliedSettingsChange,
   GLOBAL_SETTINGS_SCOPE,
+  isGlobalView,
   SettingsAccess,
   SettingsAccessError,
   type SettingsAccessService,
@@ -44,6 +48,7 @@ import {
   changeSettingsOverrides,
   resolvedGlobal,
 } from "./settings.fixture.ts";
+import { SettingsGetOutput } from "./settings-outputs.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 
@@ -266,11 +271,14 @@ const toolsOver = async (
     ),
   );
 
-  return (name: string): ToolRegistration => {
+  const lookup = (name: string): ToolRegistration => {
     const found = Arr.findFirst(extension.tools ?? [], (tool) => tool.name === name);
 
     return Option.getOrThrowWith(found, () => new Error(`no tool ${name}`));
   };
+
+  // The extension itself, for a test that installs it in a Harness.
+  return Object.assign(lookup, { extension });
 };
 
 const conversation: Pick<ToolExecutionApi, "conversationId"> = {
@@ -1257,6 +1265,264 @@ describe("a failure to reach the Settings", () => {
       ),
     ).toContain("Registry down");
     expect(logged).toEqual([]);
+  });
+});
+
+describe("the settings tools from a program", () => {
+  const isChange = Schema.is(ChangeOutput);
+  const isSettings = Schema.is(SettingsGetOutput);
+
+  it("gets each tool's structured output, as its schema declares", async () => {
+    const settings = fakeSettings({ extensions: { subagents: { readToolset: ["read"] } } });
+    const tool = await toolsOver(settings.service);
+
+    const steps: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["settings_get", { scope: "*" }],
+      ["settings_get", { scope: "env-a" }],
+      [
+        "settings_model_set",
+        { scope: "*", model: "anthropic/claude-sonnet-5-5", thinking_level: "low", reason: "r" },
+      ],
+      ["settings_model_set", { scope: "*", model: "anthropic/claude-sonnet-5-5", reason: "r" }],
+      [
+        "settings_role_set",
+        { scope: "env-a", role: "small", model: "anthropic/claude-sonnet-5-5", reason: "r" },
+      ],
+      ["settings_tool_offer", { scope: "*", pattern: "web_fetch", reason: "r" }],
+      ["settings_tool_offer", { scope: "*", pattern: "web_fetch", reason: "r" }],
+      ["settings_tool_defer", { scope: "*", pattern: "web_fetch", reason: "r" }],
+      ["settings_tool_defer", { scope: "*", pattern: "web_fetch", reason: "r" }],
+      [
+        "settings_compaction_set",
+        { scope: "*", enabled: false, reserve_tokens: 20000, reason: "r" },
+      ],
+      ["settings_compaction_set", { scope: "*", enabled: false, reason: "r" }],
+      ["settings_branch_summary_set", { scope: "env-a", skip_prompt: true, reason: "r" }],
+      [
+        "settings_extension_set",
+        { scope: "*", extension: "subagents", key: "readToolset", value: ["grep"], reason: "r" },
+      ],
+    ];
+
+    const called = await runProgram([tool.extension], steps);
+
+    expect(called.map((each) => each.diagnostics)).toEqual(steps.map(() => []));
+    expect(called.map((each) => each.isError)).toEqual(steps.map(() => false));
+
+    const [global, environment, model, modelAgain, role, offer, offerAgain, defer, deferAgain] =
+      called.map((each) => each.structuredOutput);
+
+    const [compaction, compactionAgain, branchSummary, extension] = called
+      .slice(9)
+      .map((each) => each.structuredOutput);
+
+    expect(isSettings(global)).toBe(true);
+    expect(isSettings(environment)).toBe(true);
+
+    expect(global).toMatchObject({
+      scope: { id: "*", name: "Global" },
+      own_environment: "default",
+      is_own: false,
+      settings_truncated: false,
+      instructions: { global: { text: "", bytes: 0, text_truncated: false }, environment: null },
+      problem: null,
+    });
+
+    // Each setting says where its value comes from: the default, or Global.
+    expect(global).toMatchObject({
+      settings: expect.arrayContaining([
+        expect.objectContaining({
+          field: "model",
+          value: "anthropic/claude-opus-5-5",
+          source: "default",
+        }),
+        expect.objectContaining({
+          field: "extensions.subagents.readToolset",
+          value: ["read"],
+          source: "global",
+        }),
+        expect.objectContaining({
+          field: "extensions.subagents.maxSubagentDepth",
+          value: 2,
+          source: "default",
+        }),
+      ]),
+    });
+
+    expect(environment).toMatchObject({
+      scope: { id: "env-a", name: "A" },
+      instructions: { environment: { text: "", bytes: 0, text_truncated: false } },
+      settings: expect.arrayContaining([
+        expect.objectContaining({
+          field: "model",
+          source: "inherited",
+          global_value: "anthropic/claude-opus-5-5",
+        }),
+      ]),
+    });
+
+    for (const value of [
+      model,
+      modelAgain,
+      role,
+      offer,
+      offerAgain,
+      defer,
+      deferAgain,
+      compaction,
+      compactionAgain,
+      branchSummary,
+      extension,
+    ]) {
+      expect(isChange(value)).toBe(true);
+    }
+
+    expect(model).toMatchObject({
+      scope: { id: "*", name: "Global" },
+      changes: [
+        {
+          field: "model",
+          before: "anthropic/claude-opus-5-5",
+          after: "anthropic/claude-sonnet-5-5",
+        },
+        { field: "thinkingLevel", before: "high", after: "low" },
+      ],
+      unchanged: [],
+      approval: null,
+    });
+    expect(modelAgain).toMatchObject({ changes: [], unchanged: ["model"], approval: null });
+    expect(role).toMatchObject({
+      scope: { id: "env-a", name: "A" },
+      changes: [{ field: "roles.small", before_inherited: true, after_inherited: false }],
+    });
+    expect(offer).toMatchObject({ changes: [{ field: "tools.offered" }], unchanged: [] });
+    expect(offerAgain).toMatchObject({ changes: [], unchanged: ["tools.offered"] });
+    expect(defer).toMatchObject({ changes: [{ field: "tools.offered" }], unchanged: [] });
+    expect(deferAgain).toMatchObject({ changes: [], unchanged: ["tools.offered"] });
+    expect(compaction).toMatchObject({
+      changes: [{ field: "compaction.enabled" }, { field: "compaction.reserveTokens" }],
+    });
+    // Of two fields given, the one that had its value says so beside the one that changed.
+    expect(compactionAgain).toMatchObject({ changes: [], unchanged: ["compaction.enabled"] });
+    expect(branchSummary).toMatchObject({
+      scope: { id: "env-a", name: "A" },
+      changes: [{ field: "branchSummary.skipPrompt", after: true }],
+    });
+    expect(extension).toMatchObject({
+      changes: [{ field: "extensions.subagents.readToolset", before: ["read"], after: ["grep"] }],
+    });
+  });
+
+  it("gets a changed value too large to give left out, with its flag, and the call does not fail", async () => {
+    const tool = await toolsOver(fakeSettings().service);
+    const value = "v".repeat(200_000);
+
+    const [called] = await runProgram(
+      [tool.extension],
+      [
+        [
+          "settings_extension_set",
+          { scope: "*", extension: "other", key: "big", value, reason: "r" },
+        ],
+      ],
+    );
+
+    // Only the text for the model is cut by the Harness, which says so.
+    expect(called).toMatchObject({ isError: false });
+    expect(called?.structuredOutput).toMatchObject({
+      changes: [
+        {
+          field: "extensions.other.big",
+          before: null,
+          before_truncated: false,
+          after: null,
+          after_truncated: true,
+        },
+      ],
+      changes_truncated: false,
+    });
+  });
+
+  it("reports a field that had its value beside the one that changed", async () => {
+    const settings = fakeSettings({ compaction: { enabled: false } });
+    const tool = await toolsOver(settings.service);
+
+    const [called] = await runProgram(
+      [tool.extension],
+      [
+        [
+          "settings_compaction_set",
+          { scope: "*", enabled: false, reserve_tokens: 1000, reason: "r" },
+        ],
+      ],
+    );
+
+    expect(called?.structuredOutput).toMatchObject({
+      changes: [{ field: "compaction.reserveTokens" }],
+      unchanged: ["compaction.enabled"],
+    });
+  });
+
+  it("gets the Settings with what can grow cut, each with its flag, and the call does not fail", async () => {
+    const base = fakeSettings();
+
+    const options = Object.fromEntries(
+      Arr.map(Arr.range(1, 20), (n) => [`option${n}`, "v".repeat(20_000)]),
+    );
+
+    // More than the Settings page lets be: a long text, a long note, a value too long to show, and many Environments.
+    const service: SettingsAccessService = {
+      ...base.service,
+      get: (scope) =>
+        Effect.map(base.service.get(scope), (view): SettingsView => {
+          if (!isGlobalView(view)) return view;
+
+          const settings = {
+            ...view.settings,
+            instructions: "x\n".repeat(150_000),
+            extensions: { many: { huge: "h".repeat(100_000), ...options } },
+          };
+
+          return {
+            ...view,
+            settings,
+            problem: "p".repeat(100_000),
+            overriddenIn: {
+              model: Arr.map(Arr.range(1, 2_000), (n) => ({
+                id: `env-${n}`,
+                name: `Environment ${n}`,
+              })),
+            },
+          };
+        }),
+    };
+
+    const tool = await toolsOver(service);
+    const [sized] = await runSized([tool.extension], [["settings_get", { scope: "*" }]]);
+
+    // The value fits far under the cap of a nested call's result, with the lists it cut said so.
+    expect(sized?.isError).toBe(false);
+    expect(sized?.bytes).toBeLessThan(1024 * 1024);
+    expect(sized?.truncated).toMatchObject({ settings_truncated: true, problem_truncated: true });
+
+    // The flags inside it, which the sized call does not list.
+    const value = (await run(tool("settings_get"), { scope: "*" })).structuredOutput;
+
+    expect(isSettings(value)).toBe(true);
+    expect(value).toMatchObject({
+      settings_truncated: true,
+      problem_truncated: true,
+      instructions: { global: { text_truncated: true } },
+      settings: expect.arrayContaining([
+        expect.objectContaining({ field: "model", overridden_in_truncated: true }),
+        // A value too long to show is not shown, and says so.
+        expect.objectContaining({
+          field: "extensions.many.huge",
+          value: null,
+          value_truncated: true,
+        }),
+      ]),
+    });
   });
 });
 

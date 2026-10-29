@@ -6,16 +6,19 @@ import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 import {
   createRegistry,
   Harness,
+  type JsonObject,
   MemoryStorage,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { runProgram, runSized } from "./program.fixture.ts";
+import { MAX_NESTED_STRUCTURED_OUTPUT_BYTES } from "./result-bounds.ts";
 import { MAX_LIMIT, queryProblem, readSkillSearch, skillSearchUrl } from "./skill-search.ts";
-import { SkillSearchTools } from "./skill-search-tool.ts";
+import { SkillSearchOutput, SkillSearchTools } from "./skill-search-tool.ts";
 import { answer, callTool } from "./web/harness.fixture.ts";
 import { WebToolError } from "./web/errors.ts";
 import { fakeTransport, ok } from "./web/web.fixture.ts";
@@ -123,8 +126,8 @@ const open = async (answerRequest: (request: WebRequest) => Response | WebToolEr
     agent: { model: { provider: "faux", modelId: "faux-1" } },
   });
 
-  const call = async (args: { query: string; limit?: number }) => {
-    faux.setResponses([() => callTool("skill_search", args), () => answer("done")]);
+  const call = async (name: string, args: JsonObject) => {
+    faux.setResponses([() => callTool(name, args), () => answer("done")]);
     await (
       await root.submit({ type: "input", content: "go" }, BACKGROUND_CONTEXT)
     ).wait(BACKGROUND_CONTEXT);
@@ -145,13 +148,13 @@ const open = async (answerRequest: (request: WebRequest) => Response | WebToolEr
     };
   };
 
-  return { call, sent: transport.requests };
+  return { call, extension, sent: transport.requests };
 };
 
 describe("skill_search", () => {
   it("returns each Skill's ID, source and install count, and records nothing", async () => {
     const search = await open(() => json(FOUND));
-    const result = await search.call({ query: "grill", limit: 3 });
+    const result = await search.call("skill_search", { query: "grill", limit: 3 });
 
     expect(result.isError).toBe(false);
     expect(result.text).toContain(
@@ -167,7 +170,7 @@ describe("skill_search", () => {
 
   it("says when nothing matched", async () => {
     const search = await open(() => json({ skills: [] }));
-    const result = await search.call({ query: "zzzzqq" });
+    const result = await search.call("skill_search", { query: "zzzzqq" });
 
     expect(result.isError).toBe(false);
     expect(result.text).toBe("skills.sh found no Skill for \u201czzzzqq\u201d.");
@@ -175,7 +178,7 @@ describe("skill_search", () => {
 
   it("reports a failure plainly, as the tool's error: unreachable, an error status, a changed answer", async () => {
     const unreachable = await open(() => WebToolError.make({ message: "network error" }));
-    const down = await unreachable.call({ query: "grill" });
+    const down = await unreachable.call("skill_search", { query: "grill" });
 
     expect(down.isError).toBe(true);
     expect(down.text).toBe(
@@ -184,12 +187,12 @@ describe("skill_search", () => {
 
     const refused = await open(() => json({ error: "Query must be at least 2 characters" }, 400));
 
-    expect((await refused.call({ query: "grill" })).text).toBe(
+    expect((await refused.call("skill_search", { query: "grill" })).text).toBe(
       "Could not search skills.sh: skills.sh answered 400: Query must be at least 2 characters",
     );
 
     const changed = await open(() => json({ results: [] }));
-    const odd = await changed.call({ query: "grill" });
+    const odd = await changed.call("skill_search", { query: "grill" });
 
     expect(odd.isError).toBe(true);
     expect(odd.text).toContain("not a list of Skills");
@@ -197,10 +200,78 @@ describe("skill_search", () => {
 
   it("refuses a query that is too short without asking skills.sh", async () => {
     const search = await open(() => json(FOUND));
-    const result = await search.call({ query: "g" });
+    const result = await search.call("skill_search", { query: "g" });
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("at least 2 characters");
     expect(search.sent).toHaveLength(0);
+  });
+});
+
+describe("skill_search for programs", () => {
+  const decode = Schema.decodeUnknownSync(SkillSearchOutput);
+
+  it("gives a program each result's ID, source, name and install count", async () => {
+    const search = await open(() => json(FOUND));
+    const [got] = await runProgram([search.extension], [["skill_search", { query: "grill" }]]);
+
+    expect(got).toMatchObject({ isError: false, diagnostics: [] });
+    expect(decode(got?.structuredOutput)).toEqual({
+      results_truncated: false,
+      results: [
+        {
+          id: "mattpocock/skills/grill-me",
+          source: "mattpocock/skills",
+          skill_id: "grill-me",
+          name: "grill-me",
+          installs: 1446664,
+        },
+        {
+          id: "mattpocock/skills/grilling",
+          source: "mattpocock/skills",
+          skill_id: "grilling",
+          name: "grilling",
+          installs: 1,
+        },
+      ],
+    });
+  });
+
+  it("gives a program an empty list when nothing matched", async () => {
+    const search = await open(() => json({ skills: [] }));
+    const [got] = await runProgram([search.extension], [["skill_search", { query: "zzzzqq" }]]);
+
+    expect(got).toMatchObject({ isError: false, diagnostics: [] });
+    expect(decode(got?.structuredOutput)).toEqual({ results: [], results_truncated: false });
+  });
+
+  it("gives a program an error without a value when the search fails", async () => {
+    const search = await open(() => WebToolError.make({ message: "network error" }));
+    const [got] = await runProgram([search.extension], [["skill_search", { query: "grill" }]]);
+
+    expect(got?.isError).toBe(true);
+    expect(got).not.toHaveProperty("structuredOutput");
+  });
+
+  it("cuts a long list of results, and the call still succeeds", async () => {
+    const skills = Array.from({ length: 3000 }, (_, index) => ({
+      id: `owner/repo/skill-${index}-${"x".repeat(60)}`,
+      source: "owner/repo",
+      skillId: `skill-${index}-${"x".repeat(60)}`,
+      name: `skill-${index}-${"x".repeat(60)}`,
+      installs: index,
+    }));
+
+    const search = await open(() => json({ skills }));
+    const [got] = await runSized([search.extension], [["skill_search", { query: "skill" }]]);
+
+    // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
+    expect(got).toMatchObject({
+      isError: false,
+      truncated: { results_truncated: true },
+    });
+    expect(got?.lengths.results).toBeGreaterThan(0);
+    expect(got?.lengths.results).toBeLessThan(skills.length);
+    expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
   });
 });

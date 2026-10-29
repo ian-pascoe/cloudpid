@@ -4,7 +4,8 @@
 // answers (every command hangs, `echo` included), which it cannot fix with a command. `container_resize` restarts it at
 // another size, up to its Environment's size limit, until the idle stop (GLOSSARY.md → Container resize). Both reach the
 // Container only through `WorkspaceContainer`, which the Session provides over the conversation's Workspace DO, and
-// nothing here runs a command.
+// nothing here runs a command. Each declares an output schema (`docs/architecture/agent-capabilities.md` → Values for
+// programs): what happened to the Container, as the text tells the model; a refused resize is an error and has none.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   compareInstances,
@@ -20,6 +21,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { type ConversationTarget, conversationTarget } from "./conversation-target.ts";
+import { asOutput, outputSchema } from "./outputs.ts";
 
 export const extensionName = "container";
 
@@ -106,6 +108,18 @@ const RestartParameters = Schema.Struct({
   ),
 });
 
+/** `container_restart`: what a restart did. */
+export const RestartOutput = Schema.Struct({
+  fresh: Schema.Boolean.annotate({
+    description:
+      "The snapshot was forgotten too: the next container starts from the Environment's Build or the image",
+  }),
+  was_running: Schema.Boolean.annotate({
+    description:
+      "A container was running, and is stopped; false when none was, so nothing was stopped",
+  }),
+});
+
 /** What the model is told once the Container is stopped. */
 export const describeRestart = (fresh: boolean, wasRunning: boolean): string => {
   const next = fresh
@@ -130,6 +144,7 @@ const ContainerRestart = defineEffectTool({
   name: "container_restart",
   description: restartDescription,
   parameters: RestartParameters,
+  structuredOutputSchema: outputSchema(RestartOutput),
   executionMode: "sequential",
   replay: "unsafe",
   execute: Effect.fnUntraced(function* ({ fresh = false }, api) {
@@ -145,6 +160,7 @@ const ContainerRestart = defineEffectTool({
     return {
       output: [{ type: "text" as const, text: describeRestart(fresh, wasRunning) }],
       details: { fresh, wasRunning },
+      structuredOutput: asOutput(RestartOutput, { fresh, was_running: wasRunning }),
     };
   }),
 });
@@ -175,6 +191,36 @@ const ResizeParameters = Schema.Struct({
   reason: Reason(
     "Why the container needs another size, for the user to read: such as 'tsc was stopped by the memory guard at 2.6 GB'",
   ),
+});
+
+/** `container_resize`: the size before and after, and what was stopped. A size above the limit is an error, with none. */
+export const ResizeOutput = Schema.Struct({
+  outcome: Schema.Literals(["resized", "unchanged"]).annotate({
+    description:
+      "resized: the next container starts on size; unchanged: the running container already has size, so it was not stopped",
+  }),
+  size: InstanceType.annotate({ description: "The size asked for" }),
+  previous: InstanceType.annotate({
+    description:
+      "The size the stopped container ran on, or, with none running, the one the next launch would have had; size when unchanged",
+  }),
+  next: InstanceType.annotate({ description: "The size the next container starts on" }),
+  environment: Schema.NullOr(InstanceType).annotate({
+    description:
+      "The Environment's own size, which the container after the idle stop has; null when unchanged, which does not say",
+  }),
+  was_running: Schema.Boolean.annotate({ description: "A container was running" }),
+  stopped: Schema.Boolean.annotate({
+    description: "A running container was snapshotted and stopped, so its commands ended",
+  }),
+  snapshotted: Schema.Boolean.annotate({
+    description:
+      "The stopped container's disk was snapshotted; false when none was running, or the snapshot could not be taken",
+  }),
+  disk_smaller: Schema.Boolean.annotate({
+    description:
+      "The new size's disk is smaller than the previous one's: a snapshot that does not fit it is not restored",
+  }),
 });
 
 /** `size`, with what it offers. */
@@ -220,6 +266,7 @@ const ContainerResize = defineEffectTool({
   name: "container_resize",
   description: resizeDescription,
   parameters: ResizeParameters,
+  structuredOutputSchema: outputSchema(ResizeOutput),
   executionMode: "sequential",
   replay: "unsafe",
   execute: Effect.fnUntraced(function* ({ size }, api) {
@@ -243,7 +290,39 @@ const ContainerResize = defineEffectTool({
         ? `The container already runs on ${resized.size}, so it was not stopped.`
         : describeResize(resized);
 
-    return { output: [{ type: "text" as const, text }], details: { size, ...resized } };
+    const structuredOutput = asOutput(
+      ResizeOutput,
+      resized.outcome === "unchanged"
+        ? {
+            outcome: "unchanged",
+            size,
+            previous: resized.size,
+            next: resized.size,
+            environment: null,
+            was_running: true,
+            stopped: false,
+            snapshotted: false,
+            disk_smaller: false,
+          }
+        : {
+            outcome: "resized",
+            size,
+            previous: resized.previous,
+            next: resized.next,
+            environment: resized.environment,
+            was_running: resized.wasRunning,
+            stopped: resized.wasRunning,
+            snapshotted: resized.snapshotted,
+            disk_smaller:
+              INSTANCE_RESOURCES[resized.next].diskMb < INSTANCE_RESOURCES[resized.previous].diskMb,
+          },
+    );
+
+    return {
+      output: [{ type: "text" as const, text }],
+      details: { size, ...resized },
+      structuredOutput,
+    };
   }),
 });
 

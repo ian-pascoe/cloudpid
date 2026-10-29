@@ -1,7 +1,8 @@
 // `browser`: the model's CDP code, run by the Session's browser host in the calling conversation's tab, or in one of the
 // owner's Owner tabs (`docs/architecture/browser.md`). This is the Session's side of `agents/browser`'s `browserTool`: its
 // description and its results come from the host, shaped here for the transcript, the socket, and the UI. And
-// `browser_owner_tabs`, which tells the agent which Owner tabs are open without running anything.
+// `browser_owner_tabs`, which tells the agent which Owner tabs are open without running anything. Those two tools declare
+// an output schema (`./outputs.ts`); `browser` does not, since its result is what the caller's own code returned.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -26,6 +27,8 @@ import {
 import { CONTAINER_PREVIEW_PORTS, containerPreviewHost } from "./contract.ts";
 import { BrowserSession } from "./session.ts";
 import { MAX_IMAGE_CHARACTERS } from "../images.ts";
+import { asOutput, boundItems, boundText, outputSchema } from "../outputs.ts";
+import { HandoffOutput, OwnerTabsOutput } from "./outputs.ts";
 
 /** The image types a screenshot may be: the UI shows them in an `<img>`, and an SVG or other type from a page is not one. */
 const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -223,15 +226,21 @@ export const browserOwnerTabsTool = defineEffectTool({
   name: "browser_owner_tabs",
   description: `List the user's Owner tabs: pages they opened in the Session's browser, in the Browser Pane. Each has an ID to pass as browser's tab, the page's title and origin, and whether the Browser Pane shows it ("${SHOWN_OWNER_TAB}" names that one). It reads no page and runs no code.`,
   parameters: Schema.Struct({}),
+  structuredOutputSchema: outputSchema(OwnerTabsOutput),
   replay: "safe",
   execute: () =>
     Effect.gen(function* () {
       const host = yield* BrowserHost;
       const pages = agentOwnerTabs(yield* host.ownerTabs);
+      const listed = boundItems(pages);
 
       return {
         output: [note(describeAgentOwnerTabs(pages))],
         details: { ownerTabs: Arr.map(pages, (page) => ({ id: page.id, shown: page.shown })) },
+        structuredOutput: asOutput(OwnerTabsOutput, {
+          tabs: listed.items,
+          tabs_truncated: listed.truncated,
+        }),
       };
     }).pipe(
       Effect.mapError((error) =>
@@ -269,6 +278,23 @@ export const describeOutcome = (outcome: BrowserHandoffOutcome): string => {
   }
 };
 
+/** How a handoff ended, as a value gives it. */
+const handoffOutput = (outcome: BrowserHandoffOutcome) => {
+  const reason = outcome.status === "failed" ? outcome.reason : undefined;
+  const cutReason = reason === undefined ? undefined : boundText(reason);
+
+  const windows =
+    outcome.windowOrigins === undefined ? undefined : boundItems(outcome.windowOrigins);
+
+  return asOutput(HandoffOutput, {
+    status: outcome.status,
+    reason: cutReason?.text ?? null,
+    reason_truncated: cutReason?.truncated ?? false,
+    windows: windows?.items ?? null,
+    windows_truncated: windows?.truncated ?? false,
+  });
+};
+
 const HandoffParameters = Schema.Struct({
   instructions: Schema.String.check(
     Schema.isMinLength(1),
@@ -295,6 +321,7 @@ export const browserHandoffTool = defineEffectTool({
     "\n\n",
   ),
   parameters: HandoffParameters,
+  structuredOutputSchema: outputSchema(HandoffOutput),
   executionMode: "sequential",
   replay: "safe",
   execute: ({ instructions }, api) =>
@@ -315,6 +342,7 @@ export const browserHandoffTool = defineEffectTool({
       return {
         output: [{ type: "text" as const, text: describeOutcome(outcome) }],
         details: { status: outcome.status },
+        structuredOutput: handoffOutput(outcome),
       };
     }).pipe(
       Effect.mapError((error) =>

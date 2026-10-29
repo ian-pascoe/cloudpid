@@ -2,11 +2,12 @@
 // → The Environment's own Skills, → Approval): `environment_skill_save` reads a Skill's folder from the Workspace and
 // saves it, `environment_skill_remove` removes one, over fake Skills that keep them as the Registry does. With `id: "*"`
 // each waits for the owner's Approval.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off schemaSync:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { type AgentChange, type PreviewedSkill, skillField } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  type JsonObject,
   ROOT_CONVERSATION_ID,
   type TaskId,
   type ToolExecutionApi,
@@ -17,7 +18,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import { type ApprovalAsk, Approvals, type ApprovalsService, makeApprovals } from "./approvals.ts";
 import {
@@ -30,6 +31,13 @@ import {
   type RunChange,
 } from "./environment.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
+import {
+  SkillInstallOutput,
+  SkillRemoveOutput,
+  SkillSaveOutput,
+  SkillUpdateOutput,
+} from "./environment-lifecycle-outputs.ts";
+import { answerRequests, runProgram, runSized } from "./program.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { fakeFolderEnv, fakeSkills } from "./environment-skills.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
@@ -212,7 +220,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     await asking;
   };
 
-  return { tool, logged, call, answeredEarlier, notified, approvals, ...skills };
+  return { tool, extension, logged, call, answeredEarlier, notified, approvals, ...skills };
 };
 
 type Result = Awaited<ReturnType<ToolRegistration["execute"]>>;
@@ -2402,5 +2410,498 @@ describe("environment_get marks", () => {
     );
     expect(shown).toContain("skills/tdd at c0ffee0): Tests first.");
     expect(shown).toContain("environment_skill_update");
+  });
+});
+
+describe("the Skill tools from a program", () => {
+  const decodeSave = Schema.decodeUnknownSync(SkillSaveOutput);
+  const decodeRemove = Schema.decodeUnknownSync(SkillRemoveOutput);
+  const decodeInstall = Schema.decodeUnknownSync(SkillInstallOutput);
+  const decodeUpdate = Schema.decodeUnknownSync(SkillUpdateOutput);
+
+  const reason = "To check";
+  const FOLDER = "/workspace/.cloudpid/tmp/release";
+  const OTHER = "/workspace/.cloudpid/tmp/other";
+
+  const files = () =>
+    fakeFolderEnv({
+      [`${FOLDER}/SKILL.md`]: SKILL_MD,
+      [`${FOLDER}/references/steps.md`]: "1. Tag.\n",
+      [`${OTHER}/SKILL.md`]: "---\nname: other\ndescription: Another.\n---\nDo it.\n",
+    });
+
+  const FROM = {
+    repo: "mattpocock/skills",
+    path: "skills/grill-me",
+    ref: null,
+    commit: GRILL_COMMIT,
+  };
+
+  const TO = { ...FROM, commit: "dec0de0000000000000000000000000000000002" };
+
+  it("gets the outcome of a save and a removal of an Environment's own Skill, and of one that changed nothing", async () => {
+    const { extension, keep } = await setUp();
+
+    keep("*", "release", { "SKILL.md": "---\nname: release\ndescription: Global.\n---\n" });
+
+    const steps: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["environment_skill_save", { id: "default", path: FOLDER, reason }],
+      ["environment_skill_save", { id: "default", path: FOLDER, reason }],
+      ["environment_skill_remove", { id: "default", name: "release", reason }],
+    ];
+
+    const called = await runProgram([extension], steps, { env: files() });
+
+    expect(called.map((each) => each.diagnostics)).toEqual(steps.map(() => []));
+    expect(called.map((each) => each.isError)).toEqual([false, false, false]);
+
+    const [saved, same, removed] = called.map((each) => each.structuredOutput);
+
+    expect(decodeSave(saved)).toMatchObject({
+      scope: DEFAULT,
+      changes: [{ field: "skills.release", before: null }],
+      changes_truncated: false,
+      unchanged: [],
+      approval: null,
+      changed: true,
+      skill: "release",
+      handed: true,
+      served_at: "/workspace/.agents/skills/release",
+      // It hides the Skill of the name kept Global, in this Environment.
+      hides_global: true,
+      overridden_in: [],
+    });
+
+    expect(decodeSave(same)).toMatchObject({
+      scope: DEFAULT,
+      changes: [],
+      unchanged: ["skills.release"],
+      changed: false,
+      handed: false,
+    });
+
+    expect(decodeRemove(removed)).toMatchObject({
+      scope: DEFAULT,
+      changes: [{ field: "skills.release", after: null }],
+      changed: true,
+      skill: "release",
+      handed: true,
+      // The Skill of the name kept Global is served in its place.
+      global_served: true,
+    });
+  });
+
+  it("gets the outcome of an install: the Skills installed, refused and kept, or the Skills listed when none was named", async () => {
+    const { extension, answerInstall } = await setUp();
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: "main",
+      commit: GRILL_COMMIT,
+      results: [
+        {
+          name: "grill-me",
+          path: "skills/grill-me",
+          outcome: "installed",
+          change: installChange(7, "grill-me"),
+        },
+        { name: "tdd", path: "skills/tdd", outcome: "unchanged" },
+        { name: "bad", path: "skills/bad", outcome: "rejected", message: "SKILL.md is missing" },
+      ],
+      handed: true,
+    });
+
+    const [installed] = await runProgram(
+      [extension],
+      [
+        [
+          "environment_skill_install",
+          { id: "default", source: "mattpocock/skills", skills: ["*"], reason },
+        ],
+      ],
+    );
+
+    expect(installed?.isError).toBe(false);
+    expect(installed?.diagnostics).toEqual([]);
+
+    expect(decodeInstall(installed?.structuredOutput)).toMatchObject({
+      scope: DEFAULT,
+      changes: [{ id: 7, field: "skills.grill-me" }],
+      unchanged: ["skills.tdd"],
+      approval: null,
+      changed: true,
+      source: { repo: "mattpocock/skills", ref: "main", commit: GRILL_COMMIT },
+      installed: [{ name: "grill-me", path: "skills/grill-me" }],
+      refused: [{ name: "bad", path: "skills/bad", message: "SKILL.md is missing" }],
+      listed: [],
+      handed: true,
+    });
+
+    answerInstall({
+      status: "listed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      available: [
+        { name: "grill-me", description: "Interview me", path: "skills/grill-me" },
+        { name: "tdd", description: "Test first", path: "skills/tdd" },
+      ],
+    });
+
+    const [listed] = await runProgram(
+      [extension],
+      [["environment_skill_install", { id: "default", source: "mattpocock/skills", reason }]],
+    );
+
+    expect(decodeInstall(listed?.structuredOutput)).toMatchObject({
+      changes: [],
+      changed: false,
+      installed: [],
+      listed: [
+        { name: "grill-me", description: "Interview me", path: "skills/grill-me" },
+        { name: "tdd", description: "Test first", path: "skills/tdd" },
+      ],
+      listed_truncated: false,
+      handed: false,
+    });
+  });
+
+  it("gets the outcome of an update: the Skills moved, those refused, and none marked", async () => {
+    const { extension, answerUpdate } = await setUp();
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "updated",
+          from: FROM,
+          to: TO,
+          overwrote: false,
+          change: installChange(9, "grill-me"),
+        },
+        { name: "tdd", outcome: "unchanged", message: "the same" },
+        { name: "edited", outcome: "modified", message: "edited since installed" },
+      ],
+      handed: true,
+    });
+
+    const [updated] = await runProgram(
+      [extension],
+      [["environment_skill_update", { id: "default", reason }]],
+    );
+
+    expect(updated?.isError).toBe(false);
+    expect(updated?.diagnostics).toEqual([]);
+
+    expect(decodeUpdate(updated?.structuredOutput)).toMatchObject({
+      scope: DEFAULT,
+      changes: [{ id: 9, field: "skills.grill-me" }],
+      unchanged: ["skills.tdd"],
+      approval: null,
+      changed: true,
+      updated: [{ name: "grill-me", from: FROM, to: TO, overwrote: false }],
+      refused: [{ name: "edited", outcome: "modified", message: "edited since installed" }],
+      nothing_marked: false,
+      handed: true,
+    });
+
+    answerUpdate({ status: "nothing", environment: DEFAULT });
+
+    const [nothing] = await runProgram(
+      [extension],
+      [["environment_skill_update", { id: "default", reason }]],
+    );
+
+    expect(decodeUpdate(nothing?.structuredOutput)).toMatchObject({
+      changes: [],
+      changed: false,
+      updated: [],
+      nothing_marked: true,
+    });
+  });
+
+  it("gets the owner's Approval of a change kept Global: approved, or declined with the reason", async () => {
+    const {
+      extension,
+      approvals,
+      answerPreview,
+      answerInstall,
+      answerUpdate,
+      answerUpdatePreview,
+    } = await setUp();
+
+    const pending = () => Effect.runPromise(approvals.pending);
+
+    const answer = (id: string, given: { approve: boolean; reason?: string }) =>
+      Effect.runPromise(approvals.answer(id, given));
+
+    // A save and a removal at Global, each approved and declined.
+    const saves: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["environment_skill_save", { id: "*", path: FOLDER, reason }],
+      ["environment_skill_save", { id: "*", path: OTHER, reason }],
+      ["environment_skill_remove", { id: "*", name: "release", reason }],
+      ["environment_skill_remove", { id: "*", name: "release", reason }],
+    ];
+
+    const called = await runProgram([extension], saves, {
+      env: files(),
+      meanwhile: () =>
+        answerRequests(pending, answer, [
+          { approve: true },
+          { approve: false, reason: "Too broad" },
+          { approve: false },
+          { approve: true },
+        ]),
+    });
+
+    expect(called.map((each) => each.isError)).toEqual([false, false, false, false]);
+    expect(called.map((each) => each.diagnostics)).toEqual(saves.map(() => []));
+
+    const [saved, declinedSave, declinedRemove, removed] = called.map(
+      (each) => each.structuredOutput,
+    );
+
+    expect(decodeSave(saved)).toMatchObject({
+      scope: GLOBAL_SCOPE,
+      changes: [{ field: "skills.release" }],
+      changed: true,
+      approval: { approved: true, reason: null },
+      handed: true,
+    });
+
+    expect(decodeSave(declinedSave)).toMatchObject({
+      scope: GLOBAL_SCOPE,
+      changes: [],
+      unchanged: [],
+      changed: false,
+      skill: "other",
+      approval: { approved: false, reason: "Too broad" },
+      served_at: null,
+    });
+
+    expect(decodeRemove(declinedRemove)).toMatchObject({
+      changes: [],
+      changed: false,
+      approval: { approved: false, reason: null },
+    });
+
+    expect(decodeRemove(removed)).toMatchObject({
+      scope: GLOBAL_SCOPE,
+      changes: [{ field: "skills.release", after: null }],
+      changed: true,
+      approval: { approved: true, reason: null },
+    });
+
+    // An install at Global, approved and declined.
+    answerPreview(previewOf([previewedSkill("grill-me")]));
+    answerInstall(installedAtGlobal(["grill-me"]));
+
+    const installs = await runProgram(
+      [extension],
+      [
+        ["environment_skill_install", INSTALL_ARGS],
+        ["environment_skill_install", INSTALL_ARGS],
+      ],
+      {
+        meanwhile: () =>
+          answerRequests(pending, answer, [{ approve: true }, { approve: false, reason: "No" }]),
+      },
+    );
+
+    expect(installs.map((each) => each.isError)).toEqual([false, false]);
+
+    expect(decodeInstall(installs[0]?.structuredOutput)).toMatchObject({
+      scope: GLOBAL_SCOPE,
+      changes: [{ field: "skills.grill-me" }],
+      changed: true,
+      approval: { approved: true, reason: null },
+      installed: [{ name: "grill-me", path: "skills/grill-me" }],
+    });
+
+    expect(decodeInstall(installs[1]?.structuredOutput)).toMatchObject({
+      scope: GLOBAL_SCOPE,
+      changes: [],
+      changed: false,
+      approval: { approved: false, reason: "No" },
+      installed: [],
+    });
+
+    // An update at Global, approved and declined.
+    answerUpdatePreview({
+      status: "done",
+      environment: GLOBAL_SCOPE,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "ready",
+          from: FROM,
+          to: TO,
+          description: "Interview me.",
+          files: GRILL_FILES,
+          folderHash: "folder-hash-1",
+          savedAt: 1_234,
+          overwrites: false,
+          current: { description: "Interview me.", files: ["SKILL.md"] },
+        },
+      ],
+    });
+
+    answerUpdate({
+      status: "done",
+      environment: GLOBAL_SCOPE,
+      results: [
+        {
+          name: "grill-me",
+          outcome: "updated",
+          from: FROM,
+          to: TO,
+          overwrote: false,
+          change: installChange(3, "grill-me"),
+        },
+      ],
+      handed: false,
+    });
+
+    const updates = await runProgram(
+      [extension],
+      [
+        ["environment_skill_update", { id: "*", names: ["grill-me"], reason }],
+        ["environment_skill_update", { id: "*", names: ["grill-me"], reason }],
+      ],
+      {
+        meanwhile: () =>
+          answerRequests(pending, answer, [{ approve: true }, { approve: false, reason: "Later" }]),
+      },
+    );
+
+    expect(updates.map((each) => each.isError)).toEqual([false, false]);
+
+    expect(decodeUpdate(updates[0]?.structuredOutput)).toMatchObject({
+      scope: GLOBAL_SCOPE,
+      changed: true,
+      approval: { approved: true, reason: null },
+      updated: [{ name: "grill-me", to: TO }],
+    });
+
+    expect(decodeUpdate(updates[1]?.structuredOutput)).toMatchObject({
+      changes: [],
+      changed: false,
+      approval: { approved: false, reason: "Later" },
+      updated: [],
+    });
+  });
+
+  it("cuts what does not fit: the Skills listed, installed and updated, and a change's large value, saying so, without failing", async () => {
+    const { extension, answerInstall, answerUpdate } = await setUp();
+    const many = Arr.makeBy(2_000, (at) => `skill-${at}`);
+
+    answerInstall({
+      status: "listed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      available: Arr.map(many, (name) => ({
+        name,
+        description: "d".repeat(200),
+        path: `skills/${name}`,
+      })),
+    });
+
+    const [listed] = await runSized(
+      [extension],
+      [["environment_skill_install", { id: "default", source: "mattpocock/skills", reason }]],
+    );
+
+    expect(listed?.isError).toBe(false);
+    expect(listed?.truncated["listed_truncated"]).toBe(true);
+    expect(listed?.lengths["listed"]).toBeGreaterThan(0);
+    expect(listed?.lengths["listed"]).toBeLessThan(2_000);
+    expect(listed?.bytes).toBeLessThan(1.5 * 1024 * 1024);
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      results: Arr.map(many, (name, at) => ({
+        name,
+        path: `skills/${name}`,
+        outcome: "installed" as const,
+        change: installChange(100 + at, name),
+        overriddenIn: Arr.makeBy(2, (index) => ({
+          id: `env-${index}`,
+          name: `Environment ${index}`,
+        })),
+      })),
+      handed: true,
+    });
+
+    const [installed] = await runSized(
+      [extension],
+      [
+        [
+          "environment_skill_install",
+          { id: "default", source: "mattpocock/skills", skills: ["*"], reason },
+        ],
+      ],
+    );
+
+    expect(installed?.isError).toBe(false);
+    expect(installed?.truncated["changes_truncated"]).toBe(true);
+    expect(installed?.lengths["changes"]).toBeLessThan(2_000);
+    expect(installed?.lengths["installed"]).toBe(2_000);
+    expect(installed?.truncated["installed_truncated"]).toBe(false);
+    expect(installed?.lengths["overridden_in"]).toBe(2);
+    expect(installed?.bytes).toBeLessThan(1.5 * 1024 * 1024);
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: Arr.map(many, (name, at) => ({
+        name,
+        outcome: "updated" as const,
+        from: FROM,
+        to: TO,
+        overwrote: false,
+        change: installChange(5_000 + at, name),
+      })),
+      handed: true,
+    });
+
+    const [updated] = await runSized(
+      [extension],
+      [["environment_skill_update", { id: "default", reason }]],
+    );
+
+    expect(updated?.isError).toBe(false);
+    expect(updated?.truncated["changes_truncated"]).toBe(true);
+    expect(updated?.bytes).toBeLessThan(1.5 * 1024 * 1024);
+
+    // A Skill of files so large that the change recording them cannot be shown whole: its value is left out.
+    const big = fakeFolderEnv({
+      [`${FOLDER}/SKILL.md`]: SKILL_MD,
+      [`${FOLDER}/references/big.md`]: "x".repeat(200 * 1024),
+    });
+
+    const [saved] = await runProgram(
+      [extension],
+      [["environment_skill_save", { id: "default", path: FOLDER, reason }]],
+      { env: big },
+    );
+
+    expect(saved?.isError).toBe(false);
+
+    expect(decodeSave(saved?.structuredOutput)).toMatchObject({
+      changed: true,
+      changes: [{ before: null, before_truncated: false, after: null, after_truncated: true }],
+      changes_truncated: false,
+    });
   });
 });

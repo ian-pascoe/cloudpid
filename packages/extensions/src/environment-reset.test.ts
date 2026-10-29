@@ -2,7 +2,7 @@
 // of a Container setting taken back, so it inherits Global's value. Over fake Environments that hold Global's settings and
 // each Environment's Overrides. A reset of the size limit is a Limit: it asks the owner's Approval, and on Approve
 // changes the field against the limit the owner saw; a reset of any other field asks nothing.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off strictEffectProvide:off
+// @effect-diagnostics asyncFunction:off schemaSync:off newPromise:off globalTimers:off strictEffectProvide:off
 import {
   CONTAINER_SETTING_NAMES,
   type ContainerSettings,
@@ -13,6 +13,7 @@ import {
 import type { AgentChange } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  type JsonObject,
   ROOT_CONVERSATION_ID,
   type TaskId,
   type ToolExecutionApi,
@@ -21,7 +22,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import type * as Types from "effect/Types";
 import { describe, expect, it } from "vitest";
@@ -38,6 +39,8 @@ import {
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
+import { EnvironmentChangeOutput } from "./outputs.ts";
+import { answerRequests, runProgram } from "./program.fixture.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
@@ -244,7 +247,7 @@ const setUp = async ({ global = DEFAULT_CONTAINER_SETTINGS, overrides = {} }: St
     return { result, text };
   };
 
-  return { tool, reset, calls, logged, asked };
+  return { tool, reset, calls, logged, asked, extension, approvals };
 };
 
 describe("environment_setting_reset", () => {
@@ -408,5 +411,96 @@ describe("environment_setting_reset", () => {
     expect(text).toContain("environment_container_resize");
     expect(asked).toEqual([]);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("environment_setting_reset from a program", () => {
+  /** Run `steps` as one program call each, the owner giving `answers` to the requests in turn. */
+  const callProgram = async (
+    start: Start,
+    steps: ReadonlyArray<JsonObject>,
+    answers: ReadonlyArray<{ readonly approve: boolean; readonly reason?: string }>,
+  ) => {
+    const { extension, approvals } = await setUp(start);
+
+    return runProgram(
+      [extension],
+      Arr.map(steps, (args) => ["environment_setting_reset", args] as const),
+      {
+        meanwhile: () =>
+          answerRequests(
+            () => Effect.runPromise(approvals.pending),
+            (id, given) => Effect.runPromise(approvals.answer(id, given)),
+            answers,
+          ),
+      },
+    );
+  };
+
+  it("gets a reset made, one that was not needed, and a reset of the size limit approved", async () => {
+    const reason = "Global's will do";
+
+    const steps: ReadonlyArray<JsonObject> = [
+      { id: "default", setting: "idleMinutes", reason },
+      { id: "default", setting: "idleMinutes", reason },
+      { id: "default", setting: "maxInstance", reason },
+      { id: "default", setting: "maxInstance", reason },
+    ];
+
+    const start = { overrides: { idleMinutes: 10, maxInstance: "cpu-3" } } as const;
+
+    const called = await callProgram(start, steps, [{ approve: true }]);
+
+    expect(Arr.map(called, (each) => each.diagnostics)).toEqual(Arr.map(steps, () => []));
+    expect(Arr.map(called, (each) => each.isError)).toEqual(Arr.map(steps, () => false));
+
+    const [made, unneeded, approved, again] = Arr.map(called, (each) =>
+      Schema.decodeUnknownSync(EnvironmentChangeOutput)(each.structuredOutput),
+    );
+
+    const scope = { id: "default", name: "Default" };
+
+    expect(made).toMatchObject({
+      scope,
+      changes: [{ field: "idleMinutes", before: 10, after: 2 }],
+      unchanged: [],
+      approval: null,
+      own: true,
+      new_build: false,
+      global: null,
+    });
+    expect(unneeded).toMatchObject({
+      scope,
+      changes: [],
+      unchanged: ["idleMinutes"],
+      approval: null,
+    });
+    expect(approved).toMatchObject({
+      scope,
+      changes: [{ field: "maxInstance", before: "cpu-3", after: "cpu-2" }],
+      approval: { approved: true, reason: null },
+    });
+    // The approved call reset the limit: a second finds it inherited and asks nothing.
+    expect(again).toMatchObject({ changes: [], unchanged: ["maxInstance"], approval: null });
+  });
+
+  it("gets the owner's reason when they decline the reset of the size limit", async () => {
+    const [declined] = await callProgram(
+      { overrides: { maxInstance: "cpu-3" } },
+      [{ id: "default", setting: "maxInstance", reason: "r" }],
+      [{ approve: false, reason: "Keep the room" }],
+    );
+
+    expect(declined?.isError).toBe(false);
+    expect(Schema.decodeUnknownSync(EnvironmentChangeOutput)(declined?.structuredOutput)).toEqual({
+      scope: { id: "default", name: "Default" },
+      changes: [],
+      changes_truncated: false,
+      unchanged: [],
+      approval: { approved: false, reason: "Keep the room" },
+      own: false,
+      new_build: false,
+      global: null,
+    });
   });
 });

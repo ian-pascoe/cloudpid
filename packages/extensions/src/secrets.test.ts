@@ -1,10 +1,13 @@
 // Secrets through real runs: the agent asks, the owner answers in the masked form, and tools use the value through
 // references, while the value never reaches the transcript, tool output, or the model. pi-durable's Harness is
 // Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off schemaSync:off
 import { getCurrentSystemPrompt, getCurrentTools, Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type JsonObject } from "@earendil-works/pi-durable";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { decodeProgramCall, runSized } from "./program.fixture.ts";
+import { MAX_NESTED_STRUCTURED_OUTPUT_BYTES } from "./result-bounds.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 import {
@@ -16,6 +19,7 @@ import {
   secretReference,
 } from "./secrets.ts";
 import { call, openSecretsHarness } from "./secrets/harness.fixture.ts";
+import { AskOutput, ForgetOutput, ListOutput } from "./secrets/outputs.ts";
 import { toolSearchExtension } from "./tool-search.ts";
 
 const VALUE = "ghp_live0123456789abcdef";
@@ -390,5 +394,210 @@ describe("secrets", () => {
     );
 
     expect(resolved).toMatchObject({ success: { tools: ["bash", "secret_list"] } });
+  });
+
+  describe("what programs get", () => {
+    const decodeAsk = Schema.decodeUnknownSync(AskOutput);
+    const decodeList = Schema.decodeUnknownSync(ListOutput);
+    const decodeForget = Schema.decodeUnknownSync(ForgetOutput);
+
+    /** What a program got of calling `tool` with `args`, as the `program` stand-in reports it. */
+    const nested = async (
+      session: Awaited<ReturnType<typeof openSecretsHarness>>,
+      tool: string,
+      args: JsonObject,
+    ) => {
+      await session.prompt("Go", call("program", { tool, args }));
+
+      return decodeProgramCall((await session.lastResult())?.text ?? "");
+    };
+
+    it("gives a program how to reference each Secret asked for, and never a value", async () => {
+      const session = await openSecretsHarness();
+
+      const running = session.prompt(
+        "Go",
+        call("program", { tool: "secret_ask", args: { names: ["API_KEY", "OPTIONAL"] } }),
+      );
+
+      await session.enter({ API_KEY: VALUE });
+      await running;
+
+      const asked = decodeProgramCall((await session.lastResult())?.text ?? "");
+
+      expect(asked).toMatchObject({ isError: false, diagnostics: [] });
+      expect(decodeAsk(asked.structuredOutput)).toMatchObject({
+        cancelled: false,
+        secrets: [
+          { name: "API_KEY", status: "provided", env: env("API_KEY"), reference: ref("API_KEY") },
+          { name: "OPTIONAL", status: "skipped", env: null, reference: null, expires_at: null },
+        ],
+      });
+      expect(JSON.stringify(asked)).not.toContain(VALUE);
+    });
+
+    it("says the owner cancelled", async () => {
+      const session = await openSecretsHarness();
+
+      const running = session.prompt(
+        "Go",
+        call("program", { tool: "secret_ask", args: { names: ["API_KEY"] } }),
+      );
+
+      await session.enter(null);
+      await running;
+
+      const asked = decodeProgramCall((await session.lastResult())?.text ?? "");
+
+      expect(asked).toMatchObject({ isError: false, diagnostics: [] });
+      expect(decodeAsk(asked.structuredOutput)).toMatchObject({
+        cancelled: true,
+        secrets: [{ name: "API_KEY", status: "cancelled" }],
+      });
+    });
+
+    it("says where the owner chose to keep a Secret", async () => {
+      const session = await openSecretsHarness([], [], (request, registry) => {
+        for (const { name, value } of request.secrets) {
+          registry.secrets.push({ name, value, scope: request.scope, build: false });
+        }
+
+        return request.secrets.map(({ name }): KeepResult => ({ name, kept: true }));
+      });
+
+      const running = session.prompt(
+        "Go",
+        call("program", { tool: "secret_ask", args: { names: ["API_KEY"] } }),
+      );
+
+      await session.enter({ API_KEY: VALUE }, "all");
+      await running;
+
+      const asked = decodeProgramCall((await session.lastResult())?.text ?? "");
+
+      expect(decodeAsk(asked.structuredOutput).secrets).toMatchObject([
+        { name: "API_KEY", status: "kept", scope: "every", expires_at: null },
+      ]);
+    });
+
+    it("lists what is held and what is kept, then forgets what can be", async () => {
+      const session = await openSecretsHarness(
+        [],
+        [{ name: "DATABASE_URL", value: VALUE, scope: "environment", build: false }],
+      );
+
+      await session.hold({ API_KEY: VALUE.toUpperCase() });
+
+      const listed = await nested(session, "secret_list", {});
+
+      expect(listed).toMatchObject({ isError: false, diagnostics: [] });
+      expect(decodeList(listed.structuredOutput)).toMatchObject({
+        secrets_truncated: false,
+        secrets: [
+          { name: "API_KEY", status: "held", scope: null, env: env("API_KEY") },
+          {
+            name: "DATABASE_URL",
+            status: "kept",
+            scope: "environment",
+            expires_at: null,
+            reference: ref("DATABASE_URL"),
+          },
+        ],
+      });
+      expect(decodeList(listed.structuredOutput).secrets[0]?.expires_at).toEqual(
+        expect.stringMatching(/^\d{4}-/),
+      );
+
+      const none = await nested(session, "secret_list", { query: "nothing like it" });
+
+      expect(decodeList(none.structuredOutput)).toEqual({ secrets: [], secrets_truncated: false });
+
+      const forgotten = await nested(session, "secret_forget", {
+        names: ["API_KEY", "DATABASE_URL", "MISSING"],
+      });
+
+      expect(forgotten).toMatchObject({ isError: false, diagnostics: [] });
+      expect(decodeForget(forgotten.structuredOutput)).toEqual({
+        secrets_truncated: false,
+        secrets: [
+          { name: "API_KEY", status: "forgotten", scope: null },
+          { name: "DATABASE_URL", status: "kept", scope: "environment" },
+          { name: "MISSING", status: "not_held", scope: null },
+        ],
+      });
+    });
+
+    it("cuts a long list of Secrets, and the call still succeeds", async () => {
+      const kept: KeptSecret[] = Array.from({ length: 4000 }, (_, index) => ({
+        name: `KEPT_SECRET_${String(index).padStart(5, "0")}_${"X".repeat(40)}`,
+        value: `value-${index}-0123456789`,
+        scope: "environment",
+        build: false,
+      }));
+
+      const session = await openSecretsHarness([], kept);
+      const [got] = await runSized([session.extension], [["secret_list", {}]]);
+
+      // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
+      expect(got).toMatchObject({
+        isError: false,
+        truncated: { secrets_truncated: true },
+      });
+      expect(got?.lengths.secrets).toBeGreaterThan(0);
+      expect(got?.lengths.secrets).toBeLessThan(kept.length);
+      expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
+    });
+
+    // The program stand-in's own result is redacted too, which would hide a value left in the nested one: so the nested
+    // call's whole result is kept by a stand-in that calls the tool beside it.
+    it("redacts a Secret's value from a tool's structured output before the program sees it", async () => {
+      const relayed: Array<{ isError?: boolean; structuredOutput?: Schema.Json }> = [];
+
+      const leaky = defineExtension({
+        name: "leaky",
+        tools: [
+          defineTool({
+            name: "leaky",
+            description: "Return a Secret's value in its structured output",
+            parameters: Type.Object({}),
+            structuredOutputSchema: Type.Object({
+              token: Type.String(),
+              nested: Type.Array(Type.Object({ line: Type.String() })),
+            }),
+            execute: async () => ({
+              output: [{ type: "text", text: "leaked" }],
+              structuredOutput: {
+                token: VALUE,
+                nested: [{ line: `Authorization: Bearer ${VALUE}` }],
+              },
+            }),
+          }),
+          defineTool({
+            name: "relay",
+            description: "Call a tool and keep what the program got of it",
+            parameters: Type.Object({ tool: Type.String() }),
+            execute: async ({ tool }, api, context) => {
+              relayed.push(await api.executeTool(tool, {}, context));
+
+              return { output: [{ type: "text", text: "relayed" }] };
+            },
+          }),
+        ],
+      });
+
+      const session = await openSecretsHarness([leaky]);
+
+      await session.hold({ API_KEY: VALUE });
+      await session.prompt("Go", call("relay", { tool: "leaky" }));
+
+      expect(relayed).toHaveLength(1);
+      expect(relayed[0]?.isError).not.toBe(true);
+      expect(relayed[0]?.structuredOutput).toEqual({
+        token: ref("API_KEY"),
+        nested: [{ line: `Authorization: Bearer ${ref("API_KEY")}` }],
+      });
+      expect(JSON.stringify(relayed)).not.toContain(VALUE);
+      expect(await session.transcript()).not.toContain(VALUE);
+    });
   });
 });
