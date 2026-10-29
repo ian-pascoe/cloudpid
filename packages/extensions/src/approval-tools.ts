@@ -3,8 +3,9 @@
 // ADR-0019): those that change a Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`,
 // `settings_subagent_workspaces_set`, `environment_container_size_limit_set`, and `settings_reset` of a Limit) and
 // those no revert can undo (`environment_delete`, `environment_secret_delete`), and `settings_instructions_set`, since
-// the Instructions steer every conversation unasked (ADR-0027). The Settings' Limits are kept at both Scopes (ADR-0027): their tools and `settings_reset` take a required `scope`, `*` for
-// Global or an Environment's id, and ask at either. `settings_reset` lives here for its Limits, but a reset of any other
+// the Instructions steer every conversation unasked (ADR-0027). The Settings' Limits are kept at both Scopes
+// (ADR-0027): their tools and `settings_reset` take a required `scope`, `*` for Global or an Environment's id, and ask
+// at either. `settings_reset` lives here for its Limits, but a reset of any other
 // field is made at once, without asking, as the `settings` tools make a change. Each checks what it can first and
 // refuses without asking what it would refuse anyway; then it asks the owner (`withApproval`), and on Approve makes
 // the change as the other tools do (applied, recorded with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
@@ -22,6 +23,7 @@ import {
   overrideFieldPath,
   overrideValue,
   settingsFieldValue,
+  textSize,
   utf8Bytes,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
@@ -88,7 +90,6 @@ import {
   SettingsReload,
   SettingsScope,
   type SettingsView,
-  textSize,
 } from "./settings.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
 import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
@@ -321,8 +322,8 @@ const APPROVAL =
 
 /**
  * The tools that wait for the owner's Approval: over the Session's `Environments`, `EnvironmentRemoval` and
- * `SettingsAccess`, asking through its `Approvals`, refusing a reason that holds a Secret (`Secrets`) or a deploy-time
- * credential (`DeployCredentials`), and telling the Session of each change for the Run's Notification (`AgentChangeLog`).
+ * `SettingsAccess`, asking through its `Approvals`, refusing a reason or an Instructions text that holds a Secret
+ * (`Secrets`) or a deploy-time credential (`DeployCredentials`), and telling the Session of each change for the Run's Notification (`AgentChangeLog`).
  */
 export const ApprovalTools: Effect.Effect<
   Extension,
@@ -348,9 +349,9 @@ export const ApprovalTools: Effect.Effect<
   const { apply: applySettings, reach } = yield* SettingsChanges;
 
   /**
-   * Fails, asking nothing, when the reason holds a Secret the Session holds, a deploy-time credential, or a Secret
-   * Reference's placeholder, which these tools do not resolve (the card and the history would show the reference's
-   * text).
+   * Fails, asking nothing, when `text` (`what`: the reason, or the Instructions' text) holds a Secret the Session holds,
+   * a deploy-time credential, or a Secret Reference's placeholder, which these tools do not resolve (the card and the
+   * history would show the reference's text); `fix` says what to do instead.
    */
   const plainText = (text: string, what: string, fix: string) =>
     holdsPlaceholder(text)
@@ -752,7 +753,7 @@ export const ApprovalTools: Effect.Effect<
     name: "settings_instructions_set",
     description: Arr.join(
       [
-        `Set the user's Instructions: Markdown that every conversation's model (each Session's root and its subagents) is shown in its system prompt from the start of its Context Window, before the Project instructions of the AGENTS.md files, which win where the two disagree. They are the user's standing rules for every Session; a repo's own rules belong in its AGENTS.md. Give the whole text: it replaces the Instructions there, and an empty text removes them. At most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8. settings_get shows them.`,
+        `Set the user's Instructions: Markdown that every conversation's model (each Session's root and its subagents) is shown in its system prompt from the start of its Context Window, before the Project instructions of the AGENTS.md files, which win where the two disagree. They are what the user wants of every Session; what only one repo needs belongs in its Project instructions (AGENTS.md). Give the whole text: it replaces the Instructions there, and an empty text removes them. At most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8. settings_get shows them.`,
         "They steer every conversation unasked, so the user must approve each change; set them only when the user asks. An approved change applies from each conversation's next Context Window (a new Session, a Handoff or a Rollover), never inside one: a context that has begun, this one included, keeps showing the Instructions it started with.",
         `Give scope "${GLOBAL_SETTINGS_SCOPE}": the Instructions are Global, and an Environment has none of its own yet.`,
         APPROVAL,

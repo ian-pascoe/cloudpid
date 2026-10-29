@@ -203,6 +203,8 @@ const fakeRegistries = () => {
   const keptFiles = new Map<string, ReadonlyArray<SkillFile>>();
   /** The Settings' Agent changes recorded, oldest first. */
   const settingsChanges: AgentChange[] = [];
+  /** The Settings' values now, by field, where they are not the default model. */
+  const settingsNow = new Map<string, string>();
   /** The Agent changes the owner dismissed, each as `<scope>:<id>`. */
   const dismissedChanges = new Set<string>();
   const listed = (change: AgentChange) => !dismissedChanges.has(`${change.scope}:${change.id}`);
@@ -1307,12 +1309,10 @@ const fakeRegistries = () => {
         if (found.value.actor === "owner")
           return { status: "refused", message: "A revert is not undone" };
 
-        if (found.value.after !== DEFAULT_SETTINGS.model) {
-          return {
-            status: "changed-since",
-            field: found.value.field,
-            current: DEFAULT_SETTINGS.model,
-          };
+        const current = settingsNow.get(found.value.field) ?? DEFAULT_SETTINGS.model;
+
+        if (found.value.after !== current) {
+          return { status: "changed-since", field: found.value.field, current };
         }
 
         const revert: AgentChange = {
@@ -1374,6 +1374,7 @@ const fakeRegistries = () => {
     skillFiles,
     keptFiles,
     settingsChanges,
+    settingsNow,
     sessionObjects,
     workspaceObjects,
     breakSession: (id: string, message: string) => {
@@ -4013,6 +4014,26 @@ it("refuses to revert a Settings change whose setting changed since, or one that
     `model has changed since: it is "${DEFAULT_SETTINGS.model}" now, so the change is not reverted`,
   );
   expect(missing.message).toBe("The Settings have no change 9");
+});
+
+it("names a long text by its size when it refuses to revert, rather than showing it whole", async () => {
+  const fake = fakeRegistries();
+  const now = `Answer in German.\n${"Keep commits small.\n".repeat(2_000)}`;
+
+  fake.settingsNow.set("instructions", now);
+  fake.settingsChanges.push({
+    ...settingsChange(1, "", "Answer in French."),
+    tool: "settings_instructions_set",
+    field: "instructions",
+  });
+
+  const changed = await call(fake, (registry) =>
+    Effect.flip(registry.revertSettingsChange({ change: 1 })),
+  );
+
+  expect(changed.message).toBe(
+    "instructions has changed since: it is 2,002 lines, 40,018 bytes of UTF-8 now, so the change is not reverted",
+  );
 });
 
 it("dismisses a Settings change from the list, and refuses one that is not there", async () => {

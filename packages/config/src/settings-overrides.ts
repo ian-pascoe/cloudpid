@@ -3,8 +3,8 @@
 // They are the deep partial shape of the Global document, read field by field: a Role is one field (its model and hint
 // as one value), an extension's option is one (`extensions.<extension>.<key>`), and every other setting is one by
 // itself (`model`, `compaction.enabled`, `tools.offered`, `spendLimit.perSession`), replaced whole. An Environment's
-// settings are its Overrides over Global over the defaults. The Instructions are no Override (`ADDING_UP`): they add up,
-// Global's then the Environment's, so the Overrides do not hold them.
+// settings are its Overrides over Global over the defaults. The Instructions are no Override (`INSTRUCTIONS_ROOT`):
+// they add up, Global's then the Environment's, so the Overrides do not hold them.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -28,28 +28,22 @@ const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObjec
   Predicate.isObject(value) && !Arr.isArray(value);
 
 /**
- * The settings that add up rather than being overridden (ADR-0027): the model is shown Global's, then the
- * Environment's. They are no Override field, an Environment's Overrides may not hold them, and an Environment's
- * settings carry Global's value of them.
+ * The Instructions' setting, which adds up rather than being overridden (ADR-0027): the model is shown Global's, then
+ * the Environment's. It is no Override field, an Environment's Overrides may not hold it, and an Environment's settings
+ * carry Global's value of it. An Environment's own Instructions are kept apart (#352).
  */
-export const ADDING_UP: ReadonlySet<string> = new Set(["instructions"]);
+export const INSTRUCTIONS_ROOT = "instructions";
 
-/** Why Overrides that hold a setting of `ADDING_UP` are refused. */
-const addingUpProblem = (root: string): string =>
-  `${root}: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet`;
+/** Why Overrides that hold the Instructions are refused. */
+const INSTRUCTIONS_OVERRIDE_PROBLEM = `${INSTRUCTIONS_ROOT}: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet`;
 
 const SETTINGS_ROOTS: ReadonlySet<string> = new Set(
-  Arr.filter(Record.keys(DEFAULT_SETTINGS), (root) => !ADDING_UP.has(root)),
+  Arr.filter(Record.keys(DEFAULT_SETTINGS), (root) => root !== INSTRUCTIONS_ROOT),
 );
 
-/** The first setting of `ADDING_UP` that `overrides` hold, if any. */
-const addingUpIn = (overrides: Schema.Json | undefined): Option.Option<string> =>
-  isJsonObject(overrides)
-    ? Option.map(
-        Arr.findFirst(Record.toEntries(overrides), ([root]) => ADDING_UP.has(root)),
-        ([root]) => root,
-      )
-    : Option.none();
+/** Whether `overrides` hold the Instructions. */
+const holdsInstructions = (overrides: Schema.Json | undefined): boolean =>
+  isJsonObject(overrides) && Object.hasOwn(overrides, INSTRUCTIONS_ROOT);
 
 /** The defaults below a setting's root: an object for a section (`roles`, `compaction`), anything else for a value. */
 const defaultsOf = (root: string): Settings[keyof Settings] | undefined =>
@@ -85,7 +79,7 @@ const fieldDepth = (root: string): number => {
 export const OVERRIDE_FIELD_NAMES: ReadonlyArray<string> = Arr.flatMap(
   Record.toEntries(DEFAULT_SETTINGS),
   ([root, defaults]) => {
-    if (ADDING_UP.has(root)) return [];
+    if (root === INSTRUCTIONS_ROOT) return [];
 
     if (root === "extensions") return ["extensions.<extension>.<key>"];
 
@@ -148,7 +142,7 @@ const entriesBelow = (
 const overrideEntries = (overrides: Schema.Json): ReadonlyArray<OverrideEntry> =>
   isJsonObject(overrides)
     ? Arr.flatMap(Record.toEntries(overrides), ([root, value]) =>
-        ADDING_UP.has(root) ? [] : entriesBelow(value, [root], fieldDepth(root)),
+        root === INSTRUCTIONS_ROOT ? [] : entriesBelow(value, [root], fieldDepth(root)),
       )
     : [];
 
@@ -231,10 +225,8 @@ export const withOverrides = (
     return Result.fail(SettingsError.make({ message: "The Overrides to set are not an object" }));
   }
 
-  const addingUp = addingUpIn(set);
-
-  if (Option.isSome(addingUp)) {
-    return Result.fail(SettingsError.make({ message: addingUpProblem(addingUp.value) }));
+  if (holdsInstructions(set)) {
+    return Result.fail(SettingsError.make({ message: INSTRUCTIONS_OVERRIDE_PROBLEM }));
   }
 
   const unknown = Arr.findFirst(reset, (field) => overrideFieldPath(field) === undefined);
@@ -329,10 +321,8 @@ export const resolveOverrides = (
 ): Result.Result<Settings, SettingsError> => {
   if (!isJsonObject(overrides)) return Result.fail(SettingsError.make({ message: NOT_AN_OBJECT }));
 
-  const addingUp = addingUpIn(overrides);
-
-  if (Option.isSome(addingUp)) {
-    return Result.fail(SettingsError.make({ message: addingUpProblem(addingUp.value) }));
+  if (holdsInstructions(overrides)) {
+    return Result.fail(SettingsError.make({ message: INSTRUCTIONS_OVERRIDE_PROBLEM }));
   }
 
   return Result.mapError(
@@ -388,11 +378,9 @@ export const resolveOverridesLeniently = (
   const renamed = withRenamedTools(overrides);
   let rest: Schema.JsonObject = isJsonObject(renamed) ? renamed : {};
 
-  for (const [root] of Record.toEntries(rest)) {
-    if (!ADDING_UP.has(root)) continue;
-
-    dropped.push(addingUpProblem(root));
-    rest = removeAt(rest, [root]);
+  if (holdsInstructions(rest)) {
+    dropped.push(INSTRUCTIONS_OVERRIDE_PROBLEM);
+    rest = removeAt(rest, [INSTRUCTIONS_ROOT]);
   }
 
   // Dropping a field settles its problem; a few rounds cover Overrides with several.

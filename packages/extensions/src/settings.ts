@@ -23,7 +23,7 @@ import {
   type SettingsOverrides,
   THINKING_LEVELS,
   ThinkingLevel,
-  utf8Bytes,
+  textSize,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange } from "@cloudpid/protocol";
@@ -198,13 +198,6 @@ export const CHANGE_NOTE =
   "The change is recorded with your reason, and the user can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it from its next request (this one) or when it next admits input (the others); the result says whether it reaches this Session.";
 
 const MODEL_LIST = Arr.join(SUPPORTED_MODELS, ", ");
-
-/** The size of a text such as the Instructions, as a result says it: its lines and its bytes of UTF-8. */
-export const textSize = (text: string): string => {
-  const lines = text.split("\n").length;
-
-  return `${lines} line${lines === 1 ? "" : "s"}, ${utf8Bytes(text).toLocaleString("en-US")} bytes of UTF-8`;
-};
 
 /** A Role's value, its model and hint. */
 const roleOf = (

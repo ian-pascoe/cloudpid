@@ -229,6 +229,10 @@ describe("Global's Instructions section", () => {
 
         expect(breadcrumb(markup)).toBe("Settings / Global / Instructions");
         expect(instructionsArea(markup)).toContain("font-mono");
+        expect(instructionsArea(markup)).toContain(
+          'aria-describedby="instructions-size instructions-note"',
+        );
+        expect(markup).toContain('<p id="instructions-note"');
         expect(markup).toContain(">Answer in British English.</textarea>");
         expect(markup).toContain("26 / 65,536 bytes");
         expect(markup).toContain("applies from each session&#x27;s next context");

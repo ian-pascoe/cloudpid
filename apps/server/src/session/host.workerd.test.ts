@@ -438,6 +438,15 @@ describe("a Session's agent", () => {
     await registry.updateSettings({ instructions: "Answer in German." }, 2);
     await ask(stub, 2);
 
+    // The Session has read the edit: the Settings it resolves from hold the new text.
+    expect(
+      await runInDurableObject(
+        stub,
+        (_instance: TestSession, state) =>
+          state.storage.kv.get<{ global: { instructions?: string } }>("settings-source")?.global
+            .instructions,
+      ),
+    ).toBe("Answer in German.");
     expect(await shown(stub)).toContain("Answer in French.");
     expect(await shown(stub)).not.toContain("Answer in German.");
 

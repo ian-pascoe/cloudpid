@@ -29,7 +29,15 @@ import { badOfferedEntries, offeredFromText } from "../offered-tools.ts";
 import { settingsStateAtom } from "../settings.ts";
 import { spendLimitFromText } from "../spend-limit.ts";
 import { generalForm, globalLimitsForm, instructionsForm, modelsForm, toolsForm } from "./forms.ts";
-import { CODE_AREA, Field, Group, SectionFormView, SettingsSection, TEXT_AREA } from "./parts.tsx";
+import {
+  CODE_AREA,
+  Field,
+  Group,
+  noteId,
+  SectionFormView,
+  SettingsSection,
+  TEXT_AREA,
+} from "./parts.tsx";
 
 /** The problem the Registry reports with the Settings, if any. */
 const SettingsProblem = () => {
@@ -142,7 +150,7 @@ export const InstructionsSection = () => (
                 autoComplete="off"
                 data-1p-ignore
                 aria-invalid={over > 0}
-                aria-describedby="instructions-size"
+                aria-describedby={`instructions-size ${noteId("instructions")}`}
                 onChange={(event) => {
                   set({ instructions: event.target.value });
                 }}

@@ -143,6 +143,13 @@ const utf8 = new TextEncoder();
 /** How many bytes of UTF-8 `text` is: what the cap on the Instructions counts. */
 export const utf8Bytes = (text: string): number => utf8.encode(text).length;
 
+/** The size of a long text such as the Instructions, as a result or a refusal says it: its lines and bytes of UTF-8. */
+export const textSize = (text: string): string => {
+  const lines = text.split("\n").length;
+
+  return `${lines.toLocaleString("en-US")} line${lines === 1 ? "" : "s"}, ${utf8Bytes(text).toLocaleString("en-US")} bytes of UTF-8`;
+};
+
 /** Why `text` cannot be the Instructions, or undefined when it can. */
 export const instructionsProblem = (text: string): string | undefined =>
   // A character is at most 3 bytes of UTF-8 (a pair of surrogates 4): only a long text needs encoding.

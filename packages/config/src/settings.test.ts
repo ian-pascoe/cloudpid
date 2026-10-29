@@ -112,7 +112,7 @@ describe("the Instructions", () => {
     });
   });
 
-  it("take at most 64 KiB of UTF-8, as an AGENTS.md is cut at 64 KiB, and are refused above", () => {
+  it("take at most 64 KiB of UTF-8, as an AGENTS.md is cut at 64 Ki characters, and are refused above", () => {
     expect(MAX_INSTRUCTIONS_BYTES).toBe(65_536);
     expect(resolved({ instructions: "a".repeat(65_536) }).instructions).toHaveLength(65_536);
     // Three bytes of UTF-8 each: 21,846 of them are 65,538 bytes, though only 21,846 characters.
