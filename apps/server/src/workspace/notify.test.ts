@@ -268,15 +268,23 @@ describe("FileNotifier", () => {
   it("does not wait past its longest wait for a stream of writes", async () => {
     const fake = new Fake();
     const notifier = new FileNotifier(fake.deps());
+    const gap = DEBOUNCE_MS / 2;
+    const written: string[] = [];
 
-    for (let elapsed = 0; elapsed < MAX_WAIT_MS; elapsed += 100) {
-      fake.write(`/workspace/f${elapsed}.ts`);
+    // A write every half debounce, never quiet for it, until just before the longest wait from the first: nothing yet.
+    for (let at = 0; at < MAX_WAIT_MS; at += gap) {
+      written.push(`/workspace/f${at}.ts`);
+      fake.write(`/workspace/f${at}.ts`);
       notifier.changed();
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(at + gap < MAX_WAIT_MS ? gap : MAX_WAIT_MS - at - 1);
     }
 
-    expect(fake.events[0]).toBe("push");
-    expect(fake.events[1]).toMatch(/^notify \/workspace\/f0\.ts /);
+    expect(fake.events).toEqual([]);
+
+    // At the longest wait, though the last write was only half a debounce ago: one push and one signal for them all.
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(fake.events).toEqual(["push", `notify ${written.toSorted().join(" ")}`]);
   });
 
   it("neither pushes nor notifies while the Container is stopped", async () => {

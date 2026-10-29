@@ -45,18 +45,29 @@ const workspace = async (running: boolean) => {
         .join(" "),
     );
 
-  /** Wait until the signal has done `count` things, then a little more, so a later one would show. */
-  const settled = async (count: number) => {
+  /**
+   * Wait until the signal, from its `from`th event on, has signalled every path of `expected` (in one batch or in
+   * several: how a stream of writes is batched depends on how fast they come, which a slow runner changes), then a
+   * little more, so a later event would show. Answers those events, and every path they signalled, sorted.
+   */
+  const signalled = async (from: number, expected: ReadonlyArray<string>) => {
+    const paths = (all: ReadonlyArray<string>) =>
+      [
+        ...new Set(
+          all.flatMap((event) => (event.startsWith("notify") ? event.split(" ").slice(1) : [])),
+        ),
+      ].toSorted();
+
     await vi.waitFor(
-      async () => expect((await stub.signalEvents()).length).toBeGreaterThanOrEqual(count),
-      {
-        timeout: 5_000,
-        interval: 50,
-      },
+      async () =>
+        expect(paths((await events()).slice(from))).toEqual(expect.arrayContaining([...expected])),
+      { timeout: 10_000, interval: 50 },
     );
     await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_MS * 2));
 
-    return events();
+    const since = (await events()).slice(from);
+
+    return { events: since, paths: paths(since) };
   };
 
   const write = async (path: string, content: string) => {
@@ -74,38 +85,58 @@ const workspace = async (running: boolean) => {
     expect(result.ok && result.value.exitCode, command).toBe(0);
   };
 
-  return { stub, write, shell, events, settled };
+  return { stub, write, shell, events, signalled };
 };
 
+const app = (path: string) => `/workspace/app/${path}`;
+
+/** Whether each `notify` of `events` comes after a push. */
+const pushedFirst = (events: ReadonlyArray<string>) =>
+  events.every(
+    (event, index) => !event.startsWith("notify") || events.slice(0, index).includes("push"),
+  );
+
+// The debounce and the longest wait are FileNotifier's own, held to the millisecond with fake timers in
+// `notify.test.ts`. Here the real Workspace DO's wiring is checked without timing: what is pushed and signalled, never
+// how the writes were batched.
 describe("the file-change signal", { timeout: 30_000 }, () => {
-  it("pushes the file tools' writes to the running Container once they stop, then notifies each where it is", async () => {
-    const { write, events, settled } = await workspace(true);
+  it("pushes the file tools' writes to the running Container, then signals each where it is", async () => {
+    const { write, events, signalled } = await workspace(true);
 
     // The first push sends what the Workspace held before it too (its root, the Skills' mount).
     await write("README.md", "#");
-    await settled(2);
+    await signalled(0, [app("README.md")]);
+
+    const from = (await events()).length;
 
     await write("src/a.ts", "a");
     await write("src/nested/deep/b.ts", "b");
 
-    // Nothing before the writes have been quiet for a moment.
-    expect(await events()).toHaveLength(2);
+    // The push first; the new directories themselves, so a watcher of their parent finds the new tree, and each file.
+    const expected = [
+      "src",
+      "src/a.ts",
+      "src/nested",
+      "src/nested/deep",
+      "src/nested/deep/b.ts",
+    ].map(app);
 
-    // One push and one `notify` for both, the push first: the new directories themselves, so a watcher of their parent
-    // finds the new tree, and each file.
-    expect((await settled(4)).slice(2)).toEqual([
-      "push",
-      "notify /workspace/app/src /workspace/app/src/a.ts /workspace/app/src/nested /workspace/app/src/nested/deep /workspace/app/src/nested/deep/b.ts",
-    ]);
+    const after = await signalled(from, expected);
+
+    expect(after.events[0]).toBe("push");
+    expect(pushedFirst(after.events)).toBe(true);
+    expect(after.paths).toEqual(expected);
   });
 
-  it("notifies an edited file itself, and a removed or renamed-away one at its parent", async () => {
-    const { stub, write, events, settled } = await workspace(true);
+  it("signals an edited file itself, and a removed or renamed-away one at its parent", async () => {
+    const { stub, write, events, signalled } = await workspace(true);
 
     await write("src/a.ts", "a");
     await write("src/old.ts", "old");
     await write("src/from.ts", "from");
-    await settled(2);
+    await signalled(0, ["src/a.ts", "src/old.ts", "src/from.ts"].map(app));
+
+    const from = (await events()).length;
 
     const files = new ComputerExecutionEnv({
       workspace: stub,
@@ -118,22 +149,24 @@ describe("the file-change signal", { timeout: 30_000 }, () => {
     expect((await files.createDir("lib", { recursive: true }, context)).ok).toBe(true);
     expect((await files.renameFile("src/from.ts", "lib/to.ts", context)).ok).toBe(true);
 
-    const all = await settled(4);
+    const expected = ["lib", "lib/to.ts", "src", "src/a.ts"].map(app);
 
-    expect(all.slice(2)).toEqual([
-      "push",
-      "notify /workspace/app/lib /workspace/app/lib/to.ts /workspace/app/src /workspace/app/src/a.ts",
-    ]);
-    expect(await events()).toHaveLength(4);
+    const after = await signalled(from, expected);
+
+    expect(after.events[0]).toBe("push");
+    expect(pushedFirst(after.events)).toBe(true);
+    expect(after.paths).toEqual(expected);
   });
 
   it("collects the Worker Shell's writes: a redirect, sed -i, rm, mkdir -p and mv", async () => {
-    const { write, shell, settled } = await workspace(true);
+    const { write, shell, events, signalled } = await workspace(true);
 
     await write("src/a.ts", "alpha\n");
     await write("src/old.ts", "old\n");
     await write("src/from.ts", "from\n");
-    await settled(2);
+    await signalled(0, ["src/a.ts", "src/old.ts", "src/from.ts"].map(app));
+
+    const from = (await events()).length;
 
     await shell("echo hi > src/new.ts");
     await shell("sed -i 's/alpha/beta/' src/a.ts");
@@ -141,88 +174,68 @@ describe("the file-change signal", { timeout: 30_000 }, () => {
     await shell("mkdir -p made/inner");
     await shell("mv src/from.ts made/to.ts");
 
-    const all = await settled(4);
-    const notified = (all[3] ?? "").split(" ").slice(1);
-
-    expect(all[2]).toBe("push");
-    expect(notified).toEqual(
-      expect.arrayContaining([
-        "/workspace/app/src/new.ts",
-        "/workspace/app/src/a.ts",
+    const after = await signalled(
+      from,
+      [
+        "src/new.ts",
+        "src/a.ts",
         // `old.ts` and `from.ts` gone from `src`: at `src`.
-        "/workspace/app/src",
-        "/workspace/app/made",
-        "/workspace/app/made/inner",
-        "/workspace/app/made/to.ts",
-      ]),
+        "src",
+        "made",
+        "made/inner",
+        "made/to.ts",
+      ].map(app),
     );
-    expect(notified).not.toContain("/workspace/app/src/old.ts");
-    expect(notified).not.toContain("/workspace/app/src/from.ts");
-  });
 
-  it("keeps a stream of writes waiting no longer than its longest wait", async () => {
-    const { write, events } = await workspace(true);
-    const pushes = async () => (await events()).filter((event) => event === "push").length;
-    const gap = DEBOUNCE_MS / 2;
-    const started = Date.now();
-    let early: number | undefined;
-    let late: number | undefined;
-
-    // Writes 100 ms apart, never quiet for the debounce: none pushed well before the longest wait, one pushed once it
-    // has passed, while the writes still go on.
-    for (let index = 0; index < 16; index++) {
-      await write(`src/f${index}.ts`, String(index));
-
-      const elapsed = Date.now() - started;
-
-      if (early === undefined && elapsed >= MAX_WAIT_MS / 2) early = await pushes();
-
-      if (late === undefined && elapsed >= MAX_WAIT_MS + DEBOUNCE_MS * 2) late = await pushes();
-
-      await new Promise((resolve) => setTimeout(resolve, gap));
-    }
-
-    expect(MAX_WAIT_MS + DEBOUNCE_MS * 2).toBeLessThan(15 * gap);
-    expect(early).toBe(0);
-    expect(late).toBeGreaterThanOrEqual(1);
+    expect(after.events[0]).toBe("push");
+    expect(pushedFirst(after.events)).toBe(true);
+    expect(after.paths).not.toContain(app("src/old.ts"));
+    expect(after.paths).not.toContain(app("src/from.ts"));
   });
 
   it("keeps no running Container up by its own push, where a command's push is a use", async () => {
-    const { stub, write, settled } = await workspace(true);
+    const { stub, write, signalled } = await workspace(true);
 
     await write("README.md", "#");
     await write("src/a.ts", "a");
 
     // The signal pushed (its span reported as computer's is) and signalled: no use of the Container recorded.
-    expect((await settled(2))[0]).toBe("push");
+    const after = await signalled(0, ["README.md", "src/a.ts"].map(app));
+
+    expect(after.events[0]).toBe("push");
     expect(await stub.containerLastUse()).toBeUndefined();
 
     // A command's push before it runs is a use, as ever.
     await stub.commandPush();
 
     await vi.waitFor(async () => expect(await stub.containerLastUse()).toBeTypeOf("number"), {
-      timeout: 2_000,
+      timeout: 5_000,
       interval: 20,
     });
   });
 
   it("refuses the launch its own push would cause once the Container stopped, and gives no signal", async () => {
-    const { stub, write, settled } = await workspace(true);
+    const { stub, write, events, signalled } = await workspace(true);
 
     await write("src/a.ts", "a");
-    await settled(2);
+    await signalled(0, [app("src/a.ts")]);
+
+    const from = (await events()).length;
 
     // The Container stops after the signal found it running: computer's push, reconnecting, would start it again.
     await stub.stopDuringNextPush();
     await write("src/b.ts", "b");
 
-    const all = await settled(3);
+    await vi.waitFor(async () => expect((await events()).slice(from)).toContain("push refused"), {
+      timeout: 10_000,
+      interval: 50,
+    });
+    await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_MS * 2));
 
-    expect(all.slice(2)).toEqual(["push refused"]);
+    expect((await events()).slice(from)).toEqual(["push refused"]);
     expect(await stub.fakeContainerState()).toEqual({ running: false, scripts: [] });
     expect((await stub.liveStubs()).container).toBe(0);
   });
-
   it("neither pushes nor notifies while the Container is stopped, and never starts one", async () => {
     const { stub, write, shell, events } = await workspace(false);
 
