@@ -12,6 +12,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import { type Patch, patchOf, sameJson } from "./patch.ts";
 import {
   DEFAULT_SETTINGS,
   decodeSettingsOverrides,
@@ -299,6 +300,32 @@ export const withOverrideFields = (
     },
     current,
   );
+};
+
+/** A change to an Environment's Overrides, as `updateSettingsOverrides` takes it. */
+export type OverridesPatch = Patch<Schema.JsonObject>;
+
+/**
+ * The change that makes an Environment's Overrides `before` into `after`: each field `after` holds that `before` does
+ * not, or holds otherwise, set (a Role whole), and each field only `before` holds reset, so it inherits again. A field
+ * both hold alike is left out, so a save of it keeps what the agent did to the others meanwhile.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a diff of two values, not a combinator.
+export const overridesPatchBetween = (before: Schema.Json, after: Schema.Json): OverridesPatch => {
+  const was = new Map(
+    Arr.map(overrideEntries(before), ({ keys, value }) => [Arr.join(keys, "."), value] as const),
+  );
+
+  const set = Arr.reduce(overrideEntries(after), {}, (next: Schema.JsonObject, { keys, value }) => {
+    const held = was.get(Arr.join(keys, "."));
+
+    return held !== undefined && sameJson(held, value) ? next : setAt(next, keys, value);
+  });
+
+  const kept = new Set(overrideFields(after));
+  const reset = Arr.filter([...was.keys()], (field) => !kept.has(field));
+
+  return patchOf(set, reset);
 };
 
 /** Global's overrides as they apply: those that resolve, and only what differs from the defaults. */

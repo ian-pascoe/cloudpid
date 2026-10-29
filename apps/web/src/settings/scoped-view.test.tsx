@@ -1,0 +1,570 @@
+// The Settings page's sections at both Scopes (ADR-0027), rendered with `react-dom/server` over the fake Registry: at
+// an Environment each field is marked Inherited (on a dashed border, with Override) or Overridden (with Reset to
+// Global), a Role by itself and a script or the Container-only paths as a whole; Override and Reset to Global change the
+// mark, and the save sends only what changed of the Overrides; at Global a field that Environments override names them,
+// each a link to the field at its Scope.
+
+import {
+  ContainerOverrides,
+  type ContainerSettingsOverrides,
+  DEFAULT_CONTAINER_SETTINGS,
+  DEFAULT_SETTINGS,
+  overridesFrom,
+  patchContainerOverrides,
+  resolveEnvironmentContainerSettings,
+  resolveOverrides,
+  type Settings,
+  withOverrides,
+} from "@cloudpid/config";
+import type { SettingsOverridesState, SettingsState } from "@cloudpid/protocol";
+import { RegistryContext } from "@effect/atom-react";
+import { describe, expect, it } from "@effect/vitest";
+import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
+import * as Order from "effect/Order";
+import * as Result from "effect/Result";
+import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
+import * as Schema from "effect/Schema";
+import type { ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { registryWith, settled } from "../registry.testing.ts";
+import { ContainerSection, SetupSection } from "./container.tsx";
+import type { SectionForm } from "./drafts.ts";
+import { containerSectionForm, limitsForm, modelsForm, setupForm, toolsForm } from "./forms.ts";
+import { withInherited, withOverride } from "./scoped-view.tsx";
+import { LimitsSection, ModelsSection, ToolsSection } from "./settings-sections.tsx";
+
+const GLOBAL = "*";
+const SONNET = "anthropic/claude-sonnet-5-5";
+const OPUS = "anthropic/claude-opus-5-5";
+const SMALL = { model: OPUS, hint: "Only for the hard ones." };
+const GLOBAL_SETTINGS: Settings = { ...DEFAULT_SETTINGS, model: SONNET };
+const GLOBAL_CONTAINER = { ...DEFAULT_CONTAINER_SETTINGS, startScript: "make serve" };
+
+/** Environment `work`'s Settings with Overrides `overrides` over Global's `GLOBAL_SETTINGS`. */
+const overridesStateOf = (overrides: Schema.Json): SettingsOverridesState => ({
+  environment: "work",
+  settings: Result.getOrThrow(resolveOverrides(overridesFrom(GLOBAL_SETTINGS), overrides)),
+  global: GLOBAL_SETTINGS,
+  overrides,
+});
+
+/** One save of an Environment's Overrides, as the fake Registry kept it. */
+interface Saved {
+  readonly environment: string;
+  readonly set: Schema.Json | undefined;
+  readonly reset: ReadonlyArray<string> | undefined;
+}
+
+/**
+ * A Registry with Global's Settings, which Work and Home override as `overriddenIn` says, and Work's `overrides`; and
+ * Global's Container settings (its Start Script set), and Work's Container Overrides `container` (its Setup Script).
+ */
+const holding = (
+  overrides: Schema.Json,
+  overriddenIn: SettingsState["overriddenIn"] = {},
+  container: ContainerSettingsOverrides = { setupScript: "make deps" },
+) => {
+  const saved: Array<Saved> = [];
+  const containerSaved: Array<Saved> = [];
+
+  const held = { overrides, container };
+
+  const registry = registryWith({
+    getSettings: () =>
+      Effect.succeed({
+        settings: GLOBAL_SETTINGS,
+        overrides: overridesFrom(GLOBAL_SETTINGS),
+        overriddenIn,
+      }),
+    getSettingsOverrides: () => Effect.sync(() => overridesStateOf(held.overrides)),
+    updateSettingsOverrides: ({ environment, set, reset }) =>
+      Effect.sync(() => {
+        saved.push({ environment, set, reset });
+
+        const current = overridesStateOf(held.overrides).settings;
+
+        held.overrides = Result.getOrThrow(withOverrides(held.overrides, { set, reset }, current));
+
+        return overridesStateOf(held.overrides);
+      }),
+    getEnvironmentSettings: () =>
+      Effect.sync(() => ({
+        settings: resolveEnvironmentContainerSettings(GLOBAL_CONTAINER, held.container),
+        global: GLOBAL_CONTAINER,
+        overrides: held.container,
+      })),
+    updateEnvironmentSettings: ({ environment, set, reset }) =>
+      Effect.fromResult(patchContainerOverrides(held.container, { set, reset })).pipe(
+        Effect.flatMap(Schema.decodeEffect(ContainerOverrides)),
+        Effect.orDie,
+        Effect.map((next) => {
+          containerSaved.push({ environment, set, reset });
+          held.container = next;
+
+          return {
+            settings: resolveEnvironmentContainerSettings(GLOBAL_CONTAINER, next),
+            global: GLOBAL_CONTAINER,
+            overrides: next,
+          };
+        }),
+      ),
+    listBuilds: () => Effect.succeed([]),
+    getGlobalContainerSettings: () =>
+      Effect.succeed({
+        settings: GLOBAL_CONTAINER,
+        overrides: { startScript: "make serve" },
+        overriddenIn: { setupScript: [{ id: "work", name: "Work" }] },
+      }),
+  });
+
+  return { registry, saved, containerSaved, held };
+};
+
+/** Wait until `form` shows its fields at `scope`, as its section does once its saved value has answered. */
+const opened = <Fields, E>(
+  registry: AtomRegistry.AtomRegistry,
+  form: SectionForm<Fields, E>,
+  scope: string,
+) =>
+  Effect.gen(function* () {
+    registry.mount(form.fields(scope));
+    registry.mount(form.dirty(scope));
+    yield* settled(registry, form.loaded(scope));
+  });
+
+const render = (registry: AtomRegistry.AtomRegistry, section: ReactNode) =>
+  renderToStaticMarkup(
+    <RegistryContext.Provider value={registry}>{section}</RegistryContext.Provider>,
+  );
+
+/** The markup of field `path`: from its anchor to the next field's. */
+const fieldOf = (markup: string, path: string): string => {
+  const start = markup.indexOf(`id="field-${path}"`);
+
+  if (start === -1) return "";
+
+  const next = markup.indexOf('id="field-', start + 1);
+
+  return markup.slice(start, next === -1 ? undefined : next);
+};
+
+/** The mark field `path` shows: Inherited or Overridden, with the action beside it, or none. */
+const markOf = (markup: string, path: string): string => {
+  const field = fieldOf(markup, path);
+  const chip = /<span[^>]*>(Inherited|Overridden)<\/span>/.exec(field)?.[1];
+  const action = /<button[^>]*>(Override|Reset to Global)<\/button>/.exec(field)?.[1];
+
+  return chip === undefined ? "none" : `${chip}, ${action ?? "no action"}`;
+};
+
+describe("a Settings section at an Environment", () => {
+  it.effect(
+    "marks each field Inherited, with Override, or Overridden, with Reset to Global, a Role by itself",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = holding({ model: OPUS, roles: { small: SMALL } });
+
+        yield* opened(registry, modelsForm, "work");
+
+        const markup = render(registry, <ModelsSection scope="work" />);
+
+        expect(markOf(markup, "model")).toBe("Overridden, Reset to Global");
+        expect(markOf(markup, "thinkingLevel")).toBe("Inherited, Override");
+        expect(markOf(markup, "roles.small")).toBe("Overridden, Reset to Global");
+        expect(markOf(markup, "roles.medium")).toBe("Inherited, Override");
+        expect(markOf(markup, "roles.large")).toBe("Inherited, Override");
+        expect(markOf(markup, "roles.xlarge")).toBe("Inherited, Override");
+        // Each button names its field to assistive technology.
+        expect(markup).toContain('aria-label="Override the thinking level"');
+        expect(markup).toContain('aria-label="Reset the small role to Global"');
+        expect(markup).toContain('aria-label="Override the medium role"');
+        registry.dispose();
+      }),
+  );
+
+  it.effect(
+    "shows an inherited field's Global value on a dashed border, an overridden one on a solid one",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = holding({ thinkingLevel: "low" });
+
+        yield* opened(registry, modelsForm, "work");
+
+        const markup = render(registry, <ModelsSection scope="work" />);
+        const model = /<select[^>]*id="default-model"[^>]*>/.exec(markup)?.[0] ?? "";
+        const thinking = /<select[^>]*id="default-thinking"[^>]*>/.exec(markup)?.[0] ?? "";
+
+        expect(model).not.toBe("");
+        expect(model).toContain("border-dashed");
+        expect(fieldOf(markup, "model")).toContain(`<option value="${SONNET}" selected="">`);
+        expect(thinking).not.toContain("border-dashed");
+        expect(fieldOf(markup, "thinkingLevel")).toContain('<option value="low" selected="">');
+        expect(markup).not.toContain("Overridden in");
+        registry.dispose();
+      }),
+  );
+
+  it.effect("makes a field an Override on Override, and the save sets only it", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = holding({ model: OPUS });
+
+      yield* opened(registry, modelsForm, "work");
+
+      const fields = registry.get(modelsForm.fields("work"));
+
+      if (fields === null) return expect.fail("the fields are not loaded");
+
+      registry.set(modelsForm.draft("work"), withOverride(fields, "thinkingLevel"));
+
+      const markup = render(registry, <ModelsSection scope="work" />);
+
+      expect(markOf(markup, "thinkingLevel")).toBe("Overridden, Reset to Global");
+      expect(/<button[^>]*type="submit"[^>]*>/.exec(markup)?.[0]).not.toContain('disabled=""');
+
+      registry.mount(modelsForm.save("work"));
+      registry.set(modelsForm.save("work"), undefined);
+      yield* settled(registry, modelsForm.save("work"));
+
+      // Global's thinking level, pinned as the Environment's own; the overridden model is not sent again.
+      expect(saved).toEqual([
+        {
+          environment: "work",
+          set: { thinkingLevel: DEFAULT_SETTINGS.thinkingLevel },
+          reset: undefined,
+        },
+      ]);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("makes a field Inherited again on Reset to Global, and the save resets only it", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = holding({ model: OPUS, roles: { small: SMALL } });
+
+      yield* opened(registry, modelsForm, "work");
+
+      const fields = registry.get(modelsForm.fields("work"));
+      const view = registry.get(modelsForm.scopeView("work"));
+
+      if (fields === null || view === null) return expect.fail("the fields are not loaded");
+
+      registry.set(modelsForm.draft("work"), withInherited(fields, "roles.small", view.inherited));
+
+      const markup = render(registry, <ModelsSection scope="work" />);
+
+      expect(markOf(markup, "roles.small")).toBe("Inherited, Override");
+      // The Role shows Global's model again.
+      expect(fieldOf(markup, "roles.small")).toContain(
+        `<option value="${DEFAULT_SETTINGS.roles.small.model}" selected="">`,
+      );
+      expect(markOf(markup, "model")).toBe("Overridden, Reset to Global");
+
+      registry.mount(modelsForm.save("work"));
+      registry.set(modelsForm.save("work"), undefined);
+      yield* settled(registry, modelsForm.save("work"));
+
+      expect(saved).toEqual([{ environment: "work", set: undefined, reset: ["roles.small"] }]);
+      registry.dispose();
+    }),
+  );
+
+  it.effect(
+    "offers Reset all to Global in place of Reset to defaults, held while nothing is overridden",
+    () =>
+      Effect.gen(function* () {
+        const overriding = holding({ model: OPUS });
+        const following = holding({});
+
+        yield* opened(overriding.registry, modelsForm, "work");
+        yield* opened(following.registry, modelsForm, "work");
+
+        const reset = (markup: string) =>
+          /<button[^>]*>Reset all to Global…<\/button>/.exec(markup)?.[0] ?? "";
+
+        const some = render(overriding.registry, <ModelsSection scope="work" />);
+        const none = render(following.registry, <ModelsSection scope="work" />);
+
+        expect(some).not.toContain("Reset to defaults");
+        expect(reset(some)).not.toBe("");
+        expect(reset(some)).not.toContain('disabled=""');
+        expect(reset(none)).toContain('disabled=""');
+        overriding.registry.dispose();
+        following.registry.dispose();
+      }),
+  );
+
+  it.effect(
+    "resets every Override of the section on Reset all to Global, as the Registry has them now, and drops the draft",
+    () =>
+      Effect.gen(function* () {
+        const { registry, saved, held } = holding({ model: OPUS, roles: { small: SMALL } });
+
+        yield* opened(registry, modelsForm, "work");
+
+        const fields = registry.get(modelsForm.fields("work"));
+
+        if (fields === null) return expect.fail("the fields are not loaded");
+
+        registry.set(modelsForm.draft("work"), withOverride(fields, "thinkingLevel"));
+        // The agent overrides another Role after the page read the Overrides.
+        held.overrides = { model: OPUS, roles: { small: SMALL, large: SMALL } };
+
+        registry.mount(modelsForm.resetToGlobal("work"));
+        registry.set(modelsForm.resetToGlobal("work"), undefined);
+        yield* settled(registry, modelsForm.resetToGlobal("work"));
+
+        expect(saved).toHaveLength(1);
+        expect(saved[0]).toMatchObject({ environment: "work", set: undefined });
+        expect(Arr.sort(saved[0]?.reset ?? [], Order.String)).toEqual([
+          "model",
+          "roles.large",
+          "roles.small",
+        ]);
+        expect(held.overrides).toEqual({});
+        expect(registry.get(modelsForm.draft("work"))).toBeUndefined();
+
+        const markup = render(registry, <ModelsSection scope="work" />);
+
+        expect(markOf(markup, "model")).toBe("Inherited, Override");
+        expect(markOf(markup, "thinkingLevel")).toBe("Inherited, Override");
+        expect(markOf(markup, "roles.small")).toBe("Inherited, Override");
+        expect(markup).toContain("Saved");
+        registry.dispose();
+      }),
+  );
+
+  it.effect("frames a checkbox with the Input Line at an Environment, dashed while inherited", () =>
+    Effect.gen(function* () {
+      const { registry } = holding({});
+
+      yield* opened(registry, setupForm, "work");
+      yield* opened(registry, containerSectionForm, "work");
+
+      const work = render(registry, <ContainerSection scope="work" />);
+
+      const label = (markup: string) =>
+        /<label for="spare-workspace"[^>]*>/.exec(markup)?.[0] ?? "";
+
+      expect(label(work)).toContain("border-dashed");
+      expect(markOf(work, "spareWorkspace")).toBe("Inherited, Override");
+      registry.dispose();
+    }),
+  );
+
+  it.effect("marks each script and the Toolchains as a whole", () =>
+    Effect.gen(function* () {
+      const { registry } = holding({});
+
+      yield* opened(registry, setupForm, "work");
+
+      const markup = render(registry, <SetupSection scope="work" />);
+
+      expect(markOf(markup, "setupScript")).toBe("Overridden, Reset to Global");
+      expect(markOf(markup, "startScript")).toBe("Inherited, Override");
+      expect(markOf(markup, "toolchains")).toBe("Inherited, Override");
+      // The inherited Start Script shows Global's.
+      expect(fieldOf(markup, "startScript")).toContain(">make serve</textarea>");
+      registry.dispose();
+    }),
+  );
+
+  it.effect("marks the offered tools and the Container-only paths each as a whole", () =>
+    Effect.gen(function* () {
+      const overriding = holding(
+        { tools: { offered: ["read", "bash"] } },
+        {},
+        { ignore: ["dist"] },
+      );
+
+      const following = holding({}, {}, {});
+
+      for (const { registry } of [overriding, following]) {
+        yield* opened(registry, toolsForm, "work");
+        yield* opened(registry, containerSectionForm, "work");
+      }
+
+      const tools = (registry: AtomRegistry.AtomRegistry) =>
+        render(registry, <ToolsSection scope="work" />);
+
+      const container = (registry: AtomRegistry.AtomRegistry) =>
+        render(registry, <ContainerSection scope="work" />);
+
+      expect(markOf(tools(overriding.registry), "tools.offered")).toBe(
+        "Overridden, Reset to Global",
+      );
+      expect(markOf(tools(following.registry), "tools.offered")).toBe("Inherited, Override");
+      expect(markOf(container(overriding.registry), "ignore")).toBe("Overridden, Reset to Global");
+      expect(markOf(container(following.registry), "ignore")).toBe("Inherited, Override");
+      // One mark for the list, not one per tool or path.
+      expect(
+        fieldOf(tools(overriding.registry), "tools.offered").match(/>Overridden</g),
+      ).toHaveLength(1);
+      overriding.registry.dispose();
+      following.registry.dispose();
+    }),
+  );
+
+  it.effect(
+    "marks each of the Limits by itself: the subagents extension's options per key, and the size limit",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = holding(
+          { extensions: { subagents: { maxSubagentDepth: 1 } } },
+          {},
+          { maxInstance: "cpu-3" },
+        );
+
+        yield* opened(registry, limitsForm, "work");
+
+        const markup = render(registry, <LimitsSection scope="work" />);
+
+        expect(markOf(markup, "spendLimit.perSession")).toBe("Inherited, Override");
+        expect(markOf(markup, "extensions.subagents.maxSubagentDepth")).toBe(
+          "Overridden, Reset to Global",
+        );
+        expect(markOf(markup, "extensions.subagents.maxSubagentWorkspaces")).toBe(
+          "Inherited, Override",
+        );
+        expect(markOf(markup, "maxInstance")).toBe("Overridden, Reset to Global");
+        registry.dispose();
+      }),
+  );
+
+  it.effect(
+    "resets one option of an extension on Reset to Global, keeping the extension's others",
+    () =>
+      Effect.gen(function* () {
+        const { registry, saved, held } = holding(
+          { extensions: { subagents: { maxSubagentDepth: 1, maxSubagentWorkspaces: 3 } } },
+          {},
+          {},
+        );
+
+        yield* opened(registry, limitsForm, "work");
+
+        const fields = registry.get(limitsForm.fields("work"));
+        const view = registry.get(limitsForm.scopeView("work"));
+
+        if (fields === null || view === null) return expect.fail("the fields are not loaded");
+
+        registry.set(
+          limitsForm.draft("work"),
+          withInherited(fields, "extensions.subagents.maxSubagentDepth", view.inherited),
+        );
+
+        const markup = render(registry, <LimitsSection scope="work" />);
+
+        expect(markOf(markup, "extensions.subagents.maxSubagentDepth")).toBe("Inherited, Override");
+
+        registry.mount(limitsForm.save("work"));
+        registry.set(limitsForm.save("work"), undefined);
+        yield* settled(registry, limitsForm.save("work"));
+
+        expect(saved).toEqual([
+          { environment: "work", set: undefined, reset: ["extensions.subagents.maxSubagentDepth"] },
+        ]);
+        expect(held.overrides).toEqual({ extensions: { subagents: { maxSubagentWorkspaces: 3 } } });
+        registry.dispose();
+      }),
+  );
+
+  it.effect(
+    "resets the Settings' and the Container settings' Overrides of the Limits on Reset all to Global",
+    () =>
+      Effect.gen(function* () {
+        const { registry, saved, containerSaved, held } = holding(
+          {
+            model: OPUS,
+            spendLimit: { perSession: 5 },
+            extensions: { subagents: { maxSubagentDepth: 1 } },
+          },
+          {},
+          { maxInstance: "cpu-3", setupScript: "make deps" },
+        );
+
+        yield* opened(registry, limitsForm, "work");
+
+        registry.mount(limitsForm.resetToGlobal("work"));
+        registry.set(limitsForm.resetToGlobal("work"), undefined);
+        yield* settled(registry, limitsForm.resetToGlobal("work"));
+
+        expect(saved).toHaveLength(1);
+        expect(Arr.sort(saved[0]?.reset ?? [], Order.String)).toEqual([
+          "extensions.subagents.maxSubagentDepth",
+          "spendLimit.perSession",
+        ]);
+        expect(containerSaved).toEqual([
+          { environment: "work", set: undefined, reset: ["maxInstance"] },
+        ]);
+        // What other sections override stays.
+        expect(held.overrides).toEqual({ model: OPUS });
+        expect(held.container).toEqual({ setupScript: "make deps" });
+
+        const markup = render(registry, <LimitsSection scope="work" />);
+
+        expect(markOf(markup, "maxInstance")).toBe("Inherited, Override");
+        expect(markOf(markup, "extensions.subagents.maxSubagentDepth")).toBe("Inherited, Override");
+        registry.dispose();
+      }),
+  );
+});
+
+describe("a Settings section at Global", () => {
+  it.effect(
+    "names the Environments that override a field, each a link to the field at its Scope",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = holding(
+          {},
+          {
+            model: [
+              { id: "work", name: "Work" },
+              { id: "home", name: "Home" },
+            ],
+            "roles.small": [{ id: "work", name: "Work" }],
+          },
+        );
+
+        yield* opened(registry, modelsForm, GLOBAL);
+
+        const markup = render(registry, <ModelsSection scope={GLOBAL} />);
+
+        const text = (path: string) =>
+          fieldOf(markup, path)
+            .replaceAll(/<[^>]*>/g, "")
+            .replaceAll(/\s+/g, " ");
+
+        expect(text("model")).toContain("Overridden in 2 environments: Work, Home");
+        expect(fieldOf(markup, "model")).toContain('href="/settings/work/models#field-model"');
+        expect(fieldOf(markup, "model")).toContain('href="/settings/home/models#field-model"');
+        expect(text("roles.small")).toContain("Overridden in 1 environment: Work");
+        expect(fieldOf(markup, "roles.small")).toContain(
+          'href="/settings/work/models#field-roles.small"',
+        );
+        expect(text("thinkingLevel")).not.toContain("Overridden in");
+        // Global has no marks: every value there is its own.
+        expect(markOf(markup, "model")).toBe("none");
+        expect(markup).toContain("Reset to defaults");
+        expect(markup).not.toContain("Reset all to Global");
+        registry.dispose();
+      }),
+  );
+
+  it.effect("names the Environments that override a Container setting", () =>
+    Effect.gen(function* () {
+      const { registry } = holding({});
+
+      yield* opened(registry, setupForm, GLOBAL);
+
+      const markup = render(registry, <SetupSection scope={GLOBAL} />);
+
+      expect(fieldOf(markup, "setupScript")).toContain("Overridden in 1");
+      expect(fieldOf(markup, "setupScript")).toContain(
+        'href="/settings/work/setup#field-setupScript"',
+      );
+      expect(fieldOf(markup, "startScript")).not.toContain("Overridden in");
+      registry.dispose();
+    }),
+  );
+});

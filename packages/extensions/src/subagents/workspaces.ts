@@ -60,8 +60,11 @@ export class SubagentWorkspaces extends Context.Service<
   SubagentWorkspaceHost
 >()("@cloudpid/extensions/subagents/workspaces/SubagentWorkspaces") {}
 
-/** The default Subagent Workspace limit (GLOSSARY.md → Limit): Subagent Workspaces one Session may have at once. */
-export const DEFAULT_MAX_SUBAGENT_WORKSPACES = 1;
+/**
+ * The default Subagent Workspace limit (GLOSSARY.md → Limit): Subagent Workspaces one Session may have at once. Kept in
+ * `@cloudpid/config`, which the Settings page reads.
+ */
+export { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "@cloudpid/config";
 
 /**
  * Why a clone of a Workspace on `branch` cannot be vouched for, in words: it is missing (the Workspace was not set up),

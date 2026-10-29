@@ -7,9 +7,13 @@
 // are `settings/forms.ts`'s, over the read and write helpers here, which save a patch of what a section changed.
 
 import {
+  CONTAINER_SETTING_NAMES,
   containerPatchBetween,
   DEFAULT_CONTAINER_SETTINGS,
   type ContainerSettings,
+  type ContainerSettingsOverrides,
+  patchOf,
+  sameJson,
 } from "@cloudpid/config";
 import type {
   BuildView,
@@ -24,6 +28,7 @@ import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import {
   EMPTY_SECRET_DRAFT,
   inPickerOrder,
@@ -366,7 +371,8 @@ export const environmentSettingsAtom = Atom.family((id: string) =>
   RegistryClient.query(
     "getEnvironmentSettings",
     { environment: id },
-    { reactivityKeys: [`environment-settings:${id}`] },
+    // A field the Environment inherits follows Global's, so a save at Global asks again too.
+    { reactivityKeys: [`environment-settings:${id}`, "global"] },
   ),
 );
 
@@ -439,11 +445,13 @@ export const containerSettingsAtom = Atom.family((id: string) =>
   Atom.map(environmentSettingsAtom(id), (result) => AsyncResult.map(result, loadedSettingsOf)),
 );
 
-/** Environment `id`'s Container settings as its sections edit them (`loadedSettingsOf`), read from the Registry now. */
+/** Environment `id`'s Container settings (in force, Global's, and its Overrides), read from the Registry now. */
+export const readEnvironmentContainerSettings = (id: string) =>
+  RegistryClient.use((registry) => registry("getEnvironmentSettings", { environment: id }));
+
+/** Environment `id`'s Container settings as its Variables section edits them (`loadedSettingsOf`), read now. */
 export const readContainerSettings = (id: string) =>
-  RegistryClient.use((registry) => registry("getEnvironmentSettings", { environment: id })).pipe(
-    Effect.map(loadedSettingsOf),
-  );
+  readEnvironmentContainerSettings(id).pipe(Effect.map(loadedSettingsOf));
 
 /**
  * Make Environment `id`'s Container settings `before` into `after` (both as `loadedSettingsOf` gives them): each field
@@ -461,6 +469,36 @@ export const writeContainerSettings = (
       ...containerPatchBetween(before, after),
     }),
   );
+
+/**
+ * Make Environment `id`'s Container Overrides `before` into `after` (its variables aside, which the Variables section
+ * saves): each field `after` overrides otherwise than `before` set as its Override, even equal to Global's, and each
+ * only `before` overrides reset, so it inherits Global's again. The Registry refuses them with its own message.
+ */
+export const writeContainerOverrides = (
+  id: string,
+  before: ContainerSettingsOverrides,
+  after: ContainerSettingsOverrides,
+) => {
+  const fields = Arr.filter(CONTAINER_SETTING_NAMES, (field) => field !== "variables");
+
+  const set = Record.fromEntries(
+    Arr.filterMap(fields, (field) =>
+      after[field] !== undefined && !sameJson(after[field], before[field])
+        ? Result.succeed([field, after[field]] as const)
+        : Result.failVoid,
+    ),
+  );
+
+  const reset = Arr.filter(
+    fields,
+    (field) => before[field] !== undefined && after[field] === undefined,
+  );
+
+  return RegistryClient.use((registry) =>
+    registry("updateEnvironmentSettings", { environment: id, ...patchOf(set, reset) }),
+  );
+};
 
 /**
  * The Container settings at Global in force (of which the page edits the variables), which every Workspace of an
@@ -490,10 +528,47 @@ export const globalVariablesResultAtom = Atom.map(globalSettingsAtom, (result) =
   AsyncResult.map(result, (state) => state.settings.variables),
 );
 
-/** The variables kept Global in force, read from the Registry now. */
-export const readGlobalVariables = RegistryClient.use((registry) =>
+/** The Container settings at Global (in force, what is saved, and who overrides each field), read from the Registry now. */
+export const readGlobalContainerSettings = RegistryClient.use((registry) =>
   registry("getGlobalContainerSettings", undefined),
-).pipe(Effect.map((state) => state.settings.variables));
+);
+
+/** The variables kept Global in force, read from the Registry now. */
+export const readGlobalVariables = readGlobalContainerSettings.pipe(
+  Effect.map((state) => state.settings.variables),
+);
+
+/**
+ * Make the Container settings at Global `before` into `after` (their variables aside, which the Variables section saves):
+ * each field changed set, or reset where it is back at its default, so Global keeps only what differs from the defaults.
+ * Every field of an Environment that does not override it follows. The Registry refuses them with its own message,
+ * naming the Environments a change would put past a limit.
+ */
+export const writeGlobalContainerSettings = (
+  before: ContainerSettings,
+  after: ContainerSettings,
+) => {
+  const changed = Arr.filter(
+    CONTAINER_SETTING_NAMES,
+    (field) => field !== "variables" && !sameJson(before[field], after[field]),
+  );
+
+  const atDefault = (field: keyof ContainerSettings) =>
+    sameJson(after[field], DEFAULT_CONTAINER_SETTINGS[field]);
+
+  const set = Record.fromEntries(
+    Arr.map(
+      Arr.filter(changed, (field) => !atDefault(field)),
+      (field) => [field, after[field]] as const,
+    ),
+  );
+
+  const reset = Arr.filter(changed, atDefault);
+
+  return RegistryClient.use((registry) =>
+    registry("updateGlobalContainerSettings", patchOf(set, reset)),
+  );
+};
 
 /**
  * Make the variables kept Global `before` into `after`: those added or changed are set and those taken out reset, so a

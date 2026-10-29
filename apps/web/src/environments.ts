@@ -35,6 +35,7 @@ import {
   DEFAULT_CONTAINER_SETTINGS,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
+  instanceLimitProblem,
   type InstanceType,
   MAX_IDLE_MINUTES,
   MAX_IGNORE_PATTERNS,
@@ -187,6 +188,18 @@ export const instanceLabel = (type: InstanceType): string =>
 /** An instance type's line in the Limits section's size limit list, the default limit marked as such. */
 export const sizeLimitLabel = (type: InstanceType): string =>
   sizeLine(type, DEFAULT_CONTAINER_SETTINGS.maxInstance);
+
+/**
+ * Why the size `instance` cannot be saved beside the size limit `maxInstance` (it is above it), or null; null too while
+ * either is not known yet. The Container section checks the size against the limit in force, Limits the other way.
+ */
+export const sizeLimitProblem = (
+  instance: InstanceType | undefined,
+  maxInstance: InstanceType | undefined,
+): string | null =>
+  instance === undefined || maxInstance === undefined
+    ? null
+    : (instanceLimitProblem({ instance, maxInstance }) ?? null);
 
 /** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
 export const idleMinutesProblem = (text: string): string | null => {
@@ -480,6 +493,35 @@ export const inheritedSecrets = (
   const own = new Set(secretsIn(records, environment).map((record) => record.name));
 
   return secretsIn(records, GLOBAL).filter((record) => !own.has(record.name));
+};
+
+/** The names of Environment `environment`'s own Secrets that override one kept Global of the same name. */
+export const overriddenSecrets = (
+  records: readonly EnvironmentSecretRecord[],
+  environment: string,
+): readonly string[] => {
+  const global = new Set(secretsIn(records, GLOBAL).map((record) => record.name));
+
+  return secretsIn(records, environment)
+    .map((record) => record.name)
+    .filter((name) => global.has(name));
+};
+
+/**
+ * For each Secret kept Global, the ids of the Environments whose own Secret of the same name overrides it, in the order
+ * of `records`; a Secret no Environment overrides is left out.
+ */
+export const secretOverriders = (
+  records: readonly EnvironmentSecretRecord[],
+): ReadonlyMap<string, readonly string[]> => {
+  const global = new Set(secretsIn(records, GLOBAL).map((record) => record.name));
+  const overriders = new Map<string, string[]>();
+
+  for (const { environment, name } of records)
+    if (environment !== null && global.has(name))
+      overriders.set(name, [...(overriders.get(name) ?? []), environment]);
+
+  return overriders;
 };
 
 /** What is typed in a Secrets section's form: a name, a value, and whether a new Secret reaches the Build. */

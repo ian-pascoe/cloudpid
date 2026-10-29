@@ -1,14 +1,21 @@
+// @effect-diagnostics preferEffectArray:off -- JSX lists of Environments are native arrays.
+
 // The pieces every section of the Settings page is made of (docs/architecture/client-and-protocol.md → Settings page):
 // the section's frame (its heading and what it is for), a ruled group of fields, a field with its label, hint or
-// problem and a slot for its mark (where #350's Inherited and Overridden marks go), a monospace text area, the field
-// that asks for a name to be typed before a destructive dialog's button works, and the form of a section with a Save:
-// its fields, then a bar that stays at the foot of the page with Save, Reset to defaults, and "Saved" or why the save
+// problem, its mark (Inherited or Overridden at an Environment) and its note ("Overridden in N environments" at Global),
+// the marks themselves, a monospace text area, the field that asks for a name to be typed before a destructive
+// dialog's button works, and the form of a section with a Save: its fields, then a bar that stays at the foot of the
+// page with Save, Reset to defaults (Reset to Global, behind a confirm, at an Environment), and "Saved" or why the save
 // was refused.
 
+import type { OverridingEnvironment } from "@cloudpid/protocol";
 import { useAtom, useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import type { FormEvent, ReactNode } from "react";
+import * as Arr from "effect/Array";
+import { type FormEvent, Fragment, type ReactNode, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
+import { Dialog, DialogActions } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import type { SectionForm } from "./drafts.ts";
@@ -62,8 +69,10 @@ export const Group = ({
 );
 
 /**
- * A field: its label (with `mark` beside it, where a field says where its value comes from), the control, and its hint,
- * or its problem in place of the hint, which a control can name in its `aria-describedby` as `noteId(htmlFor)`.
+ * A field: its label (with `mark` beside it, where a field says where its value comes from: Inherited or Overridden),
+ * the control, `note` under it (at Global, the Environments that override it), and its hint, or its problem in place of
+ * the hint, which a control can name in its `aria-describedby` as `noteId(htmlFor)`. `anchor` is its id, which a link
+ * to the field names (`#field-model`).
  */
 export const Field = ({
   label,
@@ -71,6 +80,8 @@ export const Field = ({
   hint,
   problem = null,
   mark,
+  note,
+  anchor,
   children,
 }: {
   label: ReactNode;
@@ -78,16 +89,19 @@ export const Field = ({
   hint?: ReactNode;
   problem?: string | null;
   mark?: ReactNode;
+  note?: ReactNode;
+  anchor?: string | undefined;
   children: ReactNode;
 }) => (
-  <div className="flex min-w-0 flex-col gap-1.5">
-    <div className="flex min-w-0 items-center gap-2">
+  <div id={anchor} className="flex min-w-0 scroll-mt-6 flex-col gap-1.5">
+    <div className="flex min-h-7 min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
       <label htmlFor={htmlFor} className="text-sm font-medium">
         {label}
       </label>
       {mark}
     </div>
     {children}
+    {note}
     {problem === null ? (
       hint !== undefined && (
         <p id={noteId(htmlFor)} className="max-w-prose text-xs text-muted-foreground">
@@ -101,6 +115,109 @@ export const Field = ({
     )}
   </div>
 );
+
+/** Where a value comes from at an Environment (ADR-0027): Global's, followed (`inherited`), or its own (`overridden`). */
+export type ScopeMarkKind = "inherited" | "overridden";
+
+/**
+ * The word that says where a value comes from at an Environment: "Inherited" in Faded Ink on a dashed line, as an
+ * inherited field's border is, or "Overridden" in Ink on the Input Line.
+ */
+export const ScopeChip = ({ kind }: { kind: ScopeMarkKind }) => (
+  <span
+    className={cn(
+      "inline-flex h-5 shrink-0 items-center rounded-sm border border-input px-1.5 text-xs leading-none",
+      kind === "inherited" ? "border-dashed text-muted-foreground" : "font-medium text-foreground",
+    )}
+  >
+    {kind === "inherited" ? "Inherited" : "Overridden"}
+  </span>
+);
+
+/**
+ * A field's mark at an Environment: Inherited, with Override (which keeps Global's value as the Environment's own), or
+ * Overridden, with Reset to Global. `name` names the field to assistive technology.
+ */
+export const FieldMark = ({
+  kind,
+  name,
+  onOverride,
+  onReset,
+}: {
+  kind: ScopeMarkKind;
+  name: string;
+  onOverride: () => void;
+  onReset: () => void;
+}) => (
+  <span className="flex items-center gap-1">
+    <ScopeChip kind={kind} />
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+      aria-label={kind === "inherited" ? `Override ${name}` : `Reset ${name} to Global`}
+      onClick={kind === "inherited" ? onOverride : onReset}
+    >
+      {kind === "inherited" ? "Override" : "Reset to Global"}
+    </Button>
+  </span>
+);
+
+/**
+ * At an Environment, the names of a list's entries (variables, Secrets, Skills) that come from Global (`inherited`) or
+ * that the Environment's own entry of the same name overrides (`overridden`), after the mark that says which.
+ */
+export const MarkedNames = ({
+  kind,
+  names,
+}: {
+  kind: ScopeMarkKind;
+  names: ReadonlyArray<string>;
+}) =>
+  names.length === 0 ? null : (
+    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+      <ScopeChip kind={kind} />
+      <span className="sr-only">{kind === "inherited" ? "from Global:" : "over Global's:"}</span>
+      <span className="font-mono break-all">{Arr.join(names, ", ")}</span>
+    </p>
+  );
+
+/** Where a link to one Environment's copy of a field goes, by the Environment's id. */
+export type FieldPath = (environment: string) => string;
+
+/**
+ * At Global, the Environments that override what is shown, so a change here does nothing for them: "Overridden in 2
+ * environments: Work, Home", each a link to the same place at its Scope (`pathAt`). `subject` goes first, for a line
+ * that names what it is about (a variable). Nothing when none does.
+ */
+export const OverriddenIn = ({
+  environments,
+  pathAt,
+  subject,
+}: {
+  environments: ReadonlyArray<OverridingEnvironment> | undefined;
+  pathAt: FieldPath;
+  subject?: ReactNode;
+}) =>
+  environments === undefined || environments.length === 0 ? null : (
+    <p className="max-w-prose text-xs text-muted-foreground">
+      {subject}
+      Overridden in {environments.length}{" "}
+      {environments.length === 1 ? "environment" : "environments"}:{" "}
+      {environments.map((environment, index) => (
+        <Fragment key={environment.id}>
+          {index > 0 && ", "}
+          <InAppLink
+            href={pathAt(environment.id)}
+            className="text-foreground underline underline-offset-2 hover:text-muted-foreground"
+          >
+            {environment.name}
+          </InAppLink>
+        </Fragment>
+      ))}
+    </p>
+  );
 
 /** The look of a text area: monospace for code, scripts and lists of names. */
 export const TEXT_AREA =
@@ -217,18 +334,113 @@ const NotLoaded = <Fields, E>({ form, scope }: { form: SectionForm<Fields, E>; s
   return <Pending problem={failureOf(loaded)} retry={retry} />;
 };
 
+/** At an Environment, a section's Reset to Global: what it resets, and doing it. */
+export interface ResetToGlobal {
+  /** The section's name in a sentence: "Models". */
+  readonly section: string;
+  /** The names of the fields the Environment overrides, as saved. */
+  readonly overridden: ReadonlyArray<string>;
+  /** Reset every Override of the section, at once. */
+  readonly reset: () => void;
+  readonly resetting: boolean;
+}
+
+/** A list of names for a sentence: "a", "a and b", "a, b and c". */
+const inWords = (names: ReadonlyArray<string>): string =>
+  Arr.match(names, {
+    onEmpty: () => "",
+    onNonEmpty: (all) =>
+      all.length === 1
+        ? Arr.headNonEmpty(all)
+        : `${Arr.join(Arr.initNonEmpty(all), ", ")} and ${Arr.lastNonEmpty(all)}`,
+  });
+
+/**
+ * Reset to Global, at an Environment: a confirm naming the fields the section overrides, which then inherit Global's
+ * values again at once (their Overrides are reset), the section's unsaved changes dropped with them.
+ */
+const ResetToGlobalButton = ({
+  reset,
+  dirty,
+  busy,
+}: {
+  reset: ResetToGlobal;
+  dirty: boolean;
+  busy: boolean;
+}) => {
+  const [open, setOpen] = useState(false);
+  const { overridden } = reset;
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        disabled={busy || reset.resetting || overridden.length === 0}
+        onClick={() => {
+          setOpen(true);
+        }}
+      >
+        {reset.resetting ? "Resetting…" : "Reset all to Global…"}
+      </Button>
+      <Dialog
+        open={open}
+        onClose={() => {
+          setOpen(false);
+        }}
+        title={`Reset ${reset.section} to Global?`}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm">
+            This environment stops overriding {inWords(overridden)}:{" "}
+            {overridden.length === 1 ? "it" : "they"} inherit Global&rsquo;s{" "}
+            {overridden.length === 1 ? "value" : "values"} again, and follow{" "}
+            {overridden.length === 1 ? "its" : "their"} changes.
+            {dirty && " Unsaved changes in this section are dropped too."}
+          </p>
+          <DialogActions>
+            <Button
+              type="button"
+              variant="outline"
+              autoFocus
+              onClick={() => {
+                setOpen(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                setOpen(false);
+                reset.reset();
+              }}
+            >
+              Reset to Global
+            </Button>
+          </DialogActions>
+        </div>
+      </Dialog>
+    </>
+  );
+};
+
 /**
  * The form of a section with a Save, at Scope `scope`: `children` renders its fields from what the form shows and sets
  * the draft; the bar under them saves only this section's fields. `invalid` holds Save while a field has a problem.
  * Reset to defaults puts the defaults in the draft, to save or not; a section with no defaults has no such button.
- * The bar sticks to the foot of the page, as wide as the content column; `inline` puts it right under the fields
- * instead, for a form that is only part of its section, so it does not seem to save what follows.
+ * With `resetToGlobal` (at an Environment) the bar has Reset all to Global in its place, which resets the section's
+ * Overrides once confirmed. The bar sticks to the foot of the page, as wide as the content column; `inline` puts it
+ * right under the fields instead, for a form that is only part of its section, so it does not seem to save what
+ * follows.
  */
 export const SectionFormView = <Fields, E>({
   form,
   scope,
   invalid,
   inline = false,
+  resetToGlobal,
   children,
 }: {
   form: SectionForm<Fields, E>;
@@ -237,6 +449,7 @@ export const SectionFormView = <Fields, E>({
   invalid: (fields: Fields) => boolean;
   /** Whether the bar sits under the fields rather than sticking to the foot of the page. */
   inline?: boolean;
+  resetToGlobal?: ResetToGlobal | undefined;
   children: (fields: Fields, set: (fields: Fields) => void) => ReactNode;
 }) => {
   const fields = useAtomValue(form.fields(scope));
@@ -271,17 +484,21 @@ export const SectionFormView = <Fields, E>({
         <Button type="submit" disabled={!dirty || blocked || saving}>
           {saving ? "Saving…" : "Save"}
         </Button>
-        {form.defaults !== undefined && (
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={saving}
-            onClick={() => {
-              setDraft(form.defaults);
-            }}
-          >
-            Reset to defaults
-          </Button>
+        {resetToGlobal === undefined ? (
+          form.defaults !== undefined && (
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={saving}
+              onClick={() => {
+                setDraft(form.defaults);
+              }}
+            >
+              Reset to defaults
+            </Button>
+          )
+        ) : (
+          <ResetToGlobalButton reset={resetToGlobal} dirty={dirty} busy={saving} />
         )}
         {problem === null ? (
           justSaved &&

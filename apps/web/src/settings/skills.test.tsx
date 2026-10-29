@@ -504,7 +504,7 @@ describe("the Installed tab", () => {
         expect(work).toContain("modified");
         expect(work).toContain('aria-label="Update tdd"');
         expect(work).toContain('aria-label="Remove notes"');
-        expect(work).toContain("Also from Global");
+        expect(work).toContain(">Inherited</span>");
         expect(work).toContain("grill-me");
         expect(work).not.toContain('aria-label="Remove grill-me"');
         expect(work).toContain("Add skills from GitHub");

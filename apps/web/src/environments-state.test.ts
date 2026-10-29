@@ -70,13 +70,14 @@ import {
 } from "./environments-state.ts";
 import { EMPTY_SECRET_DRAFT, GLOBAL } from "./environments.ts";
 import {
-  type ContainerFields,
   containerSectionForm,
   environmentNameForm,
   environmentVariablesForm,
   globalVariablesForm,
   setupForm,
 } from "./settings/forms.ts";
+import type { FormFields } from "./settings/drafts.ts";
+import type { Marked } from "./settings/scoped.ts";
 
 describe("Subagent Workspaces in the Workspaces section", () => {
   it("says what a Workspace has not pushed, per Repo", () => {
@@ -616,12 +617,7 @@ describe("the settings of an Environment", () => {
     Effect.gen(function* () {
       const { registry, saved } = configured();
 
-      yield* savingContainer(registry, {
-        instance: "basic",
-        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
-        ignore: "/data",
-        spareWorkspace: DEFAULT_CONTAINER_SETTINGS.spareWorkspace,
-      });
+      yield* savingContainer(registry, { instance: own("basic"), ignore: own("/data") });
 
       expect(saved).toEqual([{ set: { instance: "basic", ignore: ["/data"] } }]);
       expect(
@@ -636,10 +632,8 @@ describe("the settings of an Environment", () => {
       const { registry, saved } = configured();
 
       const answer = yield* savingContainer(registry, {
-        instance: "basic",
-        idle: "9999",
-        ignore: "",
-        spareWorkspace: true,
+        instance: own("basic"),
+        idleMinutes: own("9999"),
       });
 
       expect(failureOf(answer)).toBe("idleMinutes: at most 1440");
@@ -660,12 +654,29 @@ const renaming = (registry: AtomRegistry.AtomRegistry, name: string) =>
     return yield* settled(registry, environmentNameForm.save("work"));
   });
 
-/** Save `fields` as the draft of the Container section of Environment `work`, once its settings have loaded. */
-const savingContainer = (registry: AtomRegistry.AtomRegistry, fields: ContainerFields) =>
+/** A field's own value: the Environment's Override. */
+const own = <const V>(value: V): Marked<V> => ({ value, inherited: false });
+
+/** A field the Environment inherits, showing Global's `value`. */
+const inherited = <const V>(value: V): Marked<V> => ({ value, inherited: true });
+
+/**
+ * Save the Container section of Environment `work` with `fields` overridden in its draft, once its settings have
+ * loaded.
+ */
+const savingContainer = (
+  registry: AtomRegistry.AtomRegistry,
+  fields: Partial<FormFields<typeof containerSectionForm>>,
+) =>
   Effect.gen(function* () {
     registry.mount(containerSectionForm.fields("work"));
     yield* settled(registry, containerSectionForm.loaded("work"));
-    registry.set(containerSectionForm.draft("work"), fields);
+
+    const loaded = registry.get(containerSectionForm.fields("work"));
+
+    if (loaded === null) throw new Error("the Container section did not load");
+
+    registry.set(containerSectionForm.draft("work"), { ...loaded, ...fields });
     registry.mount(containerSectionForm.save("work"));
     registry.set(containerSectionForm.save("work"), undefined);
 
@@ -731,12 +742,7 @@ describe("the dialogs of an Environment", () => {
     Effect.gen(function* () {
       const { registry, saved } = paging();
 
-      yield* savingContainer(registry, {
-        instance: DEFAULT_CONTAINER_SETTINGS.instance,
-        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
-        ignore: "",
-        spareWorkspace: false,
-      });
+      yield* savingContainer(registry, { spareWorkspace: own(false) });
 
       expect(saved).toEqual([{ set: { spareWorkspace: false } }]);
     }),
@@ -751,7 +757,7 @@ describe("the dialogs of an Environment", () => {
 
       const began = registry.get(containerSectionForm.fields("work"))!;
 
-      registry.set(containerSectionForm.draft("work"), { ...began, idle: "30" });
+      registry.set(containerSectionForm.draft("work"), { ...began, idleMinutes: own("30") });
       registry.set(containerSectionForm.draft("work"), began);
       // An agent turns the Spare Workspace off meanwhile: the draft now differs from what is saved.
       change({ spareWorkspace: false });
@@ -763,7 +769,7 @@ describe("the dialogs of an Environment", () => {
 
       expect(saved).toEqual([]);
       expect(registry.get(containerSectionForm.draft("work"))).toBeUndefined();
-      expect(registry.get(containerSectionForm.fields("work"))?.spareWorkspace).toBe(false);
+      expect(registry.get(containerSectionForm.fields("work"))?.spareWorkspace.value).toBe(false);
     }),
   );
 
@@ -859,11 +865,12 @@ describe("the drafts of an Environment's Container settings sections", () => {
       yield* Deferred.succeed(gate, undefined);
       yield* settled(registry, containerSectionForm.loaded("work"));
 
+      // The Environment overrides none of them: each shows Global's, inherited.
       expect(registry.get(containerSectionForm.fields("work"))).toEqual({
-        instance: DEFAULT_CONTAINER_SETTINGS.instance,
-        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
-        ignore: "",
-        spareWorkspace: true,
+        instance: inherited(DEFAULT_CONTAINER_SETTINGS.instance),
+        idleMinutes: inherited(String(DEFAULT_CONTAINER_SETTINGS.idleMinutes)),
+        ignore: inherited(""),
+        spareWorkspace: inherited(true),
       });
     }),
   );
@@ -888,9 +895,9 @@ describe("the drafts of an Environment's Container settings sections", () => {
           variables: "NODE_ENV=test\nQUERY=a=b",
         });
         expect(registry.get(setupForm.fields("work"))).toEqual({
-          setupScript: "pnpm install\n",
-          startScript: "docker start db\n",
-          toolchains: '[tools]\nnode = "22.20.0"\n',
+          setupScript: inherited("pnpm install\n"),
+          startScript: inherited("docker start db\n"),
+          toolchains: inherited('[tools]\nnode = "22.20.0"\n'),
         });
       }),
   );
@@ -930,7 +937,7 @@ describe("the drafts of an Environment's Container settings sections", () => {
         yield* settled(registry, environmentVariablesForm.loaded("work"));
         registry.set(containerSectionForm.draft("work"), {
           ...registry.get(containerSectionForm.fields("work"))!,
-          idle: "30",
+          idleMinutes: own("30"),
         });
         registry.set(environmentVariablesForm.draft("work"), { variables: "A=1\nB=2" });
         // An agent sets the size and adds a variable after the drafts began.
@@ -954,21 +961,19 @@ describe("the drafts of an Environment's Container settings sections", () => {
 
       registry.mount(containerSectionForm.fields("work"));
       yield* settled(registry, containerSectionForm.loaded("work"));
-      registry.set(containerSectionForm.draft("work"), {
-        instance: other,
-        idle: "",
-        ignore: "/data",
-        spareWorkspace: false,
-      });
+
+      const typed = {
+        instance: own(other),
+        idleMinutes: own(""),
+        ignore: own("/data"),
+        spareWorkspace: own(false),
+      };
+
+      registry.set(containerSectionForm.draft("work"), typed);
       registry.refresh(environmentSettingsAtom("work"));
       yield* settled(registry, containerSectionForm.loaded("work"));
 
-      expect(registry.get(containerSectionForm.fields("work"))).toEqual({
-        instance: other,
-        idle: "",
-        ignore: "/data",
-        spareWorkspace: false,
-      });
+      expect(registry.get(containerSectionForm.fields("work"))).toEqual(typed);
     }),
   );
 });

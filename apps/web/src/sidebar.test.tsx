@@ -80,6 +80,8 @@ describe("the sidebar on the Settings page", () => {
       { href: "/settings/all/models", name: "Models", current: true },
       { href: "/settings/all/tools", name: "Tools", current: false },
       { href: "/settings/all/limits", name: "Limits", current: false },
+      { href: "/settings/all/container", name: "Container", current: false },
+      { href: "/settings/all/setup", name: "Setup", current: false },
       { href: "/settings/all/environments", name: "Environments", current: false },
       { href: "/settings/all/workspaces", name: "Workspaces", current: false },
       { href: "/settings/all/skills", name: "Skills", current: false },
@@ -90,17 +92,20 @@ describe("the sidebar on the Settings page", () => {
     ]);
   });
 
-  it("lists an Environment's sections, its own first, the Skills current below the Skill directory", () => {
+  it("lists an Environment's sections, as Global's but Instructions and Notifications, the Skills current below the Skill directory", () => {
     const markup = render(false, { scope: "work", view: { kind: "skillOwner", owner: "acme" } });
 
     expect(
       links(markup).map(({ name, current }) => (current ? `${name} (current)` : name)),
     ).toEqual([
       "Back to sessions",
-      "Environment",
+      "General",
+      "Models",
+      "Tools",
+      "Limits",
       "Container",
       "Setup",
-      "Limits",
+      "Environment",
       "Workspaces",
       "Skills (current)",
       "Variables",
@@ -128,7 +133,9 @@ describe("the sidebar on the Settings page", () => {
       registry.mount(generalForm.fields("*"));
       yield* settled(registry, generalForm.loaded("*"));
       registry.mount(modelsForm.fields("*"));
-      registry.set(generalForm.draft("*"), { skipPrompt: true });
+      registry.set(generalForm.draft("*"), {
+        "branchSummary.skipPrompt": { value: true, inherited: false },
+      });
 
       const named = links(render(false, { scope: "*", view: MODELS }, registry)).map(
         ({ name }) => name,

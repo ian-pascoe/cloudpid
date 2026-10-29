@@ -2,7 +2,8 @@
 // Agent changes. The Settings page's sections edit them a part each (`settings/forms.ts`), through `readSettings` and
 // `writeSettings`.
 
-import { overridesFrom, type Settings } from "@cloudpid/config";
+import { overridesFrom, overridesPatchBetween, type Settings } from "@cloudpid/config";
+import type * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -32,15 +33,8 @@ export const settingsOverridesAtom = Atom.family((environment: string) =>
 /** Why the settings could not load, or null. */
 export const settingsLoadErrorAtom = Atom.map(settingsAtom, failureOf);
 
-/** The settings in force, as the last answer has them. */
-export const savedSettingsAtom = Atom.map(settingsAtom, (result) =>
-  AsyncResult.map(result, (state) => state.settings),
-);
-
-/** The settings in force, read from the Registry now. */
-export const readSettings = RegistryClient.use((registry) =>
-  registry("getSettings", undefined),
-).pipe(Effect.map((state) => state.settings));
+/** The Global Settings (in force, their overrides of the defaults, and who overrides each field), read from the Registry now. */
+export const readSettings = RegistryClient.use((registry) => registry("getSettings", undefined));
 
 /**
  * Save `settings` as overrides of the defaults. The Registry refuses them with its own message, which lists each
@@ -49,6 +43,25 @@ export const readSettings = RegistryClient.use((registry) =>
 export const writeSettings = (settings: Settings) =>
   RegistryClient.use((registry) =>
     registry("updateSettings", { overrides: overridesFrom(settings) }),
+  );
+
+/** Environment `environment`'s Settings (its Overrides, Global's settings and the two resolved), read from the Registry now. */
+export const readSettingsOverrides = (environment: string) =>
+  RegistryClient.use((registry) => registry("getSettingsOverrides", { environment }));
+
+/**
+ * Make Environment `environment`'s Overrides `before` into `after`: each field added or changed set as its Override
+ * (even equal to Global's), each taken out reset so it inherits again, and every other field left as it is now
+ * (`overridesPatchBetween`). The Registry refuses them with its own message.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a write helper over an Environment's id, not a combinator.
+export const writeSettingsOverrides = (
+  environment: string,
+  before: Schema.Json,
+  after: Schema.Json,
+) =>
+  RegistryClient.use((registry) =>
+    registry("updateSettingsOverrides", { environment, ...overridesPatchBetween(before, after) }),
   );
 
 /**

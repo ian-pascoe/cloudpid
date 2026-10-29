@@ -7,3 +7,5 @@ export * from "./settings-overrides.ts";
 export * from "./container-settings.ts";
 
 export * from "./container-pricing.ts";
+
+export * from "./patch.ts";

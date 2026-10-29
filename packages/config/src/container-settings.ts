@@ -14,6 +14,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
+import { type Patch, patchOf, sameJson } from "./patch.ts";
 
 /**
  * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in an
@@ -763,14 +764,8 @@ export const patchContainerOverrides = (
   return Result.succeed(next);
 };
 
-const sameValue = (left: Schema.Json, right: Schema.Json): boolean =>
-  JSON.stringify(left) === JSON.stringify(right);
-
 /** A change to some settings as a form that edits them whole saves it (`containerPatchBetween`). */
-export type ContainerSettingsPatch = {
-  readonly set?: ContainerSettingsOverrides;
-  readonly reset?: ReadonlyArray<string>;
-};
+export type ContainerSettingsPatch = Patch<ContainerSettingsOverrides>;
 
 /**
  * The patch that makes the settings `before` into `after`: each field that differs set, each variable added or changed
@@ -792,7 +787,7 @@ export const containerPatchBetween = (
 
   if (after.idleMinutes !== before.idleMinutes) set.idleMinutes = after.idleMinutes;
 
-  if (!sameValue(after.ignore, before.ignore)) set.ignore = after.ignore;
+  if (!sameJson(after.ignore, before.ignore)) set.ignore = after.ignore;
 
   if (after.setupScript !== before.setupScript) set.setupScript = after.setupScript;
 
@@ -814,13 +809,7 @@ export const containerPatchBetween = (
     (name) => `${VARIABLE_PREFIX}${name}`,
   );
 
-  const patch: { -readonly [K in keyof ContainerSettingsPatch]: ContainerSettingsPatch[K] } = {};
-
-  if (!sameValue(set, {})) patch.set = set;
-
-  if (reset.length > 0) patch.reset = reset;
-
-  return patch;
+  return patchOf(set, reset);
 };
 
 /**

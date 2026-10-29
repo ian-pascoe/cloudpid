@@ -2,8 +2,9 @@
 
 // The Settings page's sections (docs/architecture/client-and-protocol.md → Settings page; GLOSSARY.md → Settings
 // section): what each is called and shown with, which a Scope has and in what order, where the page opens, and where
-// switching the Scope leads. A section a Scope does not have is not shown there; the page opens the Scope's first
-// section in its place.
+// switching the Scope leads. Both Scopes have every section in one order (ADR-0027), but Instructions (which add up
+// rather than being overridden; an Environment's own come with #352) and Notifications, which are Global's only. A section a Scope does not have is not shown there; the page opens the Scope's first section in its
+// place.
 
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -87,6 +88,8 @@ const GLOBAL_SECTIONS: readonly SectionSlug[] = [
   "models",
   "tools",
   "limits",
+  "container",
+  "setup",
   "environments",
   "workspaces",
   "skills",
@@ -96,18 +99,14 @@ const GLOBAL_SECTIONS: readonly SectionSlug[] = [
   "agent-changes",
 ];
 
-/** An Environment's sections, in the navigation's order: the Environment itself first. */
-const ENVIRONMENT_SECTIONS: readonly SectionSlug[] = [
-  "environments",
-  "container",
-  "setup",
-  "limits",
-  "workspaces",
-  "skills",
-  "variables",
-  "secrets",
-  "agent-changes",
-];
+/** Global's sections an Environment has not: Instructions, which add up rather than being overridden, and the device's. */
+const GLOBAL_ONLY: readonly SectionSlug[] = ["instructions", "notifications"];
+
+/** An Environment's sections, in the navigation's order: Global's, but those Global's only. */
+const ENVIRONMENT_SECTIONS: readonly SectionSlug[] = Arr.filter(
+  GLOBAL_SECTIONS,
+  (slug) => !Arr.contains(GLOBAL_ONLY, slug),
+);
 
 const isGlobal = (scope: string): boolean => scope === GLOBAL_SCOPE;
 
@@ -126,9 +125,8 @@ export const sectionLabel = (slug: SectionSlug, scope: string): string =>
 /** The icon of section `slug`. */
 export const sectionIcon = (slug: SectionSlug): LucideIcon => SECTIONS[slug].icon;
 
-/** The section the page opens at Scope `scope`: General at Global, the Environment at an Environment. */
-export const defaultSection = (scope: string): SectionSlug =>
-  isGlobal(scope) ? "general" : "environments";
+/** The section the page opens at Scope `scope`: General, at both. */
+export const defaultSection = (_scope: string): SectionSlug => "general";
 
 /**
  * Where the page at Scope `scope` showing `view` leads on to, replacing its path, or null to stay: a section the Scope
