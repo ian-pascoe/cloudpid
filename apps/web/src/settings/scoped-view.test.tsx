@@ -47,6 +47,7 @@ const overridesStateOf = (overrides: Schema.Json): SettingsOverridesState => ({
   settings: Result.getOrThrow(resolveOverrides(overridesFrom(GLOBAL_SETTINGS), overrides)),
   global: GLOBAL_SETTINGS,
   overrides,
+  instructions: "",
 });
 
 /** One save of an Environment's Overrides, as the fake Registry kept it. */

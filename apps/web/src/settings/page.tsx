@@ -41,8 +41,6 @@ const WIDE = "(min-width: 48rem)";
 /** Global's section `slug`. */
 const GlobalSection = ({ slug }: { slug: SectionSlug }) => {
   switch (slug) {
-    case "instructions":
-      return <InstructionsSection />;
     case "environments":
       return <EnvironmentListSection />;
     case "notifications":
@@ -73,6 +71,8 @@ const SharedSection = ({ slug, scope }: { slug: SectionSlug; scope: string }) =>
   switch (slug) {
     case "general":
       return <GeneralSection scope={scope} />;
+    case "instructions":
+      return <InstructionsSection scope={scope} />;
     case "models":
       return <ModelsSection scope={scope} />;
     case "tools":

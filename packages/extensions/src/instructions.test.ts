@@ -21,6 +21,7 @@ import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { ContextManagement } from "./context.ts";
 import {
+  ENVIRONMENT_SECTION_INTRODUCTION,
   type InstructionsInForce,
   Instructions,
   InstructionsSettings,
@@ -75,13 +76,13 @@ const Noop = defineExtension({
 });
 
 /** Instructions the test changes as it goes, as the owner's save changes what the Session reads. */
-const owned = (global: string) => {
-  let current: InstructionsInForce = { global };
+const owned = (global: string, environment?: InstructionsInForce["environment"]) => {
+  let current: InstructionsInForce = { global, environment };
 
   return {
     service: { current: () => current },
-    set: (next: string) => {
-      current = { global: next };
+    set: (next: string, nextEnvironment?: InstructionsInForce["environment"]) => {
+      current = { global: next, environment: nextEnvironment };
     },
   };
 };
@@ -161,7 +162,69 @@ describe("the owner_instructions section", () => {
         `</${SECTION_KEY}>`,
       ].join("\n"),
     );
-    expect(SECTION_INTRODUCTION).toContain("the Project instructions win");
+    expect(SECTION_INTRODUCTION).toContain("the Project instructions");
+  });
+
+  it("shows an Environment's Instructions after the Global ones, under a heading naming it", async () => {
+    const requests = await open(
+      owned("Answer in French.", { name: 'Work "main"', text: "Answer in German." }),
+      [],
+    );
+
+    expect(requests[0]!.section).toBe(
+      [
+        `<${SECTION_KEY}>`,
+        ENVIRONMENT_SECTION_INTRODUCTION,
+        "",
+        '<instructions scope="Global">',
+        "Answer in French.",
+        "</instructions>",
+        "",
+        '<instructions scope="Environment Work &quot;main&quot;">',
+        "Answer in German.",
+        "</instructions>",
+        `</${SECTION_KEY}>`,
+      ].join("\n"),
+    );
+    // The nearer wins: the Environment's over the Global ones, the Project instructions over both.
+    expect(ENVIRONMENT_SECTION_INTRODUCTION).toContain(
+      "this Environment's win over the Global ones",
+    );
+  });
+
+  it("shows only the Scope that has Instructions", async () => {
+    const environmentOnly = await open(owned("", { name: "Work", text: "Be terse." }), []);
+    const globalOnly = await open(owned("Be kind.", { name: "Work", text: " \n" }), []);
+
+    expect(environmentOnly[0]!.section).toContain(
+      '<instructions scope="Environment Work">\nBe terse.\n</instructions>',
+    );
+    expect(environmentOnly[0]!.section).not.toContain('scope="Global"');
+    expect(globalOnly[0]!.section).toContain('<instructions scope="Global">\nBe kind.');
+    expect(globalOnly[0]!.section).not.toContain('scope="Environment');
+    // The introduction speaks of an Environment's Instructions only where they are shown.
+    expect(environmentOnly[0]!.section).toContain(ENVIRONMENT_SECTION_INTRODUCTION);
+    expect(globalOnly[0]!.section).toContain(SECTION_INTRODUCTION);
+    expect(globalOnly[0]!.section).not.toContain("Environment's");
+  });
+
+  it("keeps an Environment's Instructions as they were shown when the owner edits them, until the next Context Window", async () => {
+    const instructions = owned("Use tabs.", { name: "Work", text: "Answer in German." });
+
+    const requests = await open(instructions, [
+      () => {
+        instructions.set("Use tabs.", { name: "Work", text: "Answer in Dutch." });
+
+        return call("noop", {});
+      },
+      call("context_rollover", { handoff: "Keep going." }),
+    ]);
+
+    expect(requests).toHaveLength(3);
+    expect(requests[0]!.section).toContain("Answer in German.");
+    expect(requests[1]!.section).toBe(requests[0]!.section);
+    expect(requests[2]!.section).toContain("Answer in Dutch.");
+    expect(requests[2]!.section).not.toContain("Answer in German.");
   });
 
   it("adds nothing to the prompt when there are none, nor for text that is only blank", async () => {

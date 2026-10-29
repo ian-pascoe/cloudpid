@@ -60,6 +60,7 @@ export const sessionSettingsAccess = ({
                   overrides: state.overrides,
                   global: state.global,
                   problem: state.problem,
+                  instructions: state.instructions,
                 }),
           ),
         ),

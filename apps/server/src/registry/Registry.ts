@@ -110,6 +110,7 @@ import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
 import {
+  putEnvironmentInstructions,
   readSettings,
   readSettingsOverrides,
   type SessionSettingsSource,
@@ -211,11 +212,22 @@ export type EnvironmentChangeAnswer =
     }
   | Exclude<EnvironmentChange, { readonly status: "changed" }>;
 
-/** How the owner's change of an Environment's Settings Overrides went. */
+/** How the owner's change of an Environment's Settings Overrides, or of its own Instructions, went. */
 export type SettingsOverridesUpdate =
   | { readonly status: "saved"; readonly state: SettingsOverridesState }
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
+
+/** A write of an Environment's Settings as an update says how it went: `null` is an Environment the store has not. */
+const settingsOverridesUpdate = (
+  saved: Result.Result<SettingsOverridesState, { readonly message: string }> | null,
+): SettingsOverridesUpdate => {
+  if (saved === null) return { status: "missing" };
+
+  return Result.isSuccess(saved)
+    ? { status: "saved", state: saved.success }
+    : { status: "rejected", message: saved.failure.message };
+};
 
 export type { SessionSettingsSource } from "./settings.ts";
 
@@ -750,8 +762,17 @@ export type RegistryMethods = {
     readonly reset?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SettingsOverridesUpdate>;
   /**
-   * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, and its Environment's
-   * Overrides as saved; `{}` and a null Environment for a Session the Registry does not list. For the Session DO only.
+   * The owner's change of Environment `environment`'s own Instructions: `instructions` replaces them (empty for none).
+   * Says why not, saving nothing, for a text over the cap; `missing` when the Environment is not registered.
+   */
+  readonly updateEnvironmentInstructions: (input: {
+    readonly environment: string;
+    readonly instructions: string;
+  }) => Effect.Effect<SettingsOverridesUpdate>;
+  /**
+   * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, its Environment's
+   * Overrides as saved, and the Environment's name with its own Instructions; `{}` and a null Environment (and no
+   * Instructions of its own) for a Session the Registry does not list. For the Session DO only.
    */
   readonly sessionSettings: (input: {
     readonly session: string;
@@ -1521,18 +1542,15 @@ export const RegistryLive = Registry.make(
           getSettingsOverrides: ({ environment }) =>
             Effect.sync(() => readSettingsOverrides(store, environment)),
           updateSettingsOverrides: ({ environment, set, reset }) =>
-            Effect.sync((): SettingsOverridesUpdate => {
-              const saved = updateSettingsOverrides(state.raw.storage, store, environment, {
-                set,
-                reset,
-              });
-
-              if (saved === null) return { status: "missing" };
-
-              return Result.isSuccess(saved)
-                ? { status: "saved", state: saved.success }
-                : { status: "rejected", message: saved.failure.message };
-            }),
+            Effect.sync(() =>
+              settingsOverridesUpdate(
+                updateSettingsOverrides(state.raw.storage, store, environment, { set, reset }),
+              ),
+            ),
+          updateEnvironmentInstructions: ({ environment, instructions }) =>
+            Effect.sync(() =>
+              settingsOverridesUpdate(putEnvironmentInstructions(store, environment, instructions)),
+            ),
           sessionSettings: ({ session }) =>
             Effect.sync(() => sessionSettingsSource(store, session)),
           changeSettings: ({ environment, changes: wanted, author }) =>

@@ -1761,11 +1761,11 @@ export class TestSession extends DurableObject {
 
     if (kv.get<string>("settingsMode") === "failing") throw new Error("Registry is down");
 
-    const { global, overrides } = await this.env.REGISTRIES.getByName(registry).sessionSettings(
-      this.ctx.id.name ?? "",
-    );
+    const { global, overrides, instructions } = await this.env.REGISTRIES.getByName(
+      registry,
+    ).sessionSettings(this.ctx.id.name ?? "");
 
-    return { global, overrides };
+    return { global, overrides, instructions };
   }
 
   /** Whether the Registry wants a title for this Session: titles are on, and it has neither a title nor an owner's. */

@@ -53,6 +53,7 @@ import {
   type SettingsView,
 } from "./settings.ts";
 import {
+  changeEnvironmentInstructions,
   changeGlobalSettings,
   changeSettingsOverrides,
   resolvedGlobal,
@@ -117,8 +118,8 @@ type Calls = {
   reloads: number;
 };
 
-/** An Environment's Settings as the fake holds them: its name and its Overrides. */
-type FakeOverrides = { name: string; overrides: Schema.Json };
+/** An Environment's Settings as the fake holds them: its name, its Overrides and its own Instructions. */
+type FakeOverrides = { name: string; overrides: Schema.Json; instructions?: string };
 
 /** What a test changes as it goes: the Settings at both Scopes, and what deletes take and find. */
 type FakeState = {
@@ -232,6 +233,20 @@ const setUp = async ({
     environment: FakeOverrides,
     changes: ReadonlyArray<SettingsFieldChange>,
   ): AppliedSettingsChange => {
+    // An Environment's own Instructions are no Override: the Registry keeps them apart.
+    if (changes[0]?.field === "instructions") {
+      const changed = changeEnvironmentInstructions(
+        environment.instructions ?? "",
+        id,
+        changes,
+        (made) => change({ ...made, approved: true }),
+      );
+
+      environment.instructions = changed.instructions;
+
+      return changed.answer;
+    }
+
     const changed = changeSettingsOverrides(
       state.global,
       environment.overrides,
@@ -379,6 +394,7 @@ const setUp = async ({
               settings: lenient.settings,
               overrides: lenient.overrides,
               global: lenient.global,
+              instructions: environment.instructions ?? "",
             });
           }),
         own: Effect.succeed(current),
@@ -1239,19 +1255,90 @@ describe("settings_instructions_set", () => {
     expect(calls.settings).toEqual([]);
   });
 
-  it("refuses an Environment's id, asking nothing: Environment Instructions come later", async () => {
-    const { call, asked, calls } = await setUp();
+  it("asks at an Environment's Scope with its own Instructions before and after, and sets them there, leaving Global's", async () => {
+    const { call, calls, asked, state, logged } = await setUp({
+      instructions: "Answer in French.",
+      overrides: {
+        default: { name: "Default", overrides: {} },
+        "0000abcd": { name: "Other", overrides: {}, instructions: BEFORE },
+      },
+    });
 
     const { result, text } = await call("settings_instructions_set", {
       scope: "0000abcd",
+      text: AFTER,
+      reason: "The user asked for signed commits here",
+    });
+
+    expect(asked).toEqual([
+      expect.objectContaining({
+        target: 'Environment "Other"\'s Settings',
+        change: "Instructions",
+        before: BEFORE,
+        after: AFTER,
+        expected: BEFORE,
+      }),
+    ]);
+    expect(calls.settings).toEqual([
+      expect.objectContaining({
+        scope: "0000abcd",
+        changes: [{ field: "instructions", value: AFTER, expected: { value: BEFORE } }],
+      }),
+    ]);
+    expect(state.environments["0000abcd"]?.instructions).toBe(AFTER);
+    expect(state.global).toMatchObject({ instructions: "Answer in French." });
+    expect(result.isError).not.toBe(true);
+    expect(text).toBe(
+      'The user approved: the Instructions for Environment "Other" (0000abcd) are changed (2 lines, 48 bytes of UTF-8 now). Every conversation of its Sessions is shown them after the Global ones from the start of its next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with. The change is recorded as approved, with your reason; the user can revert it on the Settings page.',
+    );
+    // Recorded under the Environment, with both texts whole, for its line diff and Revert.
+    expect(result.details).toMatchObject({
+      scope: "0000abcd",
+      agentChanges: [
+        {
+          scope: "0000abcd",
+          field: "instructions",
+          before: BEFORE,
+          after: AFTER,
+          environment: { id: "0000abcd", name: "Other" },
+        },
+      ],
+    });
+    expect(logged).toEqual([
+      { tool: "settings_instructions_set", field: "instructions", environmentName: "Other" },
+    ]);
+  });
+
+  it("asks nothing at an Environment whose own Instructions have the text, even when Global's do too", async () => {
+    const { call, asked } = await setUp({ instructions: "Same." });
+
+    const { text } = await call("settings_instructions_set", {
+      scope: "0000abcd",
+      text: "",
+      reason: "r",
+    });
+
+    expect(text).toBe(
+      'The Instructions for Environment "Other" (0000abcd) have that text already: nothing was asked, changed or recorded.',
+    );
+
+    // Global's text is not the Environment's: setting it there adds it after Global's.
+    await call("settings_instructions_set", { scope: "0000abcd", text: "Same.", reason: "r" });
+
+    expect(asked).toEqual([expect.objectContaining({ before: "None", after: "Same." })]);
+  });
+
+  it("fails for an id no Environment has, asking nothing", async () => {
+    const { call, asked, calls } = await setUp();
+
+    const { result, text } = await call("settings_instructions_set", {
+      scope: "0badc0de",
       text: "Mine.",
       reason: "r",
     });
 
     expect(result.isError).toBe(true);
-    expect(text).toBe(
-      'Nothing was asked or saved: an Environment has no Instructions of its own yet (they come with cloudpid#352). Give scope "*" for the Global Instructions, which every Session\'s conversations are shown.',
-    );
+    expect(text).toContain('No Environment has the id "0badc0de"');
     expect(asked).toEqual([]);
     expect(calls.settings).toEqual([]);
   });

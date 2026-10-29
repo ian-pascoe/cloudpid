@@ -244,6 +244,58 @@ describe("Approval over the Session socket", () => {
     ]);
   });
 
+  it("sets an Environment's own Instructions on Approve, recorded under it beside Global's, and the owner reverts them", async () => {
+    const { stub, registry } = await registered();
+
+    await registry.updateSettings({ instructions: "Answer in French." }, 2);
+    await script(
+      stub,
+      `call:settings_instructions_set:${JSON.stringify({ scope: "default", text: "Answer in German.", reason: "The user wants German here" })}`,
+      "Set.",
+    );
+
+    const owner = await connect(stub);
+
+    owner.send({ type: "submit", id: "go", input: "Use German in this Environment" });
+
+    const request = only(await owner.next(isPending));
+
+    expect(request).toMatchObject({
+      tool: "settings_instructions_set",
+      target: 'Environment "Default"\'s Settings',
+      change: "Instructions",
+      before: "None",
+      after: "Answer in German.",
+    });
+
+    owner.send({ type: "approval_answer", id: "yes", request: request.id, approve: true });
+    expect(await owner.next(isAnswer("yes"))).toMatchObject({ type: "result" });
+    await idle(stub);
+
+    expect(await registry.getSettingsOverrides("default")).toMatchObject({
+      instructions: "Answer in German.",
+      overrides: {},
+      settings: { instructions: "Answer in French." },
+    });
+
+    const [made] = await registry.listAgentChanges("default");
+
+    expect(made).toMatchObject({
+      scope: "default",
+      field: "instructions",
+      before: "",
+      after: "Answer in German.",
+      tool: "settings_instructions_set",
+      approved: true,
+    });
+    expect(await registry.revertAgentChange("default", made?.id ?? 0, 3)).toMatchObject({
+      status: "reverted",
+      change: { actor: "owner", field: "instructions", before: "Answer in German.", after: "" },
+    });
+    expect((await registry.getSettingsOverrides("default"))?.instructions).toBe("");
+    expect((await registry.getSettings()).settings.instructions).toBe("Answer in French.");
+  });
+
   it("changes nothing on Decline, and gives the agent the owner's reason", async () => {
     const { stub, registry } = await registered();
 

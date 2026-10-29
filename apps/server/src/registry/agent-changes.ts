@@ -36,7 +36,12 @@ import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
 import { environmentSettingsOf, globalSettingsOf, patchGlobal } from "./global.ts";
 import { revertSecretBuild } from "./secret-changes.ts";
-import { isOverrideField, revertSettingsOverrideChange } from "./settings-changes.ts";
+import {
+  isInstructionsField,
+  isOverrideField,
+  revertEnvironmentInstructionsChange,
+  revertSettingsOverrideChange,
+} from "./settings-changes.ts";
 import { dropUnreferencedSkillFiles, revertSkillChange, type Skills } from "./skills.ts";
 import {
   type EnvironmentRecord,
@@ -738,13 +743,18 @@ export const revertAgentChange = (
 
     if (known === null) return { status: "missing" };
 
-    // The Environment's Settings Overrides (ADR-0027) share its history with its Container settings.
-    if (isOverrideField(change.field)) {
-      const reverted = revertSettingsOverrideChange(store, changes, environment, change, now);
+    // The Environment's Settings Overrides (ADR-0027), and its own Instructions, share its history with its Container
+    // settings.
+    const settingsReverted = isInstructionsField(change.field)
+      ? revertEnvironmentInstructionsChange(store, changes, environment, change, now)
+      : isOverrideField(change.field)
+        ? revertSettingsOverrideChange(store, changes, environment, change, now)
+        : undefined;
 
-      return reverted.status === "reverted"
-        ? { status: "reverted", change: reverted.change }
-        : reverted;
+    if (settingsReverted !== undefined) {
+      return settingsReverted.status === "reverted"
+        ? { status: "reverted", change: settingsReverted.change }
+        : settingsReverted;
     }
 
     if (isLifecycleField(change.field)) {

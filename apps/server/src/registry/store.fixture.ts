@@ -29,6 +29,7 @@ import {
 } from "./agent-changes.ts";
 import { globalSettingsOf } from "./global.ts";
 import {
+  putEnvironmentInstructions,
   readSettings,
   readSettingsOverrides,
   type SessionSettingsSource,
@@ -329,6 +330,17 @@ export class TestRegistry extends DurableObject {
     change: { set?: Schema.Json; reset?: ReadonlyArray<string> },
   ): SettingsOverridesState {
     const saved = updateSettingsOverrides(this.ctx.storage, this.#store, environment, change);
+
+    if (saved === null) throw new Error(`No Environment ${environment}`);
+
+    if (Result.isFailure(saved)) throw new Error(saved.failure.message);
+
+    return saved.success;
+  }
+
+  /** Replace an Environment's own Instructions, as the Registry DO does; a text it refuses throws. */
+  updateEnvironmentInstructions(environment: string, text: string): SettingsOverridesState {
+    const saved = putEnvironmentInstructions(this.#store, environment, text);
 
     if (saved === null) throw new Error(`No Environment ${environment}`);
 

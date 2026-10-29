@@ -1,9 +1,12 @@
 // The Settings as the Registry keeps them (`docs/architecture/overview.md` → Settings, ADR-0027): Global's overrides of the
-// defaults, one JSON document in the store's document table, and each Environment's Overrides of Global, in its row.
+// defaults, one JSON document in the store's document table, and each Environment's Overrides of Global, in its row,
+// beside its own Instructions, which add to Global's rather than overriding them.
 // Reading falls back to what resolves and writing validates, so what Sessions read always resolves.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 import {
   DEFAULT_SETTINGS,
+  INSTRUCTIONS_ROOT,
+  instructionsProblem,
   overrideFields,
   overridesFrom,
   resolveLeniently,
@@ -16,6 +19,7 @@ import {
   withOverrides,
   withRenamedTools,
 } from "@cloudpid/config";
+import type { EnvironmentInstructions } from "@cloudpid/extensions/instructions";
 import type { OverridingEnvironment, SettingsOverridesState } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Data from "effect/Data";
@@ -117,6 +121,8 @@ export const savedGlobalSettings = (documents: DocumentStore): Schema.Json => {
 export type SettingsStore = DocumentStore & {
   readonly getSettingsOverrides: (environment: string) => Schema.Json | null;
   readonly putSettingsOverrides: (environment: string, overrides: Schema.Json) => boolean;
+  readonly getEnvironmentInstructions: (environment: string) => EnvironmentInstructions | null;
+  readonly putEnvironmentInstructions: (environment: string, text: string) => boolean;
   readonly listSettingsOverrides: () => ReadonlyArray<{
     readonly id: string;
     readonly name: string;
@@ -135,7 +141,8 @@ const overridesState = (
     saved,
   );
 
-  const state = { environment, settings, global, overrides };
+  const instructions = store.getEnvironmentInstructions(environment)?.text ?? "";
+  const state = { environment, settings, global, overrides, instructions };
 
   return dropped.length === 0
     ? state
@@ -205,6 +212,28 @@ export const updateSettingsOverrides = (
       : putSettingsOverrides(store, environment, next.success);
   });
 
+/**
+ * Replace Environment `environment`'s own Instructions with `text`, once it is within the cap. Answers its Settings,
+ * why the text is too long (saving nothing), or null when no Environment has the id.
+ */
+export const putEnvironmentInstructions = (
+  store: SettingsStore,
+  environment: string,
+  text: string,
+): Result.Result<SettingsOverridesState, SettingsError> | null => {
+  const problem = instructionsProblem(text);
+
+  if (problem !== undefined) {
+    return Result.fail(SettingsError.make({ message: `${INSTRUCTIONS_ROOT}: ${problem}` }));
+  }
+
+  if (!store.putEnvironmentInstructions(environment, text)) return null;
+
+  return Result.fromNullishOr(readSettingsOverrides(store, environment), () =>
+    SettingsError.make({ message: "The Environment is gone" }),
+  );
+};
+
 /** What a Session resolves its Settings from (`sessionSettings`). */
 export type SessionSettingsSource = {
   /** Global's overrides of the defaults that apply. */
@@ -213,11 +242,14 @@ export type SessionSettingsSource = {
   readonly environment: string | null;
   /** The Environment's Overrides as saved: `{}` for none. */
   readonly overrides: Schema.Json;
+  /** The Environment's own Instructions (empty for none), by its name; null with no Environment. */
+  readonly instructions: EnvironmentInstructions | null;
 };
 
 /**
  * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, and the Overrides of the
- * Environment its Workspace was made from, as saved. A Session the store does not list has no Environment, and Global's.
+ * Environment its Workspace was made from, as saved, with that Environment's name and own Instructions, which its
+ * conversations are shown after Global's. A Session the store does not list has no Environment, and Global's.
  */
 export const sessionSettingsSource = (
   store: SettingsStore & {
@@ -228,10 +260,11 @@ export const sessionSettingsSource = (
   const global = readSettings(store).overrides;
   const known = store.getSession(session);
   const overrides = known === null ? null : store.getSettingsOverrides(known.environment);
+  const instructions = known === null ? null : store.getEnvironmentInstructions(known.environment);
 
   return known === null || overrides === null
-    ? { global, environment: null, overrides: {} }
-    : { global, environment: known.environment, overrides };
+    ? { global, environment: null, overrides: {}, instructions: null }
+    : { global, environment: known.environment, overrides, instructions };
 };
 
 /**

@@ -2,8 +2,8 @@
 
 // The Settings page's sections (docs/architecture/client-and-protocol.md → Settings page; GLOSSARY.md → Settings
 // section): what each is called and shown with, which a Scope has and in what order, where the page opens, and where
-// switching the Scope leads. Both Scopes have every section in one order (ADR-0027), but Instructions (which add up
-// rather than being overridden; an Environment's own come with #352) and Notifications, which are Global's only. A section a Scope does not have is not shown there; the page opens the Scope's first section in its
+// switching the Scope leads. Both Scopes have every section in one order (ADR-0027), but Notifications, which are
+// Global's only (the device's). A section a Scope does not have is not shown there; the page opens the Scope's first section in its
 // place.
 
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
@@ -99,8 +99,8 @@ const GLOBAL_SECTIONS: readonly SectionSlug[] = [
   "agent-changes",
 ];
 
-/** Global's sections an Environment has not: Instructions, which add up rather than being overridden, and the device's. */
-const GLOBAL_ONLY: readonly SectionSlug[] = ["instructions", "notifications"];
+/** Global's sections an Environment has not: the device's. */
+const GLOBAL_ONLY: readonly SectionSlug[] = ["notifications"];
 
 /** An Environment's sections, in the navigation's order: Global's, but those Global's only. */
 const ENVIRONMENT_SECTIONS: readonly SectionSlug[] = Arr.filter(

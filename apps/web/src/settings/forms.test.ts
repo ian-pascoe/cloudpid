@@ -36,6 +36,7 @@ import { type RegistryHandlers, registryWith, settled } from "../registry.testin
 import type { SectionForm } from "./drafts.ts";
 import {
   containerSectionForm,
+  environmentInstructionsForm,
   environmentNameForm,
   environmentVariablesForm,
   formOf,
@@ -298,6 +299,7 @@ const overridesStateOf = (global: Settings, overrides: Schema.Json): SettingsOve
   settings: Result.getOrThrow(resolveOverrides(overridesFrom(global), overrides)),
   global,
   overrides,
+  instructions: "",
 });
 
 /** A Registry holding Global's Settings `global` and Environment `work`'s Overrides, keeping each change saved. */
@@ -801,7 +803,58 @@ describe("the form of a section", () => {
     expect(formOf("variables", "work")).toBe(environmentVariablesForm);
     expect(formOf("environments", GLOBAL)).toBeUndefined();
     expect(formOf("environments", "work")).toBe(environmentNameForm);
+    expect(formOf("instructions", GLOBAL)).toBe(instructionsForm);
+    expect(formOf("instructions", "work")).toBe(environmentInstructionsForm);
   });
+});
+
+describe("an Environment's Instructions", () => {
+  it.effect(
+    "are saved whole as typed, by their own RPC, leaving the Overrides and Global's alone",
+    () =>
+      Effect.gen(function* () {
+        const written: unknown[] = [];
+        const global = { ...DEFAULT_SETTINGS, instructions: "Answer in French." };
+        const held = { instructions: "Old." };
+        const text = "Run pnpm test.\n\n- Deploy from main.\n";
+
+        const stateOf = (): SettingsOverridesState => ({
+          ...overridesStateOf(global, {}),
+          instructions: held.instructions,
+        });
+
+        const registry = registryWith({
+          getSettingsOverrides: () => Effect.sync(stateOf),
+          updateEnvironmentInstructions: (input) =>
+            Effect.sync(() => {
+              written.push(input);
+              held.instructions = input.instructions;
+
+              return stateOf();
+            }),
+        });
+
+        yield* opened(registry, environmentInstructionsForm, "work");
+
+        expect(registry.get(environmentInstructionsForm.fields("work"))).toEqual({
+          instructions: "Old.",
+        });
+        expect(environmentInstructionsForm.defaults).toBeUndefined();
+
+        registry.set(environmentInstructionsForm.draft("work"), { instructions: text });
+        yield* save(registry, environmentInstructionsForm, "work");
+
+        expect(written).toEqual([{ environment: "work", instructions: text }]);
+        expect(registry.get(environmentInstructionsForm.fields("work"))).toEqual({
+          instructions: text,
+        });
+        // A trailing newline is part of the text the agent reads, so it is a change.
+        registry.set(environmentInstructionsForm.draft("work"), { instructions: text.trimEnd() });
+
+        expect(registry.get(environmentInstructionsForm.dirty("work"))).toBe(true);
+        registry.dispose();
+      }),
+  );
 });
 
 describe("Global's Variables section", () => {

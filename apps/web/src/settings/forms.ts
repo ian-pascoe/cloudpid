@@ -6,8 +6,9 @@
 // at an Environment each is Inherited or Overridden. General, Models and Tools edit the Settings, Container and Setup the
 // Container settings, and Limits both (the spend limit and the subagents' Limits, and the size limit). Variables are
 // kept per Scope (Global's variables, or an Environment's own), and an Environment's Environment section edits its name.
-// Instructions, at Global only, edit the Settings and are never overridden (#352 adds an Environment's own,
-// which add up). `formOf` names the form of a section at a Scope, for the navigation's unsaved mark.
+// Instructions are kept per Scope and add up rather than being overridden: Global's are a field of the Settings, and an
+// Environment's own are saved whole by their own RPC. `formOf` names the form of a section at a Scope, for the
+// navigation's unsaved mark.
 
 import {
   DEFAULT_MAX_SUBAGENT_DEPTH,
@@ -18,7 +19,7 @@ import {
   type Settings,
   type ThinkingLevel,
 } from "@cloudpid/config";
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, type SettingsOverridesState } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
@@ -35,6 +36,11 @@ import {
   writeGlobalVariables,
 } from "../environments-state.ts";
 import { offeredFromText, offeredToText } from "../offered-tools.ts";
+import {
+  readSettingsOverrides,
+  settingsOverridesAtom,
+  writeEnvironmentInstructions,
+} from "../settings.ts";
 import { spendLimitFromText, spendLimitToText } from "../spend-limit.ts";
 import { sectionForm, type SectionForm } from "./drafts.ts";
 import {
@@ -58,7 +64,7 @@ export const generalForm = scopedForm(settingsSource, {
 
 /**
  * Instructions: Global's, as typed; their whitespace is part of what the agent reads, so they are compared exactly. They
- * add up rather than being overridden (ADR-0027), so the section is Global's only and none of its fields is ever marked.
+ * add up rather than being overridden (ADR-0027), so none of the fields is ever marked.
  */
 export const instructionsForm = scopedForm(settingsSource, {
   instructions: {
@@ -311,6 +317,21 @@ export const environmentNameForm = sectionForm({
   keys: () => ["environments"],
 });
 
+/**
+ * An Environment's own Instructions, as typed and compared exactly, as Global's are. They are no Override: they are
+ * saved whole, beside the Environment's Overrides rather than in them, and add to Global's.
+ */
+export const environmentInstructionsForm = sectionForm({
+  saved: settingsOverridesAtom,
+  fieldsOf: (state: SettingsOverridesState) => ({ instructions: state.instructions }),
+  merge: (state, { instructions }) => ({ ...state, instructions }),
+  read: readSettingsOverrides,
+  write: (environment, _before, after) =>
+    writeEnvironmentInstructions(environment, after.instructions),
+  // Global's text, which the section shows above, is on the same key.
+  keys: () => ["settings"],
+});
+
 /** A form of any section, as the navigation reads it: whether it has unsaved changes. */
 type AnyForm = Pick<SectionForm<never, never>, "dirty">;
 
@@ -333,6 +354,7 @@ const GLOBAL_FORMS: Partial<Readonly<Record<SectionSlug, AnyForm>>> = {
 const ENVIRONMENT_FORMS: Partial<Readonly<Record<SectionSlug, AnyForm>>> = {
   ...SCOPED_FORMS,
   environments: environmentNameForm,
+  instructions: environmentInstructionsForm,
   variables: environmentVariablesForm,
 };
 

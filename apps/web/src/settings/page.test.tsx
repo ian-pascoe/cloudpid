@@ -19,7 +19,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { environmentsAtom, globalSettingsAtom } from "../environments-state.ts";
 import { registryWith, settled } from "../registry.testing.ts";
 import type { SettingsView } from "../router.ts";
-import { containerSectionForm, instructionsForm, modelsForm } from "./forms.ts";
+import {
+  containerSectionForm,
+  environmentInstructionsForm,
+  instructionsForm,
+  modelsForm,
+} from "./forms.ts";
 import { SettingsPage } from "./page.tsx";
 import { withOverride } from "./scoped-view.tsx";
 import { sectionLabel, sectionsAt } from "./sections.ts";
@@ -27,18 +32,25 @@ import { sectionLabel, sectionsAt } from "./sections.ts";
 const WORK = { id: "work", name: "Work", repos: [], createdAt: 1 };
 const HOME = { id: "home", name: "Home", repos: [], createdAt: 2 };
 
-/** A Registry holding Environments Work and Home, the Settings, and Work's Container settings `container`. */
-const fakeRegistry = (container: ContainerSettings = DEFAULT_CONTAINER_SETTINGS) =>
-  registryWith({
+/** The Instructions a fake Registry holds: Global's, and Work's own. */
+type HeldInstructions = { readonly global: string; readonly work: string };
+
+/**
+ * A Registry holding Environments Work and Home, the Settings, Work's Container settings `container`, and the
+ * Instructions `instructions`.
+ */
+const fakeRegistry = (
+  container: ContainerSettings = DEFAULT_CONTAINER_SETTINGS,
+  instructions: HeldInstructions = { global: "", work: "" },
+) => {
+  const settings = { ...DEFAULT_SETTINGS, instructions: instructions.global };
+
+  return registryWith({
     listEnvironments: () => Effect.succeed([WORK, HOME]),
     listSessions: () => Effect.succeed([]),
     listWorkspaces: () => Effect.succeed([]),
     getSettings: () =>
-      Effect.succeed({
-        settings: DEFAULT_SETTINGS,
-        overrides: overridesFrom(DEFAULT_SETTINGS),
-        overriddenIn: {},
-      }),
+      Effect.succeed({ settings, overrides: overridesFrom(settings), overriddenIn: {} }),
     getEnvironmentSettings: () =>
       Effect.succeed({
         settings: container,
@@ -50,11 +62,13 @@ const fakeRegistry = (container: ContainerSettings = DEFAULT_CONTAINER_SETTINGS)
     getSettingsOverrides: ({ environment }) =>
       Effect.succeed({
         environment,
-        settings: DEFAULT_SETTINGS,
-        global: DEFAULT_SETTINGS,
+        settings,
+        global: settings,
         overrides: {},
+        instructions: environment === "work" ? instructions.work : "",
       }),
   });
+};
 
 /** Wait for what the page reads first: the Environments, the Settings, and Work's Container settings. */
 const loaded = (registry: AtomRegistry.AtomRegistry) =>
@@ -279,6 +293,86 @@ describe("Global's Instructions section", () => {
   );
 });
 
+/** Work's own Instructions' text area's own tag in `markup`. */
+const workInstructionsArea = (markup: string): string =>
+  /<textarea id="instructions-work"[^>]*>/.exec(markup)?.[0] ?? "";
+
+/** Global's Instructions as an Environment's section shows them, read-only. */
+const fromGlobal = (markup: string): string =>
+  /<pre role="region" aria-labelledby="instructions-global-label"[^>]*>(.*?)<\/pre>/s.exec(
+    markup,
+  )?.[1] ?? "";
+
+describe("an Environment's Instructions section", () => {
+  it.effect(
+    "shows Global's Instructions read-only with a link to edit them at Global, above the Environment's own box",
+    () =>
+      Effect.gen(function* () {
+        const registry = fakeRegistry(DEFAULT_CONTAINER_SETTINGS, {
+          global: "Answer in British English.",
+          work: "Run the tests with pnpm test.",
+        });
+
+        yield* loaded(registry);
+        registry.mount(environmentInstructionsForm.fields("work"));
+        yield* settled(registry, environmentInstructionsForm.loaded("work"));
+
+        const markup = render(registry, "work", section("instructions"));
+
+        expect(breadcrumb(markup)).toBe("Settings / Work / Instructions");
+        expect(fromGlobal(markup)).toBe("Answer in British English.");
+        expect(markup).toContain('href="/settings/all/instructions"');
+        expect(markup).toContain(">Edit at Global</a>");
+        // Global's text comes first, then the Environment's own box.
+        expect(markup.indexOf("Answer in British English.")).toBeLessThan(
+          markup.indexOf(workInstructionsArea(markup)),
+        );
+        expect(workInstructionsArea(markup)).toContain("font-mono");
+        expect(markup).toContain(">Run the tests with pnpm test.</textarea>");
+        expect(markup).toContain("29 / 65,536 bytes");
+        expect(markup).toContain("Shown after the global ones");
+        // Instructions add up: nothing is Inherited or Overridden, and nothing resets to Global.
+        expect(markup).not.toContain("Inherited");
+        expect(markup).not.toContain("Overridden");
+        expect(markup).not.toContain("Reset");
+        expect(saveButton(markup)).toContain('disabled=""');
+        registry.dispose();
+      }),
+  );
+
+  it.effect(
+    "says Global has none, and holds Save while the Environment's are over 64 KiB, saying why",
+    () =>
+      Effect.gen(function* () {
+        const registry = fakeRegistry();
+
+        yield* loaded(registry);
+        registry.mount(environmentInstructionsForm.fields("work"));
+        yield* settled(registry, environmentInstructionsForm.loaded("work"));
+
+        expect(render(registry, "work", section("instructions"))).toContain("None at Global.");
+
+        registry.set(environmentInstructionsForm.draft("work"), {
+          instructions: "é".repeat(32_769),
+        });
+
+        const markup = render(registry, "work", section("instructions"));
+
+        expect(markup).toContain("65,538 / 65,536 bytes");
+        expect(workInstructionsArea(markup)).toContain('aria-invalid="true"');
+        expect(markup).toContain("2 bytes too long");
+        expect(saveButton(markup)).toContain('disabled=""');
+
+        registry.set(environmentInstructionsForm.draft("work"), { instructions: "Mine." });
+
+        expect(saveButton(render(registry, "work", section("instructions")))).not.toContain(
+          'disabled=""',
+        );
+        registry.dispose();
+      }),
+  );
+});
+
 describe("every section", () => {
   /** The fake Registry, with every list a section asks for empty. */
   const everything = () =>
@@ -312,6 +406,7 @@ describe("every section", () => {
           settings: DEFAULT_SETTINGS,
           global: DEFAULT_SETTINGS,
           overrides: {},
+          instructions: "",
         }),
     });
 

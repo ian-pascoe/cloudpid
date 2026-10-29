@@ -1,7 +1,8 @@
 // The Registry's Settings changes as the tests of the `settings` and `approval-tools` extensions fake them
 // (`docs/architecture/agent-changes.md` → Settings changes, ADR-0027): Global's fields with the owner's strict
 // resolution, a reset putting a field back to its default, and an Environment's Overrides field by field, kept even when
-// equal to Global's; each checked against what the owner saw (`expected`) as the Registry checks it.
+// equal to Global's, or its own Instructions whole; each checked against what the owner saw (`expected`) as the Registry
+// checks it.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import {
   DEFAULT_SETTINGS,
@@ -19,6 +20,7 @@ import {
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { AppliedSettingsChange, SettingsFieldChange } from "./settings.ts";
@@ -51,6 +53,49 @@ export type GlobalChanged = {
 export type OverridesChanged = {
   readonly answer: AppliedSettingsChange;
   readonly overrides: Schema.Json;
+};
+
+/** A fake change of an Environment's own Instructions: the answer, and its text after it. */
+export type InstructionsChanged = {
+  readonly answer: AppliedSettingsChange;
+  readonly instructions: string;
+};
+
+/**
+ * Environment `scope`'s own Instructions, `instructions`, changed as the Registry changes them: the whole text, on its
+ * own, against the text the owner saw.
+ */
+export const changeEnvironmentInstructions = (
+  instructions: string,
+  scope: string,
+  changes: ReadonlyArray<SettingsFieldChange>,
+  record: (made: RecordedField) => AgentChange,
+): InstructionsChanged => {
+  const [change, ...others] = changes;
+
+  if (change === undefined || others.length > 0 || !Predicate.isString(change.value)) {
+    return {
+      answer: { status: "rejected", message: "instructions: change them on their own" },
+      instructions,
+    };
+  }
+
+  if (change.value === instructions) return { answer: { status: "unchanged" }, instructions };
+
+  if (change.expected !== undefined && !sameJson(instructions, change.expected.value)) {
+    return {
+      answer: { status: "changed-since", field: change.field, current: instructions },
+      instructions,
+    };
+  }
+
+  return {
+    answer: {
+      status: "changed",
+      changes: [record({ scope, field: change.field, before: instructions, after: change.value })],
+    },
+    instructions: change.value,
+  };
 };
 
 /** Global's settings from its saved overrides, which a test gives valid. */

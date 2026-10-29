@@ -70,6 +70,7 @@ const UNEXPECTED: Handlers = {
   updateSettings: unexpected("updateSettings"),
   getSettingsOverrides: unexpected("getSettingsOverrides"),
   updateSettingsOverrides: unexpected("updateSettingsOverrides"),
+  updateEnvironmentInstructions: unexpected("updateEnvironmentInstructions"),
   listSettingsChanges: unexpected("listSettingsChanges"),
   revertSettingsChange: unexpected("revertSettingsChange"),
   dismissSettingsChange: unexpected("dismissSettingsChange"),

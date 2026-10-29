@@ -1,6 +1,7 @@
 // What a Session reads from the settings (`docs/architecture/overview.md` → Settings). The overrides live in the Registry DO: Global's,
-// and its Environment's Overrides over them (ADR-0027). The Session keeps the last it read, in its own storage, and
-// hands the Harness live getters over that copy. The Harness reads its settings synchronously, so the Registry is read
+// and its Environment's Overrides over them (ADR-0027), with the Environment's name and own Instructions, which add to
+// Global's rather than overriding them. The Session keeps the last it read, in its own storage, and hands the Harness
+// live getters over that copy. The Harness reads its settings synchronously, so the Registry is read
 // before a request is admitted (`refresh`), never inside a getter.
 import {
   DEFAULT_SETTINGS,
@@ -9,7 +10,10 @@ import {
   resolveOverridesLeniently,
   type Settings,
 } from "@cloudpid/config";
-import type { InstructionsInForce } from "@cloudpid/extensions/instructions";
+import type {
+  EnvironmentInstructions,
+  InstructionsInForce,
+} from "@cloudpid/extensions/instructions";
 import { type SubagentOptions, subagentOptions } from "@cloudpid/extensions/subagents";
 import { reloadToolSearch, type ToolSearchOptions } from "@cloudpid/extensions/tool-search";
 import type {
@@ -54,8 +58,15 @@ export type SessionSettingsValues = {
   readonly instructions: InstructionsInForce;
 };
 
-/** The parts of `settings` a Session uses. */
-export const valuesFrom = (settings: Settings): SessionSettingsValues => ({
+/**
+ * The parts of `settings` a Session uses, with its Environment's own Instructions `environment` (none for a Session in
+ * no Environment).
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a conversion of two values, not a combinator.
+export const valuesFrom = (
+  settings: Settings,
+  environment?: EnvironmentInstructions | null,
+): SessionSettingsValues => ({
   agent: { model: parseModelId(settings.model), thinkingLevel: settings.thinkingLevel },
   compaction: settings.compaction,
   subagents: subagentOptions(
@@ -64,8 +75,8 @@ export const valuesFrom = (settings: Settings): SessionSettingsValues => ({
   ),
   toolSearch: { offered: settings.tools.offered },
   spendLimit: settings.spendLimit.perSession,
-  // An Environment's settings carry Global's Instructions: its Overrides hold none (ADR-0027).
-  instructions: { global: settings.instructions },
+  // An Environment's settings carry Global's Instructions: its Overrides hold none, and its own add to them (ADR-0027).
+  instructions: { global: settings.instructions, environment: environment ?? undefined },
 });
 
 export type SessionSettingsService = {
@@ -120,8 +131,15 @@ export type SettingsKv = {
   put<T>(key: string, value: T): void;
 };
 
-/** What a Session resolves its Settings from: Global's overrides, and its Environment's Overrides over them. */
-export type SettingsSource = { readonly global: Schema.Json; readonly overrides: Schema.Json };
+/**
+ * What a Session resolves its Settings from: Global's overrides, its Environment's Overrides over them, and its
+ * Environment's own Instructions (absent from a source kept before Environments had them, and null with no Environment).
+ */
+export type SettingsSource = {
+  readonly global: Schema.Json;
+  readonly overrides: Schema.Json;
+  readonly instructions?: EnvironmentInstructions | null;
+};
 
 /** Where what was last read is kept. */
 const SOURCE_KEY = "settings-source";
@@ -133,7 +151,10 @@ const SOURCE_KEY = "settings-source";
 const OVERRIDES_KEY = "settings-overrides";
 
 export type SessionSettingsOptions = {
-  /** Global's saved overrides and the Session's Environment's Overrides, from the Registry. */
+  /**
+   * Global's saved overrides, and the Session's Environment's Overrides with its name and own Instructions, from the
+   * Registry.
+   */
   readonly read: Effect.Effect<SettingsSource>;
   /** The object's `storage.kv`, which keeps the overrides last read for an instance that starts with the Registry down. */
   readonly kv: SettingsKv;
@@ -165,11 +186,14 @@ export const sessionSettingsLayer = (
       const { kv } = options;
       const before = kv.get<Schema.Json>(OVERRIDES_KEY);
 
-      const kept =
+      const kept: SettingsSource | undefined =
         kv.get<SettingsSource>(SOURCE_KEY) ??
         (before === undefined ? undefined : { global: before, overrides: {} });
 
-      let current = valuesFrom(kept === undefined ? DEFAULT_SETTINGS : yield* resolveLogged(kept));
+      let current = valuesFrom(
+        kept === undefined ? DEFAULT_SETTINGS : yield* resolveLogged(kept),
+        kept?.instructions,
+      );
 
       /** When the last read failed, while its backoff may still run. */
       let failedAt: number | undefined;
@@ -181,7 +205,7 @@ export const sessionSettingsLayer = (
             Effect.tap((settings) =>
               Effect.sync(() => {
                 kv.put(SOURCE_KEY, source);
-                current = valuesFrom(settings);
+                current = valuesFrom(settings, source.instructions);
               }),
             ),
           ),

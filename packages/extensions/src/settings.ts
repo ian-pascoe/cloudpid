@@ -43,6 +43,7 @@ import {
   type DeployCredentials,
   MAX_CHANGE_REASON,
 } from "./environment.ts";
+import { formatScope } from "./instructions.ts";
 import { matchesPattern } from "./patterns.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -84,6 +85,8 @@ export type SettingsView =
       readonly global: Settings;
       /** Why some saved Overrides were left out, when a later release no longer accepts them: those fields inherit. */
       readonly problem?: string | undefined;
+      /** The Environment's own Instructions, empty for none: no Override, shown after Global's (ADR-0027). */
+      readonly instructions: string;
     };
 
 /** The Global Settings' view. */
@@ -369,18 +372,27 @@ export const describeSettings = (view: SettingsView, own: string | null): string
   const depthField = extensionField("subagents", "maxSubagentDepth");
   const workspacesField = extensionField("subagents", "maxSubagentWorkspaces");
 
-  const instructionsText = settings.instructions;
+  const cap = `at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB`;
 
-  // An Environment's settings carry Global's Instructions: its Overrides hold none (ADR-0027).
-  const instructionsSource = isGlobalView(view)
-    ? `Global; at most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB`
-    : "Global's: an Environment has no Instructions of its own yet";
+  /** One Scope's Instructions: none, or their size and their text as the section shows them. */
+  const instructionsOf = (text: string, source: string, scope: string) =>
+    text === "" ? `none (${source})` : `${textSize(text)} (${source})\n${formatScope(scope, text)}`;
 
-  const instructionsLine = `Instructions (every conversation's model is shown them from the start of its Context Window, before the Project instructions, which win where the two disagree; settings_instructions_set changes them once the user approves): ${
-    instructionsText === ""
-      ? `none (${isGlobalView(view) ? "default" : instructionsSource})`
-      : `${textSize(instructionsText)} (${instructionsSource})\n<instructions>\n${instructionsText}\n</instructions>`
-  }`;
+  // An Environment's settings carry Global's Instructions, and its own add to them: no Override (ADR-0027).
+  const instructionsLine = isGlobalView(view)
+    ? `Instructions (every conversation's model is shown them from the start of its Context Window, before its Environment's own and the Project instructions, which win where they disagree; settings_instructions_set changes them once the user approves): ${instructionsOf(
+        settings.instructions,
+        settings.instructions === "" ? "default" : `Global; ${cap}`,
+        "Global",
+      )}`
+    : Arr.join(
+        [
+          `Instructions (they add up, never overridden: this Environment's conversations are shown the Global ones, then its own, from the start of each Context Window, before the Project instructions; where two disagree the nearer wins; settings_instructions_set changes either Scope's once the user approves):`,
+          `  Global: ${instructionsOf(settings.instructions, "Global's", "Global")}`,
+          `  This Environment's own: ${instructionsOf(view.instructions, cap, `Environment ${view.name}`)}`,
+        ],
+        "\n",
+      );
 
   const header = isGlobalView(view)
     ? [
