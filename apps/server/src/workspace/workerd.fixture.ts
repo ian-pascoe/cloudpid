@@ -346,6 +346,45 @@ export class TestWorkspace extends Workspace {
     return this.#fakeContainer?.running ?? super.containerRunning();
   }
 
+  /** What the file-change notify did on the fake Container, in order: `push`, and `notify <path> <path> …`. */
+  #notified: string[] = [];
+
+  notifyEvents(): string[] {
+    return [...this.#notified];
+  }
+
+  /**
+   * The notify's push, on the fake Container: computer's push cursor for the Container's backend moved to the revision
+   * the files are at, as a push that sent everything leaves it (`change-log.ts` reads it).
+   */
+  protected override async pushContainerChanges(): Promise<void> {
+    if (this.#fakeContainer === undefined) return super.pushContainerChanges();
+
+    this.#notified.push("push");
+
+    const sql = this.ctx.storage.sql;
+    const [current] = sql.exec<{ v: number }>("SELECT v FROM vfs_meta WHERE k = 'rev'").toArray();
+    const rev = current?.v ?? 0;
+
+    sql.exec(
+      "INSERT INTO _vfs_push_cursor (k, backend, rev, path) VALUES ('push', ?, ?, NULL) ON CONFLICT(k, backend) DO UPDATE SET rev = excluded.rev, path = NULL",
+      CONTAINER_BACKEND_ID,
+      rev,
+    );
+    sql.exec(
+      "INSERT INTO _vfs_watermark (k, backend, v) VALUES ('pushRev', ?, ?) ON CONFLICT(k, backend) DO UPDATE SET v = excluded.v",
+      CONTAINER_BACKEND_ID,
+      rev,
+    );
+  }
+
+  /** The notify's helper, on the fake Container: recorded. */
+  protected override async notifyContainer(paths: ReadonlyArray<string>): Promise<void> {
+    if (this.#fakeContainer === undefined) return super.notifyContainer(paths);
+
+    this.#notified.push(`notify ${paths.join(" ")}`);
+  }
+
   protected override runContainerScript(script: string) {
     const fake = this.#fakeContainer;
 

@@ -121,7 +121,14 @@ export class GuardedFilesystem extends WorkspaceFilesystemStub {
   }
 
   override async mkdir(...[path, options]: Parameters<WorkspaceFilesystemStub["mkdir"]>) {
-    if (options?.recursive === true) return ensureDirectory(this.#workspace.fs, path);
+    // Reported as computer reports its own `mkdir`, so the file-change notify hears of it (`notify.ts`).
+    if (options?.recursive === true) {
+      return this.#workspace.observer.span(
+        "workspace.fs.mkdir",
+        { "workspace.fs.path": path, "workspace.fs.recursive": true },
+        () => ensureDirectory(this.#workspace.fs, path),
+      );
+    }
 
     return super.mkdir(path, options);
   }

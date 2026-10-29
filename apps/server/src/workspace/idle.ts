@@ -163,6 +163,11 @@ export class IdleStop {
     return this.#writing.size > 0;
   }
 
+  /** Whether anything holds the Container now: a command, a Container preview's socket, a bootstrap. */
+  held(): boolean {
+    return this.#holds.size > 0;
+  }
+
   /**
    * A command (or a Container preview's socket, a bootstrap) began on the Container: it is in use until it ends. One
    * that may write (`options.writes`, the default) is told of as it begins.
