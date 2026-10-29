@@ -16,7 +16,10 @@ const TurnId = Schema.NullOr(Schema.String).annotate({ description: "Turn ID, or
 const ConversationId = Schema.Int.annotate({ description: "The agent's conversation" });
 
 const Workspace = Schema.NullOr(
-  Schema.Struct({ id: Schema.String, branch: Schema.String }),
+  Schema.Struct({
+    id: Schema.String.annotate({ description: "The Subagent Workspace's id" }),
+    branch: Schema.String.annotate({ description: "Its branch" }),
+  }),
 ).annotate({ description: "The agent's Subagent Workspace; null when it works in its parent's" });
 
 const Delegation = Schema.Literals(["none", "fanout"]).annotate({
@@ -40,7 +43,8 @@ export const SpawnOutput = Schema.Struct({
   }),
   tools: Schema.Array(Schema.String).annotate({ description: "Its ordinary tools" }),
   coordinator_tools: Schema.Array(Schema.String).annotate({
-    description: "Its coordinator tools: all six with fanout, else agent_message",
+    description:
+      "Its coordinator tools: all six with fanout below the depth cap, else agent_message",
   }),
   tool_selection: Schema.String.annotate({
     description:
@@ -105,13 +109,15 @@ export const StatusListOutput = Schema.Struct({
       agent_id: AgentId,
       state: AgentState,
       model: Schema.String.annotate({ description: "provider/modelId:thinking level" }),
-      turns: Schema.Int.annotate({ description: "How many turns it has had" }),
+      turns: Schema.Int.annotate({
+        description: "How many of its turns are kept: those running and its latest settled ones",
+      }),
       child_count: Schema.Int.annotate({ description: "How many subagents of its own it has" }),
       branch: Schema.NullOr(Schema.String).annotate({
         description: "Its Subagent Workspace's branch; null when it works in its parent's",
       }),
     }),
-  ),
+  ).annotate({ description: "The caller's direct children" }),
 });
 
 /** `subagent_status` with `agent_id`: one agent's launch contract, turns, latest answer and usage. */
@@ -169,7 +175,8 @@ export const StatusOutput = Schema.Union([StatusListOutput, StatusAgentOutput]);
 export const CancelOutput = Schema.Struct({
   agent_id: AgentId,
   affected_agent_ids: Schema.Array(Schema.String).annotate({
-    description: "The agents whose work was stopped: it and, recursively, those below it",
+    description:
+      "The agents whose running work was stopped: it, and with recursive those below it; empty when none was running",
   }),
 });
 

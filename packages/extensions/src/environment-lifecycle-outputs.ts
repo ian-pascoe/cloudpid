@@ -66,7 +66,7 @@ const UnchangedTruncated = Schema.Boolean.annotate({
 });
 
 /** The fields in `unchanged` that fit, and whether any were left out. */
-const unchangedOutput = (fields: ReadonlyArray<string>) => {
+const boundedUnchanged = (fields: ReadonlyArray<string>) => {
   const kept = boundItems(fields, MAX_UNCHANGED_BYTES);
 
   return { unchanged: kept.items, unchanged_truncated: kept.truncated };
@@ -414,7 +414,7 @@ export const skillInstalledOutput = ({
   return asOutput(SkillInstallOutput, {
     scope: scopeRef(scope),
     ...changesOutput(changes),
-    ...unchangedOutput(
+    ...boundedUnchanged(
       Arr.flatMap(results, (result) =>
         result.outcome === "unchanged" ? [skillField(result.name)] : [],
       ),
@@ -478,7 +478,7 @@ export const skillUpdatedOutput = ({
   return asOutput(SkillUpdateOutput, {
     scope: scopeRef(scope),
     ...changesOutput(changes),
-    ...unchangedOutput(
+    ...boundedUnchanged(
       Arr.flatMap(results, (result) =>
         result.outcome === "unchanged" ? [skillField(result.name)] : [],
       ),
