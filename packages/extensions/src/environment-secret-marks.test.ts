@@ -1,9 +1,10 @@
 // The `environment` extension's tool for the Build mark of a kept Secret (docs/architecture/agent-changes.md):
 // `environment_secret_build`, over fake kept Secrets that apply a mark as the Registry does.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off schemaSync:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  type JsonObject,
   ROOT_CONVERSATION_ID,
   type ToolExecutionApi,
   type ToolRegistration,
@@ -12,6 +13,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   AgentChangeLog,
@@ -26,6 +28,8 @@ import { unusedApprovals } from "./approvals.fixture.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { fakeSecretMarks, type KeptMark } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
+import { ChangeOutput } from "./outputs.ts";
+import { runProgram } from "./program.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { secretEnvName } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
@@ -84,7 +88,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
       () => new Error(`no tool ${name}`),
     );
 
-  return { tool, logged, ...marks };
+  return { tool, logged, extension, ...marks };
 };
 
 // SAFETY: the tools read only the calling conversation from the invocation's API.
@@ -265,5 +269,45 @@ describe("environment_secret_build", () => {
 
     expect(calls).toEqual([]);
     expect(logged).toEqual([]);
+  });
+});
+
+describe("environment_secret_build from a program", () => {
+  it("gets the mark changed at an Environment and at Global, and one a Secret has already, as the schema declares", async () => {
+    const { extension } = await setUp();
+
+    const steps = Arr.map(
+      [
+        { id: "default", name: "API_KEY", build: false, reason: "No script needs it" },
+        { id: "default", name: "API_KEY", build: false, reason: "No script needs it" },
+        { id: "*", name: "NPM_TOKEN", build: true, reason: "The Setup Script needs it" },
+      ] satisfies ReadonlyArray<JsonObject>,
+      (args) => ["environment_secret_build", args] as const,
+    );
+
+    const called = await runProgram([extension], steps);
+
+    expect(Arr.map(called, (each) => each.diagnostics)).toEqual(Arr.map(steps, () => []));
+    expect(Arr.map(called, (each) => each.isError)).toEqual(Arr.map(steps, () => false));
+
+    const [changed, again, atGlobal] = Arr.map(called, (each) =>
+      Schema.decodeUnknownSync(ChangeOutput)(each.structuredOutput),
+    );
+
+    expect(changed).toMatchObject({
+      scope: { id: "default", name: "Default" },
+      changes: [{ field: "secrets.API_KEY.build", before: true, after: false }],
+      unchanged: [],
+      approval: null,
+    });
+    expect(again).toMatchObject({
+      scope: { id: "default", name: "Default" },
+      changes: [],
+      unchanged: ["secrets.API_KEY.build"],
+    });
+    expect(atGlobal).toMatchObject({
+      scope: { id: "*", name: "Global" },
+      changes: [{ field: "secrets.NPM_TOKEN.build", before: false, after: true }],
+    });
   });
 });

@@ -34,6 +34,7 @@ const script = (code: string) => `call:codemode:${JSON.stringify({ code })}`;
 
 describe("the codemode tool", () => {
   it("runs a script that calls read, grep, and bash on the Workspace and returns their combined output", async () => {
+    // `read` gives the script its text; `grep` and `bash` declare a schema, so they give a value.
     const { stub, workspace } = session();
 
     const results = await runInDurableObject(stub, async (instance: TestCodemodeSession) => {
@@ -45,7 +46,7 @@ describe("the codemode tool", () => {
           const hits = await tools.grep({ pattern: "gamma" });
           const shell = await tools.bash({ command: "wc -l < notes.txt" });
           text("read: " + JSON.stringify(content));
-          text("grep: " + hits);
+          text("grep: " + JSON.stringify(hits.lines));
           return { lines: shell.output.trim(), exitCode: shell.exitCode };
         `),
         "done",
@@ -62,7 +63,7 @@ describe("the codemode tool", () => {
 
     expect(codemode).toContain("Script completed");
     expect(codemode).toContain('read: "alpha\\ngamma\\n"');
-    expect(codemode).toContain("grep: notes.txt:2: gamma");
+    expect(codemode).toContain('grep: [{"path":"notes.txt","line":2,"text":"gamma","match":true}]');
     expect(codemode).toMatch(/"lines":\s*"2"/);
     expect(codemode).toMatch(/"exitCode":\s*0/);
   });
@@ -93,7 +94,8 @@ describe("the codemode tool", () => {
     const [scripted, searched, loaded] = results;
 
     expect(scripted).toContain("Script completed");
-    expect(scripted).toContain("No Secrets are held");
+    // The script gets the tool's value; the model reads its text.
+    expect(scripted).toContain('{"secrets":[],"secrets_truncated":false}');
     expect(searched).toContain("secret_list");
     // The model's own call of the tool it loaded ran: it was offered, and answered as the tool does.
     expect(loaded).not.toMatch(/not available|unavailable|unknown tool/i);

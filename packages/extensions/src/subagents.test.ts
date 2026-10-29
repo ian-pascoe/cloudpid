@@ -1,17 +1,7 @@
 // The subagent tools through real runs: a scripted model drives the root and its children in one Harness.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
-import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
-import type { JsonValue } from "@earendil-works/chord";
-import {
-  defineExtension,
-  type JsonObject,
-  ROOT_CONVERSATION_ID,
-  type ToolExecutionApi,
-} from "@earendil-works/pi-durable";
-import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
-import * as Schema from "effect/Schema";
+import { type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import {
   answer,
@@ -23,6 +13,7 @@ import {
 } from "./subagents/harness.fixture.ts";
 import type { SubagentWorkspaceHost } from "./subagents.ts";
 import { MAX_CHILD_OUTPUT_BYTES } from "./subagents/outputs.ts";
+import { decodeProgramCall, programExtension } from "./program.fixture.ts";
 import { deleteAgent, isAgentConversation, stopConversation } from "./subagents/owner.ts";
 import { conversationWorkspace, SubagentsDoc } from "./subagents/state.ts";
 
@@ -1315,57 +1306,6 @@ describe("Subagent Workspaces", () => {
 });
 
 describe("the coordinator tools from a program", () => {
-  const Called = Schema.Struct({
-    isError: Schema.Boolean,
-    structuredOutput: Schema.Unknown,
-    diagnostics: Schema.Array(Schema.Struct({ message: Schema.String })),
-  });
-
-  // @effect-diagnostics-next-line schemaSync:off -- the test reads a tool result it holds.
-  const decodeCalled = Schema.decodeUnknownSync(Schema.fromJsonString(Called));
-
-  /** `value` with each string longer than 1,000 characters as its length, so a long answer fits a tool result. */
-  const summarized = (value: JsonValue | undefined): JsonValue | undefined => {
-    if (Predicate.isString(value))
-      return value.length > 1000 ? `<${value.length} characters>` : value;
-
-    if (Array.isArray(value)) return value.map((item) => summarized(item) ?? null);
-
-    if (!Predicate.isObject(value)) return value;
-
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, summarized(item) ?? null]),
-    );
-  };
-
-  // A stand-in for code mode: calls `tool` as a script does, and answers with what the script got.
-  const Program = Effect.runSync(
-    defineEffectTool({
-      name: "program",
-      description: "Call a tool the way a program does",
-      parameters: Schema.Struct({
-        tool: Schema.String,
-        args: Schema.Record(Schema.String, Schema.Json),
-      }),
-      execute: Effect.fnUntraced(function* ({ tool, args }, api: ToolExecutionApi) {
-        const chord = yield* ChordContext;
-
-        // SAFETY: the decoded arguments are JSON.
-        const result = yield* Effect.promise(() =>
-          api.executeTool(tool, args as JsonObject, chord),
-        );
-
-        const got = yield* Schema.encodeEffect(Schema.fromJsonString(Called))({
-          isError: result.isError === true,
-          structuredOutput: summarized(result.structuredOutput),
-          diagnostics: result.diagnostics.map(({ message }) => ({ message })),
-        }).pipe(Effect.orDie);
-
-        return { output: [{ type: "text", text: got }] };
-      }),
-    }),
-  );
-
   /** Run `steps` as one program call each from the root, its child answering `reply`; what the program got of each. */
   const runProgram = async (
     steps: ReadonlyArray<readonly [string, JsonObject]>,
@@ -1389,13 +1329,13 @@ describe("the coordinator tools from a program", () => {
           : call(["program", { tool: next[0], args: next[1] }]);
       },
       {},
-      [defineExtension({ name: "program", tools: [Program] })],
+      [programExtension],
     );
 
     await session.prompt("Go");
     await session.settle();
 
-    return (await session.texts("toolResult")).map((text) => decodeCalled(text));
+    return (await session.texts("toolResult")).map((text) => decodeProgramCall(text));
   };
 
   it("gets each coordinator tool's structured output, as its schema declares", async () => {

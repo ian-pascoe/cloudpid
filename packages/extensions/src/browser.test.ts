@@ -1,9 +1,10 @@
 // The `browser` tool through real runs: a scripted model calls it in the root conversation and in a subagent, over a
 // fake browser host that records what it is asked, with the Session's Secrets and keep-alive beside it.
 // pi-durable's Harness is Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off strictEffectProvide:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off strictEffectProvide:off schemaSync:off
 import { type EntryRecord, ToolResultEntry } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import {
   Browser,
@@ -23,7 +24,10 @@ import {
   type OwnerTabListing,
 } from "./browser.ts";
 import { fakeHandoffHost, LIVE_VIEW_TOKEN } from "./browser/host.fixture.ts";
+import { HandoffOutput, OwnerTabsOutput } from "./browser/outputs.ts";
 import { MAX_IMAGE_CHARACTERS } from "./images.ts";
+import { decodeProgramCall, programExtension, runProgram, runSized } from "./program.fixture.ts";
+import { MAX_NESTED_STRUCTURED_OUTPUT_BYTES } from "./result-bounds.ts";
 import { secretReference } from "./secrets/references.ts";
 import { call as secretsCall, openSecretsHarness } from "./secrets/harness.fixture.ts";
 import { answer, call, openSubagentHarness } from "./subagents/harness.fixture.ts";
@@ -130,6 +134,12 @@ const looker =
   (...codes: string[]) =>
   (request: { readonly text: string }) =>
     request.text === "Look" ? lookWith(...codes) : answer("Looked.");
+
+const textOf = (result: { readonly content: readonly { readonly type: string }[] } | undefined) =>
+  (result?.content ?? []).map((block) => ("text" in block ? String(block.text) : "")).join("");
+
+const decodeOwnerTabs = Schema.decodeUnknownSync(OwnerTabsOutput);
+const decodeHandoff = Schema.decodeUnknownSync(HandoffOutput);
 
 describe("the browser extension", () => {
   it("offers the browser tool with the host's description, and says what the Session's Secrets cannot do in it", async () => {
@@ -562,6 +572,73 @@ describe("the browser extension in the user's Owner tabs", () => {
       ),
     });
   });
+
+  it("gives a program the Owner tabs as data: ID, title, origin and which one is shown, never a URL", async () => {
+    const { host } = fakeHost(() => completed([]), OWNER_TABS);
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Which tabs?"
+          ? call(["program", { tool: "browser_owner_tabs", args: {} }])
+          : answer("Two."),
+      {},
+      [programExtension, await extensionOver(host)],
+    );
+
+    await session.prompt("Which tabs?");
+
+    const got = decodeProgramCall(textOf(toolResults(await session.entries())[0]));
+
+    expect(got).toMatchObject({ isError: false, diagnostics: [] });
+    expect(decodeOwnerTabs(got.structuredOutput)).toEqual({
+      tabs: [
+        { id: "tab-a", title: "An article", origin: "https://news.example", shown: false },
+        { id: "tab-b", title: "Mail", origin: "https://mail.example", shown: true },
+      ],
+      tabs_truncated: false,
+    });
+    expect(JSON.stringify(got)).not.toMatch(/SECRET|story|inbox/);
+  });
+
+  it("gives a program an empty list when no Owner tab is open", async () => {
+    const { host } = fakeHost(() => completed([]));
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Which tabs?"
+          ? call(["program", { tool: "browser_owner_tabs", args: {} }])
+          : answer("None."),
+      {},
+      [programExtension, await extensionOver(host)],
+    );
+
+    await session.prompt("Which tabs?");
+
+    const got = decodeProgramCall(textOf(toolResults(await session.entries())[0]));
+
+    expect(got).toMatchObject({ isError: false, diagnostics: [] });
+    expect(decodeOwnerTabs(got.structuredOutput)).toEqual({ tabs: [], tabs_truncated: false });
+  });
+
+  it("cuts a long list of Owner tabs, and the call still succeeds", async () => {
+    const tabs = Array.from({ length: 2000 }, (_, index) => ({
+      id: `tab-${index}`,
+      title: "T".repeat(MAX_OWNER_TAB_TITLE),
+      url: `https://site${index}.example/path`,
+    }));
+
+    const { host } = fakeHost(() => completed([]), { tabs, shown: "tab-0" });
+    const [got] = await runSized([await extensionOver(host)], [["browser_owner_tabs", {}]]);
+
+    // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
+    expect(got).toMatchObject({
+      isError: false,
+      truncated: { tabs_truncated: true },
+    });
+    expect(got?.lengths.tabs).toBeGreaterThan(0);
+    expect(got?.lengths.tabs).toBeLessThan(tabs.length);
+    expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
+  });
 });
 
 describe("browser_handoff", () => {
@@ -775,6 +852,113 @@ describe("browser_handoff", () => {
       expect(surface).not.toContain(LIVE_VIEW_TOKEN);
       expect(surface).not.toContain("live.browser.run");
     }
+  });
+
+  it("gives a program how the handoff ended: completed, failed with the owner's reason, or ended unsaid", async () => {
+    const outcomes = [
+      {
+        script: { state: "complete", success: true } as const,
+        want: { status: "completed", reason: null },
+      },
+      {
+        script: { state: "complete", success: false, reason: "The code never came" } as const,
+        want: { status: "failed", reason: "The code never came" },
+      },
+      { script: { state: "ended" } as const, want: { status: "ended", reason: null } },
+    ];
+
+    for (const { script, want } of outcomes) {
+      const { extension } = await handingOver([script], {
+        windowOrigins: ["https://auth.example"],
+      });
+
+      const session = await openSubagentHarness(
+        (request) =>
+          request.text === "Log me in"
+            ? call([
+                "program",
+                { tool: "browser_handoff", args: { instructions: "Sign in, then press Done" } },
+              ])
+            : answer("Back."),
+        {},
+        [programExtension, extension],
+      );
+
+      await session.prompt("Log me in");
+
+      const got = decodeProgramCall(textOf(toolResults(await session.entries())[0]));
+
+      expect(got).toMatchObject({ isError: false, diagnostics: [] });
+      expect(decodeHandoff(got.structuredOutput)).toEqual({
+        ...want,
+        reason_truncated: false,
+        windows: ["https://auth.example"],
+        windows_truncated: false,
+      });
+      expect(JSON.stringify(got)).not.toContain(LIVE_VIEW_TOKEN);
+    }
+  });
+
+  it("cuts a long list of windows the tab left open, and the call still succeeds", async () => {
+    const windowOrigins = Array.from(
+      { length: 6000 },
+      (_, index) => `https://window-${index}-${"w".repeat(40)}.example`,
+    );
+
+    const { extension } = await handingOver([{ state: "complete", success: true }], {
+      windowOrigins,
+    });
+
+    const [got] = await runSized([extension], [["browser_handoff", { instructions: "Sign in" }]]);
+
+    // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
+    expect(got).toMatchObject({
+      isError: false,
+      truncated: { windows_truncated: true },
+    });
+    expect(got?.lengths.windows).toBeGreaterThan(0);
+    expect(got?.lengths.windows).toBeLessThan(windowOrigins.length);
+    expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
+  });
+
+  it("gives a program no windows list when the host could not say which are open, and cuts a long reason", async () => {
+    const { host } = fakeHandoffHost([
+      { state: "complete", success: false, reason: "R".repeat(400_000) },
+    ]);
+
+    const extension = await Effect.runPromise(
+      Browser.pipe(
+        Effect.provideService(BrowserHost, host),
+        Effect.provideService(BrowserSession, fakeSession().session),
+        Effect.provideService(OwnerTabDrivers, untold()),
+        Effect.provideService(
+          BrowserHandoffs,
+          makeBrowserHandoffs(
+            {
+              host: { ...host, endHandoff: () => Effect.succeed({}) },
+              storage: memoryStorage(),
+              announce: () => Effect.void,
+            },
+            fakeSession().session,
+            { notify: () => Effect.void },
+          ),
+        ),
+      ),
+    );
+
+    const steps = [["browser_handoff", { instructions: "Sign in" }]] as const;
+    const [got] = await runProgram([extension], steps);
+    const ended = decodeHandoff(got?.structuredOutput);
+
+    // The text carries the reason too, which pi-durable cuts and says in a diagnostic: the value is what is under test.
+    expect(got?.isError).toBe(false);
+    expect(ended).toMatchObject({ status: "failed", windows: null, reason_truncated: true });
+    expect(ended.reason).toMatch(/^<\d+ characters>$/);
+
+    const [sized] = await runSized([extension], steps);
+
+    expect(sized).toMatchObject({ isError: false, truncated: { reason_truncated: true } });
+    expect(sized?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
   });
 });
 

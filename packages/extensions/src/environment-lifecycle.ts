@@ -2,10 +2,20 @@
 // an Environment, renames it, adds Repos to it and takes them out, and asks for its Build or a Test Build of proposed
 // changes. Each change is applied as the owner's RPC is and recorded as an Agent change, like the tools for its Container
 // settings; they are the same extension's, built next to those (`EnvironmentTools`) over the same `Environments`. A Test
-// Build saves and records nothing.
+// Build saves and records nothing. Each tool also gives a program its outcome (`./environment-lifecycle-outputs.ts`): the
+// Environment, whether anything changed and the Agent change recorded, and for a Build whether a new one was asked for
+// (`docs/architecture/agent-capabilities.md` → Values for programs).
 // @effect-diagnostics missingPipeableSignature:off
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
-import { type AgentChange, type EnvironmentRepo, fieldRepo } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  BUILD_FIELD,
+  type EnvironmentRepo,
+  fieldRepo,
+  NAME_FIELD,
+  parseRepoSource,
+  repoField,
+} from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
@@ -25,6 +35,15 @@ import {
   MAX_CHANGE_REASON,
   type RunChange,
 } from "./environment.ts";
+import {
+  createdOutput,
+  EnvironmentCreateOutput,
+  RebuildOutput,
+  RecordChangeOutput,
+  rebuildOutput,
+  recordOutput,
+} from "./environment-lifecycle-outputs.ts";
+import { asOutput, outputSchema } from "./outputs.ts";
 
 /** An Agent change made to an Environment's record, as the Session reports it. */
 export type RecordMade = {
@@ -275,16 +294,18 @@ export const lifecycleTools = ({
   const refused = (message: string) =>
     EnvironmentsError.make({ message: `Nothing was saved: ${message}` });
 
-  /** The result of a change that was recorded: its text, and what the card shows. */
+  /** The result of a change that was recorded: its text, what the card shows, and the value a program gets. */
   const recordedResult = (
     tool: string,
     environment: ChangedEnvironment,
     change: AgentChange,
     text: string,
+    structuredOutput: JsonValue,
   ) =>
     log.record({ tool, environmentName: environment.name, field: change.field }).pipe(
       Effect.as({
         output: [{ type: "text" as const, text }],
+        structuredOutput,
         details: {
           agentChange: {
             id: change.id,
@@ -298,10 +319,29 @@ export const lifecycleTools = ({
     );
 
   /** The result of a change that found the record as asked already. */
-  const unchangedResult = (text: string, environment: ChangedEnvironment) => ({
+  const unchangedResult = (
+    text: string,
+    environment: ChangedEnvironment,
+    structuredOutput: JsonValue,
+  ) => ({
     output: [{ type: "text" as const, text }],
+    structuredOutput,
     details: { unchanged: { environment } },
   });
+
+  /** The value of a change to the record of `environment`: `change` is null for one that was as asked already. */
+  const recordValue = (
+    environment: ChangedEnvironment,
+    change: AgentChange | null,
+    field: string,
+  ) => asOutput(RecordChangeOutput, recordOutput({ environment, change, unchanged: [field] }));
+
+  /** The Environment `environment` names, by id and name: the id again when the Registry does not show it. */
+  const environmentNamed = (environment: string) =>
+    environments.get(environment).pipe(
+      Effect.map((details) => ({ id: environment, name: details?.name ?? environment })),
+      Effect.orElseSucceed(() => ({ id: environment, name: environment })),
+    );
 
   /** Apply `change` to the Environment `id` names; what it answers for each outcome but a recorded change. */
   const applied = <A extends RecordMade | RecordUnchanged>(
@@ -339,6 +379,7 @@ export const lifecycleTools = ({
       repos: RepoSource.pipe(Schema.Array, Schema.optionalKey),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentCreateOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ name, repos, reason }, api) =>
@@ -379,6 +420,11 @@ export const lifecycleTools = ({
             ],
             " ",
           ),
+          createdOutput({
+            environment,
+            repos: held,
+            change: made.change,
+          }),
         );
       }),
   });
@@ -392,6 +438,7 @@ export const lifecycleTools = ({
       name: Schema.String.annotate({ description: "The new name" }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(RecordChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, name, reason }, api) =>
@@ -413,6 +460,7 @@ export const lifecycleTools = ({
           return unchangedResult(
             `${named(answer.environment)} already has that name: nothing changed, and nothing was recorded.`,
             answer.environment,
+            recordValue(answer.environment, null, NAME_FIELD),
           );
         }
 
@@ -423,6 +471,7 @@ export const lifecycleTools = ({
           environment,
           change,
           `Renamed "${shown(change.before)}" to "${shown(change.after)}": ${named(environment)}. Its id is the same.`,
+          recordValue(environment, change, change.field),
         );
       }),
   });
@@ -442,6 +491,7 @@ export const lifecycleTools = ({
       name: Schema.optionalKey(RepoDirectory),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(RecordChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, url, name, reason }, api) =>
@@ -465,6 +515,18 @@ export const lifecycleTools = ({
           return unchangedResult(
             `${named(answer.environment)} has that repo already: nothing changed, and nothing was recorded.`,
             answer.environment,
+            recordValue(
+              answer.environment,
+              null,
+              // The directory it is cloned into: the one named, else the Repo's own name.
+              repoField(
+                name ??
+                  Result.match(parseRepoSource(url), {
+                    onSuccess: (repo) => repo.name,
+                    onFailure: () => url,
+                  }),
+              ),
+            ),
           );
         }
 
@@ -475,6 +537,7 @@ export const lifecycleTools = ({
           environment,
           change,
           `Added the repo ${fieldRepo(change.field) ?? ""} (${shown(change.after)}) to ${named(environment)}. ${WORKSPACES_UNTOUCHED} A new Workspace made from the Environment gets the clone.`,
+          recordValue(environment, change, change.field),
         );
       }),
   });
@@ -495,6 +558,7 @@ export const lifecycleTools = ({
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(RecordChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, name, reason }, api) =>
@@ -519,6 +583,7 @@ export const lifecycleTools = ({
           environment,
           change,
           `Took the repo ${name} (${shown(change.before)}) out of ${named(environment)}. ${WORKSPACES_UNTOUCHED} A new Workspace made from the Environment does not get the clone.`,
+          recordValue(environment, change, change.field),
         );
       }),
   });
@@ -574,6 +639,12 @@ export const lifecycleTools = ({
               text: `This call was cut off after it began asking for the Build, so it asks for nothing again (that would record the request twice). environment_get with id ${id} shows whether the Build is under way; call environment_rebuild again with the same id if it is not.`,
             },
           ],
+          structuredOutput: rebuildOutput({
+            environment: yield* environmentNamed(id),
+            change: null,
+            unchanged: [],
+            rerun: true,
+          }),
           details: { rerun: true },
         };
       }
@@ -591,6 +662,11 @@ export const lifecycleTools = ({
         return unchangedResult(
           `A Build of ${named(answer.environment)} for its current Repos and settings is already under way: nothing was asked for, and nothing was recorded. environment_get with id ${answer.environment.id} shows how it goes.`,
           answer.environment,
+          rebuildOutput({
+            environment: answer.environment,
+            change: null,
+            unchanged: [BUILD_FIELD],
+          }),
         );
       }
 
@@ -601,6 +677,7 @@ export const lifecycleTools = ({
         environment,
         change,
         `Asked for a new Build of ${named(environment)}: the Build is under way. environment_get with id ${environment.id} shows its state and, when it fails, the end of its reason.`,
+        rebuildOutput({ environment, change, unchanged: [] }),
       );
     });
 
@@ -744,6 +821,12 @@ export const lifecycleTools = ({
                 ).trim(),
               },
             ],
+            structuredOutput: rebuildOutput({
+              environment: asked,
+              change: null,
+              unchanged: [],
+              testBuild: { proposed: fields, tookMs },
+            }),
             details: {
               testBuild: {
                 environment: asked,
@@ -785,6 +868,7 @@ export const lifecycleTools = ({
       reason: Reason,
       proposed: Schema.optionalKey(Proposed),
     }),
+    structuredOutputSchema: outputSchema(RebuildOutput),
     executionMode: "sequential",
     // A rerun after an eviction waits for the same Test Build, and asks for a Build of the saved settings only once.
     replay: "safe",

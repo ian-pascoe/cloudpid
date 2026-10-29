@@ -2,10 +2,12 @@
 // `environment_secret_build` marks a Secret kept for an Environment, or Global, as reaching the Build, or
 // takes the mark off. The Registry applies it as the owner's switch on the Environments page does and records it, with the
 // mark before and after, so the owner can revert it. Keeping a Secret is not a tool: only the owner's choice in
-// `secret_ask`'s form keeps one (`secrets/store.ts`).
+// `secret_ask`'s form keeps one (`secrets/store.ts`). Its `structuredOutput`
+// (`docs/architecture/agent-capabilities.md` → Values for programs; `outputs.ts`) is the outcome of the mark
+// (`ChangeOutput`): the Agent change with the mark before and after, or the field that had it already.
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import { type AgentChange, SecretName } from "@cloudpid/protocol";
+import { type AgentChange, SecretName, secretBuildField } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -19,6 +21,7 @@ import {
   type EnvironmentsService,
   type RunChange,
 } from "./environment.ts";
+import { asOutput, ChangeOutput, changesOutput, outputSchema, scopeRef } from "./outputs.ts";
 import { secretEnvName } from "./secrets/references.ts";
 
 /** The id that addresses the variables and Secrets kept Global. */
@@ -128,6 +131,7 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
     execute: ({ id, name, build, reason }, api) =>
@@ -162,6 +166,13 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
                   text: `${name}, ${keptIn(marked.environment)}, is ${markWords(marked.build)} already: nothing changed, and nothing was recorded.`,
                 },
               ],
+              structuredOutput: asOutput(ChangeOutput, {
+                scope: scopeRef(marked.environment),
+                changes: [],
+                changes_truncated: false,
+                unchanged: [secretBuildField(name)],
+                approval: null,
+              }),
               details: { unchanged: { environment: marked.environment, name } },
             };
           case "changed": {
@@ -189,6 +200,12 @@ export const secretMarkTools = ({ environments, log, refuseSecrets, target }: Se
                   ),
                 },
               ],
+              structuredOutput: asOutput(ChangeOutput, {
+                scope: scopeRef(marked.environment),
+                ...changesOutput([change]),
+                unchanged: [],
+                approval: null,
+              }),
               details: {
                 agentChange: {
                   id: change.id,

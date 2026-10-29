@@ -66,15 +66,15 @@ import {
   workspaceOf,
 } from "./state.ts";
 import {
-  boundChildOutput,
   CancelOutput,
   DeleteOutput,
   MessageOutput,
-  outputSchema,
   SpawnOutput,
   StatusOutput,
   WaitOutput,
+  MAX_CHILD_OUTPUT_BYTES,
 } from "./outputs.ts";
+import { boundText, outputSchema } from "../outputs.ts";
 import {
   Anchor,
   AGENT_INPUT_KIND,
@@ -1085,7 +1085,7 @@ const Wait = defineEffectTool({
       ));
 
     // A program gets the child's answer cut to what one nested call's result holds.
-    const bounded = event.output === null ? null : boundChildOutput(event.output);
+    const bounded = event.output === null ? null : boundText(event.output, MAX_CHILD_OUTPUT_BYTES);
 
     return {
       output: text(waitText(event)),
@@ -1201,7 +1201,7 @@ const Status = defineEffectTool({
     const busy = yield* isBusy(api, agent);
     const usage = yield* usageOf(api, agent);
     const output = yield* latestOutput(api, agent);
-    const latest = boundChildOutput(output);
+    const latest = boundText(output, MAX_CHILD_OUTPUT_BYTES);
     const full = verbose === true;
     const { contract } = agent;
 

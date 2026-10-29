@@ -12,6 +12,7 @@ import {
 import type { AgentChange } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  type JsonObject,
   ROOT_CONVERSATION_ID,
   type TaskId,
   type ToolExecutionApi,
@@ -38,9 +39,12 @@ import {
   Environments,
   type RunChange,
 } from "./environment.ts";
+import { EnvironmentDeleteOutput, EnvironmentSecretDeleteOutput } from "./environment-outputs.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
+import { ChangeOutput, EnvironmentChangeOutput } from "./outputs.ts";
+import { answerRequests, runProgram } from "./program.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
@@ -516,7 +520,18 @@ const setUp = async ({
     await asking;
   };
 
-  return { tool, call, calls, logged, asked, notified, state, answeredEarlier };
+  return {
+    tool,
+    call,
+    calls,
+    logged,
+    asked,
+    notified,
+    state,
+    answeredEarlier,
+    extension,
+    approvals,
+  };
 };
 
 const NAMES = [
@@ -1707,5 +1722,230 @@ describe("environment_secret_delete", () => {
 
     expect(result.isError).toBe(true);
     expect(text).toContain("changed since they were asked");
+  });
+});
+
+describe("the tools that wait for Approval, from a program", () => {
+  /** Run `steps` as one program call each from the root, the owner giving `answers` to the requests in turn. */
+  const runSteps = async (
+    start: Start,
+    steps: ReadonlyArray<readonly [string, JsonObject]>,
+    answers: ReadonlyArray<{ readonly approve: boolean; readonly reason?: string }>,
+  ) => {
+    const { extension, approvals } = await setUp(start);
+
+    return runProgram([extension], steps, {
+      meanwhile: () =>
+        answerRequests(
+          () => Effect.runPromise(approvals.pending),
+          (id, given) => Effect.runPromise(approvals.answer(id, given)),
+          answers,
+        ),
+    });
+  };
+
+  const reason = "r";
+  const DECLINE = { approve: false, reason: "Too much" };
+
+  it("gets each tool's outcome, approved or declined with the owner's reason, as its schema declares", async () => {
+    const steps: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["settings_spend_limit_set", { scope: "*", per_session: 10, reason }],
+      ["settings_spend_limit_set", { scope: "*", per_session: 20, reason }],
+      ["settings_spend_limit_set", { scope: "*", per_session: 10, reason }],
+      ["settings_subagent_depth_set", { scope: "*", depth: 3, reason }],
+      ["settings_subagent_workspaces_set", { scope: "default", limit: 1, reason }],
+      ["settings_instructions_set", { scope: "*", text: "Sign commits", reason }],
+      ["settings_reset", { scope: "*", field: "spendLimit.perSession", reason }],
+      ["settings_reset", { scope: "*", field: "extensions.subagents.readToolset", reason }],
+      ["settings_reset", { scope: "*", field: "extensions.subagents.readToolset", reason }],
+      ["environment_container_size_limit_set", { id: "default", size: "cpu-3", reason }],
+      ["environment_container_size_limit_set", { id: "*", size: "cpu-3", reason }],
+      ["environment_container_size_limit_set", { id: "*", size: "cpu-3", reason }],
+      ["environment_delete", { id: "0000abcd", reason }],
+      ["environment_delete", { id: "0000abcd", reason }],
+      ["environment_secret_delete", { id: "default", name: "API_KEY", reason }],
+      ["environment_secret_delete", { id: "default", name: "API_KEY", reason }],
+    ];
+
+    const called = await runSteps({ extensions: { subagents: { readToolset: ["read"] } } }, steps, [
+      APPROVE, // spend limit, 10
+      DECLINE, // spend limit, 20
+      APPROVE, // depth
+      APPROVE, // workspaces
+      APPROVE, // Instructions
+      APPROVE, // reset of the spend limit
+      APPROVE, // size limit of Default
+      APPROVE, // size limit at Global
+      DECLINE, // size limit at Global
+      APPROVE, // delete
+      DECLINE, // delete
+      APPROVE, // secret
+      DECLINE, // secret
+    ]);
+
+    expect(called.map((each) => each.diagnostics)).toEqual(steps.map(() => []));
+    expect(called.map((each) => each.isError)).toEqual(steps.map(() => false));
+
+    const outputs = called.map((each) => each.structuredOutput);
+
+    const [spend, spendDeclined, spendAlready, depth, workspaces, instructions, resetLimit] =
+      outputs;
+
+    const [resetField, resetAlready, sizeEnvironment, sizeGlobal, sizeDeclined] = outputs.slice(7);
+    const [deleted, deleteDeclined, secretDeleted, secretDeclined] = outputs.slice(12);
+
+    for (const value of [
+      spend,
+      spendDeclined,
+      spendAlready,
+      depth,
+      workspaces,
+      instructions,
+      resetLimit,
+      resetField,
+      resetAlready,
+    ]) {
+      expect(Schema.is(ChangeOutput)(value)).toBe(true);
+    }
+
+    for (const value of [sizeEnvironment, sizeGlobal, sizeDeclined]) {
+      expect(Schema.is(EnvironmentChangeOutput)(value)).toBe(true);
+    }
+
+    expect(Schema.is(EnvironmentDeleteOutput)(deleted)).toBe(true);
+    expect(Schema.is(EnvironmentDeleteOutput)(deleteDeclined)).toBe(true);
+    expect(Schema.is(EnvironmentSecretDeleteOutput)(secretDeleted)).toBe(true);
+    expect(Schema.is(EnvironmentSecretDeleteOutput)(secretDeclined)).toBe(true);
+
+    // Approved: the change, and the owner's yes.
+    expect(spend).toMatchObject({
+      scope: { id: "*", name: "Global" },
+      changes: [{ field: "spendLimit.perSession", before: 5, after: 10 }],
+      unchanged: [],
+      approval: { approved: true, reason: null },
+    });
+    // Declined: nothing changed, and the owner's reason.
+    expect(spendDeclined).toMatchObject({
+      scope: { id: "*", name: "Global" },
+      changes: [],
+      unchanged: [],
+      approval: { approved: false, reason: "Too much" },
+    });
+    // Nothing was asked, since the limit had the value.
+    expect(spendAlready).toMatchObject({
+      changes: [],
+      unchanged: ["spendLimit.perSession"],
+      approval: null,
+    });
+    expect(depth).toMatchObject({
+      changes: [{ field: "extensions.subagents.maxSubagentDepth", after: 3 }],
+      approval: { approved: true, reason: null },
+    });
+    expect(workspaces).toMatchObject({
+      scope: { id: "default", name: "Default" },
+      changes: [
+        {
+          field: "extensions.subagents.maxSubagentWorkspaces",
+          before_inherited: true,
+          after_inherited: false,
+          after: 1,
+        },
+      ],
+      approval: { approved: true, reason: null },
+    });
+    expect(instructions).toMatchObject({
+      changes: [{ field: "instructions", before: "", after: "Sign commits" }],
+      approval: { approved: true, reason: null },
+    });
+    expect(resetLimit).toMatchObject({
+      changes: [{ field: "spendLimit.perSession", before: 10, after: null }],
+      approval: { approved: true, reason: null },
+    });
+    // A field that is no Limit is reset at once, asking no one.
+    expect(resetField).toMatchObject({
+      changes: [{ field: "extensions.subagents.readToolset" }],
+      approval: null,
+    });
+    expect(resetAlready).toMatchObject({
+      changes: [],
+      unchanged: ["extensions.subagents.readToolset"],
+      approval: null,
+    });
+
+    expect(sizeEnvironment).toMatchObject({
+      scope: { id: "default", name: "Default" },
+      changes: [{ field: "maxInstance", after: "cpu-3" }],
+      approval: { approved: true, reason: null },
+      // The Session's own Environment, whose Workspace has the change already.
+      own: true,
+      new_build: false,
+      global: null,
+    });
+    expect(sizeGlobal).toMatchObject({
+      scope: { id: "*", name: "Global" },
+      changes: [{ field: "maxInstance", before: "cpu-2", after: "cpu-3" }],
+      approval: { approved: true, reason: null },
+      own: true,
+      global: {
+        overridden_in: [{ id: "0000abcd", name: "Web" }],
+        new_builds: [{ id: "default", name: "Default" }],
+      },
+    });
+    expect(sizeDeclined).toMatchObject({
+      changes: [],
+      approval: { approved: false, reason: "Too much" },
+      new_build: false,
+    });
+
+    expect(deleted).toEqual({
+      environment: { id: "0000abcd", name: "Other" },
+      deleted: true,
+      footprint: { workspaces: 2, sessions: 3, secrets: 1 },
+      approval: { approved: true, reason: null },
+    });
+    expect(deleteDeclined).toEqual({
+      environment: { id: "0000abcd", name: "Other" },
+      deleted: false,
+      footprint: null,
+      approval: { approved: false, reason: "Too much" },
+    });
+    expect(secretDeleted).toEqual({
+      scope: { id: "default", name: "Default" },
+      name: "API_KEY",
+      deleted: true,
+      approval: { approved: true, reason: null },
+    });
+    expect(secretDeclined).toEqual({
+      scope: { id: "default", name: "Default" },
+      name: "API_KEY",
+      deleted: false,
+      approval: { approved: false, reason: "Too much" },
+    });
+  });
+
+  it("gets Instructions too large to give left out, with their flag, and the call does not fail", async () => {
+    // The longest the Settings page allows, each newline two bytes stored.
+    const text = "\n".repeat(64 * 1024);
+
+    const [called] = await runSteps(
+      {},
+      [["settings_instructions_set", { scope: "*", text, reason }]],
+      [APPROVE],
+    );
+
+    expect(called).toMatchObject({ isError: false, diagnostics: [] });
+    expect(called?.structuredOutput).toMatchObject({
+      changes: [
+        {
+          field: "instructions",
+          before: "",
+          before_truncated: false,
+          after: null,
+          after_truncated: true,
+        },
+      ],
+      changes_truncated: false,
+      approval: { approved: true, reason: null },
+    });
   });
 });

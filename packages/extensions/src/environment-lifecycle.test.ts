@@ -1,9 +1,10 @@
 // The `environment` extension's tools for an Environment's record (docs/architecture/agent-changes.md): making an Environment,
 // renaming it, adding and removing Repos, asking for a Build. Over fake Environments that apply each as the Registry does.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off schemaSync:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
+  type JsonObject,
   ROOT_CONVERSATION_ID,
   type ToolExecutionApi,
   type ToolRegistration,
@@ -12,6 +13,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
+import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import {
   AgentChangeLog,
@@ -24,6 +26,12 @@ import {
 import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { fakeLifecycle } from "./environment-lifecycle.fixture.ts";
+import {
+  EnvironmentCreateOutput,
+  RebuildOutput,
+  RecordChangeOutput,
+} from "./environment-lifecycle-outputs.ts";
+import { runProgram, runSized } from "./program.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
@@ -83,7 +91,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
       () => new Error(`no tool ${name}`),
     );
 
-  return { tool, logged, ...lifecycle };
+  return { tool, extension, logged, ...lifecycle };
 };
 
 /** A call's API: its conversation, its task, and its memo, which a rerun of the call (the same `memos`) finds again. */
@@ -715,5 +723,156 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
         run(tool("environment_rebuild"), { id: "0000beef", reason: "r", proposed: {} }),
       ),
     ).toContain("environment_list");
+  });
+});
+
+describe("the lifecycle tools from a program", () => {
+  const decodeRecord = Schema.decodeUnknownSync(RecordChangeOutput);
+  const decodeCreated = Schema.decodeUnknownSync(EnvironmentCreateOutput);
+  const decodeRebuild = Schema.decodeUnknownSync(RebuildOutput);
+
+  const reason = "To check";
+
+  it("gets each tool's outcome, as its schema declares: the Environment, whether anything changed, the change, whether a Build was asked for", async () => {
+    const { extension } = await setUp();
+
+    const steps: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["environment_create", { name: "Billing", repos: ["acme/api"], reason }],
+      ["environment_rename", { id: "0000abcd", name: "Renamed", reason }],
+      ["environment_rename", { id: "0000abcd", name: "Renamed", reason }],
+      ["environment_repo_add", { id: "0000abcd", url: "acme/web", reason }],
+      ["environment_repo_add", { id: "0000abcd", url: "acme/web", reason }],
+      ["environment_repo_remove", { id: "0000abcd", name: "web", reason }],
+      ["environment_rebuild", { id: "default", reason }],
+      ["environment_rebuild", { id: "default", reason }],
+      ["environment_rebuild", { id: "default", reason, proposed: { toolchains: "" } }],
+    ];
+
+    const called = await runProgram([extension], steps);
+
+    expect(called.map((each) => each.diagnostics)).toEqual(steps.map(() => []));
+    expect(called.map((each) => each.isError)).toEqual(steps.map(() => false));
+
+    const [made, renamed, same, added, kept, removed, rebuilt, building, tested] = called.map(
+      (each) => each.structuredOutput,
+    );
+
+    expect(decodeCreated(made)).toMatchObject({
+      scope: { name: "Billing" },
+      changes: [{ field: "environment" }],
+      unchanged: [],
+      approval: null,
+      changed: true,
+      repos: [{ name: "api", url: "https://github.com/acme/api.git" }],
+      repos_truncated: false,
+    });
+
+    // Only environment_rebuild says whether a Build was asked for: the Registry's upkeep decides for the others.
+    expect(decodeCreated(made)).not.toHaveProperty("new_build");
+
+    expect(decodeRecord(renamed)).toMatchObject({
+      scope: { id: "0000abcd", name: "Renamed" },
+      changes: [{ field: "name", before: "Other", after: "Renamed" }],
+      unchanged: [],
+      changed: true,
+    });
+
+    expect(decodeRecord(same)).toMatchObject({
+      scope: { id: "0000abcd", name: "Renamed" },
+      changes: [],
+      unchanged: ["name"],
+      approval: null,
+      changed: false,
+    });
+
+    expect(decodeRecord(added)).toMatchObject({
+      scope: { id: "0000abcd" },
+      changes: [{ field: "repos.web", before: null, after: "https://github.com/acme/web.git" }],
+      changed: true,
+    });
+
+    expect(decodeRecord(kept)).toMatchObject({
+      changes: [],
+      unchanged: ["repos.web"],
+      changed: false,
+    });
+
+    expect(decodeRecord(removed)).toMatchObject({
+      changes: [{ field: "repos.web", before: "https://github.com/acme/web.git", after: null }],
+      changed: true,
+    });
+
+    expect(decodeRecord(removed)).not.toHaveProperty("new_build");
+
+    expect(decodeRebuild(rebuilt)).toMatchObject({
+      scope: { id: "default", name: "Default" },
+      changes: [{ field: "build", after: "asked for" }],
+      changed: true,
+      new_build: true,
+      rerun: false,
+      test_build: null,
+    });
+
+    expect(decodeRebuild(building)).toMatchObject({
+      changes: [],
+      unchanged: ["build"],
+      changed: false,
+      new_build: false,
+    });
+
+    expect(decodeRebuild(tested)).toMatchObject({
+      scope: { id: "default" },
+      changes: [],
+      changed: false,
+      new_build: false,
+      test_build: { proposed: ["toolchains"], took_ms: 150_000 },
+    });
+  });
+
+  it("gives the value of a rebuild that was cut off and run again, which asks for nothing", async () => {
+    const { tool } = await setUp();
+    const memos = new Map<string, unknown>();
+
+    const asked = await run(
+      tool("environment_rebuild"),
+      { id: "default", reason },
+      callApi(1, memos),
+    );
+
+    const again = await run(
+      tool("environment_rebuild"),
+      { id: "default", reason },
+      callApi(1, memos),
+    );
+
+    expect(decodeRebuild(asked.structuredOutput)).toMatchObject({ changed: true, rerun: false });
+    expect(decodeRebuild(again.structuredOutput)).toMatchObject({
+      scope: { id: "default" },
+      changes: [],
+      changed: false,
+      new_build: false,
+      rerun: true,
+    });
+  });
+
+  it("cuts the Repos of a new Environment that do not fit, saying so, without failing", async () => {
+    const { extension } = await setUp();
+    const repos = Arr.makeBy(1_300, (at) => `acme/${"r".repeat(90)}${at}`);
+
+    const [called] = await runSized(
+      [extension],
+      [["environment_create", { name: "Many", repos, reason }]],
+    );
+
+    expect(called?.isError).toBe(false);
+    // Only the model-facing text of a call that lists every Repo is cut; the value is whole.
+    expect(called?.diagnostics).toEqual([{ message: expect.stringContaining("Output truncated") }]);
+
+    // The change that made it holds every Repo too: its value is left out (after_truncated), not the change.
+    expect(called?.truncated).toEqual({ changes_truncated: false, repos_truncated: true });
+    expect(called?.lengths["repos"]).toBeGreaterThan(0);
+    expect(called?.lengths["repos"]).toBeLessThan(1_300);
+    expect(called?.lengths["changes"]).toBe(1);
+    expect(called?.bytes).toBeLessThan(1.5 * 1024 * 1024);
   });
 });

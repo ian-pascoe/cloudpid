@@ -11,7 +11,11 @@
 // the change as the other tools do (applied, recorded with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
 // changes nothing, and the result carries the owner's reason. The tools are the root conversation's only
 // (`PARENT_ONLY_TOOL_PREFIXES` has `environment_` and `settings_`), run alone, and are replayed after an eviction: the
-// rerun waits for the same request, or takes the answer given meanwhile.
+// rerun waits for the same request, or takes the answer given meanwhile. Each gives programs the outcome
+// (`docs/architecture/agent-capabilities.md` → Values for programs) as a `structuredOutput`: the Scope or Environment,
+// the Agent changes made, and the owner's Approval, approved or declined with their reason (null where no one was
+// asked, as when the target has the value). The shapes are in `./settings-outputs.ts` (the Settings),
+// `./environment-outputs.ts` (the Environments) and `./outputs.ts` (the parts they share).
 import {
   compareInstances,
   DEFAULT_SETTINGS,
@@ -47,7 +51,7 @@ import {
   Approvals,
   approvedAlready,
   askedBefore,
-  declined,
+  declinedWith,
   withApproval,
 } from "./approvals.ts";
 import {
@@ -68,6 +72,21 @@ import {
   sizeWords,
 } from "./environment.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
+import {
+  changeOutput,
+  declinedOutput,
+  EnvironmentDeleteOutput,
+  EnvironmentSecretDeleteOutput,
+  unchangedOutput,
+} from "./environment-outputs.ts";
+import {
+  APPROVED,
+  asOutput,
+  ChangeOutput,
+  EnvironmentChangeOutput,
+  outputSchema,
+  scopeRef,
+} from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
@@ -91,6 +110,7 @@ import {
   SettingsScope,
   type SettingsView,
 } from "./settings.ts";
+import { settingsChangeOutput } from "./settings-outputs.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
 import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 
@@ -425,7 +445,11 @@ export const ApprovalTools: Effect.Effect<
       (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
-            return declined(answer, `${change} ${where}, from ${before} to ${after}`);
+            return declinedWith(
+              answer,
+              `${change} ${where}, from ${before} to ${after}`,
+              (approval) => settingsChangeOutput({ view, changes: [], unchanged: [], approval }),
+            );
           }
 
           // What the owner saw: at Global the value, at an Environment the value and whether it was inherited.
@@ -462,6 +486,12 @@ export const ApprovalTools: Effect.Effect<
                     text: approvedAlready(`${limit.name} ${where} is ${after}`),
                   },
                 ],
+                structuredOutput: settingsChangeOutput({
+                  view,
+                  changes: [],
+                  unchanged: [limit.field],
+                  approval: APPROVED,
+                }),
                 details: { scope: view.scope, approval: { approved: true }, agentChanges: [] },
               };
             case "changed": {
@@ -480,6 +510,12 @@ export const ApprovalTools: Effect.Effect<
                     text: `The user approved: ${limit.name} ${where} was ${before}, and is ${after} now. ${reached.text} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
                   },
                 ],
+                structuredOutput: settingsChangeOutput({
+                  view,
+                  changes: applied.changes,
+                  unchanged: [],
+                  approval: APPROVED,
+                }),
                 details: {
                   scope: view.scope,
                   approval: { approved: true },
@@ -527,6 +563,12 @@ export const ApprovalTools: Effect.Effect<
               text: `${limit.name.replace(/^t/, "T")} ${scopeWhere(view)} is ${after}${inherited === false ? " as its Override" : ""} already: nothing was asked, changed or recorded.`,
             },
           ],
+          structuredOutput: settingsChangeOutput({
+            view,
+            changes: [],
+            unchanged: [limit.field],
+            approval: null,
+          }),
           details: { scope: view.scope, unchanged: [limit.field], agentChanges: [] },
         };
       }
@@ -561,6 +603,7 @@ export const ApprovalTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     // The wait survives an eviction: the rerun finds the same request, or the answer given meanwhile.
     replay: "safe",
@@ -599,6 +642,7 @@ export const ApprovalTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "safe",
     execute: ({ scope, depth, reason }, api) =>
@@ -636,6 +680,7 @@ export const ApprovalTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     replay: "safe",
     execute: ({ scope, limit, reason }, api) =>
@@ -676,6 +721,7 @@ export const ApprovalTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     // A Limit's wait survives an eviction; a rerun of any other field's reset finds it reset, and changes nothing.
     replay: "safe",
@@ -717,6 +763,12 @@ export const ApprovalTools: Effect.Effect<
         if (reset && !(Option.isSome(limit) && (yield* askedBefore(approvals, api)))) {
           return {
             output: [{ type: "text" as const, text: already }],
+            structuredOutput: settingsChangeOutput({
+              view,
+              changes: [],
+              unchanged: [field],
+              approval: null,
+            }),
             details: { scope: view.scope, unchanged: [field], agentChanges: [] },
           };
         }
@@ -768,6 +820,7 @@ export const ApprovalTools: Effect.Effect<
       }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",
     // The wait survives an eviction: the rerun finds the same request, or the answer given meanwhile.
     replay: "safe",
@@ -810,6 +863,12 @@ export const ApprovalTools: Effect.Effect<
                 text: `The Instructions ${where} have that text already: nothing was asked, changed or recorded.`,
               },
             ],
+            structuredOutput: settingsChangeOutput({
+              view,
+              changes: [],
+              unchanged: [INSTRUCTIONS_FIELD],
+              approval: null,
+            }),
             details: { scope: view.scope, unchanged: [INSTRUCTIONS_FIELD], agentChanges: [] },
           };
         }
@@ -829,11 +888,13 @@ export const ApprovalTools: Effect.Effect<
           (answer) =>
             Effect.gen(function* () {
               if (!answer.approved) {
-                return declined(
+                return declinedWith(
                   answer,
                   text === ""
                     ? `removing the Instructions ${where}`
                     : `the new text of the Instructions ${where}`,
+                  (approval) =>
+                    settingsChangeOutput({ view, changes: [], unchanged: [], approval }),
                 );
               }
 
@@ -867,6 +928,12 @@ export const ApprovalTools: Effect.Effect<
                         text: approvedAlready(`the Instructions ${where} have that text`),
                       },
                     ],
+                    structuredOutput: settingsChangeOutput({
+                      view,
+                      changes: [],
+                      unchanged: [INSTRUCTIONS_FIELD],
+                      approval: APPROVED,
+                    }),
                     details: { scope: view.scope, approval: { approved: true }, agentChanges: [] },
                   };
                 case "changed": {
@@ -888,6 +955,12 @@ export const ApprovalTools: Effect.Effect<
                         text: `The user approved: the Instructions ${where} ${done} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
                       },
                     ],
+                    structuredOutput: settingsChangeOutput({
+                      view,
+                      changes: applied.changes,
+                      unchanged: [],
+                      approval: APPROVED,
+                    }),
                     details: {
                       scope: view.scope,
                       approval: { approved: true },
@@ -971,6 +1044,7 @@ export const ApprovalTools: Effect.Effect<
       size: InstanceType.annotate({ description: "The largest size the Environment allows" }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "safe",
     execute: ({ id, size, reason }, api) =>
@@ -995,6 +1069,10 @@ export const ApprovalTools: Effect.Effect<
                 text: `The size limit of ${where} is ${size} already: nothing was asked, changed or recorded.`,
               },
             ],
+            structuredOutput: asOutput(
+              EnvironmentChangeOutput,
+              unchangedOutput(details, "maxInstance"),
+            ),
             details: {
               unchanged: {
                 environment: { id: details.id, name: details.name },
@@ -1030,9 +1108,11 @@ export const ApprovalTools: Effect.Effect<
           (answer) =>
             Effect.gen(function* () {
               if (!answer.approved) {
-                return declined(
+                return declinedWith(
                   answer,
                   `the size limit of ${where} from ${maxInstance} to ${size}`,
+                  (approval) =>
+                    asOutput(EnvironmentChangeOutput, declinedOutput(details, approval)),
                 );
               }
 
@@ -1070,6 +1150,10 @@ export const ApprovalTools: Effect.Effect<
                         text: approvedAlready(`the size limit of ${where} is ${size}`),
                       },
                     ],
+                    structuredOutput: asOutput(
+                      EnvironmentChangeOutput,
+                      unchangedOutput(details, "maxInstance", APPROVED),
+                    ),
                     details: { approval: { approved: true } },
                   };
                 case "changed":
@@ -1086,6 +1170,10 @@ export const ApprovalTools: Effect.Effect<
                         text: `The user approved: the size limit of ${named(applied.environment)} was ${maxInstance}, and is ${size} now. environment_container_resize and container_resize may now use sizes up to ${size}. ${applied.global === undefined ? describeApplied(own, applied.newBuild) : describeAppliedGlobal("maxInstance", applied.global)} The change is recorded as approved, with your reason; the user can revert it on the Environments page.`,
                       },
                     ],
+                    structuredOutput: asOutput(
+                      EnvironmentChangeOutput,
+                      changeOutput(applied, own, APPROVED),
+                    ),
                     details: {
                       approval: { approved: true },
                       agentChange: {
@@ -1116,6 +1204,7 @@ export const ApprovalTools: Effect.Effect<
       id: Id,
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentDeleteOutput),
     executionMode: "sequential",
     replay: "safe",
     execute: ({ id, reason }, api) =>
@@ -1171,13 +1260,28 @@ export const ApprovalTools: Effect.Effect<
           },
           (answer) =>
             Effect.gen(function* () {
-              if (!answer.approved) return declined(answer, `deleting ${where}`);
+              if (!answer.approved) {
+                return declinedWith(answer, `deleting ${where}`, (approval) =>
+                  asOutput(EnvironmentDeleteOutput, {
+                    environment: scopeRef(environment),
+                    deleted: false,
+                    footprint: null,
+                    approval,
+                  }),
+                );
+              }
 
               const now = yield* describe;
 
               if (now === null) {
                 return {
                   output: [{ type: "text" as const, text: approvedAlready(`${where} is gone`) }],
+                  structuredOutput: asOutput(EnvironmentDeleteOutput, {
+                    environment: scopeRef(environment),
+                    deleted: true,
+                    footprint: null,
+                    approval: APPROVED,
+                  }),
                   details: { approval: { approved: true } },
                 };
               }
@@ -1211,6 +1315,12 @@ export const ApprovalTools: Effect.Effect<
                     text: `The user approved: deleted ${deleted}. No revert brings it back.`,
                   },
                 ],
+                structuredOutput: asOutput(EnvironmentDeleteOutput, {
+                  environment: scopeRef(now.details),
+                  deleted: true,
+                  footprint: approved.value,
+                  approval: APPROVED,
+                }),
                 details: {
                   approval: { approved: true },
                   agentChange: {
@@ -1240,6 +1350,7 @@ export const ApprovalTools: Effect.Effect<
       name: SecretName.annotate({ description: "The Secret's name, such as NPM_TOKEN" }),
       reason: Reason,
     }),
+    structuredOutputSchema: outputSchema(EnvironmentSecretDeleteOutput),
     executionMode: "sequential",
     replay: "safe",
     execute: ({ id, name, reason }, api) =>
@@ -1290,7 +1401,16 @@ export const ApprovalTools: Effect.Effect<
           },
           (answer) =>
             Effect.gen(function* () {
-              if (!answer.approved) return declined(answer, `deleting ${before}`);
+              if (!answer.approved) {
+                return declinedWith(answer, `deleting ${before}`, (approval) =>
+                  asOutput(EnvironmentSecretDeleteOutput, {
+                    scope: scopeRef(scope),
+                    name,
+                    deleted: false,
+                    approval,
+                  }),
+                );
+              }
 
               const deleted = yield* removal.deleteSecret({
                 environment,
@@ -1319,6 +1439,12 @@ export const ApprovalTools: Effect.Effect<
                         ),
                       },
                     ],
+                    structuredOutput: asOutput(EnvironmentSecretDeleteOutput, {
+                      scope: scopeRef(deleted.environment),
+                      name,
+                      deleted: true,
+                      approval: APPROVED,
+                    }),
                     details: { approval: { approved: true } },
                   };
                 case "changed-since":
@@ -1339,6 +1465,12 @@ export const ApprovalTools: Effect.Effect<
                         text: `The user approved: deleted ${before}. Commands and Sessions stop getting it once they next ask for the kept Secrets (within a minute); this Session keeps taking its value out of output until it is evicted. The Builds' upkeep ran, as after the user's own delete. No revert brings it back: the user keeps it again with secret_ask's form or on the Environments page.`,
                       },
                     ],
+                    structuredOutput: asOutput(EnvironmentSecretDeleteOutput, {
+                      scope: scopeRef(deleted.environment),
+                      name,
+                      deleted: true,
+                      approval: APPROVED,
+                    }),
                     details: {
                       approval: { approved: true },
                       agentChange: {

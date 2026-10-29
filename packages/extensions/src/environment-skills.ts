@@ -9,7 +9,9 @@
 // other Workspaces and its spare get it at their next readying. The skills list in the prompt changes at the next
 // Context Window. With `id: "*"` the Skill is kept Global, and the change waits for the owner's Approval
 // (`./environment-skills-global.ts`), as a change to a Limit does: it steers every future Session. An Environment's own
-// Skill of the same name wins in that Environment, with no Approval.
+// Skill of the same name wins in that Environment, with no Approval. Each tool also gives a program its outcome
+// (`docs/architecture/agent-capabilities.md` → Values for programs; `./environment-lifecycle-outputs.ts`): the Scope, whether anything changed, the Agent changes recorded, and the owner's
+// Approval for a change kept Global (approved, or declined with their reason).
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { SKILLS_ROOT } from "@cloudpid/protocol";
@@ -20,6 +22,11 @@ import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
+import {
+  SkillInstallOutput,
+  SkillRemoveOutput,
+  SkillSaveOutput,
+} from "./environment-lifecycle-outputs.ts";
 import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   installedOutcome,
@@ -37,6 +44,7 @@ import {
   saveAtGlobal,
   SKILL_APPROVAL,
 } from "./environment-skills-global.ts";
+import { outputSchema } from "./outputs.ts";
 import {
   MAX_APPROVED_SKILLS,
   MAX_FILE_BYTES,
@@ -302,6 +310,7 @@ export const skillTools = ({
       }),
       reason: SkillReason,
     }),
+    structuredOutputSchema: outputSchema(SkillSaveOutput),
     executionMode: "sequential",
     // A rerun after an eviction waits for the request a change to Global made, or takes its answer; one to an
     // Environment's own Skills finds its change made (the same files record nothing again).
@@ -357,6 +366,7 @@ export const skillTools = ({
       }),
       reason: SkillReason,
     }),
+    structuredOutputSchema: outputSchema(SkillRemoveOutput),
     executionMode: "sequential",
     replay: "safe",
     execute: ({ id, name, reason }, api) =>
@@ -411,6 +421,7 @@ export const skillTools = ({
       ),
       reason: SkillReason,
     }),
+    structuredOutputSchema: outputSchema(SkillInstallOutput),
     executionMode: "sequential",
     // A rerun after an eviction waits for the request an install at Global made, or takes its answer; one for
     // an Environment's own Skills runs again: the Skills kept already come back unchanged, and a ref that moved is
