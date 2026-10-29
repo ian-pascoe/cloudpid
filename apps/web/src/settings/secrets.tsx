@@ -1,8 +1,10 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of Secrets are native arrays.
 
 // The Secrets section of the Settings page (docs/architecture/agent-capabilities.md → Secrets): the Secrets kept at the
-// Scope, Global or an Environment (GLOSSARY.md → Secret), with the form that keeps another, and an Environment's names of those it gets from Global. The Registry
-// never shows a value again. Saving, replacing, switching the build flag and deleting each take effect at once.
+// Scope, Global or an Environment (GLOSSARY.md → Secret), with the form that keeps another. As the other sections' fields
+// are (ADR-0027), an Environment's list marks the names it inherits from Global and those its own Secret overrides, and
+// Global's names the Environments that override each of its Secrets. The Registry never shows a value again. Saving,
+// replacing, switching the build flag and deleting each take effect at once.
 
 import {
   GLOBAL_SCOPE,
@@ -20,6 +22,7 @@ import { Dialog, DialogActions, DialogProblem } from "../components/ui/dialog.ts
 import { Input } from "../components/ui/input.tsx";
 import {
   deleteSecretAtom,
+  environmentListAtom,
   environmentSecretsAtom,
   environmentSecretsErrorAtom,
   saveSecretAtom,
@@ -30,12 +33,15 @@ import {
 } from "../environments-state.ts";
 import {
   inheritedSecrets,
+  overriddenSecrets,
   secretDraftProblems,
+  secretOverriders,
   secretDraftReady,
   secretVariable,
 } from "../environments.ts";
 import { settledFailureOf } from "../registry.ts";
-import { CODE_AREA, Group, MarkedNames, SettingsSection } from "./parts.tsx";
+import { settingsPath } from "../router.ts";
+import { CODE_AREA, Group, MarkedNames, OverriddenIn, SettingsSection } from "./parts.tsx";
 
 /**
  * The form that keeps a Secret at Scope `scope`: a name and a value. The value's field hides what is typed where the
@@ -245,6 +251,10 @@ export const SecretsSection = ({ scope }: { scope: string }) => {
   const switched = useAtomValue(setSecretBuildAtom(scope));
   const atGlobal = scope === GLOBAL_SCOPE;
   const inherited = atGlobal || all === null ? [] : inheritedSecrets(all, scope);
+  const overridden = atGlobal || all === null ? [] : overriddenSecrets(all, scope);
+  const environments = useAtomValue(environmentListAtom) ?? [];
+  const nameOf = (id: string) => environments.find((known) => known.id === id)?.name ?? id;
+  const overriders = atGlobal && all !== null ? [...secretOverriders(all)] : [];
 
   return (
     <SettingsSection
@@ -284,6 +294,15 @@ export const SecretsSection = ({ scope }: { scope: string }) => {
           </ul>
         )}
         <MarkedNames kind="inherited" names={inherited.map((record) => record.name)} />
+        <MarkedNames kind="overridden" names={overridden} />
+        {overriders.map(([name, ids]) => (
+          <OverriddenIn
+            key={name}
+            subject={<span className="font-mono text-foreground">{name}: </span>}
+            environments={ids.map((id) => ({ id, name: nameOf(id) }))}
+            pathAt={(environment) => settingsPath(environment, "secrets")}
+          />
+        ))}
         <DialogProblem problem={loadError} />
         <DialogProblem problem={settledFailureOf(switched)} />
       </Group>

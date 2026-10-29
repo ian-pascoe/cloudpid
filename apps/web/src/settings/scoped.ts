@@ -38,6 +38,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import * as Reactivity from "effect/reactivity/Reactivity";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
@@ -51,6 +52,7 @@ import {
   writeGlobalContainerSettings,
 } from "../environments-state.ts";
 import type { RegistryClient, RegistryKey } from "../registry.ts";
+import { appRuntime } from "../runtime.ts";
 import {
   readSettings,
   readSettingsOverrides,
@@ -59,7 +61,7 @@ import {
   writeSettings,
   writeSettingsOverrides,
 } from "../settings.ts";
-import { sectionForm, type SectionForm } from "./drafts.ts";
+import { sameAsJson, sectionForm, type SectionForm } from "./drafts.ts";
 
 const isGlobal = (scope: string): boolean => scope === GLOBAL_SCOPE;
 
@@ -157,15 +159,16 @@ export interface ScopedForm<Value, F> extends SectionForm<MarkedFields<F>, Scope
   readonly defaults: MarkedFields<F>;
   /** What the section shows beside its fields at Scope `scope`; null until the saved value first answers. */
   readonly scopeView: (scope: string) => Atom.Atom<ScopeView<Value, F> | null>;
+  /**
+   * At Environment `scope`, reset every Override of the section as the Registry has them now, so each field inherits
+   * Global's value again, and drop the section's draft.
+   */
+  readonly resetToGlobal: (scope: string) => Atom.AtomResultFn<void, void, ScopedError>;
   /** The fields' paths, in the section's order. */
   readonly paths: ReadonlyArray<keyof F & string>;
   /** Each field's name for people, by path. */
   readonly labels: { readonly [K in keyof F]: string };
 }
-
-/** Whether two values of a field are the same, as JSON. */
-const sameAsJson = <V>(left: V, right: V): boolean =>
-  JSON.stringify(left) === JSON.stringify(right);
 
 /** Fields built one per key of `keys` by `make`. */
 const fieldsFrom = <F>(
@@ -249,16 +252,34 @@ export const scopedForm = <Value, Overrides, S extends FieldSpecs<Value>>(
     keys: source.keys,
   });
 
+  /** Each field inheriting `saved`'s Global value. */
+  const inheritedOf = (saved: AtScope<Value, Overrides>): MarkedFields<F> =>
+    fieldsFrom<F>(keys, (key) => ({ value: specOf(key).of(saved.global), inherited: true }));
+
+  // Reset to Global at an Environment: the section's Overrides as the Registry has them now, every one reset, so an
+  // Override made since the page read them goes too; any draft is dropped with them.
+  const resetToGlobal = Atom.family((scope: string) =>
+    appRuntime.fn((_: void, get) =>
+      Effect.gen(function* () {
+        const now = yield* source.read(scope);
+
+        if (now.overrides !== null) yield* source.write(scope, now, merge(now, inheritedOf(now)));
+
+        yield* Reactivity.invalidate(source.keys(scope));
+        yield* get.result(source.saved(scope), { suspendOnWaiting: true }).pipe(Effect.ignore);
+        get.set(form.draft(scope), undefined);
+        get.set(form.justSaved(scope), true);
+      }),
+    ),
+  );
+
   const scopeView = Atom.family((scope: string) =>
     Atom.map(source.saved(scope), (result) =>
       result.pipe(
         AsyncResult.value,
         Option.map((saved): ScopeView<Value, F> => ({
           inForce: saved.inForce,
-          inherited: fieldsFrom<F>(keys, (key) => ({
-            value: specOf(key).of(saved.global),
-            inherited: true,
-          })),
+          inherited: inheritedOf(saved),
           overriddenIn: saved.overriddenIn,
           problem: saved.problem,
         })),
@@ -270,7 +291,7 @@ export const scopedForm = <Value, Overrides, S extends FieldSpecs<Value>>(
   // SAFETY: one label per field of the specs.
   const labels = Record.map(specs, (spec) => spec.label) as ScopedForm<Value, F>["labels"];
 
-  return { ...form, defaults, scopeView, paths: keys, labels };
+  return { ...form, defaults, scopeView, resetToGlobal, paths: keys, labels };
 };
 
 // The Settings (model, Roles, tools, limits, …): Global's are written whole, an Environment's Overrides as a patch.

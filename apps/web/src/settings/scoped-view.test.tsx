@@ -10,21 +10,24 @@ import {
   overridesFrom,
   resolveOverrides,
   type Settings,
+  withOverrides,
 } from "@cloudpid/config";
 import type { SettingsOverridesState, SettingsState } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Order from "effect/Order";
 import * as Result from "effect/Result";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import type * as Schema from "effect/Schema";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { registryWith, settled } from "../registry.testing.ts";
-import { SetupSection } from "./container.tsx";
+import { ContainerSection, SetupSection } from "./container.tsx";
 import type { SectionForm } from "./drafts.ts";
-import { modelsForm, setupForm } from "./forms.ts";
-import { inheriting, overriding } from "./scoped-view.tsx";
+import { containerSectionForm, modelsForm, setupForm } from "./forms.ts";
+import { withInherited, withOverride } from "./scoped-view.tsx";
 import { ModelsSection } from "./settings-sections.tsx";
 
 const GLOBAL = "*";
@@ -43,7 +46,12 @@ const overridesStateOf = (overrides: Schema.Json): SettingsOverridesState => ({
 
 /** A Registry with Global's Settings, which Work and Home override as `overriddenIn` says, and Work's `overrides`. */
 const holding = (overrides: Schema.Json, overriddenIn: SettingsState["overriddenIn"] = {}) => {
-  const saved: unknown[] = [];
+  const saved: Array<{
+    environment: string;
+    set: Schema.Json | undefined;
+    reset: ReadonlyArray<string> | undefined;
+  }> = [];
+
   const held = { overrides };
 
   const registry = registryWith({
@@ -58,6 +66,10 @@ const holding = (overrides: Schema.Json, overriddenIn: SettingsState["overridden
       Effect.sync(() => {
         saved.push({ environment, set, reset });
 
+        const current = overridesStateOf(held.overrides).settings;
+
+        held.overrides = Result.getOrThrow(withOverrides(held.overrides, { set, reset }, current));
+
         return overridesStateOf(held.overrides);
       }),
     getEnvironmentSettings: () =>
@@ -70,6 +82,7 @@ const holding = (overrides: Schema.Json, overriddenIn: SettingsState["overridden
         global: { ...DEFAULT_CONTAINER_SETTINGS, startScript: "make serve" },
         overrides: { setupScript: "make deps" },
       }),
+    listBuilds: () => Effect.succeed([]),
     getGlobalContainerSettings: () =>
       Effect.succeed({
         settings: { ...DEFAULT_CONTAINER_SETTINGS, startScript: "make serve" },
@@ -78,7 +91,7 @@ const holding = (overrides: Schema.Json, overriddenIn: SettingsState["overridden
       }),
   });
 
-  return { registry, saved };
+  return { registry, saved, held };
 };
 
 /** Wait until `form` shows its fields at `scope`, as its section does once its saved value has answered. */
@@ -175,7 +188,7 @@ describe("a Settings section at an Environment", () => {
 
       if (fields === null) return expect.fail("the fields are not loaded");
 
-      registry.set(modelsForm.draft("work"), overriding(fields, "thinkingLevel"));
+      registry.set(modelsForm.draft("work"), withOverride(fields, "thinkingLevel"));
 
       const markup = render(registry, <ModelsSection scope="work" />);
 
@@ -209,7 +222,7 @@ describe("a Settings section at an Environment", () => {
 
       if (fields === null || view === null) return expect.fail("the fields are not loaded");
 
-      registry.set(modelsForm.draft("work"), inheriting(fields, "roles.small", view.inherited));
+      registry.set(modelsForm.draft("work"), withInherited(fields, "roles.small", view.inherited));
 
       const markup = render(registry, <ModelsSection scope="work" />);
 
@@ -252,6 +265,64 @@ describe("a Settings section at an Environment", () => {
         overriding.registry.dispose();
         following.registry.dispose();
       }),
+  );
+
+  it.effect(
+    "resets every Override of the section on Reset all to Global, as the Registry has them now, and drops the draft",
+    () =>
+      Effect.gen(function* () {
+        const { registry, saved, held } = holding({ model: OPUS, roles: { small: SMALL } });
+
+        yield* opened(registry, modelsForm, "work");
+
+        const fields = registry.get(modelsForm.fields("work"));
+
+        if (fields === null) return expect.fail("the fields are not loaded");
+
+        registry.set(modelsForm.draft("work"), withOverride(fields, "thinkingLevel"));
+        // The agent overrides another Role after the page read the Overrides.
+        held.overrides = { model: OPUS, roles: { small: SMALL, large: SMALL } };
+
+        registry.mount(modelsForm.resetToGlobal("work"));
+        registry.set(modelsForm.resetToGlobal("work"), undefined);
+        yield* settled(registry, modelsForm.resetToGlobal("work"));
+
+        expect(saved).toHaveLength(1);
+        expect(saved[0]).toMatchObject({ environment: "work", set: undefined });
+        expect(Arr.sort(saved[0]?.reset ?? [], Order.String)).toEqual([
+          "model",
+          "roles.large",
+          "roles.small",
+        ]);
+        expect(held.overrides).toEqual({});
+        expect(registry.get(modelsForm.draft("work"))).toBeUndefined();
+
+        const markup = render(registry, <ModelsSection scope="work" />);
+
+        expect(markOf(markup, "model")).toBe("Inherited, Override");
+        expect(markOf(markup, "thinkingLevel")).toBe("Inherited, Override");
+        expect(markOf(markup, "roles.small")).toBe("Inherited, Override");
+        expect(markup).toContain("Saved");
+        registry.dispose();
+      }),
+  );
+
+  it.effect("frames a checkbox with the Input Line at an Environment, dashed while inherited", () =>
+    Effect.gen(function* () {
+      const { registry } = holding({});
+
+      yield* opened(registry, setupForm, "work");
+      yield* opened(registry, containerSectionForm, "work");
+
+      const work = render(registry, <ContainerSection scope="work" />);
+
+      const label = (markup: string) =>
+        /<label for="spare-workspace"[^>]*>/.exec(markup)?.[0] ?? "";
+
+      expect(label(work)).toContain("border-dashed");
+      expect(markOf(work, "spareWorkspace")).toBe("Inherited, Override");
+      registry.dispose();
+    }),
   );
 
   it.effect("marks each script and the Toolchains as a whole", () =>

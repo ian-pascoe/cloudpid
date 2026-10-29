@@ -177,7 +177,10 @@ export const ContainerSection = ({ scope }: { scope: string }) => {
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <label
                       htmlFor="spare-workspace"
-                      className="flex items-center gap-2 text-sm font-medium"
+                      className={cn(
+                        "flex items-center gap-2 text-sm font-medium",
+                        field.frame("spareWorkspace"),
+                      )}
                     >
                       <input
                         id="spare-workspace"

@@ -66,7 +66,9 @@ export interface SectionForm<Fields, E> {
 /** The fields of section form `Form`, as its draft holds them. */
 export type FormFields<Form> = Form extends SectionForm<infer Fields, infer _E> ? Fields : never;
 
-const sameAsJson = <Fields>(left: Fields, right: Fields): boolean =>
+/** Whether two values are the same, as JSON: how a form compares fields that have no `same` of their own. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a comparison of two values, not a combinator.
+export const sameAsJson = <V>(left: V, right: V): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
 /** The fields of `typed` that differ from `base`, each compared alone as the section's `same` reads it. */

@@ -21,7 +21,7 @@ import { registryWith, settled } from "../registry.testing.ts";
 import type { SettingsView } from "../router.ts";
 import { containerSectionForm, instructionsForm, modelsForm } from "./forms.ts";
 import { SettingsPage } from "./page.tsx";
-import { overriding } from "./scoped-view.tsx";
+import { withOverride } from "./scoped-view.tsx";
 import { sectionLabel, sectionsAt } from "./sections.ts";
 
 const WORK = { id: "work", name: "Work", repos: [], createdAt: 1 };
@@ -190,7 +190,10 @@ describe("an Environment's Container section", () => {
 
       if (fields === null) return expect.fail("the fields are not loaded");
 
-      registry.set(containerSectionForm.draft("work"), overriding(fields, "spareWorkspace", false));
+      registry.set(
+        containerSectionForm.draft("work"),
+        withOverride(fields, "spareWorkspace", false),
+      );
 
       const markup = render(registry, "work", section("container"));
 

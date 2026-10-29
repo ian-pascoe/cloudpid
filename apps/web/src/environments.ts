@@ -482,6 +482,35 @@ export const inheritedSecrets = (
   return secretsIn(records, GLOBAL).filter((record) => !own.has(record.name));
 };
 
+/** The names of Environment `environment`'s own Secrets that override one kept Global of the same name. */
+export const overriddenSecrets = (
+  records: readonly EnvironmentSecretRecord[],
+  environment: string,
+): readonly string[] => {
+  const global = new Set(secretsIn(records, GLOBAL).map((record) => record.name));
+
+  return secretsIn(records, environment)
+    .map((record) => record.name)
+    .filter((name) => global.has(name));
+};
+
+/**
+ * For each Secret kept Global, the ids of the Environments whose own Secret of the same name overrides it, in the order
+ * of `records`; a Secret no Environment overrides is left out.
+ */
+export const secretOverriders = (
+  records: readonly EnvironmentSecretRecord[],
+): ReadonlyMap<string, readonly string[]> => {
+  const global = new Set(secretsIn(records, GLOBAL).map((record) => record.name));
+  const overriders = new Map<string, string[]>();
+
+  for (const { environment, name } of records)
+    if (environment !== null && global.has(name))
+      overriders.set(name, [...(overriders.get(name) ?? []), environment]);
+
+  return overriders;
+};
+
 /** What is typed in a Secrets section's form: a name, a value, and whether a new Secret reaches the Build. */
 export interface SecretDraft {
   readonly name: string;

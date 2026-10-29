@@ -22,6 +22,8 @@ import {
   GLOBAL,
   inheritedSecrets,
   inPickerOrder,
+  overriddenSecrets,
+  secretOverriders,
   inheritedVariables,
   secretDraftProblems,
   secretDraftReady,
@@ -562,6 +564,15 @@ describe("an Environment's Secrets", () => {
     expect(inheritedSecrets(records, "other").map((record) => record.name)).toEqual([
       "API_KEY",
       "SHARED",
+    ]);
+  });
+
+  it("name an Environment's own that override one kept Global, and at Global who overrides each", () => {
+    expect(overriddenSecrets(records, "work")).toEqual(["API_KEY"]);
+    expect(overriddenSecrets(records, "other")).toEqual([]);
+    expect([...secretOverriders([...records, kept("other", "SHARED")])]).toEqual([
+      ["API_KEY", ["work"]],
+      ["SHARED", ["other"]],
     ]);
   });
 

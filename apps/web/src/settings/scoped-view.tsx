@@ -7,12 +7,16 @@
 // Environments override says so under it, naming each with a link to the field at its Scope.
 
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Result from "effect/Result";
 import type { ReactNode } from "react";
 import { DialogProblem } from "../components/ui/dialog.tsx";
+import { settledFailureOf } from "../registry.ts";
 import { settingsPath } from "../router.ts";
+import { cn } from "../lib/utils.ts";
 import { FieldMark, OverriddenIn, SectionFormView } from "./parts.tsx";
 import type { MarkedFields, ScopedForm } from "./scoped.ts";
 import { sectionLabel, type SectionSlug } from "./sections.ts";
@@ -21,14 +25,14 @@ import { sectionLabel, type SectionSlug } from "./sections.ts";
 export const fieldAnchor = (path: string): string => `field-${path}`;
 
 /** `fields` with field `key` set to `value`, the Environment's own: what typing in it, or Override, does. */
-export const overriding = <F, K extends keyof F & string>(
+export const withOverride = <F, K extends keyof F & string>(
   fields: MarkedFields<F>,
   key: K,
   value: F[K] = fields[key].value,
 ): MarkedFields<F> => ({ ...fields, [key]: { value, inherited: false } });
 
 /** `fields` with field `key` inheriting Global's value (`global`'s) again: what Reset to Global does. */
-export const inheriting = <F, K extends keyof F & string>(
+export const withInherited = <F, K extends keyof F & string>(
   fields: MarkedFields<F>,
   key: K,
   global: MarkedFields<F>,
@@ -55,6 +59,11 @@ export interface FieldBinding<F> {
   readonly marks: (key: keyof F & string) => FieldMarks;
   /** The look of field `key`'s control: a dashed border while it is inherited. */
   readonly look: (key: keyof F & string) => string;
+  /**
+   * The look of the frame around field `key`'s control where the control has no border of its own (a checkbox): at an
+   * Environment the Input Line, dashed while it is inherited; none at Global.
+   */
+  readonly frame: (key: keyof F & string) => string;
 }
 
 /**
@@ -76,11 +85,14 @@ export const ScopedSectionForm = <Value, F>({
   children: (binding: FieldBinding<F>) => ReactNode;
 }) => {
   const view = useAtomValue(form.scopeView(scope));
+  const saved = useAtomValue(form.loaded(scope)).pipe(AsyncResult.value, Option.getOrNull);
+  const [resetting, reset] = useAtom(form.resetToGlobal(scope));
   const atGlobal = scope === GLOBAL_SCOPE;
 
   return (
     <>
       <DialogProblem problem={view?.problem ?? null} />
+      <DialogProblem problem={settledFailureOf(resetting)} />
       <SectionFormView
         form={form}
         scope={scope}
@@ -90,11 +102,16 @@ export const ScopedSectionForm = <Value, F>({
             ? undefined
             : {
                 section: sectionLabel(section, scope),
-                overridden: (fields) =>
-                  Arr.filterMap(form.paths, (key) =>
-                    fields[key].inherited ? Result.failVoid : Result.succeed(form.labels[key]),
-                  ),
-                inherit: (fields) => view?.inherited ?? fields,
+                overridden:
+                  saved === null
+                    ? []
+                    : Arr.filterMap(form.paths, (key) =>
+                        saved[key].inherited ? Result.failVoid : Result.succeed(form.labels[key]),
+                      ),
+                reset: () => {
+                  reset();
+                },
+                resetting: resetting.waiting,
               }
         }
       >
@@ -104,9 +121,16 @@ export const ScopedSectionForm = <Value, F>({
             value: (key) => fields[key].value,
             inherited: (key) => fields[key].inherited,
             set: (key, value) => {
-              setFields(overriding(fields, key, value));
+              setFields(withOverride(fields, key, value));
             },
             look: (key) => (fields[key].inherited ? "border-dashed" : ""),
+            frame: (key) =>
+              atGlobal
+                ? ""
+                : cn(
+                    "rounded-md border border-input px-3 py-2",
+                    fields[key].inherited && "border-dashed",
+                  ),
             marks: (key) => ({
               anchor: fieldAnchor(key),
               mark: atGlobal ? null : (
@@ -114,10 +138,10 @@ export const ScopedSectionForm = <Value, F>({
                   kind={fields[key].inherited ? "inherited" : "overridden"}
                   name={form.labels[key]}
                   onOverride={() => {
-                    setFields(overriding(fields, key));
+                    setFields(withOverride(fields, key));
                   }}
                   onReset={() => {
-                    if (view !== null) setFields(inheriting(fields, key, view.inherited));
+                    if (view !== null) setFields(withInherited(fields, key, view.inherited));
                   }}
                 />
               ),

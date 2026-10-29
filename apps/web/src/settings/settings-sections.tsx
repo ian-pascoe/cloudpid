@@ -95,7 +95,12 @@ export const GeneralSection = ({ scope }: { scope: string }) => (
           >
             <div id={anchor} className="flex scroll-mt-6 flex-col gap-1.5">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <label className="flex items-center gap-2 text-sm">
+                <label
+                  className={cn(
+                    "flex items-center gap-2 text-sm",
+                    field.frame("branchSummary.skipPrompt"),
+                  )}
+                >
                   <input
                     type="checkbox"
                     checked={field.value("branchSummary.skipPrompt")}

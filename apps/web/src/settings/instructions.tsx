@@ -3,11 +3,7 @@
 // rather than being overridden (ADR-0027), so the section is Global's only and carries no Inherited or Overridden mark;
 // it saves only its own field (`forms.ts`).
 
-import {
-  instructionsProblem,
-  MAX_INSTRUCTIONS_BYTES,
-  utf8Bytes,
-} from "@cloudpid/config";
+import { instructionsProblem, MAX_INSTRUCTIONS_BYTES, utf8Bytes } from "@cloudpid/config";
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import { cn } from "../lib/utils.ts";
 import { instructionsForm } from "./forms.ts";

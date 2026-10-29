@@ -334,53 +334,54 @@ const NotLoaded = <Fields, E>({ form, scope }: { form: SectionForm<Fields, E>; s
   return <Pending problem={failureOf(loaded)} retry={retry} />;
 };
 
-/**
- * At an Environment, what Reset to Global does to a section's fields: `overridden` names the fields `fields` override, and
- * `inherit` makes every field inherit Global's value again.
- */
-export interface ResetToGlobal<Fields> {
+/** At an Environment, a section's Reset to Global: what it resets, and doing it. */
+export interface ResetToGlobal {
+  /** The section's name in a sentence: "Models". */
   readonly section: string;
-  readonly overridden: (fields: Fields) => ReadonlyArray<string>;
-  readonly inherit: (fields: Fields) => Fields;
+  /** The names of the fields the Environment overrides, as saved. */
+  readonly overridden: ReadonlyArray<string>;
+  /** Reset every Override of the section, at once. */
+  readonly reset: () => void;
+  readonly resetting: boolean;
 }
 
 /** A list of names for a sentence: "a", "a and b", "a, b and c". */
 const inWords = (names: ReadonlyArray<string>): string =>
-  names.length <= 1
-    ? Arr.join(names, "")
-    : `${Arr.join(names.slice(0, -1), ", ")} and ${names.at(-1) ?? ""}`;
+  Arr.match(names, {
+    onEmpty: () => "",
+    onNonEmpty: (all) =>
+      all.length === 1
+        ? Arr.headNonEmpty(all)
+        : `${Arr.join(Arr.initNonEmpty(all), ", ")} and ${Arr.lastNonEmpty(all)}`,
+  });
 
 /**
  * Reset to Global, at an Environment: a confirm naming the fields the section overrides, which then inherit Global's
- * values again at once (their Overrides are reset), the section's other unsaved changes dropped with them.
+ * values again at once (their Overrides are reset), the section's unsaved changes dropped with them.
  */
-const ResetToGlobalButton = <Fields,>({
+const ResetToGlobalButton = ({
   reset,
-  fields,
   dirty,
   busy,
-  onReset,
 }: {
-  reset: ResetToGlobal<Fields>;
-  fields: Fields;
+  reset: ResetToGlobal;
   dirty: boolean;
   busy: boolean;
-  onReset: () => void;
 }) => {
   const [open, setOpen] = useState(false);
-  const overridden = reset.overridden(fields);
+  const { overridden } = reset;
 
   return (
     <>
       <Button
         type="button"
         variant="ghost"
-        disabled={busy || overridden.length === 0}
+        disabled={busy || reset.resetting || overridden.length === 0}
         onClick={() => {
           setOpen(true);
         }}
       >
-        Reset all to Global…
+        {reset.resetting ? "Resetting…" : "Reset all to Global…"}
       </Button>
       <Dialog
         open={open}
@@ -413,7 +414,7 @@ const ResetToGlobalButton = <Fields,>({
               variant="destructive"
               onClick={() => {
                 setOpen(false);
-                onReset();
+                reset.reset();
               }}
             >
               Reset to Global
@@ -429,7 +430,7 @@ const ResetToGlobalButton = <Fields,>({
  * The form of a section with a Save, at Scope `scope`: `children` renders its fields from what the form shows and sets
  * the draft; the bar under them saves only this section's fields. `invalid` holds Save while a field has a problem.
  * Reset to defaults puts the defaults in the draft, to save or not; a section with no defaults has no such button.
- * With `resetToGlobal` (at an Environment) the bar has Reset to Global in its place, which resets the section's
+ * With `resetToGlobal` (at an Environment) the bar has Reset all to Global in its place, which resets the section's
  * Overrides once confirmed. The bar sticks to the foot of the page, as wide as the content column; `inline` puts it
  * right under the fields instead, for a form that is only part of its section, so it does not seem to save what
  * follows.
@@ -448,7 +449,7 @@ export const SectionFormView = <Fields, E>({
   invalid: (fields: Fields) => boolean;
   /** Whether the bar sits under the fields rather than sticking to the foot of the page. */
   inline?: boolean;
-  resetToGlobal?: ResetToGlobal<Fields> | undefined;
+  resetToGlobal?: ResetToGlobal | undefined;
   children: (fields: Fields, set: (fields: Fields) => void) => ReactNode;
 }) => {
   const fields = useAtomValue(form.fields(scope));
@@ -497,16 +498,7 @@ export const SectionFormView = <Fields, E>({
             </Button>
           )
         ) : (
-          <ResetToGlobalButton
-            reset={resetToGlobal}
-            fields={fields}
-            dirty={dirty}
-            busy={saving}
-            onReset={() => {
-              setDraft(resetToGlobal.inherit(fields));
-              save();
-            }}
-          />
+          <ResetToGlobalButton reset={resetToGlobal} dirty={dirty} busy={saving} />
         )}
         {problem === null ? (
           justSaved &&
