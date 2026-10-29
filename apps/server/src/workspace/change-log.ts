@@ -1,5 +1,5 @@
 // What computer's sync has sent the Container, read from its change log in the Workspace DO's SQLite (dofs, inside
-// `@cloudflare/computer`), for the file-change notify (docs/architecture/container.md → File-change notifications;
+// `@cloudflare/computer`), for the file-change signal (docs/architecture/container.md → File-change signals;
 // `notify.ts`). Every write to the Workspace's files takes the next revision (`vfs_meta.rev`) and stamps it on the
 // node it changed (`vfs_nodes.rev`; a new directory gets its own); a removal leaves a tombstone with its path
 // (`vfs_changes`); and a push to a backend moves that backend's cursor (`_vfs_push_cursor`, `_vfs_watermark.pushRev`)
@@ -9,7 +9,7 @@
 // The model's file tools reach the files directly (`WorkspaceEnvHost` over `Workspace.fs`), not through the Workspace
 // stub, so computer reports no `workspace.fs.*` span for them: this log is the one record of every change, whoever made
 // it. These are dofs' private tables, as of `@cloudflare/computer` 0.8.0: re-check them when upgrading it
-// (docs/development/dependencies.md). Reads only; a table that cannot be read throws, and the notify logs it.
+// (docs/development/dependencies.md). Reads only; a table that cannot be read throws, and `FileNotifier` logs it.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
 
 /** A path a push sent: still there (a file or directory, or a symlink), or gone (removed, or renamed away). */
@@ -121,3 +121,24 @@ export const changedBetween = (
 
   return [...changed.values()];
 };
+
+/** What the file-change signal reads of the change log, for one backend. */
+export type ChangeLog = {
+  /** The revision the backend has been sent everything through. */
+  readonly pushedThrough: () => number;
+  /** Whether the Workspace's files have changes the backend has not been sent. */
+  readonly unpushed: () => boolean;
+  /** The paths changed in `(after, through]`, outside `skip`. */
+  readonly changedBetween: (
+    after: number,
+    through: number,
+    skip: ReadonlyArray<RevisionRange>,
+  ) => ReadonlyArray<ChangedPath>;
+};
+
+/** The change log in `sql`, as `backend` has been sent it. */
+export const changeLog = (sql: ChangeLogSql, backend: string): ChangeLog => ({
+  pushedThrough: () => pushedThrough(sql, backend),
+  unpushed: () => currentRevision(sql) > pushedThrough(sql, backend),
+  changedBetween: (after, through, skip) => changedBetween(sql, after, through, skip),
+});

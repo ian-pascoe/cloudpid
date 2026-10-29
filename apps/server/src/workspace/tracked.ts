@@ -4,6 +4,8 @@
 // then, and the Container is not idle meanwhile. Every command started, on any backend, is activity in the Workspace,
 // which the hold cap counts from: a handle never disposed holds the Container no longer than that. A command on the
 // Container may change its disk, so its idle stop snapshots it; the Workspace DO's own reads (`writes: false`) do not.
+// Its file system reports the Worker Shell's `mkdir -p` as computer reports its own `mkdir`, for the file-change signal
+// (docs/architecture/container.md → File-change signals).
 // @effect-diagnostics asyncFunction:off globalConsole:off
 import {
   type Workspace as ComputerWorkspace,
@@ -121,7 +123,7 @@ export class GuardedFilesystem extends WorkspaceFilesystemStub {
   }
 
   override async mkdir(...[path, options]: Parameters<WorkspaceFilesystemStub["mkdir"]>) {
-    // Reported as computer reports its own `mkdir`, so the file-change notify hears of it (`notify.ts`).
+    // Reported as computer reports its own `mkdir`, so the file-change signal hears of it (`notify.ts`).
     if (options?.recursive === true) {
       return this.#workspace.observer.span(
         "workspace.fs.mkdir",

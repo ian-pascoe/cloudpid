@@ -1,5 +1,6 @@
-// The file-change notify's rules (docs/architecture/container.md → File-change notifications): where each changed path
-// is notified, the cap, and the notifier's timing and order over a fake change log and Container. The change log's
+// The file-change signal's rules (docs/architecture/container.md → File-change signals): where each changed path is
+// signalled, the cap, the notifier's timing and order over a fake change log and Container, and the launches its push
+// refuses. The change log's
 // reads of computer's tables, and the Workspace DO's wiring, are `notify.workerd.test.ts`.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
@@ -12,84 +13,101 @@ import {
   type FileNotifierDeps,
   foldToCap,
   MAX_WAIT_MS,
-  notifyTargets,
-  withNoNotifyStart,
+  inSignalPush,
+  signalTargets,
+  withNoSignalStart,
 } from "./notify.ts";
 
 const synced = () => false;
 
-describe("notifyTargets", () => {
-  it("notifies a path still there on itself, and a gone one at its parent", () => {
+describe("signalTargets", () => {
+  it("signals a path still there on itself, and a gone one at its parent", () => {
     expect(
-      notifyTargets(
+      signalTargets(
         [
           { path: "/workspace/app/src/a.ts", state: "present" },
           { path: "/workspace/app/src/new", state: "present" },
           { path: "/workspace/app/old.ts", state: "gone" },
         ],
-        { containerOnly: synced },
+        { containerOnly: synced, readOnly: [] },
       ),
     ).toEqual(["/workspace/app", "/workspace/app/src/a.ts", "/workspace/app/src/new"]);
   });
 
-  it("notifies a symlink at its parent, where the attribute does not land on its target", () => {
+  it("signals a symlink at its parent, where the attribute does not land on its target", () => {
     expect(
-      notifyTargets([{ path: "/workspace/app/link", state: "symlink" }], {
+      signalTargets([{ path: "/workspace/app/link", state: "symlink" }], {
         containerOnly: synced,
+        readOnly: [],
       }),
     ).toEqual(["/workspace/app"]);
   });
 
-  it("notifies a renamed path at its old parent and on its new name", () => {
+  it("signals a renamed path at its old parent and on its new name", () => {
     expect(
-      notifyTargets(
+      signalTargets(
         [
           { path: "/workspace/app/a/x.ts", state: "gone" },
           { path: "/workspace/app/b/x.ts", state: "present" },
         ],
-        { containerOnly: synced },
+        { containerOnly: synced, readOnly: [] },
       ),
     ).toEqual(["/workspace/app/a", "/workspace/app/b/x.ts"]);
   });
 
-  it("notifies each target once", () => {
+  it("signals each target once", () => {
     expect(
-      notifyTargets(
+      signalTargets(
         [
           { path: "/workspace/app/a.ts", state: "gone" },
           { path: "/workspace/app/b.ts", state: "gone" },
           { path: "/workspace/app", state: "present" },
         ],
-        { containerOnly: synced },
+        { containerOnly: synced, readOnly: [] },
       ),
     ).toEqual(["/workspace/app"]);
   });
 
   it("leaves out what is outside the Workspace and what only the Container has", () => {
     expect(
-      notifyTargets(
+      signalTargets(
         [
           { path: "/.computer/readers/1", state: "present" },
           { path: "/workspaces/x", state: "present" },
           { path: "/workspace/app/node_modules/x/index.js", state: "present" },
           { path: "/workspace/app/index.ts", state: "present" },
         ],
-        { containerOnly: (path) => path.includes("/node_modules") },
+        { containerOnly: (path) => path.includes("/node_modules"), readOnly: [] },
       ),
     ).toEqual(["/workspace/app/index.ts"]);
   });
 
-  it("notifies the root itself, removed or not, on the root", () => {
+  it("signals the root itself, removed or not, on the root", () => {
     expect(
-      notifyTargets(
+      signalTargets(
         [
           { path: "/workspace", state: "present" },
           { path: "/workspace/x", state: "gone" },
         ],
-        { containerOnly: synced },
+        { containerOnly: synced, readOnly: [] },
       ),
     ).toEqual(["/workspace"]);
   });
+});
+
+it("leaves out what is under a read-only mount, where the attribute cannot be set (EROFS)", () => {
+  expect(
+    signalTargets(
+      [
+        { path: "/workspace/.agents/skills", state: "present" },
+        { path: "/workspace/.agents/skills/tdd/SKILL.md", state: "present" },
+        { path: "/workspace/.agents/skills/old/SKILL.md", state: "gone" },
+        { path: "/workspace/.agents/skills-notes.md", state: "present" },
+        { path: "/workspace/.agents/prompts/x.md", state: "present" },
+      ],
+      { containerOnly: synced, readOnly: ["/workspace/.agents/skills"] },
+    ),
+  ).toEqual(["/workspace/.agents/prompts/x.md", "/workspace/.agents/skills-notes.md"]);
 });
 
 describe("foldToCap", () => {
@@ -120,6 +138,27 @@ describe("foldToCap", () => {
     expect(foldToCap(paths, 1)).toEqual(["/workspace"]);
   });
 
+  it("folds the root with the rest into the root itself, never a root with a trailing slash", () => {
+    expect(foldToCap(["/workspace", ...paths], 3)).toEqual([
+      "/workspace",
+      "/workspace/a",
+      "/workspace/b",
+    ]);
+    expect(foldToCap(["/workspace", ...paths], 2)).toEqual(["/workspace"]);
+  });
+
+  it("folds a batch of every path of a large Workspace (a first push) without overflowing the call stack", () => {
+    const every = Array.from(
+      { length: 200_000 },
+      (_, index) => `/workspace/repo/d${index % 50}/e${index % 7}/f${index}.ts`,
+    );
+
+    const folded = foldToCap(every, 5_000);
+
+    expect(folded).toHaveLength(350);
+    expect(folded[0]).toBe("/workspace/repo/d0/e0");
+  });
+
   it("keeps 5,000 targets apart and folds 5,001", () => {
     const many = Array.from(
       { length: 5_001 },
@@ -127,15 +166,15 @@ describe("foldToCap", () => {
     );
 
     expect(
-      notifyTargets(
+      signalTargets(
         many.slice(0, 5_000).map((path) => ({ path, state: "present" as const })),
-        { containerOnly: synced },
+        { containerOnly: synced, readOnly: [] },
       ),
     ).toHaveLength(5_000);
     expect(
-      notifyTargets(
+      signalTargets(
         many.map((path) => ({ path, state: "present" as const })),
-        { containerOnly: synced },
+        { containerOnly: synced, readOnly: [] },
       ),
     ).toEqual(["/workspace/d0", "/workspace/d1", "/workspace/d2"]);
   });
@@ -150,6 +189,8 @@ class Fake {
   readonly events: string[] = [];
   readonly windows: Array<{ after: number; through: number; skip: RevisionRange[] }> = [];
   pushFails = false;
+  /** The holds begun on the Container so far (`IdleStop.holdsBegun`). */
+  holds = 0;
 
   write(path: string, state: ChangedPath["state"] = "present") {
     this.current += 1;
@@ -183,6 +224,8 @@ class Fake {
         this.events.push(`notify ${paths.join(" ")}`);
       },
       containerOnly: async () => synced,
+      readOnly: [],
+      holdsBegun: () => this.holds,
       warn: (message) => this.events.push(`warn ${message}`),
       ...overrides,
     };
@@ -328,12 +371,12 @@ describe("FileNotifier", () => {
 
     expect(fake.events).toEqual([
       "push",
-      "warn file notify: the push to the Container failed: socket closed",
+      "warn file-change signal: the push to the Container failed: socket closed",
       "notify /workspace/a.ts",
     ]);
   });
 
-  it("logs a failed notify and goes on with the next", async () => {
+  it("logs a failed helper run and goes on with the next signal", async () => {
     const fake = new Fake();
     let fail = true;
 
@@ -358,13 +401,13 @@ describe("FileNotifier", () => {
     expect(fake.events).toEqual([
       "push",
       "notify /workspace/a.ts",
-      "warn file notify: exec refused",
+      "warn file-change signal: exec refused",
       "push",
       "notify /workspace/b.ts",
     ]);
   });
 
-  it("runs one notify at a time, and another for what was written during it", async () => {
+  it("runs one signal at a time, and another for what was written during it", async () => {
     const fake = new Fake();
     let release: () => void = () => {};
 
@@ -420,7 +463,60 @@ describe("FileNotifier", () => {
   });
 });
 
-describe("withNoNotifyStart", () => {
+describe("FileNotifier.refusesLaunch", () => {
+  it("refuses a launch from its own push only, until a command begins", async () => {
+    const fake = new Fake();
+    const seen: Array<[string, boolean, boolean]> = [];
+
+    // The launch computer would make from inside the push, as the signal's push context carries it.
+    const notifier: FileNotifier = new FileNotifier(
+      fake.deps({
+        push: async () => {
+          seen.push(["own push", inSignalPush(), notifier.refusesLaunch()]);
+          fake.holds += 1;
+          seen.push(["a command began", inSignalPush(), notifier.refusesLaunch()]);
+          fake.pushedThrough = fake.current;
+        },
+      }),
+    );
+
+    vi.useFakeTimers();
+
+    try {
+      notifier.changed();
+      fake.write("/workspace/a.ts");
+      seen.push(["outside", inSignalPush(), notifier.refusesLaunch()]);
+      await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(seen).toEqual([
+      ["outside", false, false],
+      ["own push", true, true],
+      ["a command began", true, false],
+    ]);
+  });
+
+  it("marks only its own push's spans as its own: a command's push, in its own context, is signalled after", async () => {
+    const fake = new Fake();
+    const notifier = new FileNotifier(fake.deps());
+    const observer = notifier.observer("container-shell", noop);
+    const contexts: boolean[] = [];
+
+    await observer.span(
+      "workspace.sync.push",
+      { "workspace.sync.backend": "container-shell" },
+      async () => {
+        contexts.push(inSignalPush());
+      },
+    );
+
+    expect(contexts).toEqual([false]);
+  });
+});
+
+describe("withNoSignalStart", () => {
   type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
 
   const spec: Spec = { env: {}, enableInternet: true };
@@ -447,11 +543,11 @@ describe("withNoNotifyStart", () => {
     },
   });
 
-  it("refuses to start a stopped Container for the notify's push alone", async () => {
+  it("refuses to start a stopped Container, or restart one, for the signal's push alone", async () => {
     const calls: string[] = [];
 
-    const guarded = withNoNotifyStart(platform(calls), {
-      notifying: () => true,
+    const guarded = withNoSignalStart(platform(calls), {
+      refuses: () => true,
       running: () => false,
     });
 
@@ -462,15 +558,15 @@ describe("withNoNotifyStart", () => {
 
   it("reconnects to a running Container, and starts one for anything else", async () => {
     const calls: string[] = [];
-    let notifying = true;
+    let refuses = true;
 
-    const guarded = withNoNotifyStart(platform(calls), {
-      notifying: () => notifying,
-      running: () => notifying,
+    const guarded = withNoSignalStart(platform(calls), {
+      refuses: () => refuses,
+      running: () => refuses,
     });
 
     await guarded.start(spec);
-    notifying = false;
+    refuses = false;
     await guarded.start(spec);
     await guarded.restart(spec);
 

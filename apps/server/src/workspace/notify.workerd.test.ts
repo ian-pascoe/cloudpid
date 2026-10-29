@@ -1,8 +1,8 @@
-// The file-change notify on a real Workspace DO (docs/architecture/container.md → File-change notifications): the model's
+// The file-change signal on a real Workspace DO (docs/architecture/container.md → File-change signals): the model's
 // file tools' writes and the Worker Shell's are read from computer's change log, pushed to a running Container soon after
-// they stop, and then notified, each path where its watchers see it. The Container is the test Worker's fake
+// they stop, and then signalled, each path where its watchers see it. The Container is the test Worker's fake
 // (`TestWorkspace.fakeContainer`): its push moves computer's push cursor as a push does, and its helper records the paths.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off globalDate:off newPromise:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { env } from "cloudflare:workers";
@@ -36,19 +36,19 @@ const workspace = async (running: boolean) => {
     cwd: "/workspace/app",
   });
 
-  /** What the notify did so far, the harness's own files (a command's spill) left out of each notify. */
+  /** What the signal did so far, the harness's own files (a command's spill) left out of each `notify`. */
   const events = async () =>
-    (await stub.notifyEvents()).map((event) =>
+    (await stub.signalEvents()).map((event) =>
       event
         .split(" ")
         .filter((word) => !word.startsWith("/workspace/.cloudpid"))
         .join(" "),
     );
 
-  /** Wait until the notify has done `count` things, then a little more, so a later one would show. */
+  /** Wait until the signal has done `count` things, then a little more, so a later one would show. */
   const settled = async (count: number) => {
     await vi.waitFor(
-      async () => expect((await stub.notifyEvents()).length).toBeGreaterThanOrEqual(count),
+      async () => expect((await stub.signalEvents()).length).toBeGreaterThanOrEqual(count),
       {
         timeout: 5_000,
         interval: 50,
@@ -77,7 +77,7 @@ const workspace = async (running: boolean) => {
   return { stub, write, shell, events, settled };
 };
 
-describe("the file-change notify", { timeout: 30_000 }, () => {
+describe("the file-change signal", { timeout: 30_000 }, () => {
   it("pushes the file tools' writes to the running Container once they stop, then notifies each where it is", async () => {
     const { write, events, settled } = await workspace(true);
 
@@ -91,7 +91,7 @@ describe("the file-change notify", { timeout: 30_000 }, () => {
     // Nothing before the writes have been quiet for a moment.
     expect(await events()).toHaveLength(2);
 
-    // One push and one notify for both, the push first: the new directories themselves, so a watcher of their parent
+    // One push and one `notify` for both, the push first: the new directories themselves, so a watcher of their parent
     // finds the new tree, and each file.
     expect((await settled(4)).slice(2)).toEqual([
       "push",
@@ -162,15 +162,46 @@ describe("the file-change notify", { timeout: 30_000 }, () => {
 
   it("keeps a stream of writes waiting no longer than its longest wait", async () => {
     const { write, events } = await workspace(true);
+    const pushes = async () => (await events()).filter((event) => event === "push").length;
+    const gap = DEBOUNCE_MS / 2;
+    const started = Date.now();
+    let early: number | undefined;
+    let late: number | undefined;
 
-    for (let index = 0; index < 14; index++) {
+    // Writes 100 ms apart, never quiet for the debounce: none pushed well before the longest wait, one pushed once it
+    // has passed, while the writes still go on.
+    for (let index = 0; index < 16; index++) {
       await write(`src/f${index}.ts`, String(index));
-      await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_MS / 2));
+
+      const elapsed = Date.now() - started;
+
+      if (early === undefined && elapsed >= MAX_WAIT_MS / 2) early = await pushes();
+
+      if (late === undefined && elapsed >= MAX_WAIT_MS + DEBOUNCE_MS * 2) late = await pushes();
+
+      await new Promise((resolve) => setTimeout(resolve, gap));
     }
 
-    // Fourteen writes 100 ms apart, never quiet for the debounce: a notify already, at the longest wait.
-    expect(MAX_WAIT_MS).toBeLessThan(14 * (DEBOUNCE_MS / 2));
-    expect((await events()).filter((event) => event === "push").length).toBeGreaterThanOrEqual(1);
+    expect(MAX_WAIT_MS + DEBOUNCE_MS * 2).toBeLessThan(15 * gap);
+    expect(early).toBe(0);
+    expect(late).toBeGreaterThanOrEqual(1);
+  });
+
+  it("refuses the launch its own push would cause once the Container stopped, and gives no signal", async () => {
+    const { stub, write, settled } = await workspace(true);
+
+    await write("src/a.ts", "a");
+    await settled(2);
+
+    // The Container stops after the signal found it running: computer's push, reconnecting, would start it again.
+    await stub.stopDuringNextPush();
+    await write("src/b.ts", "b");
+
+    const all = await settled(3);
+
+    expect(all.slice(2)).toEqual(["push refused"]);
+    expect(await stub.fakeContainerState()).toEqual({ running: false, scripts: [] });
+    expect((await stub.liveStubs()).container).toBe(0);
   });
 
   it("neither pushes nor notifies while the Container is stopped, and never starts one", async () => {
