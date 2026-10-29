@@ -271,6 +271,12 @@ export type RegistryStore = {
   readonly getSettingsOverrides: (environment: string) => Schema.Json | null;
   /** Save an Environment's Settings Overrides; says whether it is registered. */
   readonly putSettingsOverrides: (environment: string, overrides: Schema.Json) => boolean;
+  /** An Environment's own Instructions (empty for none) with its name, or null when it is not registered. */
+  readonly getEnvironmentInstructions: (
+    environment: string,
+  ) => { readonly name: string; readonly text: string } | null;
+  /** Save an Environment's own Instructions; says whether it is registered. */
+  readonly putEnvironmentInstructions: (environment: string, text: string) => boolean;
   /** The Environments that have Settings Overrides, with them as saved, newest Environment first. */
   readonly listSettingsOverrides: () => Array<{
     readonly id: string;
@@ -860,6 +866,12 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE environments ADD COLUMN settings_overrides TEXT");
   },
+  // 28: an Environment's own Instructions (ADR-0027: they add up, shown after Global's; `docs/architecture/workspace.md` →
+  // Instructions): Markdown, empty for none, as every Environment stored before has. A column of its own, not an
+  // Override in `settings_overrides`, since nothing of Global's is replaced; it goes with its Environment's row.
+  (sql) => {
+    sql.exec("ALTER TABLE environments ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -1276,6 +1288,21 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         JSON.stringify(overrides),
         environment,
       ).rowsWritten > 0,
+
+    getEnvironmentInstructions: (environment) => {
+      const [row] = sql
+        .exec<{ name: string; instructions: string }>(
+          "SELECT name, instructions FROM environments WHERE id = ?",
+          environment,
+        )
+        .toArray();
+
+      return row === undefined ? null : { name: row.name, text: row.instructions };
+    },
+
+    putEnvironmentInstructions: (environment, text) =>
+      sql.exec("UPDATE environments SET instructions = ? WHERE id = ?", text, environment)
+        .rowsWritten > 0,
 
     listSettingsOverrides: () =>
       Arr.map(

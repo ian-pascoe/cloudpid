@@ -75,8 +75,8 @@ const Noop = defineExtension({
 });
 
 /** Instructions the test changes as it goes, as the owner's save changes what the Session reads. */
-const owned = (global: string) => {
-  let current: InstructionsInForce = { global };
+const owned = (global: string, environment?: InstructionsInForce["environment"]) => {
+  let current: InstructionsInForce = { global, environment };
 
   return {
     service: { current: () => current },
@@ -161,7 +161,44 @@ describe("the owner_instructions section", () => {
         `</${SECTION_KEY}>`,
       ].join("\n"),
     );
-    expect(SECTION_INTRODUCTION).toContain("the Project instructions win");
+    expect(SECTION_INTRODUCTION).toContain("the Project instructions");
+  });
+
+  it("shows an Environment's Instructions after the Global ones, under a heading naming it", async () => {
+    const requests = await open(
+      owned("Answer in French.", { name: 'Work "main"', text: "Answer in German." }),
+      [],
+    );
+
+    expect(requests[0]!.section).toBe(
+      [
+        `<${SECTION_KEY}>`,
+        SECTION_INTRODUCTION,
+        "",
+        '<instructions scope="Global">',
+        "Answer in French.",
+        "</instructions>",
+        "",
+        '<instructions scope="Environment Work &quot;main&quot;">',
+        "Answer in German.",
+        "</instructions>",
+        `</${SECTION_KEY}>`,
+      ].join("\n"),
+    );
+    // The nearer wins: the Environment's over the Global ones, the Project instructions over both.
+    expect(SECTION_INTRODUCTION).toContain("the Environment's win over the Global ones");
+  });
+
+  it("shows only the Scope that has Instructions", async () => {
+    const environmentOnly = await open(owned("", { name: "Work", text: "Be terse." }), []);
+    const globalOnly = await open(owned("Be kind.", { name: "Work", text: " \n" }), []);
+
+    expect(environmentOnly[0]!.section).toContain(
+      '<instructions scope="Environment Work">\nBe terse.\n</instructions>',
+    );
+    expect(environmentOnly[0]!.section).not.toContain('scope="Global"');
+    expect(globalOnly[0]!.section).toContain('<instructions scope="Global">\nBe kind.');
+    expect(globalOnly[0]!.section).not.toContain('scope="Environment');
   });
 
   it("adds nothing to the prompt when there are none, nor for text that is only blank", async () => {

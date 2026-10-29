@@ -5,10 +5,12 @@
 // Settings (`settingsFieldPath`), and one call may change several, which are one write and one record each.
 // Synchronous over the Registry DO's storage, as `changeEnvironment` is, so a change and its record are one step.
 // A change at an Environment's Scope (ADR-0027) is to its Overrides, field by field (`overrideFieldPath`), and is
-// recorded under the Environment's id with whether the field was inherited before and after it.
+// recorded under the Environment's id with whether the field was inherited before and after it; or to its own
+// Instructions (`instructions`), which are no Override, as their whole text, recorded under its id too.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   DEFAULT_SETTINGS,
+  INSTRUCTIONS_ROOT,
   type OverrideFieldChange,
   overrideFieldPath,
   overrideValue,
@@ -27,6 +29,7 @@ import * as Schema from "effect/Schema";
 import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
 import {
   type DocumentStore,
+  putEnvironmentInstructions,
   putSettingsOverrides,
   readSettings,
   readSettingsOverrides,
@@ -282,6 +285,17 @@ export const changeSettingsOverrides = (
 
     if (known === null) return { status: "missing" };
 
+    if (Arr.some(wanted, (change) => isInstructionsField(change.field))) {
+      const [only, ...others] = wanted;
+
+      return only === undefined || others.length > 0
+        ? {
+            status: "rejected",
+            message: `${INSTRUCTIONS_ROOT}: an Environment's Instructions are no Override: change them on their own`,
+          }
+        : changeEnvironmentInstructions(store, changes, known, only, author, now);
+    }
+
     const next = withOverrideFields(
       known.overrides,
       Arr.map(wanted, asOverrideChange),
@@ -349,6 +363,106 @@ export const changeSettingsOverrides = (
       ? { status: "changed", changes: recorded, state: saved.success }
       : { status: "changed", changes: recorded, state: saved.success, dropped: known.problem };
   });
+
+/** Whether Agent change field `field` is an Environment's own Instructions, which are kept apart from its Overrides. */
+export const isInstructionsField = (field: string): boolean => field === INSTRUCTIONS_ROOT;
+
+/**
+ * The agent's change of an Environment's own Instructions, `known` being its Settings now, inside the caller's
+ * transaction: the whole text replaced (a reset empties it), against the text approved, and recorded under the
+ * Environment's id with the texts before and after.
+ */
+const changeEnvironmentInstructions = (
+  store: SettingsStore,
+  changes: AgentChanges,
+  known: SettingsOverridesState,
+  change: SettingsFieldChange,
+  author: AgentChangeAuthor,
+  now: number,
+): SettingsChange => {
+  const text = change.reset === true ? "" : change.value;
+  const before = known.instructions;
+
+  if (!Predicate.isString(text)) {
+    return { status: "rejected", message: `${INSTRUCTIONS_ROOT}: not a text` };
+  }
+
+  if (text === before) return { status: "unchanged" };
+
+  if (change.expected !== undefined && !sameJson(before, change.expected.value)) {
+    return { status: "changed-since", field: INSTRUCTIONS_ROOT, current: before };
+  }
+
+  const saved = putEnvironmentInstructions(store, known.environment, text);
+
+  if (saved === null) return { status: "missing" };
+
+  if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure.message };
+
+  const recorded = changes.record({
+    scope: known.environment,
+    at: now,
+    actor: "agent",
+    session: author.session,
+    conversation: author.conversation,
+    tool: author.tool,
+    reason: author.reason,
+    field: INSTRUCTIONS_ROOT,
+    before,
+    after: saved.success.instructions,
+    reverts: null,
+    approved: author.approved,
+  });
+
+  return { status: "changed", changes: [recorded], state: saved.success };
+};
+
+/**
+ * The owner's revert of `change`, an Agent change of Environment `environment`'s own Instructions, inside the caller's
+ * transaction: the text before written back and recorded as the owner's change. Refused, saying what the text is now,
+ * when it no longer is the change's text after.
+ */
+export const revertEnvironmentInstructionsChange = (
+  store: SettingsStore,
+  changes: AgentChanges,
+  environment: string,
+  change: AgentChange,
+  now: number,
+): SettingsChangeRevert => {
+  const known = readSettingsOverrides(store, environment);
+
+  if (known === null) return { status: "missing" };
+
+  if (!sameJson(known.instructions, change.after)) {
+    return { status: "changed-since", field: change.field, current: known.instructions };
+  }
+
+  const saved = putEnvironmentInstructions(
+    store,
+    environment,
+    Predicate.isString(change.before) ? change.before : "",
+  );
+
+  if (saved === null) return { status: "missing" };
+
+  if (Result.isFailure(saved)) return { status: "refused", message: saved.failure.message };
+
+  const recorded = changes.record({
+    scope: environment,
+    at: now,
+    actor: "owner",
+    session: null,
+    conversation: null,
+    tool: null,
+    reason: `Reverted change ${change.id}${Predicate.isNotNull(change.tool) ? ` (${change.tool})` : ""}`,
+    field: change.field,
+    before: known.instructions,
+    after: saved.success.instructions,
+    reverts: change.id,
+  });
+
+  return { status: "reverted", change: recorded, state: saved.success };
+};
 
 /** Whether Agent change field `field` is one of an Environment's Settings Overrides, not one of its Container settings. */
 export const isOverrideField = (field: string): boolean => overrideFieldPath(field) !== undefined;

@@ -44,6 +44,7 @@ describe("the branch summary prompt", () => {
               settings: environment === STAGING ? skipping : DEFAULT_SETTINGS,
               global: DEFAULT_SETTINGS,
               overrides: environment === STAGING ? { branchSummary: { skipPrompt: true } } : {},
+              instructions: "",
             }),
         });
 

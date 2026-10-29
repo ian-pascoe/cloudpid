@@ -110,6 +110,7 @@ import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
 import {
+  putEnvironmentInstructions,
   readSettings,
   readSettingsOverrides,
   type SessionSettingsSource,
@@ -211,7 +212,7 @@ export type EnvironmentChangeAnswer =
     }
   | Exclude<EnvironmentChange, { readonly status: "changed" }>;
 
-/** How the owner's change of an Environment's Settings Overrides went. */
+/** How the owner's change of an Environment's Settings Overrides, or of its own Instructions, went. */
 export type SettingsOverridesUpdate =
   | { readonly status: "saved"; readonly state: SettingsOverridesState }
   | { readonly status: "rejected"; readonly message: string }
@@ -750,8 +751,17 @@ export type RegistryMethods = {
     readonly reset?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SettingsOverridesUpdate>;
   /**
-   * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, and its Environment's
-   * Overrides as saved; `{}` and a null Environment for a Session the Registry does not list. For the Session DO only.
+   * The owner's change of Environment `environment`'s own Instructions: `instructions` replaces them (empty for none).
+   * Says why not, saving nothing, for a text over the cap; `missing` when the Environment is not registered.
+   */
+  readonly updateEnvironmentInstructions: (input: {
+    readonly environment: string;
+    readonly instructions: string;
+  }) => Effect.Effect<SettingsOverridesUpdate>;
+  /**
+   * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, its Environment's
+   * Overrides as saved, and the Environment's name with its own Instructions; `{}` and a null Environment (and no
+   * Instructions of its own) for a Session the Registry does not list. For the Session DO only.
    */
   readonly sessionSettings: (input: {
     readonly session: string;
@@ -1526,6 +1536,16 @@ export const RegistryLive = Registry.make(
                 set,
                 reset,
               });
+
+              if (saved === null) return { status: "missing" };
+
+              return Result.isSuccess(saved)
+                ? { status: "saved", state: saved.success }
+                : { status: "rejected", message: saved.failure.message };
+            }),
+          updateEnvironmentInstructions: ({ environment, instructions }) =>
+            Effect.sync((): SettingsOverridesUpdate => {
+              const saved = putEnvironmentInstructions(store, environment, instructions);
 
               if (saved === null) return { status: "missing" };
 

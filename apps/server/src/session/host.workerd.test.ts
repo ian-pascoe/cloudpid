@@ -73,7 +73,7 @@ const STAGING = "5a5a5a5a";
  * Two Sessions reporting to one fresh Registry (ADR-0027): one in the Default Environment, and one in a new
  * Environment, Staging, whose Settings Overrides the test sets.
  */
-const inTwoEnvironments = async () => {
+const inTwoEnvironments = async (prefix = "session") => {
   const n = (counter += 1);
   const registryName = `registry-${n}`;
   const registry = env.REGISTRIES.getByName(registryName);
@@ -81,7 +81,7 @@ const inTwoEnvironments = async () => {
   await registry.createEnvironment(STAGING, "Staging", 1);
 
   const register = async (environment: string, workspace: string) => {
-    const sessionId = `session-${n}-${environment}`;
+    const sessionId = `${prefix}-${n}-${environment}`;
     const stub = env.SESSIONS.getByName(sessionId);
 
     await registry.createSession(
@@ -460,6 +460,32 @@ describe("a Session's agent", () => {
     await ask(next, 1);
 
     expect(await shown(next)).toContain("Answer in German.");
+  });
+
+  it("shows a Session in an Environment with Instructions the Global ones, then the Environment's, and one in an Environment with none the Global ones only", async () => {
+    const { registry, inDefault, inStaging } = await inTwoEnvironments("instructions");
+
+    const shown = (session: DurableObjectStub<TestSession>) =>
+      runInDurableObject(
+        session,
+        (instance: TestSession) => instance.sections()["owner_instructions"] ?? "",
+      );
+
+    await registry.updateSettings({ instructions: "Answer in French." }, 1);
+    await registry.updateEnvironmentInstructions(STAGING, "Answer in German.");
+
+    for (const stub of [inDefault, inStaging]) {
+      await script(stub, "one");
+      await ask(stub, 1);
+    }
+
+    const staging = await shown(inStaging);
+
+    expect(staging).toContain(
+      '<instructions scope="Global">\nAnswer in French.\n</instructions>\n\n<instructions scope="Environment Staging">\nAnswer in German.\n</instructions>',
+    );
+    expect(await shown(inDefault)).toContain("Answer in French.");
+    expect(await shown(inDefault)).not.toContain('scope="Environment');
   });
 
   it("runs a new Session's first request on the default model at the default thinking level", async () => {

@@ -360,6 +360,11 @@ export const SettingsOverridesState = Schema.Struct({
   overrides: Schema.Json,
   /** Why some saved Overrides were left out, when they no longer resolve: those fields inherit Global. */
   problem: Schema.optionalKey(Schema.String),
+  /**
+   * The Environment's own Instructions, empty for none: no Override, since they add up (ADR-0027). Its Sessions are
+   * shown Global's (`settings.instructions`), then these.
+   */
+  instructions: Schema.String,
 });
 
 export type SettingsOverridesState = typeof SettingsOverridesState.Type;
@@ -1054,6 +1059,16 @@ export class RegistryRpcs extends RpcGroup.make(
       set: Schema.optionalKey(Schema.Json),
       reset: Schema.String.pipe(Schema.Array, Schema.optionalKey),
     },
+    success: SettingsOverridesState,
+    error: SettingsError,
+  }),
+  /**
+   * Replace Environment `environment`'s own Instructions with `instructions` (empty for none), shown to its Sessions
+   * after Global's from each one's next Context Window. Fails with a `SettingsError`, saving nothing, for a text over
+   * 64 KiB of UTF-8 or an Environment that does not exist.
+   */
+  Rpc.make("updateEnvironmentInstructions", {
+    payload: { environment: EnvironmentId, instructions: Schema.String },
     success: SettingsOverridesState,
     error: SettingsError,
   }),

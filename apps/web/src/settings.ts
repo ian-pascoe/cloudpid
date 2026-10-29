@@ -65,6 +65,16 @@ export const writeSettingsOverrides = (
   );
 
 /**
+ * Save `instructions`, whole, as Environment `environment`'s own Instructions (empty for none). They are no Override: they
+ * add to Global's (ADR-0027). The Registry refuses more than 64 KiB of UTF-8 with its own message.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a write helper over an Environment's id, not a combinator.
+export const writeEnvironmentInstructions = (environment: string, instructions: string) =>
+  RegistryClient.use((registry) =>
+    registry("updateEnvironmentInstructions", { environment, instructions }),
+  );
+
+/**
  * The Settings' Agent changes (`docs/architecture/agent-changes.md`), newest first, asked again every few seconds while the
  * page is visible: a Session's agent makes them, which the page hears of no other way.
  */

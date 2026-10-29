@@ -31,12 +31,13 @@ const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObjec
 /**
  * The Instructions' setting, which adds up rather than being overridden (ADR-0027): the model is shown Global's, then
  * the Environment's. It is no Override field, an Environment's Overrides may not hold it, and an Environment's settings
- * carry Global's value of it. An Environment's own Instructions are kept apart (#352).
+ * carry Global's value of it. An Environment's own Instructions are kept apart, beside its Overrides (`docs/architecture/
+ * overview.md` → Settings).
  */
 export const INSTRUCTIONS_ROOT = "instructions";
 
 /** Why Overrides that hold the Instructions are refused. */
-const INSTRUCTIONS_OVERRIDE_PROBLEM = `${INSTRUCTIONS_ROOT}: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet`;
+const INSTRUCTIONS_OVERRIDE_PROBLEM = `${INSTRUCTIONS_ROOT}: not an Override: an Environment's Instructions add to the Global ones, and are saved on their own`;
 
 const SETTINGS_ROOTS: ReadonlySet<string> = new Set(
   Arr.filter(Record.keys(DEFAULT_SETTINGS), (root) => root !== INSTRUCTIONS_ROOT),

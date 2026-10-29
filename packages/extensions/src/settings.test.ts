@@ -50,7 +50,12 @@ import { resolveTools } from "./subagents/toolsets.ts";
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 
 /** An Environment as the fake holds it: its name, its Overrides and what was left out of them. */
-type FakeEnvironment = { name: string; overrides: Schema.Json; problem?: string };
+type FakeEnvironment = {
+  name: string;
+  overrides: Schema.Json;
+  problem?: string;
+  instructions?: string;
+};
 
 /** What a fake starts from beside Global's overrides. */
 type FakeStart = {
@@ -174,6 +179,7 @@ const fakeSettings = (
           overrides: lenient.overrides,
           global: lenient.global,
           problem: environment.problem,
+          instructions: environment.instructions ?? "",
         });
       }),
     own: Effect.succeed(own),
@@ -465,21 +471,46 @@ describe("settings_get", () => {
     );
   });
 
-  it("shows the Instructions whole, Global's at an Environment too, and the tool that changes them", async () => {
+  it("shows the Instructions whole, Global's then the Environment's own at an Environment, and the tool that changes them", async () => {
     const tool = await toolsOver(
-      fakeSettings({ instructions: "Answer in French.\nBe terse." }).service,
+      fakeSettings(
+        { instructions: "Answer in French.\nBe terse." },
+        {
+          environments: {
+            default: { name: "Default", overrides: {} },
+            "env-a": { name: "A", overrides: {}, instructions: "Answer in German." },
+          },
+        },
+      ).service,
     );
 
     const global = text(await run(tool("settings_get"), { scope: "*" }));
 
     expect(global).toContain(
-      "Instructions (every conversation's model is shown them from the start of its Context Window, before the Project instructions, which win where the two disagree; settings_instructions_set changes them once the user approves): 2 lines, 27 bytes of UTF-8 (Global; at most 64 KiB)\n<instructions>\nAnswer in French.\nBe terse.\n</instructions>",
+      "Instructions (every conversation's model is shown them from the start of its Context Window, before its Environment's own and the Project instructions, which win where they disagree; settings_instructions_set changes them once the user approves): 2 lines, 27 bytes of UTF-8 (Global; at most 64 KiB)\n<instructions scope=\"Global\">\nAnswer in French.\nBe terse.\n</instructions>",
     );
 
     const environment = text(await run(tool("settings_get"), { scope: "env-a" }));
 
     expect(environment).toContain(
-      "2 lines, 27 bytes of UTF-8 (Global's: an Environment has no Instructions of its own yet)\n<instructions>\nAnswer in French.\nBe terse.\n</instructions>",
+      Arr.join(
+        [
+          "settings_instructions_set changes either Scope's once the user approves):",
+          "  Global: 2 lines, 27 bytes of UTF-8 (Global's)",
+          '<instructions scope="Global">',
+          "Answer in French.",
+          "Be terse.",
+          "</instructions>",
+          "  This Environment's own: 1 line, 17 bytes of UTF-8 (at most 64 KiB)",
+          '<instructions scope="Environment A">',
+          "Answer in German.",
+          "</instructions>",
+        ],
+        "\n",
+      ),
+    );
+    expect(text(await run(tool("settings_get"), { scope: "default" }))).toContain(
+      "  This Environment's own: none (at most 64 KiB)",
     );
 
     const none = await toolsOver(fakeSettings().service);

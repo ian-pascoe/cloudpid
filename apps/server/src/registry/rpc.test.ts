@@ -1253,6 +1253,7 @@ const fakeRegistries = () => {
               settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
               global: DEFAULT_SETTINGS,
               overrides: { thinkingLevel: "low" },
+              instructions: "",
             }
           : null;
       }),
@@ -1271,6 +1272,29 @@ const fakeRegistries = () => {
                 settings: DEFAULT_SETTINGS,
                 global: DEFAULT_SETTINGS,
                 overrides: reset === undefined ? (set ?? {}) : {},
+                instructions: "",
+              },
+            };
+      }),
+    updateEnvironmentInstructions: ({ environment, instructions }) =>
+      Effect.sync(() => {
+        calls.push(`updateEnvironmentInstructions:${environment}`);
+
+        if (environment !== DEFAULT_ENVIRONMENT) return { status: "missing" as const };
+
+        return instructions.length > 100
+          ? {
+              status: "rejected" as const,
+              message: "instructions: is longer than 64 KiB of UTF-8",
+            }
+          : {
+              status: "saved" as const,
+              state: {
+                environment,
+                settings: DEFAULT_SETTINGS,
+                global: DEFAULT_SETTINGS,
+                overrides: {},
+                instructions,
               },
             };
       }),
@@ -1853,7 +1877,37 @@ it("reads an Environment's Settings Overrides, with Global's and the two resolve
     settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
     global: DEFAULT_SETTINGS,
     overrides: { thinkingLevel: "low" },
+    instructions: "",
   });
+});
+
+it("replaces an Environment's own Instructions, and fails a text the Registry refuses or an Environment it lacks", async () => {
+  const [saved, tooLong, missing] = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+
+      return yield* Effect.all([
+        registry.updateEnvironmentInstructions({
+          environment: DEFAULT_ENVIRONMENT,
+          instructions: "Answer in German.",
+        }),
+        Effect.flip(
+          registry.updateEnvironmentInstructions({
+            environment: DEFAULT_ENVIRONMENT,
+            instructions: "x".repeat(101),
+          }),
+        ),
+        Effect.flip(
+          registry.updateEnvironmentInstructions({ environment: "0badc0de", instructions: "" }),
+        ),
+      ]);
+    }),
+  );
+
+  expect(saved.instructions).toBe("Answer in German.");
+  expect(tooLong.message).toBe("instructions: is longer than 64 KiB of UTF-8");
+  expect(missing).toBeInstanceOf(SettingsError);
+  expect(missing.message).toContain("0badc0de");
 });
 
 it("fails the Settings of an Environment that does not exist, naming it", async () => {

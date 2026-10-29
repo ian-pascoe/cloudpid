@@ -1177,6 +1177,19 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
+      updateEnvironmentInstructions: ({ environment, instructions }) =>
+        registry.updateEnvironmentInstructions({ environment, instructions }).pipe(
+          Effect.flatMap((update) => {
+            switch (update.status) {
+              case "saved":
+                return Effect.succeed(update.state);
+              case "rejected":
+                return Effect.fail(SettingsError.make({ message: update.message }));
+              case "missing":
+                return Effect.fail(SettingsError.make({ message: noEnvironment(environment) }));
+            }
+          }),
+        ),
       listSettingsChanges: () => registry.listSettingsChanges(),
       revertSettingsChange: ({ change }) =>
         registry.revertSettingsChange({ change }).pipe(

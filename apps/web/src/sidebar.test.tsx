@@ -92,7 +92,7 @@ describe("the sidebar on the Settings page", () => {
     ]);
   });
 
-  it("lists an Environment's sections, as Global's but Instructions and Notifications, the Skills current below the Skill directory", () => {
+  it("lists an Environment's sections, as Global's but Notifications, the Skills current below the Skill directory", () => {
     const markup = render(false, { scope: "work", view: { kind: "skillOwner", owner: "acme" } });
 
     expect(
@@ -100,6 +100,7 @@ describe("the sidebar on the Settings page", () => {
     ).toEqual([
       "Back to sessions",
       "General",
+      "Instructions",
       "Models",
       "Tools",
       "Limits",

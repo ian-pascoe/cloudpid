@@ -135,7 +135,7 @@ describe("the Instructions at an Environment", () => {
     const saved = resolveOverrides({}, { instructions: "Mine." });
 
     expect(Result.isFailure(saved) && saved.failure.message).toBe(
-      "instructions: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet",
+      "instructions: not an Override: an Environment's Instructions add to the Global ones, and are saved on their own",
     );
 
     const set = withOverrides({}, { set: { instructions: "Mine." } }, DEFAULT_SETTINGS);
@@ -165,7 +165,7 @@ describe("the Instructions at an Environment", () => {
     expect(settings.model).toBe(SONNET);
     expect(overrides).toEqual({ model: SONNET });
     expect(dropped).toEqual([
-      "instructions: not an Override: an Environment's Instructions add to the Global ones, and are not kept yet",
+      "instructions: not an Override: an Environment's Instructions add to the Global ones, and are saved on their own",
     ]);
     expect(overrideFields({ instructions: "Mine.", model: SONNET })).toEqual(["model"]);
   });

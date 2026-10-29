@@ -34,6 +34,7 @@ describe("the Settings sections of a Scope", () => {
   it("are, at an Environment, Global's in the same order, but Notifications", () => {
     expect(sectionsAt("1a2b3c4d").map((slug) => sectionLabel(slug, "1a2b3c4d"))).toEqual([
       "General",
+      "Instructions",
       "Models",
       "Tools",
       "Limits",
@@ -47,7 +48,6 @@ describe("the Settings sections of a Scope", () => {
       "Agent changes",
     ]);
     expect(sectionsAt("1a2b3c4d")).not.toContain("notifications");
-    expect(sectionsAt("1a2b3c4d")).not.toContain("instructions");
   });
 
   it("open on General at both Scopes", () => {

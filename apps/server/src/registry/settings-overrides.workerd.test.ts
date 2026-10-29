@@ -13,6 +13,7 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import {
+  putEnvironmentInstructions,
   readSettings,
   readSettingsOverrides,
   sessionSettingsSource,
@@ -108,6 +109,7 @@ describe("an Environment's Settings Overrides", () => {
         settings: { ...DEFAULT_SETTINGS, model: SONNET },
         global: { ...DEFAULT_SETTINGS, model: SONNET },
         overrides: {},
+        instructions: "",
       });
 
       expect(saved(update(STAGING, { set: { model: SONNET } })).overrides).toEqual({
@@ -347,6 +349,122 @@ describe("the owner's revert of an Environment's Settings change", () => {
     }));
 });
 
+describe("an Environment's Instructions", () => {
+  it("are its own text, kept apart from its Overrides, which Global's do not replace", () =>
+    inRegistry(({ store, setGlobal }) => {
+      setGlobal({ instructions: "Answer in French." });
+
+      const state = saved(putEnvironmentInstructions(store, STAGING, "Answer in German."));
+
+      expect(state).toMatchObject({
+        instructions: "Answer in German.",
+        // The settings in force carry Global's: the two add up rather than one replacing the other.
+        settings: { instructions: "Answer in French." },
+        overrides: {},
+      });
+      expect(store.getSettingsOverrides(STAGING)).toEqual({});
+      expect(readSettingsOverrides(store, DEFAULT_ENVIRONMENT)?.instructions).toBe("");
+      expect(settingsOverriddenIn(store)).toEqual({});
+    }));
+
+  it("are what a Session in the Environment reads, with its name, beside Global's", () =>
+    inRegistry(({ store, storage }) => {
+      saved(putEnvironmentInstructions(store, STAGING, "Answer in German."));
+      storage.sql.exec(
+        "INSERT INTO sessions (id, environment, workspace, status, created_at, updated_at) VALUES ('s-staging', ?, 'w-1', 'idle', 5, 5)",
+        STAGING,
+      );
+
+      expect(sessionSettingsSource(store, "s-staging").instructions).toEqual({
+        name: "Staging",
+        text: "Answer in German.",
+      });
+      expect(sessionSettingsSource(store, "s-unlisted").instructions).toBeNull();
+    }));
+
+  it("take at most 64 KiB of UTF-8, and need an Environment", () =>
+    inRegistry(({ store }) => {
+      const refused = putEnvironmentInstructions(store, STAGING, "é".repeat(32_769));
+
+      expect(refused !== null && Result.isFailure(refused) ? refused.failure.message : "").toBe(
+        "instructions: is longer than 64 KiB of UTF-8",
+      );
+      expect(readSettingsOverrides(store, STAGING)?.instructions).toBe("");
+      expect(putEnvironmentInstructions(store, "0badc0de", "Hi.")).toBeNull();
+    }));
+
+  it("are changed by the agent against the text approved, recorded under the Environment, and reverted by the owner", () =>
+    inRegistry(({ change, revert, store }) => {
+      const wanted = { field: "instructions", value: "Answer in German.", expected: { value: "" } };
+
+      expect(change([{ ...wanted, expected: { value: "Be terse." } }])).toEqual({
+        status: "changed-since",
+        field: "instructions",
+        current: "",
+      });
+
+      const made = change([wanted]);
+
+      expect(made).toMatchObject({
+        status: "changed",
+        changes: [
+          {
+            scope: STAGING,
+            actor: "agent",
+            field: "instructions",
+            before: "",
+            after: "Answer in German.",
+          },
+        ],
+        state: { instructions: "Answer in German." },
+      });
+      expect(change([{ field: "instructions", value: "Answer in German." }])).toEqual({
+        status: "unchanged",
+      });
+      expect(store.getSettingsOverrides(STAGING)).toEqual({});
+
+      const id = made.status === "changed" ? (made.changes[0]?.id ?? 0) : 0;
+
+      expect(revert(id)).toMatchObject({
+        status: "reverted",
+        change: {
+          actor: "owner",
+          scope: STAGING,
+          field: "instructions",
+          before: "Answer in German.",
+          after: "",
+          reverts: id,
+        },
+      });
+      expect(readSettingsOverrides(store, STAGING)?.instructions).toBe("");
+    }));
+
+  it("refuse a revert once the text has changed since, and a change over the cap or beside other fields", () =>
+    inRegistry(({ change, revert, store }) => {
+      const made = change([{ field: "instructions", value: "Answer in German." }]);
+      const id = made.status === "changed" ? (made.changes[0]?.id ?? 0) : 0;
+
+      saved(putEnvironmentInstructions(store, STAGING, "Answer in Dutch."));
+
+      expect(revert(id)).toEqual({
+        status: "changed-since",
+        field: "instructions",
+        current: "Answer in Dutch.",
+      });
+      expect(change([{ field: "instructions", value: "é".repeat(32_769) }])).toEqual({
+        status: "rejected",
+        message: "instructions: is longer than 64 KiB of UTF-8",
+      });
+      expect(
+        change([
+          { field: "instructions", value: "Hi." },
+          { field: "model", value: SONNET },
+        ]),
+      ).toMatchObject({ status: "rejected" });
+      expect(store.getSettingsOverrides(STAGING)).toEqual({});
+    }));
+});
+
 describe("the agent's change of the Global Settings", () => {
   it("changes a Role whole, and is reverted under the scope settings as before", () =>
     inRegistry(({ storage, store, changes }) => {
@@ -469,6 +587,8 @@ describe("the Settings stored before Environments had Overrides", () => {
         }
 
         expect(readSettingsOverrides(store, STAGING)?.settings).toEqual(expected);
+        // An Environment stored before Environments had Instructions has none.
+        expect(readSettingsOverrides(store, STAGING)?.instructions).toBe("");
         expect(settingsOverriddenIn(store)).toEqual({});
 
         const changes = openAgentChanges(storage);

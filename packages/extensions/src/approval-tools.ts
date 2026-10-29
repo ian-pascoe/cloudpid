@@ -753,9 +753,9 @@ export const ApprovalTools: Effect.Effect<
     name: "settings_instructions_set",
     description: Arr.join(
       [
-        `Set the user's Instructions: Markdown that every conversation's model (each Session's root and its subagents) is shown in its system prompt from the start of its Context Window, before the Project instructions of the AGENTS.md files, which win where the two disagree. They are what the user wants of every Session; what only one repo needs belongs in its Project instructions (AGENTS.md). Give the whole text: it replaces the Instructions there, and an empty text removes them. At most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8. settings_get shows them.`,
-        "They steer every conversation unasked, so the user must approve each change; set them only when the user asks. An approved change applies from each conversation's next Context Window (a new Session, a Handoff or a Rollover), never inside one: a context that has begun, this one included, keeps showing the Instructions it started with.",
-        `Give scope "${GLOBAL_SETTINGS_SCOPE}": the Instructions are Global, and an Environment has none of its own yet.`,
+        `Set the user's Instructions at one Scope: Markdown that conversations' models (each Session's root and its subagents) are shown in their system prompt from the start of their Context Window, before the Project instructions of the AGENTS.md files. They are what the user wants of every Session (Global) or of every Session in one Environment; what only one repo needs belongs in its Project instructions (AGENTS.md). Give the whole text: it replaces that Scope's Instructions, and an empty text removes them. At most ${MAX_INSTRUCTIONS_BYTES / 1024} KiB of UTF-8 per Scope. settings_get shows them.`,
+        "They steer conversations unasked, so the user must approve each change; set them only when the user asks. An approved change applies from each conversation's next Context Window (a new Session, a Handoff or a Rollover), never inside one: a context that has begun, this one included, keeps showing the Instructions it started with.",
+        `Give scope "${GLOBAL_SETTINGS_SCOPE}" for the Global Instructions, which every Session's conversations are shown, or an Environment's id for its own, which its Sessions' conversations are shown after the Global ones. They add up rather than one replacing the other: where two disagree the nearer wins, the Environment's over the Global ones, and the Project instructions over both.`,
         APPROVAL,
         "The change is recorded with your reason, and the user can see it as a line diff and revert it on the Settings page.",
       ],
@@ -777,12 +777,6 @@ export const ApprovalTools: Effect.Effect<
 
         yield* plainReason(reason);
 
-        if (scope !== GLOBAL_SETTINGS_SCOPE) {
-          return yield* SettingsAccessError.make({
-            message: `Nothing was asked or saved: an Environment has no Instructions of its own yet (they come with cloudpid#352). Give scope "${GLOBAL_SETTINGS_SCOPE}" for the Global Instructions, which every Session's conversations are shown.`,
-          });
-        }
-
         if (instructionsProblem(text) !== undefined) {
           return yield* SettingsAccessError.make({
             message: `Nothing was asked or saved: the Instructions are ${grouped(utf8Bytes(text))} bytes of UTF-8, and may be at most ${grouped(MAX_INSTRUCTIONS_BYTES)} (${MAX_INSTRUCTIONS_BYTES / 1024} KiB). Make them shorter.`,
@@ -796,8 +790,17 @@ export const ApprovalTools: Effect.Effect<
         );
 
         const view = yield* access.get(scope);
-        const before = view.settings.instructions;
+        // An Environment's own: its settings carry Global's, which these add to.
+        const before = isGlobalView(view) ? view.settings.instructions : view.instructions;
         const where = scopeWhere(view);
+
+        const shownTo = isGlobalView(view)
+          ? "Every conversation is shown them"
+          : "Every conversation of its Sessions is shown them after the Global ones";
+
+        const stopped = isGlobalView(view)
+          ? "Conversations stop being shown them"
+          : "Its Sessions' conversations stop being shown them";
 
         if (before === text && !(yield* askedBefore(approvals, api))) {
           return {
@@ -875,8 +878,8 @@ export const ApprovalTools: Effect.Effect<
 
                   const done =
                     text === ""
-                      ? `are removed. Conversations stop being shown them ${instructionsApply("their")}`
-                      : `are changed (${textSize(text)} now). Every conversation is shown them ${instructionsApply("its")}`;
+                      ? `are removed. ${stopped} ${instructionsApply("their")}`
+                      : `are changed (${textSize(text)} now). ${shownTo} ${instructionsApply("its")}`;
 
                   return {
                     output: [
