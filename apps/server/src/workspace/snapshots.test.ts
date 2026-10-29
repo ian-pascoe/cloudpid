@@ -16,6 +16,7 @@ import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import type { LiveToken } from "../github/app.ts";
 import type { HeldSecrets } from "./environment-secrets.ts";
 import {
+  BUILD_SNAPSHOT_TIMEOUT_MS,
   ContainerSnapshots,
   SNAPSHOT_TIMEOUT_MS,
   scanContainerDisk,
@@ -24,6 +25,7 @@ import {
   scanGroups,
   type ScanGroup,
   type ScanHit,
+  type SnapshotReason,
   type SnapshotRecord,
 } from "./snapshots.ts";
 
@@ -35,6 +37,8 @@ type Fake = {
   scans: ScanGroup[][];
   /** Whether each scan was asked for the files changed since the Container started only. */
   sinceStart: boolean[];
+  /** Why each scan's snapshot was taken. */
+  scanReasons: SnapshotReason[];
   /** The Container has no marker of its start: a scan asked for the files changed since searches everything. */
   noMarker: boolean;
   /** The Environment's Secrets the Workspace holds. */
@@ -83,6 +87,7 @@ const open = (
     enabled?: boolean;
     tokens?: () => ReadonlyArray<LiveToken>;
     timeoutMs?: number;
+    buildTimeoutMs?: number;
     fingerprint?: ((text: string) => Promise<string>) | null;
   } = {},
 ) => {
@@ -93,6 +98,7 @@ const open = (
     taken: [],
     scans: [],
     sinceStart: [],
+    scanReasons: [],
     noMarker: false,
     held: { ok: true, secrets: [] },
     warnings: [],
@@ -110,6 +116,7 @@ const open = (
     tokens: overrides.tokens ?? (() => [{ token: SECRET }]),
     fingerprint: overrides.fingerprint === null ? undefined : (overrides.fingerprint ?? digest),
     timeoutMs: overrides.timeoutMs ?? 1_000,
+    buildTimeoutMs: overrides.buildTimeoutMs,
     image: () => state.image,
     running: () => state.running,
     snapshot: async (name) => {
@@ -122,9 +129,10 @@ const open = (
       return { id: `snap-${state.taken.length}`, size: 1234 };
     },
     secrets: async () => state.held,
-    scan: async (groups, { sinceStart }) => {
+    scan: async (groups, { sinceStart, reason }) => {
       state.scans.push([...groups]);
       state.sinceStart.push(sinceStart);
+      state.scanReasons.push(reason);
       await state.scanGate;
 
       if (state.scanFails) throw new Error("exec is not available");
@@ -708,6 +716,51 @@ describe("ContainerSnapshots.take, within its time", () => {
       expect(await taking).toBe("failed");
       expect(SNAPSHOT_TIMEOUT_MS).toBe(120_000);
       expect(state.stored).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a Build's snapshot its own, longer limit, and tells its scan it is a Build's", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { state, snapshots } = open({
+        timeoutMs: SNAPSHOT_TIMEOUT_MS,
+        buildTimeoutMs: BUILD_SNAPSHOT_TIMEOUT_MS,
+      });
+
+      state.scanGate = new Promise((resolve) => setTimeout(resolve, 150_000));
+
+      const capturing = snapshots.capture("build", IMAGE);
+
+      await vi.advanceTimersByTimeAsync(150_000);
+
+      expect(await capturing).toMatchObject({ outcome: "taken", scope: "whole" });
+      expect(state.scanReasons).toEqual(["build"]);
+      expect(BUILD_SNAPSHOT_TIMEOUT_MS).toBeGreaterThan(SNAPSHOT_TIMEOUT_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a Workspace's snapshot to its limit when a Build's is longer", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { state, snapshots } = open({
+        timeoutMs: SNAPSHOT_TIMEOUT_MS,
+        buildTimeoutMs: BUILD_SNAPSHOT_TIMEOUT_MS,
+      });
+
+      state.scanGate = new Promise((resolve) => setTimeout(resolve, 150_000));
+
+      const taking = snapshots.take("idle", IMAGE);
+
+      await vi.advanceTimersByTimeAsync(SNAPSHOT_TIMEOUT_MS);
+
+      expect(await taking).toBe("failed");
+      expect(state.scanReasons).toEqual(["idle"]);
     } finally {
       vi.useRealTimers();
     }
