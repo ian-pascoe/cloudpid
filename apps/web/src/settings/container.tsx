@@ -8,7 +8,7 @@
 // start.
 
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
-import { INSTANCE_TYPES, instanceLimitProblem, type InstanceType } from "@cloudpid/config";
+import { INSTANCE_TYPES } from "@cloudpid/config";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { RotateCw } from "lucide-react";
 import { Button } from "../components/ui/button.tsx";
@@ -22,6 +22,7 @@ import {
   ignoreProblem,
   instanceLabel,
   scriptFieldProblem,
+  sizeLimitProblem,
   toolchainsFieldProblem,
 } from "../environments.ts";
 import { cn } from "../lib/utils.ts";
@@ -29,10 +30,6 @@ import { settledFailureOf } from "../registry.ts";
 import { containerSectionForm, setupForm } from "./forms.ts";
 import { CODE_AREA, Field, Group, SettingsSection } from "./parts.tsx";
 import { ScopedSectionForm } from "./scoped-view.tsx";
-
-/** Why `instance` is above `maxInstance`, or null. */
-const limitProblem = (instance: InstanceType, maxInstance: InstanceType | undefined) =>
-  maxInstance === undefined ? null : (instanceLimitProblem({ instance, maxInstance }) ?? null);
 
 /** Environment `id`'s Build: where it stands, and a button to make it again now. */
 const BuildStatus = ({ id }: { id: string }) => {
@@ -87,7 +84,7 @@ export const ContainerSection = ({ scope }: { scope: string }) => {
         invalid={(fields) =>
           idleMinutesProblem(fields.idleMinutes.value) !== null ||
           ignoreProblem(fields.ignore.value) !== null ||
-          limitProblem(fields.instance.value, maxInstance) !== null
+          sizeLimitProblem(fields.instance.value, maxInstance) !== null
         }
       >
         {(field) => {
@@ -105,14 +102,14 @@ export const ContainerSection = ({ scope }: { scope: string }) => {
                 <Field
                   label="Size"
                   htmlFor="instance"
-                  problem={limitProblem(instance, maxInstance)}
+                  problem={sizeLimitProblem(instance, maxInstance)}
                   hint="At most the size limit, in Limits."
                   {...field.marks("instance")}
                 >
                   <NativeSelect
                     id="instance"
                     value={instance}
-                    aria-invalid={limitProblem(instance, maxInstance) !== null}
+                    aria-invalid={sizeLimitProblem(instance, maxInstance) !== null}
                     className={field.look("instance")}
                     onChange={(event) => {
                       const picked = INSTANCE_TYPES.find((type) => type === event.target.value);

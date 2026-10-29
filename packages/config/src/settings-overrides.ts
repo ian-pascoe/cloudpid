@@ -12,6 +12,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import { type Patch, patchOf, sameJson } from "./patch.ts";
 import {
   DEFAULT_SETTINGS,
   decodeSettingsOverrides,
@@ -302,10 +303,7 @@ export const withOverrideFields = (
 };
 
 /** A change to an Environment's Overrides, as `updateSettingsOverrides` takes it. */
-export type OverridesPatch = {
-  readonly set?: Schema.JsonObject;
-  readonly reset?: ReadonlyArray<string>;
-};
+export type OverridesPatch = Patch<Schema.JsonObject>;
 
 /**
  * The change that makes an Environment's Overrides `before` into `after`: each field `after` holds that `before` does
@@ -321,21 +319,13 @@ export const overridesPatchBetween = (before: Schema.Json, after: Schema.Json): 
   const set = Arr.reduce(overrideEntries(after), {}, (next: Schema.JsonObject, { keys, value }) => {
     const held = was.get(Arr.join(keys, "."));
 
-    return held !== undefined && JSON.stringify(held) === JSON.stringify(value)
-      ? next
-      : setAt(next, keys, value);
+    return held !== undefined && sameJson(held, value) ? next : setAt(next, keys, value);
   });
 
   const kept = new Set(overrideFields(after));
   const reset = Arr.filter([...was.keys()], (field) => !kept.has(field));
 
-  const patch: { -readonly [K in keyof OverridesPatch]: OverridesPatch[K] } = {};
-
-  if (!Record.isEmptyRecord(set)) patch.set = set;
-
-  if (reset.length > 0) patch.reset = reset;
-
-  return patch;
+  return patchOf(set, reset);
 };
 
 /** Global's overrides as they apply: those that resolve, and only what differs from the defaults. */

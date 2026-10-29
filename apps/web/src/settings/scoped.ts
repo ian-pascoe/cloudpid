@@ -1,28 +1,29 @@
 // @effect-diagnostics missingPipeableSignature:off -- builders and lookups by Scope, not combinators.
 
-// A Settings section's fields at a Scope (ADR-0027; docs/architecture/client-and-protocol.md → Settings page → Scopes):
+// A Settings section's fields at a Scope (ADR-0027; docs/architecture/client-and-protocol.md → Settings page → Scopes
+// and marks):
 // one form serves both Scopes. At Global a field holds Global's own value, and names the Environments that override it;
 // at an Environment it is Inherited (Global's value, followed until the owner overrides it) or Overridden (the
 // Environment's own, kept until it is reset to Global). A form's draft holds each field with its mark, keyed by the
 // field's path as the Registry names it (`model`, `roles.small`, `idleMinutes`), so a save sends only the fields the
 // owner changed: at Global the value with them replaced, at an Environment its Overrides set or reset, never an
-// inherited value. The sources below read and write each saved value at either Scope through the one read and write
-// helper per RPC (`settings.ts`, `environments-state.ts`).
+// inherited value. The sources below read and write each saved value at either Scope through the helpers of
+// `settings.ts` and `environments-state.ts`, the only callers of their RPCs.
 
 import {
   CONTAINER_SETTING_NAMES,
   type ContainerSettings,
   type ContainerSettingsOverrides,
   DEFAULT_CONTAINER_SETTINGS,
-  DEFAULT_MAX_SUBAGENT_DEPTH,
-  DEFAULT_MAX_SUBAGENT_WORKSPACES,
   DEFAULT_SETTINGS,
   isContainerField,
   overrideValue,
   type Settings,
   type SettingsError,
+  sameJson,
   settingsFieldValue,
   withOverrideFields,
+  withoutDefaultSubagentLimits,
 } from "@cloudpid/config";
 import {
   type ContainerSettingsState,
@@ -61,7 +62,7 @@ import {
   writeSettings,
   writeSettingsOverrides,
 } from "../settings.ts";
-import { sameAsJson, sectionForm, type SectionForm } from "./drafts.ts";
+import { sectionForm, type SectionForm } from "./drafts.ts";
 
 const isGlobal = (scope: string): boolean => scope === GLOBAL_SCOPE;
 
@@ -229,7 +230,7 @@ export const scopedForm = <Value, Overrides, S extends FieldSpecs<Value>>(
       return (
         a.inherited === b.inherited &&
         (a.inherited ||
-          (spec.same === undefined ? sameAsJson(a.value, b.value) : spec.same(a.value, b.value)))
+          (spec.same === undefined ? sameJson(a.value, b.value) : spec.same(a.value, b.value)))
       );
     });
 
@@ -296,30 +297,6 @@ export const scopedForm = <Value, Overrides, S extends FieldSpecs<Value>>(
 
 // The Settings (model, Roles, tools, limits, …): Global's are written whole, an Environment's Overrides as a patch.
 
-const SUBAGENT_LIMIT_DEFAULTS: ReadonlyMap<string, number> = new Map([
-  ["maxSubagentDepth", DEFAULT_MAX_SUBAGENT_DEPTH],
-  ["maxSubagentWorkspaces", DEFAULT_MAX_SUBAGENT_WORKSPACES],
-]);
-
-/**
- * `settings` without the subagents' Limits that are at their defaults, so Global keeps only what differs from the
- * defaults (the extension's options are not in the defaults, which would keep them all). An Environment's Override of
- * one at its default is kept: it pins the value against Global.
- */
-const withoutDefaultLimits = (settings: Settings): Settings => {
-  const subagents = settings.extensions["subagents"];
-
-  if (subagents === undefined) return settings;
-
-  const kept = Record.filter(subagents, (value, key) => SUBAGENT_LIMIT_DEFAULTS.get(key) !== value);
-  const { subagents: _dropped, ...others } = settings.extensions;
-
-  return {
-    ...settings,
-    extensions: Record.isEmptyRecord(kept) ? others : { ...others, subagents: kept },
-  };
-};
-
 type SettingsAtScope = AtScope<Settings, Schema.Json>;
 
 const globalSettingsAtScope = (state: SettingsState): SettingsAtScope => ({
@@ -353,7 +330,7 @@ export const settingsSource: ScopedSource<Settings, Schema.Json> = {
       : Effect.map(readSettingsOverrides(scope), environmentSettingsAtScope),
   write: (scope, before, after) =>
     isGlobal(scope)
-      ? writeSettings(withoutDefaultLimits(after.inForce))
+      ? writeSettings(withoutDefaultSubagentLimits(after.inForce))
       : writeSettingsOverrides(scope, before.overrides ?? {}, after.overrides ?? {}),
   // Global's and every Environment's Settings are on one key: a field inherited follows a save at Global.
   keys: () => ["settings"],
@@ -475,8 +452,8 @@ const partOf = <Part extends keyof LimitsValue>(
 
 /** Whether a save changes `part` of the Limits: what is in force at Global, the Overrides at an Environment. */
 const changes = (part: keyof LimitsValue, before: LimitsAtScope, after: LimitsAtScope): boolean =>
-  !sameAsJson(before.inForce[part], after.inForce[part]) ||
-  !sameAsJson(before.overrides?.[part], after.overrides?.[part]);
+  !sameJson(before.inForce[part], after.inForce[part]) ||
+  !sameJson(before.overrides?.[part], after.overrides?.[part]);
 
 /** The Limits: the Settings' (`settingsSource`) and the Container settings' (`containerSource`), each saved by its own RPC. */
 export const limitsSource: ScopedSource<LimitsValue, LimitsOverrides> = {
@@ -494,13 +471,15 @@ export const limitsSource: ScopedSource<LimitsValue, LimitsOverrides> = {
       ([settings, container]) => limitsAtScope(settings, container),
     ),
   write: (scope, before, after) =>
+    // The size limit first: the Registry refuses it more often (a size above it, an Environment it would put past
+    // it), and a refusal there then leaves nothing saved; the Settings' part is checked as it is typed.
     Effect.all(
       [
-        changes("settings", before, after)
-          ? settingsSource.write(scope, partOf(before, "settings"), partOf(after, "settings"))
-          : Effect.void,
         changes("container", before, after)
           ? containerSource.write(scope, partOf(before, "container"), partOf(after, "container"))
+          : Effect.void,
+        changes("settings", before, after)
+          ? settingsSource.write(scope, partOf(before, "settings"), partOf(after, "settings"))
           : Effect.void,
       ],
       { discard: true },

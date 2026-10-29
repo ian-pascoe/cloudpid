@@ -1,7 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain helpers over a form's fields, called from React.
 
 // A section of the Settings page at either Scope (ADR-0027; docs/architecture/client-and-protocol.md → Settings page →
-// Scopes): its form (`scoped.ts`), with each field's mark. At an Environment a field is Inherited (Global's value, its
+// Scopes and marks): its form (`scoped.ts`), with each field's mark. At an Environment a field is Inherited (Global's value, its
 // control on a dashed border; typing in it, or Override, makes it the Environment's own) or Overridden (with Reset to
 // Global), and the bar's Reset all to Global resets the section's Overrides once confirmed. At Global a field that
 // Environments override says so under it, naming each with a link to the field at its Scope.

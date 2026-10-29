@@ -6,6 +6,7 @@
 // the app is open, so moving between sections and Scopes keeps them; the navigation marks a section whose draft differs
 // from what is saved.
 
+import { sameJson } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -66,11 +67,6 @@ export interface SectionForm<Fields, E> {
 /** The fields of section form `Form`, as its draft holds them. */
 export type FormFields<Form> = Form extends SectionForm<infer Fields, infer _E> ? Fields : never;
 
-/** Whether two values are the same, as JSON: how a form compares fields that have no `same` of their own. */
-// @effect-diagnostics-next-line missingPipeableSignature:off -- a comparison of two values, not a combinator.
-export const sameAsJson = <V>(left: V, right: V): boolean =>
-  JSON.stringify(left) === JSON.stringify(right);
-
 /** The fields of `typed` that differ from `base`, each compared alone as the section's `same` reads it. */
 const changedKeys = <Fields extends object>(
   typed: Fields,
@@ -101,7 +97,7 @@ const withFields = <Fields extends object>(
 export const sectionForm = <Saved, Fields extends object, E>(
   spec: SectionFormSpec<Saved, Fields, E>,
 ): SectionForm<Fields, E> => {
-  const same = spec.same ?? sameAsJson;
+  const same = spec.same ?? sameJson;
 
   const justSaved = Atom.family((_scope: string) => Atom.make(false).pipe(Atom.keepAlive));
 

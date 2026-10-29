@@ -20,10 +20,11 @@ import {
   type Settings,
   withOverrides,
 } from "@cloudpid/config";
-import type {
-  ContainerSettingsState,
-  SettingsOverridesState,
-  SettingsState,
+import {
+  type ContainerSettingsState,
+  EnvironmentError,
+  type SettingsOverridesState,
+  type SettingsState,
 } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -480,6 +481,68 @@ describe("a Settings section at an Environment", () => {
         registry.dispose();
       }),
   );
+
+  it.effect("saves an emptied spend limit as no limit, its own or the one it inherits", () =>
+    Effect.gen(function* () {
+      const container = { getEnvironmentSettings: () => Effect.succeed(containerStateOf({})) };
+      const own5 = holdingOverrides(GLOBAL_SETTINGS, { spendLimit: { perSession: 5 } }, container);
+
+      const inherited5 = holdingOverrides(
+        { ...GLOBAL_SETTINGS, spendLimit: { perSession: 5 } },
+        {},
+        container,
+      );
+
+      for (const { registry, saved, held } of [own5, inherited5]) {
+        yield* opened(registry, limitsForm, "work");
+
+        const shown = registry.get(limitsForm.fields("work"));
+
+        if (shown === null) throw new Error("the Limits did not load");
+
+        registry.set(limitsForm.draft("work"), { ...shown, "spendLimit.perSession": own("") });
+        yield* save(registry, limitsForm, "work");
+
+        expect(saved).toEqual([{ environment: "work", set: { spendLimit: { perSession: null } } }]);
+        expect(held.overrides).toEqual({ spendLimit: { perSession: null } });
+        expect(registry.get(limitsForm.fields("work"))?.["spendLimit.perSession"]).toEqual(own(""));
+        registry.dispose();
+      }
+    }),
+  );
+
+  it.effect("saves the size limit of its Limits first, and nothing else when it is refused", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = holdingOverrides(
+        GLOBAL_SETTINGS,
+        {},
+        {
+          getEnvironmentSettings: () => Effect.succeed(containerStateOf({})),
+          updateEnvironmentSettings: () =>
+            Effect.fail(new EnvironmentError({ message: "maxInstance: below the size" })),
+        },
+      );
+
+      yield* opened(registry, limitsForm, "work");
+
+      const shown = registry.get(limitsForm.fields("work"));
+
+      if (shown === null) throw new Error("the Limits did not load");
+
+      registry.set(limitsForm.draft("work"), {
+        ...shown,
+        "spendLimit.perSession": own("5"),
+        maxInstance: own("lite"),
+      });
+
+      expect(failureOf(yield* save(registry, limitsForm, "work"))).toBe(
+        "maxInstance: below the size",
+      );
+      expect(saved).toEqual([]);
+      expect(registry.get(limitsForm.dirty("work"))).toBe(true);
+      registry.dispose();
+    }),
+  );
 });
 
 /** An Environment's answer for Overrides `overrides` over Global at the defaults. */
@@ -694,6 +757,32 @@ describe("Global's Limits", () => {
         ]);
         registry.dispose();
       }),
+  );
+
+  it.effect("save an emptied spend limit as no limit", () =>
+    Effect.gen(function* () {
+      const { registry, saved, held } = holdingSettings({
+        ...DEFAULT_SETTINGS,
+        spendLimit: { perSession: 5 },
+      });
+
+      yield* opened(registry, limitsForm, GLOBAL);
+
+      const shown = registry.get(limitsForm.fields(GLOBAL));
+
+      if (shown === null) throw new Error("the Limits did not load");
+
+      expect(shown["spendLimit.perSession"]).toEqual(own("5"));
+
+      registry.set(limitsForm.draft(GLOBAL), { ...shown, "spendLimit.perSession": own("") });
+      yield* save(registry, limitsForm, GLOBAL);
+
+      // No limit is the default, so nothing is kept of it.
+      expect(saved).toEqual([{}]);
+      expect(held.settings.spendLimit.perSession).toBeNull();
+      expect(registry.get(limitsForm.fields(GLOBAL))?.["spendLimit.perSession"]).toEqual(own(""));
+      registry.dispose();
+    }),
   );
 });
 

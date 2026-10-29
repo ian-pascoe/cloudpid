@@ -353,6 +353,31 @@ export const DEFAULT_MAX_SUBAGENT_DEPTH = 2;
  */
 export const DEFAULT_MAX_SUBAGENT_WORKSPACES = 1;
 
+/** The subagents' Limits, options of the subagents extension, by key, at their defaults. */
+const SUBAGENT_LIMIT_DEFAULTS: ReadonlyMap<string, number> = new Map([
+  ["maxSubagentDepth", DEFAULT_MAX_SUBAGENT_DEPTH],
+  ["maxSubagentWorkspaces", DEFAULT_MAX_SUBAGENT_WORKSPACES],
+]);
+
+/**
+ * `settings` without the subagents' Limits that are at their defaults, so what `overridesFrom` makes of them keeps only
+ * what differs from the defaults: an extension's options are not in `DEFAULT_SETTINGS`, so it would keep them all. Not
+ * for an Environment's Overrides, where one at its default is kept: it pins the value against Global.
+ */
+export const withoutDefaultSubagentLimits = (settings: Settings): Settings => {
+  const subagents = settings.extensions["subagents"];
+
+  if (subagents === undefined) return settings;
+
+  const kept = Record.filter(subagents, (value, key) => SUBAGENT_LIMIT_DEFAULTS.get(key) !== value);
+  const { subagents: _dropped, ...others } = settings.extensions;
+
+  return {
+    ...settings,
+    extensions: Record.isEmptyRecord(kept) ? others : { ...others, subagents: kept },
+  };
+};
+
 /**
  * The keys a settings field leads through (`docs/architecture/agent-changes.md`): a setting's dotted path (`thinkingLevel`,
  * `roles.small.model`), or `extensions.<extension>.<key>` for an extension's option, whose key may hold dots (the

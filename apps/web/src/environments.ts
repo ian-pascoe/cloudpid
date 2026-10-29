@@ -35,6 +35,7 @@ import {
   DEFAULT_CONTAINER_SETTINGS,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
+  instanceLimitProblem,
   type InstanceType,
   MAX_IDLE_MINUTES,
   MAX_IGNORE_PATTERNS,
@@ -187,6 +188,18 @@ export const instanceLabel = (type: InstanceType): string =>
 /** An instance type's line in the Limits section's size limit list, the default limit marked as such. */
 export const sizeLimitLabel = (type: InstanceType): string =>
   sizeLine(type, DEFAULT_CONTAINER_SETTINGS.maxInstance);
+
+/**
+ * Why the size `instance` cannot be saved beside the size limit `maxInstance` (it is above it), or null; null too while
+ * either is not known yet. The Container section checks the size against the limit in force, Limits the other way.
+ */
+export const sizeLimitProblem = (
+  instance: InstanceType | undefined,
+  maxInstance: InstanceType | undefined,
+): string | null =>
+  instance === undefined || maxInstance === undefined
+    ? null
+    : (instanceLimitProblem({ instance, maxInstance }) ?? null);
 
 /** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
 export const idleMinutesProblem = (text: string): string | null => {

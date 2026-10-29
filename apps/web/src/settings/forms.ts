@@ -164,15 +164,20 @@ export const limitsForm = scopedForm(limitsSource, {
   "spendLimit.perSession": {
     label: "the spend limit",
     of: ({ settings }) => spendLimitToText(settings.spendLimit.perSession),
-    into: (limits, text: string) => ({
-      ...limits,
-      settings: {
-        ...limits.settings,
-        spendLimit: {
-          perSession: spendLimitFromText(text) ?? limits.settings.spendLimit.perSession,
+    into: (limits, text: string) => {
+      // Empty text is no limit (null); only text that does not parse, which the form holds back, keeps the saved one.
+      const typed = spendLimitFromText(text);
+
+      return {
+        ...limits,
+        settings: {
+          ...limits.settings,
+          spendLimit: {
+            perSession: typed === undefined ? limits.settings.spendLimit.perSession : typed,
+          },
         },
-      },
-    }),
+      };
+    },
     same: (left: string, right: string) => {
       const typed = spendLimitFromText(left);
 

@@ -12,7 +12,8 @@ import {
   DEFAULT_CONTAINER_SETTINGS,
   type ContainerSettings,
   type ContainerSettingsOverrides,
-  type ContainerSettingsPatch,
+  patchOf,
+  sameJson,
 } from "@cloudpid/config";
 import type {
   BuildView,
@@ -444,11 +445,13 @@ export const containerSettingsAtom = Atom.family((id: string) =>
   Atom.map(environmentSettingsAtom(id), (result) => AsyncResult.map(result, loadedSettingsOf)),
 );
 
-/** Environment `id`'s Container settings as its sections edit them (`loadedSettingsOf`), read from the Registry now. */
+/** Environment `id`'s Container settings (in force, Global's, and its Overrides), read from the Registry now. */
+export const readEnvironmentContainerSettings = (id: string) =>
+  RegistryClient.use((registry) => registry("getEnvironmentSettings", { environment: id }));
+
+/** Environment `id`'s Container settings as its Variables section edits them (`loadedSettingsOf`), read now. */
 export const readContainerSettings = (id: string) =>
-  RegistryClient.use((registry) => registry("getEnvironmentSettings", { environment: id })).pipe(
-    Effect.map(loadedSettingsOf),
-  );
+  readEnvironmentContainerSettings(id).pipe(Effect.map(loadedSettingsOf));
 
 /**
  * Make Environment `id`'s Container settings `before` into `after` (both as `loadedSettingsOf` gives them): each field
@@ -466,29 +469,6 @@ export const writeContainerSettings = (
       ...containerPatchBetween(before, after),
     }),
   );
-
-/** Environment `id`'s Container settings (in force, Global's, and its Overrides), read from the Registry now. */
-export const readEnvironmentContainerSettings = (id: string) =>
-  RegistryClient.use((registry) => registry("getEnvironmentSettings", { environment: id }));
-
-/** Whether two values of a setting are the same, as JSON. */
-const sameJson = <V>(left: V, right: V): boolean => JSON.stringify(left) === JSON.stringify(right);
-
-/** The patch of Container settings that sets `set` and resets `reset`, each left out when it holds nothing. */
-const patchOf = (
-  set: ContainerSettingsOverrides,
-  reset: ReadonlyArray<string>,
-): ContainerSettingsPatch => {
-  const patch: { -readonly [K in keyof ContainerSettingsPatch]: ContainerSettingsPatch[K] } = {};
-
-  // The Overrides' optional keys make them no `Record` to Effect's helpers.
-  // @effect-diagnostics-next-line preferEffectRecord:off
-  if (Object.keys(set).length > 0) patch.set = set;
-
-  if (reset.length > 0) patch.reset = reset;
-
-  return patch;
-};
 
 /**
  * Make Environment `id`'s Container Overrides `before` into `after` (its variables aside, which the Variables section

@@ -8,8 +8,6 @@
 
 import {
   INSTANCE_TYPES,
-  instanceLimitProblem,
-  type InstanceType,
   isModelId,
   type ModelId,
   ROLE_NAMES,
@@ -21,7 +19,7 @@ import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import { Input } from "../components/ui/input.tsx";
 import { NativeSelect } from "../components/ui/native-select.tsx";
-import { sizeLimitLabel } from "../environments.ts";
+import { sizeLimitLabel, sizeLimitProblem } from "../environments.ts";
 import { cn } from "../lib/utils.ts";
 import { modelName } from "../models.ts";
 import { badOfferedEntries, offeredFromText } from "../offered-tools.ts";
@@ -319,10 +317,6 @@ const spendLimitProblem = (text: string): string | null =>
   spendLimitFromText(text) === undefined
     ? "Enter an amount above zero, such as 5 or 12.50, or leave it empty for no limit."
     : null;
-
-/** Why `maxInstance` cannot be the size limit while the size is `instance` (both in force at the Scope), or null. */
-const sizeLimitProblem = (instance: InstanceType | undefined, maxInstance: InstanceType) =>
-  instance === undefined ? null : (instanceLimitProblem({ instance, maxInstance }) ?? null);
 
 /**
  * Limits: the most a Session may spend, how deep its subagents may go and how many Subagent Workspaces it may have, and
