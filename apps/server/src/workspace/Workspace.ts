@@ -134,7 +134,7 @@ import {
 } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { changeLog } from "./change-log.ts";
-import { FileNotifier, runNotify, withNoSignalStart } from "./notify.ts";
+import { FileNotifier, inSignalPush, runNotify, withNoSignalStart } from "./notify.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
 import { SKILLS_MOUNT, WORKSPACE_CONTAINER, WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
 
@@ -945,8 +945,9 @@ export class Workspace extends ContainerHost {
 
   /**
    * Records each use of the Container for the idle stop: computer reports a span around every connect, push and pull on a
-   * backend, and a command on the Container is a push before it and a pull after it. Every span then goes to `next`
-   * (the file-change signal's observer).
+   * backend, and a command on the Container is a push before it and a pull after it. The file-change signal's own push
+   * (and its connect) is no use: an edit alone keeps no running Container from its idle stop
+   * (docs/architecture/container.md → Idle stop). Every span then goes to `next` (the file-change signal's observer).
    */
   #containerUseObserver(next: WorkspaceObserver): WorkspaceObserver {
     const uses = (attributes: Parameters<WorkspaceObserver["span"]>[1]) =>
@@ -960,7 +961,7 @@ export class Workspace extends ContainerHost {
 
     return {
       span: (name, attributes, run) => {
-        if (!uses(attributes)) return next.span(name, attributes, run);
+        if (!uses(attributes) || inSignalPush()) return next.span(name, attributes, run);
 
         touch();
 

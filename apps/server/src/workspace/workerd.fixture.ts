@@ -395,19 +395,43 @@ export class TestWorkspace extends Workspace {
 
     this.#signalled.push("push");
 
-    const sql = this.ctx.storage.sql;
-    const rev = currentRevision(sql);
+    // In a span as computer's own push reports it, which the Workspace DO's observers read.
+    await this.#containerPushSpan(() => {
+      const sql = this.ctx.storage.sql;
+      const rev = currentRevision(sql);
 
-    sql.exec(
-      "INSERT INTO _vfs_push_cursor (k, backend, rev, path) VALUES ('push', ?, ?, NULL) ON CONFLICT(k, backend) DO UPDATE SET rev = excluded.rev, path = NULL",
-      CONTAINER_BACKEND_ID,
-      rev,
+      sql.exec(
+        "INSERT INTO _vfs_push_cursor (k, backend, rev, path) VALUES ('push', ?, ?, NULL) ON CONFLICT(k, backend) DO UPDATE SET rev = excluded.rev, path = NULL",
+        CONTAINER_BACKEND_ID,
+        rev,
+      );
+      sql.exec(
+        "INSERT INTO _vfs_watermark (k, backend, v) VALUES ('pushRev', ?, ?) ON CONFLICT(k, backend) DO UPDATE SET v = excluded.v",
+        CONTAINER_BACKEND_ID,
+        rev,
+      );
+    });
+  }
+
+  /** `run` in the span computer reports around a push to the Container's backend. */
+  async #containerPushSpan(run: () => void): Promise<void> {
+    const workspace = await this.#computer();
+
+    await workspace.observer.span(
+      "workspace.sync.push",
+      { "workspace.sync.backend": CONTAINER_BACKEND_ID },
+      async () => run(),
     );
-    sql.exec(
-      "INSERT INTO _vfs_watermark (k, backend, v) VALUES ('pushRev', ?, ?) ON CONFLICT(k, backend) DO UPDATE SET v = excluded.v",
-      CONTAINER_BACKEND_ID,
-      rev,
-    );
+  }
+
+  /** A push to the Container as a command's makes before it runs (outside the signal): its span alone. */
+  async commandPush(): Promise<void> {
+    await this.#containerPushSpan(() => undefined);
+  }
+
+  /** When the Container was last used, as the idle stop keeps it in storage, if it was. */
+  containerLastUse(): number | undefined {
+    return this.ctx.storage.kv.get<number>("cloudpid:container-last-use");
   }
 
   /**

@@ -187,6 +187,25 @@ describe("the file-change signal", { timeout: 30_000 }, () => {
     expect(late).toBeGreaterThanOrEqual(1);
   });
 
+  it("keeps no running Container up by its own push, where a command's push is a use", async () => {
+    const { stub, write, settled } = await workspace(true);
+
+    await write("README.md", "#");
+    await write("src/a.ts", "a");
+
+    // The signal pushed (its span reported as computer's is) and signalled: no use of the Container recorded.
+    expect((await settled(2))[0]).toBe("push");
+    expect(await stub.containerLastUse()).toBeUndefined();
+
+    // A command's push before it runs is a use, as ever.
+    await stub.commandPush();
+
+    await vi.waitFor(async () => expect(await stub.containerLastUse()).toBeTypeOf("number"), {
+      timeout: 2_000,
+      interval: 20,
+    });
+  });
+
   it("refuses the launch its own push would cause once the Container stopped, and gives no signal", async () => {
     const { stub, write, settled } = await workspace(true);
 

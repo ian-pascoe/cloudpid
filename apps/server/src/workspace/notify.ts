@@ -17,10 +17,10 @@
 // ancestors.
 //
 // Nothing here starts a Container: a stopped one gets no push and no signal (its next command's push sends the
-// changes), and a launch the signal's own push would cause is refused (`withNoSignalStart`). The push records a use of
-// the Container, as every push does; the helper runs through the platform's `exec`, which is no use and no activity, so
-// it keeps the Container from neither its idle stop nor the hold cap. What is pending is in memory: an eviction loses
-// it, and the next write or command signals from there.
+// changes), and a launch the signal's own push would cause is refused (`withNoSignalStart`). Neither the push (which
+// the Workspace DO's use observer tells by `inSignalPush`) nor the helper, run through the platform's `exec`, is a use
+// of the Container or activity, so an edit alone does not keep a running Container from its idle stop.
+// What is pending is in memory: an eviction loses it, and the next write or command signals from there.
 // @effect-diagnostics asyncFunction:off globalTimers:off globalDate:off preferEffectArray:off missingPipeableSignature:off newPromise:off nodeBuiltinImport:off
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
