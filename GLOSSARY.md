@@ -224,6 +224,10 @@ _Avoid_: Sandbox, VM, box, Machine
 What stops the largest process in a Container that is nearly out of memory, so the Container keeps answering; each command running then ends with a note naming what was stopped.
 _Avoid_: OOM killer (the kernel's, which acts too late to save the Container)
 
+**File-change signal**:
+What the Workspace gives a running Container's file watchers (a dev server, `tsc --watch`) after its own writes (the model's file tools, the Worker Shell) reach the Container, so they see the change as they see the Container's own; the owner never sees it. Not a Notification, which is a Web Push to the owner.
+_Avoid_: Notify (as a noun), file notification, file event
+
 **GitHub App**:
 cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from.
 _Avoid_: Bot account, PAT
