@@ -8,7 +8,7 @@
 
 ## Workspace
 
-Bun installs dependencies and runs scripts (`bunfig.toml`; the version is `packageManager`'s and `mise.toml`'s); Vitest, Vite and alchemy still run on Node, and typecheck is `effect-tsgo tsrs`, the Effect-patched native checker ([ADR-0028](docs/adr/0028-bun-for-installs-and-scripts-and-tsrs-for-typecheck.md)). Root `typecheck`, `lint`, `test`, and `build` scripts run through Turborepo (`turbo.json`); `bun run check` runs all but `build`, then `format:check` (oxfmt runs once at the root). Run one package's script with `bun --cwd packages/protocol run test`. `bun install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set.
+Bun installs dependencies and runs scripts (`bunfig.toml`; the version is `packageManager`'s and `mise.toml`'s); Vitest and Vite still run on Node (alchemy hands itself to Bun), and typecheck is `effect-tsgo tsrs`, the Effect-patched native checker ([ADR-0028](docs/adr/0028-bun-for-installs-and-scripts-and-tsrs-for-typecheck.md)). Root `typecheck`, `lint`, `test`, and `build` scripts run through Turborepo (`turbo.json`); `bun run check` runs all but `build`, then `format:check` (oxfmt runs once at the root). Run one package's script with `bun --cwd packages/protocol run test`. `bun install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set.
 
 **In the cloudpid harness, run focused checks only.** If you are an agent in a cloudpid Workspace (the repo is under `/workspace`, next to `/workspace/.cloudpid`), do not run `bun run check`, a root `test`, or a whole package's test suite, and do not have your sub-agents run them. CI runs the full suite on every push. Run only:
 

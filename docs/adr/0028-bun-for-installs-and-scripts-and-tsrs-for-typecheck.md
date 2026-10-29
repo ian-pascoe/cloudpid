@@ -4,7 +4,7 @@ The repo installs its dependencies with Bun instead of pnpm, and its scripts run
 
 Each package's `typecheck` is `effect-tsgo tsrs` instead of `tsc`: tsrs, the native TypeScript checker that `@effect/tsgo` ships with the Effect language service built in, so every Effect diagnostic the shared tsconfig sets still fails the check. The patched `tsc` stays installed for editors.
 
-Vitest, Vite and alchemy keep running on Node: `bun run` starts a package's binary with the interpreter its first line names, which for them is `node`.
+Vitest and Vite keep running on Node: `bun run` starts a package's binary with the interpreter its first line names, which for them is `node`. alchemy's CLI hands itself to Bun when Bun launched it (it reads `npm_execpath`), so deploys and `alchemy dev` run on Bun, with `@effect/platform-bun` in `infra`'s dependencies; it pulls `@effect/platform-node-shared`, which the root `overrides` holds at the `effect` version, since its newest release wants a newer `effect`.
 
 Measured on an 8-core Apple Silicon laptop (2026-10-29), one run each unless noted:
 

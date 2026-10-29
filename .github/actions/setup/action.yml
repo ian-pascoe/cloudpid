@@ -1,6 +1,6 @@
 name: Set up Bun and dependencies
 description: >-
-  Bun (the version in package.json's `packageManager`), Node LTS (Vitest and alchemy run on Node), the packages of the
+  Bun (the version in package.json's `packageManager`), Node LTS (Vitest and Vite run on Node), the packages of the
   lockfile from the Actions cache, and `bun install --frozen-lockfile`. The cache is keyed by the lockfile and falls
   back to the newest one of any lockfile, so a lockfile change downloads only what changed. With `save-cache: false`
   the cache is only read, for jobs that hold deploy credentials.

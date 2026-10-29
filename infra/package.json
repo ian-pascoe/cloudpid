@@ -16,6 +16,7 @@
     "@alchemy.run/cloudflare": "2.0.0-beta.84",
     "@alchemy.run/github": "2.0.0-beta.84",
     "@cloudpid/server": "workspace:*",
+    "@effect/platform-bun": "^4.0.6",
     "@effect/platform-node": "^4.0.6",
     "alchemy": "2.0.0-beta.84",
     "effect": "^4.0.6"

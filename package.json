@@ -36,6 +36,9 @@
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.6"
+  },
   "lint-staged": {
     "*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}": "oxlint --fix --no-error-on-unmatched-pattern",
     "*": "oxfmt --no-error-on-unmatched-pattern"
