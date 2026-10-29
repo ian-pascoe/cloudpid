@@ -27,6 +27,7 @@ import {
   asOutput,
   boundItems,
   ChangeOutputFields,
+  overriddenInOutput,
   scopeRef,
   ScopeRef,
 } from "./outputs.ts";
@@ -48,10 +49,27 @@ const OverriddenIn = {
   }),
 };
 
-const overriddenInOutput = (environments: ReadonlyArray<Scope>) => {
-  const kept = boundItems(Arr.map(environments, scopeRef));
+/**
+ * The most one of a Skill tool's own lists weighs stored (the installed, refused and listed Skills, those updated, the
+ * Environments that hide one), half of what one list of a value may (`MAX_PART_BYTES`). The most a value holds then:
+ * `environment_skill_install` takes the changes (up to `MAX_PART_BYTES`), four lists at this bound and `unchanged` at
+ * `MAX_UNCHANGED_BYTES`, under 1 MiB in all; `environment_skill_update` the changes, two lists and `unchanged`, and a
+ * save or a removal the changes and the Environments, each far less.
+ */
+const MAX_SKILL_LIST_BYTES = 128 * 1024;
 
-  return { overridden_in: kept.items, overridden_in_truncated: kept.truncated };
+/** The most the fields a Skill tool found as asked already (`unchanged`) weigh stored. */
+const MAX_UNCHANGED_BYTES = 64 * 1024;
+
+const UnchangedTruncated = Schema.Boolean.annotate({
+  description: "More fields than fit this value (unchanged lists the first)",
+});
+
+/** The fields in `unchanged` that fit, and whether any were left out. */
+const unchangedOutput = (fields: ReadonlyArray<string>) => {
+  const kept = boundItems(fields, MAX_UNCHANGED_BYTES);
+
+  return { unchanged: kept.items, unchanged_truncated: kept.truncated };
 };
 
 // ── An Environment's record ─────────────────────────────────────────────────────────────────────────────────────
@@ -199,6 +217,7 @@ export const SkillRemoveOutput = Schema.Struct({
 /** `environment_skill_install`. */
 export const SkillInstallOutput = Schema.Struct({
   ...ChangeOutputFields,
+  unchanged_truncated: UnchangedTruncated,
   changed,
   source: Schema.NullOr(
     Schema.Struct({
@@ -260,6 +279,7 @@ export const SkillInstallOutput = Schema.Struct({
 /** `environment_skill_update`. */
 export const SkillUpdateOutput = Schema.Struct({
   ...ChangeOutputFields,
+  unchanged_truncated: UnchangedTruncated,
   changed,
   updated: Schema.Array(
     Schema.Struct({
@@ -321,7 +341,7 @@ const skillChange = ({
   changed: change !== null,
   skill,
   handed: change !== null && handed,
-  ...overriddenInOutput(change === null ? [] : overriddenIn),
+  ...overriddenInOutput(change === null ? [] : overriddenIn, MAX_SKILL_LIST_BYTES),
 });
 
 /** The value of `environment_skill_save`; `change` null for a Skill kept already, or one that was declined. */
@@ -368,31 +388,36 @@ export const skillInstalledOutput = ({
     result.change === undefined ? [] : [result.change],
   );
 
-  const installed = boundItems(Arr.map(saved, ({ name, path }) => ({ name, path })));
+  const installed = boundItems(
+    Arr.map(saved, ({ name, path }) => ({ name, path })),
+    MAX_SKILL_LIST_BYTES,
+  );
 
   const refused = boundItems(
     Arr.flatMap(results, ({ name, path, outcome, message }) =>
       outcome === "rejected" ? [{ name, path, message: message ?? "refused" }] : [],
     ),
+    MAX_SKILL_LIST_BYTES,
   );
 
   const shown = boundItems(
     Arr.map(listed, ({ name, description, path }) => ({ name, description, path })),
+    MAX_SKILL_LIST_BYTES,
   );
 
   // Each Environment once, whichever Skill its own hides.
-  const hiding: Scope[] = [];
-
-  for (const environment of Arr.flatMap(saved, (result) => result.overriddenIn ?? [])) {
-    if (!Arr.some(hiding, ({ id }) => id === environment.id)) hiding.push(environment);
-  }
+  const hiding = Arr.dedupeWith(
+    Arr.flatMap(saved, (result) => result.overriddenIn ?? []),
+    (a: Scope, b: Scope) => a.id === b.id,
+  );
 
   return asOutput(SkillInstallOutput, {
     scope: scopeRef(scope),
     ...changesOutput(changes),
-    unchanged: Arr.map(
-      Arr.filter(results, (result) => result.outcome === "unchanged"),
-      ({ name }) => skillField(name),
+    ...unchangedOutput(
+      Arr.flatMap(results, (result) =>
+        result.outcome === "unchanged" ? [skillField(result.name)] : [],
+      ),
     ),
     approval,
     changed: saved.length > 0,
@@ -404,7 +429,7 @@ export const skillInstalledOutput = ({
     listed: shown.items,
     listed_truncated: shown.truncated,
     handed: saved.length > 0 && handed,
-    ...overriddenInOutput(hiding),
+    ...overriddenInOutput(hiding, MAX_SKILL_LIST_BYTES),
   });
 };
 
@@ -436,6 +461,7 @@ export const skillUpdatedOutput = ({
       to: skillSourceOutput(to),
       overwrote,
     })),
+    MAX_SKILL_LIST_BYTES,
   );
 
   const refused = boundItems(
@@ -446,13 +472,16 @@ export const skillUpdatedOutput = ({
         ? [{ name: result.name, outcome: result.outcome, message: result.message }]
         : [],
     ),
+    MAX_SKILL_LIST_BYTES,
   );
 
   return asOutput(SkillUpdateOutput, {
     scope: scopeRef(scope),
     ...changesOutput(changes),
-    unchanged: Arr.flatMap(results, (result) =>
-      result.outcome === "unchanged" ? [skillField(result.name)] : [],
+    ...unchangedOutput(
+      Arr.flatMap(results, (result) =>
+        result.outcome === "unchanged" ? [skillField(result.name)] : [],
+      ),
     ),
     approval,
     changed: moved.length > 0,

@@ -6,7 +6,6 @@
 // override one, the Instructions and a value too long to show (an Agent change's values are cut by `./outputs.ts`).
 // @effect-diagnostics missingPipeableSignature:off
 import type { AgentChange } from "@cloudpid/protocol";
-import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import {
@@ -18,6 +17,7 @@ import {
   changesOutput,
   MAX_PART_BYTES,
   ScopeRef,
+  overriddenInOutput,
   scopeRef,
 } from "./outputs.ts";
 import type { SettingsView } from "./settings.ts";
@@ -144,16 +144,9 @@ export const instructionsOutput = (text: string, bytes: number) => {
 };
 
 /** The Environments that override a field, as many as fit. */
-export const overriddenInOutput = (
+export const settingOverriddenIn = (
   by: ReadonlyArray<{ readonly id: string; readonly name: string }>,
-) => {
-  const bounded = boundItems(
-    Arr.map(by, ({ id, name }) => ({ id, name })),
-    MAX_OVERRIDDEN_IN_BYTES,
-  );
-
-  return { overridden_in: bounded.items, overridden_in_truncated: bounded.truncated };
-};
+) => overriddenInOutput(by, MAX_OVERRIDDEN_IN_BYTES);
 
 /** A setting's values as a value gives them: each as it is, unless one is too long to show. */
 export const settingValues = (value: Schema.Json | null, global: Schema.Json | null) => {

@@ -34,6 +34,7 @@ import {
   boundText,
   changesOutput,
   EnvironmentChangeOutput,
+  overriddenInOutput,
   scopeRef,
   ScopeRef,
 } from "./outputs.ts";
@@ -388,15 +389,10 @@ type Placement = {
 };
 
 /** `place` as a value gives it: the Environments that override are cut to `MAX_OVERRIDING_BYTES`. */
-const placed = ({ source, overriding }: Placement) => {
-  const bounded = boundItems(overriding, MAX_OVERRIDING_BYTES);
-
-  return {
-    source,
-    overridden_in: bounded.items,
-    overridden_in_truncated: bounded.truncated,
-  };
-};
+const placed = ({ source, overriding }: Placement) => ({
+  source,
+  ...overriddenInOutput(overriding, MAX_OVERRIDING_BYTES),
+});
 
 /** `settings` as a value gives them, each placed by `place`. */
 const settingsOutput = (

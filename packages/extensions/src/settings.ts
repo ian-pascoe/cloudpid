@@ -54,7 +54,7 @@ import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
   instructionsOutput,
-  overriddenInOutput,
+  settingOverriddenIn,
   scopeRefOf,
   settingsChangeOutput,
   SettingsGetOutput,
@@ -486,7 +486,7 @@ export const settingsOutput = (view: SettingsView, own: string | null) => {
         source: Option.isSome(overrideValue(view.overrides, field))
           ? ("global" as const)
           : ("default" as const),
-        ...overriddenInOutput(view.overriddenIn[field] ?? []),
+        ...settingOverriddenIn(view.overriddenIn[field] ?? []),
       };
     }
 
@@ -496,7 +496,7 @@ export const settingsOutput = (view: SettingsView, own: string | null) => {
       source: Option.isSome(overrideValue(view.overrides, field))
         ? ("override" as const)
         : ("inherited" as const),
-      ...overriddenInOutput([]),
+      ...settingOverriddenIn([]),
     };
   };
 

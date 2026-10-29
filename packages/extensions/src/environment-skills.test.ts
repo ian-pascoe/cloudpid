@@ -2989,4 +2989,61 @@ describe("the Skill tools from a program", () => {
     expect(updated?.lengths["refused"]).toBeLessThan(2_000);
     expect(updated?.bytes).toBeLessThan(1.5 * 1024 * 1024);
   });
+
+  it("cuts the Skills an install installed, and the fields it found kept already, saying so, without failing", async () => {
+    const { extension, answerInstall } = await setUp();
+    const many = Arr.makeBy(2_000, (at) => `skill-${at}`);
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      results: Arr.map(many, (name) => ({
+        name,
+        path: `skills/${"p".repeat(200)}/${name}`,
+        outcome: "installed" as const,
+      })),
+      handed: true,
+    });
+
+    const install: ReadonlyArray<readonly [string, JsonObject]> = [
+      [
+        "environment_skill_install",
+        { id: "default", source: "mattpocock/skills", skills: ["*"], reason },
+      ],
+    ];
+
+    const [installed] = await runSized([extension], install);
+
+    expect(installed?.isError).toBe(false);
+    expect(installed?.truncated["installed_truncated"]).toBe(true);
+    expect(installed?.lengths["installed"]).toBeGreaterThan(0);
+    expect(installed?.lengths["installed"]).toBeLessThan(2_000);
+    expect(installed?.truncated["unchanged_truncated"]).toBe(false);
+    expect(installed?.bytes).toBeLessThan(1024 * 1024);
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      results: Arr.map(many, (name) => ({
+        name: `${"u".repeat(60)}-${name}`,
+        path: `skills/${name}`,
+        outcome: "unchanged" as const,
+      })),
+      handed: false,
+    });
+
+    const [kept] = await runSized([extension], install);
+
+    expect(kept?.isError).toBe(false);
+    expect(kept?.truncated["unchanged_truncated"]).toBe(true);
+    expect(kept?.lengths["unchanged"]).toBeGreaterThan(0);
+    expect(kept?.lengths["unchanged"]).toBeLessThan(2_000);
+    expect(kept?.bytes).toBeLessThan(1024 * 1024);
+  });
 });

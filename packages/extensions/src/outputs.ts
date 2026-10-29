@@ -85,6 +85,19 @@ export const scopeRef = ({
   readonly name: string;
 }): typeof ScopeRef.Type => ({ id, name });
 
+/**
+ * The Environments that override something (a setting, a variable, a Skill), as many as fit `maxBytes`, and whether
+ * any were left out.
+ */
+export const overriddenInOutput = (
+  environments: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+  maxBytes: number = MAX_PART_BYTES,
+) => {
+  const { items, truncated } = boundItems(Arr.map(environments, scopeRef), maxBytes);
+
+  return { overridden_in: items, overridden_in_truncated: truncated };
+};
+
 /** The owner's answer to a change that waits for their Approval; null for a change that does not. */
 export const ApprovalOutcome = Schema.NullOr(
   Schema.Struct({
