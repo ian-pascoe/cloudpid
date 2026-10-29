@@ -27,7 +27,7 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 
 - **Infra** (`docs/development/infra.md`): read before running `alchemy dev` or a deploy, adding or rotating a deploy-time secret, or changing CI.
 - **Workers** (`docs/development/workers.md`): read before adding a Worker, a binding or an entrypoint, writing a workerd test, or changing what the Worker Shell runs.
-- **Dependencies** (`docs/development/dependencies.md`): read before upgrading a patched or pinned dependency (`@cloudflare/computer`, alchemy, `@cloudflare/vitest-plugin`, isomorphic-git, `@pierre/diffs`), or when `bun install` fails on a patch.
+- **Dependencies** (`docs/development/dependencies.md`): read before upgrading a patched or pinned dependency (`@cloudflare/computer`, `pi-durable`, alchemy, `@cloudflare/vitest-plugin`, isomorphic-git, `@pierre/diffs`), or when `bun install` fails on a patch.
 
 ## Reference repositories
 

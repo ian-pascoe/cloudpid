@@ -174,6 +174,8 @@ export const openSecretsHarness = async (
   kept?: ReadonlyArray<KeptSecret>,
   /** What keeps the Secrets the owner chooses to keep: it may change `registry.secrets`, which `kept` reads. */
   keep?: (request: KeepRequest, registry: { secrets: KeptSecret[] }) => ReadonlyArray<KeepResult>,
+  /** Extensions installed after the secrets extension, as the Session installs `ResultBounds`. */
+  after: readonly Extension[] = [],
 ) => {
   const registry = { secrets: [...(kept ?? [])] };
   const runtime = ManagedRuntime.make(TestClock.layer());
@@ -249,6 +251,8 @@ export const openSecretsHarness = async (
   for (const extension of beside) tools.install(extension);
 
   tools.install(secretsExt);
+
+  for (const extension of after) tools.install(extension);
 
   const harness = await Harness.open(
     new MemoryStorage(),

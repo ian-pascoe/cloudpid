@@ -1,0 +1,79 @@
+diff --git a/dist/codemode/codemode.d.ts b/dist/codemode/codemode.d.ts
+index 6a26e43076d86829ae1b54f201d69788f6e646fb..c998acf93a312b2ff0f9817ee1fab6ad78dc3136 100644
+--- a/dist/codemode/codemode.d.ts
++++ b/dist/codemode/codemode.d.ts
+@@ -138,6 +138,11 @@ export type CodemodeNestedCall = {
+  */
+ export type CodemodeToolDetails = {
+     calls: CodemodeNestedCall[];
++    /** cloudpid patch (#97): the calls after those listed, which did not fit the list's bytes, and how many failed. */
++    omittedCalls?: {
++        count: number;
++        failed: number;
++    };
+     /** Temp file with the complete text output, when the output was cut to its token budget. */
+     fullOutputPath?: string;
+ };
+diff --git a/dist/codemode/codemode.js b/dist/codemode/codemode.js
+index 774212f45368f90fcaf23d5948f2fa4e59d059a6..476c0d9ea8a714532918c355e181b35023e5d785 100644
+--- a/dist/codemode/codemode.js
++++ b/dist/codemode/codemode.js
+@@ -83,6 +83,11 @@ export const CodemodeStoreDoc = defineDoc({
+ });
+ const ARGS_PREVIEW_CHARS = 200;
+ const ERROR_PREVIEW_CHARS = 500;
++// cloudpid patch (#97): a result is one SQLite row (8 MiB: workerd#7493, cloudflare-docs#34502), stored in the run's
++// document and in its entry, so the call list its details carry is held to this many stored bytes (JSON, UTF-8), in call
++// order; the calls after it are counted.
++const MAX_DETAILS_CALLS_BYTES = 64 * 1024;
++const detailsEncoder = new TextEncoder();
+ function cut(text, max) {
+     return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+ }
+@@ -387,7 +392,8 @@ class CodemodeCall {
+             generatedImages: this.generatedImages,
+             wallMs: this.api.now() - this.start.startedAt,
+             maxOutputTokens: this.start.maxOutputTokens,
+-            calls: details.calls,
++            // cloudpid patch (#97): the model's error summary names every call, within its token budget.
++            calls: this.calledRows(),
+             limits: OUTPUT_LIMITS,
+             write: this.outputFiles(),
+         });
+@@ -718,11 +724,33 @@ class CodemodeCall {
+             row.error = cut(error, ERROR_PREVIEW_CHARS);
+     }
+     /** The rows in call order; calls still running when the script ended were cancelled. */
+-    details() {
+-        const calls = [...this.rows.values()]
++    calledRows() {
++        return [...this.rows.values()]
+             .sort((a, b) => a.id - b.id)
+             .map((row) => (row.status === "running" ? { ...row, status: "cancelled" } : row));
+-        return { calls };
++    }
++    /**
++     * cloudpid patch (#97): the rows from the first while they fit `MAX_DETAILS_CALLS_BYTES`; the calls after them are
++     * counted in `omittedCalls`, with how many of those failed.
++     */
++    details() {
++        const rows = this.calledRows();
++        let bytes = 2;
++        let kept = rows.length;
++        for (let index = 0; index < rows.length; index++) {
++            bytes += detailsEncoder.encode(JSON.stringify(rows[index])).length + (index === 0 ? 0 : 1);
++            if (bytes > MAX_DETAILS_CALLS_BYTES) {
++                kept = index;
++                break;
++            }
++        }
++        if (kept === rows.length)
++            return { calls: rows };
++        const omitted = rows.slice(kept);
++        return {
++            calls: rows.slice(0, kept),
++            omittedCalls: { count: omitted.length, failed: omitted.filter((row) => row.status === "error").length },
++        };
+     }
+     async callGlobal(call) {
+         const discovery = DISCOVERY_GLOBALS.includes(call.name);

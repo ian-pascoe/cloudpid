@@ -7,16 +7,15 @@ import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durabl
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BINARY_SCAN_BYTES,
-  byteLength,
   capturedDiffs,
   MAX_CODEMODE_DIFF_BYTES,
   MAX_DIFF_INPUT_BYTES,
   MAX_EDIT_LENGTH,
   MAX_PATCH_BYTES,
   oldFile,
-  storedBytes,
   writeDetails,
 } from "./call-diff.ts";
+import { byteLength, storedBytes } from "./stored-bytes.ts";
 
 const lines = (count: number, prefix = "line"): string =>
   Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}\n`).join("");
@@ -483,8 +482,28 @@ describe("capturedDiffs", () => {
     });
   });
 
+  it("counts each diff whole, its path and key included, and leaves out the calls past the budget", async () => {
+    // 1,000 calls with long paths and no patch: their records alone pass the budget.
+    const ids = Array.from({ length: 1000 }, (_, index) => index + 1);
+    const path = `src/${"deep/".repeat(60)}file.ts`;
+
+    const diffs = await capturedDiffs(
+      listed(...ids.map((id) => [id, "write", "ok"] as const)),
+      async () => ({ path, binary: true }),
+    );
+
+    const kept = Object.keys(diffs);
+
+    expect(storedBytes(diffs)).toBeLessThanOrEqual(MAX_CODEMODE_DIFF_BYTES);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(1000);
+    // The first calls, in order: those past the budget have no entry at all.
+    expect(kept).toEqual(ids.slice(0, kept.length).map(String));
+    expect(diffs["1"]).toEqual({ path, binary: true });
+  });
+
   it("holds the patches of one result to a budget they share, in call order", async () => {
-    const patch = "p".repeat(MAX_CODEMODE_DIFF_BYTES / 2 - 10);
+    const patch = "p".repeat(MAX_CODEMODE_DIFF_BYTES / 2 - 100);
 
     const diffs = await capturedDiffs(
       listed([1, "write", "ok"], [2, "write", "ok"], [3, "write", "ok"], [4, "write", "ok"]),

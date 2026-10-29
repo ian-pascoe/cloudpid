@@ -1392,6 +1392,26 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /** The `details` of each tool result in the root transcript, as stored, oldest first. */
+  toolResultDetails(): Promise<ReadonlyArray<unknown>> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+        const root = yield* harness.root({});
+
+        const page = yield* callDurable("entries", (context) =>
+          root.entries({ order: "ascending" }, 100, undefined, context),
+        );
+
+        return Arr.flatMap(page.items, (entry) => {
+          const message = ToolResultEntry.is(entry) ? entry.model?.[0] : undefined;
+
+          return message?.role === "toolResult" ? [message.details] : [];
+        });
+      }),
+    );
+  }
+
   /** The images of the tool results in the root transcript, as stored, oldest first: each one's type and base64 length. */
   toolResultImages(): Promise<
     ReadonlyArray<{ readonly mimeType: string; readonly characters: number }>
@@ -1422,6 +1442,11 @@ export class TestSession extends DurableObject {
 
   /** The length of the longest row of the Harness's own storage, as JSON: what one SQLite row of it holds. */
   longestHarnessRow(): number {
+    return Math.max(0, ...this.harnessRows().map((row) => row.length));
+  }
+
+  /** Each row of the Harness's own storage, as JSON. */
+  harnessRows(): readonly string[] {
     const { sql } = this.ctx.storage;
 
     const tables = sql
@@ -1430,19 +1455,16 @@ export class TestSession extends DurableObject {
       )
       .toArray();
 
-    return Math.max(
-      0,
-      ...tables.flatMap((table) => {
-        const name = table["name"];
+    return tables.flatMap((table) => {
+      const name = table["name"];
 
-        return Predicate.isString(name)
-          ? sql
-              .exec(`select * from "${name}"`)
-              .toArray()
-              .map((row) => JSON.stringify(row).length)
-          : [];
-      }),
-    );
+      return Predicate.isString(name)
+        ? sql
+            .exec(`select * from "${name}"`)
+            .toArray()
+            .map((row) => JSON.stringify(row))
+        : [];
+    });
   }
 
   /** Report this Session's status to the Registry object named `registry`, as the Session DO does to the Registry DO. */

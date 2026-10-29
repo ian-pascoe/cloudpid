@@ -44,7 +44,7 @@ export type ParsedTemplate = PromptTemplate & { readonly content: string };
 
 /**
  * The largest template or Skill file a message is expanded with, in bytes: an expansion is stored in one entry, whose
- * row SQLite holds to 2 MB. A bigger template is not listed; a bigger Skill is left unexpanded.
+ * row SQLite holds to 8 MiB (workerd#7493). A bigger template is not listed; a bigger Skill is left unexpanded.
  */
 export const MAX_EXPANDED_FILE_BYTES = 256 * 1024;
 

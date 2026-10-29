@@ -5,7 +5,8 @@
 
 /**
  * A Skill's file larger than this is refused: the Registry keeps each text in one SQLite row and each Workspace keeps it
- * as one storage value (as UTF-8 bytes), and a Durable Object's row or value may hold 2 MB.
+ * as one storage value (as UTF-8 bytes), and a Durable Object's row or value may hold 8 MiB (workerd#7493; Cloudflare's
+ * docs still say 2 MB: cloudflare-docs#34502).
  */
 export const MAX_FILE_BYTES = 1536 * 1024;
 

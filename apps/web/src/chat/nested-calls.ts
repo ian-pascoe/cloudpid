@@ -57,9 +57,21 @@ const Details = Schema.Struct({
   ),
   /** The Call diffs of the script's `edit` and `write` calls, by call (`id`); read one at a time, as one bad entry is not the list's. */
   diffs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  /** Read apart from the calls, as a bad one is not the list's. */
+  omittedCalls: Schema.optional(Schema.Unknown),
 });
 
+/** The calls a result's details left out of their list, which they cap: how many, and how many of those failed. */
+export const OmittedCalls = Schema.Struct({
+  count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  failed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
+export type OmittedCalls = typeof OmittedCalls.Type;
+
 const decodeDetails = Schema.decodeUnknownOption(Details);
+
+const decodeOmitted = Schema.decodeUnknownOption(OmittedCalls);
 
 const decodeArgs = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
@@ -93,3 +105,11 @@ export const settledCalls = (
         return call;
       }),
   });
+
+/** The calls a code mode result's details left out of their list, or none when they left none out or say it badly. */
+export const omittedCalls = (
+  details: Extract<TranscriptPart, { type: "tool-result" }>["details"],
+): OmittedCalls | undefined =>
+  Option.getOrUndefined(
+    Option.flatMap(decodeDetails(details), ({ omittedCalls: omitted }) => decodeOmitted(omitted)),
+  );

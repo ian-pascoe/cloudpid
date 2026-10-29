@@ -1,8 +1,8 @@
-// `read` of an image too large for one SQLite row, through a Session on a real Workspace and the Images binding (which
+// `read` of an image over the conversation's bound, through a Session on a real Workspace and the Images binding (which
 // miniflare emulates with sharp): the image the model gets is held to the conversation's bound, the result says it was
-// reduced, and the Session keeps running (docs/architecture/workspace.md → Filesystem and tools). miniflare's SQLite does not enforce
-// Cloudflare's 2 MB row cap, so the sizes are what is checked, not the failure the bound prevents.
-// workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
+// reduced, and the Session keeps running (docs/architecture/workspace.md → Filesystem and tools). One image this size
+// stays within the 8 MiB a row holds (workerd#7493), so the sizes are what is checked, not a failure the bound
+// prevents. workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { MAX_IMAGE_CHARACTERS } from "@cloudpid/extensions/images";
@@ -84,7 +84,7 @@ describe("a Session's read of a large image", () => {
     const slug = uniqueWorkspace();
     const png = await noisyPng(1000);
 
-    // Over the 2 MB a SQLite row holds, as base64 and as bytes.
+    // Far over `MAX_IMAGE_CHARACTERS`, as base64 and as bytes.
     expect(png.byteLength).toBeGreaterThan(2_900_000);
 
     const workspace = new ComputerExecutionEnv({

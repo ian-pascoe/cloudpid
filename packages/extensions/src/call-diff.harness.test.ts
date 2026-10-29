@@ -223,7 +223,7 @@ describe("write's Call diff", () => {
     expect((await file("big.txt")).length).toBe(MAX_DIFF_INPUT_BYTES / 2 + 2);
   });
 
-  it("keeps the stored result of a write of 1 MiB well under the 2 MB row", async () => {
+  it("keeps the stored result of a write of 1 MiB well under the 8 MiB row", async () => {
     const { call } = await open();
 
     const result = await call("write", {
@@ -235,7 +235,7 @@ describe("write's Call diff", () => {
     expect(result.bytes).toBeLessThan(10_000);
   });
 
-  it("keeps the stored result of a write whose patch is just under 512 KiB well within the 2 MB row", async () => {
+  it("keeps the stored result of a write whose patch is just under 512 KiB well within the 8 MiB row", async () => {
     const { call } = await open();
     // Quotes are escaped when stored, so the patch is the longest a result holds: about 488 KiB as stored.
     const content = `${'"'.repeat(60)}\n`.repeat(4_000);

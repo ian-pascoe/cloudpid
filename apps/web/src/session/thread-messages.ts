@@ -16,7 +16,13 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { type CallDiff, callDiffOf } from "../call-diff.ts";
 import { madeChanges, type ShownChange } from "../chat/agent-change.ts";
-import { liveCalls, type NestedCall, settledCalls } from "../chat/nested-calls.ts";
+import {
+  liveCalls,
+  type NestedCall,
+  type OmittedCalls,
+  omittedCalls,
+  settledCalls,
+} from "../chat/nested-calls.ts";
 import { type StartedSubagent, startedSubagent } from "../chat/subagent.ts";
 import { entryIdOf } from "./tree.ts";
 
@@ -129,6 +135,7 @@ const resolveCall = (
 
   if (index !== undefined && call?.type === "tool-call") {
     const nested = settledCalls(result.details);
+    const omitted = omittedCalls(result.details);
     const subagent = result.name === "subagent" ? startedSubagent(result.details) : undefined;
     const images = shownImages(result.content);
     const changes = madeChanges(result.details);
@@ -136,12 +143,14 @@ const resolveCall = (
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
 
-    // What a tool left besides its text: the calls it made, which its result lists once it has ended, the subagent a
-    // `subagent` call started, the images it returned (a browser's screenshots), the Agent change it made, and the patch an
-    // `edit` or `write` recorded (its Call diff).
+    // What a tool left besides its text: the calls it made, which its result lists once it has ended (and how many it left
+    // out of the list), the subagent a `subagent` call started, the images it returned (a browser's screenshots), the Agent
+    // change it made, and the patch an `edit` or `write` recorded (its Call diff).
     const artifact: CardArtifact = {};
 
     if (nested.length > 0) artifact.nested = nested;
+
+    if (omitted !== undefined) artifact.omittedCalls = omitted;
 
     if (subagent !== undefined) artifact.subagent = subagent;
 
@@ -155,6 +164,7 @@ const resolveCall = (
       index,
       1,
       nested.length === 0 &&
+        omitted === undefined &&
         subagent === undefined &&
         images.length === 0 &&
         changes.length === 0 &&
@@ -168,6 +178,7 @@ const resolveCall = (
 /** What a tool call's card shows beside its arguments and result. */
 type CardArtifact = {
   nested?: NestedCall[];
+  omittedCalls?: OmittedCalls;
   subagent?: StartedSubagent;
   images?: { readonly mimeType: string; readonly data: string }[];
   changes?: ReadonlyArray<ShownChange>;

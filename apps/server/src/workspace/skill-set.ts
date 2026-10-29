@@ -75,8 +75,9 @@ const HASH_KEY = "cloudpid:skills:hash";
 
 /**
  * Where each file of the held set is kept, under `<prefix><path>`, as its UTF-8 bytes: one entry per file keeps each
- * value under the 2 MB a value may hold, as a file is at most `MAX_FILE_BYTES` of UTF-8 (a string would be serialized
- * at two bytes a character when it holds one past Latin-1). A set kept before holds strings, which are read as they are.
+ * value under the 8 MiB a value may hold (workerd#7493), as a file is at most `MAX_FILE_BYTES` of UTF-8 (a string would
+ * be serialized at two bytes a character when it holds one past Latin-1). A set kept before holds strings, which are
+ * read as they are.
  */
 export const FILE_PREFIX = "cloudpid:skills:file:";
 

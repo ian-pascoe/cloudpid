@@ -35,6 +35,7 @@
     "./approvals": "./src/approvals.ts",
     "./approval-tools": "./src/approval-tools.ts",
     "./images": "./src/images.ts",
+    "./result-bounds": "./src/result-bounds.ts",
     "./bash-routing": "./src/bash-routing.ts",
     "./tool-search": "./src/tool-search.ts"
   },

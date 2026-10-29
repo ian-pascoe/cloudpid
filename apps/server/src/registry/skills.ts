@@ -254,7 +254,7 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
     return true;
   },
   put: (scope, skill, contents, now) => {
-    // One row per text keeps each row below the 2 MB a row may hold: a file is at most `MAX_FILE_BYTES`.
+    // One row per text keeps each row below the 8 MiB a row holds (workerd#7493): a file is at most `MAX_FILE_BYTES`.
     for (const hash of new Set(Record.values(skill.files))) {
       const text = contents.get(hash);
 

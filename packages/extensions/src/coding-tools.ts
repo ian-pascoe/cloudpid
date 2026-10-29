@@ -56,7 +56,8 @@ import {
   type BashRoute,
   type WorkerOutput,
 } from "./bash-routing.ts";
-import { byteLength, capturedDiffs, oldFile, writeDetails } from "./call-diff.ts";
+import { capturedDiffs, oldFile, writeDetails } from "./call-diff.ts";
+import { byteLength } from "./stored-bytes.ts";
 import { Images, type ImagesService, readTool } from "./images.ts";
 
 /** Where a `bash` command can run: the Worker Shell (`worker`) or the Container (`container`). */
