@@ -1,5 +1,3 @@
-// @effect-diagnostics processEnv:off -- Vite's config is plain Node, read once at start.
-
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type ServerOptions } from "vite";
@@ -17,11 +15,6 @@ const server: ServerOptions = {
     "^/sessions/[^/]+/attachments/": WORKER,
   },
 };
-
-// `VITE_POLL=1` makes the dev server poll for changes: on a cloudpid Container `/workspace` is a FUSE mount whose
-// changes made through the Workspace (the file tools, the Worker Shell) raise no inotify events, so Vite never hears
-// of them.
-if (process.env["VITE_POLL"] === "1") server.watch = { usePolling: true, interval: 300 };
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],

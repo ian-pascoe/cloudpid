@@ -25,7 +25,7 @@ Every deploy and `alchemy dev` builds the Container's image (`apps/sandbox-image
 
 ## Web UI development
 
-Run `pnpm --filter @cloudpid/web run dev` next to `alchemy dev`: Vite proxies `/rpc` and the Session socket to `localhost:1337`. On a cloudpid Container, start it with `VITE_POLL=1`: `/workspace` is a FUSE mount whose changes made through the Workspace raise no inotify events, so without polling Vite keeps serving a file's old version.
+Run `pnpm --filter @cloudpid/web run dev` next to `alchemy dev`: Vite proxies `/rpc` and the Session socket to `localhost:1337`. On a cloudpid Container its watcher needs no polling: the Workspace DO tells the Container's watchers of the agent's edits ([_File-change notifications_](../architecture/container.md)).
 
 ## Secrets and variables
 
