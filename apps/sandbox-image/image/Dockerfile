@@ -1,6 +1,6 @@
 # The Workspace Container's image (docs/architecture/container.md, ADR-0004): Ubuntu 26.04 LTS with fuse3, the
 # everyday command-line tools, a C toolchain, Docker, computerd under its supervisor with a memory guard, the
-# file-change notify helper, and mise with its installs of the base mise.toml's Toolchains. Every program a project uses is a mise Toolchain; the image's installs are only found by mise for a
+# file-change signal's helper, and mise with its installs of the base mise.toml's Toolchains. Every program a project uses is a mise Toolchain; the image's installs are only found by mise for a
 # Workspace that asks for those versions. The image is glibc-based because computerd is a glibc Node SEA, and
 # linux/amd64 because that is what Cloudflare Containers run.
 
@@ -77,11 +77,12 @@ COPY --chmod=755 supervise /usr/local/bin/cloudpid-supervise
 COPY --chmod=755 cloudpid-memory-guard /usr/local/bin/cloudpid-memory-guard
 COPY command.bash /usr/local/share/cloudpid/command.bash
 
-# The file-change notify helper the Workspace DO runs after it sends the Container its changes, so file watchers hear of
-# them (docs/architecture/container.md → File-change notifications). A small C program built with the image's own C
-# toolchain: no package (attr's setfattr) or interpreter of its own.
-COPY cloudpid-notify.c /usr/local/src/cloudpid-notify.c
-RUN cc -O2 -Wall -Wextra -Werror -o /usr/local/bin/cloudpid-notify /usr/local/src/cloudpid-notify.c
+# The helper the Workspace DO runs after it sends the Container its changes, so file watchers hear of them (the
+# file-change signal: docs/architecture/container.md → File-change signals). A small C program built with the image's
+# own C toolchain: no package (attr's setfattr) or interpreter of its own. Its source is bound for the build only, so
+# no layer keeps it.
+RUN --mount=type=bind,source=cloudpid-notify.c,target=/tmp/cloudpid-notify.c \
+    cc -O2 -Wall -Wextra -Werror -o /usr/local/bin/cloudpid-notify /tmp/cloudpid-notify.c
 
 # computerd mounts its file system at MOUNT_POINT, so commands see the Workspace's files at /workspace. FUSE_MOUNT=auto
 # mounts through /dev/fuse where the platform exposes it (Cloudflare Containers) and falls back to a userspace shim

@@ -1,4 +1,4 @@
-// The file-change notify helper (docs/architecture/container.md → File-change notifications): `image/cloudpid-notify.c`
+// The file-change signal's helper (docs/architecture/container.md → File-change signals): `image/cloudpid-notify.c`
 // keeps the values `notify.ts` gives the Workspace DO, and the image builds it where the Workspace DO runs it. On Linux
 // with a C compiler the program is built and run for real against a temporary root (where its file system takes user
 // extended attributes); elsewhere (macOS has another `setxattr`) those cases are skipped. Its effect on computerd's
@@ -31,6 +31,11 @@ it("is built into the image where the Workspace DO runs it", () => {
   expect(dockerfile).toMatch(
     new RegExp(`cc [^\\n]*-o ${NOTIFY_PROGRAM.replaceAll("/", "\\/")} [^\\n]*cloudpid-notify\\.c`),
   );
+  // Its source is bound for the build only: no layer of the image keeps it.
+  expect(dockerfile).toContain(
+    "RUN --mount=type=bind,source=cloudpid-notify.c,target=/tmp/cloudpid-notify.c",
+  );
+  expect(dockerfile).not.toMatch(/^COPY .*cloudpid-notify\.c/m);
 });
 
 /** The helper built from the image's source, when this machine can build and run it (Linux, with `cc`). */
@@ -87,9 +92,9 @@ const attribute = (path: string): string | undefined => {
 describe.skipIf(built === undefined)("cloudpid-notify, built and run", () => {
   const program = built ?? "";
 
-  it("notifies each path, NUL or newline separated, and a gone one at its nearest existing ancestor", (context) => {
+  it("signals each NUL-ended path, and a gone one at its nearest existing ancestor", (context) => {
     const dir = root();
-    const result = run(program, dir, `${dir}/src/a.js\0${dir}/keep/gone/deep.js\n${dir}/keep/`);
+    const result = run(program, dir, `${dir}/src/a.js\0${dir}/keep/gone/deep.js\0${dir}/keep`);
 
     // A file system without user extended attributes (some tmpfs) answers EOPNOTSUPP: nothing to check here.
     if (result.stderr.includes("not supported")) context.skip();
@@ -104,17 +109,49 @@ describe.skipIf(built === undefined)("cloudpid-notify, built and run", () => {
     expect(values).toEqual(["1", "1"]);
   });
 
+  it("takes a newline as part of a file name, not as a separator", (context) => {
+    const dir = root();
+
+    writeFileSync(join(dir, "src", "two\nlines.js"), "x");
+
+    const result = run(program, dir, `${dir}/src/two\nlines.js\0`);
+
+    if (result.stderr.includes("not supported")) context.skip();
+
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+
+    const value = attribute(join(dir, "src", "two\nlines.js"));
+
+    if (value !== undefined) expect(value).toBe("1");
+  });
+
   it("never climbs above its root, and says nothing of a path that is gone", () => {
     const dir = root();
-    const result = run(program, `${dir}/src`, `${dir}/src/gone/x.js\n`);
+    const result = run(program, `${dir}/src`, `${dir}/src/gone/x.js\0`);
 
     expect(result.status).toBe(0);
     expect(result.stderr.includes("gone")).toBe(false);
   });
 
-  it("skips a path outside its root, and fails on one that is not absolute after notifying the rest", () => {
+  it("skips a path with an empty, . or .. segment, which could lead out of its root", () => {
     const dir = root();
-    const result = run(program, dir, `relative/x\n/etc/hostname\n${dir}/src/a.js\n`);
+
+    const result = run(
+      program,
+      dir,
+      [`${dir}/../etc/hostname`, `${dir}/./src/a.js`, `${dir}//src/a.js`, `${dir}/keep/`]
+        .map((path) => `${path}\0`)
+        .join(""),
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr.match(/segment, skipped/g)).toHaveLength(4);
+  });
+
+  it("skips a path outside its root, and fails on one that is not absolute after signalling the rest", () => {
+    const dir = root();
+    const result = run(program, dir, `relative/x\0/etc/hostname\0${dir}/src/a.js\0`);
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("relative/x: not an absolute path");
