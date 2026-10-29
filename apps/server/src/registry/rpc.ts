@@ -14,6 +14,7 @@ import {
   type ForkKind,
   ownBranchProblem,
   SessionNotFound,
+  type SettingsOverridesState,
   forkTitle,
   workspaceDirectory,
 } from "@cloudpid/protocol";
@@ -47,7 +48,7 @@ import { joinRepoSkills, joinSkillView, repoSearchQuery, type SkillRepos } from 
 import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
 import { removals } from "./removal.ts";
-import { REGISTRY_NAME, type Registry } from "./Registry.ts";
+import { REGISTRY_NAME, type Registry, type SettingsOverridesUpdate } from "./Registry.ts";
 import {
   type EnvironmentNaming,
   GLOBAL_SCOPE,
@@ -302,6 +303,20 @@ const shownValue = (value: Schema.Json | null): string =>
     : Predicate.isString(value) && (value.includes("\n") || value.length > SHOWN_TEXT_CHARACTERS)
       ? textSize(value)
       : JSON.stringify(value);
+
+/** The answer to an owner's change of Environment `environment`'s Settings: the state saved, or why not. */
+const settingsOverridesAnswer =
+  (environment: string) =>
+  (update: SettingsOverridesUpdate): Effect.Effect<SettingsOverridesState, SettingsError> => {
+    switch (update.status) {
+      case "saved":
+        return Effect.succeed(update.state);
+      case "rejected":
+        return Effect.fail(SettingsError.make({ message: update.message }));
+      case "missing":
+        return Effect.fail(SettingsError.make({ message: noEnvironment(environment) }));
+    }
+  };
 
 /**
  * The main Worker's `RegistryRpcs` endpoint (`docs/architecture/client-and-protocol.md`): Effect RPC over HTTP with JSON
@@ -1165,31 +1180,13 @@ export const serveRegistryRpc = <R = never>(
             ),
           ),
       updateSettingsOverrides: ({ environment, set, reset }) =>
-        registry.updateSettingsOverrides({ environment, set, reset }).pipe(
-          Effect.flatMap((update) => {
-            switch (update.status) {
-              case "saved":
-                return Effect.succeed(update.state);
-              case "rejected":
-                return Effect.fail(SettingsError.make({ message: update.message }));
-              case "missing":
-                return Effect.fail(SettingsError.make({ message: noEnvironment(environment) }));
-            }
-          }),
-        ),
+        registry
+          .updateSettingsOverrides({ environment, set, reset })
+          .pipe(Effect.flatMap(settingsOverridesAnswer(environment))),
       updateEnvironmentInstructions: ({ environment, instructions }) =>
-        registry.updateEnvironmentInstructions({ environment, instructions }).pipe(
-          Effect.flatMap((update) => {
-            switch (update.status) {
-              case "saved":
-                return Effect.succeed(update.state);
-              case "rejected":
-                return Effect.fail(SettingsError.make({ message: update.message }));
-              case "missing":
-                return Effect.fail(SettingsError.make({ message: noEnvironment(environment) }));
-            }
-          }),
-        ),
+        registry
+          .updateEnvironmentInstructions({ environment, instructions })
+          .pipe(Effect.flatMap(settingsOverridesAnswer(environment))),
       listSettingsChanges: () => registry.listSettingsChanges(),
       revertSettingsChange: ({ change }) =>
         registry.revertSettingsChange({ change }).pipe(

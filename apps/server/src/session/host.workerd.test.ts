@@ -71,7 +71,8 @@ const STAGING = "5a5a5a5a";
 
 /**
  * Two Sessions reporting to one fresh Registry (ADR-0027): one in the Default Environment, and one in a new
- * Environment, Staging, whose Settings Overrides the test sets.
+ * Environment, Staging, whose Settings Overrides the test sets. `prefix` starts their names: `instructions` gives them
+ * the Instructions section, as `TestSession` installs it only for a Session named so.
  */
 const inTwoEnvironments = async (prefix = "session") => {
   const n = (counter += 1);

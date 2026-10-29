@@ -3,6 +3,7 @@ import {
   resolveContainerOverridesLeniently,
   resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
+import type { EnvironmentInstructions } from "@cloudpid/extensions/instructions";
 import type { SealedValue } from "@cloudpid/extensions/secrets/core";
 import {
   DEFAULT_ENVIRONMENT,
@@ -272,9 +273,7 @@ export type RegistryStore = {
   /** Save an Environment's Settings Overrides; says whether it is registered. */
   readonly putSettingsOverrides: (environment: string, overrides: Schema.Json) => boolean;
   /** An Environment's own Instructions (empty for none) with its name, or null when it is not registered. */
-  readonly getEnvironmentInstructions: (
-    environment: string,
-  ) => { readonly name: string; readonly text: string } | null;
+  readonly getEnvironmentInstructions: (environment: string) => EnvironmentInstructions | null;
   /** Save an Environment's own Instructions; says whether it is registered. */
   readonly putEnvironmentInstructions: (environment: string, text: string) => boolean;
   /** The Environments that have Settings Overrides, with them as saved, newest Environment first. */

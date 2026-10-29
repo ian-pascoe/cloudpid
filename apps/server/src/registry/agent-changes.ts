@@ -745,14 +745,16 @@ export const revertAgentChange = (
 
     // The Environment's Settings Overrides (ADR-0027), and its own Instructions, share its history with its Container
     // settings.
-    if (isOverrideField(change.field) || isInstructionsField(change.field)) {
-      const reverted = isInstructionsField(change.field)
-        ? revertEnvironmentInstructionsChange(store, changes, environment, change, now)
-        : revertSettingsOverrideChange(store, changes, environment, change, now);
+    const settingsReverted = isInstructionsField(change.field)
+      ? revertEnvironmentInstructionsChange(store, changes, environment, change, now)
+      : isOverrideField(change.field)
+        ? revertSettingsOverrideChange(store, changes, environment, change, now)
+        : undefined;
 
-      return reverted.status === "reverted"
-        ? { status: "reverted", change: reverted.change }
-        : reverted;
+    if (settingsReverted !== undefined) {
+      return settingsReverted.status === "reverted"
+        ? { status: "reverted", change: settingsReverted.change }
+        : settingsReverted;
     }
 
     if (isLifecycleField(change.field)) {

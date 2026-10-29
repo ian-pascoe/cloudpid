@@ -218,6 +218,17 @@ export type SettingsOverridesUpdate =
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
 
+/** A write of an Environment's Settings as an update says how it went: `null` is an Environment the store has not. */
+const settingsOverridesUpdate = (
+  saved: Result.Result<SettingsOverridesState, { readonly message: string }> | null,
+): SettingsOverridesUpdate => {
+  if (saved === null) return { status: "missing" };
+
+  return Result.isSuccess(saved)
+    ? { status: "saved", state: saved.success }
+    : { status: "rejected", message: saved.failure.message };
+};
+
 export type { SessionSettingsSource } from "./settings.ts";
 
 /** The Container settings at Global, with the Environments that override each field (ADR-0027). */
@@ -1531,28 +1542,15 @@ export const RegistryLive = Registry.make(
           getSettingsOverrides: ({ environment }) =>
             Effect.sync(() => readSettingsOverrides(store, environment)),
           updateSettingsOverrides: ({ environment, set, reset }) =>
-            Effect.sync((): SettingsOverridesUpdate => {
-              const saved = updateSettingsOverrides(state.raw.storage, store, environment, {
-                set,
-                reset,
-              });
-
-              if (saved === null) return { status: "missing" };
-
-              return Result.isSuccess(saved)
-                ? { status: "saved", state: saved.success }
-                : { status: "rejected", message: saved.failure.message };
-            }),
+            Effect.sync(() =>
+              settingsOverridesUpdate(
+                updateSettingsOverrides(state.raw.storage, store, environment, { set, reset }),
+              ),
+            ),
           updateEnvironmentInstructions: ({ environment, instructions }) =>
-            Effect.sync((): SettingsOverridesUpdate => {
-              const saved = putEnvironmentInstructions(store, environment, instructions);
-
-              if (saved === null) return { status: "missing" };
-
-              return Result.isSuccess(saved)
-                ? { status: "saved", state: saved.success }
-                : { status: "rejected", message: saved.failure.message };
-            }),
+            Effect.sync(() =>
+              settingsOverridesUpdate(putEnvironmentInstructions(store, environment, instructions)),
+            ),
           sessionSettings: ({ session }) =>
             Effect.sync(() => sessionSettingsSource(store, session)),
           changeSettings: ({ environment, changes: wanted, author }) =>

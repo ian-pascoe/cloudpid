@@ -176,12 +176,20 @@ export const InstructionsSection = ({ scope }: { scope: string }) => (
   <SettingsSection
     title="Instructions"
     description={
-      <>
-        What the agent is told in{" "}
-        {scope === GLOBAL_SCOPE ? "every session" : "this environment's sessions"}. A repository's
-        own instructions (<code>AGENTS.md</code>) win where they disagree. The agent can propose a
-        change too, which you approve in its session.
-      </>
+      scope === GLOBAL_SCOPE ? (
+        <>
+          What the agent is told in every session. A repository's own instructions (
+          <code>AGENTS.md</code>) win where they disagree. The agent can propose a change too, which
+          you approve in its session.
+        </>
+      ) : (
+        <>
+          What the agent is told in this environment's sessions, after the global instructions:
+          where the two disagree, this environment's win. A repository's own instructions (
+          <code>AGENTS.md</code>) win over both. The agent can propose a change too, which you
+          approve in its session.
+        </>
+      )
     }
   >
     {scope === GLOBAL_SCOPE ? <GlobalInstructions /> : <EnvironmentInstructions scope={scope} />}

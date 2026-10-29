@@ -14,11 +14,15 @@ import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 export const extensionName = "instructions";
 
 /** The section's key; also the tag that wraps its text. pi-durable keeps `instructions` for an agent's own. */
 export const SECTION_KEY = "owner_instructions";
+
+/** An Environment's own Instructions (empty text for none), by its name, which their heading shows. */
+export type EnvironmentInstructions = { readonly name: string; readonly text: string };
 
 /**
  * The Instructions in force for a Session's conversations, by Scope: the Global ones (empty for none), and those of the
@@ -26,7 +30,7 @@ export const SECTION_KEY = "owner_instructions";
  */
 export type InstructionsInForce = {
   readonly global: string;
-  readonly environment?: { readonly name: string; readonly text: string } | undefined;
+  readonly environment?: EnvironmentInstructions | undefined;
 };
 
 /** The Instructions as the Session last read its Settings: synchronous, as the section reads them. */
@@ -35,9 +39,19 @@ export class InstructionsSettings extends Context.Service<
   { readonly current: () => InstructionsInForce }
 >()("@cloudpid/extensions/instructions/InstructionsSettings") {}
 
-/** What the section says before the Instructions: whose they are, and which wins where they disagree. */
+/** What the section says before the Global Instructions alone: whose they are, and that the Project instructions win. */
 export const SECTION_INTRODUCTION =
-  "Instructions the owner keeps in the Settings, each block under its Scope: the Global ones, for every conversation, and this Environment's, for its conversations, after them. Follow them. Where two disagree, the nearer wins: the Environment's win over the Global ones, and the Project instructions from AGENTS.md files below win over both, as they are nearer to the work.";
+  "Instructions the owner keeps in the Settings for every conversation. Follow them. Where they disagree with the Project instructions from AGENTS.md files below, the Project instructions win: they are nearer to the work.";
+
+/**
+ * What the section says before Instructions that include this Environment's own: each block's Scope, and that the nearer
+ * wins where two disagree.
+ */
+export const ENVIRONMENT_SECTION_INTRODUCTION =
+  "Instructions the owner keeps in the Settings, each block under its Scope: the Global ones are for every conversation, this Environment's for its conversations. Follow them. Where two disagree, the nearer wins: this Environment's win over the Global ones, and the Project instructions from AGENTS.md files below win over both, as they are nearer to the work.";
+
+/** The Global Instructions' heading. */
+const GLOBAL_SCOPE_NAME = "Global";
 
 /** `text` as an XML attribute's value holds it. */
 const attribute = (text: string): string =>
@@ -53,7 +67,7 @@ export const formatSection = (instructions: InstructionsInForce): string => {
 
   const shown = Arr.filter(
     [
-      { scope: "Global", text: instructions.global },
+      { scope: GLOBAL_SCOPE_NAME, text: instructions.global },
       ...(environment === undefined
         ? []
         : [{ scope: `Environment ${environment.name}`, text: environment.text }]),
@@ -61,9 +75,16 @@ export const formatSection = (instructions: InstructionsInForce): string => {
     ({ text }) => text.trim() !== "",
   );
 
+  // The Environment's block, shown last when it has text, is the only one that is not Global's.
+  const introduction = Arr.last(shown).pipe(
+    Option.exists(({ scope }) => scope !== GLOBAL_SCOPE_NAME),
+  )
+    ? ENVIRONMENT_SECTION_INTRODUCTION
+    : SECTION_INTRODUCTION;
+
   return shown.length === 0
     ? ""
-    : `<${SECTION_KEY}>\n${SECTION_INTRODUCTION}\n\n${Arr.join(
+    : `<${SECTION_KEY}>\n${introduction}\n\n${Arr.join(
         Arr.map(shown, ({ scope, text }) => formatScope(scope, text)),
         "\n\n",
       )}\n</${SECTION_KEY}>`;

@@ -19,6 +19,7 @@ import {
   withOverrides,
   withRenamedTools,
 } from "@cloudpid/config";
+import type { EnvironmentInstructions } from "@cloudpid/extensions/instructions";
 import type { OverridingEnvironment, SettingsOverridesState } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Data from "effect/Data";
@@ -120,9 +121,7 @@ export const savedGlobalSettings = (documents: DocumentStore): Schema.Json => {
 export type SettingsStore = DocumentStore & {
   readonly getSettingsOverrides: (environment: string) => Schema.Json | null;
   readonly putSettingsOverrides: (environment: string, overrides: Schema.Json) => boolean;
-  readonly getEnvironmentInstructions: (
-    environment: string,
-  ) => { readonly name: string; readonly text: string } | null;
+  readonly getEnvironmentInstructions: (environment: string) => EnvironmentInstructions | null;
   readonly putEnvironmentInstructions: (environment: string, text: string) => boolean;
   readonly listSettingsOverrides: () => ReadonlyArray<{
     readonly id: string;
@@ -244,7 +243,7 @@ export type SessionSettingsSource = {
   /** The Environment's Overrides as saved: `{}` for none. */
   readonly overrides: Schema.Json;
   /** The Environment's own Instructions (empty for none), by its name; null with no Environment. */
-  readonly instructions: { readonly name: string; readonly text: string } | null;
+  readonly instructions: EnvironmentInstructions | null;
 };
 
 /**

@@ -1,6 +1,7 @@
 // What a Session reads from the settings (`docs/architecture/overview.md` → Settings). The overrides live in the Registry DO: Global's,
-// and its Environment's Overrides over them (ADR-0027). The Session keeps the last it read, in its own storage, and
-// hands the Harness live getters over that copy. The Harness reads its settings synchronously, so the Registry is read
+// and its Environment's Overrides over them (ADR-0027), with the Environment's name and own Instructions, which add to
+// Global's rather than overriding them. The Session keeps the last it read, in its own storage, and hands the Harness
+// live getters over that copy. The Harness reads its settings synchronously, so the Registry is read
 // before a request is admitted (`refresh`), never inside a getter.
 import {
   DEFAULT_SETTINGS,
@@ -9,7 +10,10 @@ import {
   resolveOverridesLeniently,
   type Settings,
 } from "@cloudpid/config";
-import type { InstructionsInForce } from "@cloudpid/extensions/instructions";
+import type {
+  EnvironmentInstructions,
+  InstructionsInForce,
+} from "@cloudpid/extensions/instructions";
 import { type SubagentOptions, subagentOptions } from "@cloudpid/extensions/subagents";
 import { reloadToolSearch, type ToolSearchOptions } from "@cloudpid/extensions/tool-search";
 import type {
@@ -127,9 +131,6 @@ export type SettingsKv = {
   put<T>(key: string, value: T): void;
 };
 
-/** An Environment's own Instructions, by its name, as a Session reads them (`SettingsSource.instructions`). */
-export type EnvironmentInstructions = { readonly name: string; readonly text: string };
-
 /**
  * What a Session resolves its Settings from: Global's overrides, its Environment's Overrides over them, and its
  * Environment's own Instructions (absent from a source kept before Environments had them, and null with no Environment).
@@ -137,7 +138,7 @@ export type EnvironmentInstructions = { readonly name: string; readonly text: st
 export type SettingsSource = {
   readonly global: Schema.Json;
   readonly overrides: Schema.Json;
-  readonly instructions?: EnvironmentInstructions | null | undefined;
+  readonly instructions?: EnvironmentInstructions | null;
 };
 
 /** Where what was last read is kept. */
