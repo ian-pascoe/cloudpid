@@ -6,7 +6,7 @@ import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
 
 /**
  * The most base64 characters of images one tool result holds (two images at `MAX_IMAGE_CHARACTERS`), leaving room under
- * the 2 MB row for the result's text, details, and diagnostics.
+ * the 8 MiB row (workerd#7493) for the result's text, details, and diagnostics.
  */
 export const MAX_RESULT_IMAGE_CHARACTERS = 1_500_000;
 

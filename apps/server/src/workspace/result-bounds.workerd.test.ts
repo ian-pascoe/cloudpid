@@ -1,6 +1,7 @@
-// A script's call list, held to its bound in the details of its result (docs/architecture/workspace.md → The rest of one
-// tool result), through a Session's `codemode` on a real Workspace. miniflare's SQLite does not enforce the 2 MB row
-// cap, so the sizes are checked. workerd's `cloudflare:test` APIs are Promise-based, so this file is too.
+// A script's call list, held to its bound in the details of its result (docs/architecture/workspace.md → The rest of
+// one tool result), through a Session's `codemode` on a real Workspace. Local workerd holds a row to 8 MiB as a
+// deployed Durable Object does (workerd#7493), but passing it takes far more calls, so the sizes are checked. workerd's
+// `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off
 import { MAX_CODEMODE_CALLS_BYTES } from "@cloudpid/extensions/result-bounds";
 import { runInDurableObject } from "cloudflare:test";
@@ -11,8 +12,8 @@ import { call, uniqueWorkspace } from "./session.workerd.helpers.ts";
 
 /**
  * How many calls the script makes. Each failing one's row is about 720 bytes (its arguments and error cut for display),
- * so the unbounded list would weigh about 720 KB, 22 times its bound; past about 2,800 calls it would pass the 2 MB row,
- * which miniflare takes over a minute to run.
+ * so the unbounded list would weigh about 720 KB, 11 times its bound; past about 11,600 calls it would pass the 8 MiB
+ * row, and 2,800 already take miniflare over a minute.
  */
 const CALLS = 1000;
 

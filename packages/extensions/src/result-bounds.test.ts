@@ -134,7 +134,7 @@ describe("boundToolResult", () => {
     const fits = { calls: [], diffs: { 1: { patch: "p".repeat(MAX_RESULT_DETAILS_BYTES * 4) } } };
     const result = { output: [], details: fits };
 
-    expect(MAX_CODEMODE_DETAILS_BYTES).toBe(292 * 1024);
+    expect(MAX_CODEMODE_DETAILS_BYTES).toBe(324 * 1024);
     expect(boundToolResult(result, { tool: "codemode", nested: false })).toBe(result);
 
     const over = { calls: [], diffs: { 1: { patch: "p".repeat(MAX_CODEMODE_DETAILS_BYTES) } } };
@@ -142,7 +142,7 @@ describe("boundToolResult", () => {
     expect(
       boundToolResult({ output: [], details: over }, { tool: "codemode", nested: false }).details,
     ).toEqual({
-      omitted: `Details of ${storedBytes(over).toLocaleString("en-US")} bytes were left out: one codemode result holds at most 292 KiB of them.`,
+      omitted: `Details of ${storedBytes(over).toLocaleString("en-US")} bytes were left out: one codemode result holds at most 324 KiB of them.`,
     });
   });
 
@@ -216,7 +216,7 @@ describe("one stored row", () => {
       MAX_CODEMODE_DETAILS_BYTES +
       MAX_RESULT_DIAGNOSTICS_BYTES * 2;
 
-    expect(parts).toBe(1_951_776);
+    expect(parts).toBe(5_010_272);
     expect(parts + ENVELOPE).toBeLessThanOrEqual(MAX_ROW_BYTES);
   });
 

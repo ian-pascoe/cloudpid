@@ -16,7 +16,7 @@ import { linkSkillReferences } from "./skill-references.ts";
 
 /**
  * The most an expanded message may hold, in UTF-8 bytes: the expansion and the typed text it keeps, both stored in its
- * entry, whose row SQLite holds to 2 MB.
+ * entry, whose row SQLite holds to 8 MiB (workerd#7493).
  */
 export const MAX_EXPANSION_BYTES = 1024 * 1024;
 

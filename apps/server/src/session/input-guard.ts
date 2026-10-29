@@ -1,7 +1,8 @@
-// What a submit may hold (`docs/architecture/client-and-protocol.md` → Attachments). The owner's message is stored as one
-// entry, a single SQLite row that Cloudflare caps at 2 MB, and a message that waits for the run is copied into the
-// conversation's inbox, one document (one row) for every message waiting. A write over the cap fails the commit, which
-// fails the whole Session, so the Session refuses such a message first, with why, and keeps running.
+// What a submit may hold (`docs/architecture/client-and-protocol.md` → Attachments). The owner's message is stored as
+// one entry, a single SQLite row that workerd caps at 8 MiB (workerd#7493; Cloudflare's docs still say 2 MB:
+// cloudflare-docs#34502), and a message that waits for the run is copied into the conversation's inbox, one document
+// (one row) for every message waiting. A write over the cap fails the commit, which fails the whole Session, so the
+// Session refuses such a message first, with why, and keeps running.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over a draft's JSON.
 import { isInlineImageType, MAX_STORED_INPUT_BYTES } from "@cloudpid/protocol";
 import type { UserInput } from "@earendil-works/pi-durable";

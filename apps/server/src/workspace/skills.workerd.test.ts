@@ -493,8 +493,8 @@ describe("the Skill set a Workspace keeps", () => {
   it("keeps a file as large as a Skill's file may be, past Latin-1, across an eviction", async () => {
     const slug = uniqueWorkspace();
     const workspace = env.WORKSPACES.getByName(slug);
-    // As a string, V8 would keep this at two bytes a character, past the 2 MB a deployed storage value may hold (the
-    // local workerd does not enforce it, so this checks the round trip only).
+    // As a string, V8 would keep this at two bytes a character, about 3 MiB: within the 8 MiB a storage value may hold
+    // (workerd#7493), but twice what it is kept as, so this checks the round trip.
     const data = `${"x".repeat(MAX_FILE_BYTES - 3)}✓`;
 
     expect(

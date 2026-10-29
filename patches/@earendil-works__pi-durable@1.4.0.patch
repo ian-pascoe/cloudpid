@@ -15,31 +15,22 @@ index 6a26e43076d86829ae1b54f201d69788f6e646fb..c998acf93a312b2ff0f9817ee1fab6ad
      fullOutputPath?: string;
  };
 diff --git a/dist/codemode/codemode.js b/dist/codemode/codemode.js
-index 774212f45368f90fcaf23d5948f2fa4e59d059a6..05df4eb998039b9f22f0b1a8ffd1d13c4426ac33 100644
+index 774212f45368f90fcaf23d5948f2fa4e59d059a6..476c0d9ea8a714532918c355e181b35023e5d785 100644
 --- a/dist/codemode/codemode.js
 +++ b/dist/codemode/codemode.js
-@@ -83,12 +83,19 @@ export const CodemodeStoreDoc = defineDoc({
+@@ -83,6 +83,11 @@ export const CodemodeStoreDoc = defineDoc({
  });
  const ARGS_PREVIEW_CHARS = 200;
  const ERROR_PREVIEW_CHARS = 500;
-+// cloudpid patch (#97): a result is one SQLite row (2 MB), stored in the run's document and in its entry, so the call
-+// list its details carry is held to this many stored bytes (JSON, UTF-8), in call order; the calls after it are counted.
-+const MAX_DETAILS_CALLS_BYTES = 32 * 1024;
++// cloudpid patch (#97): a result is one SQLite row (8 MiB: workerd#7493, cloudflare-docs#34502), stored in the run's
++// document and in its entry, so the call list its details carry is held to this many stored bytes (JSON, UTF-8), in call
++// order; the calls after it are counted.
++const MAX_DETAILS_CALLS_BYTES = 64 * 1024;
 +const detailsEncoder = new TextEncoder();
  function cut(text, max) {
      return text.length > max ? `${text.slice(0, max - 3)}...` : text;
  }
- const codemodeSchema = Type.Object({ code: Type.String({ description: "Raw JavaScript source." }) });
- /** Outputs bounded by the script's own token budget; the Harness's limits only stop a runaway. */
--const OUTPUT_LIMITS = { maxBytes: 4 * 1024 * 1024, maxLines: 100_000 };
-+// cloudpid patch (#97): 160 000 bytes, not 4 MiB, so a script's text is at most 40 000 characters (`truncate` keeps a
-+// quarter of `maxBytes`), the default budget's, whatever `max_output_tokens` asks for: the result shares one SQLite row
-+// with its images.
-+const OUTPUT_LIMITS = { maxBytes: 160_000, maxLines: 100_000 };
- /** Globals for finding tools, answered from the start data, so a replay sees what the first run saw. */
- const DISCOVERY_GLOBALS = ["searchTools", "describeTool", "describeNamespace"];
- const DEFAULT_SEARCH_LIMIT = 8;
-@@ -387,7 +394,8 @@ class CodemodeCall {
+@@ -387,7 +392,8 @@ class CodemodeCall {
              generatedImages: this.generatedImages,
              wallMs: this.api.now() - this.start.startedAt,
              maxOutputTokens: this.start.maxOutputTokens,
@@ -49,7 +40,7 @@ index 774212f45368f90fcaf23d5948f2fa4e59d059a6..05df4eb998039b9f22f0b1a8ffd1d13c
              limits: OUTPUT_LIMITS,
              write: this.outputFiles(),
          });
-@@ -718,11 +726,33 @@ class CodemodeCall {
+@@ -718,11 +724,33 @@ class CodemodeCall {
              row.error = cut(error, ERROR_PREVIEW_CHARS);
      }
      /** The rows in call order; calls still running when the script ended were cancelled. */

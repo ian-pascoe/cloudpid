@@ -1,7 +1,8 @@
 // The rest of one tool result (`docs/architecture/workspace.md` → The rest of one tool result, #97). A tool result is
-// one row of the Session DO's SQLite, which Cloudflare caps at 2 MB: a write over it fails the commit and the Session.
-// pi-durable bounds a result's text, `ResultImages` its images, and `CodemodeDiffs` a script's Call diffs; this holds the
-// other parts a tool controls to caps of their own, each counted as stored (`storedBytes`), and says what it cut:
+// one row of the Session DO's SQLite, which workerd caps at 8 MiB (`MAX_ROW_BYTES`): a write over it fails the commit
+// and the Session. pi-durable bounds a result's text, `ResultImages` its images, and `CodemodeDiffs` a script's Call
+// diffs; this holds the other parts a tool controls to caps of their own, each counted as stored (`storedBytes`), and
+// says what it cut:
 //
 // - the diagnostics a tool reports, which pi-durable stores twice (appended to the content, and in the entry's data);
 // - a nested call's `structuredOutput`, stored in its caller's `NestedCallDoc` (a model-issued call's is never stored);
@@ -19,15 +20,20 @@ import {
 import { MAX_CODEMODE_DIFF_BYTES } from "./call-diff.ts";
 import { cutStored, storedBytes } from "./stored-bytes.ts";
 
-/** A stored row's limit: Cloudflare documents 2 MB for a Durable Object's SQLite row, read here as decimal. */
-export const MAX_ROW_BYTES = 2_000_000;
+/**
+ * A stored row's limit: 8 MiB, workerd's `SqliteDatabase::MAX_ROW_LENGTH` (8 MiB and 34 bytes) since
+ * [workerd#7493](https://github.com/cloudflare/workerd/pull/7493) (2 MB until
+ * [workerd#7020](https://github.com/cloudflare/workerd/pull/7020)). Cloudflare's docs still say 2 MB
+ * ([cloudflare-docs#34502](https://github.com/cloudflare/cloudflare-docs/issues/34502)); a deployed Durable Object and
+ * local workerd both accept 8 MiB and refuse more with `SQLITE_TOOBIG`.
+ */
+export const MAX_ROW_BYTES = 8 * 1024 * 1024;
 
 /**
- * The most characters of text a `codemode` result holds: the pi-durable patch's `OUTPUT_LIMITS` (160,000 bytes, of
- * which pi-durable keeps a quarter as characters), the default `max_output_tokens` budget's, which a script can lower but
- * no longer raise.
+ * The most characters of text a `codemode` result holds: pi-durable's `OUTPUT_LIMITS` (4 MiB, of which it keeps a
+ * quarter as characters), however much `max_output_tokens` asks for.
  */
-export const MAX_CODEMODE_TEXT_CHARACTERS = 40_000;
+export const MAX_CODEMODE_TEXT_CHARACTERS = 1_048_576;
 
 /** The most the diagnostics a tool reports may weigh stored, together; pi-durable stores them twice. */
 export const MAX_RESULT_DIAGNOSTICS_BYTES = 16 * 1024;
@@ -45,7 +51,7 @@ export const MAX_RESULT_DETAILS_BYTES = 64 * 1024;
  * The most the call list of a `codemode` result's details weighs stored: the pi-durable patch's
  * `MAX_DETAILS_CALLS_BYTES` (`patches/@earendil-works__pi-durable@1.4.0.patch`), which keeps them to it.
  */
-export const MAX_CODEMODE_CALLS_BYTES = 32 * 1024;
+export const MAX_CODEMODE_CALLS_BYTES = 64 * 1024;
 
 /**
  * The most a `codemode` result's `details` may weigh stored: its call list and its Call diffs (`MAX_CODEMODE_DIFF_BYTES`),

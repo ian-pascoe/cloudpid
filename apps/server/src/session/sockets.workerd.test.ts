@@ -476,7 +476,7 @@ describe("a submit the Session cannot store", () => {
 
     const instances = constructions.get(stub.id.toString());
 
-    // Over the 2 MB a row holds: without the guard, the commit fails and takes the Session down with it.
+    // Over `MAX_STORED_INPUT_BYTES`, though under the 8 MiB a row holds (workerd#7493): refused before it is stored.
     client.send({
       type: "submit",
       id: "big",

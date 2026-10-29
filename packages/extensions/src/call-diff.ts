@@ -6,8 +6,9 @@
 // - `binary`: the old file has a NUL in its first 8,000 bytes, or could not be read.
 // - `tooLarge`: the two texts together pass 1 MiB, the patch passes 512 KiB, or lining the texts up took too long.
 //
-// The result is one SQLite row (2 MB), so a patch is bounded before it is stored; the write itself is never held back by
-// it. These are plain functions over text (`writeDetails`, `capturedDiffs`) and over a file system (`oldFile`).
+// The result is one SQLite row (8 MiB, workerd#7493), so a patch is bounded before it is stored; the write itself is
+// never held back by it. These are plain functions over text (`writeDetails`, `capturedDiffs`) and over a file system
+// (`oldFile`).
 //
 // Lining the texts up has two bounds. jsdiff's `timeout` reads `Date.now()`, which does not advance while synchronous
 // code runs in workerd (the Session DO), so it cannot stop a long line-up there: `maxEditLength`, a bound on the lines

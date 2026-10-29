@@ -32,8 +32,9 @@ const FALLBACK_NAME = "attachment";
 
 /**
  * The most a submitted message may hold, in UTF-8 bytes of its JSON (its content, with any inline image, and the data
- * its entry keeps). The entry is one SQLite row, which Cloudflare caps at 2 MB, and a queued message is copied into the
- * conversation's inbox, one row for every message waiting; the rest of 2 MB is left for the row's own fields.
+ * its entry keeps). The entry is one SQLite row, which workerd caps at 8 MiB (workerd#7493; Cloudflare's docs still say
+ * 2 MB: cloudflare-docs#34502), and a queued message is copied into the conversation's inbox, one row for every message
+ * waiting. Set when a row was taken to hold 2 MB, and kept: an inline image goes to the model's provider too.
  */
 export const MAX_STORED_INPUT_BYTES = 1_900_000;
 

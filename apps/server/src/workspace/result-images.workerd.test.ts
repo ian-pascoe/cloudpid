@@ -1,8 +1,8 @@
 // Several images in one tool result, through a Session's `codemode` on a real Workspace: a script can show many, each
 // within the per-image bound, which together would outgrow the result's one SQLite row. They are kept in order until
 // one result's budget is spent, and the rest are noted, in the stored result and in the script's run, which code mode
-// stores before it (docs/architecture/workspace.md → Filesystem and tools). miniflare's SQLite does not enforce Cloudflare's 2 MB row
-// cap, so the sizes are what is checked.
+// stores before it (docs/architecture/workspace.md → Filesystem and tools). The sizes are what is checked: the script
+// would need more images than this to pass the 8 MiB a row holds (workerd#7493).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off globalDate:off
 import { MAX_RESULT_IMAGE_CHARACTERS } from "@cloudpid/extensions/images";
