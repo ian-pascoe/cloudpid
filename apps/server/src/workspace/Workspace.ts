@@ -14,6 +14,7 @@ import {
 import {
   ContainerBackend,
   type ContainerBackendOptions,
+  type IWorkspaceContainerAPI,
   withWorkspaceContainer,
 } from "@cloudflare/computer/backends/container";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
@@ -132,6 +133,8 @@ import {
   scanContainerDisk,
 } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
+import { changeLog } from "./change-log.ts";
+import { FileNotifier, inSignalPush, runNotify, withNoSignalStart } from "./notify.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
 import { SKILLS_MOUNT, WORKSPACE_CONTAINER, WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
 
@@ -280,6 +283,8 @@ export class Workspace extends ContainerHost {
   #mountChecked: Promise<void> | undefined;
   /** The Skill set the mount at `SKILLS_MOUNT` serves: empty until one is handed over (`updateSkills`). */
   readonly #skills: ReturnType<typeof skillSetStore>;
+  /** Sends the running Container the Workspace's writes promptly, and gives the file-change signal for them (`notify.ts`). */
+  readonly #notifier: FileNotifier;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
@@ -405,6 +410,31 @@ export class Workspace extends ContainerHost {
       labels: workspaceLabels(ctx.id.toString()),
     });
 
+    // Which absolute paths are Container-only for the launch that runs now, or the next one (ADR-0018).
+    const containerOnly = async (): Promise<ContainerOnly> => {
+      const ignore = await launch.ignore();
+      const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
+
+      return (path) => isContainerOnly(path, patterns);
+    };
+
+    // The Skill set's mount is read-only on the Container. Under `alchemy dev` its `/workspace` is no real mount
+    // (`CONTAINER_FUSE=false`): nothing can be locked there.
+    const readOnly = env.CONTAINER_FUSE === "false" ? [] : [SKILLS_MOUNT];
+
+    // While the Container runs, the Workspace's writes are pushed to it soon after they are made and the file-change
+    // signal given for them (docs/architecture/container.md → File-change signals); never on a stopped one.
+    this.#notifier = new FileNotifier({
+      running: () => this.containerRunning(),
+      log: changeLog(ctx.storage.sql, CONTAINER_BACKEND_ID),
+      push: () => this.pushContainerChanges(),
+      notify: (paths) => this.signalContainer(paths),
+      containerOnly,
+      readOnly,
+      holdsBegun: () => this.#idle.holdsBegun(),
+      warn: (message) => console.warn(message),
+    });
+
     const analytics =
       env.CLOUDPID_ANALYTICS_TOKEN !== undefined &&
       env.CLOUDPID_ANALYTICS_TOKEN !== "" &&
@@ -502,13 +532,19 @@ export class Workspace extends ContainerHost {
     // The Container starts when a command first asks for it, not with the object.
     const container: ContainerBackendOptions = {
       // The launch goes through `launch`, which picks the instance type and the snapshot, and each Container started can
-      // report why it stopped (`withExitReports`).
+      // report why it stopped (`withExitReports`). The file-change signal's push never launches one (`withNoSignalStart`).
       container: () => ({
         getWorkspaceContainer: () =>
-          withExitReports(
-            launch.wrap(this.getWorkspaceContainer()),
-            () => this.#interceptExitReports(),
-            (message) => console.warn(message),
+          withNoSignalStart(
+            withExitReports(
+              launch.wrap(this.workspaceContainer()),
+              () => this.#interceptExitReports(),
+              (message) => console.warn(message),
+            ),
+            {
+              refuses: () => this.#notifier.refusesLaunch(),
+              running: () => this.containerRunning(),
+            },
           ),
       }),
       workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
@@ -553,7 +589,7 @@ export class Workspace extends ContainerHost {
       // A bootstrap (its Setup Scripts can take a quarter of an hour) keeps the Container from its idle stop.
       activity: this.#idle,
       // Under `alchemy dev` the Container's `/workspace` is no real mount (`CONTAINER_FUSE=false`): it cannot be locked.
-      readOnlyDirectories: env.CONTAINER_FUSE === "false" ? [] : [SKILLS_MOUNT],
+      readOnlyDirectories: readOnly,
       git: { name: env.CLOUDPID_GIT_NAME, email: env.CLOUDPID_GIT_EMAIL },
       warn: (message) => console.warn(message),
       now: () => Date.now(),
@@ -569,7 +605,9 @@ export class Workspace extends ContainerHost {
           (set, api) => this.writeSkillSet(set, api),
         ),
       },
-      observer: this.#containerUseObserver(),
+      observer: this.#containerUseObserver(
+        this.#notifier.observer(CONTAINER_BACKEND_ID, noopObserver),
+      ),
       // The Worker Shell's `git` runs on computer's git client. `bash` routes only a few read-only subcommands there
       // (`bash-routing.ts`): the Container's real git is the only one that writes `.git`.
       git: workerShellGit(),
@@ -652,14 +690,6 @@ export class Workspace extends ContainerHost {
         this.#runOnContainer(script, scriptEnv, { writes: options?.writes === true }),
     });
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
-
-    // Which absolute paths are Container-only for the launch that runs now, or the next one (ADR-0018).
-    const containerOnly = async (): Promise<ContainerOnly> => {
-      const ignore = await launch.ignore();
-      const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
-
-      return (path) => isContainerOnly(path, patterns);
-    };
 
     // The repos' Changes: read here with isomorphic-git, or by the Container's git for a repo that needs it, which only
     // a call that may start the Container starts (ADR-0022).
@@ -758,9 +788,38 @@ export class Workspace extends ContainerHost {
     return this.#idle;
   }
 
+  /** The platform's Container API, which every launch goes through. A test Worker replaces it. */
+  protected workspaceContainer(): IWorkspaceContainerAPI {
+    return this.getWorkspaceContainer();
+  }
+
   /** Whether the Container runs now. A test Worker replaces it. */
   protected containerRunning(): boolean {
     return this.ctx.container?.running === true;
+  }
+
+  /**
+   * Send the Container the Workspace's changes now (computer's push to its backend), for the file-change signal, which
+   * calls it only while the Container runs. A test Worker replaces it.
+   */
+  protected async pushContainerChanges(): Promise<void> {
+    for await (const progress of this.#workspace.push(CONTAINER_BACKEND_ID)) {
+      if (progress.complete) break;
+    }
+  }
+
+  /**
+   * Tell the Container's file watchers of `paths` (`cloudpid-notify`, through the platform's `exec`: no use of the
+   * Container and no activity, docs/architecture/container.md → File-change signals). A test Worker replaces it.
+   */
+  protected async signalContainer(paths: ReadonlyArray<string>): Promise<void> {
+    const container = this.ctx.container;
+
+    if (container?.running !== true) return;
+
+    const reported = await runNotify(container, paths);
+
+    if (reported !== "") console.warn(`file-change signal: ${reported.slice(0, 1_000)}`);
   }
 
   /**
@@ -886,9 +945,11 @@ export class Workspace extends ContainerHost {
 
   /**
    * Records each use of the Container for the idle stop: computer reports a span around every connect, push and pull on a
-   * backend, and a command on the Container is a push before it and a pull after it.
+   * backend, and a command on the Container is a push before it and a pull after it. The file-change signal's own push
+   * (and its connect) is no use: an edit alone keeps no running Container from its idle stop
+   * (docs/architecture/container.md → Idle stop). Every span then goes to `next` (the file-change signal's observer).
    */
-  #containerUseObserver(): WorkspaceObserver {
+  #containerUseObserver(next: WorkspaceObserver): WorkspaceObserver {
     const uses = (attributes: Parameters<WorkspaceObserver["span"]>[1]) =>
       attributes["workspace.sync.backend"] === CONTAINER_BACKEND_ID ||
       attributes["workspace.backend.id"] === CONTAINER_BACKEND_ID;
@@ -900,11 +961,11 @@ export class Workspace extends ContainerHost {
 
     return {
       span: (name, attributes, run) => {
-        if (!uses(attributes)) return noopObserver.span(name, attributes, run);
+        if (!uses(attributes) || inSignalPush()) return next.span(name, attributes, run);
 
         touch();
 
-        return noopObserver.span(name, attributes, run).finally(touch);
+        return next.span(name, attributes, run).finally(touch);
       },
     };
   }
@@ -1479,22 +1540,33 @@ export class Workspace extends ContainerHost {
   fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
     this.#spare.noteUse();
 
+    return this.#fileOperation(request, { session: true });
+  }
+
+  /** A file operation: a Session's (`session`), or this object's own work's (a spare's preparation, a Build). */
+  async #fileOperation(
+    request: EnvRequest,
+    { session = false }: { readonly session?: boolean } = {},
+  ): Promise<EnvResponse<HostOperation>> {
+    const writes = WRITE_OPERATIONS.has(request.op);
+
     // A Session's write (a model tool's) is activity in the Workspace, which the hold cap counts from; a read is not, as
     // a watcher polls.
-    if (WRITE_OPERATIONS.has(request.op)) {
+    if (writes && session) {
       this.#idle
         .noteActivity()
         .catch((cause: unknown) => console.warn("idle stop: noting activity failed", cause));
     }
 
-    return this.#fileOperation(request);
-  }
-
-  async #fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
     // The Skill set is copied into the files the first time the mounts are indexed, which `#ready()` does once.
     await this.#ready();
 
-    return this.#host.handle(request);
+    try {
+      return await this.#host.handle(request);
+    } finally {
+      // A write reaches a running Container soon, with the file-change signal (`FileNotifier`).
+      if (writes) this.#notifier.changed();
+    }
   }
 
   /**

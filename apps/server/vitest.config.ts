@@ -22,6 +22,7 @@ const workspaceOnly = [
   "src/workspace/comparison*.workerd.test.ts",
   "src/workspace/runs*.workerd.test.ts",
   "src/workspace/work-state*.workerd.test.ts",
+  "src/workspace/notify.workerd.test.ts",
 ];
 
 /** Every other Workspace test (Sessions and tools on a Workspace) runs in a test Worker that also hosts a Session host. */

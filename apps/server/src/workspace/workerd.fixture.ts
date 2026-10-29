@@ -9,6 +9,7 @@ import {
   WorkspaceServiceProxy,
   WorkspaceStub,
 } from "@cloudflare/computer";
+import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
 import { ensureDirectory } from "@cloudpid/computer-env";
 import { RpcTarget } from "cloudflare:workers";
 import * as git from "isomorphic-git";
@@ -17,6 +18,7 @@ import type { Answers } from "./github-pulls.fixtures.ts";
 import type { ContainerPreviewActivity } from "./container-preview.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
+import { currentRevision } from "./change-log.ts";
 import type { SkillSet } from "./skill-set-schema.ts";
 
 /** The start of the hash of a Skill set the test Worker cannot write into the files (`writeSkillSet`). */
@@ -344,6 +346,129 @@ export class TestWorkspace extends Workspace {
 
   protected override containerRunning(): boolean {
     return this.#fakeContainer?.running ?? super.containerRunning();
+  }
+
+  /** What the file-change signal did on the fake Container, in order: `push`, and `notify <path> <path> …`. */
+  #signalled: string[] = [];
+
+  /**
+   * Whether the signal's next push finds the Container stopped since it was found running (the idle stop, a restart),
+   * and goes on as the real push does, into computer's launch.
+   */
+  #stopsDuringPush = false;
+
+  signalEvents(): string[] {
+    return [...this.#signalled];
+  }
+
+  stopDuringNextPush(): void {
+    this.#stopsDuringPush = true;
+  }
+
+  /**
+   * The signal's push, on the fake Container: computer's push cursor for the Container's backend moved to the revision
+   * the files are at, as a push that sent everything leaves it (`change-log.ts` reads it). With `stopDuringNextPush`,
+   * the Container stops, and computer's own push runs: its launch must be refused, and is recorded as `push refused`.
+   */
+  protected override async pushContainerChanges(): Promise<void> {
+    const fake = this.#fakeContainer;
+
+    if (fake === undefined) return super.pushContainerChanges();
+
+    if (this.#stopsDuringPush) {
+      this.#stopsDuringPush = false;
+      fake.running = false;
+
+      try {
+        await super.pushContainerChanges();
+        this.#signalled.push("push");
+      } catch (error) {
+        this.#signalled.push(
+          String(error).includes("never starts a Container") ? "push refused" : String(error),
+        );
+
+        throw error;
+      }
+
+      return;
+    }
+
+    this.#signalled.push("push");
+
+    // In a span as computer's own push reports it, which the Workspace DO's observers read.
+    await this.#containerPushSpan(() => {
+      const sql = this.ctx.storage.sql;
+      const rev = currentRevision(sql);
+
+      sql.exec(
+        "INSERT INTO _vfs_push_cursor (k, backend, rev, path) VALUES ('push', ?, ?, NULL) ON CONFLICT(k, backend) DO UPDATE SET rev = excluded.rev, path = NULL",
+        CONTAINER_BACKEND_ID,
+        rev,
+      );
+      sql.exec(
+        "INSERT INTO _vfs_watermark (k, backend, v) VALUES ('pushRev', ?, ?) ON CONFLICT(k, backend) DO UPDATE SET v = excluded.v",
+        CONTAINER_BACKEND_ID,
+        rev,
+      );
+    });
+  }
+
+  /** `run` in the span computer reports around a push to the Container's backend. */
+  async #containerPushSpan(run: () => void): Promise<void> {
+    const workspace = await this.#computer();
+
+    await workspace.observer.span(
+      "workspace.sync.push",
+      { "workspace.sync.backend": CONTAINER_BACKEND_ID },
+      async () => run(),
+    );
+  }
+
+  /** A push to the Container as a command's makes before it runs (outside the signal): its span alone. */
+  async commandPush(): Promise<void> {
+    await this.#containerPushSpan(() => undefined);
+  }
+
+  /** When the Container was last used, as the idle stop keeps it in storage, if it was. */
+  containerLastUse(): number | undefined {
+    return this.ctx.storage.kv.get<number>("cloudpid:container-last-use");
+  }
+
+  /**
+   * The platform's Container API, under the fake Container: a launch that gets through is recorded as `container start`,
+   * and fails, as the fake Container never runs anything computer reaches.
+   */
+  protected override workspaceContainer(): IWorkspaceContainerAPI {
+    if (this.#fakeContainer === undefined) return super.workspaceContainer();
+
+    const launched = () => {
+      this.#signalled.push("container start");
+
+      return Promise.reject(new Error("The fake Container is not started by computer"));
+    };
+
+    const unused = () => Promise.reject(new Error("The fake Container is not reached by computer"));
+
+    return {
+      start: launched,
+      restart: launched,
+      interceptOutboundHttp: unused,
+      interceptAllOutboundHttp: unused,
+      fetchPort: unused,
+      port: () => {
+        throw new Error("The fake Container is not reached by computer");
+      },
+      setInactivityTimeout: unused,
+      status: () => Promise.resolve({ running: this.#fakeContainer?.running === true, exit: null }),
+      exitInfo: () => Promise.resolve(null),
+    };
+  }
+
+  /** The signal's helper, on the fake Container: recorded. */
+  protected override async signalContainer(paths: ReadonlyArray<string>): Promise<void> {
+    if (this.#fakeContainer === undefined) return super.signalContainer(paths);
+
+    this.#signalled.push(`notify ${paths.join(" ")}`);
   }
 
   protected override runContainerScript(script: string) {

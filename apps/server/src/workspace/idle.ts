@@ -100,6 +100,8 @@ export class IdleStop {
   #armedAt = 0;
   /** The holds on the Container that have begun and not ended. In memory: an evicted object has none running. */
   readonly #holds = new Set<object>();
+  /** How many holds have begun, ever (`holdsBegun`). */
+  #holdsBegun = 0;
   /** Those of `#holds` that may change the Container's disk. */
   readonly #writing = new Set<object>();
 
@@ -164,6 +166,14 @@ export class IdleStop {
   }
 
   /**
+   * How many holds have begun on the Container so far (a command, a Container preview's socket, a bootstrap): the
+   * file-change signal tells by it whether a command began during its push (`FileNotifier.refusesLaunch`).
+   */
+  holdsBegun(): number {
+    return this.#holdsBegun;
+  }
+
+  /**
    * A command (or a Container preview's socket, a bootstrap) began on the Container: it is in use until it ends. One
    * that may write (`options.writes`, the default) is told of as it begins.
    */
@@ -172,6 +182,7 @@ export class IdleStop {
     const writes = options.writes !== false;
 
     this.#holds.add(token);
+    this.#holdsBegun += 1;
 
     if (writes) this.#writing.add(token);
 
