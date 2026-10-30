@@ -228,6 +228,10 @@ _Avoid_: OOM killer (the kernel's, which acts too late to save the Container)
 What the Workspace gives a running Container's file watchers (a dev server, `tsc --watch`) after its own writes (the model's file tools, the Worker Shell) reach the Container, so they see the change as they see the Container's own; the owner never sees it. Not a Notification, which is a Web Push to the owner.
 _Avoid_: Notify (as a noun), file notification, file event
 
+**Result Spill**:
+The file a tool writes the whole of its output to when more came back than one result may show, in the Workspace's temporary directory and named in the result, so the agent can read it as any file. A script's value needs none: it holds the whole output.
+_Avoid_: Temp file, full output, truncation file, overflow
+
 **GitHub App**:
 cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from.
 _Avoid_: Bot account, PAT
@@ -393,3 +397,11 @@ _Avoid_: MCP config, `mcp.json` (for the merged set), server list
 **MCP server adjustment**:
 An entry holding only `enabled`, `exposure` and `toolExposure`, which adjusts an MCP server of that name defined elsewhere instead of defining one. An Environment's is an Override of each key it holds; a Repo's may only switch things off. Global holds none.
 _Avoid_: Override (pi's name for it; an Override is an Environment's own value), partial entry, patch
+
+**MCP inventory**:
+What cloudpid knows of an Environment's MCP server set: for each MCP server, its instructions and the tools, resources, resource templates and prompts it declared when last asked, with any problem found in them. A Session takes its MCP tools from it, so every Session of the Environment sees the same tools.
+_Avoid_: Discovery cache, snapshot (that is a Container's saved disk), tool list (for the whole)
+
+**Exposure**:
+How an MCP server's tool reaches the model: `direct` (an Offered tool), `deferred` (a Deferred tool), `codemode` (callable from scripts only, never loaded by `tool_search`), or `hidden` (unreachable). A server's exposure applies to all its tools unless its entry sets one by name or pattern; the offered set naming a `codemode` or `deferred` tool makes it an Offered tool, never a `hidden` one.
+_Avoid_: Visibility, activation, tool mode
