@@ -167,7 +167,7 @@ The Scope every Environment inherits from.
 _Avoid_: For every Environment, all environments, default (the Default Environment is one Environment)
 
 **Override**:
-An Environment's own value of a setting, set on purpose and shown against the Global value it replaces until it is reset. A field without one is **inherited**. Keyed settings (Variables, Secrets, Skills, Roles, extension options) are overridden name by name, every other setting whole.
+An Environment's own value of a setting, set on purpose and shown against the Global value it replaces until it is reset. A field without one is **inherited**. Keyed settings (Variables, Secrets, Skills, Roles, extension options, MCP servers) are overridden name by name, every other setting whole. An Environment overrides an MCP server whole with its own MCP server definition, or part by part with an MCP server adjustment.
 _Avoid_: Local setting, customization
 
 **Variable**:
@@ -359,7 +359,7 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Global Skills, to Instructions, or one no revert can undo (deleting an Environment or a kept Secret).
+The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; or one no revert can undo (deleting an Environment or a kept Secret).
 _Avoid_: Confirmation, permission, consent
 
 ## Credentials and the browser
@@ -398,12 +398,16 @@ _Avoid_: User tab, the owner's tab (for a conversation's tab the owner took over
 A server the agent's tools can come from: a command the Workspace's Container runs (stdio) or a URL (Streamable HTTP), with how its tools reach the model. It is kept in the Settings, Global or an Environment's, or in a Repo's `.pi/mcp.json`.
 _Avoid_: MCP (alone, for one server), tool server, plugin, connection (that is the live link to one)
 
+**MCP server definition**:
+What makes an MCP server the one it is: the command it runs (with its arguments and directory) or the URL it is reached at, what it is sent (its environment and headers, which may name Secrets and Variables), how it signs in, how long a request may wait, and its description. That is everything about it except whether it is on and its Exposure. The agent changes one in the Settings only with the owner's Approval.
+_Avoid_: Config (alone), entry (for the definition), server settings
+
 **MCP server set**:
 The MCP servers an Environment's Sessions can reach: Global's and the Environment's own, with each Repo's `.pi/mcp.json` as it is on the Repo's default branch, in one namespace. The owner's entries win over a Repo's, and the Environment's MCP server adjustments apply last. Every Session of the Environment sees the same set, whatever its directory.
 _Avoid_: MCP config, `mcp.json` (for the merged set), server list
 
 **MCP server adjustment**:
-An entry holding only `enabled`, `exposure` and `toolExposure`, which adjusts an MCP server of that name defined elsewhere instead of defining one. An Environment's is an Override of each key it holds; a Repo's may only switch things off. Global holds none.
+An entry that holds only whether an MCP server is on and its Exposure (`enabled`, `exposure`, `toolExposure`), adjusting a server defined elsewhere instead of giving its MCP server definition. An Environment's is an Override of each part it holds; a Repo's may only switch things off. Global holds none.
 _Avoid_: Override (pi's name for it; an Override is an Environment's own value), partial entry, patch
 
 **MCP inventory**:
