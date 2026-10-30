@@ -114,6 +114,10 @@ _Avoid_: Upload (for the file), file mention
 An Owner tab the owner gives with a message, so the agent sees what they see without a browser run: its URL, title and Owner tab ID and, for the tab the Browser Pane shows, the text the owner had selected in it and its screen as an image. What the page supplied reaches the model as untrusted page content, apart from the owner's words; the transcript shows a chip.
 _Avoid_: Page Attachment (an Attachment is a file), tab attachment
 
+**Attached resource**:
+An MCP server's resource the owner gives with a message. What the server returned for it when the message was sent reaches the model as untrusted content, apart from the owner's words; the transcript shows a chip.
+_Avoid_: Resource Attachment (an Attachment is a file), resource mention (a mention is text the agent opens itself)
+
 ## Diffs and review
 
 **Changes**:
@@ -229,7 +233,7 @@ What the Workspace gives a running Container's file watchers (a dev server, `tsc
 _Avoid_: Notify (as a noun), file notification, file event
 
 **Result Spill**:
-The file a tool writes the whole of its output to when more came back than one result may show, in the Workspace's temporary directory and named in the result, so the agent can read it as any file. A script's value needs none: it holds the whole output.
+The file a tool writes the whole of its output to when more came back than one result may show, or in a form it cannot show (a binary), in the Workspace's temporary directory and named in the result, so the agent can read it as any file. A script's value needs none: it holds the whole output.
 _Avoid_: Temp file, full output, truncation file, overflow
 
 **GitHub App**:
@@ -399,8 +403,12 @@ An entry holding only `enabled`, `exposure` and `toolExposure`, which adjusts an
 _Avoid_: Override (pi's name for it; an Override is an Environment's own value), partial entry, patch
 
 **MCP inventory**:
-What cloudpid knows of an Environment's MCP server set: for each MCP server, its instructions and the tools, resources, resource templates and prompts it declared when last asked, with any problem found in them. A Session takes its MCP tools from it, so every Session of the Environment sees the same tools.
+What cloudpid knows of an Environment's MCP server set: for each MCP server, its instructions, what it supports, and the tools and prompts it declared when last asked, with any problem found in them. A Session takes its MCP tools from it, so every Session of the Environment sees the same tools. A server's resources and resource templates are asked for when needed, not kept in it.
 _Avoid_: Discovery cache, snapshot (that is a Container's saved disk), tool list (for the whole)
+
+**Resource watch**:
+A conversation's standing request to be told when an MCP resource it read changes. Each change reaches it as a notice at its next request, never starting a Run.
+_Avoid_: Subscription (that is the protocol's, which serves every watch of a resource), follow, watch (alone: a client also watches a conversation)
 
 **Exposure**:
 How an MCP server's tool reaches the model: `direct` (an Offered tool), `deferred` (a Deferred tool), `codemode` (callable from scripts only, never loaded by `tool_search`), or `hidden` (unreachable). A server's exposure applies to all its tools unless its entry sets one by name or pattern; the offered set naming a `codemode` or `deferred` tool makes it an Offered tool, never a `hidden` one.
