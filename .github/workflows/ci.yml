@@ -19,12 +19,97 @@ env:
   TURBO_CACHE_DIR: .turbo/cache
 
 jobs:
+  # Whether the change touches more than docs (`docs/**` and Markdown anywhere, which no build, test or deploy reads:
+  # turbo.json leaves `*.md` out of every task's inputs). A docs-only change runs only the format check (`docs`), not
+  # `checks`, the prod deploy or a preview. When the files cannot be listed, the change counts as code.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      deployments: read
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+      preview: ${{ steps.preview.outputs.deployed }}
+    steps:
+      # A pull request's files are its diff from the merge base (the API lists at most 3,000); a push's, the compare of
+      # `before` and the pushed commit (at most 300). A list at its cap may be incomplete, so it counts as code. Renames
+      # count their old path too: moving code into docs/ changes the code.
+      - name: List the changed files
+        id: files
+        if: github.event.action != 'closed'
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PULL_REQUEST/files?per_page=100" \
+              --jq '.[] | .filename, (.previous_filename // empty)') || files=unlisted
+            cap=3000
+          elif [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            files=unlisted
+          else
+            files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" \
+              --jq '.files[] | .filename, (.previous_filename // empty)') || files=unlisted
+            cap=300
+          fi
+          count=$(grep -c . <<<"$files" || true)
+          if [ "$files" = unlisted ] || [ "$count" -ge "$cap" ]; then
+            code=true
+          elif grep -qvE '^docs/|\.md$' <<<"$files"; then
+            code=true
+          else
+            code=false
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "$count changed files; code: $code"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+
+      # On close, destroy the preview only if one was ever started: every run of the `preview` job records a deployment
+      # in the `preview` environment, under the branch's name, before its first step. A push whose `preview` job starts
+      # after this lookup finds the pull request closed and deploys nothing (see `preview`). When the lookup fails, destroy.
+      - name: Look up the preview
+        id: preview
+        if: github.event.action == 'closed'
+        run: |
+          count=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=preview&per_page=1" \
+            -f ref="$HEAD_REF" -X GET --jq length) || count=1
+          echo "deployed=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+
+  # The whole check of a docs-only change: the formatter covers Markdown. oxfmt at the lockfile's version, without the
+  # install the other checks need.
+  docs:
+    name: Format
+    needs: changes
+    if: github.event.action != 'closed' && needs.changes.outputs.code == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - run: |
+          version=$(sed -nE 's/^    "oxfmt": \["oxfmt@([^"]+)".*/\1/p' bun.lock)
+          bunx "oxfmt@$version" --check
+
   # What `bun run check` runs, split over runners so they run at once: the server's tests alone took about 4½ minutes on
   # one runner, sharing its 4 cores with every other task, while the rest was done in about 1½. Each part has its own
   # turbo cache, so a part whose inputs did not change replays its logs.
   checks:
     name: ${{ matrix.name }}
-    if: github.event.action != 'closed'
+    needs: changes
+    if: github.event.action != 'closed' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Job-level, not workflow-level: a new push cancels the PR's previous check, but never a preview deploy or destroy
@@ -91,25 +176,31 @@ jobs:
           echo "Turbo cache: $before → $(du -sh "$TURBO_CACHE_DIR" | cut -f1), $(wc -l <<<"$hashes") tasks kept"
 
   # The one status the `main` ruleset requires (`Check`), and what the deploy jobs wait for: it passes only when every
-  # part did. It runs when one fails too (`!cancelled()`), so a failure reports as one rather than as skipped, which
-  # a required check would count as passing.
+  # part did, or for a docs-only change when `docs` did. It runs when one fails too (`!cancelled()`), so a failure
+  # reports as one rather than as skipped, which a required check would count as passing.
   check:
     name: Check
-    needs: checks
+    needs: [changes, checks, docs]
     if: ${{ !cancelled() && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: test "$RESULT" = success
+      - run: |
+          test "$CHANGES" = success
+          if [ "$CODE" = true ]; then test "$CHECKS" = success; else test "$DOCS" = success; fi
         env:
-          RESULT: ${{ needs.checks.result }}
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          CHECKS: ${{ needs.checks.result }}
+          DOCS: ${{ needs.docs.result }}
 
   # Deploys `prod` on push to main with a scoped API token from the `production` environment
   # (credentials as code: infra/github.ts, docs/development/infra.md → CI credentials).
   deploy:
     name: Deploy prod
-    needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, check]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment:
@@ -170,13 +261,15 @@ jobs:
   # of the app secrets. Pull requests from forks get no secrets, so they get no preview.
   preview:
     name: Preview
-    needs: check
-    # `check` is skipped on `closed`, so the destroy runs without it; a deploy waits for it to pass.
+    needs: [changes, check]
+    # `check` is skipped on `closed`, so the destroy runs without it, when a preview was ever started; a deploy waits for
+    # `check` to pass, and a docs-only change deploys none.
     if: >-
       !cancelled()
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
-      && (github.event.action == 'closed' || needs.check.result == 'success')
+      && (github.event.action == 'closed' && needs.changes.outputs.preview != 'false'
+        || needs.changes.outputs.code == 'true' && needs.check.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
