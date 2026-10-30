@@ -95,7 +95,7 @@ _Avoid_: Task (alone, in prose about the product), to-do
 ## Messages
 
 **Slash command**:
-A `/name` at the start of the owner's message that runs an action instead of being sent to the model as written, either in the Session or in the web app.
+A `/name` the owner starts a message with that runs an action, or starts the message from a Prompt template, a Skill or an MCP prompt, instead of being sent to the model as written, either in the Session or in the web app.
 _Avoid_: Command (alone), action, macro
 
 **Shell escape**:
@@ -104,7 +104,11 @@ _Avoid_: Bash mode, user bash, Slash command (for this)
 
 **Prompt template**:
 A Markdown file in a repo's `.agents/prompts` whose Slash command expands into a message, with the command's arguments filled in.
-_Avoid_: Prompt, snippet, macro
+_Avoid_: Prompt, snippet, macro, MCP prompt (that is a server's)
+
+**MCP prompt**:
+A message an MCP server offers to write for the owner, picked in the composer as a Slash command with the arguments it asks for. The server writes it when the message is sent, and what the owner typed follows it. A Prompt template is a Repo's file instead; an Attached resource is server content given with a message, not the message itself.
+_Avoid_: Prompt (alone), MCP command, server prompt, Prompt template (for a server's)
 
 **Attachment**:
 A file the owner gives with a message, stored in the Session's Workspace and pointed at by its path; an attached image is also shown to the model.
