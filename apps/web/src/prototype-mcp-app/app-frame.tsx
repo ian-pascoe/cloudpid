@@ -1,4 +1,5 @@
 /* oxlint-disable -- PROTOTYPE: throwaway code, never merged */
+// @effect-diagnostics *:off
 /**
  * PROTOTYPE (throwaway): the host side of one MCP App View, an iframe and its `postMessage` bridge. A real host forwards
  * `tools/call` and `resources/read` over the Session socket to the Environment's MCP host object; here a stub answers.

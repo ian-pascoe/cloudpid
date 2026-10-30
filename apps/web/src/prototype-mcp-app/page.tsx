@@ -1,4 +1,5 @@
 /* oxlint-disable -- PROTOTYPE: throwaway code, never merged */
+// @effect-diagnostics *:off
 /**
  * PROTOTYPE (throwaway, branch `prototype/384-mcp-app`): where an MCP App's View lives in the Session page, for
  * https://github.com/ian-pascoe/cloudpid/issues/384. Three variants on `/prototype/mcp-app?variant=A|B|C`:

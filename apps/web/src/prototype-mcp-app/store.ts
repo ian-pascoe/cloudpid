@@ -1,4 +1,5 @@
 /* oxlint-disable -- PROTOTYPE: throwaway code, never merged */
+// @effect-diagnostics *:off
 /**
  * PROTOTYPE (throwaway, never merged): in-memory state for the MCP App rendering prototype of
  * https://github.com/ian-pascoe/cloudpid/issues/384. Nothing here is persisted or talks to a server; the "MCP servers"

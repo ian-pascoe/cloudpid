@@ -1,4 +1,5 @@
 /* oxlint-disable -- PROTOTYPE: throwaway code, never merged */
+// @effect-diagnostics *:off
 /**
  * PROTOTYPE (throwaway): the HTML of a stub MCP App View, as a server would serve it from a `ui://` resource. It speaks
  * the MCP Apps JSON-RPC over `postMessage`: `ui/initialize`, then takes `tool-input` and `tool-result`, and sends
