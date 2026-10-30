@@ -317,7 +317,7 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input, linking to the Session.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request), linking to the Session.
 _Avoid_: Alert, push message (for the user-facing thing)
 
 **Settings**:
@@ -421,6 +421,14 @@ _Avoid_: Visibility (that is Tool visibility, the server's own), activation, too
 **Tool visibility**:
 Who an MCP server says may call one of its tools: the model, the server's App Views, or both. The owner's Exposure applies on top of it, so a tool only App Views may call never reaches the model.
 _Avoid_: Exposure (that is the owner's choice), audience
+
+**MCP sign-in**:
+The owner's permission, given on an MCP server's own sign-in page, for cloudpid to use that server as the owner. It belongs to one MCP server, the owner's or one Repo's, by its name and URL, and is kept Global, so every Environment with that server uses it until the owner signs out; a renamed or moved server, or the owner's copy of a Repo's, needs one of its own. The agent can ask for one but never makes or sees one.
+_Avoid_: Login, OAuth token (for the whole), credentials (a Credential is a 1Password item), auth, connection (that is the live link to a server)
+
+**Sign-in request**:
+The agent's ask that the owner sign in to an MCP server, shown as a card in its Session with a Notification. It waits until the owner signs in, from it or anywhere else, or declines it; every Sign-in request for one MCP sign-in ends when the owner signs in.
+_Avoid_: Auth prompt, login request, Approval (that is for an Agent change), elicitation (that is the server's own request)
 
 ## MCP Apps
 
