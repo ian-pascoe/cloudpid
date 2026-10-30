@@ -1,0 +1,134 @@
+
+=== Container start (bridge only; no stdio server yet)  [+0.0 s]
+  | bridge 2026-10-30T14:23:13.761Z bridge on :8790 (token required)
+  bridge status: []
+
+=== Discovery: initialize spawns the server lazily, then list everything  [+0.1 s]
+  | bridge 2026-10-30T14:23:13.792Z spawn 58ac3a93b30103d7.2bf85a587933: npx -y @modelcontextprotocol/server-everything@2.1.0 (pid 5423)
+  | bridge 2026-10-30T14:23:15.329Z first line from 58ac3a93b30103d7.2bf85a587933 after 1537 ms
+  | bridge 2026-10-30T14:23:15.330Z initialize answered in 1537 ms
+  session: 58ac3a93b30103d7.2bf85a587933
+  initialize (spawn + npx): 1558 ms
+  | bridge 2026-10-30T14:23:15.339Z server notification notifications/tools/list_changed → queued
+2026-10-30T14:23:15.340Z server notification notifications/tools/list_changed → queued
+2026-10-30T14:23:15.340Z server notification notifications/tools/list_changed → queued
+2026-10-30T14:23:15.340Z server notification notifications/tools/list_changed → queued
+  tools/list: 12 ms
+  | bridge 2026-10-30T14:23:15.344Z tools/list answered in 4 ms
+  resources/list: 3 ms
+  | bridge 2026-10-30T14:23:15.353Z resources/list answered in 1 ms
+  resources/templates/list: 2 ms
+  | bridge 2026-10-30T14:23:15.356Z resources/templates/list answered in 1 ms
+  prompts/list: 3 ms
+  inventory: 20 tools, 7 resources, 2 templates, 4 prompts
+  tools: echo, get-annotated-message, get-env, get-header-params, get-resource-links, get-resource-reference, get-structured-content, get-sum, get-tiny-image, gzip-file-as-resource, trigger-list-changed, trigger-log-messages, trigger-long-running-operation, trigger-resource-update, toggle-simulated-logging, toggle-subscriber-updates, get-roots-list, trigger-elicitation-request, trigger-multi-step-elicitation, trigger-sampling-request
+  | bridge 2026-10-30T14:23:15.358Z prompts/list answered in 1 ms
+  bridge status: [
+  {
+    spawnId: '58ac3a93b30103d7.2bf85a587933',
+    command: 'npx -y @modelcontextprotocol/server-everything@2.1.0',
+    pid: 5423,
+    upMs: 1567,
+    firstLineMs: 1537,
+    inFlight: [],
+    getStream: true,
+    queued: 0,
+    idleMs: 1,
+    stderrTail: [
+      "npm warn deprecated @modelcontextprotocol/server-legacy@2.4.0: This package is a frozen copy of v1's SSE transport and OAuth Authorization Server helpers for migration purposes only. Use StreamableHTTP from @modelcontextprotocol/server and a dedicated OAuth server in production. Will not receive new features.",
+      'Starting default (STDIO) server...'
+    ]
+  }
+]
+
+=== Idle stop: the Container stops, the server with it (the host keeps its inventory and session id)  [+1.7 s]
+
+=== A later call: cold start, the bridge answers 404, the host re-initializes and retries  [+1.7 s]
+  | bridge 2026-10-30T14:23:15.417Z bridge on :8790 (token required)
+  Container start (bridge): 53 ms
+  bridge answered 404: session gone; re-initializing
+  | bridge 2026-10-30T14:23:15.427Z spawn 58ac3a93b30103d7.043b9525b52d: npx -y @modelcontextprotocol/server-everything@2.1.0 (pid 19388)
+  | bridge 2026-10-30T14:23:16.029Z first line from 58ac3a93b30103d7.043b9525b52d after 602 ms
+  | bridge 2026-10-30T14:23:16.029Z initialize answered in 602 ms
+  session: 58ac3a93b30103d7.043b9525b52d
+  re-initialize: 609 ms
+  | bridge 2026-10-30T14:23:16.033Z server notification notifications/tools/list_changed → stream
+2026-10-30T14:23:16.033Z server notification notifications/tools/list_changed → stream
+2026-10-30T14:23:16.033Z server notification notifications/tools/list_changed → stream
+2026-10-30T14:23:16.033Z server notification notifications/tools/list_changed → stream
+  tools/call echo (404 + re-initialize + call): 617 ms
+  result: Echo: after the idle stop
+
+=== Server→client requests mid-call: sampling, elicitation, roots  [+2.3 s]
+  | bridge 2026-10-30T14:23:16.035Z tools/call answered in 2 ms
+  | bridge 2026-10-30T14:23:16.038Z server request sampling/createMessage → stream
+  | bridge 2026-10-30T14:23:16.041Z tools/call answered in 5 ms
+  tools/call trigger-sampling-request: 5 ms
+  result: LLM sampling result: 
+{
+  "model": "prototype-small",
+  "role": "assistant",
+  "content": {
+    "type": "text",
+    "text": "sampled: Resource trigger-sampling-request context: hello"
+  }
+}
+  | bridge 2026-10-30T14:23:16.044Z server request elicitation/create → stream
+  elicitation asked: Please provide inputs for the following fields:
+  tools/call trigger-elicitation-request: 10 ms
+  result: ✅ User provided the requested information! User inputs:
+- Name: prototype
+- Agreed to terms: true
+- Favorite first line: prototype
+- Email: prototype
+- Homepage: prototype
+- Birthdate: prototype
+- Fav
+  | bridge 2026-10-30T14:23:16.051Z tools/call answered in 9 ms
+  | bridge 2026-10-30T14:23:16.053Z server request roots/list → stream
+  | bridge 2026-10-30T14:23:16.056Z tools/call answered in 4 ms
+  tools/call get-roots-list: 5 ms
+  result: Current MCP Roots (1 total):
+
+1. cloudpid
+   URI: file:///workspace/cloudpid
+
+Note: This server demonstrates the roots protocol capability but doesn't actually access files. The roots are provided by 
+  server requests the host answered: [ 'sampling/createMessage', 'elicitation/create', 'roots/list' ]
+
+=== Progress on the call's own stream  [+2.3 s]
+  | bridge 2026-10-30T14:23:16.385Z server request roots/list → stream
+  | bridge 2026-10-30T14:23:16.387Z server notification notifications/message → stream
+  | bridge 2026-10-30T14:23:17.060Z server notification notifications/progress → stream
+  | bridge 2026-10-30T14:23:18.061Z server notification notifications/progress → stream
+  | bridge 2026-10-30T14:23:19.063Z server notification notifications/progress → stream
+  tools/call trigger-long-running-operation (3 s, 3 steps): 3011 ms
+  progress seen: [ '1/3', '2/3', '3/3' ]
+
+=== A call cut by the server's exit (OOM kill, crash): the bridge answers it with an error  [+5.4 s]
+  | bridge 2026-10-30T14:23:19.065Z tools/call answered in 3008 ms
+  in flight: [ 'tools/call' ]
+  | bridge 2026-10-30T14:23:20.580Z exit 58ac3a93b30103d7.043b9525b52d: signal SIGKILL
+  call failed: -32000 MCP error -32000: stdio server exited (signal SIGKILL)
+  bridge status: []
+  bridge answered 404: session gone; re-initializing
+  | bridge 2026-10-30T14:23:20.595Z spawn 58ac3a93b30103d7.b2906f926b9f: npx -y @modelcontextprotocol/server-everything@2.1.0 (pid 22487)
+  | bridge 2026-10-30T14:23:23.287Z first line from 58ac3a93b30103d7.b2906f926b9f after 2693 ms
+2026-10-30T14:23:23.288Z initialize answered in 2693 ms
+  session: 58ac3a93b30103d7.b2906f926b9f
+  re-initialize: 2711 ms
+  | bridge 2026-10-30T14:23:23.301Z server notification notifications/tools/list_changed → stream
+2026-10-30T14:23:23.301Z server notification notifications/tools/list_changed → stream
+2026-10-30T14:23:23.301Z server notification notifications/tools/list_changed → stream
+2026-10-30T14:23:23.301Z server notification notifications/tools/list_changed → stream
+  | bridge 2026-10-30T14:23:23.304Z tools/call answered in 5 ms
+  next call (404 + re-initialize + call): 2723 ms
+  result: Echo: after the crash
+
+=== A call cut by a Container stop (held stop, container_restart): the stream breaks  [+9.6 s]
+  | bridge 2026-10-30T14:23:23.654Z server request roots/list → stream
+  | bridge 2026-10-30T14:23:23.664Z server notification notifications/message → stream
+  call failed: -32001 MCP error -32001: Request timed out
+
+=== A call while the Container is stopped and nothing starts it  [+69.6 s]
+  call failed:  fetch failed

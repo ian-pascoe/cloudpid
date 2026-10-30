@@ -1,0 +1,9 @@
+{
+  "name": "prototype-mcp-bridge",
+  "private": true,
+  "type": "module",
+  "description": "PROTOTYPE (#383), throwaway: a stdio→Streamable HTTP bridge and a demo client",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2"
+  }
+}
