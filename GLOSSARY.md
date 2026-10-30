@@ -249,7 +249,7 @@ A dev server running in a Workspace's Container, opened in the Session's browser
 _Avoid_: Preview (alone: that is a pull request's preview stage), tunnel, port forward
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the Browser Pane, the diffs (the Diff pane), an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the Browser Pane, the diffs (the Diff pane), an open file, an App View at full size (an App Pane). Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Session details**:
@@ -403,5 +403,35 @@ What cloudpid knows of an Environment's MCP server set: for each MCP server, its
 _Avoid_: Discovery cache, snapshot (that is a Container's saved disk), tool list (for the whole)
 
 **Exposure**:
-How an MCP server's tool reaches the model: `direct` (an Offered tool), `deferred` (a Deferred tool), `codemode` (callable from scripts only, never loaded by `tool_search`), or `hidden` (unreachable). A server's exposure applies to all its tools unless its entry sets one by name or pattern; the offered set naming a `codemode` or `deferred` tool makes it an Offered tool, never a `hidden` one.
-_Avoid_: Visibility, activation, tool mode
+How an MCP server's tool reaches the model: `direct` (an Offered tool), `deferred` (a Deferred tool), `codemode` (callable from scripts only, never loaded by `tool_search`), or `hidden` (unreachable). A server's exposure applies to all its tools unless its entry sets one by name or pattern; the offered set naming a `codemode` or `deferred` tool makes it an Offered tool, never a `hidden` one. `hidden` also keeps the tool from its server's App Views.
+_Avoid_: Visibility (that is Tool visibility, the server's own), activation, tool mode
+
+**Tool visibility**:
+Who an MCP server says may call one of its tools: the model, the server's App Views, or both. The owner's Exposure applies on top of it, so a tool only App Views may call never reaches the model.
+_Avoid_: Exposure (that is the owner's choice), audience
+
+## MCP Apps
+
+**MCP App**:
+An interactive page an MCP server declares for one of its tools, which cloudpid shows to the owner when that tool is called.
+_Avoid_: Widget, UI resource (the spec's name for its HTML), plugin
+
+**App View**:
+One MCP App shown for one tool call: live in the call's card, or at full size in an App Pane, while it is the newest of its server's in the conversation or the owner reopened it; otherwise collapsed to the call's result and its last App context. It may call its own server's tools but reaches the model only through an App message the owner sends and its App context.
+_Avoid_: View (alone, beside a Live View), widget, iframe, app (alone)
+
+**App Pane**:
+A Pane, one per App View the owner moves there, showing it at full size.
+_Avoid_: App window, fullscreen view
+
+**App sandbox**:
+Where App Views run: a site of their own apart from cloudpid's, holding no credential of cloudpid's, with one origin for each Environment's MCP server.
+_Avoid_: Sandbox (alone; `codemode` scripts run in a sandbox too), iframe host, View host
+
+**App context**:
+What an App View tells the model of what the owner is doing in it. Only its latest reaches the model, as untrusted content with the owner's next message.
+_Avoid_: Model context (the spec's name), app state
+
+**App message**:
+A message an App View offers to send for the owner. It waits in the composer, marked as the app's, until the owner sends, edits or discards it.
+_Avoid_: Draft (alone), app prompt
