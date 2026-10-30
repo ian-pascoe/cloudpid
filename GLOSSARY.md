@@ -379,3 +379,17 @@ _Avoid_: Browser (alone, for the Pane, in prose and code; its tab label is "Brow
 **Owner tab**:
 A tab of the Session's shared browser that the owner opened in the Browser Pane, apart from the conversations' tabs but sharing their cookies and logins. The owner may have several; the Browser Pane's tab strip lists them by title and shows one of them, the same on every device. A link a page in an Owner tab opens in a new tab becomes an Owner tab; a pop-up the page opens (an OAuth window) stays a window of its tab and is not one. The agent can read and drive one (`browser` with `tab`) without changing its size, while the Browser Pane says the agent is driving it. It lasts as long as the browser it is in, or until it is closed; the host keeps its address (without its fragment), so a browser that replaced the old one reopens it at that address (never its history, page state or logins). A Browser Pane in view keeps the browser alive while it polls, and a Pane that is not in view lets it close.
 _Avoid_: User tab, the owner's tab (for a conversation's tab the owner took over in a Browser Handoff)
+
+## MCP
+
+**MCP server**:
+A server the agent's tools can come from: a command the Workspace's Container runs (stdio) or a URL (Streamable HTTP), with how its tools reach the model. It is kept in the Settings, Global or an Environment's, or in a Repo's `.pi/mcp.json`.
+_Avoid_: MCP (alone, for one server), tool server, plugin, connection (that is the live link to one)
+
+**MCP server set**:
+The MCP servers an Environment's Sessions can reach: Global's and the Environment's own, with each Repo's `.pi/mcp.json` as it is on the Repo's default branch, in one namespace. The owner's entries win over a Repo's, and the Environment's MCP server adjustments apply last. Every Session of the Environment sees the same set, whatever its directory.
+_Avoid_: MCP config, `mcp.json` (for the merged set), server list
+
+**MCP server adjustment**:
+An entry holding only `enabled`, `exposure` and `toolExposure`, which adjusts an MCP server of that name defined elsewhere instead of defining one. An Environment's is an Override of each key it holds; a Repo's may only switch things off. Global holds none.
+_Avoid_: Override (pi's name for it; an Override is an Environment's own value), partial entry, patch
