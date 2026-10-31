@@ -150,7 +150,7 @@ const NOT_AN_AGENT = "This conversation is not a live agent; it may have been de
 /**
  * Decide in one commit, for `caller`, and record the result for this call; a rerun gets the recorded result. Refused once
  * the calling conversation no longer runs `caller`: a deleted agent's call still under way must not act for an agent that
- * took its ID since (ADR-0039).
+ * took its ID since (ADR-0040).
  */
 const decide = Effect.fnUntraced(function* <T extends JsonObject>(
   api: ToolExecutionApi,
@@ -370,7 +370,7 @@ const SpawnParameters = Schema.Struct({
 type SpawnArgs = typeof SpawnParameters.Type;
 
 /**
- * The ID `caller`'s next child gets: `requested`'s segment under the caller, a deleted agent's included (ADR-0039), or the
+ * The ID `caller`'s next child gets: `requested`'s segment under the caller, a deleted agent's included (ADR-0040), or the
  * next automatic `agent-<n>` that no agent has had (with the `n` to count on from); or why it cannot have it.
  */
 const chooseId = (
@@ -394,7 +394,7 @@ const chooseId = (
   const id = childAgentId(caller, requested);
   const existing = state.agents[id];
 
-  // An ID tombstoned before IDs were freed stays retired: what its agent left is not known (ADR-0039).
+  // An ID tombstoned before IDs were freed stays retired: what its agent left is not known (ADR-0040).
   if (existing === undefined && state.tombstones.includes(id) && state.freed?.[id] === undefined) {
     return {
       refused: `${id} was deleted before deleted IDs could be reused; choose another agent_id`,
@@ -1344,7 +1344,7 @@ const stopAll = (api: ToolExecutionApi, agents: ReadonlyArray<Stoppable>, backgr
 /**
  * Abort `target`, with its subtree when `recursive`, then again for any descendant spawned while it was being stopped,
  * until none is left running unstopped. Stops once `target` is deleted, so an agent that took its ID since is left alone
- * (ADR-0039), and fails once the calling conversation no longer runs `caller`. Returns which agents were running, and
+ * (ADR-0040), and fails once the calling conversation no longer runs `caller`. Returns which agents were running, and
  * every agent stopped.
  */
 const stopSubtree = Effect.fnUntraced(function* (

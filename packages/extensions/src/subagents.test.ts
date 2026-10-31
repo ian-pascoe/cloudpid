@@ -534,7 +534,7 @@ describe("subagents", () => {
         return answer("Noted.");
       });
 
-      // As a Session from before ADR-0039 has it: a tombstone, and nothing of what its agent left.
+      // As a Session from before ADR-0040 has it: a tombstone, and nothing of what its agent left.
       await session.harness.commit(async (tx) => {
         (await tx.doc(SubagentsDoc)).tombstones.push("worker");
       }, context);

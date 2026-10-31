@@ -131,7 +131,7 @@ export type Waiter = {
 };
 
 /**
- * What a deleted agent leaves under its freed ID for a later agent that takes it (ADR-0039): where its turn numbering
+ * What a deleted agent leaves under its freed ID for a later agent that takes it (ADR-0040): where its turn numbering
  * goes on, so a turn ID never names two turns, and its Subagent Workspace, which the delete may have failed to remove.
  */
 export type FreedId = {
@@ -145,7 +145,7 @@ export type SubagentsState = {
   conversations: Record<string, string>;
   /**
    * Deleted IDs that no live agent has taken again: an automatic `agent-<n>` is never given out twice, while a spawn
-   * that names one in `freed` starts a new, unrelated agent under it (ADR-0039).
+   * that names one in `freed` starts a new, unrelated agent under it (ADR-0040).
    */
   tombstones: string[];
   /**
@@ -293,7 +293,7 @@ export const waitEvent = (
 
 /**
  * Whether agent `id` is still the one that runs `conversationId`: not deleted since it was read, nor replaced by a new
- * agent that took its ID (ADR-0039).
+ * agent that took its ID (ADR-0040).
  */
 export const runs = (state: SubagentsState, id: string, conversationId: ConversationId): boolean =>
   state.agents[id]?.conversationId === conversationId;

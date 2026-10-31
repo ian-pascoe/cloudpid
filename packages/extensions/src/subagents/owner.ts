@@ -91,7 +91,7 @@ export const stopConversation = async (
     const state = await readState(harness, context);
     const target = agentOf(state, conversationId);
 
-    // Deleted meanwhile: whatever runs under its ID now is another agent's (ADR-0039).
+    // Deleted meanwhile: whatever runs under its ID now is another agent's (ADR-0040).
     if (target === undefined) return;
 
     const fresh = Arr.filter(below(state, target), (agent) => !stopped.has(agent.id));
@@ -120,7 +120,7 @@ export type OwnerDeletion = {
  * Delete agent `agentId` with everything below it, as `subagent_delete` with `discard: true` does (the owner confirmed
  * losing what was not pushed): stop them, tombstone their IDs, end the waits on them, and remove their Subagent
  * Workspaces through `workspaces`. An agent already deleted deletes nothing, and so does one that does not work in
- * `workspace` (an agent that took the ID of one whose Workspace was left behind, ADR-0039), or that took the ID while
+ * `workspace` (an agent that took the ID of one whose Workspace was left behind, ADR-0040), or that took the ID while
  * this one was being stopped.
  */
 export const deleteAgent = async (

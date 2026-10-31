@@ -115,7 +115,7 @@ const reportTarget = (
 
 /**
  * The turn `turnId` among `turns` that `reporter` carries. A later agent that took a deleted agent's ID has turns of its
- * own (ADR-0039), which a reporter of the deleted one must neither deliver to nor settle.
+ * own (ADR-0040), which a reporter of the deleted one must neither deliver to nor settle.
  */
 const carriedTurn = <T extends { readonly id: string; readonly reporter: TaskId }>(
   turns: ReadonlyArray<T> | undefined,
