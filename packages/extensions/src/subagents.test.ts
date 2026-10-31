@@ -479,7 +479,7 @@ describe("subagents", () => {
       const state = await session.state();
 
       expect(state.tombstones).toEqual(["agent-1"]);
-      expect(state.retired).toEqual({ "agent-1": { nextTurn: 2 } });
+      expect(state.freed).toEqual({ "agent-1": { nextTurn: 2 } });
       expect(state.agents["worker"]?.contract.task).toBe("Work again");
       expect(state.agents["worker"]?.turns.map((turn) => turn.id)).toEqual(["turn-2", "turn-3"]);
     });
@@ -521,6 +521,30 @@ describe("subagents", () => {
       expect((await session.state()).agents["worker"]?.turns).toMatchObject([
         { id: "turn-2", status: "completed", delivery: "auto" },
       ]);
+    });
+
+    it("keeps an ID deleted before deleting freed one retired", async () => {
+      const session = await openSubagentHarness((request) => {
+        if (request.agent !== "root") return answer("Done.");
+
+        if (request.text === "Go") {
+          return call(["subagent", { task: "Work", agent_id: "worker" }]);
+        }
+
+        return answer("Noted.");
+      });
+
+      // As a Session from before ADR-0039 has it: a tombstone, and nothing of what its agent left.
+      await session.harness.commit(async (tx) => {
+        (await tx.doc(SubagentsDoc)).tombstones.push("worker");
+      }, context);
+      await session.prompt("Go");
+      await session.settle();
+
+      expect(await session.texts("toolResult")).toEqual([
+        "worker was deleted before deleted IDs could be reused; choose another agent_id",
+      ]);
+      expect((await session.state()).agents).toEqual({});
     });
 
     it("removes the Workspace a deleted agent left behind before its ID is taken again", async () => {
@@ -568,7 +592,7 @@ describe("subagents", () => {
       const state = await session.state();
 
       expect(state.agents["worker"]?.workspace?.id).toBe("00000002");
-      expect(state.retired).toEqual({});
+      expect(state.freed).toEqual({});
     });
   });
 

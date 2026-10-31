@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- helpers for pi-durable commit callbacks, which are Promise code.
 // The Session's subagents, as one Session document: every live agent with its launch contract and recent turns, the
-// tombstones of deleted IDs and what a deleted ID leaves for an agent that takes it again, and the waits blocked on a
+// tombstones of deleted IDs and what each leaves for an agent that takes it again, and the waits blocked on a
 // child. A commit that changes it decides one delivery at a time, so a result is either claimed by a wait or reported
 // back automatically, never both.
 import {
@@ -131,10 +131,10 @@ export type Waiter = {
 };
 
 /**
- * What a deleted agent leaves under its ID for a later agent that takes it (ADR-0039): where its turn numbering goes
- * on, so a turn ID never names two turns, and its Subagent Workspace, which the delete may have failed to remove.
+ * What a deleted agent leaves under its freed ID for a later agent that takes it (ADR-0039): where its turn numbering
+ * goes on, so a turn ID never names two turns, and its Subagent Workspace, which the delete may have failed to remove.
  */
-export type RetiredAgent = {
+export type FreedId = {
   nextTurn: number;
   workspace?: AgentWorkspace;
 };
@@ -145,11 +145,14 @@ export type SubagentsState = {
   conversations: Record<string, string>;
   /**
    * Deleted IDs that no live agent has taken again: an automatic `agent-<n>` is never given out twice, while a spawn
-   * that names one starts a new, unrelated agent under it (ADR-0039).
+   * that names one in `freed` starts a new, unrelated agent under it (ADR-0039).
    */
   tombstones: string[];
-  /** By deleted ID, what its agent left for a later one that takes the ID; absent before the first delete. */
-  retired?: Record<string, RetiredAgent>;
+  /**
+   * By tombstoned ID, what its agent left for a later one that takes the ID (`freeId`, `takeId`). An ID tombstoned before
+   * IDs were freed has no entry, and stays retired: nothing says where its turns ended or what Workspace it left.
+   */
+  freed?: Record<string, FreedId>;
   /** The next automatic ID number, by parent. */
   nextIndex: Record<string, number>;
   waiters: Record<string, Waiter>;
@@ -288,6 +291,37 @@ export const waitEvent = (
   elapsed_ms: fields.elapsed_ms ?? 0,
 });
 
+/**
+ * Whether agent `id` is still the one that runs `conversationId`: not deleted since it was read, nor replaced by a new
+ * agent that took its ID (ADR-0039).
+ */
+export const runs = (state: SubagentsState, id: string, conversationId: ConversationId): boolean =>
+  state.agents[id]?.conversationId === conversationId;
+
+/** Tombstone deleted `agent`'s ID, keeping what a later agent of that ID must not repeat or inherit. */
+const freeId = (doc: SubagentsState, agent: AgentRecord): void => {
+  doc.tombstones.push(agent.id);
+  doc.freed ??= {};
+  doc.freed[agent.id] =
+    agent.workspace === undefined
+      ? { nextTurn: agent.nextTurn }
+      : { nextTurn: agent.nextTurn, workspace: { ...agent.workspace } };
+};
+
+/**
+ * Give freed `id` to a new agent, in its spawn's commit: its tombstone and what the deleted agent left go. Returns the turn
+ * number the new agent counts on from.
+ */
+export const takeId = (doc: SubagentsState, id: string): number => {
+  const nextTurn = doc.freed?.[id]?.nextTurn ?? 1;
+
+  if (doc.freed?.[id] !== undefined) delete doc.freed[id];
+
+  doc.tombstones = Arr.filter(doc.tombstones, (each) => each !== id);
+
+  return nextTurn;
+};
+
 /** An agent deleted with its subtree (`deleteSubtree`): what stops its conversation, and its Subagent Workspace. */
 export type DeletedAgent = Pick<AgentRecord, "id" | "conversationId"> & {
   workspace?: AgentWorkspace;
@@ -306,18 +340,12 @@ export const deleteSubtree = (
 ): DeletedAgent[] => {
   const gone: DeletedAgent[] = [];
 
-  if (doc.agents[target]?.conversationId !== conversationId) return gone;
-
-  doc.retired ??= {};
+  if (!runs(doc, target, conversationId)) return gone;
 
   for (const agent of subtreeOf(doc, target)) {
     delete doc.agents[agent.id];
     delete doc.conversations[String(agent.conversationId)];
-    doc.tombstones.push(agent.id);
-    doc.retired[agent.id] =
-      agent.workspace === undefined
-        ? { nextTurn: agent.nextTurn }
-        : { nextTurn: agent.nextTurn, workspace: { ...agent.workspace } };
+    freeId(doc, agent);
 
     const removed: DeletedAgent = { id: agent.id, conversationId: agent.conversationId };
 

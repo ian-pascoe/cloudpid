@@ -59,7 +59,9 @@ import {
   reportConversationOf,
   type SubagentsState,
   SubagentsDoc,
+  runs,
   subtreeOf,
+  takeId,
   type Turn,
   type WaitEvent,
   waitEvent,
@@ -392,6 +394,13 @@ const chooseId = (
   const id = childAgentId(caller, requested);
   const existing = state.agents[id];
 
+  // Deleted before deleting freed an ID: what it left is not known (ADR-0039).
+  if (existing === undefined && state.tombstones.includes(id) && state.freed?.[id] === undefined) {
+    return {
+      refused: `${id} was deleted before deleted IDs could be reused; choose another agent_id`,
+    };
+  }
+
   if (existing !== undefined) {
     const running = Arr.some(existing.turns, (turn) => turn.status === "running");
 
@@ -404,28 +413,28 @@ const chooseId = (
 };
 
 /**
- * Remove the Subagent Workspace a deleted agent left under the ID a spawn takes again (`retired`), which its delete could
- * not remove: the Session's Workspaces are found by agent ID, so the new agent would be handed it. Returns the removed
- * Workspace's ID, which the spawn's commit checks is still the one left; fails, naming it, while it cannot be removed.
+ * Remove the Subagent Workspace a deleted agent left under the freed ID a spawn takes (`freed`), which its delete may
+ * have failed to remove: the Session's Workspaces are found by agent ID, so the new agent would be handed it. Returns the
+ * leftover's ID, which the spawn's commit checks is still the one left; fails, naming it, while it cannot be removed.
  */
-const removeRetiredWorkspace = Effect.fnUntraced(function* (state: SubagentsState, id: string) {
-  const left = state.retired?.[id]?.workspace;
+const removeLeftoverWorkspace = Effect.fnUntraced(function* (state: SubagentsState, id: string) {
+  const leftover = state.freed?.[id]?.workspace;
   const host = yield* Effect.serviceOption(SubagentWorkspaces);
 
-  if (left === undefined) return undefined;
+  if (leftover === undefined) return undefined;
 
   // Without Subagent Workspaces, nobody can be given it.
-  if (Option.isNone(host)) return left.id;
+  if (Option.isNone(host)) return leftover.id;
 
   yield* Effect.tryPromise({
-    try: () => host.value.remove(left),
+    try: () => host.value.remove(leftover),
     catch: (cause) =>
       SubagentError.make({
-        message: `The Subagent Workspace ${left.id} of the deleted ${id} could not be removed (${cause instanceof Error ? cause.message : String(cause)}), and a new ${id} would be given it: remove it from the Environments page, or choose another agent_id`,
+        message: `The Subagent Workspace ${leftover.id} of the deleted ${id} could not be removed (${cause instanceof Error ? cause.message : String(cause)}), and a new ${id} would be given it: remove it from the Environments page, or choose another agent_id`,
       }),
   });
 
-  return left.id;
+  return leftover.id;
 });
 
 /**
@@ -591,10 +600,10 @@ const Spawn = defineEffectTool({
     const preamble = yield* parentContext(api, sessionContext, options.roles.small?.model ?? model);
 
     // Only a named ID can be a deleted agent's: an automatic one skips them.
-    const cleared =
+    const removedLeftover =
       args.agent_id === undefined
         ? undefined
-        : yield* removeRetiredWorkspace(state, childAgentId(caller, args.agent_id));
+        : yield* removeLeftoverWorkspace(state, childAgentId(caller, args.agent_id));
 
     const workspace =
       args.workspace === "new" ? yield* newWorkspace(args, state, caller, options) : undefined;
@@ -617,19 +626,14 @@ const Spawn = defineEffectTool({
       }
 
       // An agent of this ID was deleted since the read, leaving a Workspace not removed above.
-      const retired = doc.retired?.[id];
-      const left = retired?.workspace?.id;
+      const leftover = doc.freed?.[id]?.workspace?.id;
 
-      if (left !== undefined && left !== cleared) {
+      if (leftover !== undefined && leftover !== removedLeftover) {
         return refuse(`${id} was deleted while this spawn started; spawn again`);
       }
 
       // The new agent shares nothing with a deleted one of its ID but where its turn numbering goes on.
-      const nextTurn = retired?.nextTurn ?? 1;
-
-      if (retired !== undefined) delete doc.retired?.[id];
-
-      doc.tombstones = Arr.filter(doc.tombstones, (each) => each !== id);
+      const nextTurn = takeId(doc, id);
 
       if (chosen.index !== undefined) doc.nextIndex[caller] = chosen.index + 1;
 
@@ -859,10 +863,9 @@ const Message = defineEffectTool({
             ? (reportConversationOf(doc, caller) ?? conversationOf(doc, target))
             : conversationOf(doc, target);
 
-        // Deleted since the read, perhaps with a new agent taking its ID.
         if (
           conversationId === undefined ||
-          (addressed !== undefined && conversationId !== addressed.conversationId)
+          (addressed !== undefined && !runs(doc, target, addressed.conversationId))
         ) {
           return refuse(`Agent ${target} was deleted`);
         }
@@ -1016,8 +1019,7 @@ const Wait = defineEffectTool({
       const doc = await tx.doc(SubagentsDoc);
       const record = doc.agents[target];
 
-      // Deleted since the read, perhaps with a new agent taking its ID.
-      if (record?.conversationId !== agent.conversationId) {
+      if (record === undefined || !runs(doc, target, agent.conversationId)) {
         return refuse(`Agent ${target} was deleted`);
       }
 
@@ -1341,11 +1343,14 @@ const stopAll = (api: ToolExecutionApi, agents: ReadonlyArray<Stoppable>, backgr
 
 /**
  * Abort `target`, with its subtree when `recursive`, then again for any descendant spawned while it was being stopped,
- * until none is left running unstopped. Returns which agents were running, and every agent stopped.
+ * until none is left running unstopped. Stops once `target` is deleted, so an agent that took its ID since is left alone
+ * (ADR-0039), and fails once the calling conversation no longer runs `caller`. Returns which agents were running, and
+ * every agent stopped.
  */
 const stopSubtree = Effect.fnUntraced(function* (
   api: ToolExecutionApi,
-  target: string,
+  caller: string,
+  target: Stoppable,
   recursive: boolean,
 ) {
   const stopped = new Set<string>();
@@ -1354,9 +1359,13 @@ const stopSubtree = Effect.fnUntraced(function* (
   for (;;) {
     const state = yield* readState(api);
 
+    if (agentOf(state, api.conversationId) !== caller) return yield* fail(NOT_AN_AGENT);
+
+    if (!runs(state, target.id, target.conversationId)) return { affected, stopped };
+
     const scope = recursive
-      ? subtreeOf(state, target)
-      : Option.toArray(Record.get(state.agents, target));
+      ? subtreeOf(state, target.id)
+      : Option.toArray(Record.get(state.agents, target.id));
 
     const fresh = Arr.filter(scope, (agent) => !stopped.has(agent.id));
 
@@ -1387,7 +1396,7 @@ const Cancel = defineEffectTool({
     const caller = yield* callerOf(api, state);
     const target = normalizeAgentId(agent_id);
     const agent = yield* directChild(state, caller, target);
-    const { affected } = yield* stopSubtree(api, agent.id, recursive ?? true);
+    const { affected } = yield* stopSubtree(api, caller, agent, recursive ?? true);
 
     return {
       output: text(
@@ -1572,7 +1581,7 @@ const Delete = defineEffectTool({
       if (refusal !== undefined) return yield* fail(refusal);
     }
 
-    const { stopped } = yield* stopSubtree(api, target, true);
+    const { stopped } = yield* stopSubtree(api, caller, record, true);
 
     // The subtree as it is now: a descendant spawned after the last scan is deleted too, and stopped below. Once its
     // conversation is unmapped, no deleted agent can spawn again. Nothing is deleted if the target was deleted, and its

@@ -89,7 +89,11 @@ export const stopConversation = async (
 
   for (;;) {
     const state = await readState(harness, context);
-    const target = agentOf(state, conversationId) ?? ROOT_AGENT;
+    const target = agentOf(state, conversationId);
+
+    // Deleted meanwhile: whatever runs under its ID now is another agent's (ADR-0039).
+    if (target === undefined) return;
+
     const fresh = Arr.filter(below(state, target), (agent) => !stopped.has(agent.id));
 
     if (fresh.length === 0) return;
