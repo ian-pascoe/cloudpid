@@ -6,7 +6,7 @@ A personal coding agent on Cloudflare: pi's harness running durably in Durable O
 
 **Session**:
 One agent unit of work the user opens: a root conversation, its subagents, and their history, bound to one Workspace.
-_Avoid_: Chat, thread, conversation (for the whole unit)
+_Avoid_: Chat, thread, conversation (for the whole unit), MCP session (a Legacy MCP server's own)
 
 **Archived Session**:
 A Session the owner has put away: kept whole, listed apart under _Archived_ rather than with the others, and read-only until it is unarchived.
@@ -318,7 +318,7 @@ _Avoid_: Catalog, directory
 
 **Notification**:
 A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request), linking to the Session.
-_Avoid_: Alert, push message (for the user-facing thing)
+_Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:
 The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options), kept Global and as an Environment's Overrides. Each Session reads its Environment's, resolved over Global and the defaults, before its next request.
@@ -413,6 +413,10 @@ _Avoid_: Override (pi's name for it; an Override is an Environment's own value),
 **MCP inventory**:
 What cloudpid knows of an Environment's MCP server set: for each MCP server, its instructions, what it supports, and the tools and prompts it declared when last asked, with any problem found in them. A Session takes its MCP tools from it, so every Session of the Environment sees the same tools. A server's resources and resource templates are asked for when needed, not kept in it.
 _Avoid_: Discovery cache, snapshot (that is a Container's saved disk), tool list (for the whole)
+
+**Protocol era**:
+Which generation of MCP an MCP server speaks. A **Legacy** server (protocol `2025-11-25` and earlier) talks over a session it opens, and can ask cloudpid for something (the owner's answer, a reply from a model) only while the call it belongs to waits. A **Modern** server (`2026-07-28` and later) keeps no session: each request stands alone, and a question ends its request, which cloudpid sends again with the answer, so the question can wait. cloudpid speaks both, learns each server's era by asking it, and shows a server's protocol version rather than its era.
+_Avoid_: Stateful/stateless (for the era), v1/v2 (those are SDK versions), old/new protocol, version (for the era)
 
 **Resource watch**:
 A conversation's standing request to be told when an MCP resource it read changes. Each change reaches it as a notice at its next request, never starting a Run.
