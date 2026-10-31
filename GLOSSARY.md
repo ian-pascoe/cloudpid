@@ -317,7 +317,7 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request), linking to the Session.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request), linking to the Session.
 _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:
@@ -341,11 +341,11 @@ The `AGENTS.md` (or `CLAUDE.md`) files of a Workspace, each applying to the file
 _Avoid_: Instructions (alone), repo rules
 
 **Usage**:
-What a Session has spent on model requests: tokens by kind and the cost in US dollars, summed over its root conversation, its subagents and its title call. Shown in the Session's header.
+What a Session has spent on model requests: tokens by kind and the cost in US dollars, summed over its root conversation, its subagents, its title call and the Sampling requests its MCP servers ran. Shown in the Session's header.
 _Avoid_: Billing, tokens (for the whole figure)
 
 **Spend limit**:
-The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on.
+The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on. A Sampling request at the limit is refused, and the Run goes on.
 _Avoid_: Budget, quota, cap
 
 ## The agent's changes to its harness
@@ -399,7 +399,7 @@ A server the agent's tools can come from: a command the Workspace's Container ru
 _Avoid_: MCP (alone, for one server), tool server, plugin, connection (that is the live link to one)
 
 **MCP server definition**:
-What makes an MCP server the one it is: the command it runs (with its arguments and directory) or the URL it is reached at, what it is sent (its environment and headers, which may name Secrets and Variables), how it signs in, how long a request may wait, and its description. That is everything about it except whether it is on and its Exposure. The agent changes one in the Settings only with the owner's Approval.
+What makes an MCP server the one it is: the command it runs (with its arguments and directory) or the URL it is reached at, what it is sent (its environment and headers, which may name Secrets and Variables), how it signs in, how long a request may wait, whether it may use the owner's models, and its description. That is everything about it except whether it is on and its Exposure. The agent changes one in the Settings only with the owner's Approval.
 _Avoid_: Config (alone), entry (for the definition), server settings
 
 **MCP server set**:
@@ -437,6 +437,10 @@ _Avoid_: Login, OAuth token (for the whole), credentials (a Credential is a 1Pas
 **Sign-in request**:
 The agent's ask that the owner sign in to an MCP server, shown as a card in its Session with a Notification. It waits until the owner signs in, from it or anywhere else, or declines it; every Sign-in request for one MCP sign-in ends when the owner signs in.
 _Avoid_: Auth prompt, login request, Approval (that is for an Agent change), elicitation (that is the server's own request)
+
+**Sampling request**:
+An MCP server's ask, during a call the agent or the owner made, for a reply from one of the owner's models, shown as a card in that call's conversation. The owner allows it (for the call, in the Session, or always for that server) or refuses it (likewise), unless the server's MCP server definition already allows or refuses it. The reply goes only to the server; the card keeps what was asked, the reply and what it cost.
+_Avoid_: Approval (that is for an Agent change), consent, completion request, sampling (alone, for one request)
 
 ## MCP Apps
 
