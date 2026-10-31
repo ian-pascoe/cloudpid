@@ -180,7 +180,7 @@ export const CancelOutput = Schema.Struct({
   }),
 });
 
-/** `subagent_delete`: the agents deleted with it, whose IDs are retired. */
+/** `subagent_delete`: the agents deleted with it, whose IDs a new subagent may take. */
 export const DeleteOutput = Schema.Struct({
   agent_id: AgentId,
   deleted_agent_ids: Schema.Array(Schema.String).annotate({

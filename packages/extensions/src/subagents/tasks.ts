@@ -19,6 +19,7 @@ import {
   type NextTaskState,
   ROOT_CONVERSATION_ID,
   type Task,
+  type TaskId,
   type TaskRuntime,
   type Tx,
 } from "@earendil-works/pi-durable";
@@ -112,6 +113,19 @@ const reportTarget = (
 ): ConversationId | undefined =>
   reportConversationOf(state, agentId) ?? conversationOf(state, parent);
 
+/**
+ * The turn `turnId` among `turns` that `reporter` carries. A later agent that took a deleted agent's ID has turns of its
+ * own (ADR-0039), which a reporter of the deleted one must neither deliver to nor settle.
+ */
+const carriedTurn = <T extends { readonly id: string; readonly reporter: TaskId }>(
+  turns: ReadonlyArray<T> | undefined,
+  turnId: string,
+  reporter: TaskId,
+): T | undefined =>
+  Option.getOrUndefined(
+    Arr.findFirst(turns ?? [], (each) => each.id === turnId && each.reporter === reporter),
+  );
+
 /** The model-visible header of a message from another agent, as pi-minimal-subagents frames it. */
 export const envelope = (
   kind: "result" | "message",
@@ -174,7 +188,11 @@ export const reporterWith = (handBack: HandBack): ReporterTask => {
       deliver: async (reporter, runtime, context) => {
         const { agentId, turnId, content, whenBusy, from } = reporter.input;
         const state = (await runtime.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE;
-        const agent = state.agents[agentId];
+        const found = state.agents[agentId];
+
+        // Its agent, unless deleted, perhaps with a new agent taking the ID.
+        const agent =
+          carriedTurn(found?.turns, turnId, reporter.id) === undefined ? undefined : found;
 
         const conversation =
           agent === undefined
@@ -217,10 +235,7 @@ export const reporterWith = (handBack: HandBack): ReporterTask => {
           const doc = await tx.doc(SubagentsDoc);
           const record = doc.agents[agentId];
 
-          const settledTurn =
-            record === undefined
-              ? undefined
-              : Option.getOrUndefined(Arr.findFirst(record.turns, (each) => each.id === turnId));
+          const settledTurn = carriedTurn(record?.turns, turnId, reporter.id);
 
           if (record === undefined || settledTurn === undefined) return completed(null);
 
@@ -341,9 +356,7 @@ export const reporterWith = (handBack: HandBack): ReporterTask => {
         await runtime.commit(async (tx): Promise<NextTaskState<ReporterState, null>> => {
           const doc = await tx.doc(SubagentsDoc);
 
-          const turn = Option.getOrUndefined(
-            Arr.findFirst(doc.agents[agentId]?.turns ?? [], (each) => each.id === turnId),
-          );
+          const turn = carriedTurn(doc.agents[agentId]?.turns, turnId, reporter.id);
 
           // Claimed by a wait meanwhile, or deleted.
           if (turn?.delivery !== "pending") return completed(null);
@@ -408,11 +421,10 @@ export const reporterWith = (handBack: HandBack): ReporterTask => {
       runtime.commit(async (tx) => {
         const doc = await tx.doc(SubagentsDoc);
 
-        const turn = Option.getOrUndefined(
-          Arr.findFirst(
-            doc.agents[reporter.input.agentId]?.turns ?? [],
-            (each) => each.id === reporter.input.turnId,
-          ),
+        const turn = carriedTurn(
+          doc.agents[reporter.input.agentId]?.turns,
+          reporter.input.turnId,
+          reporter.id,
         );
 
         if (turn?.status === "running") {

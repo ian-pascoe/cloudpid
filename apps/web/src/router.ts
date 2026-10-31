@@ -149,8 +149,8 @@ export const sessionPath = (sessionId: string): string =>
   `/sessions/${encodeURIComponent(sessionId)}`;
 
 /**
- * The Subagent page of agent `agentId` (its canonical ID, such as `agent-1.reviewer`, never reused in its Session) in
- * Session `sessionId`: the Session page scoped to that subagent (GLOSSARY.md → Subagent page).
+ * The Subagent page of agent `agentId` (its canonical ID, such as `agent-1.reviewer`, which a new subagent may take once
+ * it is deleted) in Session `sessionId`: the Session page scoped to that subagent (GLOSSARY.md → Subagent page).
  */
 export const subagentPath = (sessionId: string, agentId: string): string =>
   `${sessionPath(sessionId)}/agents/${encodeURIComponent(agentId)}`;

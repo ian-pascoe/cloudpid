@@ -101,7 +101,7 @@ export type SessionOrigin = typeof SessionOrigin.Type;
  * Session DO keeps in the Registry.
  */
 export const SessionAgent = Schema.Struct({
-  /** Its canonical ID, such as `agent-1` or `agent-1.reviewer`; never reused in its Session. */
+  /** Its canonical ID, such as `agent-1` or `agent-1.reviewer`; unique among the Session's live subagents. */
   id: Schema.String,
   /** The agent that started it: `root` or another subagent's ID. */
   parent: Schema.String,
