@@ -438,8 +438,8 @@ describe("subagents", () => {
     });
   });
 
-  describe("tombstones", () => {
-    it("never reuses a deleted ID, and skips it when numbering", async () => {
+  describe("deleted IDs", () => {
+    it("lets a named ID be taken again by a fresh agent, and never numbers one automatically", async () => {
       const steps = [
         call(["subagent", { task: "Work", agent_id: "worker" }]),
         call(["subagent_delete", { agent_id: "worker" }]),
@@ -465,16 +465,134 @@ describe("subagents", () => {
 
       const results = await session.texts("toolResult");
 
+      // The new worker's turns go on from the deleted one's, so a turn ID never names two turns.
       expect(results).toEqual([
-        expect.stringMatching(/^Spawned worker /),
-        "Deleted worker; their IDs are retired.",
-        "worker was deleted, and deleted IDs are never reused; choose another agent_id",
-        "Agent worker was deleted",
+        expect.stringMatching(/^Spawned worker \(turn turn-1\)/),
+        "Deleted worker; a new subagent may take its ID, starting fresh.",
+        expect.stringMatching(/^Spawned worker \(turn turn-2\)/),
+        expect.stringMatching(/^worker was idle; the message started turn turn-3\./),
         expect.stringMatching(/^Spawned agent-1 /),
-        "Deleted agent-1; their IDs are retired.",
+        "Deleted agent-1; a new subagent may take its ID, starting fresh.",
         expect.stringMatching(/^Spawned agent-2 /),
       ]);
-      expect((await session.state()).tombstones).toEqual(["worker", "agent-1"]);
+
+      const state = await session.state();
+
+      expect(state.tombstones).toEqual(["agent-1"]);
+      expect(state.freed).toEqual({ "agent-1": { nextTurn: 2 } });
+      expect(state.agents["worker"]?.contract.task).toBe("Work again");
+      expect(state.agents["worker"]?.turns.map((turn) => turn.id)).toEqual(["turn-2", "turn-3"]);
+    });
+
+    it("reports a deleted agent's turn neither to its parent nor as the turn of the agent that took its ID", async () => {
+      const steps = [
+        call(["subagent", { task: "Slow", agent_id: "worker" }]),
+        call(["subagent_delete", { agent_id: "worker" }]),
+        call(["subagent", { task: "Fast", agent_id: "worker" }]),
+      ];
+
+      let step = 0;
+
+      const session = await openSubagentHarness(async (request) => {
+        if (request.agent === "worker") {
+          // Runs until the delete stops it.
+          if (request.text === "Slow") {
+            await new Promise((resolve) =>
+              request.signal?.addEventListener("abort", resolve, { once: true }),
+            );
+
+            return answer("Slow done.");
+          }
+
+          return answer("Fast done.");
+        }
+
+        if (request.text.startsWith("[Subagent result")) return answer("Noted.");
+
+        return steps[step++] ?? answer("Finished.");
+      });
+
+      await session.prompt("Go");
+      await session.settle();
+
+      expect(
+        (await session.texts("user")).filter((text) => text.startsWith("[Subagent result")),
+      ).toEqual(["[Subagent result | agent=worker | turn=turn-2 | status=completed]\nFast done."]);
+      expect((await session.state()).agents["worker"]?.turns).toMatchObject([
+        { id: "turn-2", status: "completed", delivery: "auto" },
+      ]);
+    });
+
+    it("keeps an ID tombstoned before IDs were freed retired", async () => {
+      const session = await openSubagentHarness((request) => {
+        if (request.agent !== "root") return answer("Done.");
+
+        if (request.text === "Go") {
+          return call(["subagent", { task: "Work", agent_id: "worker" }]);
+        }
+
+        return answer("Noted.");
+      });
+
+      // As a Session from before ADR-0040 has it: a tombstone, and nothing of what its agent left.
+      await session.harness.commit(async (tx) => {
+        (await tx.doc(SubagentsDoc)).tombstones.push("worker");
+      }, context);
+      await session.prompt("Go");
+      await session.settle();
+
+      expect(await session.texts("toolResult")).toEqual([
+        "worker was deleted before deleted IDs could be reused; choose another agent_id",
+      ]);
+      expect((await session.state()).agents).toEqual({});
+    });
+
+    it("removes the Workspace a deleted agent left behind before its ID is taken again", async () => {
+      const workspaces = fakeSubagentWorkspaces();
+
+      const session = await openSubagentHarness(
+        (request) => {
+          if (request.agent !== "root") return answer("Done.");
+
+          if (request.text === "Delegate it" || request.text === "Again") {
+            return call(["subagent", { task: "Work", agent_id: "worker", workspace: "new" }]);
+          }
+
+          if (request.text === "Remove it") {
+            return call(["subagent_delete", { agent_id: "worker" }]);
+          }
+
+          return answer("Noted.");
+        },
+        {},
+        [],
+        workspaces.host,
+      );
+
+      await session.prompt("Delegate it");
+      await session.settle();
+      workspaces.failRemoval("the Container is busy");
+      await session.prompt("Remove it");
+      await session.settle();
+      await session.prompt("Again");
+      await session.settle();
+      workspaces.failRemoval(undefined);
+      await session.prompt("Again");
+      await session.settle();
+
+      const results = await session.texts("toolResult");
+
+      expect(results.slice(1, 3)).toEqual([
+        "Deleted worker; a new subagent may take its ID, starting fresh.\nThe Subagent Workspace 00000001 of worker could not be removed (the Container is busy); the owner can remove it from the Environments page.",
+        "The Subagent Workspace 00000001 of the deleted worker could not be removed (the Container is busy), and a new worker would be given it: remove it from the Environments page, or choose another agent_id",
+      ]);
+      expect(results[3]).toMatch(/^Spawned worker \(turn turn-2\)/);
+      expect(workspaces.removed).toEqual(["00000001"]);
+
+      const state = await session.state();
+
+      expect(state.agents["worker"]?.workspace?.id).toBe("00000002");
+      expect(state.freed).toEqual({});
     });
   });
 

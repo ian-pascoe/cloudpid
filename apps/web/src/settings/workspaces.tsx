@@ -247,7 +247,7 @@ const RemoveSubagentWorkspaceDialog = ({
         <li>
           Subagent <span className="font-mono">{agent}</span>
           {session === undefined ? "" : ` of “${sessionTitle(session)}”`}, and every subagent below
-          it: their work stops and their IDs are retired.
+          it: their work stops for good.
         </li>
         <li>Its files and Container, and those of the Subagent Workspaces below it.</li>
       </ul>

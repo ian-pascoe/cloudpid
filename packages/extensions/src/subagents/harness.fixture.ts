@@ -40,7 +40,8 @@ import type { RepoWorkState, SubagentWorkspaceRequest } from "./workspaces.ts";
 
 /**
  * Subagent Workspaces kept in memory: each made on `cloudpid/<id>` (or the branch asked for), with what each has not
- * pushed set by the test (`work`), and those removed. `refuse` makes the next `create` reject with its message.
+ * pushed set by the test (`work`), and those removed. `refuse` makes the next `create` reject with its message, and
+ * `failRemoval` every `remove` until it is cleared.
  */
 export const fakeSubagentWorkspaces = () => {
   const requests: SubagentWorkspaceRequest[] = [];
@@ -48,6 +49,8 @@ export const fakeSubagentWorkspaces = () => {
   const work = new Map<string, RepoWorkState[]>();
   const removed: string[] = [];
   let refusal: string | undefined;
+  let removal: string | undefined;
+  let count = 0;
   let warnings: string[] = [];
 
   const host: SubagentWorkspaceHost = {
@@ -60,7 +63,9 @@ export const fakeSubagentWorkspaces = () => {
 
       if (known !== undefined) return { workspace: known, warnings };
 
-      const id = `0000000${made.size + 1}`;
+      count += 1;
+
+      const id = `0000000${count}`;
 
       const workspace: AgentWorkspace = {
         id,
@@ -84,8 +89,13 @@ export const fakeSubagentWorkspaces = () => {
           head: workspace.branch,
         },
       ],
+    // As the Registry does, a removed Workspace is no longer the one its subagent's ID is answered with.
     remove: async (workspace) => {
+      if (removal !== undefined) throw new Error(removal);
+
       removed.push(workspace.id);
+
+      for (const [agent, each] of made) if (each.id === workspace.id) made.delete(agent);
     },
   };
 
@@ -97,6 +107,9 @@ export const fakeSubagentWorkspaces = () => {
     removed,
     refuse: (message: string | undefined) => {
       refusal = message;
+    },
+    failRemoval: (message: string | undefined) => {
+      removal = message;
     },
     warn: (next: string[]) => {
       warnings = next;

@@ -82,14 +82,18 @@ export const stopConversation = async (
 
   if (!options.subagents) return;
 
-  // Same loop as the extension's `stopSubtree`: an abort waits until its conversation is idle, and meanwhile an agent
+  // Much as the extension's `stopSubtree` loops: an abort waits until its conversation is idle, and meanwhile an agent
   // still running (the parent of the one being stopped) can start another. So read the state again after each pass and
   // stop whatever is new, until nothing is.
   const stopped = new Set<string>();
 
   for (;;) {
     const state = await readState(harness, context);
-    const target = agentOf(state, conversationId) ?? ROOT_AGENT;
+    const target = agentOf(state, conversationId);
+
+    // Deleted meanwhile: whatever runs under its ID now is another agent's (ADR-0040).
+    if (target === undefined) return;
+
     const fresh = Arr.filter(below(state, target), (agent) => !stopped.has(agent.id));
 
     if (fresh.length === 0) return;
@@ -114,9 +118,10 @@ export type OwnerDeletion = {
 
 /**
  * Delete agent `agentId` with everything below it, as `subagent_delete` with `discard: true` does (the owner confirmed
- * losing what was not pushed): stop them, retire their IDs, end the waits on them, and remove their Subagent Workspaces
- * through `workspaces`. An agent already deleted deletes nothing, and so does one that does not work in `workspace` (an
- * agent that took the ID of one whose Workspace was left behind).
+ * losing what was not pushed): stop them, tombstone their IDs, end the waits on them, and remove their Subagent
+ * Workspaces through `workspaces`. An agent already deleted deletes nothing, and so does one that does not work in
+ * `workspace` (an agent that took the ID of one whose Workspace was left behind, ADR-0040), or that took the ID while
+ * this one was being stopped.
  */
 export const deleteAgent = async (
   harness: OwnerDeleteHarness,
@@ -134,7 +139,7 @@ export const deleteAgent = async (
   await stopConversation(harness, agent.conversationId, { subagents: true }, context);
 
   const gone = await harness.commit(
-    async (tx) => deleteSubtree(await tx.doc(SubagentsDoc), agentId),
+    async (tx) => deleteSubtree(await tx.doc(SubagentsDoc), agentId, agent.conversationId),
     context,
   );
 

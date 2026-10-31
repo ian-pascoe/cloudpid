@@ -2,7 +2,8 @@
 
 // What a Subagent page (GLOSSARY.md → Subagent page) shows of its subagent: the page names it by its canonical ID, and
 // the Session's task graph, watched on its socket, gives the conversation to show. A subagent the graph does not list
-// once it has loaded was deleted (IDs are never reused): the page says so, with a way back to its Session.
+// once it has loaded was deleted: the page says so, with a way back to its Session. A new subagent that takes the ID
+// later (ADR-0040) is shown in its place.
 
 import type { GraphAgent, TaskGraphSummary } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
