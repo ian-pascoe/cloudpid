@@ -315,7 +315,7 @@ const freeId = (doc: SubagentsState, agent: AgentRecord): void => {
 export const takeId = (doc: SubagentsState, id: string): number => {
   const nextTurn = doc.freed?.[id]?.nextTurn ?? 1;
 
-  if (doc.freed?.[id] !== undefined) delete doc.freed[id];
+  if (doc.freed !== undefined) delete doc.freed[id];
 
   doc.tombstones = Arr.filter(doc.tombstones, (each) => each !== id);
 

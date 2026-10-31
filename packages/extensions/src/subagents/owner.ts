@@ -82,7 +82,7 @@ export const stopConversation = async (
 
   if (!options.subagents) return;
 
-  // Same loop as the extension's `stopSubtree`: an abort waits until its conversation is idle, and meanwhile an agent
+  // Much as the extension's `stopSubtree` loops: an abort waits until its conversation is idle, and meanwhile an agent
   // still running (the parent of the one being stopped) can start another. So read the state again after each pass and
   // stop whatever is new, until nothing is.
   const stopped = new Set<string>();

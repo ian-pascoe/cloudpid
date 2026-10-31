@@ -394,7 +394,7 @@ const chooseId = (
   const id = childAgentId(caller, requested);
   const existing = state.agents[id];
 
-  // Deleted before deleting freed an ID: what it left is not known (ADR-0039).
+  // An ID tombstoned before IDs were freed stays retired: what its agent left is not known (ADR-0039).
   if (existing === undefined && state.tombstones.includes(id) && state.freed?.[id] === undefined) {
     return {
       refused: `${id} was deleted before deleted IDs could be reused; choose another agent_id`,
@@ -626,9 +626,9 @@ const Spawn = defineEffectTool({
       }
 
       // An agent of this ID was deleted since the read, leaving a Workspace not removed above.
-      const leftover = doc.freed?.[id]?.workspace?.id;
+      const leftoverId = doc.freed?.[id]?.workspace?.id;
 
-      if (leftover !== undefined && leftover !== removedLeftover) {
+      if (leftoverId !== undefined && leftoverId !== removedLeftover) {
         return refuse(`${id} was deleted while this spawn started; spawn again`);
       }
 

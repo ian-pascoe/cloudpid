@@ -523,7 +523,7 @@ describe("subagents", () => {
       ]);
     });
 
-    it("keeps an ID deleted before deleting freed one retired", async () => {
+    it("keeps an ID tombstoned before IDs were freed retired", async () => {
       const session = await openSubagentHarness((request) => {
         if (request.agent !== "root") return answer("Done.");
 
