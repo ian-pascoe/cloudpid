@@ -17,7 +17,7 @@ We chose the SDK because it already ships the Modern plumbing (the `server/disco
 
 ## Consequences
 
-- The SDK adds about 9–10 MiB of cold heap per package to every isolate that loads it ([typescript-sdk#2865](https://github.com/modelcontextprotocol/typescript-sdk/issues/2865)). So only `packages/mcp` imports `@modelcontextprotocol/*`, and only the MCP host object and the `/mcp` route load its runtime. Everything else imports its types and uses RPC.
+- The SDK adds about 9–10 MiB of cold heap per package to every isolate that loads it ([typescript-sdk#2865](https://github.com/modelcontextprotocol/typescript-sdk/issues/2865)). So only `packages/mcp` imports `@modelcontextprotocol/*`, and only `McpWorker`'s stateless `McpEngine` and `McpServer` (`/mcp`) entrypoints load its runtime; the MCP host object drives the engine over RPC (ADR-0038). Everything else imports its types and uses RPC.
 - The SDK's releases tighten behaviour in minors. A bump is gated by the conformance suite at the SDK's own CI version, the fake servers of both eras, golden tests of the SDK behaviour the core leans on, and workerd tests. It is pinned on its own, not to `agents`' peer.
 - Protocol fixes go upstream to the SDK, not to pi: forwarding `onRequestStreamEnd`, the reconnect and expired-session bugs, a per-call `allowTask`, opting out of eager schema loading, and tying incoming server requests to their call. Until then they are worked around at the injected `fetch`. pi gets only the sign-in additions, as an issue before any PR.
 - The owner's earlier lean to build MCP locally on pi-mcp, upstreamable to pi, is given up.
