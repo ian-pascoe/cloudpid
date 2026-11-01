@@ -11,7 +11,10 @@ const underCi = process.env["CI"] !== undefined;
 const present = (command: string): boolean =>
   underCi || spawnSync(command, ["--version"]).status === 0;
 
-/** GNU coreutils: `stat --printf`, `touch -d @<epoch>`, and a `head -c` that reads no more of a pipe than it prints. */
+/**
+ * GNU coreutils, probed by its `stat`: `stat --printf`, `touch -d @<epoch>`, and a `head -c` that reads no more of a pipe
+ * than it prints.
+ */
 export const hasGnuCoreutils = present("stat");
 
 /** util-linux's `flock`, which keeps two Sessions' scripts from running at once. */
