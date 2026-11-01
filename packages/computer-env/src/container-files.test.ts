@@ -1,6 +1,6 @@
 // The Container's file operations run their real scripts here, in bash on this machine, which stands in for the
 // Container; the "Workspace DO" side of the stage is the same disk.
-// @effect-diagnostics nodeBuiltinImport:off asyncFunction:off preferEffectArray:off
+// @effect-diagnostics nodeBuiltinImport:off asyncFunction:off preferEffectArray:off processEnv:off
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -18,6 +18,12 @@ import { type ContainerAccess, ContainerFiles } from "./container-files.ts";
 import { HostFailure } from "./failure.ts";
 
 const hasRg = spawnSync("rg", ["--version"]).status === 0;
+
+// The Container's GNU coreutils and findutils (`stat --printf`, `realpath -e`, `find -printf`), which a macOS host
+// lacks; CI runs Linux and never skips.
+const hasGnuTools =
+  process.env["CI"] !== undefined ||
+  (spawnSync("stat", ["--version"]).status === 0 && spawnSync("find", ["--version"]).status === 0);
 
 let root: string;
 let running: boolean;
@@ -89,25 +95,31 @@ describe("the Container's file operations", () => {
     ).toEqual([true, true, false]);
   });
 
-  it("give a file's or directory's metadata, and name the Container when there is nothing there", async () => {
-    const info = await files().info(join(root, "pkg/index.ts"), true);
+  it.skipIf(!hasGnuTools)(
+    "give a file's or directory's metadata, and name the Container when there is nothing there",
+    async () => {
+      const info = await files().info(join(root, "pkg/index.ts"), true);
 
-    expect(info).toMatchObject({ name: "index.ts", kind: "file", size: 40 });
-    expect(Math.abs(info.mtimeMs - statSync(join(root, "pkg/index.ts")).mtimeMs)).toBeLessThan(2);
-    expect((await files().info(join(root, "pkg"), true)).kind).toBe("directory");
-    expect(await failure(files().info(join(root, "missing"), true))).toEqual({
-      code: "not_found",
-      message: "No such file or directory (on the Container)",
-    });
-  });
+      expect(info).toMatchObject({ name: "index.ts", kind: "file", size: 40 });
+      expect(Math.abs(info.mtimeMs - statSync(join(root, "pkg/index.ts")).mtimeMs)).toBeLessThan(2);
+      expect((await files().info(join(root, "pkg"), true)).kind).toBe("directory");
+      expect(await failure(files().info(join(root, "missing"), true))).toEqual({
+        code: "not_found",
+        message: "No such file or directory (on the Container)",
+      });
+    },
+  );
 
-  it("read a file's bytes through the stage, and leave no stage behind", async () => {
-    const read = await files().readFile(join(root, "pkg/node_modules/effect/package.json"));
+  it.skipIf(!hasGnuTools)(
+    "read a file's bytes through the stage, and leave no stage behind",
+    async () => {
+      const read = await files().readFile(join(root, "pkg/node_modules/effect/package.json"));
 
-    expect(text(read)).toBe('{"name":"effect"}\n');
-    expect(spawnSync("ls", ["-A", join(root, ".stage")], { encoding: "utf8" }).stdout).toBe("");
-    expect((await failure(files().readFile(join(root, "pkg")))).code).toBe("is_directory");
-  });
+      expect(text(read)).toBe('{"name":"effect"}\n');
+      expect(spawnSync("ls", ["-A", join(root, ".stage")], { encoding: "utf8" }).stdout).toBe("");
+      expect((await failure(files().readFile(join(root, "pkg")))).code).toBe("is_directory");
+    },
+  );
 
   it("write a new file, making its parents, and append to it", async () => {
     const container = files();
@@ -119,21 +131,24 @@ describe("the Container's file operations", () => {
     expect(readFileSync(path, "utf8")).toBe("one\ntwo\n");
   });
 
-  it("say a write changes the Container's disk, and a read does not", async () => {
-    const container = files();
-    const path = join(root, "pkg/node_modules/new.txt");
+  it.skipIf(!hasGnuTools)(
+    "say a write changes the Container's disk, and a read does not",
+    async () => {
+      const container = files();
+      const path = join(root, "pkg/node_modules/new.txt");
 
-    await container.writeFile(path, new TextEncoder().encode("one"), false);
+      await container.writeFile(path, new TextEncoder().encode("one"), false);
 
-    expect(writes).toEqual([true]);
+      expect(writes).toEqual([true]);
 
-    await container.readFile(path);
-    await container.info(path, true);
+      await container.readFile(path);
+      await container.info(path, true);
 
-    expect(writes).toEqual([true, false, false]);
-  });
+      expect(writes).toEqual([true, false, false]);
+    },
+  );
 
-  it("replace a file read before, keeping its mode", async () => {
+  it.skipIf(!hasGnuTools)("replace a file read before, keeping its mode", async () => {
     const container = files();
     const path = join(root, "run.sh");
 
@@ -147,88 +162,103 @@ describe("the Container's file operations", () => {
     expect(statSync(path).mode & 0o777).toBe(0o755);
   });
 
-  it("refuse to replace a file that changed on the Container since it was read", async () => {
-    const container = files();
-    const path = join(root, "pkg/index.ts");
+  it.skipIf(!hasGnuTools)(
+    "refuse to replace a file that changed on the Container since it was read",
+    async () => {
+      const container = files();
+      const path = join(root, "pkg/index.ts");
 
-    await container.readFile(path);
-    writeFileSync(path, "changed meanwhile\n");
+      await container.readFile(path);
+      writeFileSync(path, "changed meanwhile\n");
 
-    expect(
-      await failure(container.writeFile(path, new TextEncoder().encode("edited\n"), false)),
-    ).toEqual({
-      code: "invalid",
-      message:
-        "The file changed on the Container since it was read: read it again (on the Container)",
-    });
-    expect(readFileSync(path, "utf8")).toBe("changed meanwhile\n");
-  });
+      expect(
+        await failure(container.writeFile(path, new TextEncoder().encode("edited\n"), false)),
+      ).toEqual({
+        code: "invalid",
+        message:
+          "The file changed on the Container since it was read: read it again (on the Container)",
+      });
+      expect(readFileSync(path, "utf8")).toBe("changed meanwhile\n");
+    },
+  );
 
-  it("open a reader on a copy of the file, as it was, with the original's metadata", async () => {
-    const path = join(root, "pkg/index.ts");
+  it.skipIf(!hasGnuTools)(
+    "open a reader on a copy of the file, as it was, with the original's metadata",
+    async () => {
+      const path = join(root, "pkg/index.ts");
 
-    const { opened, info } = await files().openReader(path, false, async (stage) =>
-      readFileSync(stage, "utf8"),
-    );
+      const { opened, info } = await files().openReader(path, false, async (stage) =>
+        readFileSync(stage, "utf8"),
+      );
 
-    expect(opened).toBe("export const a = 1;\nexport const b = 2;\n");
-    expect(info).toMatchObject({ path, kind: "file", size: 40 });
-  });
+      expect(opened).toBe("export const a = 1;\nexport const b = 2;\n");
+      expect(info).toMatchObject({ path, kind: "file", size: 40 });
+    },
+  );
 
-  it("list a directory, and a synced one's Container-only entries only while the Container runs", async () => {
-    const container = files();
+  it.skipIf(!hasGnuTools)(
+    "list a directory, and a synced one's Container-only entries only while the Container runs",
+    async () => {
+      const container = files();
 
-    expect(await container.readdir(join(root, "pkg/node_modules"))).toEqual([
-      { name: "effect", isDirectory: true, isSymbolicLink: false },
-    ]);
+      expect(await container.readdir(join(root, "pkg/node_modules"))).toEqual([
+        { name: "effect", isDirectory: true, isSymbolicLink: false },
+      ]);
 
-    // The temp directory stands outside the Workspace, so every entry there counts as the Container's.
-    expect(await container.containerOnlyEntries(join(root, "pkg"))).toEqual(
-      expect.arrayContaining([
-        { name: "node_modules", isDirectory: true, isSymbolicLink: false, containerOnly: true },
-      ]),
-    );
+      // The temp directory stands outside the Workspace, so every entry there counts as the Container's.
+      expect(await container.containerOnlyEntries(join(root, "pkg"))).toEqual(
+        expect.arrayContaining([
+          { name: "node_modules", isDirectory: true, isSymbolicLink: false, containerOnly: true },
+        ]),
+      );
 
-    running = false;
-    expect(await container.containerOnlyEntries(join(root, "pkg"))).toEqual([]);
-  });
+      running = false;
+      expect(await container.containerOnlyEntries(join(root, "pkg"))).toEqual([]);
+    },
+  );
 
-  it("find the paths a glob matches below a directory, leaving out excluded directories, up to the limit", async () => {
-    mkdirSync(join(root, "pkg/src/deep"), { recursive: true });
-    writeFileSync(join(root, "pkg/src/deep/a.ts"), "");
-    writeFileSync(join(root, "pkg/src/b.md"), "");
+  it.skipIf(!hasGnuTools)(
+    "find the paths a glob matches below a directory, leaving out excluded directories, up to the limit",
+    async () => {
+      mkdirSync(join(root, "pkg/src/deep"), { recursive: true });
+      writeFileSync(join(root, "pkg/src/deep/a.ts"), "");
+      writeFileSync(join(root, "pkg/src/b.md"), "");
 
-    const found = await files().find(join(root, "pkg"), "**/*.ts", {
-      limit: 10,
-      exclude: ["**/node_modules/**"],
-    });
-
-    expect(found.map((entry) => entry.path).sort()).toEqual([
-      join(root, "pkg/index.ts"),
-      join(root, "pkg/src/deep/a.ts"),
-    ]);
-    expect(
-      await files().find(join(root, "pkg"), "**/*.ts", {
-        limit: 1,
-        exclude: ["**/node_modules/**"],
-      }),
-    ).toHaveLength(1);
-  });
-
-  it("find below a directory whose name has glob characters, and in a directory with spaces", async () => {
-    mkdirSync(join(root, "app/[slug]/my dir"), { recursive: true });
-    writeFileSync(join(root, "app/[slug]/my dir/page.tsx"), "");
-
-    expect(
-      await files().find(join(root, "app/[slug]"), "**/*.tsx", {
+      const found = await files().find(join(root, "pkg"), "**/*.ts", {
         limit: 10,
-        exclude: ["**/node_modules/**", "**/my dir/**"],
-      }),
-    ).toEqual([]);
-    expect(
-      await files().find(join(root, "app/[slug]"), "**/*.tsx", { limit: 10, exclude: [] }),
-    ).toEqual([{ path: join(root, "app/[slug]/my dir/page.tsx"), type: "file" }]);
-  });
+        exclude: ["**/node_modules/**"],
+      });
+
+      expect(found.map((entry) => entry.path).sort()).toEqual([
+        join(root, "pkg/index.ts"),
+        join(root, "pkg/src/deep/a.ts"),
+      ]);
+      expect(
+        await files().find(join(root, "pkg"), "**/*.ts", {
+          limit: 1,
+          exclude: ["**/node_modules/**"],
+        }),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.skipIf(!hasGnuTools)(
+    "find below a directory whose name has glob characters, and in a directory with spaces",
+    async () => {
+      mkdirSync(join(root, "app/[slug]/my dir"), { recursive: true });
+      writeFileSync(join(root, "app/[slug]/my dir/page.tsx"), "");
+
+      expect(
+        await files().find(join(root, "app/[slug]"), "**/*.tsx", {
+          limit: 10,
+          exclude: ["**/node_modules/**", "**/my dir/**"],
+        }),
+      ).toEqual([]);
+      expect(
+        await files().find(join(root, "app/[slug]"), "**/*.tsx", { limit: 10, exclude: [] }),
+      ).toEqual([{ path: join(root, "app/[slug]/my dir/page.tsx"), type: "file" }]);
+    },
+  );
 
   it.skipIf(!hasRg)(
     "grep inside an excluded directory, the excludes counting from the searched directory",

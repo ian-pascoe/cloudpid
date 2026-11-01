@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { hasGnuCoreutils } from "./host.fixture.ts";
 import { parseRunCopy, runCopyScript } from "@cloudpid/sandbox-image/runs";
 
 const env = {
@@ -235,42 +236,47 @@ describe("the Container's Run copy", () => {
     ).toThrow("Not a time limit");
   });
 
-  it("leaves a big or a binary file as HEAD has it, recording only its size and hash, and counts it", () => {
-    const repo = workspace({ "keep.txt": "keep\n", "big.txt": "old\n", "pic.bin": "a\0b" });
-    const big = "x".repeat(2_000);
-    const huge = "y".repeat(5_000);
-    const pic = Buffer.from([1, 2, 0, 3]);
+  it.skipIf(!hasGnuCoreutils)(
+    "leaves a big or a binary file as HEAD has it, recording only its size and hash, and counts it",
+    () => {
+      const repo = workspace({ "keep.txt": "keep\n", "big.txt": "old\n", "pic.bin": "a\0b" });
+      const big = "x".repeat(2_000);
+      const huge = "y".repeat(5_000);
+      const pic = Buffer.from([1, 2, 0, 3]);
 
-    repo.write("keep.txt", "changed\n");
-    repo.write("big.txt", big);
-    repo.write("pic.bin", pic);
-    repo.write("new.png", pic);
-    repo.write("huge.txt", huge);
+      repo.write("keep.txt", "changed\n");
+      repo.write("big.txt", big);
+      repo.write("pic.bin", pic);
+      repo.write("new.png", pic);
+      repo.write("huge.txt", huge);
 
-    const made = repo.copy();
+      const made = repo.copy();
 
-    if (!made.ok) throw new Error(`not ok: ${JSON.stringify(made)}`);
+      if (!made.ok) throw new Error(`not ok: ${JSON.stringify(made)}`);
 
-    const blob = (text: string) =>
-      repo.sh(`printf '%s' '${text}' | git hash-object --stdin`).trim();
+      const blob = (text: string) =>
+        repo.sh(`printf '%s' '${text}' | git hash-object --stdin`).trim();
 
-    expect(made.files).toBe(5);
-    expect(made.unstored).toEqual([
-      { path: "new.png", size: 4, id: expect.stringMatching(/^[0-9a-f]{40}$/), binary: true },
-      { path: "pic.bin", size: 4, id: expect.stringMatching(/^[0-9a-f]{40}$/), binary: true },
-      { path: "big.txt", size: 2_000, id: blob(big), binary: false },
-      { path: "huge.txt", size: 5_000, id: null, binary: false },
-    ]);
-    // HEAD's own versions stay in the tree; nothing of the others was stored, and the changed text was.
-    expect(repo.sh(`git ls-tree -r --name-only '${made.commit}'`)).toBe(
-      "big.txt\nkeep.txt\npic.bin\n",
-    );
-    expect(repo.sh(`git show '${made.commit}:big.txt'`)).toBe("old\n");
-    expect(repo.sh(`git show '${made.commit}:keep.txt'`)).toBe("changed\n");
-    expect(
-      repo.sh(`git cat-file -e '${blob(big)}' 2>/dev/null && echo present || echo missing`).trim(),
-    ).toBe("missing");
-  });
+      expect(made.files).toBe(5);
+      expect(made.unstored).toEqual([
+        { path: "new.png", size: 4, id: expect.stringMatching(/^[0-9a-f]{40}$/), binary: true },
+        { path: "pic.bin", size: 4, id: expect.stringMatching(/^[0-9a-f]{40}$/), binary: true },
+        { path: "big.txt", size: 2_000, id: blob(big), binary: false },
+        { path: "huge.txt", size: 5_000, id: null, binary: false },
+      ]);
+      // HEAD's own versions stay in the tree; nothing of the others was stored, and the changed text was.
+      expect(repo.sh(`git ls-tree -r --name-only '${made.commit}'`)).toBe(
+        "big.txt\nkeep.txt\npic.bin\n",
+      );
+      expect(repo.sh(`git show '${made.commit}:big.txt'`)).toBe("old\n");
+      expect(repo.sh(`git show '${made.commit}:keep.txt'`)).toBe("changed\n");
+      expect(
+        repo
+          .sh(`git cat-file -e '${blob(big)}' 2>/dev/null && echo present || echo missing`)
+          .trim(),
+      ).toBe("missing");
+    },
+  );
 
   it("counts the files before it stores any, so a repo past the limit stores nothing", () => {
     const repo = workspace({ "a.txt": "a\n" });
@@ -301,24 +307,27 @@ describe("the Container's Run copy", () => {
     expect(repo.sh(`git show '${made.commit}:a.txt'`)).toBe("staged, then more\n");
   });
 
-  it("sees a same-size edit made in the instant the index was written, as git does: the copy keeps the index's time", () => {
-    const repo = workspace({ "a.txt": "one\n", "b.txt": "b\n" });
+  it.skipIf(!hasGnuCoreutils)(
+    "sees a same-size edit made in the instant the index was written, as git does: the copy keeps the index's time",
+    () => {
+      const repo = workspace({ "a.txt": "one\n", "b.txt": "b\n" });
 
-    // The stat data git compares is the size and the second only, and the file is edited to the same size and put back to
-    // its time, with the index dated the same second: a racily clean entry, which only the index's own time tells apart.
-    repo.sh(
-      "git config core.checkStat minimal && touch -d @1700000000 a.txt && git update-index --refresh",
-    );
-    repo.write("a.txt", "two\n");
-    repo.sh("touch -d @1700000000 a.txt .git/index");
+      // The stat data git compares is the size and the second only, and the file is edited to the same size and put back to
+      // its time, with the index dated the same second: a racily clean entry, which only the index's own time tells apart.
+      repo.sh(
+        "git config core.checkStat minimal && touch -d @1700000000 a.txt && git update-index --refresh",
+      );
+      repo.write("a.txt", "two\n");
+      repo.sh("touch -d @1700000000 a.txt .git/index");
 
-    const made = repo.copy();
+      const made = repo.copy();
 
-    if (!made.ok) throw new Error(`not ok: ${JSON.stringify(made)}`);
+      if (!made.ok) throw new Error(`not ok: ${JSON.stringify(made)}`);
 
-    expect(repo.sh(`git show '${made.commit}:a.txt'`)).toBe("two\n");
-    expect(made.files).toBe(1);
-  });
+      expect(repo.sh(`git show '${made.commit}:a.txt'`)).toBe("two\n");
+      expect(made.files).toBe(1);
+    },
+  );
 
   it("starts from a copy of the repo's index, which keeps the stat data, and not from `read-tree`", () => {
     const files: Record<string, string> = {};

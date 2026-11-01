@@ -2,6 +2,7 @@ node_modules/
 .repos/
 .turbo/
 .worktrees/
+.scratch/
 .alchemy/
 .env*
 !.env.example

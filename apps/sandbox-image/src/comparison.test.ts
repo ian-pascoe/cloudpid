@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { hasGnuCoreutils } from "./host.fixture.ts";
 import {
   blobsScript,
   comparisonScript,
@@ -685,35 +686,41 @@ describe("a pull request's Container command", () => {
 });
 
 describe("the blob fallback", () => {
-  it("reads the blobs asked for, and only the size of one over the limit", () => {
-    const repo = workspace();
-    const small = repo.sh("git rev-parse HEAD:README.md", repo.dir);
-    const big = repo.sh("git rev-parse HEAD:lib/keep.txt", repo.dir);
+  it.skipIf(!hasGnuCoreutils)(
+    "reads the blobs asked for, and only the size of one over the limit",
+    () => {
+      const repo = workspace();
+      const small = repo.sh("git rev-parse HEAD:README.md", repo.dir);
+      const big = repo.sh("git rev-parse HEAD:lib/keep.txt", repo.dir);
 
-    const blobs = parseBlobs(
-      repo.sh(blobsScript("app", [small, big, "0".repeat(40)], 100, repo.root)),
-    );
+      const blobs = parseBlobs(
+        repo.sh(blobsScript("app", [small, big, "0".repeat(40)], 100, repo.root)),
+      );
 
-    expect(blobs.get(small)?.bytes).toBe(6);
-    expect(Buffer.from(blobs.get(small)?.blob ?? []).toString()).toBe("hello\n");
-    expect(blobs.get(big)).toEqual({ bytes: Buffer.byteLength(lines(30, "keep")) });
-    expect(blobs.has("0".repeat(40))).toBe(false);
-  });
+      expect(blobs.get(small)?.bytes).toBe(6);
+      expect(Buffer.from(blobs.get(small)?.blob ?? []).toString()).toBe("hello\n");
+      expect(blobs.get(big)).toEqual({ bytes: Buffer.byteLength(lines(30, "keep")) });
+      expect(blobs.has("0".repeat(40))).toBe(false);
+    },
+  );
 
-  it("reads on past an id that is not a blob, whose bytes git prints too", () => {
-    const repo = workspace();
-    const commit = repo.sh("git rev-parse HEAD", repo.dir);
-    const tree = repo.sh("git rev-parse HEAD^{tree}", repo.dir);
-    const small = repo.sh("git rev-parse HEAD:README.md", repo.dir);
+  it.skipIf(!hasGnuCoreutils)(
+    "reads on past an id that is not a blob, whose bytes git prints too",
+    () => {
+      const repo = workspace();
+      const commit = repo.sh("git rev-parse HEAD", repo.dir);
+      const tree = repo.sh("git rev-parse HEAD^{tree}", repo.dir);
+      const small = repo.sh("git rev-parse HEAD:README.md", repo.dir);
 
-    const blobs = parseBlobs(
-      repo.sh(blobsScript("app", [commit, tree, small, commit, small], 100, repo.root)),
-    );
+      const blobs = parseBlobs(
+        repo.sh(blobsScript("app", [commit, tree, small, commit, small], 100, repo.root)),
+      );
 
-    expect(blobs.has(commit)).toBe(false);
-    expect(blobs.has(tree)).toBe(false);
-    expect(Buffer.from(blobs.get(small)?.blob ?? []).toString()).toBe("hello\n");
-  });
+      expect(blobs.has(commit)).toBe(false);
+      expect(blobs.has(tree)).toBe(false);
+      expect(Buffer.from(blobs.get(small)?.blob ?? []).toString()).toBe("hello\n");
+    },
+  );
 
   it("refuses an id that is not a blob id", () => {
     expect(() => blobsScript("app", ["HEAD:x; rm -rf /"], 10)).toThrow("Not a blob id");

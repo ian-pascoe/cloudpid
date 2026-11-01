@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { hasSetsid } from "./host.fixture.ts";
 import { variableNameProblem } from "@cloudpid/config";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
@@ -1295,7 +1296,7 @@ describe("the Start Scripts", () => {
     expect(scriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
   });
 
-  it("let a service they detach outlive them", () => {
+  it.skipIf(!hasSetsid)("let a service they detach outlive them", () => {
     const { repo, start, root } = startSandbox();
     const marker = join(root, "service-up");
 
