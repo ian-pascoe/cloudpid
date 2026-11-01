@@ -3,36 +3,75 @@ import { describe, expect, it } from "vitest";
 import {
   envReference,
   isSecretName,
-  referencedSecretNames,
   rewriteReferences,
   secretEnvName,
   secretReference,
+  secretReferencesByName,
 } from "./references.ts";
 
 // Built from parts, so the agent writing this file never writes a reference itself.
 const ref = secretReference;
 const env = envReference;
 
-describe("referencedSecretNames", () => {
+describe("secretReferencesByName", () => {
   it("finds both forms in nested string arguments", () => {
     const args = {
       command: `curl -H "Authorization: Bearer $${env("API_TOKEN")}" https://example.com`,
       files: [{ content: `PASSWORD=${ref("DB_PASSWORD")}` }],
     };
 
-    expect([...referencedSecretNames(args)].toSorted()).toEqual(["API_TOKEN", "DB_PASSWORD"]);
+    expect([...secretReferencesByName(args).keys()]).toEqual(["API_TOKEN", "DB_PASSWORD"]);
   });
 
-  it("names malformed placeholders too, so a call naming one can be refused", () => {
-    expect([...referencedSecretNames({ text: `${ref("lower")} ${ref("")}` })]).toEqual([
-      "lower",
-      "",
+  it("keeps each reference as the call wrote it, with the shell expansion that opens it", () => {
+    const references = (text: string) => secretReferencesByName({ text }).get("TOKEN");
+
+    expect(references(`x=${ref("TOKEN")}`)).toEqual([{ form: "placeholder", text: ref("TOKEN") }]);
+    expect(references(`curl -u $${env("TOKEN")}`)).toEqual([
+      { form: "expansion", text: `$${env("TOKEN")}` },
+    ]);
+    expect(references(`curl -u "\${${env("TOKEN")}}"`)).toEqual([
+      { form: "expansion", text: `\${${env("TOKEN")}}` },
+    ]);
+    expect(references(`echo \${${env("TOKEN")}:-none}`)).toEqual([
+      { form: "expansion", text: `\${${env("TOKEN")}` },
+    ]);
+    expect(references(`set ${env("TOKEN")} first`)).toEqual([{ form: "word", text: env("TOKEN") }]);
+  });
+
+  it("lists a name's references in order of appearance, each text once", () => {
+    const args = {
+      doc: `${env("TOKEN")} is unset: echo $${env("TOKEN")}`,
+      again: [`${ref("TOKEN")} ${ref("TOKEN")} $${env("TOKEN")}`],
+    };
+
+    expect(secretReferencesByName(args).get("TOKEN")).toEqual([
+      { form: "word", text: env("TOKEN") },
+      { form: "expansion", text: `$${env("TOKEN")}` },
+      { form: "placeholder", text: ref("TOKEN") },
+    ]);
+  });
+
+  it("names malformed references too, so a call naming one can be refused", () => {
+    const references = secretReferencesByName({
+      text: `${ref("lower")} ${ref("")} $${env("lower")}`,
+    });
+
+    expect([...references]).toEqual([
+      [
+        "lower",
+        [
+          { form: "placeholder", text: ref("lower") },
+          { form: "expansion", text: `$${env("lower")}` },
+        ],
+      ],
+      ["", [{ form: "placeholder", text: ref("") }]],
     ]);
   });
 
   it("ignores the bare prefix and a name glued to a longer word", () => {
-    expect(referencedSecretNames({ command: `env | grep ${secretEnvName("")}` }).size).toBe(0);
-    expect(referencedSecretNames({ command: `MY${env("TOKEN")}` }).size).toBe(0);
+    expect(secretReferencesByName({ command: `env | grep ${secretEnvName("")}` }).size).toBe(0);
+    expect(secretReferencesByName({ command: `MY${env("TOKEN")}` }).size).toBe(0);
   });
 
   it("ignores references escaped with a backslash, and the shell's own escapes", () => {
@@ -41,7 +80,7 @@ describe("referencedSecretNames", () => {
       command: `echo \\$${env("TOKEN")} \\\${${env("TOKEN")}}`,
     };
 
-    expect(referencedSecretNames(args).size).toBe(0);
+    expect(secretReferencesByName(args).size).toBe(0);
   });
 });
 

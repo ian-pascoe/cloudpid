@@ -82,21 +82,62 @@ const visitStrings = (value: JsonValue, visit: (text: string) => void): void => 
 };
 
 /**
- * Every Secret Name `value` references, in either form, including names that are not valid Secret Names, so a call
- * naming one can be refused rather than run as typed. Escaped references name nothing.
+ * One reference as the call wrote it, and its form, which decides how to escape it:
+ * - `placeholder`: the double-brace form;
+ * - `expansion`: a shell expansion of the environment variable, opened by `$` or `${`, whose escape is the shell's own;
+ * - `word`: the bare environment variable, as in prose.
  */
-export const referencedSecretNames = (value: JsonValue): Set<string> => {
-  const names = new Set<string>();
+export type WrittenReference = {
+  readonly form: "placeholder" | "expansion" | "word";
+  readonly text: string;
+};
+
+/** Each referenced Secret Name, with its references as the call wrote them, in order of appearance. */
+export type WrittenReferences = ReadonlyMap<string, ReadonlyArray<WrittenReference>>;
+
+/**
+ * The environment reference at `start`..`end` of `text` as written: with the shell expansion that opens it (`$`, or
+ * `${` and a `}` right after the name), so a backslash put right before it is the shell's own escape.
+ */
+const writtenEnvReference = (text: string, start: number, end: number): WrittenReference => {
+  const word = text.slice(start, end);
+
+  if (text.slice(start - 2, start) === "${") {
+    return { form: "expansion", text: `\${${word}${text[end] === "}" ? "}" : ""}` };
+  }
+
+  if (text[start - 1] === "$") return { form: "expansion", text: `$${word}` };
+
+  return { form: "word", text: word };
+};
+
+/**
+ * Every Secret Name `value` references, in either form, including names that are not valid Secret Names, so a call
+ * naming one can be refused rather than run as typed. Each name maps to its references as written, each text once, so
+ * a refusal can quote the text that triggered it. Escaped references name nothing.
+ */
+export const secretReferencesByName = (value: JsonValue): WrittenReferences => {
+  const references = new Map<string, Array<WrittenReference>>();
 
   visitStrings(value, (text) => {
     for (const found of text.matchAll(REFERENCE)) {
       const match = matchOf(found.slice(1), text, found.index);
 
-      if (match !== undefined && !match.escaped) names.add(match.name);
+      if (match === undefined || match.escaped) continue;
+
+      const written: WrittenReference =
+        match.form === "env"
+          ? writtenEnvReference(text, found.index, found.index + found[0].length)
+          : { form: "placeholder", text: found[0] };
+
+      const known = references.get(match.name);
+
+      if (known === undefined) references.set(match.name, [written]);
+      else if (!known.some((reference) => reference.text === written.text)) known.push(written);
     }
   });
 
-  return names;
+  return references;
 };
 
 /** Whether `text` holds a placeholder (the double-brace form) that no backslash escapes, whatever name it gives. */

@@ -46,11 +46,13 @@ import {
 } from "./outputs.ts";
 import {
   isSecretName,
-  referencedSecretNames,
   rewriteReferences,
   SECRET_NAME_PATTERN,
   secretEnvName,
   secretReference,
+  secretReferencesByName,
+  type WrittenReference,
+  type WrittenReferences,
 } from "./references.ts";
 import type { KeptScope } from "./kept.ts";
 import {
@@ -70,8 +72,27 @@ export const PARENT_ONLY_SECRET_TOOLS = ["secret_ask", "secret_forget"] as const
 /** The Secrets tools, whose arguments name Secrets rather than reference them. */
 const SECRET_TOOLS: ReadonlySet<string> = new Set(["secret_ask", "secret_list", "secret_forget"]);
 
-const ESCAPE_HINT =
-  "To write a reference as literal text instead, put a backslash right before it; the backslash is removed before the tool runs.";
+/** What removes the backslash that escapes each form, so the hint is true of each example. */
+const ESCAPE_REMOVED_BY = {
+  placeholder: "which the Secrets extension removes before the tool runs",
+  word: "which the Secrets extension removes before the tool runs",
+  expansion: "the shell's own escape, which the Secrets extension leaves as written",
+} as const satisfies Record<WrittenReference["form"], string>;
+
+/** How to write each form in `written` as literal text instead, with its first reference as the example. */
+const escapeHint = (written: ReadonlyArray<WrittenReference>): string => {
+  const examples = (["placeholder", "word", "expansion"] as const).flatMap((form) => {
+    const example = written.find((reference) => reference.form === form);
+
+    return example === undefined ? [] : [`\\${example.text}, ${ESCAPE_REMOVED_BY[form]}`];
+  });
+
+  return `To write a reference as literal text instead, put a backslash right before it: ${examples.join("; ")}.`;
+};
+
+/** References as the call wrote them, listed for a block reason. */
+const writtenText = (written: ReadonlyArray<WrittenReference>): string =>
+  written.map((reference) => reference.text).join(", ");
 
 /** The system prompt's guidance, built from its parts so no source spells a reference. */
 export const SECRET_GUIDELINES = [
@@ -84,53 +105,57 @@ export const SECRET_GUIDELINES = [
 const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));
 
 /**
- * Why a call referencing `names` cannot run, or undefined when every one is a held Secret. A malformed name and a name
- * this Session does not hold each get their own advice.
+ * Why a call cannot run, or undefined when every name `references` holds is a held Secret. A malformed name and a name
+ * this Session does not hold each get their own advice. Each is quoted as the call wrote it, in whichever form, so the
+ * caller can find and escape the text that triggered it.
  */
 const unresolvedReason = (
-  names: ReadonlyArray<string>,
+  references: WrittenReferences,
   isHeld: (name: string) => boolean,
 ): string | undefined => {
-  const malformed = names.filter((name) => !isSecretName(name));
-  const unheld = names.filter((name) => isSecretName(name) && !isHeld(name));
+  const writtenWhere = (keep: (name: string) => boolean) =>
+    [...references].flatMap(([name, written]) => (keep(name) ? written : []));
+
+  const malformed = writtenWhere((name) => !isSecretName(name));
+  const unheld = writtenWhere((name) => isSecretName(name) && !isHeld(name));
   const sentences = ["The call did not run."];
 
   if (malformed.length > 0) {
-    const listed = malformed.map((name) => JSON.stringify(name)).join(", ");
-
     const verb =
-      malformed.length === 1 ? "is not a valid Secret Name" : "are not valid Secret Names";
+      malformed.length === 1
+        ? "is not a valid Secret Reference"
+        : "are not valid Secret References";
 
     sentences.push(
-      `${listed} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
+      `${writtenText(malformed)} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
     );
   }
 
   if (unheld.length > 0) {
     sentences.push(
-      `It references ${unheld.map(secretReference).join(", ")}, which this Session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
+      `It references ${writtenText(unheld)}, which this Session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
     );
   }
 
   if (sentences.length === 1) return undefined;
 
-  sentences.push(ESCAPE_HINT);
+  sentences.push(escapeHint([...malformed, ...unheld]));
 
   return sentences.join(" ");
 };
 
-/** The values of every Secret `names` reference, or why the call cannot run. */
-const resolveAll = (secrets: SecretsService, names: ReadonlyArray<string>) =>
+/** The values of every Secret `references` names, or why the call cannot run. */
+const resolveAll = (secrets: SecretsService, references: WrittenReferences) =>
   Effect.gen(function* () {
     const values = new Map<string, string>();
 
-    for (const name of names) {
+    for (const name of references.keys()) {
       const value = isSecretName(name) ? yield* secrets.resolve(name) : undefined;
 
       if (value !== undefined) values.set(name, value);
     }
 
-    const reason = unresolvedReason(names, (name) => values.has(name));
+    const reason = unresolvedReason(references, (name) => values.has(name));
 
     return reason === undefined ? { values } : { reason };
   });
@@ -223,7 +248,7 @@ const withSecrets =
       // The kept Secrets first, so the output is redacted of them also when nothing references them.
       await run(secrets.refresh);
 
-      const resolved = await run(resolveAll(secrets, [...referencedSecretNames(json)]));
+      const resolved = await run(resolveAll(secrets, secretReferencesByName(json)));
 
       if ("reason" in resolved) throw new Error(resolved.reason);
 
@@ -578,11 +603,11 @@ export const secretsExtension = (
           // a reference in their arguments is text, whether or not the Session holds it.
           if (call.name.startsWith(ENVIRONMENT_TOOL_PREFIX)) return undefined;
 
-          const names = [...referencedSecretNames(call.arguments)];
+          const references = secretReferencesByName(call.arguments);
 
-          if (names.length === 0) return undefined;
+          if (references.size === 0) return undefined;
 
-          const resolved = yield* resolveAll(secrets, names);
+          const resolved = yield* resolveAll(secrets, references);
 
           return "reason" in resolved ? { block: resolved.reason } : undefined;
         }),

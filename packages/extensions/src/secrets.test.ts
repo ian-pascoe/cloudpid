@@ -124,13 +124,105 @@ describe("secrets", () => {
     expect(session.execs).toEqual([]);
   });
 
-  it("blocks a malformed reference, saying what a Secret Name looks like", async () => {
+  // The escape hint for references written in each form, as the block reason gives it.
+  const hint = (...examples: ReadonlyArray<string>) =>
+    `put a backslash right before it: ${examples.join("; ")}.`;
+
+  const removedByExtension = (written: string) =>
+    `\\${written}, which the Secrets extension removes before the tool runs`;
+
+  const shellEscape = (written: string) =>
+    `\\${written}, the shell's own escape, which the Secrets extension leaves as written`;
+
+  it.each([
+    ["a placeholder", ref("MISSING"), ref("MISSING"), hint(removedByExtension(ref("MISSING")))],
+    [
+      "a placeholder written twice",
+      `${ref("MISSING")} and ${ref("MISSING")}`,
+      ref("MISSING"),
+      hint(removedByExtension(ref("MISSING"))),
+    ],
+    [
+      "a shell expansion",
+      `curl -u $${env("MISSING")}`,
+      `$${env("MISSING")}`,
+      hint(shellEscape(`$${env("MISSING")}`)),
+    ],
+    [
+      "a braced shell expansion",
+      `curl -u \${${env("MISSING")}}`,
+      `\${${env("MISSING")}}`,
+      hint(shellEscape(`\${${env("MISSING")}}`)),
+    ],
+    [
+      "a shell expansion with a modifier",
+      `curl -u \${${env("MISSING")}:-none}`,
+      `\${${env("MISSING")}`,
+      hint(shellEscape(`\${${env("MISSING")}`)),
+    ],
+    [
+      "a reference in both forms",
+      `${ref("MISSING")} or $${env("MISSING")}`,
+      `${ref("MISSING")}, $${env("MISSING")}`,
+      hint(removedByExtension(ref("MISSING")), shellEscape(`$${env("MISSING")}`)),
+    ],
+    [
+      "a bare word before a shell expansion",
+      `${env("MISSING")} is unset: echo $${env("MISSING")}`,
+      `${env("MISSING")}, $${env("MISSING")}`,
+      hint(removedByExtension(env("MISSING")), shellEscape(`$${env("MISSING")}`)),
+    ],
+  ])(
+    "blocks a call whose %s names no held Secret, quoting it as written and showing how to escape each form",
+    async (_kind, text, written, escapes) => {
+      const session = await openSecretsHarness();
+
+      await session.prompt("Go", call("record", { text }));
+
+      const reason = (await session.lastResult())?.text ?? "";
+
+      expect(reason).toContain(`It references ${written}, which this Session does not hold.`);
+      expect(reason).toContain(escapes);
+      // The reason names only the forms the call wrote.
+      expect(reason.includes("{{")).toBe(text.includes("{{"));
+      expect(session.recorded).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["a malformed placeholder", ref("lower-case"), hint(removedByExtension(ref("lower-case")))],
+    ["an empty placeholder", ref(""), hint(removedByExtension(ref("")))],
+    [
+      "a malformed environment reference",
+      `$${env("lower")}`,
+      hint(shellEscape(`$${env("lower")}`)),
+    ],
+  ])(
+    "blocks %s, quoting it and saying what a Secret Name looks like",
+    async (_kind, written, escapes) => {
+      const session = await openSecretsHarness();
+
+      await session.prompt("Go", call("record", { text: `echo ${written}` }));
+
+      const reason = (await session.lastResult())?.text ?? "";
+
+      expect(reason).toContain(
+        `${written} is not a valid Secret Reference: a Secret Name uses uppercase letters`,
+      );
+      expect(reason).not.toContain("does not hold");
+      expect(reason).toContain(escapes);
+      expect(session.recorded).toEqual([]);
+    },
+  );
+
+  it("gives a malformed and an unheld reference each its own advice in one block, and one escape example per form", async () => {
     const session = await openSecretsHarness();
 
-    await session.prompt("Go", call("record", { text: ref("lower") }));
+    await session.prompt("Go", call("record", { text: `${ref("bad name")} ${ref("MISSING")}` }));
 
-    expect((await session.lastResult())?.text).toContain("not a valid Secret Name");
-    expect(session.recorded).toEqual([]);
+    expect((await session.lastResult())?.text).toContain(
+      `The call did not run. ${ref("bad name")} is not a valid Secret Reference: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references ${ref("MISSING")}, which this Session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it: \\${ref("bad name")}, which the Secrets extension removes before the tool runs.`,
+    );
   });
 
   it("passes an environment tool's reference through unresolved, held or not, for the tool to refuse", async () => {
