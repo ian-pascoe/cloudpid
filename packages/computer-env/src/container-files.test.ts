@@ -19,9 +19,11 @@ import { HostFailure } from "./failure.ts";
 
 const hasRg = spawnSync("rg", ["--version"]).status === 0;
 
-// The Container's GNU coreutils (`stat -c`, `stat --`), which a macOS host lacks; CI runs Linux and never skips.
-const hasGnuCoreutils =
-  process.env["CI"] !== undefined || spawnSync("stat", ["--version"]).status === 0;
+// The Container's GNU coreutils and findutils (`stat --printf`, `realpath -e`, `find -printf`), which a macOS host
+// lacks; CI runs Linux and never skips.
+const hasGnuTools =
+  process.env["CI"] !== undefined ||
+  (spawnSync("stat", ["--version"]).status === 0 && spawnSync("find", ["--version"]).status === 0);
 
 let root: string;
 let running: boolean;
@@ -93,7 +95,7 @@ describe("the Container's file operations", () => {
     ).toEqual([true, true, false]);
   });
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "give a file's or directory's metadata, and name the Container when there is nothing there",
     async () => {
       const info = await files().info(join(root, "pkg/index.ts"), true);
@@ -108,7 +110,7 @@ describe("the Container's file operations", () => {
     },
   );
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "read a file's bytes through the stage, and leave no stage behind",
     async () => {
       const read = await files().readFile(join(root, "pkg/node_modules/effect/package.json"));
@@ -129,7 +131,7 @@ describe("the Container's file operations", () => {
     expect(readFileSync(path, "utf8")).toBe("one\ntwo\n");
   });
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "say a write changes the Container's disk, and a read does not",
     async () => {
       const container = files();
@@ -146,7 +148,7 @@ describe("the Container's file operations", () => {
     },
   );
 
-  it.skipIf(!hasGnuCoreutils)("replace a file read before, keeping its mode", async () => {
+  it.skipIf(!hasGnuTools)("replace a file read before, keeping its mode", async () => {
     const container = files();
     const path = join(root, "run.sh");
 
@@ -160,7 +162,7 @@ describe("the Container's file operations", () => {
     expect(statSync(path).mode & 0o777).toBe(0o755);
   });
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "refuse to replace a file that changed on the Container since it was read",
     async () => {
       const container = files();
@@ -180,7 +182,7 @@ describe("the Container's file operations", () => {
     },
   );
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "open a reader on a copy of the file, as it was, with the original's metadata",
     async () => {
       const path = join(root, "pkg/index.ts");
@@ -194,7 +196,7 @@ describe("the Container's file operations", () => {
     },
   );
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "list a directory, and a synced one's Container-only entries only while the Container runs",
     async () => {
       const container = files();
@@ -215,7 +217,7 @@ describe("the Container's file operations", () => {
     },
   );
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "find the paths a glob matches below a directory, leaving out excluded directories, up to the limit",
     async () => {
       mkdirSync(join(root, "pkg/src/deep"), { recursive: true });
@@ -240,7 +242,7 @@ describe("the Container's file operations", () => {
     },
   );
 
-  it.skipIf(!hasGnuCoreutils)(
+  it.skipIf(!hasGnuTools)(
     "find below a directory whose name has glob characters, and in a directory with spaces",
     async () => {
       mkdirSync(join(root, "app/[slug]/my dir"), { recursive: true });

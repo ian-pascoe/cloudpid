@@ -72,8 +72,11 @@ const startedTimes = (dir: string): number =>
     ? readFileSync(join(dir, "started"), "utf8").trim().split("\n").length
     : 0;
 
+/** What the helper starts the daemon with: `flock`, so one daemon starts, and `setsid`, so it outlives the helper. */
+const hasUtilLinux = hasFlock && hasSetsid;
+
 describe("cloudpid-dockerd", () => {
-  it.skipIf(!hasFlock || !hasSetsid)(
+  it.skipIf(!hasUtilLinux)(
     "starts the daemon detached, with the variable that lets it come up without IPv6 forwarding, and waits for it",
     async () => {
       const dir = fakes(1);
@@ -97,7 +100,7 @@ describe("cloudpid-dockerd", () => {
     expect(startedTimes(dir)).toBe(0);
   });
 
-  it.skipIf(!hasFlock || !hasSetsid)("starts one daemon when called twice at once", async () => {
+  it.skipIf(!hasUtilLinux)("starts one daemon when called twice at once", async () => {
     const dir = fakes(1);
 
     const [first, second] = await Promise.all([run(dir), run(dir)]);
@@ -106,7 +109,7 @@ describe("cloudpid-dockerd", () => {
     expect(startedTimes(dir)).toBe(1);
   });
 
-  it.skipIf(!hasFlock || !hasSetsid)(
+  it.skipIf(!hasUtilLinux)(
     "fails with the end of the daemon's log when it does not answer in time",
     async () => {
       const dir = fakes(20);

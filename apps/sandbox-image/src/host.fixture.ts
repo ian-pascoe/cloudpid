@@ -7,17 +7,18 @@ import { existsSync } from "node:fs";
 
 const underCi = process.env["CI"] !== undefined;
 
-const answers = (command: string): boolean =>
+/** Whether `command` is on the host: it answers `--version`, as the GNU and util-linux tools do. */
+const present = (command: string): boolean =>
   underCi || spawnSync(command, ["--version"]).status === 0;
 
 /** GNU coreutils: `stat --printf`, `touch -d @<epoch>`, and a `head -c` that reads no more of a pipe than it prints. */
-export const hasGnuCoreutils = answers("stat");
+export const hasGnuCoreutils = present("stat");
 
 /** util-linux's `flock`, which keeps two Sessions' scripts from running at once. */
-export const hasFlock = answers("flock");
+export const hasFlock = present("flock");
 
 /** util-linux's `setsid`, which detaches a service from the script that started it. */
-export const hasSetsid = answers("setsid");
+export const hasSetsid = present("setsid");
 
 /** `/proc`, where the Build's clean-up finds what its scripts left running. */
 export const hasProc = underCi || existsSync("/proc/self/stat");

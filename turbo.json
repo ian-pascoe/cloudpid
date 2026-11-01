@@ -17,9 +17,12 @@
       "dependsOn": ["transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
     },
+    // Tests of the Container's scripts skip on a host without its Linux tools, but
+    // never under `CI`, so a run with it hashes apart from one without.
     "test": {
       "dependsOn": ["transit"],
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "env": ["CI"]
     },
     "build": {
       "dependsOn": ["^build"],
