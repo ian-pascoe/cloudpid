@@ -317,7 +317,7 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request), linking to the Session.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), linking to the Session.
 _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:
@@ -436,11 +436,15 @@ _Avoid_: Login, OAuth token (for the whole), credentials (a Credential is a 1Pas
 
 **Sign-in request**:
 The agent's ask that the owner sign in to an MCP server, shown as a card in its Session with a Notification. It waits until the owner signs in, from it or anywhere else, or declines it; every Sign-in request for one MCP sign-in ends when the owner signs in.
-_Avoid_: Auth prompt, login request, Approval (that is for an Agent change), elicitation (that is the server's own request)
+_Avoid_: Auth prompt, login request, Approval (that is for an Agent change), Elicitation request (that is an MCP server's own ask)
 
 **Sampling request**:
 An MCP server's ask, during a call the agent or the owner made, for a reply from one of the owner's models, shown as a card in that call's conversation. The owner allows it (for the call, in the Session, or always for that server) or refuses it (likewise), unless the server's MCP server definition already allows or refuses it. The reply goes only to the server; the card keeps what was asked, the reply and what it cost.
 _Avoid_: Approval (that is for an Agent change), consent, completion request, sampling (alone, for one request)
+
+**Elicitation request**:
+An MCP server's ask, during a call the agent or the owner made, for the owner's own answer: a form to fill in, or a page to open in the owner's browser. It is shown as a card in that call's conversation, and only the owner answers it, by submitting, declining or cancelling it; the answer goes only to the server.
+_Avoid_: Approval (that is for an Agent change), Sign-in request (that is the agent's ask for an MCP sign-in), input request, question or form (alone), elicitation (alone, for one request)
 
 ## MCP Apps
 
