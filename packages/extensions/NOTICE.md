@@ -36,7 +36,8 @@ What was ported, and what changed:
 The Secrets in `src/secrets/` are a port of [`@ian-pascoe/pi-secret`](https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-secret)
 (version 0.3.0, commit `3dad0f7`) and the redaction in its sibling `@ian-pascoe/pi-utils` (`secret-registry.ts`), the
 owner's own packages, under the same MIT licence. 1Password and Env File Secret Providers, Secret Grants,
-`secret_ask_grant`, and `secret_save` are not ported (v2).
+`secret_ask_grant`, and `secret_save` are not ported (v2). The block reason that quotes each Secret Reference as the call
+wrote it is ported from a later commit, `9d64447` ([pi-extensions#507](https://github.com/ian-pascoe/pi-extensions/pull/507)).
 
 | Here            | From                                        | Change                                                                                                                                                       |
 | --------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
