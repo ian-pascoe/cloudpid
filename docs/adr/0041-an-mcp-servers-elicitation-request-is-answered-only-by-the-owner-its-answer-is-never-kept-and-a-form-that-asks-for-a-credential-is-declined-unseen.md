@@ -22,3 +22,4 @@ An MCP server may ask the owner something during a call (`elicitation/create`): 
 - A `2025-11-25` `-32042` (URL elicitation required) has ended its call, so it waits durably, and the call is sent again only after the owner's Done, at most 10 times. It is the one case where a `tools/call` is sent again: the server refused it before running.
 - A server that needs a credential must use URL mode or its MCP server definition.
 - The owner can't see later what they entered.
+- A question in an MCP task waits as the task does, after its call has returned (ADR-0042). Opening a page answers `accept` at once, and the task goes on when the owner finishes there; there is no "Done, try again".

@@ -89,7 +89,7 @@ The flat list of Todo Items an agent keeps in its conversation to track what it 
 _Avoid_: Plan, checklist, task list
 
 **Todo Item**:
-One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Subagents Pane lists.
+One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Subagents Pane lists, nor an MCP task.
 _Avoid_: Task (alone, in prose about the product), to-do
 
 ## Messages
@@ -435,16 +435,20 @@ The owner's permission, given on an MCP server's own sign-in page, for cloudpid 
 _Avoid_: Login, OAuth token (for the whole), credentials (a Credential is a 1Password item), auth, connection (that is the live link to a server)
 
 **Sign-in request**:
-The agent's ask that the owner sign in to an MCP server, shown as a card in its Session with a Notification. It waits until the owner signs in, from it or anywhere else, or declines it; every Sign-in request for one MCP sign-in ends when the owner signs in.
+The agent's ask, or cloudpid's for an MCP task it follows, that the owner sign in to an MCP server, shown as a card in its Session with a Notification. It waits until the owner signs in, from it or anywhere else, or declines it; every Sign-in request for one MCP sign-in ends when the owner signs in.
 _Avoid_: Auth prompt, login request, Approval (that is for an Agent change), Elicitation request (that is an MCP server's own ask)
 
 **Sampling request**:
-An MCP server's ask, during a call the agent or the owner made, for a reply from one of the owner's models, shown as a card in that call's conversation. The owner allows it (for the call, in the Session, or always for that server) or refuses it (likewise), unless the server's MCP server definition already allows or refuses it. The reply goes only to the server; the card keeps what was asked, the reply and what it cost.
+An MCP server's ask, during a call the agent or the owner made or an MCP task such a call started, for a reply from one of the owner's models, shown as a card in that call's conversation. The owner allows it (for the call, in the Session, or always for that server) or refuses it (likewise), unless the server's MCP server definition already allows or refuses it. The reply goes only to the server; the card keeps what was asked, the reply and what it cost.
 _Avoid_: Approval (that is for an Agent change), consent, completion request, sampling (alone, for one request)
 
 **Elicitation request**:
-An MCP server's ask, during a call the agent or the owner made, for the owner's own answer: a form to fill in, or a page to open in the owner's browser. It is shown as a card in that call's conversation, and only the owner answers it, by submitting, declining or cancelling it; the answer goes only to the server.
+An MCP server's ask, during a call the agent or the owner made or an MCP task such a call started, for the owner's own answer: a form to fill in, or a page to open in the owner's browser. It is shown as a card in that call's conversation, and only the owner answers it, by submitting, declining or cancelling it; the answer goes only to the server.
 _Avoid_: Approval (that is for an Agent change), Sign-in request (that is the agent's ask for an MCP sign-in), input request, question or form (alone), elicitation (alone, for one request)
+
+**MCP task**:
+Work an MCP server goes on doing after answering the call that started it. The call waits for it as long as the server's MCP server definition lets a request wait, at most ten minutes; if it is still working then, it goes on in the background, and the agent is told when it ends and reads its result then. The owner or the agent can cancel one, which the server may not honour.
+_Avoid_: Task (alone: that is a Todo Item, or pi-durable's work), background job, async call
 
 ## MCP Apps
 
