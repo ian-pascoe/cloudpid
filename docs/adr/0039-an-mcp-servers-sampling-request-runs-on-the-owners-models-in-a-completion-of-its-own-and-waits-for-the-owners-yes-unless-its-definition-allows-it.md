@@ -23,3 +23,4 @@ An MCP server may ask cloudpid for a reply from a model (`sampling/createMessage
 - A deferred Modern request keeps its call running across a Session restart. That makes the `mcp` tool replay-safe, guarded by markers so that a `tools/call` is still never sent twice.
 - A Legacy request lives only while its call waits, which gives the owner 10 minutes.
 - Sampling is deprecated in `2026-07-28` (SEP-2577) and may be removed from the first revision released on or after 2027-07-28. A connection at a revision without sampling never declares it. The code stays while any revision cloudpid speaks still has sampling.
+- A question in an MCP task waits as the task does, after its call has returned (ADR-0042). A refusal there sends `tasks/cancel`.
