@@ -450,6 +450,14 @@ _Avoid_: Approval (that is for an Agent change), Sign-in request (that is the ag
 Work an MCP server goes on doing after answering the call that started it. The call waits for it as long as the server's MCP server definition lets a request wait, at most ten minutes; if it is still working then, it goes on in the background, and the agent is told when it ends and reads its result then. The owner or the agent can cancel one, which the server may not honour.
 _Avoid_: Task (alone: that is a Todo Item, or pi-durable's work), background job, async call
 
+**MCP endpoint**:
+cloudpid's own MCP server, through which a Local agent works with cloudpid as the owner: it lists Environments and Sessions, starts and messages Sessions, waits for their Runs and reads their transcripts. It never asks the Local agent anything and answers nothing that waits for the owner.
+_Avoid_: MCP server (that is one the agent's tools come from), API, `/mcp`
+
+**Local agent**:
+An agent the owner runs outside cloudpid, such as pi or Claude Code on their own machine, that works with cloudpid's Sessions through the MCP endpoint. A Session it starts, and each message it sends, is marked as coming from it.
+_Avoid_: MCP client (the protocol's role, which cloudpid also plays toward MCP servers), remote agent, external agent
+
 ## MCP Apps
 
 **MCP App**:
