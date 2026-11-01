@@ -17,5 +17,5 @@ The SDK's default, which Cloudflare's `agents` also uses, answers every question
 
 - Only a Modern server's question can wait hours for the owner. A Legacy one has to be answered while its call waits, bounded by a wait the elicitation and sampling designs set.
 - Questions that arrive outside any call (on a Legacy server's GET stream) or from a call with no conversation get roots, a cancel, or a refusal, never a question to the owner.
-- A `2025-11-25` `-32042` (URL elicitation required) ends its call, so it waits durably and the call is sent again after the owner's Done (ADR-0040).
+- A `2025-11-25` `-32042` (URL elicitation required) ends its call, so it waits durably and the call is sent again after the owner's Done (ADR-0041).
 - Elicitation, sampling and MCP tasks build on this one shape. A task's `input_required` status uses the same question shape.
