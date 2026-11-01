@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { hasFlock, hasSetsid } from "./host.fixture.ts";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 
 const helper = join(sandboxImageContext, "cloudpid-dockerd");
@@ -72,17 +73,20 @@ const startedTimes = (dir: string): number =>
     : 0;
 
 describe("cloudpid-dockerd", () => {
-  it("starts the daemon detached, with the variable that lets it come up without IPv6 forwarding, and waits for it", async () => {
-    const dir = fakes(1);
+  it.skipIf(!hasFlock || !hasSetsid)(
+    "starts the daemon detached, with the variable that lets it come up without IPv6 forwarding, and waits for it",
+    async () => {
+      const dir = fakes(1);
 
-    const ran = await run(dir);
+      const ran = await run(dir);
 
-    expect(ran.status).toBe(0);
-    expect(startedTimes(dir)).toBe(1);
-    expect(readFileSync(join(dir, "ipv6"), "utf8").trim()).toBe("1");
-    // Its output goes to the log, not to the Start Script's.
-    expect(readFileSync(join(dir, "dockerd.log"), "utf8")).toContain("dockerd: starting");
-  });
+      expect(ran.status).toBe(0);
+      expect(startedTimes(dir)).toBe(1);
+      expect(readFileSync(join(dir, "ipv6"), "utf8").trim()).toBe("1");
+      // Its output goes to the log, not to the Start Script's.
+      expect(readFileSync(join(dir, "dockerd.log"), "utf8")).toContain("dockerd: starting");
+    },
+  );
 
   it("does nothing when the daemon answers already", async () => {
     const dir = fakes(0);
@@ -93,7 +97,7 @@ describe("cloudpid-dockerd", () => {
     expect(startedTimes(dir)).toBe(0);
   });
 
-  it("starts one daemon when called twice at once", async () => {
+  it.skipIf(!hasFlock || !hasSetsid)("starts one daemon when called twice at once", async () => {
     const dir = fakes(1);
 
     const [first, second] = await Promise.all([run(dir), run(dir)]);
@@ -102,15 +106,18 @@ describe("cloudpid-dockerd", () => {
     expect(startedTimes(dir)).toBe(1);
   });
 
-  it("fails with the end of the daemon's log when it does not answer in time", async () => {
-    const dir = fakes(20);
+  it.skipIf(!hasFlock || !hasSetsid)(
+    "fails with the end of the daemon's log when it does not answer in time",
+    async () => {
+      const dir = fakes(20);
 
-    const ran = await run(dir, 1);
+      const ran = await run(dir, 1);
 
-    expect(ran.status).toBe(1);
-    expect(ran.stderr).toContain("did not answer within 1 s");
-    expect(ran.stderr).toContain("dockerd: starting");
-  });
+      expect(ran.status).toBe(1);
+      expect(ran.stderr).toContain("did not answer within 1 s");
+      expect(ran.stderr).toContain("dockerd: starting");
+    },
+  );
 });
 
 describe("the image's Docker", () => {

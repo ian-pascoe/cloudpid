@@ -13,6 +13,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type ContainerOnly, type KeptChanges, WorkspaceChangesModule } from "./changes.ts";
 import { type RunFiles, WorkspaceRunsModule } from "./runs.ts";
 
+// The Container's GNU coreutils (`stat --printf`), which a macOS host lacks; CI runs Linux and never skips.
+const hasGnuCoreutils =
+  process.env["CI"] !== undefined || spawnSync("stat", ["--version"]).status === 0;
+
 const env = {
   PATH: process.env.PATH ?? "",
   HOME: tmpdir(),
@@ -261,38 +265,43 @@ describe("the Run copies", () => {
     expect(empty.sh("git fsck --strict --no-dangling").exitCode).toBe(0);
   });
 
-  it("records the big and binary files of a repo the Container copies, and lists them as changes only while they differ from the copy", async () => {
-    const space = workspace({ ".gitattributes": "* text=auto eol=lf\n", "a.txt": "one\n" });
+  it.skipIf(!hasGnuCoreutils)(
+    "records the big and binary files of a repo the Container copies, and lists them as changes only while they differ from the copy",
+    async () => {
+      const space = workspace({ ".gitattributes": "* text=auto eol=lf\n", "a.txt": "one\n" });
 
-    space.write("a.txt", "two\n");
-    space.write("big.txt", lines(MAX_CHANGE_SIDE_BYTES / 8));
-    space.write("logo.png", new Uint8Array([137, 80, 0, 1, 2]));
+      space.write("a.txt", "two\n");
+      space.write("big.txt", lines(MAX_CHANGE_SIDE_BYTES / 8));
+      space.write("logo.png", new Uint8Array([137, 80, 0, 1, 2]));
 
-    const { start, container, store, paths } = runs(space);
+      const { start, container, store, paths } = runs(space);
 
-    container.running = true;
-    await start();
+      container.running = true;
+      await start();
 
-    // SAFETY: the module put a repo's record under this key.
-    const record = store.get(`cloudpid:run:${SCOPE}:repo:app`) as {
-      start: { unstored: Array<{ path: string; binary: boolean }> };
-    };
+      // SAFETY: the module put a repo's record under this key.
+      const record = store.get(`cloudpid:run:${SCOPE}:repo:app`) as {
+        start: { unstored: Array<{ path: string; binary: boolean }> };
+      };
 
-    const unstored = record.start.unstored.toSorted((a, b) => (a.path < b.path ? -1 : 1));
+      const unstored = record.start.unstored.toSorted((a, b) => (a.path < b.path ? -1 : 1));
 
-    expect(unstored.map(({ path, binary }) => [path, binary])).toEqual([
-      ["big.txt", false],
-      ["logo.png", true],
-    ]);
-    expect(space.git(`ls-tree -r --name-only '${startOf(space)}'`)).toBe(".gitattributes\na.txt\n");
+      expect(unstored.map(({ path, binary }) => [path, binary])).toEqual([
+        ["big.txt", false],
+        ["logo.png", true],
+      ]);
+      expect(space.git(`ls-tree -r --name-only '${startOf(space)}'`)).toBe(
+        ".gitattributes\na.txt\n",
+      );
 
-    // As the copy has them they are not the Run's changes; the Run's own edit is.
-    space.write("a.txt", "three\n");
-    expect(await paths()).toEqual(["M a.txt"]);
+      // As the copy has them they are not the Run's changes; the Run's own edit is.
+      space.write("a.txt", "three\n");
+      expect(await paths()).toEqual(["M a.txt"]);
 
-    space.write("logo.png", new Uint8Array([137, 80, 0, 1, 2, 3]));
-    expect(await paths()).toEqual(["M a.txt", expect.stringMatching(/ logo\.png$/u)]);
-  });
+      space.write("logo.png", new Uint8Array([137, 80, 0, 1, 2, 3]));
+      expect(await paths()).toEqual(["M a.txt", expect.stringMatching(/ logo\.png$/u)]);
+    },
+  );
 
   it("keeps an executable file executable and records binary and big files by size and hash, not as blobs", async () => {
     const space = workspace({

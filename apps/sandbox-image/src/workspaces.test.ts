@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { hasFlock } from "./host.fixture.ts";
 import { SETUP_SCRIPT, setupRecord, START_SCRIPT } from "@cloudpid/sandbox-image/toolchains";
 import {
   carryRef,
@@ -251,25 +252,28 @@ describe("preparing a Workspace's clones", () => {
     expect(git("symbolic-ref --short HEAD", join(root, "empty"))).toBe("cloudpid/1a2b3c4d");
   });
 
-  it("clones once when two Sessions prepare the Workspace at the same time", async () => {
-    const { root, app, api, start } = container();
+  it.skipIf(!hasFlock)(
+    "clones once when two Sessions prepare the Workspace at the same time",
+    async () => {
+      const { root, app, api, start } = container();
 
-    const script = prepareWorkspaceScript(
-      {
-        repos: [
-          { name: "app", url: app.origin },
-          { name: "api", url: api.origin },
-        ],
-        branch: "cloudpid/1a2b3c4d",
-        base: null,
-      },
-      root,
-      "file",
-    );
+      const script = prepareWorkspaceScript(
+        {
+          repos: [
+            { name: "app", url: app.origin },
+            { name: "api", url: api.origin },
+          ],
+          branch: "cloudpid/1a2b3c4d",
+          base: null,
+        },
+        root,
+        "file",
+      );
 
-    expect(await Promise.all([start(script), start(script)])).toEqual([0, 0]);
-    expect(existsSync(join(root, "app", ".git"))).toBe(true);
-  });
+      expect(await Promise.all([start(script), start(script)])).toEqual([0, 0]);
+      expect(existsSync(join(root, "app", ".git"))).toBe(true);
+    },
+  );
 
   it("only uses the transports it is allowed", () => {
     const { root, app, sh } = container();
@@ -517,33 +521,36 @@ describe("taking a spare Workspace's clones", () => {
     expect(git("symbolic-ref --short HEAD", join(root, "empty"))).toBe("cloudpid/1a2b3c4d");
   });
 
-  it("ends on the Workspace's branch when it is taken while the spare is still cloning", async () => {
-    const { root, state, app, api, git, start } = container();
+  it.skipIf(!hasFlock)(
+    "ends on the Workspace's branch when it is taken while the spare is still cloning",
+    async () => {
+      const { root, state, app, api, git, start } = container();
 
-    const script = (branch: string) =>
-      prepareWorkspaceScript(
-        {
-          repos: [
-            { name: "app", url: app.origin },
-            { name: "api", url: api.origin },
-          ],
-          branch,
-          base: null,
-          spare: SPARE,
-        },
-        root,
-        "file",
-        state,
+      const script = (branch: string) =>
+        prepareWorkspaceScript(
+          {
+            repos: [
+              { name: "app", url: app.origin },
+              { name: "api", url: api.origin },
+            ],
+            branch,
+            base: null,
+            spare: SPARE,
+          },
+          root,
+          "file",
+          state,
+        );
+
+      expect(await Promise.all([start(script(SPARE)), start(script("cloudpid/1a2b3c4d"))])).toEqual(
+        [0, 0],
       );
 
-    expect(await Promise.all([start(script(SPARE)), start(script("cloudpid/1a2b3c4d"))])).toEqual([
-      0, 0,
-    ]);
-
-    // Whichever ran first, the second found the clones there: on the Workspace's branch, or on the spare's to switch.
-    expect(git("branch --show-current", join(root, "app"))).toBe("cloudpid/1a2b3c4d");
-    expect(git("branch --show-current", join(root, "api"))).toBe("cloudpid/1a2b3c4d");
-  });
+      // Whichever ran first, the second found the clones there: on the Workspace's branch, or on the spare's to switch.
+      expect(git("branch --show-current", join(root, "app"))).toBe("cloudpid/1a2b3c4d");
+      expect(git("branch --show-current", join(root, "api"))).toBe("cloudpid/1a2b3c4d");
+    },
+  );
 });
 
 describe("carrying a Workspace to a Fork's new one", () => {

@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { hasGnuCoreutils } from "./host.fixture.ts";
 import {
   changesScript,
   headBlobScript,
@@ -143,20 +144,23 @@ describe("the Container's Changes listing", () => {
     expect(repo.sh("git status --porcelain", repo.dir)).toBe(" M a.txt\n?? new.txt\n");
   });
 
-  it("lists a same-size edit made in the instant the index was written, as git does: the copy keeps the index's time", () => {
-    const repo = workspace({ "a.txt": "one\n", "b.txt": "b\n" });
+  it.skipIf(!hasGnuCoreutils)(
+    "lists a same-size edit made in the instant the index was written, as git does: the copy keeps the index's time",
+    () => {
+      const repo = workspace({ "a.txt": "one\n", "b.txt": "b\n" });
 
-    // The stat data git compares is the size and the second only, and the file is edited to the same size and put back to
-    // its time, with the index dated the same second: a racily clean entry, which only the index's own time tells apart.
-    repo.sh(
-      "git config core.checkStat minimal && touch -d @1700000000 a.txt && git update-index --refresh",
-      repo.dir,
-    );
-    repo.write("a.txt", "two\n");
-    repo.sh("touch -d @1700000000 a.txt .git/index", repo.dir);
+      // The stat data git compares is the size and the second only, and the file is edited to the same size and put back to
+      // its time, with the index dated the same second: a racily clean entry, which only the index's own time tells apart.
+      repo.sh(
+        "git config core.checkStat minimal && touch -d @1700000000 a.txt && git update-index --refresh",
+        repo.dir,
+      );
+      repo.write("a.txt", "two\n");
+      repo.sh("touch -d @1700000000 a.txt .git/index", repo.dir);
 
-    expect(repo.list()[0]).toMatchObject({ files: [{ path: "a.txt", status: "modified" }] });
-  });
+      expect(repo.list()[0]).toMatchObject({ files: [{ path: "a.txt", status: "modified" }] });
+    },
+  );
 
   it("marks what git takes for binary, with no counts, and leaves ignored files out", () => {
     const repo = workspace({

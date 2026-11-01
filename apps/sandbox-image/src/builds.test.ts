@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { hasProc } from "./host.fixture.ts";
 import {
   BUILD_RUN_VARIABLE,
   buildCleanupScript,
@@ -273,44 +274,48 @@ const until = async (check: () => boolean, ms = 5_000) => {
 };
 
 describe("a Build's clean-up", () => {
-  it("stops what the Build's scripts left running, Docker's daemon first, and leaves every other process alone", async () => {
-    const { base, root, state, run, sh } = container();
-    const tagged = { [BUILD_RUN_VARIABLE]: run };
+  it.skipIf(!hasProc)(
+    "stops what the Build's scripts left running, Docker's daemon first, and leaves every other process alone",
+    async () => {
+      const { base, root, state, run, sh } = container();
+      const tagged = { [BUILD_RUN_VARIABLE]: run };
 
-    // A daemon named dockerd that notes, when asked to stop, whether the Build's other service still ran.
-    const bin = join(base, "daemons");
+      // A daemon named dockerd that notes, when asked to stop, whether the Build's other service still ran.
+      const bin = join(base, "daemons");
 
-    mkdirSync(bin);
-    writeFileSync(
-      join(bin, "dockerd"),
-      `#!/bin/bash\ntrap 'kill -0 "$(cat ${join(base, "service.pid")})" 2>/dev/null && echo first > ${join(base, "dockerd.stopped")}; exit 0' TERM\nwhile :; do sleep 0.1; done\n`,
-    );
-    chmodSync(join(bin, "dockerd"), 0o755);
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, "dockerd"),
+        `#!/bin/bash\ntrap 'kill -0 "$(cat ${join(base, "service.pid")})" 2>/dev/null && echo first > ${join(base, "dockerd.stopped")}; exit 0' TERM\nwhile :; do sleep 0.1; done\n`,
+      );
+      chmodSync(join(bin, "dockerd"), 0o755);
 
-    const service = detached("exec sleep 300", tagged);
+      const service = detached("exec sleep 300", tagged);
 
-    writeFileSync(join(base, "service.pid"), String(service));
+      writeFileSync(join(base, "service.pid"), String(service));
 
-    const dockerd = detached(`exec ${join(bin, "dockerd")}`, tagged);
-    // One that ignores the polite request.
-    const stubborn = detached("trap '' TERM; while :; do sleep 0.1; done", tagged);
-    // Not the Build's: another run's, and one with no tag.
-    const other = detached("exec sleep 300", { [BUILD_RUN_VARIABLE]: `${run}-other` });
-    const untagged = detached("exec sleep 300", {});
+      const dockerd = detached(`exec ${join(bin, "dockerd")}`, tagged);
+      // One that ignores the polite request.
+      const stubborn = detached("trap '' TERM; while :; do sleep 0.1; done", tagged);
+      // Not the Build's: another run's, and one with no tag.
+      const other = detached("exec sleep 300", { [BUILD_RUN_VARIABLE]: `${run}-other` });
+      const untagged = detached("exec sleep 300", {});
 
-    await until(() => existsSync(`/proc/${stubborn}`));
-    // Give the shells a moment to set their traps.
-    await new Promise((resolve) => setTimeout(resolve, 300));
+      await until(() => existsSync(`/proc/${stubborn}`));
+      // Give the shells a moment to set their traps.
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
-    // The stubborn one gets one second, not five, to keep the test short.
-    const cleaned = sh(`${buildPrelude(run, root)}${buildCleanupScript(run, root, state, 1)}`);
+      // The stubborn one gets one second, not five, to keep the test short.
+      const cleaned = sh(`${buildPrelude(run, root)}${buildCleanupScript(run, root, state, 1)}`);
 
-    expect(cleaned.status, cleaned.stderr).toBe(0);
-    await until(() => !alive(service) && !alive(dockerd) && !alive(stubborn));
-    expect([alive(service), alive(dockerd), alive(stubborn)]).toEqual([false, false, false]);
-    expect(readFileSync(join(base, "dockerd.stopped"), "utf8")).toBe("first\n");
-    expect([alive(other), alive(untagged)]).toEqual([true, true]);
-  }, 60_000);
+      expect(cleaned.status, cleaned.stderr).toBe(0);
+      await until(() => !alive(service) && !alive(dockerd) && !alive(stubborn));
+      expect([alive(service), alive(dockerd), alive(stubborn)]).toEqual([false, false, false]);
+      expect(readFileSync(join(base, "dockerd.stopped"), "utf8")).toBe("first\n");
+      expect([alive(other), alive(untagged)]).toEqual([true, true]);
+    },
+    60_000,
+  );
 
   it("deletes the scratch clones and every Setup Script record, the Environment's too", () => {
     const { root, state, run, repos, sh } = container();

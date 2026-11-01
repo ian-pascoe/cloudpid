@@ -11,7 +11,7 @@
   "type": "module",
   "scripts": {
     "build": "turbo run build",
-    "check": "turbo run typecheck lint test && bun run format:check",
+    "check": "turbo run typecheck lint test --continue && bun run format:check",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "lint": "turbo run lint",
