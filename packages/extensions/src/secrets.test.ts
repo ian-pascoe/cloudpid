@@ -215,7 +215,7 @@ describe("secrets", () => {
     },
   );
 
-  it("gives a malformed and an unheld reference each its own advice in one block, and one escape example per form", async () => {
+  it("gives a malformed and an unheld reference each its own advice in one block, with one escape example for the placeholders", async () => {
     const session = await openSecretsHarness();
 
     await session.prompt("Go", call("record", { text: `${ref("bad name")} ${ref("MISSING")}` }));
