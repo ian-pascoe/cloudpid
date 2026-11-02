@@ -151,6 +151,9 @@ const WALK_TIMEOUT = Duration.seconds(120);
 
 const CALL_TIMEOUT_MS = 60_000;
 
+/** How long a close waits for the notifications in flight. */
+const NOTIFY_GRACE = Duration.seconds(2);
+
 /** A Legacy era row older than this is probed again at the next `initialize` (D3). */
 const LEGACY_ERA_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -294,6 +297,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const failure = (cause: unknown, mayHaveRun = false) =>
     classify(cause, { mayHaveRun, tokenSent: auth.tokenSent(), verdicts });
 
+  /** Notifications still being sent, which a close would abort: a Legacy `notifications/cancelled` above all. */
+  const notifying = new Set<Promise<void>>();
+
   const transportFor = (session?: SessionRow) => {
     const requestInit: RequestInit = { headers: { ...target.headers } };
 
@@ -323,7 +329,26 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       options.protocolVersion = session.protocolVersion;
     }
 
-    return new StreamableHTTPClientTransport(new URL(target.url), options);
+    const transport = new StreamableHTTPClientTransport(new URL(target.url), options);
+    const send = transport.send.bind(transport);
+
+    transport.send = (message, sendOptions) => {
+      const sent = send(message, sendOptions);
+
+      if ("method" in message && !("id" in message)) {
+        const settled = sent.then(
+          () => undefined,
+          () => undefined,
+        );
+
+        notifying.add(settled);
+        void settled.then(() => notifying.delete(settled));
+      }
+
+      return sent;
+    };
+
+    return transport;
   };
 
   const newClient = () =>
@@ -336,8 +361,18 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       inputRequired: { autoFulfill: false },
     });
 
+  /**
+   * Closes `client` once the notifications in flight are sent (at most 2 s), so an aborted Legacy request's
+   * `notifications/cancelled` reaches the server before the close aborts the transport's fetches (D15).
+   */
   const closeClient = (client: Client) =>
-    Effect.tryPromise(() => client.close()).pipe(Effect.ignore);
+    Effect.suspend(() =>
+      notifying.size === 0
+        ? Effect.void
+        : Effect.promise(() => Promise.all(notifying)).pipe(
+            Effect.timeoutOrElse({ duration: NOTIFY_GRACE, orElse: () => Effect.void }),
+          ),
+    ).pipe(Effect.andThen(Effect.tryPromise(() => client.close())), Effect.ignore);
 
   /** Runs one connect attempt of `plan`, closing the client if it fails. */
   const attempt = (plan: Plan) =>
@@ -589,7 +624,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           resetTimeoutOnProgress: true,
           // Without `outputSchema`, so the SDK checks no `structuredContent`: the engine does (D17). With the
           // definition given, the SDK rethrows a `-32020` header mismatch rather than refreshing `tools/list`: the
-          // refresh and one retry (D14) belong to the catalog's owner (#447, #449), so it surfaces as `ServerError`.
+          // refresh and one retry (D14) belong to the catalog's owner, the engine, so it surfaces as `ServerError`.
           toolDefinition: Struct.omit(params.tool, ["outputSchema"]),
         };
 

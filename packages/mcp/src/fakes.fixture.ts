@@ -3,7 +3,7 @@
  * Modern, Legacy stateless, Legacy stateful with a GET stream, and a hostile wrapper that answers chosen requests
  * itself. Each records what reached it, so tests can see what the core sent.
  */
-// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off
+// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off newPromise:off
 import {
   createMcpHandler,
   Server,
@@ -56,8 +56,80 @@ export const SHOUT_TOOL = {
 
 const EchoArguments = Schema.Struct({ text: Schema.String });
 
-/** An SDK server answering `tools/list` a page at a time and `tools/call` for both tools. */
-const fakeMcp = (sends?: (server: Server) => Promise<void>) => {
+const BigArguments = Schema.Struct({ bytes: Schema.Int });
+
+const TypedArguments = Schema.Struct({ structured: Schema.optionalKey(Schema.Json) });
+
+/** The fakes' tool that answers with `bytes` bytes of text, for byte limits and large results. */
+export const BIG_TOOL = {
+  name: "big",
+  description: "Answer with that many bytes of text.",
+  inputSchema: { type: "object" as const },
+};
+
+/** The fakes' tool that never answers: it waits for the request to be cancelled, and records that it was. */
+export const HANG_TOOL = {
+  name: "hang",
+  description: "Wait until cancelled.",
+  inputSchema: { type: "object" as const },
+};
+
+/** The fakes' tool with an `outputSchema`: it answers with the `structuredContent` it is given. */
+export const TYPED_TOOL = {
+  name: "typed",
+  description: "Answer with the structured content given.",
+  inputSchema: { type: "object" as const },
+  outputSchema: {
+    type: "object" as const,
+    properties: { count: { type: "number" } },
+    required: ["count"],
+  },
+};
+
+/**
+ * The fakes' tool with an `x-mcp-header`: its `region` goes in an `Mcp-Param-Region` header on Modern, and it answers
+ * with the region.
+ */
+export const REGION_TOOL = {
+  name: "region",
+  description: "Answer with the region.",
+  inputSchema: {
+    type: "object" as const,
+    properties: { region: { type: "string", "x-mcp-header": "Region" } },
+  },
+};
+
+const RegionArguments = Schema.Struct({ region: Schema.String });
+
+/** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
+export interface FakeOptions {
+  /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
+  readonly listMore?: boolean;
+  /** The names of the calls whose request was cancelled while they ran. */
+  readonly cancelled?: Array<string>;
+}
+
+/**
+ * Waits until `signal` aborts, then calls `aborted` and rejects. `aborted` runs in the abort itself, since the
+ * call's own request may be gone by the time a continuation would run (a Worker cancels a disconnected request's).
+ */
+const untilAborted = (signal: AbortSignal, aborted: () => void) =>
+  new Promise<never>((_resolve, reject) => {
+    signal.addEventListener(
+      "abort",
+      () => {
+        aborted();
+        reject(new Error("cancelled"));
+      },
+      { once: true },
+    );
+  });
+
+/**
+ * An SDK server answering `tools/list` a page at a time and `tools/call` for its tools: `echo` and `shout`, and
+ * `big`, `hang`, `typed` and `region`, listed only with `listMore`.
+ */
+const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions = {}) => {
   const server = new Server(
     { name: "fake", version: "1.0.0" },
     { capabilities: { tools: { listChanged: true } }, instructions: "Use the echo tool." },
@@ -65,18 +137,50 @@ const fakeMcp = (sends?: (server: Server) => Promise<void>) => {
 
   server.setRequestHandler("tools/list", async (request) =>
     request.params?.cursor === "page-2"
-      ? { tools: [SHOUT_TOOL] }
+      ? {
+          tools:
+            options.listMore === true
+              ? [SHOUT_TOOL, BIG_TOOL, HANG_TOOL, TYPED_TOOL, REGION_TOOL]
+              : [SHOUT_TOOL],
+        }
       : { tools: [ECHO_TOOL], nextCursor: "page-2" },
   );
-  server.setRequestHandler("tools/call", async (request) => {
+  server.setRequestHandler("tools/call", async (request, ctx) => {
     await sends?.(server);
-    const { text } = Schema.decodeUnknownSync(EchoArguments)(request.params.arguments);
 
-    return {
-      content: [
-        { type: "text", text: request.params.name === "shout" ? text.toUpperCase() : text },
-      ],
-    };
+    switch (request.params.name) {
+      case "big": {
+        const { bytes } = Schema.decodeUnknownSync(BigArguments)(request.params.arguments);
+
+        return { content: [{ type: "text", text: "x".repeat(bytes) }] };
+      }
+
+      case "hang":
+        return untilAborted(ctx.mcpReq.signal, () => options.cancelled?.push(request.params.name));
+
+      case "region": {
+        const { region } = Schema.decodeUnknownSync(RegionArguments)(request.params.arguments);
+
+        return { content: [{ type: "text", text: region }] };
+      }
+
+      case "typed": {
+        const { structured } = Schema.decodeUnknownSync(TypedArguments)(request.params.arguments);
+        const content = [{ type: "text" as const, text: JSON.stringify(structured ?? null) }];
+
+        return structured === undefined ? { content } : { content, structuredContent: structured };
+      }
+
+      default: {
+        const { text } = Schema.decodeUnknownSync(EchoArguments)(request.params.arguments);
+
+        return {
+          content: [
+            { type: "text", text: request.params.name === "shout" ? text.toUpperCase() : text },
+          ],
+        };
+      }
+    }
   });
 
   return server;
@@ -114,11 +218,11 @@ const recording = (handle: (request: Request) => Promise<Response>): FakeServer 
 };
 
 /** A Modern (`2026-07-28`) server: stateless, and answering any Legacy request as unsupported. */
-export const modernServer = (): FakeServer =>
-  recording(createMcpHandler(() => fakeMcp(), { legacy: "reject" }).fetch);
+export const modernServer = (options?: FakeOptions): FakeServer =>
+  recording(createMcpHandler(() => fakeMcp(undefined, options), { legacy: "reject" }).fetch);
 
 /** A Legacy server with no sessions: each POST is answered by a fresh server; GET and DELETE are 405. */
-export const legacyStatelessServer = (): FakeServer =>
+export const legacyStatelessServer = (options?: FakeOptions): FakeServer =>
   recording(async (request) => {
     if (request.method !== "POST") {
       return new Response(null, { status: 405 });
@@ -129,7 +233,7 @@ export const legacyStatelessServer = (): FakeServer =>
       enableJsonResponse: true,
     });
 
-    await fakeMcp().connect(transport);
+    await fakeMcp(undefined, options).connect(transport);
 
     return transport.handleRequest(request);
   });
@@ -138,7 +242,7 @@ export const legacyStatelessServer = (): FakeServer =>
  * A Legacy server with sessions: answers on SSE, keeps a GET stream per session (recording what the client reads of
  * it), and forgets sessions on demand.
  */
-export const legacyStatefulServer = () => {
+export const legacyStatefulServer = (options?: FakeOptions) => {
   const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const streamed: Array<string> = [];
   let next = 0;
@@ -185,8 +289,9 @@ export const legacyStatefulServer = () => {
     });
 
     // A notification on the GET stream with every call, as servers announcing changes do.
-    await fakeMcp((server) =>
-      server.notification({ method: "notifications/tools/list_changed" }),
+    await fakeMcp(
+      (server) => server.notification({ method: "notifications/tools/list_changed" }),
+      options,
     ).connect(transport);
 
     return transport.handleRequest(request);

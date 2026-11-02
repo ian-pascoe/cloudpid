@@ -6,7 +6,8 @@
  * `docs/architecture/mcp.md` → Packages and objects (the core's seam), Deploys (`prior` rows carry a format `v`).
  * What is here so far: the core's tagged `McpError`, `McpErrorWire` (with its fallback `OtherMcpError`, and
  * `mayHaveRun`) for the engine edge, the call context, the `prior` rows the host keeps for the engine
- * (`docs/architecture/mcp-connections.md` → Storage), and the host's own RPC (`./host.ts`).
+ * (`docs/architecture/mcp-connections.md` → Storage), `McpEngine`'s RPC, `McpEngineMethods`
+ * (`docs/architecture/mcp-connections.md` → The engine), and the host's own RPC (`./host.ts`).
  */
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
@@ -252,3 +253,218 @@ export const mayHaveRun = (error: McpErrorWire, method: string): boolean => {
     Match.exhaustive,
   );
 };
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `McpEngine`'s RPC (`McpEngineMethods`): what `McpHost` sends the engine and what comes back
+// (`docs/architecture/mcp-connections.md` → The engine; The Environment's MCP host object #382 D1).
+//
+// The engine is a `WorkerEntrypoint`, so a call's values cross by structured clone: the engine sends each result
+// encoded with these Schemas and the host decodes it with them, a failure through `McpErrorWire` (an unknown tag reads
+// as `OtherMcpError`). The edge only gains (`docs/architecture/mcp.md` → Deploys): a new operation is a new `op`, which
+// an older engine fails as `Unsupported`, and a new success shape is returned only when the request asked for it.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** A JSON object, as rows, server answers and definitions cross the edge. */
+const JsonObject = Schema.Record(Schema.String, Schema.Json);
+
+/**
+ * The server a call goes to: its connection key `conn`, its name and its `timeout`, and for an HTTP server its URL and
+ * headers, `${NAME}` values resolved. `kind` keeps room for stdio targets (`workspace`, `start`, `env`), which an
+ * engine that does not know them fails as `Unsupported`.
+ */
+export const McpEngineTarget = Schema.Struct({
+  kind: Schema.Literal("http"),
+  conn: Schema.String,
+  name: Schema.String,
+  url: Schema.String,
+  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  /** The entry's `timeout` for a `tools/call` (default 60 s). */
+  timeoutMs: Schema.optionalKey(Schema.Int),
+});
+
+export type McpEngineTarget = typeof McpEngineTarget.Type;
+
+/**
+ * The rows the host keeps for a connection (`mcp_eras`, `mcp_sessions`), as JSON of any format: the engine reads a row
+ * it does not know as absent (`docs/architecture/mcp-connections.md` → Storage).
+ */
+export const McpEnginePrior = Schema.Struct({
+  era: Schema.optionalKey(Schema.Json),
+  session: Schema.optionalKey(Schema.Json),
+});
+
+export type McpEnginePrior = typeof McpEnginePrior.Type;
+
+/** The rows a call changed, for the host to keep: a row to keep, `null` to drop it, absent to leave it as it is. */
+export const McpEngineState = Schema.Struct({
+  era: Schema.Json.pipe(Schema.NullOr, Schema.optionalKey),
+  session: Schema.Json.pipe(Schema.NullOr, Schema.optionalKey),
+});
+
+export type McpEngineState = typeof McpEngineState.Type;
+
+/**
+ * A tool's definition, as the server listed it and the host keeps it in its catalog: a `tools/call` carries it, since
+ * its `inputSchema` gives the `Mcp-Param` headers and its `outputSchema` is what the engine checks `structuredContent`
+ * against (The MCP core #394 D14, D17).
+ */
+export const McpToolDefinition = Schema.StructWithRest(
+  Schema.Struct({
+    name: Schema.String,
+    inputSchema: JsonObject,
+    outputSchema: Schema.optionalKey(JsonObject),
+  }),
+  [JsonObject],
+);
+
+export type McpToolDefinition = typeof McpToolDefinition.Type;
+
+/** What a call failed with, and the rows it changed before it did. */
+export const McpEngineFailed = Schema.Struct({
+  kind: Schema.Literal("failed"),
+  error: McpErrorWire,
+  state: McpEngineState,
+});
+
+export type McpEngineFailed = typeof McpEngineFailed.Type;
+
+/** A tool whose definition the engine could not use, and why: an `outputSchema` TypeBox rejects. */
+export const McpToolProblem = Schema.Struct({
+  tool: Schema.String,
+  problem: Schema.String,
+});
+
+export type McpToolProblem = typeof McpToolProblem.Type;
+
+/**
+ * A discovery (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): what the server is, every
+ * page of its tools and prompts, and the tools whose output schema could not be compiled. The inventory's bounds,
+ * versions and storage are the host's.
+ */
+export const McpEngineDiscovered = Schema.Struct({
+  kind: Schema.Literal("discovered"),
+  era: Schema.Literals(["modern", "legacy"]),
+  protocolVersion: Schema.String,
+  serverInfo: Schema.optionalKey(JsonObject),
+  capabilities: JsonObject,
+  instructions: Schema.optionalKey(Schema.String),
+  tools: Schema.Array(McpToolDefinition),
+  prompts: Schema.Array(JsonObject),
+  problems: Schema.Array(McpToolProblem),
+  /** The tools list's cache hint (SEP-2549), for the host's TTL. */
+  ttlMs: Schema.optionalKey(Schema.Finite),
+  fetchedAt: Schema.Finite,
+  state: McpEngineState,
+});
+
+export type McpEngineDiscovered = typeof McpEngineDiscovered.Type;
+
+export const McpEngineDiscoverResult = Schema.Union([McpEngineDiscovered, McpEngineFailed]);
+
+export type McpEngineDiscoverResult = typeof McpEngineDiscoverResult.Type;
+
+/** The lists a `request` can walk, every page. */
+export const McpEngineListOp = Schema.Literals([
+  "tools/list",
+  "prompts/list",
+  "resources/list",
+  "resources/templates/list",
+]);
+
+/** What `request` is asked to do. A new operation is a new `op` (`docs/architecture/mcp.md` → Deploys). */
+export const McpEngineRequest = Schema.Union([
+  Schema.Struct({
+    op: Schema.Literal("tools/call"),
+    tool: McpToolDefinition,
+    arguments: Schema.optionalKey(JsonObject),
+    ctx: McpCallContext,
+  }),
+  Schema.Struct({
+    op: McpEngineListOp,
+    ctx: McpCallContext,
+  }),
+]);
+
+export type McpEngineRequest = typeof McpEngineRequest.Type;
+
+/** A native byte stream: RPC passes it through without cloning or counting it, and the host returns it unread. */
+const ByteStream = Schema.declare(
+  (input): input is ReadableStream<Uint8Array> => input instanceof ReadableStream,
+);
+
+/**
+ * A result's value: inline up to 1 MiB of JSON, else the JSON's bytes as a native `ReadableStream` the engine produces
+ * on pull (`docs/architecture/mcp-connections.md` → The engine, large results; #409 answer 3).
+ */
+export const McpEngineValue = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("inline"), value: Schema.Json }),
+  Schema.Struct({ kind: Schema.Literal("stream"), body: ByteStream, bytes: Schema.Int }),
+]);
+
+export type McpEngineValue = typeof McpEngineValue.Type;
+
+/**
+ * How a `tools/call` result's `structuredContent` fits the tool's `outputSchema`, checked in the engine (The MCP core
+ * #394 D17, refined by #382 D9.3): absent when the tool declares none, `valid: false` with the first errors otherwise.
+ */
+export const McpStructuredOutput = Schema.Union([
+  Schema.Struct({ valid: Schema.Literal(true) }),
+  Schema.Struct({ valid: Schema.Literal(false), errors: Schema.Array(Schema.String) }),
+]);
+
+export type McpStructuredOutput = typeof McpStructuredOutput.Type;
+
+/** A request that completed: its value, its cache metadata (The MCP core #394 D13) and the rows it changed. */
+export const McpEngineCompleted = Schema.Struct({
+  kind: Schema.Literal("complete"),
+  result: McpEngineValue,
+  /** False when the result came from answered questions, so no cache may keep it. */
+  cacheable: Schema.Boolean,
+  ttlMs: Schema.optionalKey(Schema.Finite),
+  cacheScope: Schema.optionalKey(Schema.Literals(["public", "private"])),
+  fetchedAt: Schema.Finite,
+  structuredOutput: Schema.optionalKey(McpStructuredOutput),
+  /**
+   * The server's tools, listed again because it refused the call's headers (`-32020`) and the call was sent once more
+   * with the fresh definition (The MCP core #394 D14), for the host to update its catalog.
+   */
+  tools: McpToolDefinition.pipe(Schema.Array, Schema.optionalKey),
+  state: McpEngineState,
+});
+
+export type McpEngineCompleted = typeof McpEngineCompleted.Type;
+
+export const McpEngineRequestResult = Schema.Union([McpEngineCompleted, McpEngineFailed]);
+
+export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
+
+/**
+ * The callbacks a call carries, passed as RPC stubs that live as long as the caller's invocation (`docs/architecture/
+ * mcp.md` → RPC edges). Later slices add `onInput`, `onProgress` and `onLog`.
+ */
+export interface McpEngineHooks {
+  /**
+   * Pending until the caller aborts the call (it resolves) or dies (it rejects); either way the engine aborts the server
+   * request, since RPC carries no `AbortSignal`.
+   */
+  readonly untilAborted: () => Promise<void>;
+  /** An access token for the server, asked again with `stale` after the server refused one; none without OAuth. */
+  readonly auth?: (stale: boolean) => Promise<string | undefined>;
+  /** Called when a request's response headers arrive, so the host can keep its outbound queue across engine calls. */
+  readonly opened?: () => void | Promise<void>;
+}
+
+/** `McpEngine`'s methods as the host calls them, over the `MCP_ENGINE` binding; each resolves to an encoded result. */
+export interface McpEngineMethods {
+  readonly discover: (
+    target: typeof McpEngineTarget.Encoded,
+    prior: typeof McpEnginePrior.Encoded,
+    hooks: McpEngineHooks,
+  ) => Promise<typeof McpEngineDiscoverResult.Encoded>;
+  readonly request: (
+    target: typeof McpEngineTarget.Encoded,
+    prior: typeof McpEnginePrior.Encoded,
+    request: typeof McpEngineRequest.Encoded,
+    hooks: McpEngineHooks,
+  ) => Promise<typeof McpEngineRequestResult.Encoded>;
+}

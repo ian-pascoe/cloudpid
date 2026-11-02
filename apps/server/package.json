@@ -25,6 +25,7 @@
     "@cloudpid/effect-durable": "workspace:*",
     "@cloudpid/extensions": "workspace:*",
     "@cloudpid/mcp": "workspace:*",
+    "@cloudpid/mcp-worker": "workspace:*",
     "@cloudpid/protocol": "workspace:*",
     "@cloudpid/sandbox-image": "workspace:*",
     "@cloudpid/telemetry": "workspace:*",
