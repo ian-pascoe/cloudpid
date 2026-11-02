@@ -10,26 +10,28 @@ import { MODES, parseBaseline, runnerBaseline } from "./run.ts";
 
 const committed = readFileSync(resolve(import.meta.dirname, "baseline.json"), "utf8");
 
-const empty = (): Record<string, Record<string, string>> =>
-  Object.fromEntries(MODES.map((mode) => [mode, {}]));
+const empty = (): Record<string, ReadonlyArray<unknown>> =>
+  Object.fromEntries(MODES.map((mode) => [mode, []]));
 
 describe("baseline.json", () => {
-  it("is a baseline of every mode, each entry with a reason", () => {
+  it("is a baseline of every mode, each group of entries with a reason", () => {
     const baseline = parseBaseline(committed);
 
     expect(Object.keys(baseline)).toStrictEqual([...MODES]);
   });
 
-  it("is read only with every mode and a reason for every entry", () => {
+  it("is read only with every mode and a reason for every group", () => {
     const { "2025-03-26": _dropped, ...missing } = empty();
 
     expect(() => parseBaseline(JSON.stringify(missing))).toThrow(/2025-03-26/);
-    expect(() => parseBaseline(JSON.stringify({ ...empty(), "2024-11-05": {} }))).toThrow(
+    expect(() => parseBaseline(JSON.stringify({ ...empty(), "2024-11-05": [] }))).toThrow(
       /2024-11-05/,
     );
     expect(() =>
-      parseBaseline(JSON.stringify({ ...empty(), "2025-06-18": { tools_call: "" } })),
-    ).toThrow(/tools_call/);
+      parseBaseline(
+        JSON.stringify({ ...empty(), "2025-06-18": [{ reason: "", entries: ["tools_call"] }] }),
+      ),
+    ).toThrow(/reason/);
     expect(() => parseBaseline(JSON.stringify([]))).toThrow();
   });
 });
@@ -39,16 +41,16 @@ describe("the runner's baseline", () => {
     const baseline = parseBaseline(
       JSON.stringify({
         ...empty(),
-        "2026-07-28": {
-          "sep-2322-client-request-state": "no resume",
-          "sse-retry:check": "no retry",
-        },
-        "2025-11-25": { initialize: "other mode" },
+        "2026-07-28": [
+          { reason: "no resume", entries: ["sep-2322-client-request-state"] },
+          { reason: "no retry", entries: ["sse-retry:check", "sse-retry:other"] },
+        ],
+        "2025-11-25": [{ reason: "other mode", entries: ["initialize"] }],
       }),
     );
 
     expect(JSON.parse(runnerBaseline(baseline, "2026-07-28"))).toStrictEqual({
-      client: ["sep-2322-client-request-state", "sse-retry:check"],
+      client: ["sep-2322-client-request-state", "sse-retry:check", "sse-retry:other"],
     });
     expect(JSON.parse(runnerBaseline(baseline, "2025-06-18"))).toStrictEqual({ client: [] });
   });

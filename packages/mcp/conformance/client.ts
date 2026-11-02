@@ -27,7 +27,8 @@ import {
 } from "../src/index.ts";
 import type { McpCallContext, McpError } from "../src/types.ts";
 
-const CTX: McpCallContext = { origin: "host" };
+/** What every call here is made for: the owner's host, which has no conversation. */
+const HOST_CALL: McpCallContext = { origin: "host" };
 
 /** What stops a scenario short: one the core cannot drive yet, or one the server did not set up as expected. */
 class ScenarioError extends Schema.TaggedError<ScenarioError, { readonly brand: unique symbol }>()(
@@ -91,7 +92,7 @@ const toolCallsOf = (context: string | undefined) =>
 
 const listTools = (connection: McpConnection) =>
   connection
-    .list("tools", CTX)
+    .list("tools", HOST_CALL)
     .pipe(Effect.map((outcome): ReadonlyArray<ListItems["tools"]> => outcome.value));
 
 /** The tool `name` of `tools`, or the scenario's failure that the server does not list it. */
@@ -118,29 +119,25 @@ const SCENARIOS = new Map<string, Scenario>([
     (connection) =>
       Effect.gen(function* () {
         const tools = yield* listTools(connection);
-        const tool = tools.find((t) => t.name === "add_numbers");
+        const tool = yield* toolNamed(tools, "add_numbers");
 
-        if (tool !== undefined) {
-          yield* connection.callTool({ tool, arguments: { a: 5, b: 3 } }, CTX);
-        }
+        yield* connection.callTool({ tool, arguments: { a: 5, b: 3 } }, HOST_CALL);
       }),
   ],
 
   // The mock lists tools, resources and prompts and checks each request's `Mcp-Method` and `Mcp-Name`; the core reads
-  // no resource and gets no prompt yet, so only the listings and the call are driven.
+  // no resource and gets no prompt yet, so only the listings and the call of its tool are driven.
   [
     "http-standard-headers",
     (connection) =>
       Effect.gen(function* () {
         const tools = yield* listTools(connection);
-        const tool = tools[0];
+        const tool = yield* toolNamed(tools, "test_headers");
 
-        if (tool !== undefined) {
-          yield* connection.callTool({ tool, arguments: {} }, CTX);
-        }
+        yield* connection.callTool({ tool, arguments: {} }, HOST_CALL);
 
-        yield* connection.list("resources", CTX);
-        yield* connection.list("prompts", CTX);
+        yield* connection.list("resources", HOST_CALL);
+        yield* connection.list("prompts", HOST_CALL);
       }),
   ],
 
@@ -155,7 +152,7 @@ const SCENARIOS = new Map<string, Scenario>([
         for (const call of calls) {
           const tool = yield* toolNamed(tools, call.name);
 
-          yield* connection.callTool({ tool, arguments: call.arguments }, CTX);
+          yield* connection.callTool({ tool, arguments: call.arguments }, HOST_CALL);
         }
       }),
   ],
@@ -169,7 +166,7 @@ const SCENARIOS = new Map<string, Scenario>([
 
         for (const tool of tools) {
           yield* connection
-            .callTool({ tool, arguments: { region: "us-west1" } }, CTX)
+            .callTool({ tool, arguments: { region: "us-west1" } }, HOST_CALL)
             .pipe(Effect.ignore);
         }
       }),
@@ -187,12 +184,12 @@ const SCENARIOS = new Map<string, Scenario>([
         // SAFETY: a JSON Schema is JSON.
         const schema = focal.inputSchema as Schema.Json;
 
-        yield* connection.callTool({ tool: echo, arguments: { schema } }, CTX);
+        yield* connection.callTool({ tool: echo, arguments: { schema } }, HOST_CALL);
       }),
   ],
 
-  // The core never reconnects a stream (`maxRetries: 0`; a cut is `Cut`), so this call fails the way a cut stream
-  // does, and the scenario's retry checks fail with it.
+  // The core does not resume a Legacy SSE stream yet (#394 D15; #542), so this call fails the way a cut stream does,
+  // and the scenario's retry checks fail with it.
   [
     "sse-retry",
     (connection) =>
@@ -200,20 +197,20 @@ const SCENARIOS = new Map<string, Scenario>([
         const tools = yield* listTools(connection);
         const tool = yield* toolNamed(tools, "test_reconnection");
 
-        yield* connection.callTool({ tool, arguments: {} }, CTX);
+        yield* connection.callTool({ tool, arguments: {} }, HOST_CALL);
       }),
   ],
 ]);
 
 /** What the runner hands the client: the mock server's URL, and the scenario with its context. */
-const invocation = {
+const runnerHandOff = {
   url: process.argv[2],
   scenario: process.env.MCP_CONFORMANCE_SCENARIO,
   context: process.env.MCP_CONFORMANCE_CONTEXT,
 };
 
 const main = Effect.gen(function* () {
-  const { url, scenario: name, context } = invocation;
+  const { url, scenario: name, context } = runnerHandOff;
 
   if (url === undefined || name === undefined) {
     return yield* ScenarioError.make({

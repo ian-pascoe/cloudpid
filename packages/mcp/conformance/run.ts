@@ -8,11 +8,11 @@
  * The runner's own baseline is a file of scenario names, which fails the run on a failure outside it (a regression)
  * and on a scenario in it that now passes (stale: remove the entry), so the baseline only shrinks. Its entries are
  * keyed by scenario name alone, and one scenario can pass at one version and fail at another, so `baseline.json` has
- * a section per mode, each entry with the reason it fails, and this writes the runner's file for the mode.
+ * a section per mode, its entries grouped by the reason they fail, and this writes the runner's file for the mode.
  */
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off schemaSync:off -- a Node script that spawns the runner: plain functions over values.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Schema from "effect/Schema";
@@ -23,16 +23,16 @@ const Mode = Schema.Literals(MODES);
 
 export type Mode = typeof Mode.Type;
 
-/** A mode's entries: a scenario, or `<scenario>:<check-id>` for one check of it, each with the reason it fails. */
-const Section = Schema.Record(Schema.String, Schema.NonEmptyString);
-
-/** `baseline.json`: every mode, and no other. */
-const Baseline = Schema.Struct({
-  "2026-07-28": Section,
-  "2025-11-25": Section,
-  "2025-06-18": Section,
-  "2025-03-26": Section,
+/** Entries that fail for one reason: a scenario, or `<scenario>:<check-id>` for one check of it. */
+const Group = Schema.Struct({
+  reason: Schema.NonEmptyString,
+  entries: Schema.NonEmptyArray(Schema.String),
 });
+
+const Section = Schema.Array(Group);
+
+/** `baseline.json`: a section for every mode, and no other. */
+const Baseline = Schema.Record(Mode, Section);
 
 export type Baseline = typeof Baseline.Type;
 
@@ -43,9 +43,9 @@ const isMode = Schema.is(Mode);
 /** `baseline.json` as read, or why it is not a baseline. */
 export const parseBaseline = (text: string): Baseline => decodeBaseline(JSON.parse(text));
 
-/** The file the runner reads for `mode`: its client scenarios, as the JSON subset of YAML. */
+/** The file the runner reads for `mode`: its client entries, as the JSON subset of YAML. */
 export const runnerBaseline = (baseline: Baseline, mode: Mode) =>
-  JSON.stringify({ client: Object.keys(baseline[mode]) });
+  JSON.stringify({ client: baseline[mode].flatMap((group) => group.entries) });
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +61,8 @@ const main = () => {
   const baseline = parseBaseline(readFileSync(join(here, "baseline.json"), "utf8"));
   const out = join(here, "results", mode);
 
+  // Only this run's results: the runner adds a directory per scenario run.
+  rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
 
   const file = join(out, "expected-failures.yaml");
