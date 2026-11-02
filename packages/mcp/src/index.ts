@@ -3,10 +3,23 @@
  * entry loads `@modelcontextprotocol/client`, so only `McpEngine` and `McpServer` (the `McpWorker`) import it: the
  * SDK adds about 9-10 MiB of cold heap to every isolate that loads it.
  *
- * `docs/architecture/mcp.md` → Packages and objects (the SDK pin, the import rule). A skeleton: the core's seam
- * (`connect`, `McpConnection`, `McpError`) lands in later changes.
+ * `docs/architecture/mcp.md` → Packages and objects (the SDK pin, the import rule, the core's seam).
  */
-import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/client";
+export {
+  type CallToolParams,
+  connect,
+  type ListItems,
+  type ListKind,
+  type McpConnection,
+  type McpDeps,
+  type McpTarget,
+  type Outcome,
+  type RowStore,
+} from "./connection.ts";
 
-/** The newest protocol version the pinned SDK speaks. */
-export const SDK_PROTOCOL_VERSION: string = LATEST_PROTOCOL_VERSION;
+export {
+  MCP_APPS_EXTENSION,
+  MODERN_PROTOCOL_VERSION,
+  LEGACY_PROTOCOL_VERSIONS,
+  SUPPORTED_PROTOCOL_VERSIONS,
+} from "./protocol.ts";
