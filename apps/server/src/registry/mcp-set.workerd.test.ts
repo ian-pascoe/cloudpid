@@ -110,6 +110,7 @@ describe("the MCP server set over the Registry's storage", () => {
       expect(mcpServerSetAnswer(store, { environment: STAGING }, 7)).toEqual({
         hash: EMPTY_MCP_SET_HASH,
         signInsRevision: 0,
+        revision: 5,
       });
     }));
 
@@ -138,11 +139,13 @@ describe("the MCP server set over the Registry's storage", () => {
       expect(store.deleteEnvironment(STAGING)).toBe("deleted");
       recordMcpDeleted(store, STAGING, 12);
 
-      expect(pendingMcpPushes(store, undefined, 13).destroys).toEqual([STAGING]);
+      expect(pendingMcpPushes(store, undefined, 13).wipes.map((wipe) => wipe.environment)).toEqual([
+        STAGING,
+      ]);
 
       recordMcpDestroyed(store, STAGING, 14);
 
-      expect(pendingMcpPushes(store, undefined, 15).destroys).toEqual([]);
+      expect(pendingMcpPushes(store, undefined, 15).wipes).toEqual([]);
     }));
 
   it("tells a Session's Settings how many servers its Environment's set has", () =>

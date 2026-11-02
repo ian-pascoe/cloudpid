@@ -12,11 +12,13 @@
 // source, and the Repo layers (`.pi/mcp.json`, #468) join them when the Registry keeps them.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 import { mcpConnectionKey, type McpResolvedServer } from "@cloudpid/config";
-import type {
-  McpPending,
-  McpPush,
-  McpServerSetAnswer,
-  McpServerValuesAnswer,
+import {
+  type McpPending,
+  type McpPush,
+  type McpServerSetAnswer,
+  type McpServerValuesAnswer,
+  McpSetRevision,
+  McpWipe,
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -41,8 +43,6 @@ export const MCP_HANDED_DOCUMENT = "mcp-handed";
 /** The store as the MCP set reads it: the Settings at both Scopes, and the Environments. */
 export type McpSetStore = DocumentStore &
   Pick<RegistryStore, "getSettingsOverrides" | "listEnvironments" | "getEnvironmentSettings">;
-
-const NO_SERVERS: McpSetContent = { kind: "set", hash: EMPTY_MCP_SET_HASH, entries: [] };
 
 /** `environment`'s MCP server set, without its revision, or null when it is not registered. */
 export const environmentMcpSet = (
@@ -70,23 +70,21 @@ const resolvedServer = (
   ).pipe(Option.getOrUndefined);
 };
 
-/** What the Registry knows of a host's set: the hash and revision it was last handed, by Environment. */
+/** What the Registry knows of the hosts' sets: what each was last handed, the revisions given out, the wipes to send. */
 const Handed = Schema.Struct({
-  /** The last revision given out: the next set gets one more. */
-  seq: Schema.Int,
-  handed: Schema.Record(
-    Schema.String,
-    Schema.Struct({ hash: Schema.String, revision: Schema.Int }),
-  ),
-  /** The Environments deleted whose host the main Worker has not wiped yet. */
-  destroy: Schema.Array(Schema.String),
+  /** The last revision given out, to a set or a deletion: the next gets one more. */
+  lastRevision: Schema.Int,
+  /** The hash and revision each registered Environment's host was last handed. */
+  handed: Schema.Record(Schema.String, McpSetRevision),
+  /** The deleted Environments whose host the main Worker has not wiped yet. */
+  wipes: Schema.Array(McpWipe),
 });
 
 type Handed = typeof Handed.Type;
 
 const decodeHanded = Schema.decodeUnknownOption(Schema.fromJsonString(Handed));
 
-const NOTHING_HANDED: Handed = { seq: 0, handed: {}, destroy: [] };
+const NOTHING_HANDED: Handed = { lastRevision: 0, handed: {}, wipes: [] };
 
 const readHanded = (store: DocumentStore): Handed =>
   Option.getOrElse(
@@ -97,21 +95,20 @@ const readHanded = (store: DocumentStore): Handed =>
 const writeHanded = (store: DocumentStore, handed: Handed, now: number): void =>
   store.putDocument(MCP_HANDED_DOCUMENT, JSON.stringify(handed), now);
 
-/** The Environments of `handed` that are still registered: a deleted one's record goes with the next write. */
-const registered = (
-  store: Pick<RegistryStore, "listEnvironments">,
-  handed: Handed["handed"],
-): Handed["handed"] => {
-  const known = new Set(Arr.map(store.listEnvironments(), ({ id }) => id));
+/** The Environments of `handed` that are in `known`: a deleted one's record goes with the next write. */
+const registered = (known: ReadonlySet<string>, handed: Handed["handed"]): Handed["handed"] =>
+  Record.filter(handed, (_, id) => known.has(id));
 
-  return Record.filter(handed, (_, id) => known.has(id));
-};
+/** The ids of the registered Environments. */
+const registeredIds = (store: Pick<RegistryStore, "listEnvironments">): ReadonlySet<string> =>
+  new Set(Arr.map(store.listEnvironments(), ({ id }) => id));
 
 /**
- * The answer to the host's `mcpServerSet({ environment, heldHash })`: the current hash, and the set with a new revision
- * unless the host holds it (a host that holds none holds the empty set). An Environment the Registry does not list has
- * no servers. A set handed out is recorded as the host's, so a later change is pushed to it even when no push of the
- * earlier set was ever made or answered.
+ * The answer to the host's `mcpServerSet({ environment, heldHash })`: the current hash with a new revision, and the set
+ * unless the host holds it (a host that holds none holds the empty set). The hash and revision are noted as handed to
+ * the host, held set or not: a later change is pushed to it even when no push was ever made or answered, and a push
+ * handed out before is outranked. An Environment the Registry does not list gets no revision and no set (it has no host
+ * to fill: a deleted one's is wiped).
  */
 export const mcpServerSetAnswer = (
   store: McpSetStore,
@@ -119,34 +116,31 @@ export const mcpServerSetAnswer = (
   now: number,
 ): McpServerSetAnswer => {
   const known = environmentMcpSet(store, input.environment);
-  const set = known ?? NO_SERVERS;
-  const held = input.heldHash ?? EMPTY_MCP_SET_HASH;
 
   // No MCP sign-ins yet: the revision comes with them.
-  const answer: McpServerSetAnswer = { hash: set.hash, signInsRevision: 0 };
-
-  if (set.hash === held) return answer;
+  if (known === null) return { hash: EMPTY_MCP_SET_HASH, signInsRevision: 0 };
 
   const state = readHanded(store);
-  const revision = state.seq + 1;
+  const revision = state.lastRevision + 1;
 
   writeHanded(
     store,
     {
       ...state,
-      seq: revision,
-      handed:
-        known === null
-          ? state.handed
-          : {
-              ...registered(store, state.handed),
-              [input.environment]: { hash: set.hash, revision },
-            },
+      lastRevision: revision,
+      handed: {
+        ...registered(registeredIds(store), state.handed),
+        [input.environment]: { hash: known.hash, revision },
+      },
     },
     now,
   );
 
-  return { ...answer, set: set.entries, revision };
+  const answer: McpServerSetAnswer = { hash: known.hash, signInsRevision: 0, revision };
+
+  return known.hash === (input.heldHash ?? EMPTY_MCP_SET_HASH)
+    ? answer
+    : { ...answer, set: known.entries };
 };
 
 /** The host's `mcpServerValues` arguments: the server by name, with the `conn` the host holds it under. */
@@ -189,8 +183,8 @@ export const readsSecrets = (store: McpSetStore, environment: string, server: st
 /**
  * What the main Worker is to do at a sync: the sets to push, by Environment (`environment`'s, all Environments' when
  * undefined) whose hash differs from what its host was last handed (`shouldPushMcpSet`), each with a new revision; and
- * the deleted Environments whose host is to be wiped. A revision is given out here and recorded only when the push is
- * answered (`mcpPushed`).
+ * every deleted Environment's host still to be wiped, whatever Environment the sync is for, so any sync retries a wipe
+ * that was lost. A revision is given out here and recorded only when the push is answered (`mcpPushed`).
  */
 export const pendingMcpPushes = (
   store: McpSetStore,
@@ -204,32 +198,23 @@ export const pendingMcpPushes = (
 
   const due = Arr.filterMap(environments, (id) => {
     const set = environmentMcpSet(store, id);
+    const handed = Record.get(state.handed, id).pipe(Option.map(({ hash }) => hash));
 
-    return set !== null &&
-      shouldPushMcpSet(
-        Record.get(state.handed, id).pipe(
-          Option.map(({ hash }) => hash),
-          Option.getOrUndefined,
-        ),
-        set.hash,
-      )
+    return set !== null && shouldPushMcpSet(Option.getOrUndefined(handed), set.hash)
       ? Result.succeed({ environment: id, set })
       : Result.failVoid;
   });
 
   const pushes = Arr.map(due, ({ environment: id, set }, index): McpPush => ({
     environment: id,
-    set: { ...set, revision: state.seq + 1 + index },
+    set: { ...set, revision: state.lastRevision + 1 + index },
   }));
 
-  const destroys = Arr.filter(
-    state.destroy,
-    (id) => environment === undefined || id === environment,
-  );
+  if (pushes.length > 0) {
+    writeHanded(store, { ...state, lastRevision: state.lastRevision + pushes.length }, now);
+  }
 
-  if (pushes.length > 0) writeHanded(store, { ...state, seq: state.seq + pushes.length }, now);
-
-  return { pushes, destroys };
+  return { pushes, wipes: state.wipes };
 };
 
 /**
@@ -238,48 +223,49 @@ export const pendingMcpPushes = (
  */
 export const recordMcpPushed = (
   store: DocumentStore & Pick<RegistryStore, "listEnvironments">,
-  input: { readonly environment: string; readonly hash: string; readonly revision: number },
+  input: McpSetRevision & { readonly environment: string },
   now: number,
 ): void => {
-  const state = readHanded(store);
-  const known = registered(store, state.handed);
-  const recorded = Record.get(known, input.environment);
+  const known = registeredIds(store);
 
-  if (
-    !Arr.some(store.listEnvironments(), ({ id }) => id === input.environment) ||
-    (Option.isSome(recorded) && recorded.value.revision > input.revision)
-  ) {
-    return;
-  }
+  if (!known.has(input.environment)) return;
+
+  const state = readHanded(store);
+  const handed = registered(known, state.handed);
+  const recorded = Record.get(handed, input.environment);
+
+  if (Option.isSome(recorded) && recorded.value.revision > input.revision) return;
 
   writeHanded(
     store,
     {
       ...state,
-      seq: Math.max(state.seq, input.revision),
-      handed: { ...known, [input.environment]: { hash: input.hash, revision: input.revision } },
+      lastRevision: Math.max(state.lastRevision, input.revision),
+      handed: { ...handed, [input.environment]: { hash: input.hash, revision: input.revision } },
     },
     now,
   );
 };
 
 /**
- * Note that `environment` was deleted, so the next sync wipes its host. A host that was never handed a set is not
- * woken just to be wiped: it holds nothing.
+ * Note that `environment` was deleted, so the next sync, whatever it is for, wipes its host, under a revision above
+ * every set handed out so far. A host that was never handed a set is not woken just to be wiped: it holds nothing.
  */
 export const recordMcpDeleted = (store: DocumentStore, environment: string, now: number): void => {
   const state = readHanded(store);
 
   if (Option.isNone(Record.get(state.handed, environment))) return;
 
+  const revision = state.lastRevision + 1;
+
   writeHanded(
     store,
     {
-      ...state,
+      lastRevision: revision,
       handed: Record.remove(state.handed, environment),
-      destroy: Arr.append(
-        Arr.filter(state.destroy, (id) => id !== environment),
-        environment,
+      wipes: Arr.append(
+        Arr.filter(state.wipes, (wipe) => wipe.environment !== environment),
+        { environment, revision },
       ),
     },
     now,
@@ -294,11 +280,11 @@ export const recordMcpDestroyed = (
 ): void => {
   const state = readHanded(store);
 
-  if (!Arr.contains(state.destroy, environment)) return;
+  if (!Arr.some(state.wipes, (wipe) => wipe.environment === environment)) return;
 
   writeHanded(
     store,
-    { ...state, destroy: Arr.filter(state.destroy, (id) => id !== environment) },
+    { ...state, wipes: Arr.filter(state.wipes, (wipe) => wipe.environment !== environment) },
     now,
   );
 };

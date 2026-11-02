@@ -54,6 +54,14 @@ export const McpSetEntry = Schema.Struct({
 
 export type McpSetEntry = typeof McpSetEntry.Type;
 
+/** A set's hash with the revision it was handed out under: what a host holds, and what the Registry notes as handed. */
+export const McpSetRevision = Schema.Struct({
+  hash: Schema.String,
+  revision: Schema.Int,
+});
+
+export type McpSetRevision = typeof McpSetRevision.Type;
+
 /** `apply({ kind: "set" })`: the Environment's whole MCP server set, in the order its entries resolved. */
 export const McpApplySet = Schema.Struct({
   kind: Schema.Literal("set"),
@@ -70,8 +78,14 @@ export const McpApplySet = Schema.Struct({
 
 export type McpApplySet = typeof McpApplySet.Type;
 
-/** `apply({ kind: "destroy" })`: an Environment was deleted; the host wipes its storage. */
-export const McpApplyDestroy = Schema.Struct({ kind: Schema.Literal("destroy") });
+/**
+ * `apply({ kind: "destroy" })`: an Environment was deleted; the host wipes its storage and keeps `revision`, which the
+ * Registry gave the deletion, so a set handed out before it (a push or a pull answered late) never fills the host again.
+ */
+export const McpApplyDestroy = Schema.Struct({
+  kind: Schema.Literal("destroy"),
+  revision: Schema.Int,
+});
 
 export type McpApplyDestroy = typeof McpApplyDestroy.Type;
 
@@ -88,11 +102,11 @@ export const McpApplied = Schema.TaggedStruct("Applied", {
 
 export type McpApplied = typeof McpApplied.Type;
 
-/** The set was refused as older than the one the host holds (`revision`), which it kept. */
-export const McpStale = Schema.TaggedStruct("Stale", {
-  hash: Schema.String,
-  revision: Schema.Int,
-});
+/**
+ * The set was refused as no newer than what the host holds: `hash` and `revision` are the held set's, which it kept, or
+ * (`hash` empty) the revision it was wiped at.
+ */
+export const McpStale = Schema.TaggedStruct("Stale", McpSetRevision.fields);
 
 export type McpStale = typeof McpStale.Type;
 
@@ -233,7 +247,11 @@ export const McpServerSetAnswer = Schema.Struct({
   /** Bumped by an MCP sign-in, sign-out or rebind (`docs/architecture/mcp-sign-in.md`); 0 until sign-ins exist. */
   signInsRevision: Schema.Int,
   set: McpSetEntry.pipe(Schema.Array, Schema.optionalKey),
-  /** With `set`: its place in the Registry's order of the sets it hands out (`McpApplySet.revision`). */
+  /**
+   * Its place in the Registry's order of the sets it hands out (`McpApplySet.revision`), for the set when it comes and
+   * otherwise for the hash the host holds, which the Registry noted as handed under it. Absent for an Environment the
+   * Registry does not list.
+   */
   revision: Schema.optionalKey(Schema.Int),
 });
 
@@ -247,13 +265,21 @@ export const McpPush = Schema.Struct({
 
 export type McpPush = typeof McpPush.Type;
 
+/** A deleted Environment whose host is to be wiped, with the revision the deletion was given. */
+export const McpWipe = Schema.Struct({
+  environment: Schema.String,
+  revision: Schema.Int,
+});
+
+export type McpWipe = typeof McpWipe.Type;
+
 /**
- * What the Registry hands the main Worker at a sync: the sets to push, and the Environments deleted since whose host
- * must be wiped (`apply({ kind: "destroy" })`).
+ * What the Registry hands the main Worker at a sync: the sets to push, and every deleted Environment whose host is yet
+ * to be wiped (`apply({ kind: "destroy" })`), whatever Environment the sync was for.
  */
 export const McpPending = Schema.Struct({
   pushes: Schema.Array(McpPush),
-  destroys: Schema.Array(Schema.String),
+  wipes: Schema.Array(McpWipe),
 });
 
 export type McpPending = typeof McpPending.Type;

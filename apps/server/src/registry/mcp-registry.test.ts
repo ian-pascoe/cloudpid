@@ -86,6 +86,7 @@ describe("the host's pull (mcpServerSet)", () => {
     expect(mcpServerSetAnswer(registry, { environment: "a", heldHash: first.hash }, 2)).toEqual({
       hash: first.hash,
       signInsRevision: 0,
+      revision: 2,
     });
   });
 
@@ -97,21 +98,21 @@ describe("the host's pull (mcpServerSet)", () => {
     expect(mcpServerSetAnswer(registry, { environment: "a" }, 1)).toEqual({
       hash: EMPTY_MCP_SET_HASH,
       signInsRevision: 0,
+      revision: 1,
     });
     expect(mcpServerSetAnswer(registry, { environment: "b" }, 1).set).toHaveLength(1);
   });
 
-  it("answers an Environment it does not list as one with no servers, and notes nothing of it", () => {
+  it("answers an Environment it does not list with no set and no revision, and notes nothing of it", () => {
     const registry = store([]);
 
+    // Neither a set nor a revision: a host answered after its wipe is not filled again.
     expect(mcpServerSetAnswer(registry, { environment: "gone", heldHash: "old" }, 1)).toEqual({
       hash: EMPTY_MCP_SET_HASH,
       signInsRevision: 0,
-      set: [],
-      revision: 1,
     });
     expect(environmentMcpSet(registry, "gone")).toBeNull();
-    expect(handedOf(registry).handed).toEqual({});
+    expect(registry.getDocument(MCP_HANDED_DOCUMENT)).toBeNull();
   });
 
   it("notes the set it answers as handed, so a later change is pushed though no push was ever made", () => {
@@ -133,12 +134,39 @@ describe("the host's pull (mcpServerSet)", () => {
     expect(pushes[0]?.set.entries).toEqual([]);
     expect(answer.hash).not.toBe(EMPTY_MCP_SET_HASH);
   });
+
+  it("notes the set the host already holds as handed too, so a push applied whose note was lost is not forgotten", () => {
+    const registry = store(["a"]);
+
+    registry.global(servers({ linear: LINEAR }));
+
+    // The push was applied by the host, but `mcpPushed` never arrived: the Registry notes nothing.
+    const [lost] = pendingMcpPushes(registry, "a", 1).pushes;
+
+    // A pull from that host, which holds that very set: only its hash and a revision come back.
+    const answer = mcpServerSetAnswer(
+      registry,
+      { environment: "a", heldHash: lost?.set.hash ?? "" },
+      2,
+    );
+
+    expect(answer.set).toBeUndefined();
+    expect(answer.revision).toBeGreaterThan(lost?.set.revision ?? 0);
+    expect(pendingMcpPushes(registry, "a", 3).pushes).toEqual([]);
+
+    // The owner removes the last server: with nothing noted, the empty set would never be pushed.
+    registry.global({});
+
+    expect(pendingMcpPushes(registry, "a", 4).pushes.map(({ set }) => set.hash)).toEqual([
+      EMPTY_MCP_SET_HASH,
+    ]);
+  });
 });
 
 describe("the Environments to push to", () => {
   it("is none while no Environment has a server, so no host is woken", () => {
-    expect(pendingMcpPushes(store(["a", "b"]), undefined, 1)).toEqual({ pushes: [], destroys: [] });
-    expect(pendingMcpPushes(store(["a"]), "a", 1)).toEqual({ pushes: [], destroys: [] });
+    expect(pendingMcpPushes(store(["a", "b"]), undefined, 1)).toEqual({ pushes: [], wipes: [] });
+    expect(pendingMcpPushes(store(["a"]), "a", 1)).toEqual({ pushes: [], wipes: [] });
   });
 
   it("is each Environment whose set differs from what its host was told, once a Global save changed it", () => {
@@ -244,7 +272,7 @@ describe("the revisions of the sets handed out", () => {
 });
 
 describe("the hosts to wipe", () => {
-  it("is an Environment deleted after its host was handed a set, until the wipe is recorded", () => {
+  it("is an Environment deleted after its host was handed a set, with the revision of its deletion, until the wipe is recorded", () => {
     const registry = store(["a", "b"]);
 
     registry.global(servers({ linear: LINEAR }));
@@ -252,13 +280,33 @@ describe("the hosts to wipe", () => {
     registry.remove("a");
     recordMcpDeleted(registry, "a", 2);
 
-    expect(pendingMcpPushes(registry, undefined, 3).destroys).toEqual(["a"]);
-    expect(pendingMcpPushes(registry, "b", 3).destroys).toEqual([]);
+    // Above every set handed out so far (revisions 1 and 2).
+    expect(pendingMcpPushes(registry, undefined, 3).wipes).toEqual([
+      { environment: "a", revision: 3 },
+    ]);
     expect(pendingMcpPushes(registry, "a", 3).pushes).toEqual([]);
 
     recordMcpDestroyed(registry, "a", 4);
 
-    expect(pendingMcpPushes(registry, undefined, 5).destroys).toEqual([]);
+    expect(pendingMcpPushes(registry, undefined, 5).wipes).toEqual([]);
+  });
+
+  it("is all of them at every sync, whatever Environment it is for: a lost wipe is retried by any save", () => {
+    const registry = store(["a", "b", "c"]);
+
+    registry.global(servers({ linear: LINEAR }));
+    pushAll(registry, undefined);
+    registry.remove("a");
+    recordMcpDeleted(registry, "a", 2);
+    registry.remove("b");
+    recordMcpDeleted(registry, "b", 3);
+
+    const wiped = (environment: string | undefined) =>
+      pendingMcpPushes(registry, environment, 4).wipes.map((wipe) => wipe.environment);
+
+    expect(wiped("c")).toEqual(["a", "b"]);
+    expect(wiped("gone")).toEqual(["a", "b"]);
+    expect(wiped(undefined)).toEqual(["a", "b"]);
   });
 
   it("is none for an Environment whose host was never handed a set: it holds nothing and is not woken", () => {
@@ -267,7 +315,7 @@ describe("the hosts to wipe", () => {
     registry.remove("a");
     recordMcpDeleted(registry, "a", 1);
 
-    expect(pendingMcpPushes(registry, undefined, 2).destroys).toEqual([]);
+    expect(pendingMcpPushes(registry, undefined, 2).wipes).toEqual([]);
   });
 });
 

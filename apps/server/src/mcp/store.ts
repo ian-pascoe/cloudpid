@@ -3,8 +3,9 @@
 // ever here; the rest of the tables (inventories, status, eras, sessions, watches, App HTML) come with the slices that
 // use them. Migrations only add, and each shipped one has its digest in `migrations.manifest.ts`.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
+// @effect-diagnostics asyncFunction:off -- the object's `deleteAll` is a Promise, and the wipe is its Promise's.
 import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect-durable/sqlite";
-import { McpSetSource, type McpApplySet } from "@cloudpid/mcp/types";
+import { McpSetSource, type McpApplySet, type McpSetRevision } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Option from "effect/Option";
@@ -18,6 +19,11 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     sql.exec(`CREATE TABLE mcp_meta (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       set_hash TEXT NOT NULL,
+      revision INTEGER NOT NULL
+    ) STRICT`);
+    // The revision the host was wiped at (`apply({ kind: "destroy" })`), a floor for any set after it.
+    sql.exec(`CREATE TABLE mcp_wiped (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
       revision INTEGER NOT NULL
     ) STRICT`);
     sql.exec(`CREATE TABLE mcp_servers (
@@ -60,13 +66,18 @@ export type McpHostStoreService = {
   /** The stored set, or null before one was applied. A row that no longer decodes is left out. */
   readonly readSet: () => StoredSet | null;
   /** The hash and revision of the stored set; undefined before one was applied (which reads as the empty set). */
-  readonly held: () => { readonly hash: string; readonly revision: number } | undefined;
+  readonly held: () => McpSetRevision | undefined;
+  /** The revision the host was wiped at: a set no newer than it is never kept; undefined when it never was wiped. */
+  readonly wipedAt: () => number | undefined;
   /** Replace the stored set with `set`, whole or not at all. */
   readonly replaceSet: (set: McpApplySet) => void;
   /** Keep the set as it is under a newer `revision`. */
   readonly setRevision: (revision: number) => void;
-  /** Wipe the storage: every table's rows, and the tables, which are made again empty. */
-  readonly destroy: () => void;
+  /**
+   * Wipe the storage: every table's rows, and the tables, which are made again empty, keeping `revision` as the floor
+   * of the sets that may fill it again. Rejects when the storage cannot.
+   */
+  readonly destroy: (revision: number) => Promise<void>;
 };
 
 /** The host's storage, as its methods use it: the object's SQLite store, or a fake that fails on demand. */
@@ -93,7 +104,7 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
 
   const { sql } = storage;
 
-  const held = (): { readonly hash: string; readonly revision: number } | undefined => {
+  const held = (): McpSetRevision | undefined => {
     const [meta] = sql
       .exec<{ set_hash: string; revision: number }>(
         "SELECT set_hash, revision FROM mcp_meta WHERE id = 1",
@@ -105,6 +116,10 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
 
   return {
     held,
+
+    wipedAt: () =>
+      sql.exec<{ revision: number }>("SELECT revision FROM mcp_wiped WHERE id = 1").toArray()[0]
+        ?.revision,
 
     readSet: () => {
       const meta = held();
@@ -170,9 +185,10 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
       sql.exec("UPDATE mcp_meta SET revision = ? WHERE id = 1", revision);
     },
 
-    destroy: () => {
-      void storage.deleteAll();
+    destroy: async (revision) => {
+      await storage.deleteAll();
       migrate(storage, MIGRATIONS);
+      sql.exec("INSERT INTO mcp_wiped (id, revision) VALUES (1, ?)", revision);
     },
   };
 };

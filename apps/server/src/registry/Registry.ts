@@ -7,7 +7,12 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { ContainerPatch, ContainerSettings } from "@cloudpid/config";
-import type { McpPending, McpServerSetAnswer, McpServerValuesAnswer } from "@cloudpid/mcp/types";
+import type {
+  McpPending,
+  McpServerSetAnswer,
+  McpServerValuesAnswer,
+  McpSetRevision,
+} from "@cloudpid/mcp/types";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   AgentChange,
@@ -801,8 +806,9 @@ export type RegistryMethods = {
   }) => Effect.Effect<SessionSettingsSource>;
   /**
    * The host's pull (`docs/architecture/mcp-configuration.md` → From the Registry to the host): `environment`'s MCP server
-   * set's hash, and the set with its `revision` unless the host holds it (`heldHash`; none held is the empty set), which
-   * is noted as handed to the host. An Environment the Registry does not list has no servers. For the `McpHost` DO only.
+   * set's hash with a new `revision`, noted as handed to the host, and the set unless the host holds it (`heldHash`;
+   * none held is the empty set). An Environment the Registry does not list gets neither revision nor set. For the
+   * `McpHost` DO only.
    */
   readonly mcpServerSet: (input: {
     readonly environment: string;
@@ -817,8 +823,9 @@ export type RegistryMethods = {
   /**
    * What the main Worker is to do: the MCP server sets to push (`environment`'s, every Environment's when undefined)
    * when its hash differs from what its host was last handed, an empty set only after a non-empty one, each with a new
-   * revision; and the deleted Environments whose host holds a set to be wiped. The Registry never calls out: the main
-   * Worker sends each to `McpHost.apply`.
+   * revision; and every deleted Environment whose host was handed a set and is yet to be wiped (`environment` or not,
+   * so any sync retries a wipe that was lost), each with the revision of its deletion. The Registry never calls out:
+   * the main Worker sends each to `McpHost.apply`.
    */
   readonly mcpPending: (input: {
     readonly environment?: string | undefined;
@@ -827,11 +834,9 @@ export type RegistryMethods = {
    * Note that the host of `environment` took the set with `hash` at `revision`, so it is not pushed again. A revision
    * older than the one noted (the host was handed a later set since) is ignored.
    */
-  readonly mcpPushed: (input: {
-    readonly environment: string;
-    readonly hash: string;
-    readonly revision: number;
-  }) => Effect.Effect<void>;
+  readonly mcpPushed: (
+    input: McpSetRevision & { readonly environment: string },
+  ) => Effect.Effect<void>;
   /** Note that the host of the deleted Environment `environment` was wiped, so it is not asked again. */
   readonly mcpDestroyed: (input: { readonly environment: string }) => Effect.Effect<void>;
   /**

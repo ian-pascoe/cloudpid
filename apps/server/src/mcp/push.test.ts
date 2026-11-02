@@ -8,6 +8,7 @@ import {
   type McpApply,
   type McpApplyResult,
   McpDestroyed,
+  type McpWipe,
   McpStale,
   type McpPush,
 } from "@cloudpid/mcp/types";
@@ -19,17 +20,19 @@ import { mcpPushes } from "./push.ts";
 // decode (`readMcpApplyResult`) is what must read it.
 const newerResult = JSON.parse('{"_tag":"Deferred","message":"later"}') as McpApplyResult;
 
-/** A set to push, whose revision is its place in the list `scripted` is given. */
+/** A set to push, under `revision` (1 unless a test says another). */
 const push = (environment: string, hash: string, revision = 1): McpPush => ({
   environment,
   set: { kind: "set", hash, revision, entries: [] },
 });
 
+const wipe = (environment: string, revision: number): McpWipe => ({ environment, revision });
+
 /** A Registry that has `pending` to push, and hosts that answer as `answers` say (by host name) or take the set. */
 const scripted = (
   pending: ReadonlyArray<McpPush>,
   answers: Record<string, () => Effect.Effect<McpApplyResult>> = {},
-  destroys: ReadonlyArray<string> = [],
+  wipes: ReadonlyArray<McpWipe> = [],
 ) => {
   const asked: Array<string | undefined> = [];
   const applied: Array<readonly [string, McpApply]> = [];
@@ -46,7 +49,8 @@ const scripted = (
             pushes: pending.filter(
               (one) => environment === undefined || one.environment === environment,
             ),
-            destroys: destroys.filter((one) => environment === undefined || one === environment),
+            // Every wipe still to be sent, whatever Environment this sync is for.
+            wipes,
           };
         }),
       mcpPushed: ({ environment, hash, revision }) =>
@@ -137,7 +141,7 @@ describe("pushing the MCP server set", () => {
   });
 
   it("wipes the host of a deleted Environment, and records it once the host answered", async () => {
-    const world = scripted([push("a", "h1")], {}, ["gone", "stuck"]);
+    const world = scripted([push("a", "h1")], {}, [wipe("gone", 4), wipe("stuck", 5)]);
 
     await Effect.runPromise(world.pushes.sync(undefined));
 
@@ -147,6 +151,19 @@ describe("pushing the MCP server set", () => {
       ["mcp:stuck", "destroy"],
     ]);
     expect(world.destroyed).toEqual(["gone", "stuck"]);
+    // Each wipe carries the revision of its deletion.
+    expect(world.applied.map(([, one]) => (one.kind === "destroy" ? one.revision : 0))).toEqual([
+      0, 4, 5,
+    ]);
+  });
+
+  it("sends the wipes still owed at a sync for one Environment, so a lost wipe is retried by any save", async () => {
+    const world = scripted([], {}, [wipe("gone", 4)]);
+
+    await Effect.runPromise(world.pushes.sync("elsewhere"));
+
+    expect(world.asked).toEqual(["elsewhere"]);
+    expect(world.destroyed).toEqual(["gone"]);
   });
 
   it("records no wipe for a host that did not answer, and goes on", async () => {
@@ -156,7 +173,7 @@ describe("pushing the MCP server set", () => {
         "mcp:stuck": () => Effect.die(new Error("Network connection lost.")),
         "mcp:odd": () => Effect.succeed(HostUnsupported.make({ message: "no", op: "destroy" })),
       },
-      ["stuck", "odd", "gone"],
+      [wipe("stuck", 4), wipe("odd", 5), wipe("gone", 6)],
     );
 
     await Effect.runPromise(world.pushes.sync(undefined));

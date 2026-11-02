@@ -13,6 +13,7 @@ import {
   McpApplied,
   type McpApply,
   type McpApplyResult,
+  McpApplyDestroy,
   McpApplySet,
   McpDestroyed,
   type McpRequestStart,
@@ -54,21 +55,30 @@ const decodeKind = Schema.decodeUnknownOption(KindOnly);
 
 const decodeSet = Schema.decodeUnknownOption(McpApplySet);
 
+const decodeDestroy = Schema.decodeUnknownOption(McpApplyDestroy);
+
 const applied = (set: McpApplySet, changed: boolean): McpApplied =>
   McpApplied.make({ hash: set.hash, changed });
 
 /**
  * Keep `set` as the Environment's set unless the host holds a later one: a set with a revision below the held one is
- * `Stale`, and the held set stays. The same hash under a newer revision only moves the revision up. An empty set is
- * kept like any other, so a host emptied of its servers holds the empty set, not the one before.
+ * `Stale`, and the held set stays; so is any set no newer than the revision a wiped host was wiped at, which a push or
+ * a pull answered after the wipe cannot fill again (`Stale` with no hash). The same hash under a newer revision only
+ * moves the revision up. An empty set is kept like any other, so a host emptied of its servers holds the empty set,
+ * not the one before.
  */
 const applySet = (set: McpApplySet): Effect.Effect<McpApplied | McpStale, never, McpHostStore> =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const held = store.held();
+    const wiped = store.wipedAt();
 
     if (held !== undefined && set.revision < held.revision) {
-      return McpStale.make({ hash: held.hash, revision: held.revision });
+      return McpStale.make(held);
+    }
+
+    if (held === undefined && wiped !== undefined && set.revision <= wiped) {
+      return McpStale.make({ hash: "", revision: wiped });
     }
 
     if (held?.hash === set.hash) {
@@ -81,6 +91,34 @@ const applySet = (set: McpApplySet): Effect.Effect<McpApplied | McpStale, never,
 
     return applied(set, true);
   });
+
+/**
+ * Wipe the storage, keeping the revision of the deletion (or the held set's when it is later) as the floor of what may
+ * fill it again. A wipe the storage refuses is `HostFailed`: the Registry still has it to send.
+ */
+const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostStore> =>
+  Effect.gen(function* () {
+    const store = yield* McpHostStore;
+    const wanted = decodeDestroy(input);
+
+    if (Option.isNone(wanted)) {
+      return HostFailed.make({ message: "The destroy has no revision" });
+    }
+
+    const revision = Math.max(
+      wanted.value.revision,
+      store.held()?.revision ?? 0,
+      store.wipedAt() ?? 0,
+    );
+
+    yield* Effect.promise(() => store.destroy(revision));
+
+    return McpDestroyed.make({});
+  }).pipe(
+    Effect.catchCause(() =>
+      Effect.succeed(HostFailed.make({ message: "The storage was not wiped" })),
+    ),
+  );
 
 /**
  * `apply`: the pushes and teardown. `set` keeps the Environment's set and `destroy` wipes the storage; any other
@@ -96,11 +134,7 @@ export const apply = (input: McpApply): Effect.Effect<McpApplyResult, never, Mcp
     }
 
     if (kind.value.kind === "destroy") {
-      const store = yield* McpHostStore;
-
-      yield* Effect.sync(() => store.destroy());
-
-      return McpDestroyed.make({});
+      return yield* destroy(input);
     }
 
     if (kind.value.kind !== "set") {
@@ -131,12 +165,26 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostStore | Mc
     const registry = yield* McpRegistryPort;
     const answer = yield* registry.serverSet({ environment, heldHash: store.held()?.hash });
 
-    if (answer.set !== undefined && answer.revision !== undefined) {
+    const { revision } = answer;
+
+    if (revision === undefined) return;
+
+    const held = store.held();
+
+    if (answer.set !== undefined) {
       yield* applySet({
         kind: "set",
         hash: answer.hash,
-        revision: answer.revision,
+        revision,
         entries: answer.set,
+      });
+    } else if (held === undefined) {
+      // The Registry noted the empty set as handed under this revision, which a push of an older set must not undo.
+      yield* applySet({ kind: "set", hash: answer.hash, revision, entries: [] });
+    } else if (held.hash === answer.hash) {
+      // The Registry noted the set the host holds as handed under this revision: so does the host.
+      yield* Effect.sync(() => {
+        if (revision > held.revision) store.setRevision(revision);
       });
     }
   }).pipe(
