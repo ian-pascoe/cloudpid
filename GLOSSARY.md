@@ -202,6 +202,10 @@ _Avoid_: Worktree, sandbox, child Session
 Deleting a Workspace with its Sessions, files and Container. What it pushed stays on the remote; its uncommitted changes and unpushed commits are lost.
 _Avoid_: Cleanup (for the owner's action), reset
 
+**Carried Changes**:
+A Workspace's Changes taken to a new Workspace on another branch, by a Fork or Clone or by a Session import, where they are still uncommitted.
+_Avoid_: Carried files, carry, patch, stash, WIP commit
+
 ## Execution
 
 **Container restart**:
@@ -457,6 +461,10 @@ _Avoid_: MCP server (that is one the agent's tools come from), API, `/mcp`
 **Local agent**:
 An agent the owner runs outside cloudpid, such as pi or Claude Code on their own machine, that works with cloudpid's Sessions through the MCP endpoint. A Session it starts, and each message it sends, is marked as coming from it.
 _Avoid_: MCP client (the protocol's role, which cloudpid also plays toward MCP servers), remote agent, external agent
+
+**Session import**:
+A Session a Local agent starts from a conversation it had on the owner's machine: that conversation's active Session branch becomes the new Session's root conversation, in a new Workspace on the branch the Local agent pushed, with its Carried Changes. It may bring the owner's next message, which the Session answers once the import ends; without one, the Session waits for the owner. The Session is marked as imported from that Local agent.
+_Avoid_: Handoff (that is the Rollover note), upload, migration, transfer, Fork (that starts from a cloudpid Session)
 
 ## MCP Apps
 
