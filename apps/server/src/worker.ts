@@ -14,7 +14,7 @@ import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
-import { deployment } from "./deployment.ts";
+import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { buildUpkeep } from "./registry/builds.ts";
 import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
@@ -132,19 +132,26 @@ const browserBinding = Effect.gen(function* () {
 });
 
 /**
- * Deploy-time props, resolved from the stage. The stage is absent once the Worker runs (the props
- * only matter at deploy time), so that case falls back to a non-prod stage.
+ * Deploy-time props, resolved from the stage: the Worker's name, where it is served, its Access application and, off
+ * `prod`, the label var (`deployment.ts`). The stage is absent once the Worker runs (the props only matter at deploy time), so that
+ * case falls back to a non-prod stage.
  */
 const props = Effect.gen(function* () {
   const stage = Option.getOrElse(yield* Effect.serviceOption(Alchemy.Stage), () => "runtime");
+  const { label, ...workerProps } = deployment(stage);
+
+  // The `<label>` of the App sandbox's `<hash>--<label>` View URLs, set on non-prod stages only: prod's Views have no
+  // suffix. Never taken from a request's `Host`.
+  const stageLabelVar = label === undefined ? {} : { [STAGE_LABEL_VAR]: label };
 
   return {
     main: import.meta.url,
     compatibility: { date: "2026-08-31" },
-    ...deployment(stage),
+    ...workerProps,
     observability: WORKER_OBSERVABILITY,
     assets: yield* webAssets,
     env: {
+      ...stageLabelVar,
       ...(yield* workspaceBinding),
       ...(yield* sandboxBinding),
       ...(yield* browserBinding),
