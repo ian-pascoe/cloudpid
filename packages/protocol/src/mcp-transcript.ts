@@ -224,9 +224,9 @@ export type TranscriptWindow = {
 export const pageTranscript = (
   entries: readonly TranscriptEntry[],
   request: {
-    readonly before?: number;
-    readonly after?: number;
-    readonly maxChars?: number;
+    readonly before?: number | undefined;
+    readonly after?: number | undefined;
+    readonly maxChars?: number | undefined;
   },
 ): TranscriptWindow => {
   const maxChars = transcriptChars(request.maxChars);

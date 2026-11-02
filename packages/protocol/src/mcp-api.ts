@@ -237,6 +237,8 @@ export const CursorState = Schema.Struct({
   w: Schema.Finite,
   /** The newest settled input's submission the caller has seen. */
   s: Schema.Int,
+  /** Whether the Session was importing when the cursor was made, so a wait tells an import that has ended since. */
+  i: Schema.optionalKey(Schema.Boolean),
 });
 
 export type CursorState = typeof CursorState.Type;
@@ -260,7 +262,13 @@ const decodeBase64Url = (text: string): string | undefined => {
 
 /** `state` as the opaque cursor a caller passes back. */
 export const encodeCursor = (state: CursorState): string =>
-  encodeBase64Url(JSON.stringify({ c: state.c, e: state.e, w: state.w, s: state.s }));
+  encodeBase64Url(
+    JSON.stringify(
+      state.i === true
+        ? { c: state.c, e: state.e, w: state.w, s: state.s, i: true }
+        : { c: state.c, e: state.e, w: state.w, s: state.s },
+    ),
+  );
 
 /** The state a cursor holds, or none for one that is not a cursor of this Session's kind (`invalid_cursor`). */
 export const decodeCursor = (cursor: string): Option.Option<CursorState> => {

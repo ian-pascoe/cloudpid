@@ -57,7 +57,11 @@ import type {
   SessionAgent,
   SessionTree,
   SettingsOverridesState,
+  StopRequest,
+  SubmitRequest,
+  TranscriptRequest,
   ViewedFile,
+  WaitRequest,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
@@ -138,6 +142,7 @@ import {
   type AnnotationStoreService,
 } from "./annotations.ts";
 import { SessionReviews, sessionReviewsLayer, type SessionReviewsService } from "./reviews.ts";
+import { SessionMcp, type SessionMcpService, sessionMcpLayer } from "./mcp.ts";
 import {
   type ChangesSource,
   SessionChanges,
@@ -610,6 +615,7 @@ export class TestSession extends DurableObject {
   #annotations!: AnnotationStoreService;
   #viewed!: ViewedStoreService;
   #reviews!: SessionReviewsService;
+  #mcp!: SessionMcpService;
   #runtime!: ManagedRuntime.ManagedRuntime<
     | SessionHost
     | SessionSockets
@@ -619,7 +625,8 @@ export class TestSession extends DurableObject {
     | Secrets
     | AnnotationStore
     | ViewedStore
-    | SessionReviews,
+    | SessionReviews
+    | SessionMcp,
     unknown
   >;
   /** Resolves when this instance's model request starts and hangs. */
@@ -654,6 +661,16 @@ export class TestSession extends DurableObject {
       this.#runtime = ManagedRuntime.make(
         sessionSocketsLayer(ctx).pipe(
           Layer.provideMerge(sessionReviewsLayer(ctx.storage.kv)),
+          // The MCP endpoint's calls; a short poll, and a short stop, so a test sees a wake-up or a stop that is slow.
+          Layer.provideMerge(
+            sessionMcpLayer({
+              session: ctx.id.name,
+              kv: ctx.storage.kv,
+              archived: Effect.sync(() => ctx.storage.kv.get<boolean>("archived") === true),
+              pollMs: 20,
+              stopWaitMs: ctx.storage.kv.get<number>("mcp-stop-wait") ?? 30_000,
+            }),
+          ),
           Layer.provideMerge(
             sessionHostLayer({
               storage: ctx.storage,
@@ -876,7 +893,33 @@ export class TestSession extends DurableObject {
       this.#annotations = Context.get(context, AnnotationStore);
       this.#viewed = Context.get(context, ViewedStore);
       this.#reviews = Context.get(context, SessionReviews);
+      this.#mcp = Context.get(context, SessionMcp);
     });
+  }
+
+  /** `SessionMethods.status`: what the MCP endpoint reads of the Session itself. */
+  mcpStatus(request?: { readonly after?: string }) {
+    return Effect.runPromise(this.#mcp.status(request));
+  }
+
+  /** `SessionMethods.waitForChange`. */
+  mcpWait(request: WaitRequest) {
+    return Effect.runPromise(this.#mcp.waitForChange(request));
+  }
+
+  /** `SessionMethods.transcriptPage`. */
+  mcpTranscript(request: TranscriptRequest) {
+    return Effect.runPromise(this.#mcp.transcriptPage(request));
+  }
+
+  /** `SessionMethods.submit`. */
+  mcpSubmit(request: SubmitRequest) {
+    return Effect.runPromise(this.#mcp.submit(request));
+  }
+
+  /** `SessionMethods.stop`. */
+  mcpStop(request: StopRequest) {
+    return Effect.runPromise(this.#mcp.stop(request));
   }
 
   /** The Viewed boxes as the Session keeps them. */

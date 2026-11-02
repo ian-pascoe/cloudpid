@@ -11,7 +11,9 @@ import {
   transcriptChars,
 } from "./mcp-transcript.ts";
 import type { TranscriptEntry } from "./mcp-api.ts";
-import type { TranscriptMessage } from "./transcript.ts";
+import { projectEntries, type TranscriptMessage } from "./transcript.ts";
+import { USER_ENTRY_KIND } from "./user-entry.ts";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 
 const at = Date.UTC(2026, 0, 2, 14, 2, 30);
 
@@ -231,5 +233,28 @@ describe("pageTranscript", () => {
     expect(transcriptChars(undefined)).toBe(12_000);
     expect(transcriptChars(1)).toBe(2_000);
     expect(transcriptChars(10_000_000)).toBe(40_000);
+  });
+});
+
+describe("an input sent over the endpoint", () => {
+  it("projects with its mark and renders it in the header", () => {
+    const entry = {
+      id: 4,
+      kind: USER_ENTRY_KIND,
+      data: {
+        display: "hello",
+        skills: [],
+        via: { auth: "service_token", client: { name: "pi" } },
+      },
+      model: [{ role: "user", content: "hello", timestamp: at }],
+    };
+
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: the fields of an entry the projection reads.
+    const [message] = projectEntries([entry as unknown as EntryRecord]);
+
+    expect(message?.via).toEqual({ auth: "service_token", client: { name: "pi" } });
+    expect(render(...(message === undefined ? [] : [message]))[0]?.text).toBe(
+      "### user · 14:02 · via pi (MCP)\nhello",
+    );
   });
 });
