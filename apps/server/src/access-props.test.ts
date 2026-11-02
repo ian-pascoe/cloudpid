@@ -1,5 +1,4 @@
 // @effect-diagnostics asyncFunction:off
-import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import { accessProps } from "./access-props.ts";
@@ -9,14 +8,13 @@ const application = { aud: "the-application-aud" };
 
 const run = (options: { readonly dev: boolean; readonly runtime?: boolean }) => {
   const declare = vi.fn(() => Effect.succeed(application));
-  // SAFETY: `accessProps` reads only `dev` of the context.
-  const context = AlchemyContext.of({ dotAlchemy: ".alchemy", dev: options.dev } as never);
 
   return Effect.runPromise(
     accessProps({
       declare: Effect.suspend(declare),
       runtime: options.runtime ?? false,
-    }).pipe(Effect.provideService(AlchemyContext, context)),
+      dev: options.dev,
+    }),
   ).then((result) => ({ result, declare }));
 };
 

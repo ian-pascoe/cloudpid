@@ -4,6 +4,7 @@ import { WebConfigLive } from "@cloudpid/extensions/web";
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
 import * as Alchemy from "alchemy";
+import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Namespace from "alchemy/Namespace";
 import * as Command from "alchemy/Command";
 import * as Cloudflare from "@alchemy.run/cloudflare";
@@ -17,13 +18,9 @@ import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
 import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { accessProps } from "./access-props.ts";
-import {
-  type GuardEnv,
-  guardAccess,
-  guardFromEnv,
-  loadTeamKeysFromAccess,
-  teamKeys,
-} from "./access.ts";
+import { bypassAccessProps } from "./bypass-access.ts";
+import { guardedRoutes } from "./sign-in-routes.ts";
+import { type GuardEnv, guardFromEnv, loadTeamKeysFromAccess, teamKeys } from "./access.ts";
 import { type AssetLayer, serveAsset } from "./assets.ts";
 import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
 import { buildUpkeep } from "./registry/builds.ts";
@@ -145,14 +142,20 @@ const browserBinding = Effect.gen(function* () {
 
 /**
  * Deploy-time props, resolved from the stage: the Worker's name, where it is served, its Access application and the
- * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`). A deployed stage also declares the MCP
- * endpoint's own Access application and the Local agent's service token (`mcpAccessProps`), whose `aud` and client ID
- * are the Worker's vars `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`. The stage is absent once the Worker
+ * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`), with the stage's `MCP_CLIENT_DOCUMENT`
+ * var (on, except under `alchemy dev`). A deployed stage also declares the MCP endpoint's own Access application and
+ * the Local agent's service token (`mcpAccessProps`), whose `aud` and client ID are the Worker's vars
+ * `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`, and the Bypass application of the two public sign-in paths
+ * (`bypassAccessProps`), which the Worker takes no var from. The stage is absent once the Worker
  * runs (the props only matter at deploy time), so that case falls back to a non-prod stage.
  */
 const props = Effect.gen(function* () {
   const stage = Option.getOrElse(yield* Effect.serviceOption(Alchemy.Stage), () => "runtime");
-  const { label, access, ...workerProps } = deployment(stage);
+  // Read once, and passed to everything below. Where the bundle runs the props only matter at deploy time, and there is
+  // no context to read.
+  const runtime = globalThis.__ALCHEMY_RUNTIME__ === true;
+  const dev = runtime ? false : (yield* AlchemyContext).dev;
+  const { label, access, env: deploymentEnv, ...workerProps } = deployment(stage, { dev });
 
   // The Worker's own Access application, declared here as the `Server/Access` the Worker's `access: { policies }` form
   // made (same logical id, so a deploy updates it in place), so that its `aud` can be a var of the Worker.
@@ -161,7 +164,8 @@ const props = Effect.gen(function* () {
       type: "self_hosted",
       policies: access.policies,
     }).pipe(Namespace.push("Server")),
-    runtime: globalThis.__ALCHEMY_RUNTIME__ === true,
+    runtime,
+    dev,
   });
 
   // The `<label>` of the App sandbox's `<hash>--<label>` View URLs, set on non-prod stages only: prod's Views have no
@@ -172,7 +176,8 @@ const props = Effect.gen(function* () {
   // id are vars of the Worker. Declared under `Server/` like the Worker's own application.
   const mcpAccess = yield* mcpAccessProps({
     stage,
-    runtime: globalThis.__ALCHEMY_RUNTIME__ === true,
+    runtime,
+    dev,
     declare: {
       serviceToken: (tokenProps) =>
         Cloudflare.Access.ServiceToken(LOCAL_AGENT_TOKEN_ID, tokenProps).pipe(
@@ -181,6 +186,16 @@ const props = Effect.gen(function* () {
       application: (applicationProps) =>
         Cloudflare.Access.Application("McpAccess", applicationProps).pipe(Namespace.push("Server")),
     },
+  });
+
+  // The Bypass application of the two public sign-in paths (bypass-access.ts): nothing under `alchemy dev`, which has no
+  // Access. Declared under `Server/` like the others, and independent of the Worker (it names its host and paths).
+  yield* bypassAccessProps({
+    stage,
+    runtime,
+    dev,
+    declare: (applicationProps) =>
+      Cloudflare.Access.Application("Bypass", applicationProps).pipe(Namespace.push("Server")),
   });
 
   return {
@@ -192,6 +207,7 @@ const props = Effect.gen(function* () {
     assets: yield* webAssets,
     env: {
       ...accessGuardProps.vars,
+      ...deploymentEnv,
       ...stageLabelVar,
       ...(yield* workspaceBinding),
       ...(yield* sandboxBinding),
@@ -272,11 +288,15 @@ export default class Server extends Cloudflare.Worker<Server>()(
       },
     });
 
-    // The guard of every route (docs/architecture/mcp-sign-in.md → The Access guard): the Worker verifies the Access
+    // The two public sign-in paths go first, ahead of the guard: a bypass application reaches further than the two paths
+    // it names, and no other form of them may reach the single-page app's fallback or the assets (`guardedRoutes`,
+    // sign-in-routes.ts). Every form is a 404 until #450.
+    //
+    // The guard of every other route (docs/architecture/mcp-sign-in.md → The Access guard): the Worker verifies the Access
     // assertion itself and refuses the rest, so a request that reached it some other way (a bypass application's wider
     // paths, a service binding) gets a 403. The deploy put its vars in the Worker's environment.
     // SAFETY: the deploy sets these vars as strings (`guardVars`), and nothing else puts a value under their names.
-    const guard = guardAccess({
+    const guard = guardedRoutes({
       ...guardFromEnv(worker as GuardEnv),
       keys: teamKeys(loadTeamKeysFromAccess),
     });

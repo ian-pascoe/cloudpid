@@ -1,5 +1,4 @@
 // @effect-diagnostics asyncFunction:off
-import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import { OWNER_EMAIL, appOrigin } from "./deployment.ts";
@@ -10,7 +9,7 @@ import {
   localAgentTokenName,
   mcpAccessProps,
   mcpApplicationProps,
-  mcpHost,
+  appHost,
 } from "./mcp-access.ts";
 
 const token = { serviceTokenId: "the-token-id", clientId: "abc123.access" };
@@ -23,15 +22,14 @@ const run = (options: {
 }) => {
   const serviceToken = vi.fn(() => Effect.succeed(token));
   const declareApplication = vi.fn(() => Effect.succeed(application));
-  // SAFETY: `mcpAccessProps` reads only `dev` of the context.
-  const context = AlchemyContext.of({ dotAlchemy: ".alchemy", dev: options.dev } as never);
 
   return Effect.runPromise(
     mcpAccessProps({
       stage: options.stage,
       runtime: options.runtime ?? false,
+      dev: options.dev,
       declare: { serviceToken, application: declareApplication },
-    }).pipe(Effect.provideService(AlchemyContext, context)),
+    }),
   ).then((result) => ({ result, serviceToken, application: declareApplication }));
 };
 
@@ -41,7 +39,7 @@ describe("the MCP endpoint's host", () => {
     ["pr-438", "cloudpid-server-pr-438.ian-g-pascoe.workers.dev"],
     ["dev_Ian", "cloudpid-server-dev-ian.ian-g-pascoe.workers.dev"],
   ])("on %s is %s, the host of the stage's app origin", (stage, host) => {
-    expect(mcpHost(stage)).toBe(host);
+    expect(appHost(stage)).toBe(host);
     expect(appOrigin(stage)).toBe(`https://${host}`);
   });
 });

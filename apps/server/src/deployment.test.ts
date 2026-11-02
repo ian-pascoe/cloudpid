@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACCESS_AUDIENCE_VAR,
   LOCAL_MODE_VAR,
+  MCP_CLIENT_DOCUMENT_VAR,
   OWNER_EMAIL,
   PRODUCTION_DOMAIN,
   WORKERS_DEV_SUBDOMAIN,
@@ -12,9 +13,12 @@ import {
   stageLabel,
 } from "./deployment.ts";
 
+/** What a deployed stage passes: it is not planned by `alchemy dev`. */
+const LIVE = { dev: false };
+
 describe("deployment", () => {
   it("serves prod on its custom domain only, not workers.dev, and keeps its alchemy name", () => {
-    const config = deployment("prod");
+    const config = deployment("prod", LIVE);
 
     expect(config).toMatchObject({ domain: PRODUCTION_DOMAIN, workersDev: false });
     expect(config).not.toHaveProperty("name");
@@ -28,7 +32,7 @@ describe("deployment", () => {
     ["Feature_X", "cloudpid-server-feature-x"],
     ["a--b", "cloudpid-server-a--b"],
   ])("serves %s on workers.dev as %s, with no custom domain", (stage, name) => {
-    const config = deployment(stage);
+    const config = deployment(stage, LIVE);
 
     expect(config).toMatchObject({ name, workersDev: true });
     expect(config).not.toHaveProperty("domain");
@@ -38,19 +42,19 @@ describe("deployment", () => {
     ["dev_Ian", "dev-ian"],
     ["pr-7", "pr-7"],
   ])("labels %s as %s, for the Worker's label var", (stage, label) => {
-    expect(deployment(stage).label).toBe(label);
+    expect(deployment(stage, LIVE).label).toBe(label);
     expect(stageLabel(stage)).toBe(label);
   });
 
   it("gives prod no label, so its Worker gets no label var and its Views no suffix", () => {
-    expect(deployment("prod").label).toBeUndefined();
+    expect(deployment("prod", LIVE).label).toBeUndefined();
   });
 
   it("accepts a label of exactly 35 characters", () => {
     const stage = `pr-${"a".repeat(32)}`;
 
     expect(stage).toHaveLength(35);
-    expect(deployment(stage).name).toBe(`cloudpid-server-${stage}`);
+    expect(deployment(stage, LIVE).name).toBe(`cloudpid-server-${stage}`);
   });
 
   it.each([
@@ -65,15 +69,37 @@ describe("deployment", () => {
     ["a space", "pr 7"],
     ["a non-ASCII letter", "pr-é"],
   ])("refuses a stage that is %s, never truncating it", (_, stage) => {
-    expect(() => deployment(stage)).toThrow(/stage/i);
+    expect(() => deployment(stage, LIVE)).toThrow(/stage/i);
     expect(() => stageLabel(stage)).toThrow(/stage/i);
     expect(() => appOrigin(stage)).toThrow(/stage/i);
   });
 
   it.each(["prod", "dev_ian"])("gates %s behind Access for the owner email only", (stage) => {
-    const { access } = deployment(stage);
+    const { access } = deployment(stage, LIVE);
 
     expect(access.policies).toEqual([{ decision: "allow", include: [{ email: OWNER_EMAIL }] }]);
+  });
+});
+
+describe("MCP_CLIENT_DOCUMENT", () => {
+  it("is the var the Worker reads the switch from", () => {
+    expect(MCP_CLIENT_DOCUMENT_VAR).toBe("MCP_CLIENT_DOCUMENT");
+  });
+
+  it.each([
+    ["prod", false, "true"],
+    ["dev_ian", false, "true"],
+    ["pr-444", false, "true"],
+    ["Feature_X", false, "true"],
+    ["prod", true, "false"],
+    ["dev_ian", true, "false"],
+    ["pr-444", true, "false"],
+  ])("on %s, with alchemy dev %s, is %s", (stage, dev, flag) => {
+    expect(deployment(stage, { dev }).env).toEqual({ MCP_CLIENT_DOCUMENT: flag });
+  });
+
+  it.each(["prod", "pr-444"])("is the only var %s's deployment sets", (stage) => {
+    expect(deployment(stage, LIVE).env).toStrictEqual({ MCP_CLIENT_DOCUMENT: "true" });
   });
 });
 
@@ -92,7 +118,7 @@ describe("appOrigin", () => {
 
   it.each(["pr-430", "dev_ian"])("is the host of the Worker %s is named for", (stage) => {
     expect(appOrigin(stage)).toBe(
-      `https://${deployment(stage).name}.${WORKERS_DEV_SUBDOMAIN}.workers.dev`,
+      `https://${deployment(stage, LIVE).name}.${WORKERS_DEV_SUBDOMAIN}.workers.dev`,
     );
   });
 });
@@ -121,11 +147,11 @@ describe("checkedAppOrigin", () => {
 
 describe("the Access guard's vars", () => {
   it.each(["prod", "dev_ian", "pr-430"])(
-    "are not in the live deployment output of %s, so no deployed Worker can be in local mode",
+    "are not in the deployment output of %s, live or under alchemy dev, so no deployed Worker can be in local mode",
     (stage) => {
-      const output = deployment(stage);
-
-      expect(JSON.stringify(output)).not.toContain(LOCAL_MODE_VAR);
+      for (const dev of [false, true]) {
+        expect(JSON.stringify(deployment(stage, { dev }))).not.toContain(LOCAL_MODE_VAR);
+      }
     },
   );
 
