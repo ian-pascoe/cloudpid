@@ -9,6 +9,7 @@ import {
   resolveContainerOverridesLeniently,
   resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
+import { migrate } from "@cloudpid/effect-durable/sqlite";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
@@ -17,7 +18,7 @@ import { buildKey } from "../workspace/build-record.ts";
 import { GLOBAL_DOCUMENT, globalSettingsOf, workspaceOverridesOf } from "./global.ts";
 import { openAgentChanges } from "./agent-changes.ts";
 import type { TestRegistry } from "./store.fixture.ts";
-import { MIGRATIONS, migrate, openRegistryStore, type RegistryStore } from "./store.ts";
+import { MIGRATIONS, openRegistryStore, type RegistryStore } from "./store.ts";
 
 /** What Environments stored before Global held Container settings: each a shape a release saved, as text. */
 const STORED: ReadonlyArray<{
@@ -232,7 +233,7 @@ describe("Agent changes recorded before Global held Container settings", () => {
           );
         }
 
-        migrate(storage);
+        migrate(storage, MIGRATIONS);
 
         const changes = openAgentChanges(storage);
 

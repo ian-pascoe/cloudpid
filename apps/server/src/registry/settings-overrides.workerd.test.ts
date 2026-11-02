@@ -6,6 +6,7 @@
 // @effect-diagnostics asyncFunction:off
 import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_SETTINGS, resolveLeniently, resolveOverridesLeniently } from "@cloudpid/config";
+import { migrate } from "@cloudpid/effect-durable/sqlite";
 import { DEFAULT_ENVIRONMENT, SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Result from "effect/Result";
@@ -29,7 +30,7 @@ import {
   type SettingsFieldChange,
 } from "./settings-changes.ts";
 import { noSkills, type TestRegistry } from "./store.fixture.ts";
-import { MIGRATIONS, migrate, openRegistryStore } from "./store.ts";
+import { MIGRATIONS, openRegistryStore } from "./store.ts";
 
 const SONNET = "anthropic/claude-sonnet-5-5";
 const HAIKU = "anthropic/claude-haiku-5-5";
