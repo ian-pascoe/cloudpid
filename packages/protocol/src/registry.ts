@@ -6,6 +6,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
+import { MarkedOrigin } from "./mcp-api.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
 import {
@@ -92,7 +93,15 @@ export const forkTitle = (title: string | null, kind: ForkKind): string => {
 };
 
 /** The Session a Fork or Clone was made from, which may have been deleted since. */
-export const SessionOrigin = Schema.Struct({ session: Schema.String, kind: ForkKind });
+export const ForkOrigin = Schema.Struct({ session: Schema.String, kind: ForkKind });
+
+export type ForkOrigin = typeof ForkOrigin.Type;
+
+/**
+ * Where a Session came from: the Session a Fork or Clone was made from, or how the MCP endpoint's caller got in for a
+ * Session it started (`mcp`) or imported (`import`; `docs/architecture/mcp-endpoint.md` → Access and identity, Marks).
+ */
+export const SessionOrigin = Schema.Union([ForkOrigin, MarkedOrigin]);
 
 export type SessionOrigin = typeof SessionOrigin.Type;
 

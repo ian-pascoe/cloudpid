@@ -1,4 +1,4 @@
-import type { SessionRecord } from "@cloudpid/protocol";
+import { type ForkOrigin, type SessionRecord, viaLabel } from "@cloudpid/protocol";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
@@ -24,7 +24,7 @@ import { environmentNamesAtom } from "./environments-state.ts";
  * The line under a Fork's or a Clone's title: "Forked from" or "Cloned from" the Session it was made from, a link to it
  * while it is there.
  */
-const Origin = ({ origin }: { origin: NonNullable<SessionRecord["origin"]> }) => {
+const ForkedFrom = ({ origin }: { origin: ForkOrigin }) => {
   const source = useAtomValue(sessionListAtom, (list) =>
     Option.getOrUndefined(Arr.findFirst(list ?? [], (known) => known.id === origin.session)),
   );
@@ -48,6 +48,10 @@ const Origin = ({ origin }: { origin: NonNullable<SessionRecord["origin"]> }) =>
     </>
   );
 };
+
+/** The line under the title of a Session made over the MCP endpoint: "MCP · pi", or "Imported · pi". */
+const Origin = ({ origin }: { origin: NonNullable<SessionRecord["origin"]> }) =>
+  "session" in origin ? <ForkedFrom origin={origin} /> : <>{viaLabel(origin, origin.kind)}</>;
 
 /** Session `sessionId`'s page: its chat, with what the list knows of it. */
 const SessionPage = ({ sessionId }: { sessionId: string }) => {

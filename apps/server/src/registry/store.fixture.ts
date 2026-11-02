@@ -94,6 +94,7 @@ export class TestRegistry extends DurableObject {
       title: string | null;
       workspace: StoredWorkspaceChoice;
       origin?: SessionOrigin | null;
+      requestId?: string;
     },
     now: number,
   ): SessionRecord | SessionRefusal {

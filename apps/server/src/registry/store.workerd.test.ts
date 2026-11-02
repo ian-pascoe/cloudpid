@@ -459,6 +459,105 @@ describe("the Registry store", () => {
     ).not.toHaveProperty("origin");
   });
 
+  it("records how the MCP endpoint's caller got in, for a Session it started or imported", async () => {
+    const registry = fresh();
+
+    const started = await registry.createSession(
+      {
+        id: "s-1",
+        title: null,
+        workspace: newWorkspace("1a2b3c4d"),
+        origin: { kind: "mcp", client: { name: "claude-code", version: "2.1" }, auth: "oauth" },
+      },
+      1_000,
+    );
+
+    const imported = await registry.createSession(
+      {
+        id: "s-2",
+        title: null,
+        workspace: newWorkspace("5e6f7a8b"),
+        origin: { kind: "import", auth: "service_token" },
+      },
+      2_000,
+    );
+
+    const origins = { "s-1": started, "s-2": imported };
+
+    expect(started).toMatchObject({ origin: { kind: "mcp", auth: "oauth" } });
+    expect(await registry.getSession("s-1")).toEqual(origins["s-1"]);
+    expect(await registry.getSession("s-2")).toEqual(origins["s-2"]);
+    expect(await registry.getSession("s-2")).toMatchObject({
+      origin: { kind: "import", auth: "service_token" },
+    });
+    expect(await registry.getSession("s-2")).not.toHaveProperty("origin.client");
+  });
+
+  it("reads an origin of a kind it does not know as none", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d") },
+      1_000,
+    );
+    await runInDurableObject(registry, (_, state) => {
+      state.storage.sql.exec(
+        "UPDATE sessions SET origin = '{}', origin_kind = 'from-the-future' WHERE id = 's-1'",
+      );
+    });
+
+    expect(await registry.getSession("s-1")).not.toHaveProperty("origin");
+  });
+
+  it("finds the first Session again for a request id within 24 hours, and makes another after", async () => {
+    const registry = fresh();
+    const day = 24 * 60 * 60 * 1_000;
+
+    const first = await registry.createSession(
+      { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d"), requestId: "req-1" },
+      1_000,
+    );
+
+    // The same request: the first Session, and no Workspace or Session registered.
+    expect(
+      await registry.createSession(
+        { id: "s-2", title: null, workspace: newWorkspace("5e6f7a8b"), requestId: "req-1" },
+        2_000,
+      ),
+    ).toEqual(first);
+    expect(await sessionIds(registry)).toEqual(["s-1"]);
+
+    // Another request, and none at all, are new starts.
+    await registry.createSession(
+      { id: "s-3", title: null, workspace: newWorkspace("9c0d1e2f"), requestId: "req-2" },
+      3_000,
+    );
+    await registry.createSession(
+      { id: "s-4", title: null, workspace: newWorkspace("3a4b5c6d") },
+      4_000,
+    );
+
+    expect(await sessionIds(registry)).toEqual(["s-4", "s-3", "s-1"]);
+
+    // A day on, the memory is gone.
+    const later = await registry.createSession(
+      { id: "s-5", title: null, workspace: newWorkspace("7e8f9a0b"), requestId: "req-1" },
+      1_000 + day,
+    );
+
+    expect(later).toMatchObject({ id: "s-5" });
+
+    // A request whose Session was deleted starts anew.
+    await registry.deleteSession("s-5");
+
+    expect(
+      await registry.createSession(
+        { id: "s-6", title: null, workspace: newWorkspace("1b2c3d4e"), requestId: "req-1" },
+        2_000 + day,
+      ),
+    ).toMatchObject({ id: "s-6" });
+  });
+
   it("lists the default Environment before anything is created", async () => {
     expect(await fresh().listEnvironments()).toEqual([
       expect.objectContaining({ id: DEFAULT_ENVIRONMENT, name: "Default", repos: [] }),

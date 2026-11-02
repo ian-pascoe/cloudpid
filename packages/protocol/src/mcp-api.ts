@@ -529,14 +529,19 @@ export const EnvironmentsResult = Schema.Struct({
 
 export type EnvironmentsResult = typeof EnvironmentsResult.Type;
 
+/** A Session the endpoint made or imported: the audit mark of how its caller got in, never the owner's email. */
+export const MarkedOrigin = Schema.Struct({
+  kind: Schema.Literals(["mcp", "import"]),
+  client: Schema.optionalKey(McpClient),
+  auth: McpAuth,
+});
+
+export type MarkedOrigin = typeof MarkedOrigin.Type;
+
 /** Where a listed Session came from: a Fork or Clone's source, or the endpoint's marks. */
 export const McpSessionOrigin = Schema.Union([
   Schema.Struct({ kind: Schema.Literals(["fork", "clone"]), session: Schema.String }),
-  Schema.Struct({
-    kind: Schema.Literals(["mcp", "import"]),
-    client: Schema.optionalKey(McpClient),
-    auth: McpAuth,
-  }),
+  MarkedOrigin,
 ]);
 
 export type McpSessionOrigin = typeof McpSessionOrigin.Type;
