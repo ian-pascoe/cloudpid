@@ -1,0 +1,62 @@
+{
+  "2026-07-28": {
+    "auth/metadata-default": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/metadata-var1": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/metadata-var2": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/metadata-var3": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/basic-cimd": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-from-www-authenticate": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-from-scopes-supported": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-omitted-when-undefined": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-step-up": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-retry-limit": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-basic": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-post": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-none": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/pre-registration": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/resource-mismatch": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/offline-access-scope": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/offline-access-not-supported": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/authorization-server-migration": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/iss-supported": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/iss-not-advertised": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/iss-supported-missing": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/iss-wrong-issuer": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/iss-unexpected": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/iss-normalized": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/metadata-issuer-mismatch": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "sep-2322-client-request-state": "The core has no `input_required` or `resume` yet (the questions slice)",
+    "http-invalid-tool-headers:sep-2243-x-mcp-header-not-empty": "The core lists through `client.request`, which keeps tools the SDK's `listTools` would leave out; the catalog excludes them by `xMcpHeaderProblems` (D14; #447, #449)",
+    "http-invalid-tool-headers:sep-2243-x-mcp-header-primitive-only": "The core lists through `client.request`, which keeps tools the SDK's `listTools` would leave out; the catalog excludes them by `xMcpHeaderProblems` (D14; #447, #449)",
+    "http-invalid-tool-headers:sep-2243-x-mcp-header-unique": "The core lists through `client.request`, which keeps tools the SDK's `listTools` would leave out; the catalog excludes them by `xMcpHeaderProblems` (D14; #447, #449)",
+    "http-invalid-tool-headers:sep-2243-x-mcp-header-charset": "The core lists through `client.request`, which keeps tools the SDK's `listTools` would leave out; the catalog excludes them by `xMcpHeaderProblems` (D14; #447, #449)"
+  },
+  "2025-11-25": {
+    "elicitation-sep1034-client-defaults": "The core cannot answer a Legacy server's question yet: no `onInput` (the questions slice)",
+    "sse-retry:client-sse-retry-timing": "By design the core never reconnects a cut stream: a cut is `Cut`, retried at the seam, with no `Last-Event-ID` resume (`mcp-connections.md` → Failures and cuts)",
+    "sse-retry:client-sse-last-event-id": "By design the core never reconnects a cut stream: a cut is `Cut`, retried at the seam, with no `Last-Event-ID` resume (`mcp-connections.md` → Failures and cuts)",
+    "auth/metadata-default": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/metadata-var1": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/metadata-var2": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/metadata-var3": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/basic-cimd": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-from-www-authenticate": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-from-scopes-supported": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-omitted-when-undefined": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-step-up": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/scope-retry-limit": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-basic": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-post": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-none": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/pre-registration": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401"
+  },
+  "2025-06-18": {
+    "auth/token-endpoint-auth-basic": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-post": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/token-endpoint-auth-none": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401"
+  },
+  "2025-03-26": {
+    "auth/2025-03-26-oauth-metadata-backcompat": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401",
+    "auth/2025-03-26-oauth-endpoint-fallback": "No OAuth: the sign-in flow is the Registry's (`@cloudpid/mcp/oauth`, a skeleton until the sign-in slices land) and the core takes only `deps.auth`, so the client answers no 401"
+  }
+}

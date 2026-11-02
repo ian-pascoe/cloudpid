@@ -9,3 +9,6 @@ node_modules/
 dist/
 # Planted by packages/mcp/src/import-rule.test.ts; a crash must not leave them committable.
 **/src/planted-*/
+
+# The conformance runner's results.
+packages/mcp/conformance/results/
