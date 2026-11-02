@@ -119,6 +119,13 @@ export type SecretsService = {
    * redact. `held`, `resolve`, `environment`, `forget` and `scrub` do it themselves.
    */
   readonly refresh: Effect.Effect<void>;
+  /**
+   * Whether the Secrets to redact can all be read: the kept ones were read at least once by this instance (a refresh
+   * that fails later keeps the set held from then), or none are kept. Asks for the kept Secrets if they are due. False
+   * means a text shown outside the Session cannot be told clean of them, which the MCP endpoint then withholds
+   * (`docs/architecture/mcp-endpoint.md` → Transcripts, Redaction).
+   */
+  readonly readable: Effect.Effect<boolean>;
   /** Delete the ciphertext of every Secret whose lifetime has passed. */
   readonly sweep: Effect.Effect<void>;
   /** When the next held Secret expires, if any is held. */
@@ -251,6 +258,8 @@ const makeSecrets = ({
     let keptSecrets = new Map<string, KeptSecret>();
     /** When the kept Secrets are next asked for; 0 until they first are. */
     let keptDueAt = 0;
+    /** Whether the kept Secrets were handed at least once. */
+    let keptRead = false;
     const keptLock = yield* Semaphore.make(1);
     /** Calls waiting for an answer, by ask. */
     const waiters = new Map<string, Deferred.Deferred<void>>();
@@ -331,6 +340,7 @@ const makeSecrets = ({
               }
 
               keptSecrets = new Map(loaded.success.map((secret) => [secret.name, secret]));
+              keptRead = true;
               keptDueAt = time + KEPT_REFRESH_MS;
 
               for (const secret of loaded.success) redactions.hold(secret.name, secret.value);
@@ -602,6 +612,7 @@ const makeSecrets = ({
           });
         }),
       refresh: Effect.asVoid(refreshKept),
+      readable: Effect.map(refreshKept, () => kept === undefined || keptRead),
       sweep: Effect.map(now, (time) => {
         const expired = Object.values(sealed())
           .filter((record) => record.expiresAt <= time)

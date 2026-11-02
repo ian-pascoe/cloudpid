@@ -93,15 +93,7 @@ export const forkTitle = (title: string | null, kind: ForkKind): string => {
 };
 
 /** The Session a Fork or Clone was made from, which may have been deleted since. */
-export const ForkOrigin = Schema.Struct({ session: Schema.String, kind: ForkKind });
-
-export type ForkOrigin = typeof ForkOrigin.Type;
-
-/**
- * Where a Session came from: the Session a Fork or Clone was made from, or how the MCP endpoint's caller got in for a
- * Session it started (`mcp`) or imported (`import`; `docs/architecture/mcp-endpoint.md` → Access and identity, Marks).
- */
-export const SessionOrigin = Schema.Union([ForkOrigin, MarkedOrigin]);
+export const SessionOrigin = Schema.Struct({ session: Schema.String, kind: ForkKind });
 
 export type SessionOrigin = typeof SessionOrigin.Type;
 
@@ -147,6 +139,12 @@ export const SessionRecord = Schema.Struct({
   archivedAt: Schema.NullOr(Schema.Finite),
   /** The Session it is a Fork or Clone of; absent for a Session started afresh. */
   origin: Schema.optionalKey(SessionOrigin),
+  /**
+   * How the MCP endpoint's caller got in, for a Session it started (`mcp`) or imported (`import`): the audit mark and
+   * the client's name, never the owner's email (`docs/architecture/mcp-endpoint.md` → Access and identity, Marks). A
+   * field of its own, so a client that does not know it still reads `origin` and the whole list.
+   */
+  marks: Schema.optionalKey(MarkedOrigin),
   /**
    * Its subagents, parents before their children, as the Session last reported them (ADR-0024); absent for a Session
    * that has not reported any since the field was added, which shows none.

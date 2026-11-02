@@ -3,7 +3,9 @@
 // answers, newest first.
 // @effect-diagnostics missingPipeableSignature:off
 import {
+  decodeBase64Url,
   DEFAULT_SESSIONS_PAGE,
+  encodeBase64Url,
   MAX_SESSIONS_PAGE,
   type SessionRecord,
   type SessionsQuery,
@@ -26,21 +28,6 @@ const Position = Schema.Struct({ t: Schema.Finite, i: Schema.String });
 
 const decodePosition = Schema.decodeUnknownOption(Schema.fromJsonString(Position));
 
-const encode = (text: string): string =>
-  btoa(text).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-
-const decode = (cursor: string): string | undefined => {
-  if (!/^[A-Za-z0-9_-]+$/.test(cursor)) return undefined;
-
-  try {
-    const padded = cursor.replaceAll("-", "+").replaceAll("_", "/");
-
-    return atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
-  } catch {
-    return undefined;
-  }
-};
-
 /** Whether `a` comes before `b` in the list: newest first, ties by the larger id. */
 const before = (a: { readonly t: number; readonly i: string }, b: typeof a): boolean =>
   a.t > b.t || (a.t === b.t && a.i > b.i);
@@ -57,7 +44,7 @@ export const pageSessions = (
   const after =
     query.cursor === undefined
       ? undefined
-      : Option.getOrUndefined(decodePosition(decode(query.cursor) ?? ""));
+      : Option.getOrUndefined(decodePosition(decodeBase64Url(query.cursor) ?? ""));
 
   if (query.cursor !== undefined && after === undefined) return { refused: "invalid-cursor" };
 
@@ -82,6 +69,6 @@ export const pageSessions = (
 
   return {
     sessions: page,
-    nextCursor: encode(JSON.stringify({ t: last.createdAt, i: last.id })),
+    nextCursor: encodeBase64Url(JSON.stringify({ t: last.createdAt, i: last.id })),
   };
 };

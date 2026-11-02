@@ -3,10 +3,11 @@
 // `cloudpid.user` entry whose model message is the expansion and whose data keeps what the owner typed, which the
 // transcript and the Session's title show instead.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over an entry's JSON and its text.
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AttachedPage } from "./attached-pages.ts";
-import { Via } from "./mcp-api.ts";
+import { SessionVia } from "./mcp-api.ts";
 import { ReviewData } from "./review.ts";
 
 /** The kind of an owner's message the Session expanded. */
@@ -29,7 +30,8 @@ export const UserEntryData = Schema.Struct({
   skills: Schema.Array(ExpandedSkill),
   pages: AttachedPage.pipe(Schema.Array, Schema.optionalKey),
   review: Schema.optionalKey(ReviewData),
-  via: Schema.optionalKey(Via),
+  // A mark this version cannot read leaves the entry readable, without the mark.
+  via: Schema.optionalKey(SessionVia).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
 });
 
 export type UserEntryData = typeof UserEntryData.Type;

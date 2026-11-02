@@ -25,6 +25,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import { SessionStatus } from "../session/status.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
 import { dropUnreferencedSkillFiles } from "./skills.ts";
@@ -52,8 +53,10 @@ export type SessionRecord = {
   readonly updatedAt: number;
   /** When the owner archived the Session, or null while it is not archived. */
   readonly archivedAt: number | null;
-  /** The Session it is a Fork or Clone of, or how the MCP endpoint's caller got in; absent for one started afresh. */
+  /** The Session it is a Fork or Clone of; absent for one started afresh. */
   readonly origin?: SessionOrigin;
+  /** How the MCP endpoint's caller got in, for a Session it started or imported. */
+  readonly marks?: MarkedOrigin;
   /** Its subagents as it last reported them, parents first; absent until it first reports (ADR-0024). */
   readonly agents?: ReadonlyArray<SessionAgent>;
 };
@@ -207,6 +210,8 @@ export type RegistryStore = {
       readonly workspace: StoredWorkspaceChoice;
       /** The Session it is a Fork or Clone of, or the endpoint's marks, or null. */
       readonly origin?: SessionOrigin | null;
+      /** How the MCP endpoint's caller got in, or null. */
+      readonly marks?: MarkedOrigin | null;
       /**
        * Made for this request before (within `REQUEST_MEMORY_MS`), and the Session still there: that Session is answered
        * and nothing is registered, so a start that is sent again finds the first.
@@ -511,31 +516,38 @@ const decodeMarks = Schema.decodeUnknownOption(
 /** How long a start remembers its `requestId`. */
 export const REQUEST_MEMORY_MS = 24 * 60 * 60 * 1000;
 
-/** The two columns that keep `origin`. */
-const originColumns = (origin: SessionOrigin | null): [string | null, string | null] => {
-  if (origin === null) return [null, null];
+/** The two columns that keep a Session's origin: a Fork or Clone's source, or the endpoint's marks as JSON. */
+const originColumns = (
+  origin: SessionOrigin | null,
+  marks: MarkedOrigin | null,
+): [string | null, string | null] => {
+  if (origin !== null) return [origin.session, origin.kind];
 
-  if ("session" in origin) return [origin.session, origin.kind];
+  if (marks !== null)
+    return [JSON.stringify({ client: marks.client, auth: marks.auth }), marks.kind];
 
-  return [JSON.stringify({ client: origin.client, auth: origin.auth }), origin.kind];
+  return [null, null];
 };
 
+/** What a Session's origin columns read as. */
+type Origins = { readonly origin?: SessionOrigin; readonly marks?: MarkedOrigin };
+
 /**
- * The origin the columns keep. One whose kind this version does not know (a newer deploy's) reads as none, never as a
- * failure: the Session is still a Session.
+ * What the columns keep: a Fork or Clone's `origin`, or the endpoint's `marks`. A kind this version does not know (a
+ * newer deploy's) reads as none, never as a failure: the Session is still a Session.
  */
-const readOrigin = (row: Pick<SessionRow, "origin" | "origin_kind">): SessionOrigin | undefined => {
+const readOrigins = (row: Pick<SessionRow, "origin" | "origin_kind">): Origins => {
   const { origin, origin_kind: kind } = row;
 
-  if (origin === null || origin === undefined) return undefined;
+  if (origin === null || origin === undefined) return {};
 
-  if (isForkKind(kind)) return { session: origin, kind };
+  if (isForkKind(kind)) return { origin: { session: origin, kind } };
 
-  if (kind !== "mcp" && kind !== "import") return undefined;
+  if (kind !== "mcp" && kind !== "import") return {};
 
-  return Option.getOrUndefined(
-    Option.map(decodeMarks(origin), (marks): SessionOrigin => ({ ...marks, kind })),
-  );
+  const marks = Option.getOrUndefined(decodeMarks(origin));
+
+  return marks === undefined ? {} : { marks: { ...marks, kind } };
 };
 
 const decodeAgents = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(SessionAgent)));
@@ -556,10 +568,16 @@ const toSession = (row: SessionRow): SessionRecord => {
     archivedAt: row.archived_at,
   };
 
-  const origin = readOrigin(row);
-  const withOrigin = origin === undefined ? record : { ...record, origin };
+  const { origin, marks } = readOrigins(row);
+  const full: Types.Mutable<SessionRecord> = record;
 
-  return agents === undefined ? withOrigin : { ...withOrigin, agents };
+  if (origin !== undefined) full.origin = origin;
+
+  if (marks !== undefined) full.marks = marks;
+
+  if (agents !== undefined) full.agents = agents;
+
+  return full;
 };
 
 const toEnvironment = (row: EnvironmentRow): EnvironmentRecord => ({
@@ -1092,6 +1110,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         }
 
         const origin = input.origin ?? null;
+        const marks = input.marks ?? null;
 
         sql.exec(
           "INSERT INTO sessions (id, title, title_source, environment, workspace, status, created_at, updated_at, origin, origin_kind) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?)",
@@ -1102,7 +1121,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           workspace,
           now,
           now,
-          ...originColumns(origin),
+          ...originColumns(origin, marks),
         );
 
         if (requestId !== undefined) {
@@ -1126,7 +1145,13 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           archivedAt: null,
         };
 
-        return origin === null ? record : { ...record, origin };
+        const created: Types.Mutable<SessionRecord> = record;
+
+        if (origin !== null) created.origin = origin;
+
+        if (marks !== null) created.marks = marks;
+
+        return created;
       }),
 
     getSession,

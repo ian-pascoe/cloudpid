@@ -2,7 +2,6 @@
 // Run, Transcripts, Starting, sending and stopping): `status`, `waitForChange`, `transcriptPage`, `submit` and `stop`.
 // Every answer is an `ApiResult`, so a refusal travels as a value; what the host failed at is `unavailable`. Waiting
 // requests, the transcript and the answers are redacted here, before they leave the object.
-// @effect-diagnostics globalDate:off missingPipeableSignature:off preferEffectArray:off
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { Secrets } from "@cloudpid/extensions/secrets";
@@ -12,7 +11,6 @@ import {
   apiOk,
   type CursorState,
   decodeCursor,
-  DEFAULT_TRANSCRIPT_CHARS,
   encodeCursor,
   MAX_LAST_ANSWER_CHARS,
   MAX_LATEST_ACTIVITY,
@@ -25,6 +23,7 @@ import {
   projectEntries,
   redactGithubTokens,
   renderTranscript,
+  type RunOutcome,
   runOutcome,
   type SessionStatusReport,
   STOP_WAIT_MS,
@@ -34,7 +33,6 @@ import {
   type SubmitResult,
   transcriptChars,
   type TranscriptEntry,
-  type TranscriptMessage,
   type TranscriptPage,
   type TranscriptRequest,
   type WaitOutcome,
@@ -49,6 +47,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
+import * as Predicate from "effect/Predicate";
 import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
 import { SessionError } from "./errors.ts";
@@ -104,8 +103,17 @@ const RENDER_BATCH = 25;
 /** The longest a one-line summary of activity is. */
 const ACTIVITY_LINE_CHARS = 120;
 
-/** A text redactor, or why there is none. */
+/** A text redactor. */
 type Redactor = (text: string) => string;
+
+/** The seam every text leaves through: the redactor, and whether the Secrets it redacts could be read at all. */
+type Seam = { readonly redact: Redactor; readonly readable: boolean };
+
+/** Where the delivery of each recent request id is kept, so a repeated send reports its first one. */
+const DELIVERIES_KEY = "mcp-deliveries";
+
+/** How many request ids' deliveries are kept. */
+const DELIVERIES_KEPT = 64;
 
 /** One request waiting for the owner, before its time is known. */
 type Waiting = Omit<WaitingRequest, "since">;
@@ -138,6 +146,12 @@ const deliveryOf = (
   return whenBusy === "steer" ? "steered" : "queued";
 };
 
+/** Whether a settled input has text to show: an answer, or the detail of a failure. */
+const hasText = (settled: SettledInput | undefined): boolean =>
+  settled?.status === "done"
+    ? settled.answer !== undefined && settled.answer !== ""
+    : Predicate.isString(settled?.detail);
+
 /** An agent's id for conversation `conversation`: `root` for a Session branch. */
 const agentIdOf = (state: FollowState, conversation: number): string =>
   state.agents[String(conversation)] ?? "root";
@@ -158,12 +172,15 @@ const sessionMcp = (options: SessionMcpOptions) =>
       apiFailure("unavailable", error.message);
 
     /** The held Secrets, refreshed, as a redactor with the GitHub token pass: the endpoint's single seam. */
-    const redactor: Effect.Effect<Redactor> = secrets.refresh.pipe(
-      Effect.as((text: string) => redactGithubTokens(secrets.redact(text))),
+    const redactor: Effect.Effect<Seam> = secrets.readable.pipe(
+      Effect.map((readable) => ({
+        readable,
+        redact: (text: string) => redactGithubTokens(secrets.redact(text)),
+      })),
     );
 
     /** The requests waiting for the owner, each with the time it was first seen (kept, so a wake does not renew it). */
-    const waiting = (redact: Redactor, state: FollowState) =>
+    const waiting = ({ redact, readable }: Seam, state: FollowState) =>
       Effect.gen(function* () {
         const asks = yield* secrets.pending;
         const approved = yield* approvals.pending;
@@ -176,7 +193,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
               kind: "approval" as const,
               request_id: ask.id,
               agent_id: agentIdOf(state, ask.conversationId),
-              summary: redact(`${ask.change} (${ask.target})`),
+              summary: readable ? redact(`${ask.change} (${ask.target})`) : "Approval request",
               url: "",
             },
           })),
@@ -186,7 +203,9 @@ const sessionMcp = (options: SessionMcpOptions) =>
               kind: "secret" as const,
               request_id: ask.id,
               agent_id: agentIdOf(state, ask.conversationId),
-              summary: redact(`Secret request: ${Arr.join(ask.names, ", ")}`),
+              summary: readable
+                ? redact(`Secret request: ${Arr.join(ask.names, ", ")}`)
+                : "Secret request",
               url: "",
             },
           })),
@@ -237,12 +256,12 @@ const sessionMcp = (options: SessionMcpOptions) =>
       });
 
     /** What the Session is now, for `conversation` (the cursor's, or the active branch). */
-    const snapshot = (redact: Redactor, conversation?: number) =>
+    const snapshot = (seam: Seam, conversation?: number) =>
       host
         .follow(conversation)
         .pipe(
           Effect.flatMap((state) =>
-            waiting(redact, state).pipe(Effect.map((list): Snapshot => ({ state, waiting: list }))),
+            waiting(seam, state).pipe(Effect.map((list): Snapshot => ({ state, waiting: list }))),
           ),
         );
 
@@ -263,7 +282,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
     };
 
     /** What happened since the cursor: entries, tool calls and the latest few one-liners, redacted. */
-    const activity = (state: FollowState, cursor: CursorState | undefined, redact: Redactor) =>
+    const activity = (state: FollowState, cursor: CursorState | undefined, seam: Seam) =>
       Effect.gen(function* () {
         const forward = cursor !== undefined && cursor.c === state.conversationId;
 
@@ -279,7 +298,8 @@ const sessionMcp = (options: SessionMcpOptions) =>
         );
 
         const messages = projectEntries(forward ? records : Arr.reverse(records));
-        const rendered = renderTranscript(messages, { redact });
+        // The lines are text of the Session: with the Secrets unreadable they are left out, the counts stay.
+        const rendered = seam.readable ? renderTranscript(messages, { redact: seam.redact }) : [];
 
         const calls = Arr.reduce(
           messages,
@@ -302,17 +322,23 @@ const sessionMcp = (options: SessionMcpOptions) =>
         };
       });
 
-    /** The outcome of the Run that settled, for a failed one with its error in `error`. */
-    const outcomeOf = (settled: SettledInput | undefined) => {
+    /** The outcome of the Run that settled: a failed one's message is redacted, or left out when it cannot be. */
+    const outcomeOf = (
+      settled: SettledInput | undefined,
+      { redact, readable }: Seam,
+    ): RunOutcome | undefined => {
       if (settled === undefined) return undefined;
 
-      if (settled.status === "done") return runOutcome({ status: "done" });
+      const outcome =
+        settled.status === "done"
+          ? runOutcome({ status: "done" })
+          : runOutcome({ status: "unanswered", reason: settled.reason, detail: settled.detail });
 
-      return runOutcome({
-        status: "unanswered",
-        reason: settled.reason,
-        detail: settled.detail,
-      });
+      if (outcome.message === undefined) return outcome;
+
+      const { message, ...rest } = outcome;
+
+      return readable ? { ...rest, message: redact(message) } : rest;
     };
 
     /** Every failure of the host is `unavailable`: the Session may heal. */
@@ -326,8 +352,8 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
           if (request.after !== undefined && cursor === undefined) return invalidCursor;
 
-          const redact = yield* redactor;
-          const now = yield* snapshot(redact);
+          const seam = yield* redactor;
+          const now = yield* snapshot(seam);
           const current = statusOf(now);
           const settled = now.state.newestSettled;
 
@@ -337,14 +363,23 @@ const sessionMcp = (options: SessionMcpOptions) =>
             cursor: encodeCursor(cursorOf(now)),
           };
 
+          if (now.state.model !== undefined) report.model = now.state.model;
+
+          if (now.state.thinking !== undefined) report.thinking = now.state.thinking;
+
           // What the last Run came to is told while no Run is going.
           if (current !== "running") {
-            const outcome = outcomeOf(settled);
-            const answer = answerOf(settled, redact, MAX_LAST_ANSWER_CHARS);
+            const outcome = outcomeOf(settled, seam);
 
             if (outcome !== undefined) report.outcome = outcome;
 
-            if (answer !== undefined) report.last_answer = answer;
+            if (seam.readable) {
+              const answer = answerOf(settled, seam.redact, MAX_LAST_ANSWER_CHARS);
+
+              if (answer !== undefined) report.last_answer = answer;
+            } else if (hasText(settled)) {
+              report.text_withheld = "secrets_unavailable";
+            }
           }
 
           if (cursor !== undefined && cursor.c !== now.state.activeBranch) {
@@ -372,15 +407,15 @@ const sessionMcp = (options: SessionMcpOptions) =>
           waits += 1;
 
           return yield* Effect.gen(function* () {
-            const redact = yield* redactor;
-            let now = yield* snapshot(redact, cursor?.c);
+            const seam = yield* redactor;
+            let now = yield* snapshot(seam, cursor?.c);
             let ended = endedBy(now, cursor);
 
             while (ended === undefined && (yield* Clock.currentTimeMillis) < deadline) {
               const left = deadline - (yield* Clock.currentTimeMillis);
 
               yield* Effect.sleep(Duration.millis(Math.max(1, Math.min(pollMs, left))));
-              now = yield* snapshot(redact, cursor?.c);
+              now = yield* snapshot(seam, cursor?.c);
               ended = endedBy(now, cursor);
             }
 
@@ -390,7 +425,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
               status: statusOf(now),
               ended_by: reason,
               waiting: now.waiting,
-              activity: yield* activity(now.state, cursor, redact),
+              activity: yield* activity(now.state, cursor, seam),
               cursor: encodeCursor(cursorOf(now)),
             };
 
@@ -400,16 +435,21 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
             if (reason === "run_ended") {
               const settled = now.state.newestSettled;
-              const outcome = outcomeOf(settled);
-              const answer = answerOf(settled, redact, MAX_WAIT_ANSWER_CHARS);
+              const outcome = outcomeOf(settled, seam);
 
               if (outcome !== undefined) result.outcome = outcome;
 
-              if (outcome?.result === "failed" && outcome.message !== undefined) {
-                result.error = redact(outcome.message);
-              }
+              if (seam.readable) {
+                const answer = answerOf(settled, seam.redact, MAX_WAIT_ANSWER_CHARS);
 
-              if (answer !== undefined) result.answer = answer;
+                if (outcome?.result === "failed" && outcome.message !== undefined) {
+                  result.error = outcome.message;
+                }
+
+                if (answer !== undefined) result.answer = answer;
+              } else if (hasText(settled)) {
+                result.text_withheld = "secrets_unavailable";
+              }
             }
 
             return apiOk(result);
@@ -454,7 +494,17 @@ const sessionMcp = (options: SessionMcpOptions) =>
             return invalidCursor;
           }
 
-          const redact = yield* redactor;
+          const seam = yield* redactor;
+
+          if (!seam.readable) {
+            return apiFailure(
+              "unavailable",
+              "The Secrets to redact the transcript of could not be read: try again shortly.",
+              { retryable: true },
+            );
+          }
+
+          const { redact } = seam;
           const head = yield* host.follow();
           const conversation = transcriptConversation(request, after ?? before, head);
 
@@ -518,7 +568,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
           });
 
           const marks = {
-            w: waitingMark(yield* waiting(redact, head)),
+            w: waitingMark(yield* waiting(seam, head)),
             s: state.newestSettled?.id ?? 0,
           };
 
@@ -561,6 +611,35 @@ const sessionMcp = (options: SessionMcpOptions) =>
         s: Math.max(0, submission - 1),
       });
 
+    /** How a send was delivered: a repeat of a request id reports its first send's delivery, kept for the latest few. */
+    const delivered = (
+      requestId: string | undefined,
+      whenBusy: Prompt["whenBusy"],
+      earlier: { readonly queued: boolean } | undefined,
+      busy: boolean,
+    ): SubmitResult["delivery"] => {
+      if (requestId === undefined) return deliveryOf(whenBusy, earlier, busy);
+
+      const known = options.kv.get<Record<string, SubmitResult["delivery"]>>(DELIVERIES_KEY) ?? {};
+      const first = known[requestId];
+
+      if (first !== undefined) return first;
+
+      const delivery = deliveryOf(whenBusy, earlier, busy);
+
+      // Without a record, an admitted request id was sent before this was kept: say what the host knows.
+      if (earlier === undefined) {
+        const next = Arr.takeRight(
+          [...Record.toEntries(known), [requestId, delivery] as const],
+          DELIVERIES_KEPT,
+        );
+
+        options.kv.put(DELIVERIES_KEY, Record.fromEntries(next));
+      }
+
+      return delivery;
+    };
+
     const submit: SessionMcpService["submit"] = (request) =>
       guarded(
         Effect.gen(function* () {
@@ -578,7 +657,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
             );
           }
 
-          const redact = yield* redactor;
+          const seam = yield* redactor;
           const before = yield* host.follow();
 
           if (before.copying) {
@@ -606,12 +685,16 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
           const id = earlier?.id ?? (yield* host.submit(prompt));
           const after = yield* host.follow();
-          const mark = waitingMark(yield* waiting(redact, after));
+          const mark = waitingMark(yield* waiting(seam, after));
 
-          return apiOk<SubmitResult>({
-            delivery: deliveryOf(request.whenBusy, earlier, before.unsettled),
-            cursor: submitCursor(after, id, mark),
-          });
+          const delivery = delivered(
+            request.requestId,
+            request.whenBusy,
+            earlier,
+            before.unsettled,
+          );
+
+          return apiOk<SubmitResult>({ delivery, cursor: submitCursor(after, id, mark) });
         }).pipe(
           Effect.catchTag("SessionError", (error) =>
             // The Session's own refusal of this input (too large to store, say) is the caller's to fix.
@@ -628,10 +711,10 @@ const sessionMcp = (options: SessionMcpOptions) =>
       guarded(
         Effect.gen(function* () {
           const before = yield* host.follow();
-          const redact = yield* redactor;
+          const seam = yield* redactor;
 
           // Stopping an idle Session is a no-op that leaves no notice, so the call is idempotent.
-          if (before.idle) return apiOk<StopResult>({ status: statusOf(yield* snapshot(redact)) });
+          if (before.idle) return apiOk<StopResult>({ status: statusOf(yield* snapshot(seam)) });
 
           yield* host.note(`Stopped from ${request.via.client?.name ?? "a client"} (MCP)`);
 
@@ -639,7 +722,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
             .abort({ subagents: request.subagents === true })
             .pipe(Effect.timeoutOption(Duration.millis(stopWaitMs)));
 
-          const result: Types.Mutable<StopResult> = { status: statusOf(yield* snapshot(redact)) };
+          const result: Types.Mutable<StopResult> = { status: statusOf(yield* snapshot(seam)) };
 
           if (Option.isNone(stopped)) result.stopping = true;
 
@@ -653,9 +736,3 @@ const sessionMcp = (options: SessionMcpOptions) =>
 /** The Session's `SessionMcp`; build it once per instance, over the host, the Secrets and the waiting requests. */
 export const sessionMcpLayer = (options: SessionMcpOptions) =>
   Layer.effect(SessionMcp, sessionMcp(options));
-
-/** The default number of characters a transcript page holds, for callers that name none. */
-export const DEFAULT_PAGE_CHARS = DEFAULT_TRANSCRIPT_CHARS;
-
-/** A message the transcript renders, as the endpoint's reads see it. */
-export type RenderedMessage = TranscriptMessage;

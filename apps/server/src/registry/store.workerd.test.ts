@@ -467,7 +467,7 @@ describe("the Registry store", () => {
         id: "s-1",
         title: null,
         workspace: newWorkspace("1a2b3c4d"),
-        origin: { kind: "mcp", client: { name: "claude-code", version: "2.1" }, auth: "oauth" },
+        marks: { kind: "mcp", client: { name: "claude-code", version: "2.1" }, auth: "oauth" },
       },
       1_000,
     );
@@ -477,20 +477,21 @@ describe("the Registry store", () => {
         id: "s-2",
         title: null,
         workspace: newWorkspace("5e6f7a8b"),
-        origin: { kind: "import", auth: "service_token" },
+        marks: { kind: "import", auth: "service_token" },
       },
       2_000,
     );
 
     const origins = { "s-1": started, "s-2": imported };
 
-    expect(started).toMatchObject({ origin: { kind: "mcp", auth: "oauth" } });
+    expect(started).toMatchObject({ marks: { kind: "mcp", auth: "oauth" } });
+    expect(started).not.toHaveProperty("origin");
     expect(await registry.getSession("s-1")).toEqual(origins["s-1"]);
     expect(await registry.getSession("s-2")).toEqual(origins["s-2"]);
     expect(await registry.getSession("s-2")).toMatchObject({
-      origin: { kind: "import", auth: "service_token" },
+      marks: { kind: "import", auth: "service_token" },
     });
-    expect(await registry.getSession("s-2")).not.toHaveProperty("origin.client");
+    expect(await registry.getSession("s-2")).not.toHaveProperty("marks.client");
   });
 
   it("reads an origin of a kind it does not know as none", async () => {
@@ -507,6 +508,7 @@ describe("the Registry store", () => {
     });
 
     expect(await registry.getSession("s-1")).not.toHaveProperty("origin");
+    expect(await registry.getSession("s-1")).not.toHaveProperty("marks");
   });
 
   it("finds the first Session again for a request id within 24 hours, and makes another after", async () => {

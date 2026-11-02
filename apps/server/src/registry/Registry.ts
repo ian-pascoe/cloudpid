@@ -14,6 +14,7 @@ import type {
   EnvironmentRepo,
   EnvironmentSecretRecord,
   EnvironmentSkill,
+  MarkedOrigin,
   OverridingEnvironment,
   PushState,
   PushSubscription,
@@ -294,8 +295,10 @@ export type RegistryMethods = {
   readonly createSession: (input: {
     readonly title?: string | undefined;
     readonly workspace: WorkspaceChoice;
-    /** The Session it is a Fork or Clone of, or how the MCP endpoint's caller got in. */
+    /** The Session it is a Fork or Clone of. */
     readonly origin?: SessionOrigin | undefined;
+    /** How the MCP endpoint's caller got in, for a Session it starts or imports. */
+    readonly marks?: MarkedOrigin | undefined;
     /**
      * Made for this request within the last 24 h and still there: that Session is answered, and no other is registered.
      */
@@ -981,14 +984,21 @@ export const RegistryLive = Registry.make(
           );
 
         return {
-          createSession: ({ title, workspace, origin, requestId }) =>
+          createSession: ({ title, workspace, origin, marks, requestId }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
               if (workspace.kind === "existing") {
                 return store.createSession(
-                  { id, title: title ?? null, workspace, origin: origin ?? null, requestId },
+                  {
+                    id,
+                    title: title ?? null,
+                    workspace,
+                    origin: origin ?? null,
+                    marks: marks ?? null,
+                    requestId,
+                  },
                   now,
                 );
               }
@@ -1012,6 +1022,7 @@ export const RegistryLive = Registry.make(
                     base: workspace.base ?? null,
                   },
                   origin: origin ?? null,
+                  marks: marks ?? null,
                   requestId,
                 },
                 now,

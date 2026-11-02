@@ -12,6 +12,7 @@ import {
   type EnvironmentSecretRecord,
   type PushSubscription,
   SETTINGS_SCOPE,
+  type MarkedOrigin,
   type SessionOrigin,
   type SettingsOverridesState,
 } from "@cloudpid/protocol";
@@ -94,6 +95,7 @@ export class TestRegistry extends DurableObject {
       title: string | null;
       workspace: StoredWorkspaceChoice;
       origin?: SessionOrigin | null;
+      marks?: MarkedOrigin | null;
       requestId?: string;
     },
     now: number,

@@ -39,7 +39,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { type PageCrop, PageCropType } from "./annotations.ts";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
-import type { Via } from "./mcp-api.ts";
+import type { SessionVia } from "./mcp-api.ts";
 import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
 import { skillBlocksIn, type UserEntryData, userEntryData } from "./user-entry.ts";
 
@@ -94,7 +94,7 @@ export type TranscriptMessage = {
   /** A Review's Annotations, each with its quote and the owner's text: the message shows its summary instead. */
   readonly review?: readonly ShownReviewAnnotation[];
   /** Who sent an owner's message that came over the MCP endpoint (never the owner's email). */
-  readonly via?: Via;
+  readonly via?: SessionVia;
 };
 
 const userParts = (content: UserMessage["content"]): TranscriptPart[] =>

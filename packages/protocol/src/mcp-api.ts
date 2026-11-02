@@ -2,7 +2,8 @@
 // Transcripts, Access and identity): what the main Worker's `McpApi` target answers `McpServer`, and what the Session
 // object answers the main Worker (`status`, `waitForChange`, `transcriptPage`, `submit`, `stop`). Effect Schemas, shared
 // with `packages/pi-cloudpid`, so nothing here imports the MCP SDK, pi-durable's runtime or a Worker API.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over short strings and records.
+// @effect-diagnostics missingPipeableSignature:off -- plain functions over short strings and records.
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -69,13 +70,21 @@ export type McpToolName = (typeof MCP_TOOL_NAMES)[number];
 /** The only import format there is: pi's own session file, one JSON line per entry. */
 export const PI_SESSION_FORMAT = "pi-session-jsonl";
 
+/**
+ * `literals` that read a value it does not list as `fallback`, never as a decoding failure: a newer deploy may add a
+ * member, and an older one decoding it (over RPC, or from storage) must still read the record, as the generic member
+ * (`docs/architecture/mcp.md` → Deploys).
+ */
+const open = <S extends Schema.Top>(literals: S, fallback: S["Type"]) =>
+  literals.pipe(Schema.catchDecoding(() => Effect.succeedSome(fallback)));
+
 /** How the caller got in: an Access OAuth grant (the owner), or the Local agent's service token. */
-export const McpAuth = Schema.Literals(["oauth", "service_token"]);
+export const McpAuth = open(Schema.Literals(["oauth", "service_token", "unknown"]), "unknown");
 
 export type McpAuth = typeof McpAuth.Type;
 
 /** The MCP generation the caller spoke. */
-export const McpEra = Schema.Literals(["legacy", "modern"]);
+export const McpEra = open(Schema.Literals(["legacy", "modern", "unknown"]), "unknown");
 
 export type McpEra = typeof McpEra.Type;
 
@@ -88,57 +97,70 @@ export const McpClient = Schema.Struct({
 export type McpClient = typeof McpClient.Type;
 
 /**
- * Who sent an input over the endpoint (`docs/architecture/mcp-endpoint.md` → Access and identity, Marks): never the
- * owner's email. The `auth` kind and the client's name are the audit mark; `era` is for telemetry.
+ * What `McpServer` tells `McpApi` of the caller (`docs/architecture/mcp-endpoint.md` → The `api` target): the client's
+ * name and the MCP generation it spoke. How the caller got in is never an argument: the main Worker closes it over the
+ * `api` target.
  */
 export const Via = Schema.Struct({
+  client: Schema.optionalKey(McpClient),
+  era: McpEra,
+});
+
+export type Via = typeof Via.Type;
+
+/**
+ * Who sent an input over the endpoint, as the Session object takes it and keeps it (`UserEntryData.via`;
+ * `docs/architecture/mcp-endpoint.md` → Access and identity, Marks): never the owner's email. The `auth` kind and the
+ * client's name are the audit mark; `era` is for telemetry. The main Worker adds `auth` to the `api`'s `Via`.
+ */
+export const SessionVia = Schema.Struct({
   client: Schema.optionalKey(McpClient),
   auth: McpAuth,
   era: Schema.optionalKey(McpEra),
 });
 
-export type Via = typeof Via.Type;
+export type SessionVia = typeof SessionVia.Type;
 
 /** The words that say where an input or Session came from: "MCP · pi", or "MCP" when the caller gave no name. */
-export const viaLabel = (via: Pick<Via, "client">, kind: "mcp" | "import" = "mcp"): string => {
+export const viaLabel = (
+  via: Pick<SessionVia, "client">,
+  kind: "mcp" | "import" = "mcp",
+): string => {
   const prefix = kind === "mcp" ? "MCP" : "Imported";
 
   return via.client === undefined ? prefix : `${prefix} · ${via.client.name}`;
 };
 
-/** Domain failures (`isError` results); the endpoint's `unsupported` and `unavailable` end the list. */
-export const ApiErrorCode = Schema.Literals([
-  "not_found",
-  "ambiguous_environment",
-  "invalid_argument",
-  "invalid_cursor",
-  "session_busy",
-  "session_importing",
-  "session_archived",
-  "branch_taken",
-  "input_too_large",
-  "too_many_running",
-  "too_many_waits",
-  "rate_limited",
-  "offset_mismatch",
-  "import_too_large",
-  "import_expired",
-  "checksum_mismatch",
-  "unsupported_format",
-  "unsupported",
+/**
+ * Domain failures (`isError` results); the endpoint's `unsupported` and `unavailable` end the list. A code this version
+ * does not know (a newer deploy's) reads as `unavailable`, the generic failure that may heal.
+ */
+export const ApiErrorCode = open(
+  Schema.Literals([
+    "not_found",
+    "ambiguous_environment",
+    "invalid_argument",
+    "invalid_cursor",
+    "session_busy",
+    "session_importing",
+    "session_archived",
+    "branch_taken",
+    "input_too_large",
+    "too_many_running",
+    "too_many_waits",
+    "rate_limited",
+    "offset_mismatch",
+    "import_too_large",
+    "import_expired",
+    "checksum_mismatch",
+    "unsupported_format",
+    "unsupported",
+    "unavailable",
+  ]),
   "unavailable",
-]);
+);
 
 export type ApiErrorCode = typeof ApiErrorCode.Type;
-
-const isApiErrorCode = Schema.is(ApiErrorCode);
-
-/**
- * A code as a caller reads it: one this version does not know (a newer deploy's) reads as `unavailable`, the generic
- * failure that may heal, never as a decoding error (`docs/architecture/mcp.md` → Deploys).
- */
-export const readApiErrorCode = (code: Schema.Json): ApiErrorCode =>
-  isApiErrorCode(code) ? code : "unavailable";
 
 export const ApiError = Schema.Struct({
   code: ApiErrorCode,
@@ -245,10 +267,12 @@ export type CursorState = typeof CursorState.Type;
 
 const decodeCursorState = Schema.decodeUnknownOption(Schema.fromJsonString(CursorState));
 
-const encodeBase64Url = (text: string): string =>
+/** `text` as base64url, without padding. */
+export const encodeBase64Url = (text: string): string =>
   btoa(text).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 
-const decodeBase64Url = (text: string): string | undefined => {
+/** The text a base64url string holds, or none for a string that is not one. */
+export const decodeBase64Url = (text: string): string | undefined => {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) return undefined;
 
   try {
@@ -281,24 +305,25 @@ export const decodeCursor = (cursor: string): Option.Option<CursorState> => {
 // Following a Run
 
 /** `running`: the root Run is going or input is queued; `background`: the root idles but subagents or tasks work. */
-export const McpSessionStatus = Schema.Literals([
-  "running",
-  "waiting_for_owner",
-  "background",
-  "idle",
-  "importing",
-]);
+export const McpSessionStatus = open(
+  Schema.Literals(["running", "waiting_for_owner", "background", "idle", "importing", "unknown"]),
+  "unknown",
+);
 
 export type McpSessionStatus = typeof McpSessionStatus.Type;
 
-export const WaitingKind = Schema.Literals([
-  "approval",
-  "secret",
-  "sign_in",
-  "elicitation",
-  "sampling",
-  "browser_handoff",
-]);
+export const WaitingKind = open(
+  Schema.Literals([
+    "approval",
+    "secret",
+    "sign_in",
+    "elicitation",
+    "sampling",
+    "browser_handoff",
+    "unknown",
+  ]),
+  "unknown",
+);
 
 export type WaitingKind = typeof WaitingKind.Type;
 
@@ -318,7 +343,7 @@ export type WaitingRequest = typeof WaitingRequest.Type;
 
 /** How the root Run ended, from its submission: a failed Run is an outcome, never an error. */
 export const RunOutcome = Schema.Struct({
-  result: Schema.Literals(["answered", "stopped", "failed"]),
+  result: open(Schema.Literals(["answered", "stopped", "failed", "unknown"]), "unknown"),
   reason: Schema.optionalKey(Schema.String),
   message: Schema.optionalKey(Schema.String),
 });
@@ -360,18 +385,15 @@ export const AnswerText = Schema.Struct({ text: Schema.String, truncated: Schema
 
 export type AnswerText = typeof AnswerText.Type;
 
-export const EndedBy = Schema.Literals([
-  "run_ended",
-  "owner_needed",
-  "import_ended",
-  "stalled",
+export const EndedBy = open(
+  Schema.Literals(["run_ended", "owner_needed", "import_ended", "stalled", "timeout"]),
   "timeout",
-]);
+);
 
 export type EndedBy = typeof EndedBy.Type;
 
 /** Why the text fields were left out: the Secrets to redact them of could not be read. */
-export const TextWithheld = Schema.Literal("secrets_unavailable");
+export const TextWithheld = open(Schema.Literals(["secrets_unavailable"]), "secrets_unavailable");
 
 /** What the Session answers a wait (`waitForChange`): `WaitResult` without the Session's id and the `next` sentence. */
 export const WaitOutcome = Schema.Struct({
@@ -432,7 +454,7 @@ export type TranscriptDetail = typeof TranscriptDetail.Type;
 
 export const TranscriptEntry = Schema.Struct({
   entry_id: Schema.Int,
-  role: Schema.Literals(["user", "assistant", "tool", "notice"]),
+  role: open(Schema.Literals(["user", "assistant", "tool", "notice"]), "notice"),
   /** ISO 8601; empty for an entry with no time. */
   at: Schema.String,
   /** The rendered block, header first. */
@@ -482,12 +504,15 @@ export const SubmitRequest = Schema.Struct({
   whenBusy: Schema.optionalKey(WhenBusy),
   /** Submitting the same `requestId` again finds the first submission. */
   requestId: Schema.optionalKey(Schema.String),
-  via: Via,
+  via: SessionVia,
 });
 
 export type SubmitRequest = typeof SubmitRequest.Type;
 
-export const Delivery = Schema.Literals(["started", "queued", "steered"]);
+export const Delivery = open(
+  Schema.Literals(["started", "queued", "steered", "unknown"]),
+  "unknown",
+);
 
 export type Delivery = typeof Delivery.Type;
 
@@ -501,7 +526,7 @@ export type SubmitResult = typeof SubmitResult.Type;
 export const StopRequest = Schema.Struct({
   /** Also stop every subagent (Stop all). */
   subagents: Schema.optionalKey(Schema.Boolean),
-  via: Via,
+  via: SessionVia,
 });
 
 export type StopRequest = typeof StopRequest.Type;
@@ -539,7 +564,7 @@ export type EnvironmentsResult = typeof EnvironmentsResult.Type;
 
 /** A Session the endpoint made or imported: the audit mark of how its caller got in, never the owner's email. */
 export const MarkedOrigin = Schema.Struct({
-  kind: Schema.Literals(["mcp", "import"]),
+  kind: open(Schema.Literals(["mcp", "import"]), "mcp"),
   client: Schema.optionalKey(McpClient),
   auth: McpAuth,
 });
@@ -548,7 +573,7 @@ export type MarkedOrigin = typeof MarkedOrigin.Type;
 
 /** Where a listed Session came from: a Fork or Clone's source, or the endpoint's marks. */
 export const McpSessionOrigin = Schema.Union([
-  Schema.Struct({ kind: Schema.Literals(["fork", "clone"]), session: Schema.String }),
+  Schema.Struct({ kind: open(Schema.Literals(["fork", "clone"]), "fork"), session: Schema.String }),
   MarkedOrigin,
 ]);
 
@@ -559,7 +584,7 @@ export const McpSessionSummary = Schema.Struct({
   session_id: Schema.String,
   title: Schema.NullOr(Schema.String),
   environment: Schema.Struct({ id: Schema.String, name: Schema.String }),
-  status: Schema.Literals(["running", "idle"]),
+  status: open(Schema.Literals(["running", "idle"]), "idle"),
   origin: Schema.optionalKey(McpSessionOrigin),
   updated_at: Schema.String,
   archived: Schema.Boolean,
@@ -599,7 +624,7 @@ export const SessionDetail = Schema.Struct({
       agent_id: Schema.String,
       parent: Schema.String,
       role: Schema.NullOr(Schema.String),
-      status: Schema.Literals(["working", "idle"]),
+      status: open(Schema.Literals(["working", "idle"]), "idle"),
     }),
   ),
   workspace: Schema.Struct({

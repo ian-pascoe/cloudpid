@@ -864,6 +864,12 @@ export class TestSession extends DurableObject {
               session: ctx.id.toString(),
               storage: ctx.storage.kv,
               sockets: ctx,
+              // The Registry's kept Secrets: none, unless `keptFails` makes the ask fail.
+              kept: Effect.suspend(() =>
+                ctx.storage.kv.get<boolean>("kept-fails") === true
+                  ? Effect.fail("the Registry is unreachable")
+                  : Effect.succeed([]),
+              ),
               notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
             }),
           ),
@@ -1646,6 +1652,11 @@ export class TestSession extends DurableObject {
   loseOwnerTab(): void {
     this.ctx.storage.kv.delete("owner-tab");
     this.ctx.storage.kv.put("owner-tab-lost", true);
+  }
+
+  /** The Registry's kept Secrets cannot be read (or can again), as an ask for them fails. */
+  keptFails(fails: boolean): void {
+    this.ctx.storage.kv.put("kept-fails", fails);
   }
 
   /** The Registry says the Session is archived (or not): the Browser Pane may open nothing then. */

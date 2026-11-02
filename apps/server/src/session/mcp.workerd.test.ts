@@ -9,7 +9,7 @@ import {
   decodeCursor,
   encodeCursor,
   type SubmitRequest,
-  type Via,
+  type SessionVia,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import { describe, expect, it, vi } from "vitest";
@@ -26,7 +26,7 @@ declare global {
   }
 }
 
-const via: Via = { auth: "oauth", client: { name: "claude-code" } };
+const via: SessionVia = { auth: "oauth", client: { name: "claude-code" } };
 
 const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
 
@@ -120,6 +120,32 @@ describe("submit", () => {
 
     expect((await send(stub, { whenBusy: "followUp" })).delivery).toBe("queued");
     expect((await send(stub, { whenBusy: "steer" })).delivery).toBe("steered");
+
+    await stub.mcpStop({ via });
+  });
+
+  it("reports the first send's delivery when a request id comes again", async () => {
+    const stub = fresh();
+
+    await script(stub, "hang", "second");
+
+    await send(stub, { requestId: "req-first" });
+    await runInDurableObject(stub, (instance: TestSession) => instance.hanging.promise);
+
+    // A repeat of the send that started the Run still says it started it, steering or not.
+    expect((await send(stub, { requestId: "req-first", whenBusy: "steer" })).delivery).toBe(
+      "started",
+    );
+
+    const steered = await send(stub, { requestId: "req-late", whenBusy: "steer" });
+
+    expect(steered.delivery).toBe("steered");
+
+    // The same request id again, whatever it now says about the busy Run, is the first send's delivery.
+    expect((await send(stub, { requestId: "req-late", whenBusy: "followUp" })).delivery).toBe(
+      "steered",
+    );
+    expect((await send(stub, { requestId: "req-late" })).delivery).toBe("steered");
 
     await stub.mcpStop({ via });
   });
@@ -427,5 +453,82 @@ describe("stop", () => {
       status: "idle",
       outcome: { result: "stopped" },
     });
+  });
+});
+
+describe("redaction", () => {
+  const SECRET = "hunter2-the-long-value";
+  /** What a held Secret shows as. */
+  const PLACEHOLDER = "{" + "{secret:API_KEY}}";
+
+  /** Run `responses[0]` to its end, then hold `SECRET`: what the Run said is stored as the model said it. */
+  const heldAfter = async (response: string) => {
+    const stub = fresh();
+
+    await script(stub, response);
+
+    const sent = await send(stub);
+
+    okValue(await wait(stub, sent.cursor));
+    await runInDurableObject(stub, (instance: TestSession) => instance.hold({ API_KEY: SECRET }));
+
+    return { stub, sent };
+  };
+
+  it("redacts a held Secret from the answer, the last answer and the latest activity", async () => {
+    const { stub, sent } = await heldAfter(`the key is ${SECRET}`);
+    const ended = okValue(await wait(stub, sent.cursor));
+    const status = okValue(await stub.mcpStatus());
+
+    expect(ended.answer?.text).toContain(PLACEHOLDER);
+    expect(status.last_answer?.text).toContain(PLACEHOLDER);
+    expect(ended.activity.latest.join("\n")).toContain(PLACEHOLDER);
+    expect(JSON.stringify([ended, status])).not.toContain(SECRET);
+  });
+
+  it("redacts a held Secret from the error of a failed Run, and from its outcome", async () => {
+    const { stub, sent } = await heldAfter(`error:invalid request: the key ${SECRET} is bad`);
+    const ended = okValue(await wait(stub, sent.cursor));
+    const status = okValue(await stub.mcpStatus());
+
+    expect(ended.error).toContain("is bad");
+    expect(status.outcome).toMatchObject({ result: "failed" });
+    expect(JSON.stringify([ended, status])).not.toContain(SECRET);
+  });
+
+  it("withholds the Session's text, saying why, while the kept Secrets cannot be read", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.keptFails(true));
+    await script(stub, `the key is ${SECRET}`);
+
+    const sent = await send(stub);
+    const ended = okValue(await wait(stub, sent.cursor));
+    const status = okValue(await stub.mcpStatus());
+
+    expect(ended).toMatchObject({ ended_by: "run_ended", text_withheld: "secrets_unavailable" });
+    expect(ended.answer).toBeUndefined();
+    expect(ended.activity.latest).toEqual([]);
+    expect(ended.activity.entries).toBeGreaterThan(0);
+    expect(status).toMatchObject({ status: "idle", text_withheld: "secrets_unavailable" });
+    expect(status.last_answer).toBeUndefined();
+    expect(await stub.mcpTranscript({})).toMatchObject({
+      ok: false,
+      error: { code: "unavailable", retryable: true },
+    });
+  });
+
+  it("withholds the message of a failed Run while the kept Secrets cannot be read", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.keptFails(true));
+    await script(stub, "error:invalid request: the prompt is bad");
+
+    const ended = okValue(await wait(stub, (await send(stub)).cursor));
+
+    expect(ended.outcome).toMatchObject({ result: "failed" });
+    expect(ended.outcome?.message).toBeUndefined();
+    expect(ended.error).toBeUndefined();
+    expect(ended.text_withheld).toBe("secrets_unavailable");
   });
 });

@@ -44,7 +44,7 @@ import {
   type TodoTask,
   type Annotation,
   type AttachedPage,
-  type Via,
+  SessionVia,
   clampPage,
   pageBlock,
   type RenderedReview,
@@ -101,6 +101,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import * as Queue from "effect/Queue";
 import * as Random from "effect/Random";
 import * as Record from "effect/Record";
@@ -349,7 +350,7 @@ export type Prompt = {
   /** Submitting the same `requestId` again finds the first submission. */
   readonly requestId?: string;
   /** Who sent the input over the MCP endpoint; the owner's entry keeps it (`UserEntryData.via`). */
-  readonly via?: Via;
+  readonly via?: SessionVia;
   readonly input: UserInput;
   /**
    * Reads the Owner tabs the owner attached (`BrowserPane.attach`, redacted of held Secrets): run as the message is
@@ -1796,30 +1797,36 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     });
 
   /** `draft` with the marks of who sent it over the MCP endpoint, kept in the owner's entry (`UserEntryData.via`). */
-  const withVia = (draft: InputSubmissionDraft, input: UserInput, via: Via | undefined) => {
-    if (via === undefined) return draft;
+  const withVia = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    via: SessionVia | undefined,
+  ): Effect.Effect<InputSubmissionDraft, SessionError> =>
+    via === undefined
+      ? Effect.succeed(draft)
+      : Schema.encodeEffect(SessionVia)(via).pipe(
+          Effect.map((encoded) => {
+            const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
 
-    const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+            const kept = ownerEntry({
+              display: data?.display ?? typedBeside(input),
+              skills: data?.skills ?? [],
+              pages: data?.pages,
+              review: data?.review,
+            });
 
-    const kept = ownerEntry({
-      display: data?.display ?? typedBeside(input),
-      skills: data?.skills ?? [],
-      pages: data?.pages,
-      review: data?.review,
-    });
-
-    return { ...draft, entry: { ...kept, data: { ...kept.data, via: viaJson(via) } } };
-  };
-
-  /** A `Via` as JSON: strings only, as its Schema says. */
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a Via is strings and one object of them, as its Schema says: JSON, only typed read-only.
-  const viaJson = (via: Via): JsonValue => via as unknown as JsonValue;
+            return { ...draft, entry: { ...kept, data: { ...kept.data, via: encoded } } };
+          }),
+          Effect.mapError((error) =>
+            SessionError.make({ operation: "submit", message: error.message }),
+          ),
+        );
 
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
     // A message the Session would refuse is not expanded first.
     unlessForking.pipe(
       Effect.andThen(draftOf(prompt)),
-      Effect.map((draft) => withVia(draft, prompt.input, prompt.via)),
+      Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
       Effect.tap((draft) => guard(prompt.conversationId, draft)),
       Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)),
       inArrivalOrder,
@@ -2525,6 +2532,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         }
       }
 
+      // What the conversation runs with, when the Harness can tell: a status without it still says the rest.
+      const agent = yield* Effect.option(attempt("follow", () => conversation.agent(context)));
       const read = { newestEntry: newest.items[0]?.id ?? 0, newestSettled };
 
       const unsettled = Arr.some(
@@ -2537,7 +2546,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         (task) => task.state.kind === "blocked" && task.state.reason === "restart_limit",
       );
 
-      const followed: FollowState = {
+      const followed: Types.Mutable<FollowState> = {
         conversationId: conversation.id,
         activeBranch: current.id,
         copying,
@@ -2547,6 +2556,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         newestEntry: read.newestEntry,
         agents: state?.conversations ?? {},
       };
+
+      if (Option.isSome(agent)) {
+        const { model, thinkingLevel } = agent.value;
+
+        if (model !== undefined) followed.model = `${model.provider}/${model.modelId}`;
+
+        if (thinkingLevel !== undefined) followed.thinking = thinkingLevel;
+      }
 
       return read.newestSettled === undefined
         ? followed

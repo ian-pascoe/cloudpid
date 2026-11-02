@@ -32,6 +32,10 @@ export type FollowState = {
   readonly newestSettled?: SettledInput;
   /** Each conversation's agent: `root` for a Session branch. */
   readonly agents: Readonly<Record<string, string>>;
+  /** The conversation's model, `provider/id`, when its agent is known. */
+  readonly model?: string;
+  /** The conversation's thinking level, when its agent has one. */
+  readonly thinking?: string;
 };
 
 /** A read of a conversation's entries. */
