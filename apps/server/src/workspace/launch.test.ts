@@ -24,6 +24,9 @@ type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
 
 const SPEC: Spec = { env: { PORT: "8080" }, enableInternet: true, name: "WorkspaceContainer" };
 
+/** The variable the bridge token is handed to the Container in. */
+const TOKEN = "CLOUDPID_MCP_BRIDGE_TOKEN";
+
 /** The built-in Container-only paths of the fake: the Workspace's own come after them. */
 const BUILT_IN = ["**/node_modules"];
 
@@ -76,6 +79,8 @@ type Fake = {
   writing: boolean;
   /** Makes `load` reject. */
   failLoad: boolean;
+  /** How many bridge tokens were minted. */
+  tokens: number;
 };
 
 const DAY = 24 * 60 * 60_000;
@@ -113,6 +118,7 @@ const open = (
     failedBuilds: [],
     writing: false,
     failLoad: false,
+    tokens: 0,
   };
 
   const api: IWorkspaceContainerAPI = {
@@ -209,6 +215,7 @@ const open = (
       },
       running: () => state.running,
       writing: () => state.writing,
+      newBridgeToken: () => `token-${++state.tokens}`,
       now: () => state.now,
       warn: (message) => state.warnings.push(message),
       info: (message) => state.infos.push(message),
@@ -245,7 +252,7 @@ describe("a launch", () => {
     await container.start(SPEC);
 
     expect(state.starts[0]?.instance).toBe("standard-4");
-    expect(state.starts[0]?.env).toEqual(SPEC.env);
+    expect(state.starts[0]?.env).toEqual({ ...SPEC.env, [TOKEN]: "token-1" });
   });
 
   it("starts a Workspace with no saved settings on the 1 vCPU / 3 GiB custom size, as resources", async () => {
@@ -588,6 +595,117 @@ describe("a launch", () => {
   });
 });
 
+describe("the bridge token of a launch (docs/architecture/mcp-connections.md → The stdio bridge)", () => {
+  it("is minted for each launch, set in the launch's environment and kept in its record", async () => {
+    const { state, container } = open();
+
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.env).toEqual({ ...SPEC.env, [TOKEN]: "token-1" });
+    expect(state.record?.bridgeToken).toBe("token-1");
+
+    // Another launch (the Container stopped meanwhile) has a token of its own.
+    await container.start(SPEC);
+
+    expect(state.starts[1]?.env?.[TOKEN]).toBe("token-2");
+    expect(state.record?.bridgeToken).toBe("token-2");
+  });
+
+  it("is asked for again, unchanged, when the running Container is reconnected to, so computer relaunches nothing and no token is minted", async () => {
+    const { state, api, container, make } = open();
+
+    await container.start(SPEC);
+    state.running = true;
+    state.outcome = "adopted";
+    await container.start(SPEC);
+    // After an eviction the record is read from storage.
+    await make().wrap(api).start(SPEC);
+
+    expect(state.starts.map((spec) => spec.env?.[TOKEN])).toEqual([
+      "token-1",
+      "token-1",
+      "token-1",
+    ]);
+    expect(state.record?.bridgeToken).toBe("token-1");
+    expect(state.tokens).toBe(1);
+  });
+
+  it("is not given to a running Container launched before tokens were kept, whose reconnect would otherwise relaunch it", async () => {
+    const { state, container } = open();
+
+    state.running = true;
+    state.outcome = "adopted";
+    state.record = {
+      instance: "cpu-1",
+      idleMinutes: 30,
+      needsSnapshot: false,
+      restoredFrom: undefined,
+      image: "img-1",
+      launchedAt: 1,
+    };
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.env).toEqual(SPEC.env);
+    expect(state.record?.bridgeToken).toBeUndefined();
+    expect(state.tokens).toBe(0);
+  });
+
+  it("is not given to a running Container found with no launch on record either", async () => {
+    const { state, container } = open();
+
+    state.running = true;
+    state.outcome = "adopted";
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.env).toEqual(SPEC.env);
+    expect(state.record?.bridgeToken).toBeUndefined();
+  });
+
+  it("stays the same in a start retried from the image after the platform refused the snapshot", async () => {
+    const { state, container } = open();
+
+    state.restorable = { id: "snap-1", image: "img-1" };
+    state.rejectSnapshotStart = true;
+    await container.start(SPEC);
+
+    expect(state.starts).toHaveLength(2);
+    expect(state.starts.map((spec) => spec.env?.[TOKEN])).toEqual(["token-1", "token-1"]);
+    expect(state.record?.bridgeToken).toBe("token-1");
+  });
+
+  it("is minted again for computer's restart, which is a launch, and kept in the record in place of the first", async () => {
+    const { state, container } = open();
+
+    await container.start(SPEC);
+    await container.restart(SPEC);
+
+    expect(state.restarts[0]?.env).toEqual({ ...SPEC.env, [TOKEN]: "token-2" });
+    expect(state.record?.bridgeToken).toBe("token-2");
+  });
+
+  it("is never in a line the launch logs", async () => {
+    const { state, container } = open();
+
+    state.restorable = { id: "snap-1", image: "img-1" };
+    state.rejectSnapshotStart = true;
+    await container.start(SPEC);
+    await container.restart(SPEC);
+
+    expect([...state.infos, ...state.warnings].join("\n")).not.toContain("token-");
+  });
+
+  it("is read from the record, which keeps nothing else of the launch's environment", async () => {
+    const { state, container, launch } = open();
+
+    expect(await launch.bridgeToken()).toBeUndefined();
+
+    await container.start(SPEC);
+
+    expect(await launch.bridgeToken()).toBe("token-1");
+    expect(state.record).not.toHaveProperty("env");
+  });
+});
+
 describe("a launch after the agent's resize", () => {
   it("starts on the size the resize recorded instead of the settings', and records it", async () => {
     const { state, container } = open({ instance: "cpu-1" });
@@ -783,6 +901,7 @@ describe("a launch from the Environment's Build", () => {
     expect(state.starts[0]?.env).toEqual({
       ...specFor(BUILT_IN).env,
       CLOUDPID_RESET_STORE: "1",
+      [TOKEN]: "token-1",
     });
     // Its own install snapshot is still taken, labelled with the Build's image.
     expect(state.record).toMatchObject({
@@ -807,7 +926,7 @@ describe("a launch from the Environment's Build", () => {
     await container.start(specFor(BUILT_IN));
 
     expect(state.starts[0]?.containerSnapshot).toEqual({ id: "own" });
-    expect(state.starts[0]?.env).toEqual(specFor(BUILT_IN).env);
+    expect(state.starts[0]?.env).toEqual({ ...specFor(BUILT_IN).env, [TOKEN]: "token-1" });
   });
 
   it("starts from the image when the Build is of another image, other paths, or near the end of its lifetime", async () => {
@@ -823,7 +942,7 @@ describe("a launch from the Environment's Build", () => {
       await container.start(specFor(BUILT_IN));
 
       expect(state.starts[0]?.containerSnapshot).toBeUndefined();
-      expect(state.starts[0]?.env).toEqual(specFor(BUILT_IN).env);
+      expect(state.starts[0]?.env).toEqual({ ...specFor(BUILT_IN).env, [TOKEN]: "token-1" });
       expect(state.record?.resetStore).toBeFalsy();
       expect(state.infos).toContainEqual(expect.stringContaining("build-1 is not used"));
       expect(state.infos).toContainEqual(expect.stringContaining("from the image"));
@@ -853,7 +972,7 @@ describe("a launch from the Environment's Build", () => {
 
     expect(state.starts).toHaveLength(2);
     expect(state.starts[1]?.containerSnapshot).toBeUndefined();
-    expect(state.starts[1]?.env).toEqual(specFor(BUILT_IN).env);
+    expect(state.starts[1]?.env).toEqual({ ...specFor(BUILT_IN).env, [TOKEN]: "token-1" });
     expect(state.failedBuilds).toEqual(["build-1"]);
     expect(state.forgotten).toBe(0);
     expect(state.record).toMatchObject({ needsSnapshot: true, image: "img-1" });
@@ -875,7 +994,7 @@ describe("a launch from the Environment's Build", () => {
     await container.restart(specFor(BUILT_IN));
 
     expect(state.restarts[0]?.containerSnapshot).toBeUndefined();
-    expect(state.restarts[0]?.env).toEqual(specFor(BUILT_IN).env);
+    expect(state.restarts[0]?.env).toEqual({ ...specFor(BUILT_IN).env, [TOKEN]: "token-2" });
     expect(state.failedBuilds).toEqual(["build-1"]);
     expect(state.forgotten).toBe(0);
     expect(state.record).toMatchObject({ needsSnapshot: true, image: "img-1" });
@@ -948,6 +1067,7 @@ describe("a start the platform rejects for the snapshot", () => {
         save: async () => undefined,
         running: () => false,
         writing: () => false,
+        newBridgeToken: () => "token",
         now: () => 1,
         warn: () => undefined,
         info: () => undefined,

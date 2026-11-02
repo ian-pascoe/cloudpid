@@ -20,6 +20,10 @@
 //   launch has computerd's store reset (`RESET_STORE_VARIABLE` in its environment), and asks for it again whenever it
 //   reconnects to that Container, since computer relaunches a running Container whose environment differs. A Build
 //   that does not come up falls back to the image as a snapshot does, and this Workspace does not try it again;
+// - the bridge token (docs/architecture/mcp-connections.md → The stdio bridge) is minted for each launch, set in its
+//   environment as `CLOUDPID_MCP_BRIDGE_TOKEN` and kept in its record, never logged. A reconnect to the running Container
+//   asks for the same one again (computer relaunches one whose environment differs), and a Container launched before
+//   tokens were kept is asked for none: it has no bridge, and a restart gives it one;
 // - what the files a Container has not changed since it started were shown clean of (`scanned`: the restored snapshot's
 //   scan, then each of its own snapshots') is kept with it, so the scan before its next snapshot searches only the files
 //   changed since (docs/architecture/container.md → Snapshots). One started from the image or a Build has none until
@@ -40,6 +44,7 @@ import {
   type ContainerSettings,
   type StoredInstanceType,
 } from "@cloudpid/config";
+import { MCP_BRIDGE_TOKEN_ENV } from "@cloudpid/sandbox-image/mcp-bridge";
 import { type EnvironmentBuild, RESET_STORE_VARIABLE } from "./build-record.ts";
 import { launchSize } from "./resize.ts";
 import {
@@ -80,6 +85,12 @@ export type LaunchRecord = {
    * a Build or computer's restart, and in older records: those snapshot at their idle stop.
    */
   readonly diskUnchanged?: true | undefined;
+  /**
+   * The bridge token minted for this launch, which the Container's supervisor hands to its MCP bridge
+   * (`MCP_BRIDGE_TOKEN_ENV`) and `WorkspaceMcpBridge` adds as the bearer of every forward. Absent from records of
+   * Containers launched before tokens were kept, which run no bridge.
+   */
+  readonly bridgeToken?: string | undefined;
   /** Epoch milliseconds. */
   readonly launchedAt: number;
 };
@@ -118,6 +129,8 @@ export type ContainerLaunchDeps = {
    * Container told of its write before the launch was recorded, so that launch is not unchanged.
    */
   readonly writing: () => boolean;
+  /** A new bridge token: 256 random bits, unguessable. */
+  readonly newBridgeToken: () => string;
   /** The Environment's Build the Workspace holds, which a launch with no snapshot of its own may start from. */
   readonly builds?: {
     /** The Build, unless this Workspace has given up on it (`failed`). */
@@ -174,6 +187,13 @@ export const containerIgnore = (
 const resettingStore = (spec: ContainerLaunchSpec, reset: boolean): ContainerLaunchSpec =>
   reset ? { ...spec, env: { ...spec.env, [RESET_STORE_VARIABLE]: "1" } } : spec;
 
+/** `spec` with the bridge token `token` in its environment, when there is one. */
+const withBridgeToken = (
+  spec: ContainerLaunchSpec,
+  token: string | undefined,
+): ContainerLaunchSpec =>
+  token === undefined ? spec : { ...spec, env: { ...spec.env, [MCP_BRIDGE_TOKEN_ENV]: token } };
+
 export class ContainerLaunch {
   readonly #deps: ContainerLaunchDeps;
   #record: LaunchRecord | undefined;
@@ -223,6 +243,14 @@ export class ContainerLaunch {
     }
 
     return this.#deps.ignore(await this.#deps.settings());
+  }
+
+  /**
+   * The bridge token of the launch the Container that runs (or last ran) came from; undefined when there is no record,
+   * or the record is of a Container launched before tokens were kept. Never log it.
+   */
+  async bridgeToken(): Promise<string | undefined> {
+    return (await this.#current())?.bridgeToken;
   }
 
   /** How long the running Container may go unused: what it was launched with, not what the settings say now. */
@@ -426,6 +454,9 @@ export class ContainerLaunch {
 
     const size = containerInstance(instance);
 
+    // A reconnect asks for the token the Container launched with; a launch has a token of its own.
+    const token = running ? kept?.bridgeToken : this.#deps.newBridgeToken();
+
     const ignore = ignoreOf(spec);
     let snapshot = running ? undefined : await this.#deps.snapshots.restorable(ignore);
 
@@ -437,7 +468,7 @@ export class ContainerLaunch {
 
     // A Container that started from a Build was launched with the store reset, which a reconnect asks for again.
     let launch: ContainerLaunchSpec = resettingStore(
-      this.#labelled({ ...spec, instance: size }),
+      withBridgeToken(this.#labelled({ ...spec, instance: size }), token),
       build !== undefined || kept?.resetStore === true,
     );
 
@@ -473,7 +504,7 @@ export class ContainerLaunch {
       build = undefined;
       this.#restoring = undefined;
       this.#restoringBuild = false;
-      launch = this.#labelled({ ...spec, instance: size });
+      launch = withBridgeToken(this.#labelled({ ...spec, instance: size }), token);
       info = await api.start(launch);
     }
 
@@ -517,6 +548,7 @@ export class ContainerLaunch {
       idleMinutes: settings.idleMinutes,
       // A Container from the Build holds none of the Workspace's own work: it is snapshotted after its install too.
       needsSnapshot: snapshot === undefined,
+      bridgeToken: token,
       restoredFrom: snapshot?.id ?? build?.snapshot.id,
       image: snapshot?.image ?? build?.image ?? this.#deps.image(),
       ignore,
@@ -573,18 +605,15 @@ export class ContainerLaunch {
       };
     }
 
+    // The restart is a launch of its own, with a token of its own, which also ends the old one's use.
+    const token = record === undefined ? undefined : this.#deps.newBridgeToken();
+
     // computer's restart launches from the image with its own environment: no store to reset, no file its scans
     // covered, and a disk that is not the snapshot's.
-    if (
-      record !== undefined &&
-      (restoring !== undefined ||
-        record.resetStore === true ||
-        record.scanned !== undefined ||
-        record.diskUnchanged === true)
-    ) {
+    if (record !== undefined) {
       const { resetStore: _reset, scanned: _scanned, diskUnchanged: _unchanged, ...rest } = record;
 
-      await this.#remember(rest);
+      await this.#remember({ ...rest, bridgeToken: token });
     }
 
     // Without a record the Container is one found running that was launched before launches were recorded (as in
@@ -597,6 +626,8 @@ export class ContainerLaunch {
 
     this.#deps.info("Container launch: restarted from the image (computer's restart)");
 
-    return api.restart(this.#labelled({ ...spec, instance: containerInstance(instance) }));
+    return api.restart(
+      withBridgeToken(this.#labelled({ ...spec, instance: containerInstance(instance) }), token),
+    );
   }
 }

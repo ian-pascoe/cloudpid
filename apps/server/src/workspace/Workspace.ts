@@ -98,6 +98,14 @@ import {
   ContainerPreview,
   type ContainerPreviewActivity,
 } from "./container-preview.ts";
+import {
+  MCP_BRIDGE_HEALTH_INTERVAL_MS,
+  MCP_BRIDGE_HEALTH_TIMEOUT_MS,
+  McpBridge,
+  type McpBridgeActivity,
+  type McpBridgeHealthPoll,
+  type McpBridgeOptions,
+} from "./mcp-bridge.ts";
 import { ContainerResizes } from "./resize.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
@@ -250,6 +258,12 @@ const CONTAINER_FILES_TIMEOUT_SECONDS = 300;
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
 export const CONTAINER_BACKEND_ID = "container-shell";
 
+/** 256 random bits, as hex: an unguessable ID or token. */
+const randomHex = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+
 export class Workspace extends ContainerHost {
   readonly #workspace: ComputerWorkspace;
   readonly #host: WorkspaceEnvHost;
@@ -279,6 +293,8 @@ export class Workspace extends ContainerHost {
   readonly #workState: WorkspaceWorkStateModule;
   /** The Container previews: the Session's browser's requests for the Container's ports (`containerPreview`). */
   readonly #containerPreview: ContainerPreview;
+  /** The MCP engine's requests for the Container's MCP bridge (`mcpBridge`). */
+  readonly #mcpBridge: McpBridge;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
   /** The Skill set the mount at `SKILLS_MOUNT` serves: empty until one is handed over (`updateSkills`). */
@@ -407,6 +423,7 @@ export class Workspace extends ContainerHost {
       running: () => ctx.container?.running === true,
       // A command that launches a Container holds it as it may write, before the launch is recorded.
       writing: () => this.#idle.writing(),
+      newBridgeToken: randomHex,
       now: () => Date.now(),
       warn: (message) => console.warn(message),
       info: (message) => console.info(message),
@@ -765,14 +782,68 @@ export class Workspace extends ContainerHost {
       port: (port) => this.containerPort(port),
       activity: () => this.containerPreviewActivity(),
       used: () => this.#spare.noteUse(),
-      // 256 random bits, as hex.
-      newId: () =>
-        Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join(""),
+      newId: randomHex,
       keepAliveMs: () => this.containerPreviewKeepAliveMs(),
       warn: (message) => console.warn(message),
     });
+
+    // The MCP engine's requests for the Container's bridge, which `WorkspaceMcpBridge` hands here: a start of the Container
+    // only when the caller asks, and a use of it (touched, held) only when the request is one.
+    this.#mcpBridge = new McpBridge({
+      recorded: () => this.#recorded(),
+      running: () => this.containerRunning(),
+      start: async () => {
+        const ran = await this.runContainerScript("true");
+
+        if (ran.exitCode !== 0) {
+          throw new Error(`the Container did not run a command (${ran.exitCode ?? ran.stderr})`);
+        }
+      },
+      token: () => launch.bridgeToken(),
+      port: (port) => this.containerPort(port),
+      activity: () => this.mcpBridgeActivity(),
+      used: () => this.#spare.noteUse(),
+      now: () => Date.now(),
+      healthPoll: () => this.mcpBridgeHealthPoll(),
+      warn: (message) => console.warn(message),
+    });
+  }
+
+  /** The uses an MCP bridge request makes of the Container: the idle stop's. A test Worker counts them. */
+  protected mcpBridgeActivity(): McpBridgeActivity {
+    return this.#idle;
+  }
+
+  /** How the bridge's health is polled after a start. A test Worker shortens it. */
+  protected mcpBridgeHealthPoll(): McpBridgeHealthPoll {
+    return {
+      intervalMs: MCP_BRIDGE_HEALTH_INTERVAL_MS,
+      timeoutMs: MCP_BRIDGE_HEALTH_TIMEOUT_MS,
+    };
+  }
+
+  /**
+   * Whether the Workspace has a record of itself: computer's table of the mounts it has indexed, which a Workspace that
+   * was used has a row in and a destroyed one (its storage is wiped) has no table for. A table that cannot be read
+   * (a computer upgrade changed it) counts as a record, as `#mountIndexed` does.
+   */
+  #recorded(): boolean {
+    try {
+      const table = this.#sql
+        .exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_vfs_mounts'")
+        .toArray();
+
+      return (
+        table.length > 0 && this.#sql.exec("SELECT 1 FROM _vfs_mounts LIMIT 1").toArray().length > 0
+      );
+    } catch (cause) {
+      console.warn(
+        "Cannot tell whether the Workspace has a record of itself; taking it for one",
+        cause,
+      );
+
+      return true;
+    }
   }
 
   /** The Container's port `port`, for a Container preview. A test Worker replaces it. */
@@ -1280,6 +1351,16 @@ export class Workspace extends ContainerHost {
    */
   containerPreview(request: Request, port: number): Promise<Response> {
     return this.#containerPreview.serve(request, port);
+  }
+
+  /**
+   * Answer `request`, the MCP engine's, from the Container's MCP bridge: the Workspaces Worker's `WorkspaceMcpBridge`
+   * entrypoint hands it here (docs/architecture/mcp-connections.md → The stdio bridge). A stopped Container is started
+   * only for `start`, and the request touches and holds it only for `use`; neither is activity. A Workspace with no
+   * record of itself answers 404 `no_workspace`, a stopped Container 503 `stopped`.
+   */
+  mcpBridge(request: Request, options: McpBridgeOptions): Promise<Response> {
+    return this.#mcpBridge.serve(request, options);
   }
 
   /** The Container's egress: computerd dials back here, and `WorkspaceProxy` forwards its WebSocket upgrade. */
