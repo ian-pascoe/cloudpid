@@ -58,6 +58,7 @@ import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
 import { Workspaces } from "./workspace/resource.ts";
+import { LOCAL_AGENT_TOKEN_ID, mcpAccessProps } from "./mcp-access.ts";
 
 /**
  * The web app (`apps/web`), built at deploy time and served as static assets by this Worker. The Worker runs first
@@ -144,7 +145,9 @@ const browserBinding = Effect.gen(function* () {
 
 /**
  * Deploy-time props, resolved from the stage: the Worker's name, where it is served, its Access application and the
- * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`). The stage is absent once the Worker
+ * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`). A deployed stage also declares the MCP
+ * endpoint's own Access application and the Local agent's service token (`mcpAccessProps`), whose `aud` and client ID
+ * are the Worker's vars `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`. The stage is absent once the Worker
  * runs (the props only matter at deploy time), so that case falls back to a non-prod stage.
  */
 const props = Effect.gen(function* () {
@@ -165,6 +168,21 @@ const props = Effect.gen(function* () {
   // suffix. Never taken from a request's `Host`.
   const stageLabelVar = label === undefined ? {} : { [STAGE_LABEL_VAR]: label };
 
+  // The MCP endpoint's own Access application and the Local agent's service token (mcp-access.ts), whose `aud` and client
+  // id are vars of the Worker. Declared under `Server/` like the Worker's own application.
+  const mcpAccess = yield* mcpAccessProps({
+    stage,
+    runtime: globalThis.__ALCHEMY_RUNTIME__ === true,
+    declare: {
+      serviceToken: (tokenProps) =>
+        Cloudflare.Access.ServiceToken(LOCAL_AGENT_TOKEN_ID, tokenProps).pipe(
+          Namespace.push("Server"),
+        ),
+      application: (applicationProps) =>
+        Cloudflare.Access.Application("McpAccess", applicationProps).pipe(Namespace.push("Server")),
+    },
+  });
+
   return {
     main: import.meta.url,
     compatibility: { date: "2026-08-31" },
@@ -180,6 +198,7 @@ const props = Effect.gen(function* () {
       ...(yield* browserBinding),
       // The Images binding the Session DOs' `read` prepares images with; `alchemy dev` emulates it with sharp.
       [IMAGES_BINDING]: Cloudflare.Images.Images(IMAGES_BINDING),
+      ...mcpAccess.vars,
     },
   };
 });
