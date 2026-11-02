@@ -8,6 +8,7 @@
  * `mayHaveRun`) for the engine edge, the call context, and the `prior` rows the host keeps for the engine
  * (`docs/architecture/mcp-connections.md` → Storage).
  */
+import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
@@ -217,18 +218,35 @@ export const McpErrorWire = Schema.Union([...McpError.members, OtherMcpErrorFrom
 
 export type McpErrorWire = typeof McpErrorWire.Type;
 
-const isCut = Schema.is(Cut);
-
-const isOtherMcpError = Schema.is(OtherMcpError);
-
 /**
- * Whether the failed request may have run: a `Cut` says, an `OtherMcpError` may have unless it says not, and every
- * other tag reads as not.
+ * Whether a failed request may have run (`docs/architecture/mcp-connections.md` → Failures and cuts), so whether it
+ * may be sent again. Only a `tools/call` runs anything; for any other method this is what a `Cut` or an
+ * `OtherMcpError` says, else false. For a `tools/call`:
+ *
+ * - **May have run:** a `Cut` that says so, an `OtherMcpError` unless it says not, and every failure that comes after
+ *   the server took the call: `TimedOut` (the timeout starts at the send), `TooLarge` and `ProtocolViolation` (it
+ *   answered), and `Unreachable` with a 5xx (it failed while handling the call).
+ * - **Did not run:** what the server refused before running it: `Unreachable` with a 408 or 429, or with no status (a
+ *   network error once the call is sent is a `Cut`), `SignInRequired`, `StepUpRequired`, `ServerError` (a JSON-RPC
+ *   error or an HTTP status; a tool's own failure is a result with `isError`), `NotFound` and `Unsupported`.
  */
-export const mayHaveRun = (error: McpErrorWire) => {
-  if (isCut(error)) {
-    return error.mayHaveRun;
-  }
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain predicate over a value, not a combinator.
+export const mayHaveRun = (error: McpErrorWire, method: string): boolean => {
+  const call = method === "tools/call";
 
-  return isOtherMcpError(error) ? (error.mayHaveRun ?? true) : false;
+  return Match.value(error).pipe(
+    Match.tag("Cut", (cut) => cut.mayHaveRun),
+    Match.tag("OtherMcpError", (other) => other.mayHaveRun ?? call),
+    Match.tag("TimedOut", "TooLarge", "ProtocolViolation", () => call),
+    Match.tag("Unreachable", ({ status }) => call && status !== undefined && status >= 500),
+    Match.tag(
+      "SignInRequired",
+      "StepUpRequired",
+      "ServerError",
+      "NotFound",
+      "Unsupported",
+      () => false,
+    ),
+    Match.exhaustive,
+  );
 };
