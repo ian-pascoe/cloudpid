@@ -14,7 +14,7 @@ export const PRODUCTION_DOMAIN = "pi.ianpascoe.dev";
  */
 export const WORKERS_DEV_SUBDOMAIN = "ian-g-pascoe";
 
-/** The Worker var that carries the {@link stageLabel}. */
+/** The Worker var that carries a non-prod stage's {@link stageLabel}; unset on `prod`, whose Views have no label. */
 export const STAGE_LABEL_VAR = "CLOUDPID_STAGE_LABEL";
 
 /** What a non-prod stage's main Worker is called, before its label. */
@@ -32,20 +32,18 @@ const MAX_LABEL_LENGTH = 35;
 export const stageLabel = (stage: string): string => {
   const label = stage.toLowerCase().replaceAll("_", "-");
 
-  const problem =
-    label === ""
-      ? "is empty"
-      : !/^[A-Za-z0-9_-]*$/.test(stage)
-        ? "has characters outside [A-Za-z0-9_-]"
-        : label.length > MAX_LABEL_LENGTH
-          ? `is longer than ${MAX_LABEL_LENGTH} characters`
-          : label.startsWith("-") || label.endsWith("-")
-            ? "starts or ends with '-'"
-            : undefined;
+  const refusals: ReadonlyArray<readonly [refused: boolean, why: string]> = [
+    [label === "", "is empty"],
+    [!/^[A-Za-z0-9_-]*$/.test(stage), "has characters outside [A-Za-z0-9_-]"],
+    [label.length > MAX_LABEL_LENGTH, `is longer than ${MAX_LABEL_LENGTH} characters`],
+    [label.startsWith("-") || label.endsWith("-"), "starts or ends with '-'"],
+  ];
 
-  if (problem !== undefined) {
+  const refusal = refusals.find(([refused]) => refused);
+
+  if (refusal !== undefined) {
     throw new Error(
-      `Stage ${JSON.stringify(stage)} cannot be deployed: its label ${JSON.stringify(label)} ${problem}. ` +
+      `Stage ${JSON.stringify(stage)} cannot be deployed: its label ${JSON.stringify(label)} ${refusal[1]}. ` +
         "Every non-prod stage names its main Worker cloudpid-server-<label>; rename the stage.",
     );
   }
@@ -84,7 +82,9 @@ export const checkedAppOrigin = (stage: string, url: string | undefined): string
  * alchemy name (in alchemy a rename replaces the script and wipes its Durable Objects); every other stage (`dev_$USER`,
  * previews) stays on `workers.dev` as `cloudpid-server-<label>`, so its origin is {@link appOrigin}. The Worker's
  * Access application covers all of its URLs, so every stage admits only {@link OWNER_EMAIL}. `label` is the
- * {@link stageLabel}, which the Worker reads as the {@link STAGE_LABEL_VAR} var. Throws for a stage whose label is refused.
+ * {@link stageLabel} of a non-prod stage, which the Worker reads as the {@link STAGE_LABEL_VAR} var to build its
+ * `<hash>--<label>` View URLs; `prod` has none (`undefined`, so no var is set and a View's host has no suffix). Throws
+ * for a stage whose label is refused, `prod` aside.
  */
 export const deployment = (stage: string) => {
   const label = stageLabel(stage);
@@ -94,6 +94,6 @@ export const deployment = (stage: string) => {
   };
 
   return stage === "prod"
-    ? { label, domain: PRODUCTION_DOMAIN, workersDev: false, access }
+    ? { label: undefined, domain: PRODUCTION_DOMAIN, workersDev: false, access }
     : { label, name: `${WORKER_NAME_PREFIX}${label}`, workersDev: true, access };
 };

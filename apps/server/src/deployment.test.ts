@@ -32,12 +32,15 @@ describe("deployment", () => {
   });
 
   it.each([
-    ["prod", "prod"],
     ["dev_Ian", "dev-ian"],
     ["pr-7", "pr-7"],
-  ])("labels %s as %s", (stage, label) => {
+  ])("labels %s as %s, for the Worker's label var", (stage, label) => {
     expect(deployment(stage).label).toBe(label);
     expect(stageLabel(stage)).toBe(label);
+  });
+
+  it("gives prod no label, so its Worker gets no label var and its Views no suffix", () => {
+    expect(deployment("prod").label).toBeUndefined();
   });
 
   it("accepts a label of exactly 35 characters", () => {
