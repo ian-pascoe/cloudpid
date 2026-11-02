@@ -17,6 +17,10 @@ export * from "./lifecycle-changes.ts";
 
 export * from "./live-view.ts";
 
+export * from "./mcp-api.ts";
+
+export * from "./mcp-transcript.ts";
+
 export * from "./ranking.ts";
 
 export * from "./registry.ts";

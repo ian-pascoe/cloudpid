@@ -2,6 +2,9 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+/** The `operation` of a `SessionError` for a conversation the Session does not have (a cursor of another Session names one). */
+export const CONVERSATION_MISSING = "conversation_missing";
+
 /** A Harness or Durable Object storage call failed. */
 export class SessionError extends Schema.TaggedError<
   SessionError,

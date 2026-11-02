@@ -485,6 +485,31 @@ describe("Secrets kept for the Environment", () => {
       expect(yield* secrets.resolve("DATABASE_URL")).toBeUndefined();
       expect(state.asked).toBe(3);
     }));
+
+  test("are readable once read, and not while the Registry has never been reachable", () =>
+    Effect.gen(function* () {
+      const none = yield* open(memoryStorage().storage);
+
+      // With none kept there is nothing to read.
+      expect(yield* none.secrets.readable).toBe(true);
+
+      const down = registry([kept()]);
+
+      down.state.fail = true;
+
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, down.load);
+
+      expect(yield* secrets.readable).toBe(false);
+
+      down.state.fail = false;
+      yield* TestClock.adjust(KEPT_RETRY_MS);
+      expect(yield* secrets.readable).toBe(true);
+
+      // A later failure keeps the set held from before.
+      down.state.fail = true;
+      yield* TestClock.adjust(KEPT_REFRESH_MS);
+      expect(yield* secrets.readable).toBe(true);
+    }));
 });
 
 /** What the fake Registry of the keep tests holds, and what its hook was asked. */

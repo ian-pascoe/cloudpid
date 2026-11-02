@@ -11,6 +11,7 @@ import {
   type EnvironmentRepo,
   type EnvironmentSecretRecord,
   GLOBAL_SCOPE,
+  MarkedOrigin,
   ForkKind,
   MAX_ENVIRONMENT_SECRETS,
   type SessionOrigin,
@@ -24,6 +25,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import { SessionStatus } from "../session/status.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
 import { dropUnreferencedSkillFiles } from "./skills.ts";
@@ -53,6 +55,8 @@ export type SessionRecord = {
   readonly archivedAt: number | null;
   /** The Session it is a Fork or Clone of; absent for one started afresh. */
   readonly origin?: SessionOrigin;
+  /** How the MCP endpoint's caller got in, for a Session it started or imported. */
+  readonly marks?: MarkedOrigin;
   /** Its subagents as it last reported them, parents first; absent until it first reports (ADR-0024). */
   readonly agents?: ReadonlyArray<SessionAgent>;
 };
@@ -204,8 +208,15 @@ export type RegistryStore = {
       readonly id: string;
       readonly title: string | null;
       readonly workspace: StoredWorkspaceChoice;
-      /** The Session it is a Fork or Clone of, or null. */
+      /** The Session it is a Fork or Clone of, or the endpoint's marks, or null. */
       readonly origin?: SessionOrigin | null;
+      /** How the MCP endpoint's caller got in, or null. */
+      readonly marks?: MarkedOrigin | null;
+      /**
+       * Made for this request before (within `REQUEST_MEMORY_MS`), and the Session still there: that Session is answered
+       * and nothing is registered, so a start that is sent again finds the first.
+       */
+      readonly requestId?: string | undefined;
     },
     now: number,
   ) => SessionRecord | SessionRefusal;
@@ -377,7 +388,10 @@ type SessionRow = {
   created_at: number;
   updated_at: number;
   archived_at: number | null;
-  /** The Session it is a Fork or Clone of, and which; both null for one started afresh. */
+  /**
+   * A Fork or Clone's source Session and which it is; for `mcp` and `import`, the marks as JSON (`MarkedOrigin`) and
+   * which. Both null for one started afresh.
+   */
   origin: string | null;
   origin_kind: string | null;
   /** JSON: `SessionAgent[]`, as the Session last reported them; null until it first does. */
@@ -493,6 +507,49 @@ const toBuild = (row: Pick<EnvironmentRow, "build" | "build_status">): BuildReco
 
 const isForkKind = Schema.is(ForkKind);
 
+const decodeMarks = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ client: MarkedOrigin.fields.client, auth: MarkedOrigin.fields.auth }),
+  ),
+);
+
+/** How long a start remembers its `requestId`. */
+export const REQUEST_MEMORY_MS = 24 * 60 * 60 * 1000;
+
+/** The two columns that keep a Session's origin: a Fork or Clone's source, or the endpoint's marks as JSON. */
+const originColumns = (
+  origin: SessionOrigin | null,
+  marks: MarkedOrigin | null,
+): [string | null, string | null] => {
+  if (origin !== null) return [origin.session, origin.kind];
+
+  if (marks !== null)
+    return [JSON.stringify({ client: marks.client, auth: marks.auth }), marks.kind];
+
+  return [null, null];
+};
+
+/** What a Session's origin columns read as. */
+type Origins = { readonly origin?: SessionOrigin; readonly marks?: MarkedOrigin };
+
+/**
+ * What the columns keep: a Fork or Clone's `origin`, or the endpoint's `marks`. A kind this version does not know (a
+ * newer deploy's) reads as none, never as a failure: the Session is still a Session.
+ */
+const readOrigins = (row: Pick<SessionRow, "origin" | "origin_kind">): Origins => {
+  const { origin, origin_kind: kind } = row;
+
+  if (origin === null || origin === undefined) return {};
+
+  if (isForkKind(kind)) return { origin: { session: origin, kind } };
+
+  if (kind !== "mcp" && kind !== "import") return {};
+
+  const marks = Option.getOrUndefined(decodeMarks(origin));
+
+  return marks === undefined ? {} : { marks: { ...marks, kind } };
+};
+
 const decodeAgents = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(SessionAgent)));
 
 const toSession = (row: SessionRow): SessionRecord => {
@@ -511,12 +568,16 @@ const toSession = (row: SessionRow): SessionRecord => {
     archivedAt: row.archived_at,
   };
 
-  const withOrigin =
-    row.origin === null || row.origin === undefined || !isForkKind(row.origin_kind)
-      ? record
-      : { ...record, origin: { session: row.origin, kind: row.origin_kind } };
+  const { origin, marks } = readOrigins(row);
+  const full: Types.Mutable<SessionRecord> = record;
 
-  return agents === undefined ? withOrigin : { ...withOrigin, agents };
+  if (origin !== undefined) full.origin = origin;
+
+  if (marks !== undefined) full.marks = marks;
+
+  if (agents !== undefined) full.agents = agents;
+
+  return full;
 };
 
 const toEnvironment = (row: EnvironmentRow): EnvironmentRecord => ({
@@ -869,6 +930,13 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   (sql) => {
     sql.exec("ALTER TABLE environments ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
   },
+  // 29: the `requestId` of a Session start over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → Starting,
+  // sending and stopping), so a start sent again within 24 h finds the first Session. None before.
+  (sql) => {
+    sql.exec(
+      "CREATE TABLE session_requests (request_id TEXT PRIMARY KEY, session TEXT NOT NULL, at INTEGER NOT NULL)",
+    );
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
@@ -991,9 +1059,34 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       )
       .toArray();
 
+  /**
+   * The Session registered for `requestId` less than `REQUEST_MEMORY_MS` ago, if it is still there. Rows past the memory
+   * are dropped as they are found, so the table holds a day of starts.
+   */
+  const requestedSession = (requestId: string, now: number): SessionRecord | null => {
+    sql.exec("DELETE FROM session_requests WHERE at <= ?", now - REQUEST_MEMORY_MS);
+
+    const row = sql
+      .exec<{ session: string }>(
+        "SELECT session FROM session_requests WHERE request_id = ?",
+        requestId,
+      )
+      .toArray()[0];
+
+    return row === undefined ? null : getSession(row.session);
+  };
+
   return {
     createSession: (input, now) =>
       storage.transactionSync((): SessionRecord | SessionRefusal => {
+        const { requestId } = input;
+
+        if (requestId !== undefined) {
+          const earlier = requestedSession(requestId, now);
+
+          if (earlier !== null) return earlier;
+        }
+
         const choice = input.workspace;
         let environment: string;
 
@@ -1017,6 +1110,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         }
 
         const origin = input.origin ?? null;
+        const marks = input.marks ?? null;
 
         sql.exec(
           "INSERT INTO sessions (id, title, title_source, environment, workspace, status, created_at, updated_at, origin, origin_kind) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?)",
@@ -1027,9 +1121,17 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           workspace,
           now,
           now,
-          origin?.session ?? null,
-          origin?.kind ?? null,
+          ...originColumns(origin, marks),
         );
+
+        if (requestId !== undefined) {
+          sql.exec(
+            "INSERT OR REPLACE INTO session_requests (request_id, session, at) VALUES (?, ?, ?)",
+            requestId,
+            input.id,
+            now,
+          );
+        }
 
         const record: SessionRecord = {
           id: input.id,
@@ -1043,7 +1145,13 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           archivedAt: null,
         };
 
-        return origin === null ? record : { ...record, origin };
+        const created: Types.Mutable<SessionRecord> = record;
+
+        if (origin !== null) created.origin = origin;
+
+        if (marks !== null) created.marks = marks;
+
+        return created;
       }),
 
     getSession,

@@ -1,4 +1,4 @@
-import type { SessionRecord } from "@cloudpid/protocol";
+import { type SessionOrigin, type SessionRecord, viaLabel } from "@cloudpid/protocol";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
@@ -24,7 +24,7 @@ import { environmentNamesAtom } from "./environments-state.ts";
  * The line under a Fork's or a Clone's title: "Forked from" or "Cloned from" the Session it was made from, a link to it
  * while it is there.
  */
-const Origin = ({ origin }: { origin: NonNullable<SessionRecord["origin"]> }) => {
+const ForkedFrom = ({ origin }: { origin: SessionOrigin }) => {
   const source = useAtomValue(sessionListAtom, (list) =>
     Option.getOrUndefined(Arr.findFirst(list ?? [], (known) => known.id === origin.session)),
   );
@@ -48,6 +48,17 @@ const Origin = ({ origin }: { origin: NonNullable<SessionRecord["origin"]> }) =>
     </>
   );
 };
+
+/**
+ * What a Session came from, under its title: a Fork or Clone's source, or "MCP · pi" / "Imported · pi" for one the MCP
+ * endpoint started or imported; none for one started afresh.
+ */
+const Origin = ({ session }: { session: SessionRecord }) =>
+  session.origin !== undefined ? (
+    <ForkedFrom origin={session.origin} />
+  ) : session.marks !== undefined ? (
+    <>{viaLabel(session.marks, session.marks.kind)}</>
+  ) : undefined;
 
 /** Session `sessionId`'s page: its chat, with what the list knows of it. */
 const SessionPage = ({ sessionId }: { sessionId: string }) => {
@@ -81,7 +92,9 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
       origin={
         // The Environment's name waits for the listing; the Origin shows at once.
         session === undefined ||
-        (environmentName === undefined && session.origin === undefined) ? undefined : (
+        (environmentName === undefined &&
+          session.origin === undefined &&
+          session.marks === undefined) ? undefined : (
           <>
             {environmentName !== undefined && (
               <InAppLink
@@ -92,8 +105,10 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
                 {environmentName}
               </InAppLink>
             )}
-            {environmentName !== undefined && session.origin !== undefined && " · "}
-            {session.origin !== undefined && <Origin origin={session.origin} />}
+            {environmentName !== undefined &&
+              (session.origin !== undefined || session.marks !== undefined) &&
+              " · "}
+            <Origin session={session} />
           </>
         )
       }

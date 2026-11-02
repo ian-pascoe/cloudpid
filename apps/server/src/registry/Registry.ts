@@ -14,13 +14,16 @@ import type {
   EnvironmentRepo,
   EnvironmentSecretRecord,
   EnvironmentSkill,
+  MarkedOrigin,
   OverridingEnvironment,
   PushState,
   PushSubscription,
   SessionOrigin,
+  SessionsQuery,
   SkillChangeFiles,
   SkillFile,
 } from "@cloudpid/protocol";
+import { pageSessions, type SessionsResult } from "./session-page.ts";
 import { EMPTY_SKILL_SET_HASH, type SkillSet } from "../workspace/skill-set-schema.ts";
 import {
   previewSkillSave,
@@ -294,11 +297,19 @@ export type RegistryMethods = {
     readonly workspace: WorkspaceChoice;
     /** The Session it is a Fork or Clone of. */
     readonly origin?: SessionOrigin | undefined;
+    /** How the MCP endpoint's caller got in, for a Session it starts or imports. */
+    readonly marks?: MarkedOrigin | undefined;
+    /**
+     * Made for this request within the last 24 h and still there: that Session is answered, and no other is registered.
+     */
+    readonly requestId?: string | undefined;
   }) => Effect.Effect<SessionRecord | SessionRefusal>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
   /** Every Session, newest first. */
   readonly listSessions: () => Effect.Effect<ReadonlyArray<SessionRecord>>;
+  /** A page of the Sessions, newest first, filtered (`pageSessions`): for the MCP endpoint's `sessions_list`. */
+  readonly sessions: (query: SessionsQuery) => Effect.Effect<SessionsResult>;
   /** The Session DO reports that a Run started or ended. A Session that is not registered is ignored. */
   readonly setSessionStatus: (input: {
     readonly id: string;
@@ -973,14 +984,21 @@ export const RegistryLive = Registry.make(
           );
 
         return {
-          createSession: ({ title, workspace, origin }) =>
+          createSession: ({ title, workspace, origin, marks, requestId }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
               if (workspace.kind === "existing") {
                 return store.createSession(
-                  { id, title: title ?? null, workspace, origin: origin ?? null },
+                  {
+                    id,
+                    title: title ?? null,
+                    workspace,
+                    origin: origin ?? null,
+                    marks: marks ?? null,
+                    requestId,
+                  },
                   now,
                 );
               }
@@ -1004,12 +1022,15 @@ export const RegistryLive = Registry.make(
                     base: workspace.base ?? null,
                   },
                   origin: origin ?? null,
+                  marks: marks ?? null,
+                  requestId,
                 },
                 now,
               );
             }),
           getSession: ({ id }) => Effect.sync(() => store.getSession(id)),
           listSessions: () => Effect.sync(() => store.listSessions()),
+          sessions: (query) => Effect.sync(() => pageSessions(store.listSessions(), query)),
           setSessionStatus: ({ id, status }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => store.setSessionStatus(id, status, now)),

@@ -44,6 +44,7 @@ import {
   type TodoTask,
   type Annotation,
   type AttachedPage,
+  SessionVia,
   clampPage,
   pageBlock,
   type RenderedReview,
@@ -69,6 +70,7 @@ import {
   type Conversation,
   type ConversationId,
   type Cursor,
+  type EntryId,
   type EnvTarget,
   type Extension,
   type HarnessOptions,
@@ -99,6 +101,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import * as Queue from "effect/Queue";
 import * as Random from "effect/Random";
 import * as Record from "effect/Record";
@@ -128,10 +131,11 @@ import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { contextUsageOf } from "./context-usage.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
-import { attempt, refuse, SessionError } from "./errors.ts";
+import { attempt, CONVERSATION_MISSING, refuse, SessionError } from "./errors.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
+import type { EntriesRequest, FollowState, SettledInput } from "./mcp-reads.ts";
 import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file-search.ts";
 import { cropParts, fitCrops } from "./crops.ts";
 import { inputProblem, storedBytes } from "./input-guard.ts";
@@ -146,6 +150,9 @@ import { isFilling, sessionForks, STILL_FILLING } from "./fork-host.ts";
 import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+/** The kind of the display-only entry that says a Stop came over the MCP endpoint. */
+export const MCP_NOTICE_KIND = "cloudpid.mcp-notice";
 
 /** How often the alarm wakes the object while work is live, so a run an eviction cut off resumes. */
 export const HEARTBEAT_MS = 60_000;
@@ -167,6 +174,24 @@ const HELD_STOPS_TIMEOUT: Duration.Input = "5 seconds";
 
 /** The submissions the owner made whose Run's end has not been notified yet, in the Session's key-value storage. */
 const NOTIFY_KEY = "notify-submissions";
+
+/**
+ * Where the inputs admitted to the Session's conversations are kept, the newest `MAX_INPUTS`: the MCP endpoint's wait
+ * finds the Run that ended among them (pi-durable lists no settled submission).
+ */
+const INPUTS_KEY = "mcp-inputs";
+
+const MAX_INPUTS = 64;
+
+/** An entry ID from the number a client passed in a cursor. */
+// SAFETY: entry IDs are positive integers; the caller checked the number is one it was given.
+const entryId = (id: number): EntryId => id as EntryId;
+
+/** A conversation ID from the number a client passed in a cursor. */
+// SAFETY: conversation IDs are positive integers; a number that names none finds no conversation.
+const toConversationId = (id: number): ConversationId => id as ConversationId;
+
+type AdmittedInput = { readonly id: SubmissionId; readonly conversationId: number };
 
 /** The conversations whose `/compact` waits for their Run to end, in the Session's key-value storage. */
 const COMPACT_KEY = "pending-compactions";
@@ -324,6 +349,8 @@ export type Prompt = {
   readonly conversationId?: ConversationId;
   /** Submitting the same `requestId` again finds the first submission. */
   readonly requestId?: string;
+  /** Who sent the input over the MCP endpoint; the owner's entry keeps it (`UserEntryData.via`). */
+  readonly via?: SessionVia;
   readonly input: UserInput;
   /**
    * Reads the Owner tabs the owner attached (`BrowserPane.attach`, redacted of held Secrets): run as the message is
@@ -408,6 +435,22 @@ export type SessionHostService = {
    * when the object must wake (the Browser Pane's use of the browser, which moves its idle close).
    */
   readonly settle: Effect.Effect<void, SessionError>;
+  /**
+   * The state a wait or a status for the MCP endpoint is decided from (`FollowState`), read now; never starts work. For
+   * `conversationId`, any conversation of the Session (a cursor keeps following the branch it was made on), else the
+   * active branch's.
+   */
+  readonly follow: (conversationId?: number) => Effect.Effect<FollowState, SessionError>;
+  /** Up to `limit` entries of the conversation, in `order`, within the bounds (for a transcript read). */
+  readonly entries: (
+    request: EntriesRequest,
+  ) => Effect.Effect<ReadonlyArray<EntryRecord>, SessionError>;
+  /** The input admitted for `requestId` on the active branch, if any (its id and whether it has been placed). */
+  readonly admitted: (
+    requestId: string,
+  ) => Effect.Effect<{ readonly id: number; readonly queued: boolean } | undefined, SessionError>;
+  /** Show `notice` in the active branch's transcript, as a line of its own. */
+  readonly note: (notice: string) => Effect.Effect<void, SessionError>;
   /** The root conversation's ID; the root is created when absent. */
   readonly root: Effect.Effect<ConversationId, SessionError>;
   /** The active branch's conversation ID (GLOSSARY.md → Session branch); the root is created when absent. */
@@ -1289,6 +1332,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           tracedRun(
             conversation.id,
             attempt("submit", () => conversation.submit(draft, context)),
+          ).pipe(
+            Effect.tap((admitted) =>
+              Effect.sync(() => {
+                kv.put(INPUTS_KEY, [
+                  ...(kv.get<ReadonlyArray<AdmittedInput>>(INPUTS_KEY) ?? []).slice(
+                    -(MAX_INPUTS - 1),
+                  ),
+                  { id: admitted.id, conversationId: conversation.id },
+                ]);
+              }),
+            ),
           ),
         ),
         // The owner hears how this Run ends, even after an eviction: the submission is kept until it is told.
@@ -1525,7 +1579,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * goes as typed.
    */
   const expandedDraft = (prompt: Prompt): Effect.Effect<DraftOf, SessionError> => {
-    const { conversationId, input, review, attachPages: _attachPages, ...rest } = prompt;
+    const { conversationId, input, review, attachPages: _attachPages, via: _via, ...rest } = prompt;
     const typed = typedText(input);
 
     // A Review is the owner's message too: the summary as typed (or expanded), then its Markdown; its entry keeps both.
@@ -1742,10 +1796,37 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       );
     });
 
+  /** `draft` with the marks of who sent it over the MCP endpoint, kept in the owner's entry (`UserEntryData.via`). */
+  const withVia = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    via: SessionVia | undefined,
+  ): Effect.Effect<InputSubmissionDraft, SessionError> =>
+    via === undefined
+      ? Effect.succeed(draft)
+      : Schema.encodeEffect(SessionVia)(via).pipe(
+          Effect.map((encoded) => {
+            const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+
+            const kept = ownerEntry({
+              display: data?.display ?? typedBeside(input),
+              skills: data?.skills ?? [],
+              pages: data?.pages,
+              review: data?.review,
+            });
+
+            return { ...draft, entry: { ...kept, data: { ...kept.data, via: encoded } } };
+          }),
+          Effect.mapError((error) =>
+            SessionError.make({ operation: "submit", message: error.message }),
+          ),
+        );
+
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
     // A message the Session would refuse is not expanded first.
     unlessForking.pipe(
       Effect.andThen(draftOf(prompt)),
+      Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
       Effect.tap((draft) => guard(prompt.conversationId, draft)),
       Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)),
       inArrivalOrder,
@@ -2367,7 +2448,184 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     yield* compactWhenIdle(Number(key) as ConversationId);
   }
 
+  /**
+   * The conversation to read: the active branch's by default, else any conversation of the Session (a branch left, or a
+   * subagent's), which `addressed` would refuse for a command.
+   */
+  const readable = (conversationId: number | undefined) =>
+    conversationId === undefined
+      ? active
+      : attempt("conversation", () =>
+          harness.harness.conversation(toConversationId(conversationId), context),
+        ).pipe(
+          Effect.filterOrFail(Predicate.isNotUndefined, () =>
+            SessionError.make({
+              operation: CONVERSATION_MISSING,
+              message: `Conversation ${conversationId} does not exist`,
+            }),
+          ),
+        );
+
+  /** The conversation's unsettled inputs and its newest settled one, with what the endpoint's wait needs of the rest. */
+  const follow = (conversationId?: number): Effect.Effect<FollowState, SessionError> =>
+    Effect.gen(function* () {
+      const current = yield* active;
+      const conversation = yield* readable(conversationId);
+      const copying = yield* forks.filling;
+      const { tasks, submissions } = yield* inspect;
+      const state = yield* attempt("follow", () => harness.harness.snapshot(SubagentsDoc, context));
+
+      const newest = yield* attempt("follow", () =>
+        conversation.commit(
+          (tx) => tx.scanEntries({ conversationId: conversation.id, order: "descending" }, 1),
+          context,
+        ),
+      );
+
+      // The inputs the Session admitted to this conversation, newest first: the first that settled is the Run that ended.
+      const ids = Arr.reverse(
+        Arr.map(
+          Arr.filter(
+            kv.get<ReadonlyArray<AdmittedInput>>(INPUTS_KEY) ?? [],
+            (input) => input.conversationId === conversation.id,
+          ),
+          (input) => input.id,
+        ),
+      );
+
+      let newestSettled: SettledInput | undefined;
+
+      for (const id of ids) {
+        const record = yield* attempt("follow", async () => {
+          const submission = await harness.harness.submission(id, context);
+
+          return submission === undefined ? undefined : submission.status(context);
+        });
+
+        if (record?.type !== "input") continue;
+
+        if (record.status === "done") {
+          const answer = yield* attempt("follow", () =>
+            conversation.commit((tx) => tx.entry(AssistantEntry, record.answer), context),
+          );
+
+          const message = answer?.model?.[0];
+
+          newestSettled = {
+            id,
+            status: "done",
+            answer: message?.role === "assistant" ? contentText(message.content, "") : undefined,
+          };
+
+          break;
+        }
+
+        if (record.status === "unanswered") {
+          newestSettled = {
+            id,
+            status: "unanswered",
+            reason: record.reason,
+            detail: record.detail,
+          };
+
+          break;
+        }
+      }
+
+      // What the conversation runs with, when the Harness can tell: a status without it still says the rest.
+      const agent = yield* Effect.option(attempt("follow", () => conversation.agent(context)));
+      const read = { newestEntry: newest.items[0]?.id ?? 0, newestSettled };
+
+      const unsettled = Arr.some(
+        submissions,
+        (record) => record.type === "input" && record.conversationId === conversation.id,
+      );
+
+      const stalled = Arr.some(
+        tasks,
+        (task) => task.state.kind === "blocked" && task.state.reason === "restart_limit",
+      );
+
+      const followed: Types.Mutable<FollowState> = {
+        conversationId: conversation.id,
+        activeBranch: current.id,
+        copying,
+        idle: tasks.length === 0 && submissions.length === 0,
+        unsettled,
+        stalled,
+        newestEntry: read.newestEntry,
+        agents: state?.conversations ?? {},
+      };
+
+      if (Option.isSome(agent)) {
+        const { model, thinkingLevel } = agent.value;
+
+        if (model !== undefined) followed.model = `${model.provider}/${model.modelId}`;
+
+        if (thinkingLevel !== undefined) followed.thinking = thinkingLevel;
+      }
+
+      return read.newestSettled === undefined
+        ? followed
+        : { ...followed, newestSettled: read.newestSettled };
+    });
+
   return {
+    follow,
+    entries: ({ conversationId, order, minEntryId, maxEntryId, limit }) =>
+      readable(conversationId).pipe(
+        Effect.flatMap((conversation) =>
+          attempt("entries", async () => {
+            const items: EntryRecord[] = [];
+            let cursor: Cursor | undefined;
+            const query: Types.Mutable<Parameters<Conversation["entries"]>[0]> = { order };
+
+            if (minEntryId !== undefined) query.minEntryId = entryId(minEntryId);
+
+            if (maxEntryId !== undefined) query.maxEntryId = entryId(maxEntryId);
+
+            do {
+              const page = await conversation.entries(
+                query,
+                Math.min(50, limit - items.length),
+                cursor,
+                context,
+              );
+
+              items.push(...page.items);
+              cursor = page.next;
+            } while (cursor !== undefined && items.length < limit);
+
+            return items;
+          }),
+        ),
+      ),
+    admitted: (requestId) =>
+      active.pipe(
+        Effect.flatMap((conversation) =>
+          attempt("admitted", () =>
+            conversation.commit(
+              (tx) => tx.submissionByRequest(conversation.id, requestId),
+              context,
+            ),
+          ),
+        ),
+        Effect.map((record) =>
+          record === undefined ? undefined : { id: record.id, queued: record.status === "queued" },
+        ),
+      ),
+    note: (notice) =>
+      active.pipe(
+        Effect.flatMap((conversation) =>
+          attempt("note", () =>
+            conversation.submit(
+              { type: "write", entry: { kind: MCP_NOTICE_KIND, data: { notice } } },
+              context,
+            ),
+          ),
+        ),
+        Effect.asVoid,
+      ),
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,

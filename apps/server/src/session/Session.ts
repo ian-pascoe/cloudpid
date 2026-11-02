@@ -76,6 +76,7 @@ import {
 import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
+import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import {
@@ -103,6 +104,18 @@ import {
 import { WORKSPACE_ROOT, workspaceObjectName } from "../workspace/binding.ts";
 import { workspacePreparation } from "../workspace/prepare.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
+import type {
+  ApiResult,
+  SessionStatusReport,
+  StopRequest,
+  StopResult,
+  SubmitRequest,
+  SubmitResult,
+  TranscriptPage,
+  TranscriptRequest,
+  WaitOutcome,
+  WaitRequest,
+} from "@cloudpid/protocol";
 
 /**
  * Workers' tracing API (`cloudflare:workers`), where the runtime has one. It is read when an object is built, not when
@@ -181,6 +194,22 @@ export type SessionMethods = {
     readonly agent: string;
     readonly workspace: string;
   }) => Effect.Effect<ReadonlyArray<string>, SessionError>;
+  /**
+   * What the MCP endpoint's `session_get` reports of the Session itself: its five-valued status, the outcome and answer
+   * of its last Run, the requests waiting for the owner, and a cursor. `after` is the cursor the caller holds
+   * (`docs/architecture/mcp-endpoint.md` → The `api` target). A failure is the result's, never a throw.
+   */
+  readonly status: (request?: {
+    readonly after?: string;
+  }) => Effect.Effect<ApiResult<SessionStatusReport>>;
+  /** Wait until the Run ends, the owner is needed, an import ends, a task is parked, or `deadline` (epoch ms). */
+  readonly waitForChange: (request: WaitRequest) => Effect.Effect<ApiResult<WaitOutcome>>;
+  /** A page of the transcript, rendered and redacted here so no tool result crosses the RPC whole. */
+  readonly transcriptPage: (request: TranscriptRequest) => Effect.Effect<ApiResult<TranscriptPage>>;
+  /** Admit an input as the socket's `submit` does, marked with who sent it; the cursor to wait for its Run from. */
+  readonly submit: (request: SubmitRequest) => Effect.Effect<ApiResult<SubmitResult>>;
+  /** Stop the root's Run (and the subagents', with `subagents`), waiting up to 30 s for the Session to go idle. */
+  readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -659,12 +688,28 @@ export const SessionLive = Session.make(
                   ),
         }).pipe(Layer.provide(sessionBrowser));
 
+        // Whether the owner archived the Session, for the MCP endpoint's input: a Registry that cannot say fails the call.
+        const archivedSession: Effect.Effect<boolean, SessionError> =
+          name === undefined
+            ? Effect.succeed(false)
+            : registries
+                .getByName(REGISTRY_NAME)
+                .getSession({ id: name })
+                .pipe(
+                  Effect.map((session) => session !== null && session.archivedAt !== null),
+                  Effect.mapError((error) =>
+                    SessionError.make({ operation: "archived", message: String(error) }),
+                  ),
+                );
+
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
           sessionSocketsLayer(state.raw).pipe(
             // Reviews, which the sockets send, place through the host and check against the Changes.
             Layer.provideMerge(sessionReviewsLayer(kv)),
+            // The MCP endpoint's calls, over the host, the Secrets and the requests waiting for the owner.
+            Layer.provideMerge(sessionMcpLayer({ session: name, kv, archived: archivedSession })),
             Layer.provideMerge(
               sessionHostLayer({
                 storage: state.raw.storage,
@@ -815,6 +860,7 @@ export const SessionLive = Session.make(
         const sockets = Context.get(services, SessionSockets);
         const held = Context.get(services, Secrets);
         const reviews = Context.get(services, SessionReviews);
+        const mcp = Context.get(services, SessionMcp);
 
         return {
           // A failed alarm is retried by the runtime. Expired Secrets are deleted first.
@@ -868,6 +914,12 @@ export const SessionLive = Session.make(
                 Effect.map((deletion) => deletion.kept),
               ),
             ),
+          status: (request) => invoked("session.mcp.status", mcp.status(request)),
+          waitForChange: (request) => invoked("session.mcp.wait", mcp.waitForChange(request)),
+          transcriptPage: (request) =>
+            invoked("session.mcp.transcript", mcp.transcriptPage(request)),
+          submit: (request) => invoked("session.mcp.submit", mcp.submit(request)),
+          stop: (request) => invoked("session.mcp.stop", mcp.stop(request)),
           destroy: () =>
             invoked(
               "session.destroy",

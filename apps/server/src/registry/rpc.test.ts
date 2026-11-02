@@ -77,6 +77,7 @@ import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
+import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type {
   BuildRecord,
@@ -644,6 +645,7 @@ const fakeRegistries = () => {
         return created;
       }),
     listSessions: () => Effect.sync(() => [...sessions]),
+    sessions: (query) => Effect.sync(() => pageSessions(sessions, query)),
     getSession: ({ id }) =>
       Effect.sync(() => Option.getOrNull(Arr.findFirst(sessions, (session) => session.id === id))),
     archiveSession: ({ id }) => setArchived(id, 7, "archiveSession"),

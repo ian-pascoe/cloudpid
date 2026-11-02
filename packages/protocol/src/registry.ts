@@ -6,6 +6,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
+import { MarkedOrigin } from "./mcp-api.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
 import {
@@ -138,6 +139,12 @@ export const SessionRecord = Schema.Struct({
   archivedAt: Schema.NullOr(Schema.Finite),
   /** The Session it is a Fork or Clone of; absent for a Session started afresh. */
   origin: Schema.optionalKey(SessionOrigin),
+  /**
+   * How the MCP endpoint's caller got in, for a Session it started (`mcp`) or imported (`import`): the audit mark and
+   * the client's name, never the owner's email (`docs/architecture/mcp-endpoint.md` → Access and identity, Marks). A
+   * field of its own, so a client that does not know it still reads `origin` and the whole list.
+   */
+  marks: Schema.optionalKey(MarkedOrigin),
   /**
    * Its subagents, parents before their children, as the Session last reported them (ADR-0024); absent for a Session
    * that has not reported any since the field was added, which shows none.
