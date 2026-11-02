@@ -2,6 +2,8 @@
 // @effect-diagnostics asyncFunction:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { migrate } from "@cloudpid/effect-durable/sqlite";
+import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import { DEFAULT_ENVIRONMENT, MAX_ENVIRONMENT_SECRETS, SPARE_BRANCH } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
@@ -10,7 +12,6 @@ import { describe, expect, it } from "vitest";
 import { GLOBAL_DOCUMENT, globalSettingsOf, readGlobal, writeGlobal } from "./global.ts";
 import {
   MIGRATIONS,
-  migrate,
   openRegistryStore,
   SPARE_REFILL_WINDOW_MS,
   type StoredWorkspaceChoice,
@@ -1837,5 +1838,41 @@ describe("the Registry store", () => {
       ]);
       expect(versions()).toEqual({ version: MIGRATIONS.length + 1 });
     });
+  });
+
+  it("refuses every storage operation of a replaced instance, and leaves its data to the next", async () => {
+    const registry = fresh();
+
+    await registry.createEnvironment("0000abcd", "Cloudpid", 500);
+
+    await runInDurableObject(registry, async (_instance: TestRegistry, state) => {
+      const gate = refusingStorage(state.storage);
+      // The old instance opened its store before the code update reached it.
+      const store = openRegistryStore(gate.storage);
+
+      expect(store.getEnvironment("0000abcd")).toMatchObject({ name: "Cloudpid" });
+
+      gate.trip();
+
+      expect(() => store.getEnvironment("0000abcd")).toThrow();
+      expect(() => store.listEnvironments()).toThrow();
+      expect(() => store.createEnvironment("1111abcd", "Other", 600)).toThrow();
+      expect(() => store.putDocument("settings", "{}", 700)).toThrow();
+      expect(() => store.deleteEnvironment("0000abcd")).toThrow();
+      expect(() => gate.storage.transactionSync(() => 1)).toThrow();
+      expect(() => gate.storage.sql.exec("SELECT 1")).toThrow();
+      await expect(gate.storage.get("anything")).rejects.toThrow();
+      await expect(gate.storage.put("anything", 1)).rejects.toThrow();
+    });
+
+    await evictDurableObject(registry);
+
+    // A new instance reads what the old one kept, and nothing the refused calls tried to write.
+    const ids = Arr.map(await registry.listEnvironments(), ({ id }) => id);
+
+    expect(ids).toHaveLength(2);
+    expect(ids).toContain("0000abcd");
+    expect(ids).not.toContain("1111abcd");
+    expect(await registry.getDocument("settings")).toBeNull();
   });
 });
