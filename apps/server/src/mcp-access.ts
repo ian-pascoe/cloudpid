@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import { OWNER_EMAIL, appOrigin, stageLabel } from "./deployment.ts";
 
 /** The path of the MCP endpoint, which its Access application covers with its sub-paths. */
-export const MCP_PATH = "/mcp";
+const MCP_PATH = "/mcp";
 
 /**
  * The Worker var that carries the audience (`aud`) of the MCP endpoint's Access application, which is not the main
@@ -42,7 +42,7 @@ export const localAgentTokenName = (stage: string): string =>
   stage === "prod" ? "cloudpid-local-agent" : `cloudpid-local-agent-${stageLabel(stage)}`;
 
 /** The `Access.ServiceToken`'s props: `cloudpid-local-agent`, a year long. */
-export const localAgentTokenProps = (stage: string) =>
+const localAgentTokenProps = (stage: string) =>
   ({ name: localAgentTokenName(stage), duration: LOCAL_AGENT_TOKEN_DURATION }) as const;
 
 /**
@@ -91,27 +91,20 @@ export const mcpApplicationProps = <TokenId>(stage: string, tokenId: TokenId) =>
  * environment. Nothing is enrolled in the application: it names its host and path, not the Worker.
  */
 export const mcpAccessProps = <
-  TokenId,
-  ClientId,
-  Audience,
-  TokenError,
-  ApplicationError,
-  TokenServices,
-  ApplicationServices,
+  Token extends { readonly serviceTokenId: unknown; readonly clientId: unknown },
+  Application extends { readonly aud: unknown },
+  Error,
+  Services,
 >(options: {
   readonly stage: string;
   readonly runtime: boolean;
   readonly declare: {
     readonly serviceToken: (
       props: ReturnType<typeof localAgentTokenProps>,
-    ) => Effect.Effect<
-      { readonly serviceTokenId: TokenId; readonly clientId: ClientId },
-      TokenError,
-      TokenServices
-    >;
+    ) => Effect.Effect<Token, Error, Services>;
     readonly application: (
-      props: ReturnType<typeof mcpApplicationProps<TokenId>>,
-    ) => Effect.Effect<{ readonly aud: Audience }, ApplicationError, ApplicationServices>;
+      props: ReturnType<typeof mcpApplicationProps<Token["serviceTokenId"]>>,
+    ) => Effect.Effect<Application, Error, Services>;
   };
 }) =>
   Effect.gen(function* () {

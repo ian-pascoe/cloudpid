@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { LOCAL_AGENT_TOKEN_ID } from "@cloudpid/server/mcp-access";
 
-/** The stack's name, the first part of every state path (`infra/alchemy.run.ts`). */
+/** The stack's name, the first part of every state path: it must match `Alchemy.Stack("cloudpid", …)` in `infra/alchemy.run.ts`. */
 const STACK = "cloudpid";
 
 /** Where alchemy keeps the stage's service token record: `<stack>/<stage>/<namespace>/<logical id>`. */

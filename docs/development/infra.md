@@ -91,11 +91,11 @@ Workers Scripts Write also covers what rides on the script upload: observability
 
 ## The MCP endpoint's Access application
 
-[_Access and identity_](../architecture/mcp-endpoint.md#access-and-identity) is the design; this is how it is deployed. Every deployed stage has **three Access applications** on its host, all in the stack:
+[_Access and identity_](../architecture/mcp-endpoint.md#access-and-identity) is the design; this is how it is deployed. Every deployed stage has **three Access applications** on its host, all in the stack (the third once #444 lands):
 
 1. **The Worker's own** (`Server/Access`), owner-only, which covers every path (`deployment(stage)`, above). Managed OAuth is never turned on for it.
 2. **The MCP endpoint's** (`Server/McpAccess`, `apps/server/src/mcp-access.ts`): `self_hosted` with the `public` destination `<host>/mcp` (`pi.ianpascoe.dev/mcp` on `prod`, `cloudpid-server-<label>.ian-g-pascoe.workers.dev/mcp` elsewhere, which is `appOrigin(stage)`'s host and covers sub-paths), managed OAuth (`oauthConfiguration`: access tokens 5 minutes, grant 14 days, dynamic client registration for loopback and localhost), the owner-email Allow, and Service Auth for the Local agent's token **by id** (never `anyValidServiceToken`). A hostname destination beats the Worker's, so only `/mcp` gets managed OAuth: the OAuth token and the service token pass `/mcp` and get a 302 to the Access login on `/` and `/rpc`.
-3. **The Bypass application** of [ADR-0035](../adr/0035-cloudpid-identifies-itself-with-a-public-client-document-and-takes-authorization-responses-outside-access.md) for the two public paths under `/oauth/mcp/`, which the Access guard's slice declares.
+3. **The Bypass application** of [ADR-0035](../adr/0035-cloudpid-identifies-itself-with-a-public-client-document-and-takes-authorization-responses-outside-access.md) for the two public paths under `/oauth/mcp/`, which arrives with #444: until then a stage has two.
 
 - **The token:** `Server/LocalAgentToken`, an `Access.ServiceToken` of a year (`8760h`), named `cloudpid-local-agent` on `prod` and `cloudpid-local-agent-<label>` elsewhere: alchemy finds a token again by its name, and a name two stages shared would make one's destroy delete the other's. It needs the deploy token's Access: Service Tokens Write ([_CI credentials_](#ci-credentials)).
 - **The Worker's vars:** `CLOUDPID_MCP_ACCESS_AUD` (the `/mcp` application's `aud`, which is not the main application's) and `MCP_SERVICE_TOKEN_CLIENT_ID` (the token's client ID, public). The secret never reaches the Worker. `alchemy dev` declares neither and sets neither var.
