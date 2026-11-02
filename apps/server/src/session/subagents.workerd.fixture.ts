@@ -46,6 +46,7 @@ import {
 import {
   type AbortOptions,
   type FileSearch,
+  type Prompt,
   SessionHost,
   sessionHostLayer,
   type SlashCommand,
@@ -361,7 +362,41 @@ export class TestSubagentSession extends DurableObject {
 
   submit(text: string): Promise<number> {
     return this.#runtime.runPromise(
-      Effect.flatMap(SessionHost, (host) => host.submit({ requestId: text, input: text })),
+      Effect.flatMap(SessionHost, (host) =>
+        host.submit({ requestId: text, input: text, ...this.#held(text) }),
+      ),
+    );
+  }
+
+  /** The messages whose preparation is held, by text: their page read waits until `finishPreparing`. */
+  readonly #preparing = new Map<string, PromiseWithResolvers<void>>();
+
+  /** Hold the preparation of the message `text` (a slow read of its attached pages) until `finishPreparing(text)`. */
+  holdPreparing(text: string): void {
+    this.#preparing.set(text, Promise.withResolvers<void>());
+  }
+
+  /** Let the held preparation of the message `text` end. */
+  finishPreparing(text: string): void {
+    this.#preparing.get(text)?.resolve();
+  }
+
+  /** The page read that holds the preparation of `text`, if it is held. */
+  #held(text: string): Pick<Prompt, "attachPages"> {
+    const gate = this.#preparing.get(text);
+
+    return gate === undefined
+      ? {}
+      : { attachPages: Effect.promise(() => gate.promise).pipe(Effect.as([])) };
+  }
+
+  /** Navigate the Session tree to a point that does not exist: the refusal while a message is prepared, or why it could not. */
+  navigateNowhere(): Promise<string | undefined> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.navigate({ entryId: 0, position: "at" })).pipe(
+        Effect.as(undefined),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      ),
     );
   }
 
@@ -397,7 +432,7 @@ export class TestSubagentSession extends DurableObject {
   submitTo(conversationId: ConversationId, text: string): Promise<number> {
     return this.#runtime.runPromise(
       Effect.flatMap(SessionHost, (host) =>
-        host.submit({ requestId: text, input: text, conversationId }),
+        host.submit({ requestId: text, input: text, conversationId, ...this.#held(text) }),
       ),
     );
   }

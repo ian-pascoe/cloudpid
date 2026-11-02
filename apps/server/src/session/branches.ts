@@ -65,6 +65,8 @@ export type BranchesOptions = {
   readonly pendingCompactions: () => Readonly<Record<string, string>>;
   /** Why the Session cannot move now (it is still being filled as a Fork or Clone), if it cannot. */
   readonly refusal: () => string | undefined;
+  /** Whether a message is being prepared for `conversation`: the tree does not move until it is placed. */
+  readonly preparing: (conversation: ConversationId) => boolean;
   /** Runs `effect` in turn with the owner's messages, so none lands on a branch being left. */
   readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 };
@@ -114,7 +116,15 @@ export const sessionBranches = (options: BranchesOptions) => {
 
   /** Fail with why the active branch cannot be left now, if it cannot. */
   const refuseWhileBusy = (conversation: Conversation) =>
-    busyReason(conversation).pipe(
+    (options.preparing(conversation.id)
+      ? Effect.fail(
+          refuse(
+            "The Session tree cannot be navigated while a message is being prepared: wait for it to be sent.",
+          ),
+        )
+      : Effect.void
+    ).pipe(
+      Effect.andThen(busyReason(conversation)),
       Effect.flatMap((reason) =>
         reason === undefined
           ? Effect.void
