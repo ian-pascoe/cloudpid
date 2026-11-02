@@ -13,18 +13,25 @@ import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./sign-in-routes.ts";
  * Bypass/Everyone policy. A path-scoped application beats the Worker's own. Access applies it to more than the two
  * paths (sub-paths, any capitalisation: #403), so the Worker refuses every other form itself (`sign-in-routes.ts`).
  *
- * There is no `domain` and no `adopt`: whether Cloudflare refuses a second application with the same destinations, which
- * a leftover of a failed destroy would be, is the check of #422 D6.2 (see `docs/development/infra.md` → Stages and Access).
+ * Cloudflare refuses a second application with the same destinations (409, `application_already_exists`), which a
+ * leftover of a failed destroy would be, and it echoes the first destination as the application's `domain` (the check of
+ * #422 D6.2, on a preview). So the props set `domain` to that first destination, the same string, and `adopt`: alchemy
+ * finds the leftover by its `domain` and takes it over, instead of the deploy failing with a 409.
  */
-export const bypassApplicationProps = (stage: string) =>
-  ({
+export const bypassApplicationProps = (stage: string) => {
+  const documentUri = `${appHost(stage)}${CLIENT_DOCUMENT_PATH}`;
+
+  return {
     type: "self_hosted",
+    domain: documentUri,
+    adopt: true,
     destinations: [
-      { type: "public", uri: `${appHost(stage)}${CLIENT_DOCUMENT_PATH}` },
+      { type: "public", uri: documentUri },
       { type: "public", uri: `${appHost(stage)}${CALLBACK_PATH}` },
     ],
     policies: [{ decision: "bypass", include: [{ everyone: {} }] }],
-  }) as const;
+  } as const;
+};
 
 /**
  * The stack's part for the bypass: on a live stage, the Bypass application (`options.declare`, which gets the props

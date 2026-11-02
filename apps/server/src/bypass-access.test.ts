@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import { bypassAccessProps, bypassApplicationProps } from "./bypass-access.ts";
 import { appOrigin } from "./deployment.ts";
+import { appHost } from "./mcp-access.ts";
 import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./sign-in-routes.ts";
 
 const run = (options: {
@@ -54,18 +55,31 @@ describe("the Bypass application's props", () => {
     },
   );
 
-  it("are a self-hosted application with one Bypass/Everyone policy, and no domain, adopt or Worker destination", () => {
+  it("are a self-hosted application with one Bypass/Everyone policy, and no Worker destination", () => {
     const props = bypassApplicationProps("prod");
 
     expect(props.type).toBe("self_hosted");
     expect(props.policies).toEqual([{ decision: "bypass", include: [{ everyone: {} }] }]);
     expect(props).toStrictEqual({
       type: "self_hosted",
+      domain: props.domain,
+      adopt: true,
       destinations: props.destinations,
       policies: props.policies,
     });
     expect(JSON.stringify(props)).not.toContain("worker");
   });
+
+  it.each(["prod", "pr-540", "dev_ian"])(
+    "set domain to the first destination, as Cloudflare echoes it, and adopt a leftover of %s",
+    (stage) => {
+      const props = bypassApplicationProps(stage);
+
+      expect(props.domain).toBe(props.destinations[0].uri);
+      expect(props.domain).toBe(`${appHost(stage)}${CLIENT_DOCUMENT_PATH}`);
+      expect(props.adopt).toBe(true);
+    },
+  );
 
   it("have no destination outside the two paths, and none that covers `/mcp` or `/oauth/mcp/start`", () => {
     for (const { uri } of bypassApplicationProps("prod").destinations) {
