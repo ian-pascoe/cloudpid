@@ -8,6 +8,7 @@
     "./toolchains": "./src/toolchains.ts",
     "./supervisor": "./src/supervisor.ts",
     "./memory-guard": "./src/memory-guard.ts",
+    "./mcp-bridge": "./src/mcp-bridge.ts",
     "./workspaces": "./src/workspaces.ts",
     "./builds": "./src/builds.ts",
     "./changes": "./src/changes.ts",

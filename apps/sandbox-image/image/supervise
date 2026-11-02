@@ -17,17 +17,24 @@
 # with no swap to use, evicts computerd's own pages long before its OOM killer acts, and every command stalls, `echo`
 # included. Its lines go where computerd's do, so an exit report carries them too.
 #
+# It runs the Container MCP bridge beside computerd too (`cloudpid-mcp-bridge.ts`; docs/architecture/mcp-connections.md → The
+# stdio bridge) when the launch's environment has the token the Workspace DO minted for it (CLOUDPID_MCP_BRIDGE_TOKEN): a
+# bridge with no token would serve no one, and a Workspace DO from before the bridge sets none. The bridge, which keeps nothing
+# across a stop, runs on Node, which the image's base mise.toml installs; its lines go where computerd's do.
+#
 # Before anything else runs, it makes the Container's start marker anew (docs/architecture/container.md → Snapshots): the
 # scan before a snapshot searches only the files whose status changed after it, unless the Workspace DO asks for all.
 #
-# The host, the path and the number of lines, and the marker, are those of `@cloudpid/sandbox-image/supervisor`;
-# CLOUDPID_COMPUTERD, CLOUDPID_MEMORY_GUARD, CLOUDPID_MEMORY_NOTES, CLOUDPID_START_MARKER and CLOUDPID_REPORT_* exist for
-# its tests, and the image sets none of them.
+# The host, the path and the number of lines, and the marker, are those of `@cloudpid/sandbox-image/supervisor`, the
+# bridge's script that of `@cloudpid/sandbox-image/mcp-bridge`; CLOUDPID_COMPUTERD, CLOUDPID_MEMORY_GUARD,
+# CLOUDPID_MEMORY_NOTES, CLOUDPID_START_MARKER, CLOUDPID_MCP_BRIDGE, CLOUDPID_MCP_BRIDGE_NODE and CLOUDPID_REPORT_* exist
+# for its tests, and the image sets none of them.
 set -u
 
 computerd=${CLOUDPID_COMPUTERD:-/usr/local/bin/computerd}
 memory_guard=${CLOUDPID_MEMORY_GUARD:-/usr/local/bin/cloudpid-memory-guard}
 memory_notes=${CLOUDPID_MEMORY_NOTES:-/run/cloudpid-memory-guard}
+mcp_bridge=${CLOUDPID_MCP_BRIDGE:-/usr/local/share/cloudpid/mcp-bridge.ts}
 start_marker=${CLOUDPID_START_MARKER:-/run/cloudpid-started}
 report_host=${CLOUDPID_REPORT_HOST:-cloudpid.internal}
 report_port=${CLOUDPID_REPORT_PORT:-80}
@@ -79,6 +86,23 @@ if [ -x "$memory_guard" ]; then
   guard_pid=$!
 fi
 
+# The bridge's Node is the image's own: the one the base mise.toml (in the image, whatever a Workspace's config says) names, found
+# before any Workspace config exists; `node` on PATH where mise cannot say.
+bridge_pid=
+if [ -n "${CLOUDPID_MCP_BRIDGE_TOKEN:-}" ] && [ -r "$mcp_bridge" ]; then
+  bridge_node=${CLOUDPID_MCP_BRIDGE_NODE:-$(MISE_GLOBAL_CONFIG_FILE=/usr/local/share/cloudpid/mise.toml MISE_TRUSTED_CONFIG_PATHS=/usr/local/share/cloudpid mise which node 2>/dev/null || command -v node)}
+  if [ -n "$bridge_node" ]; then
+    "$bridge_node" --disable-warning=ExperimentalWarning "$mcp_bridge" >&3 2>&3 &
+    bridge_pid=$!
+  else
+    echo "cloudpid-supervise: no node to run the MCP bridge with" >&3
+  fi
+fi
+
+# Only the bridge holds the token (docs/architecture/mcp-connections.md → The stdio bridge): computerd, and the commands it
+# runs, are started without it.
+unset CLOUDPID_MCP_BRIDGE_TOKEN
+
 started=$SECONDS
 "$computerd" "$@" >"$scratch/out" 2>&1 &
 computerd_pid=$!
@@ -93,10 +117,14 @@ while :; do
   kill -0 "$computerd_pid" 2>/dev/null || break
 done
 
-# The guard has nothing left to keep up, and its output is the last writer this script knows of.
+# The guard and the bridge have nothing left to keep up, and their output is the last writer this script knows of.
 if [ -n "$guard_pid" ]; then
   kill "$guard_pid" 2>/dev/null
   wait "$guard_pid" 2>/dev/null
+fi
+if [ -n "$bridge_pid" ]; then
+  kill "$bridge_pid" 2>/dev/null
+  wait "$bridge_pid" 2>/dev/null
 fi
 exec 3>&-
 

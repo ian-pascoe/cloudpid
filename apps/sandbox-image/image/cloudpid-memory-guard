@@ -22,9 +22,9 @@ notes=${CLOUDPID_MEMORY_NOTES:-/run/cloudpid-memory-guard}
 # SIGTERM below the lower of 15% of the memory and 1 GiB available, SIGKILL below the lower of 8% and 512 MiB.
 memory_percent=15,8
 memory_kib=1048576,524288
-# Process names (at most 15 characters, as the kernel keeps them) earlyoom never stops: computerd, the supervisor and
-# this script.
-avoid='^(computerd|cloudpid-superv|cloudpid-memory)$'
+# Process names (at most 15 characters, as the kernel keeps them) earlyoom never stops: computerd, the supervisor, this
+# script and the MCP bridge.
+avoid='^(computerd|cloudpid-superv|cloudpid-memory|cloudpid-mcp-br)$'
 
 mkdir -p -- "$notes"
 
