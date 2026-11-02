@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["../../.oxlintrc.json"],
+  "rules": {
+    // The one package that imports the SDK (docs/architecture/mcp.md → Packages and objects).
+    "no-restricted-imports": "off"
+  }
+}

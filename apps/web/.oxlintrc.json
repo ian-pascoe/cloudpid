@@ -1,4 +1,32 @@
 {
   "$schema": "../../node_modules/@effect/tsgo/oxlint-schema.json",
-  "extends": ["../../.oxlintrc.json"]
+  "extends": ["../../.oxlintrc.json"],
+  "rules": {
+    // Replaces the root rule. The web app may import types, and only types, from `@modelcontextprotocol/ext-apps`
+    // (`import type`), for its own App bridge: the first pattern lets only type imports of `ext-apps` and its
+    // subpaths through. The second restricts every other `@modelcontextprotocol/*` package, the SDK's `client`,
+    // `core`, `server`, `ext-tasks` and any it adds later. The `ext-apps` rule is a `regex` because oxlint stops
+    // reporting value imports of a group's subpaths once another group in the rule negates them.
+    // docs/architecture/mcp.md → Packages and objects.
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "regex": "^@modelcontextprotocol/ext-apps(/|$)",
+            "allowTypeImports": true,
+            "message": "The web app imports only types from @modelcontextprotocol/ext-apps (`import type`), for its own App bridge. See docs/architecture/mcp.md → Packages and objects."
+          },
+          {
+            "group": [
+              "@modelcontextprotocol/**",
+              "!@modelcontextprotocol/ext-apps",
+              "!@modelcontextprotocol/ext-apps/**"
+            ],
+            "message": "Only packages/mcp imports the MCP SDK: it adds about 9-10 MiB of cold heap to every isolate that loads it. The web app imports @cloudpid/mcp/types. See docs/architecture/mcp.md → Packages and objects."
+          }
+        ]
+      }
+    ]
+  }
 }

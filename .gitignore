@@ -7,3 +7,5 @@ node_modules/
 .env*
 !.env.example
 dist/
+# Planted by packages/mcp/src/import-rule.test.ts; a crash must not leave them committable.
+**/src/planted-*/

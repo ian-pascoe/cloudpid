@@ -35,6 +35,17 @@
   },
   "rules": {
     "oxc/no-accumulating-spread": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "group": ["@modelcontextprotocol/**"],
+            "message": "Only packages/mcp imports @modelcontextprotocol/*: it loads the SDK, which adds about 9-10 MiB of cold heap to every isolate. Use @cloudpid/mcp/types or @cloudpid/mcp/oauth, or an RPC to McpEngine. See docs/architecture/mcp.md → Packages and objects."
+          }
+        ]
+      }
+    ],
     "anti-slop/no-array-filter-map": "error",
     "anti-slop/no-reduce-accumulator-copy": "error",
     "anti-slop/no-chained-type-assertions": "error",
