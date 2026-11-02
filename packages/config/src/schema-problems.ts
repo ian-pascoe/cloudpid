@@ -23,11 +23,12 @@ export const problemsOf = (error: Schema.SchemaError): ReadonlyArray<SettingsPro
     return { keys, line: path === "" ? issue.message : `${path}: ${issue.message}` };
   });
 
-/** The lines of `problems`, one each, for a person to read. */
-export const problemLines = (problems: ReadonlyArray<SettingsProblem>): string =>
+/** The lines of `problems` for a person to read, one each, or on one line with `separator`. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a join of plain problems, not a combinator.
+export const problemLines = (problems: ReadonlyArray<SettingsProblem>, separator = "\n"): string =>
   Arr.join(
     Arr.map(problems, (problem) => problem.line),
-    "\n",
+    separator,
   );
 
 /**

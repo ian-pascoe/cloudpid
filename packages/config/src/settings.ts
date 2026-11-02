@@ -13,10 +13,10 @@ import {
   MCP_ROOT,
   type McpLayerScope,
   McpSettings,
-  mcpEntryKeys,
   mcpFieldPath,
   mcpLayerProblems,
   mcpServersOf,
+  withMcpLayerRead,
 } from "./mcp-servers.ts";
 import { problemLines, problemsOf, type SettingsProblem, withProblems } from "./schema-problems.ts";
 
@@ -488,8 +488,17 @@ export type LenientSettings = {
  * reading what an earlier release saved.
  */
 export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
-  let rest = withRenamedTools(overrides);
+  const renamed = withRenamedTools(overrides);
   const dropped: string[] = [];
+
+  // The MCP servers are read as the MCP server set reads them (`readMcpLayer`): an entry at a time.
+  const mcp = isJsonObject(renamed)
+    ? withMcpLayerRead(renamed, "global")
+    : { document: renamed, problems: [] };
+
+  let rest = mcp.document;
+
+  for (const problem of mcp.problems) dropped.push(problem.line);
 
   // Dropping a path settles its problem; a few rounds cover a document with several.
   for (let round = 0; round < 8; round += 1) {
@@ -503,9 +512,7 @@ export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
 
     if (Arr.some(problems, (problem) => problem.keys.length === 0)) break;
 
-    rest = Arr.reduce(problems, rest, (left, problem) =>
-      omitPath(left, mcpEntryKeys(problem.keys)),
-    );
+    rest = Arr.reduce(problems, rest, (left, problem) => omitPath(left, problem.keys));
   }
 
   return { settings: DEFAULT_SETTINGS, dropped };

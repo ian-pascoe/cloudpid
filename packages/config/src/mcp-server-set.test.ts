@@ -1,9 +1,13 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type McpRepoLayer, resolveMcpServerSet } from "./mcp-server-set.ts";
+import { normalizeMcpServer } from "./mcp-servers.ts";
+import { resolveOverridesLeniently } from "./settings-overrides.ts";
+import { resolveLeniently } from "./settings.ts";
 
 const LINEAR = { url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer ${TOKEN}" } };
 const LOCAL = { command: "node", args: ["server.js"] };
@@ -178,7 +182,11 @@ describe("the MCP server set", () => {
 
       expect(set.servers).toHaveLength(50 + 50);
       expect(set.problems).toEqual([
-        { source: { kind: "global" }, name: "g50", message: expect.stringContaining("at most 50") },
+        {
+          source: { kind: "global" },
+          name: "g50",
+          message: expect.stringContaining("over the 50"),
+        },
       ]);
       expect(server(set, "g0").server.enabled).toBe(false);
     });
@@ -530,5 +538,123 @@ describe("the MCP server set", () => {
       ]);
       expect(set.problems[0]?.reset).toBeUndefined();
     });
+  });
+});
+
+describe("the set and the Settings read the same servers", () => {
+  const many = (count: number, prefix: string, value: Schema.Json): Schema.JsonObject =>
+    Record.fromEntries(
+      count === 0 ? [] : Arr.makeBy(count, (i): [string, Schema.Json] => [`${prefix}${i}`, value]),
+    );
+
+  const BROKEN = { command: "x", auth: "nope" };
+
+  /** 51 entries, the third of them broken. */
+  const third = Record.union(
+    Record.union(many(2, "a", LOCAL), { a2: BROKEN }, (left) => left),
+    many(49, "b", LOCAL),
+    (left) => left,
+  );
+
+  /** Stale documents, as `[Global's, the Environment's]`: each is something the strict reads would refuse. */
+  const stale: ReadonlyArray<readonly [string, Schema.Json, Schema.Json]> = [
+    [
+      "a stale adjustment: one key stands",
+      {},
+      owner({ foo: { enabled: false, exposure: "bogus" } }),
+    ],
+    [
+      "a stale adjustment of a Global server",
+      owner({ foo: LOCAL }),
+      owner({ foo: { enabled: false, exposure: "bogus", timeout: 3 } }),
+    ],
+    ["an entry that does not decode, then its twin", owner({ Foo: BROKEN, foo: LOCAL }), {}],
+    ["a twin, then the entry that does not decode", owner({ foo: LOCAL, Foo: BROKEN }), {}],
+    ["51 entries with the third broken", owner(third), {}],
+    ["an adjustment at Global", owner({ a: LOCAL, b: { enabled: false } }), {}],
+    [
+      "names that are not names",
+      owner({ "bad name": LOCAL, ok: LOCAL, [`n`.repeat(65)]: LOCAL }),
+      {},
+    ],
+    [
+      "Global's twin of an Environment's entry",
+      owner({ "my-linear": LINEAR, other: LOCAL }),
+      owner({ My_Linear: LOCAL }),
+    ],
+    [
+      "an Environment entry that does not decode over Global's",
+      owner({ linear: LINEAR }),
+      owner({ linear: BROKEN, extra: LOCAL }),
+    ],
+    [
+      "51 Environment entries, the first broken",
+      owner({ g: LOCAL }),
+      owner(Record.union({ e0: BROKEN }, many(50, "e", LOCAL), (left) => left)),
+    ],
+    [
+      "an adjustment of a name Global lacks",
+      owner({ g: LOCAL }),
+      owner({ nobody: { enabled: false } }),
+    ],
+    [
+      "entries that are not objects",
+      owner({ a: "text", b: 3, c: null, d: LOCAL }),
+      owner({ e: [] }),
+    ],
+  ];
+
+  for (const [label, global, environment] of stale) {
+    it(label, () => {
+      const settings = resolveOverridesLeniently(global, environment).settings.mcp.servers;
+      const set = resolveMcpServerSet(global, environment, []);
+
+      // The servers the Settings keep, in force, are the set's, with the same state.
+      const kept = Record.fromEntries(
+        Arr.filterMap(Record.toEntries(settings), ([name, value]) => {
+          const server = normalizeMcpServer(value);
+
+          return server === undefined ? Result.failVoid : Result.succeed([name, server] as const);
+        }),
+      );
+
+      expect(
+        Record.fromEntries(Arr.map(set.servers, ({ name, server }) => [name, server] as const)),
+      ).toEqual(kept);
+    });
+  }
+
+  it("holds for Global's own document too", () => {
+    for (const [, global] of stale) {
+      const kept = resolveLeniently(global).settings.mcp.servers;
+      const set = resolveMcpServerSet(global, {}, []);
+
+      expect(Arr.map(set.servers, ({ name }) => name)).toEqual(Record.keys(kept));
+    }
+  });
+
+  it("leaves a stale adjustment's valid keys in force, and skips the rest of it", () => {
+    const set = resolveMcpServerSet(
+      owner({ foo: LOCAL }),
+      owner({ foo: { enabled: false, exposure: "bogus" } }),
+      [],
+    );
+
+    expect(set.servers[0]?.server).toMatchObject({ enabled: false, exposure: "codemode" });
+    expect(set.problems).toEqual([
+      {
+        source: { kind: "environment" },
+        name: "foo",
+        message: expect.stringMatching(/^exposure: /),
+      },
+    ]);
+  });
+
+  it("counts only the entries that stand, and makes no twin of one that does not", () => {
+    const counted = resolveMcpServerSet(owner(third), {}, []);
+    const twins = resolveMcpServerSet(owner({ Foo: BROKEN, foo: LOCAL }), {}, []);
+
+    expect(counted.servers).toHaveLength(50);
+    expect(Arr.map(twins.servers, ({ name }) => name)).toEqual(["foo"]);
   });
 });

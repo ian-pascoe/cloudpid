@@ -19,7 +19,8 @@ import {
   MCP_ADJUSTMENT_KEYS,
   mcpFieldPath,
   mcpServersOf,
-  normalizeMcpName,
+  mcpShadowedTwins,
+  withMcpLayerRead,
 } from "./mcp-servers.ts";
 import { type Patch, patchOf, sameJson } from "./patch.ts";
 import { problemLines } from "./schema-problems.ts";
@@ -455,27 +456,21 @@ const withoutShadowedTwins = (
 
   if (!isJsonObject(own) || !isJsonObject(global)) return { overrides: inherited, dropped: [] };
 
-  const ownNames = Arr.filterMap(Record.toEntries(own), ([name, value]) =>
-    isJsonObject(value) && isMcpFullEntry(value) ? Result.succeed(name) : Result.failVoid,
-  );
-
-  const shadowed = Arr.filterMap(Record.toEntries(global), ([name]) => {
-    const twin = Arr.findFirst(
-      ownNames,
-      (held) => held !== name && normalizeMcpName(held) === normalizeMcpName(name),
+  const fullNames = (servers: Schema.JsonObject) =>
+    Arr.filterMap(Record.toEntries(servers), ([name, value]) =>
+      isJsonObject(value) && isMcpFullEntry(value) ? Result.succeed(name) : Result.failVoid,
     );
 
-    return Option.isSome(twin) ? Result.succeed([name, twin.value] as const) : Result.failVoid;
-  });
+  const shadowed = mcpShadowedTwins(fullNames(global), fullNames(own));
 
   return {
-    overrides: Arr.reduce(shadowed, inherited, (left, [name]) =>
+    overrides: Arr.reduce(shadowed, inherited, (left, { global: name }) =>
       removeAt(left, [MCP_ROOT, "servers", name]),
     ),
     dropped: Arr.map(
       shadowed,
-      ([name, twin]) =>
-        `${MCP_ROOT}.servers.${name}: Global's server is left out: this Environment's own "${twin}" is a name that differs only in case or in - and _, and it has the last word`,
+      ({ global: name, environment }) =>
+        `${MCP_ROOT}.servers.${name}: Global's server is left out: this Environment's own "${environment}" is a name that differs only in case or in - and _, and it has the last word`,
     ),
   };
 };
@@ -499,6 +494,13 @@ export const resolveOverridesLeniently = (
     dropped.push(INSTRUCTIONS_OVERRIDE_PROBLEM);
     rest = removeAt(rest, [INSTRUCTIONS_ROOT]);
   }
+
+  // The MCP servers are read as the MCP server set reads them (`readMcpLayer`): an entry, and a key of an adjustment, at a time.
+  const read = withMcpLayerRead(rest, "environment");
+
+  rest = read.document;
+
+  for (const problem of read.problems) dropped.push(problem.line);
 
   // Dropping a field settles its problem; a few rounds cover Overrides with several.
   for (let round = 0; round < MAX_LENIENT_ROUNDS; round += 1) {

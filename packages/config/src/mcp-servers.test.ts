@@ -343,7 +343,7 @@ describe("the `oauth` fields", () => {
     expect(refused(oauth({ grantType: "password" }))).toHaveLength(1);
   });
 
-  it("accept `callbackPort` and `callbackUrl` with a hint that names the redirect URI", () => {
+  it("accept `callbackPort` and `callbackUrl` with a hint that says so", () => {
     const entry = accepted(oauth({ callbackPort: 8080, callbackUrl: "http://localhost:8080/cb" }));
 
     expect(mcpEntryHints(entry)).toEqual([

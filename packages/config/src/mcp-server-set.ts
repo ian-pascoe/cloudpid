@@ -14,17 +14,15 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { isJsonObject } from "./json.ts";
 import {
-  decodeMcpServerValue,
   isMcpFullEntry,
   MCP_ADJUSTMENT_KEYS,
-  MCP_LIMITS,
-  MCP_NAME,
   type McpEntryHint,
   type McpServerEntry,
   type McpServerValue,
   mcpEntryHints,
+  mcpShadowedTwins,
+  readMcpLayer,
   mcpServersOf,
   normalizeMcpName,
   normalizeMcpServer,
@@ -131,64 +129,28 @@ const GLOBAL: McpSource = { kind: "global" };
 const ENVIRONMENT: McpSource = { kind: "environment" };
 
 /**
- * The entries and adjustments of an owner's layer (Global's document or an Environment's Overrides) that stand, each
- * entry read as the Settings read it. What a stale document holds that the Settings would refuse is skipped with a
- * problem: an entry that does not decode, a name that is not one or is the twin of an earlier one, an entry over the 50
- * servers, an adjustment at Global.
+ * An owner's layer (Global's document or an Environment's Overrides) as the Settings read it (`readMcpLayer`, which both
+ * share): what does not stand is a problem of `source`.
  */
 const readOwnerLayer = (
   document: Schema.Json,
   source: McpSource,
   problems: Array<McpProblem>,
 ): Layer => {
-  const servers = mcpServersOf(document);
-  const entries: Array<Layer["entries"][number]> = [];
-  const adjustments: Array<Layer["adjustments"][number]> = [];
-  const seen = new Map<string, string>();
+  const read = readMcpLayer(
+    mcpServersOf(document),
+    source.kind === "global" ? "global" : "environment",
+  );
 
-  if (servers === undefined || !isJsonObject(servers)) return { entries, adjustments };
-
-  for (const [name, written] of Record.toEntries(servers)) {
-    const skip = (message: string) => problems.push({ source, name, message });
-    const twin = seen.get(normalizeMcpName(name));
-
-    if (name.length > MCP_LIMITS.name || !MCP_NAME.test(name)) {
-      skip("is skipped: a name is letters, digits, - and _, at most 64 characters");
-
-      continue;
-    }
-
-    if (twin !== undefined) {
-      skip(`is skipped: it clashes with "${twin}", a name that differs only in case or in - and _`);
-
-      continue;
-    }
-
-    seen.set(normalizeMcpName(name), name);
-
-    const decoded = decodeMcpServerValue(written);
-
-    if (Result.isFailure(decoded)) {
-      skip(
-        `is skipped: ${Arr.join(
-          Arr.map(decoded.failure, ({ line }) => line),
-          "; ",
-        )}`,
-      );
-    } else if (isMcpFullEntry(decoded.success)) {
-      if (entries.length >= MCP_LIMITS.servers) {
-        skip(`is skipped: a Scope has at most ${MCP_LIMITS.servers} MCP servers`);
-      } else {
-        entries.push({ name, value: decoded.success });
-      }
-    } else if (source.kind === "global") {
-      skip("is skipped: Global holds no MCP server adjustment, it has no lower layer to adjust");
-    } else {
-      adjustments.push({ name, value: decoded.success });
-    }
+  for (const { name, keys, text } of read.problems) {
+    problems.push({
+      source,
+      name,
+      message: keys.length === 0 ? text : `${Arr.join(keys, ".")}: ${text}`,
+    });
   }
 
-  return { entries, adjustments };
+  return { entries: read.entries, adjustments: read.adjustments };
 };
 
 /** The keys of an adjustment, or of a Repo's. */
@@ -256,14 +218,32 @@ export const resolveMcpServerSet = (
   const globalLayer = readOwnerLayer(global, GLOBAL, problems);
   const environmentLayer = readOwnerLayer(overrides, ENVIRONMENT, problems);
 
-  // The owner's entries: Global's, and the Environment's over them. The set is a list of `Working` that a name finds.
-  const working: Array<Working> = Arr.map(globalLayer.entries, ({ name, value }): Working => ({
-    name,
-    source: GLOBAL,
-    value,
-    replacesGlobal: false,
-    shadowed: [],
-  }));
+  // The owner's entries: Global's, and the Environment's over them. The Environment has the last word, so a name of Global's
+  // that is the twin of one of its own is left out (the Settings leave it out too, `mcpShadowedTwins`).
+  const shadowedTwins = mcpShadowedTwins(
+    Arr.map(globalLayer.entries, ({ name }) => name),
+    Arr.map(environmentLayer.entries, ({ name }) => name),
+  );
+
+  for (const { global: name, environment } of shadowedTwins) {
+    problems.push({
+      source: GLOBAL,
+      name,
+      message: `is skipped here: it clashes with this Environment's "${environment}", a name that differs only in case or in - and _`,
+    });
+  }
+
+  const working: Array<Working> = Arr.filterMap(globalLayer.entries, ({ name, value }) =>
+    Arr.some(shadowedTwins, ({ global }) => global === name)
+      ? Result.failVoid
+      : Result.succeed<Working>({
+          name,
+          source: GLOBAL,
+          value,
+          replacesGlobal: false,
+          shadowed: [],
+        }),
+  );
 
   const indexOf = (name: string): number =>
     Arr.findFirstIndex(working, (held) => held.name === name).pipe(Option.getOrElse(() => -1));
@@ -276,24 +256,12 @@ export const resolveMcpServerSet = (
 
   for (const { name, value } of environmentLayer.entries) {
     const same = indexOf(name);
-    const twin = twinIndexOf(name);
-    const held = working[twin];
-
-    if (twin < 0 || held === undefined) {
-      working.push({ name, source: ENVIRONMENT, value, replacesGlobal: false, shadowed: [] });
-
-      continue;
-    }
 
     if (same < 0) {
-      problems.push({
-        source: GLOBAL,
-        name: held.name,
-        message: `is skipped here: it clashes with this Environment's "${name}", a name that differs only in case or in - and _`,
-      });
+      working.push({ name, source: ENVIRONMENT, value, replacesGlobal: false, shadowed: [] });
+    } else {
+      working[same] = { name, source: ENVIRONMENT, value, replacesGlobal: true, shadowed: [] };
     }
-
-    working[twin] = { name, source: ENVIRONMENT, value, replacesGlobal: same >= 0, shadowed: [] };
   }
 
   // A Repo's entries only add servers: under an owner's name they are shadowed, under an earlier Repo's they are a problem.

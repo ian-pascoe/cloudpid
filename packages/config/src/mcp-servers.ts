@@ -13,7 +13,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { isJsonObject, utf8Bytes } from "./json.ts";
-import { problemsOf, type SettingsProblem } from "./schema-problems.ts";
+import { problemLines, problemsOf, type SettingsProblem } from "./schema-problems.ts";
 
 /** The most an MCP server entry, and what holds entries, may be (D10 of the MCP server configuration design). */
 export const MCP_LIMITS = {
@@ -50,8 +50,6 @@ export const MCP_ROOT = "mcp";
 
 /** The keys an MCP server adjustment holds; every other key is part of the MCP server definition. */
 export const MCP_ADJUSTMENT_KEYS = ["enabled", "exposure", "toolExposure"] as const;
-
-export type McpAdjustmentKey = (typeof MCP_ADJUSTMENT_KEYS)[number];
 
 /** The keys of the MCP server definition: every key but those of an adjustment (`auth` is none, it is refused). */
 export const MCP_DEFINITION_KEYS = [
@@ -161,15 +159,6 @@ const isSingleReference = (text: string): boolean => /^\$\{[A-Za-z_][A-Za-z0-9_]
 const malformedReferences = (text: string): boolean =>
   Arr.some([...text.matchAll(NAME_REFERENCE)], ([, name]) => !VALID_REFERENCE.test(name ?? "")) ||
   /\$\{(?![^}]*\})/.test(text);
-
-/** The `${NAME}` an entry's text reads, in order, without repeats. */
-export const mcpReferenceNames = (text: string): ReadonlyArray<string> =>
-  Arr.dedupe(
-    Arr.filter(
-      Arr.map([...text.matchAll(NAME_REFERENCE)], ([, name]) => name ?? ""),
-      (name) => VALID_REFERENCE.test(name),
-    ),
-  );
 
 const tildePath = (text: string): boolean => /^~(\/|$)/.test(text);
 
@@ -477,6 +466,22 @@ const SettingsServer = serverSchema("settings");
 
 const RepoServer = serverSchema("repo");
 
+/**
+ * Why `name` is not a server's name here, or undefined: it is not one (`^[A-Za-z0-9_-]+$`, at most 64 characters), or it
+ * differs only in case or in `-`/`_` from a name in `seen` (normalized name to the name as spelled).
+ */
+const nameProblem = (name: string, seen: ReadonlyMap<string, string>): string | undefined => {
+  if (name.length > MCP_LIMITS.name || !MCP_NAME.test(name)) {
+    return `is not a name: use letters, digits, - and _, at most ${MCP_LIMITS.name} characters`;
+  }
+
+  const twin = seen.get(normalizeMcpName(name));
+
+  return twin === undefined
+    ? undefined
+    : `clashes with "${twin}": names that differ only in case or in - and _ are one server`;
+};
+
 /** `servers`' problems: a name that is not one, and the names that differ from an earlier one only in case or in `-`/`_`. */
 const nameProblems = (
   servers: Readonly<Record<string, unknown>>,
@@ -485,24 +490,12 @@ const nameProblems = (
   const issues: Array<Schema.FilterIssue> = [];
 
   for (const name of Record.keys(servers)) {
-    if (name.length > MCP_LIMITS.name || !MCP_NAME.test(name)) {
-      issues.push({
-        path: [name],
-        issue: `is not a name: use letters, digits, - and _, at most ${MCP_LIMITS.name} characters`,
-      });
+    const problem = nameProblem(name, seen);
 
-      continue;
-    }
-
-    const twin = seen.get(normalizeMcpName(name));
-
-    if (twin === undefined) {
+    if (problem === undefined) {
       seen.set(normalizeMcpName(name), name);
     } else {
-      issues.push({
-        path: [name],
-        issue: `clashes with "${twin}": names that differ only in case or in - and _ are one server`,
-      });
+      issues.push({ path: [name], issue: problem });
     }
   }
 
@@ -569,13 +562,6 @@ export const mcpServersOf = (document: Schema.Json): Schema.Json | undefined => 
   return mcp === undefined || !isJsonObject(mcp) ? undefined : mcp["servers"];
 };
 
-/**
- * The keys a lenient read drops for a problem at `keys`: the whole entry for a problem inside an MCP server's entry, since
- * an entry with a key left out is another server; any other problem's own keys.
- */
-export const mcpEntryKeys = (keys: ReadonlyArray<string>): ReadonlyArray<string> =>
-  keys[0] === "mcp" && keys[1] === "servers" && keys.length > 3 ? Arr.take(keys, 3) : keys;
-
 /** The problems of the servers one layer holds, as the settings' strict reads refuse them. */
 export type McpLayerScope = "global" | "environment";
 
@@ -603,7 +589,7 @@ export const mcpLayerProblems = (
       if (scope === "global") {
         problems.push({
           keys,
-          line: `${Arr.join(keys, ".")}: Global holds no MCP server adjustment: it has no lower layer to adjust`,
+          line: `${Arr.join(keys, ".")}: ${GLOBAL_ADJUSTMENT}`,
         });
       }
 
@@ -615,13 +601,183 @@ export const mcpLayerProblems = (
     if (count > MCP_LIMITS.servers) {
       problems.push({
         keys,
-        line: `${Arr.join(keys, ".")}: is over the ${MCP_LIMITS.servers} MCP servers a Scope may have`,
+        line: `${Arr.join(keys, ".")}: ${overServers}`,
       });
     }
   }
 
   return problems;
 };
+
+const GLOBAL_ADJUSTMENT = "Global holds no MCP server adjustment: it has no lower layer to adjust";
+
+const overServers = `is over the ${MCP_LIMITS.servers} MCP servers a Scope may have`;
+
+/** Something wrong with an entry of a layer, or with a key of its adjustment (`keys` below the entry). */
+export type McpLayerProblem = {
+  readonly name: string;
+  readonly keys: ReadonlyArray<string>;
+  /** What is wrong, without where. */
+  readonly text: string;
+};
+
+/** The Settings' problem for `problem`: its keys from the root, and its line as `mcp.servers.<name>[.<keys>]: <text>`. */
+export const mcpLayerProblemOf = ({ name, keys, text }: McpLayerProblem): SettingsProblem => {
+  const path = ["mcp", "servers", name, ...keys];
+
+  return { keys: path, line: `${Arr.join(path, ".")}: ${text}` };
+};
+
+/** An entry or an adjustment of a layer that stands, as the schema reads it. */
+export type McpLayerEntry = { readonly name: string; readonly value: McpServerValue };
+
+/** What one owner's layer of MCP servers holds once every part that does not stand is left out. */
+export type McpLayerRead = {
+  /** The full entries that stand, in order. */
+  readonly entries: ReadonlyArray<McpLayerEntry>;
+  /** The adjustments that stand, with only the keys that do: each key stands alone. */
+  readonly adjustments: ReadonlyArray<McpLayerEntry>;
+  /** What was left out, in order. */
+  readonly problems: ReadonlyArray<McpLayerProblem>;
+  /** The `mcp.servers` document of what stands, as written, in order. */
+  readonly servers: Schema.JsonObject;
+};
+
+/**
+ * One owner's layer of MCP servers read leniently, as the Settings read it and as the MCP server set reads it, so
+ * that the two cannot differ: every full entry that decodes stands, in order, up to 50 (what does not decode does not
+ * count, and does not make its twin a clash); an adjustment (an Environment's only, Global has none) stands key by key,
+ * each key being an Override field of its own; a name that is not one or is the twin of an earlier standing name is left
+ * out. `servers` is the layer's `mcp.servers` as written.
+ */
+export const readMcpLayer = (
+  servers: Schema.Json | undefined,
+  scope: McpLayerScope,
+): McpLayerRead => {
+  const entries: Array<McpLayerEntry> = [];
+  const adjustments: Array<McpLayerEntry> = [];
+  const problems: Array<McpLayerProblem> = [];
+  const standing: Array<readonly [string, Schema.Json]> = [];
+  const seen = new Map<string, string>();
+
+  if (servers !== undefined && isJsonObject(servers)) {
+    for (const [name, written] of Record.toEntries(servers)) {
+      const refuse = (keys: ReadonlyArray<string>, text: string) =>
+        problems.push({ name, keys, text });
+
+      const refuseDecode = (failure: ReadonlyArray<SettingsProblem>) => {
+        for (const problem of failure) {
+          const own = Arr.join(problem.keys, ".");
+
+          refuse(problem.keys, own === "" ? problem.line : problem.line.slice(own.length + 2));
+        }
+      };
+
+      const named = nameProblem(name, seen);
+
+      if (named !== undefined) {
+        refuse([], named);
+
+        continue;
+      }
+
+      if (!isJsonObject(written) || isMcpFullEntry(written)) {
+        const decoded = decodeMcpServerValue(written);
+
+        if (Result.isFailure(decoded)) {
+          refuseDecode(decoded.failure);
+        } else if (entries.length >= MCP_LIMITS.servers) {
+          refuse([], overServers);
+        } else {
+          entries.push({ name, value: decoded.success });
+          standing.push([name, written]);
+          seen.set(normalizeMcpName(name), name);
+        }
+
+        continue;
+      }
+
+      if (scope === "global") {
+        refuse([], GLOBAL_ADJUSTMENT);
+
+        continue;
+      }
+
+      const kept = Arr.filter(Record.toEntries(written), ([key, value]) => {
+        const alone = decodeMcpServerValue(Record.fromEntries([[key, value]]));
+
+        if (Result.isFailure(alone)) refuseDecode(alone.failure);
+
+        return Result.isSuccess(alone);
+      });
+
+      const adjustment = Record.fromEntries(kept);
+      const decoded = decodeMcpServerValue(adjustment);
+
+      if (Result.isFailure(decoded)) {
+        refuseDecode(decoded.failure);
+      } else if (kept.length > 0) {
+        adjustments.push({ name, value: decoded.success });
+        standing.push([name, adjustment]);
+        seen.set(normalizeMcpName(name), name);
+      }
+    }
+  }
+
+  return { entries, adjustments, problems, servers: Record.fromEntries(standing) };
+};
+
+/** A document with its MCP servers read as a layer, and the Settings' problems for what that left out. */
+export type McpLayerDocument = {
+  readonly document: Schema.JsonObject;
+  readonly problems: ReadonlyArray<SettingsProblem>;
+};
+
+/**
+ * `document` (the settings, or an Environment's Overrides) with its `mcp.servers` read as `readMcpLayer` reads them,
+ * and the Settings' problems for what that left out. A document with no `mcp.servers` is as it was.
+ */
+export const withMcpLayerRead = (
+  document: Schema.JsonObject,
+  scope: McpLayerScope,
+): McpLayerDocument => {
+  const mcp = document[MCP_ROOT];
+
+  if (mcp === undefined || !isJsonObject(mcp) || mcp["servers"] === undefined) {
+    return { document, problems: [] };
+  }
+
+  const read = readMcpLayer(mcp["servers"], scope);
+
+  return {
+    document: Record.map(document, (entry, key) =>
+      key === MCP_ROOT
+        ? Record.map(mcp, (held, name) => (name === "servers" ? read.servers : held))
+        : entry,
+    ),
+    problems: Arr.map(read.problems, mcpLayerProblemOf),
+  };
+};
+
+/**
+ * The Environment's own entries that shadow one of Global's by a twin name, differing from it only in case or in
+ * `-`/`_`: the Environment has the last word, so Global's is left out of its set and of its settings alike. Names that
+ * are the same replace instead, and are not here.
+ */
+export const mcpShadowedTwins = (
+  globalNames: ReadonlyArray<string>,
+  environmentNames: ReadonlyArray<string>,
+): ReadonlyArray<{ readonly global: string; readonly environment: string }> =>
+  Arr.filterMap(globalNames, (global) => {
+    const twin = Arr.findFirst(
+      environmentNames,
+      (held) => held !== global && normalizeMcpName(held) === normalizeMcpName(global),
+    );
+
+    return Option.isSome(twin)
+      ? Result.succeed({ global, environment: twin.value })
+      : Result.failVoid;
+  });
 
 /** An entry in force: what an MCP server is, with every default applied. */
 type McpCommon = {
@@ -714,7 +870,9 @@ export const normalizeMcpServer = (value: McpServerValue): McpServerEntry | unde
 };
 
 /**
- * A note on an entry that is accepted as it is: not a problem, and nothing is skipped. `oauth-callback-ignored`:
+ * A note on an entry that is accepted as it is: not a problem, and nothing is skipped. `kind` must gain a fallback member
+ * before a hint crosses an RPC edge (`docs/architecture/mcp.md` → Deploys: every state carries one), so that a newer
+ * kind reads on an older Worker. `oauth-callback-ignored`:
  * `callbackPort` or `callbackUrl` is read and ignored, since cloudpid signs in at its own redirect URI.
  */
 export type McpEntryHint = {
@@ -749,9 +907,6 @@ export type McpFileProblem = { readonly name: string | null; readonly message: s
 /** An entry of a Repo's file that stands, as written (its `cwd` made absolute). */
 export type McpRepoEntry = { readonly name: string; readonly value: McpServerValue };
 
-/** A hint (`McpEntryHint`) on an entry of a Repo's file that stands. */
-export type McpFileHint = McpEntryHint & { readonly name: string };
-
 /**
  * What a Repo's `.pi/mcp.json` gives: the entries that stand, a problem for each that does not or reads otherwise, and
  * the hints on those that stand.
@@ -759,7 +914,7 @@ export type McpFileHint = McpEntryHint & { readonly name: string };
 export type McpRepoFile = {
   readonly entries: ReadonlyArray<McpRepoEntry>;
   readonly problems: ReadonlyArray<McpFileProblem>;
-  readonly hints: ReadonlyArray<McpFileHint>;
+  readonly hints: ReadonlyArray<McpEntryHint & { readonly name: string }>;
 };
 
 const parseJson = (text: string): Option.Option<Schema.Json> =>
@@ -782,12 +937,6 @@ const onlySwitchesOff = (value: McpServerValue): boolean =>
 /** Whether `value` holds something to apply. */
 const holdsAdjustment = (value: McpServerValue): boolean =>
   Arr.some(MCP_ADJUSTMENT_KEYS, (key) => value[key] !== undefined);
-
-const lines = (problems: ReadonlyArray<SettingsProblem>): string =>
-  Arr.join(
-    Arr.map(problems, ({ line }) => line),
-    "; ",
-  );
 
 /**
  * The servers of a Repo's `.pi/mcp.json` (`text`, the file as read), for the Repo in directory `directory`: the
@@ -848,27 +997,19 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
   const base = `/workspace/${directory}`;
   const entries: Array<McpRepoEntry> = [];
   const problems: Array<McpFileProblem> = [];
-  const hints: Array<McpFileHint> = [];
+  const hints: Array<McpRepoFile["hints"][number]> = [];
   const seen = new Map<string, string>();
 
   for (const [name, written] of given) {
     const skip = (message: string) => problems.push({ name, message });
 
-    if (!MCP_NAME.test(name)) {
-      skip("is skipped: a name is letters, digits, - and _");
+    const unnamed = nameProblem(name, seen);
+
+    if (unnamed !== undefined) {
+      skip(`is skipped: ${unnamed}`);
 
       continue;
     }
-
-    const twin = seen.get(normalizeMcpName(name));
-
-    if (twin !== undefined) {
-      skip(`is skipped: it clashes with "${twin}", a name that differs only in case or in - and _`);
-
-      continue;
-    }
-
-    seen.set(normalizeMcpName(name), name);
 
     if (!isJsonObject(written)) {
       skip("is skipped: an entry is an object");
@@ -888,7 +1029,7 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
     const decoded = decodeMcpServerValue(value, "repo");
 
     if (Result.isFailure(decoded)) {
-      skip(`is skipped: ${lines(decoded.failure)}`);
+      skip(`is skipped: ${problemLines(decoded.failure, "; ")}`);
 
       continue;
     }
@@ -897,6 +1038,8 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
 
     if (isMcpFullEntry(entry)) {
       for (const hint of mcpEntryHints(entry)) hints.push({ ...hint, name });
+
+      seen.set(normalizeMcpName(name), name);
 
       entries.push({
         name,
@@ -910,6 +1053,7 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
     } else if (!onlySwitchesOff(entry)) {
       skip(`is skipped: ${SWITCH_OFF_PROBLEM}`);
     } else {
+      seen.set(normalizeMcpName(name), name);
       entries.push({ name, value: entry });
     }
   }
