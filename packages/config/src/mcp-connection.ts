@@ -30,15 +30,15 @@ export const mcpKeySource = (source: McpSource): string =>
 const byKey = Order.mapInput(Order.String, (entry: readonly [string, Schema.Json]) => entry[0]);
 
 /** `value` with the keys of every object in it in order, so one value has one text. */
-const sorted = (value: Schema.Json): Schema.Json => {
-  if (isJsonArray(value)) return Arr.map(value, sorted);
+export const sortedJson = (value: Schema.Json): Schema.Json => {
+  if (isJsonArray(value)) return Arr.map(value, sortedJson);
 
   if (!isJsonObject(value)) return value;
 
   return Record.fromEntries(
     Arr.map(Arr.sort(Record.toEntries(value), byKey), ([key, entry]): [string, Schema.Json] => [
       key,
-      sorted(entry),
+      sortedJson(entry),
     ]),
   );
 };
@@ -70,11 +70,11 @@ export const canonicalMcpConnection = ({ name, source, server }: McpKeyed): stri
     name: normalizeMcpName(name),
     type: server.type,
     url: server.type === "http" ? urlKey(server.url) : null,
-    headers: server.type === "http" ? sorted(server.headers) : {},
+    headers: server.type === "http" ? sortedJson(server.headers) : {},
     oauth: server.type === "http" ? oauthKey(server.oauth) : null,
     command: server.type === "stdio" ? server.command : null,
     args: server.type === "stdio" ? server.args : [],
-    env: server.type === "stdio" ? sorted(server.env) : {},
+    env: server.type === "stdio" ? sortedJson(server.env) : {},
     cwd: server.type === "stdio" ? (server.cwd ?? null) : null,
   });
 

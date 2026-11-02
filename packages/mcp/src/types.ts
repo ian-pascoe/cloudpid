@@ -5,12 +5,14 @@
  *
  * `docs/architecture/mcp.md` → Packages and objects (the core's seam), Deploys (`prior` rows carry a format `v`).
  * What is here so far: the core's tagged `McpError`, `McpErrorWire` (with its fallback `OtherMcpError`, and
- * `mayHaveRun`) for the engine edge, the call context, and the `prior` rows the host keeps for the engine
- * (`docs/architecture/mcp-connections.md` → Storage).
+ * `mayHaveRun`) for the engine edge, the call context, the `prior` rows the host keeps for the engine
+ * (`docs/architecture/mcp-connections.md` → Storage), and the host's own RPC (`./host.ts`).
  */
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+
+export * from "./host.ts";
 
 /** Where a call comes from (The MCP core #394 D7, `McpCallContext`). */
 export const McpCallOrigin = Schema.Literals(["agent", "owner", "app", "host"]);

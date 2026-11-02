@@ -26,6 +26,7 @@ import * as Data from "effect/Data";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { type McpSetLayers, mcpServerCountOf } from "./mcp-set.ts";
 
 /** The name of the settings overrides document. */
 export const SETTINGS_DOCUMENT = "settings";
@@ -244,7 +245,19 @@ export type SessionSettingsSource = {
   readonly overrides: Schema.Json;
   /** The Environment's own Instructions (empty for none), by its name; null with no Environment. */
   readonly instructions: EnvironmentInstructions | null;
+  /**
+   * How many MCP servers the Environment's set has (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension): a
+   * Session with none, and no Resource watch, never wakes the Environment's `McpHost`. Absent from an older Registry.
+   */
+  readonly mcp?: { readonly servers: number };
 };
+
+/** The layers an Environment's MCP set is resolved from: Global's document as saved and `overrides`, no Repo yet. */
+export const mcpLayersOf = (documents: DocumentStore, overrides: Schema.Json): McpSetLayers => ({
+  global: savedGlobalSettings(documents),
+  overrides,
+  repos: [],
+});
 
 /**
  * What Session `session` resolves its Settings from (ADR-0027): Global's overrides that apply, and the Overrides of the
@@ -262,9 +275,12 @@ export const sessionSettingsSource = (
   const overrides = known === null ? null : store.getSettingsOverrides(known.environment);
   const instructions = known === null ? null : store.getEnvironmentInstructions(known.environment);
 
+  // The set is resolved from Global's document as saved, as the host is handed it (`mcpServerSetOf`).
+  const servers = mcpServerCountOf(mcpLayersOf(store, overrides ?? {}));
+
   return known === null || overrides === null
-    ? { global, environment: null, overrides: {}, instructions: null }
-    : { global, environment: known.environment, overrides, instructions };
+    ? { global, environment: null, overrides: {}, instructions: null, mcp: { servers } }
+    : { global, environment: known.environment, overrides, instructions, mcp: { servers } };
 };
 
 /**

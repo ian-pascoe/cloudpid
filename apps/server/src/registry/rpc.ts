@@ -47,6 +47,7 @@ import { skillOwnersOver } from "./skill-owner.ts";
 import { joinRepoSkills, joinSkillView, repoSearchQuery, type SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
+import type { McpPushes } from "../mcp/push.ts";
 import { removals } from "./removal.ts";
 import { REGISTRY_NAME, type Registry, type SettingsOverridesUpdate } from "./Registry.ts";
 import {
@@ -106,6 +107,11 @@ export type RegistryRpcObjects<R = never> = {
   readonly spares: Spares;
   /** Keeps each Environment's Build current (`buildUpkeep`), after the answer, and makes one again when asked. */
   readonly builds: Builds;
+  /**
+   * Hands an Environment's MCP server set to its `McpHost` after a save at either Scope, `addRepo` or `removeRepo`, run after
+   * the answer (`docs/architecture/mcp-configuration.md` → From the Registry to the host).
+   */
+  readonly mcp: McpPushes;
   /** The draft composer's catalog and `@` menu, looked up in a Workspace's object. */
   readonly lookups: WorkspaceLookups;
   /** The draft's Start from menu: the branches of an Environment's Repos, asked of GitHub. */
@@ -332,6 +338,7 @@ export const serveRegistryRpc = <R = never>(
     legacy,
     spares,
     builds,
+    mcp,
     lookups,
     branches,
     skillSearch,
@@ -734,7 +741,9 @@ export const serveRegistryRpc = <R = never>(
         registry
           .renameEnvironment({ id: environment, name })
           .pipe(Effect.flatMap((naming) => named(naming, name, environment))),
-      deleteEnvironment: ({ environment }) => deleteEnvironment(environment),
+      deleteEnvironment: ({ environment }) =>
+        // The Registry noted the host to wipe; the sync wipes it, and every one that an earlier sync did not.
+        deleteEnvironment(environment).pipe(Effect.tap(() => background(mcp.sync(undefined)))),
       addRepo: ({ environment, source, name }) =>
         Effect.gen(function* () {
           const found = yield* Effect.fromResult(parseRepoSource(source)).pipe(
@@ -750,6 +759,7 @@ export const serveRegistryRpc = <R = never>(
               // The spare holds the Repos it was made with: one made before is stale now, and so is the Build.
               yield* background(spares.of(environment));
               yield* background(builds.of(environment));
+              yield* background(mcp.sync(environment));
 
               return repo;
             case "taken":
@@ -765,6 +775,7 @@ export const serveRegistryRpc = <R = never>(
               case "changed":
                 return background(spares.of(environment)).pipe(
                   Effect.andThen(background(builds.of(environment))),
+                  Effect.andThen(background(mcp.sync(environment))),
                 );
               case "absent":
                 return failed(noRepo(repo));
@@ -1166,7 +1177,8 @@ export const serveRegistryRpc = <R = never>(
         registry.updateSettings({ overrides }).pipe(
           Effect.flatMap(
             SettingsUpdate.$match({
-              Saved: ({ state }) => Effect.succeed(state),
+              // A save at Global may change the set of every Environment.
+              Saved: ({ state }) => background(mcp.sync(undefined)).pipe(Effect.as(state)),
               Rejected: ({ message }) => Effect.fail(SettingsError.make({ message })),
             }),
           ),
@@ -1180,9 +1192,10 @@ export const serveRegistryRpc = <R = never>(
             ),
           ),
       updateSettingsOverrides: ({ environment, set, reset }) =>
-        registry
-          .updateSettingsOverrides({ environment, set, reset })
-          .pipe(Effect.flatMap(settingsOverridesAnswer(environment))),
+        registry.updateSettingsOverrides({ environment, set, reset }).pipe(
+          Effect.flatMap(settingsOverridesAnswer(environment)),
+          Effect.tap(() => background(mcp.sync(environment))),
+        ),
       updateEnvironmentInstructions: ({ environment, instructions }) =>
         registry
           .updateEnvironmentInstructions({ environment, instructions })
@@ -1193,7 +1206,8 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((revert) => {
             switch (revert.status) {
               case "reverted":
-                return Effect.succeed(revert.change);
+                // A revert at Global, or at an Environment, may change a set.
+                return background(mcp.sync(undefined)).pipe(Effect.as(revert.change));
               case "changed-since":
                 return Effect.fail(
                   SettingsError.make({
