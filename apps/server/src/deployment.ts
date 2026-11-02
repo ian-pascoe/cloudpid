@@ -113,6 +113,11 @@ export const checkedAppOrigin = (served: {
  * {@link stageLabel} of a non-prod stage, which the Worker reads as the {@link STAGE_LABEL_VAR} var to build its
  * `<hash>--<label>` View URLs; `prod` has none (`undefined`, so no var is set and a View's host has no suffix). Throws
  * for a stage whose label is refused, `prod` aside.
+ *
+ * This is the Worker's own, owner-only application, and it stays that: the MCP endpoint has an application of its own
+ * (`mcp-access.ts`), with `public` destination `<host>/mcp` on every deployed stage, managed OAuth, the owner's Allow and
+ * Service Auth for the Local agent's service token. Its `aud` and the token's client ID are the Worker's vars
+ * `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`; `alchemy dev` declares neither.
  */
 export const deployment = (stage: string) => {
   const label = stageLabel(stage);

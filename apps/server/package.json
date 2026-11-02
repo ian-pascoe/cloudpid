@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./deployment": "./src/deployment.ts",
+    "./mcp-access": "./src/mcp-access.ts",
     "./github/app": "./src/github/app.ts"
   },
   "scripts": {

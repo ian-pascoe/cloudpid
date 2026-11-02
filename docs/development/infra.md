@@ -11,7 +11,7 @@ The alchemy stack is `infra/alchemy.run.ts`; its scripts run alchemy from `infra
 
 It authenticates with the local alchemy profile (`alchemy profile edit --add Cloudflare`) and keeps state with `Cloudflare.state()`. Alchemy records the Worker's absolute `main` path in state, but a deploy from another checkout path plans no change, so CI and local deploys can alternate.
 
-`alchemy dev --stage dev_$USER` replaces that stage's deployed Worker with the local one and deletes its Access app; redeploy the stage afterwards.
+`alchemy dev --stage dev_$USER` replaces that stage's deployed Worker with the local one and deletes its Access apps (the MCP endpoint's too) and its Local agent service token, so redeploy the stage afterwards and read the new token with `local-agent-token`.
 
 ## Stages and Access
 
@@ -88,6 +88,22 @@ Any branch can use `preview`'s token, and Workers Scripts Write covers every Wor
 - **Hand-set secrets:** the stack does not manage `MODEL_PROXY_API_KEY`, `SECRETS_ENCRYPTION_KEY`, the VAPID three, `EXA_API_KEY` or `PARALLEL_API_KEY`. Set each in both environments with `gh secret set <NAME> --env production` and `--env preview`, giving `preview` an encryption key and VAPID pair of its own (the dev ones from `~/.config/cloudpid/dev.env` will do), since the previews share them.
 
 Workers Scripts Write also covers what rides on the script upload: observability (`WORKER_OBSERVABILITY`) and the Images binding need no extra permission.
+
+## The MCP endpoint's Access application
+
+[_Access and identity_](../architecture/mcp-endpoint.md#access-and-identity) is the design; this is how it is deployed. Every deployed stage has **three Access applications** on its host, all in the stack:
+
+1. **The Worker's own** (`Server/Access`), owner-only, which covers every path (`deployment(stage)`, above). Managed OAuth is never turned on for it.
+2. **The MCP endpoint's** (`Server/McpAccess`, `apps/server/src/mcp-access.ts`): `self_hosted` with the `public` destination `<host>/mcp` (`pi.ianpascoe.dev/mcp` on `prod`, `cloudpid-server-<label>.ian-g-pascoe.workers.dev/mcp` elsewhere, which is `appOrigin(stage)`'s host and covers sub-paths), managed OAuth (`oauthConfiguration`: access tokens 5 minutes, grant 14 days, dynamic client registration for loopback and localhost), the owner-email Allow, and Service Auth for the Local agent's token **by id** (never `anyValidServiceToken`). A hostname destination beats the Worker's, so only `/mcp` gets managed OAuth: the OAuth token and the service token pass `/mcp` and get a 302 to the Access login on `/` and `/rpc`.
+3. **The Bypass application** of [ADR-0035](../adr/0035-cloudpid-identifies-itself-with-a-public-client-document-and-takes-authorization-responses-outside-access.md) for the two public paths under `/oauth/mcp/`, which the Access guard's slice declares.
+
+- **The token:** `Server/LocalAgentToken`, an `Access.ServiceToken` of a year (`8760h`), named `cloudpid-local-agent` on `prod` and `cloudpid-local-agent-<label>` elsewhere: alchemy finds a token again by its name, and a name two stages shared would make one's destroy delete the other's. It needs the deploy token's Access: Service Tokens Write ([_CI credentials_](#ci-credentials)).
+- **The Worker's vars:** `CLOUDPID_MCP_ACCESS_AUD` (the `/mcp` application's `aud`, which is not the main application's) and `MCP_SERVICE_TOKEN_CLIENT_ID` (the token's client ID, public). The secret never reaches the Worker. `alchemy dev` declares neither and sets neither var.
+- **Reading the token:** `bun --cwd infra run local-agent-token --stage <stage> [--profile <profile>]` prints `CLOUDPID_ACCESS_CLIENT_ID=…` and `CLOUDPID_ACCESS_CLIENT_SECRET=…` (what `/cloudpid` reads) and the expiry, from alchemy's state (`alchemy state read cloudpid/<stage>/Server/LocalAgentToken`), where the provider keeps the secret redacted: Cloudflare shows it only on create and rotate. It uses the alchemy profile the deploys use. CI never runs it and the stack never prints the secret.
+- **A preview's destroy** deletes the `/mcp` application and the token with the rest of the stage; nothing is left behind.
+- **After a deploy,** managed OAuth takes 1–2 minutes to take effect: until then `/mcp` answers `1042` or a 302.
+- **No WAF rule that requires a User-Agent may sit on `/.well-known/*`** (or Access's own OAuth endpoints): Claude Code's discovery and registration requests send an empty one, and a rule that blocks it breaks sign-in.
+- **Renewing and rotating:** the provider has no refresh, so a token that is a year old is renewed in the dashboard (Refresh) or replaced. To rotate the secret, bump `clientSecretVersion` of `Server/LocalAgentToken`, deploy, and rerun `local-agent-token`; the old secret lasts until `previousClientSecretExpiresAt`.
 
 ## Checking a deployed stage
 

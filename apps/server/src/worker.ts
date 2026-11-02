@@ -58,6 +58,7 @@ import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
 import { Workspaces } from "./workspace/resource.ts";
+import { LOCAL_AGENT_TOKEN_ID, mcpAccessProps } from "./mcp-access.ts";
 
 /**
  * The web app (`apps/web`), built at deploy time and served as static assets by this Worker. The Worker runs first
@@ -165,6 +166,21 @@ const props = Effect.gen(function* () {
   // suffix. Never taken from a request's `Host`.
   const stageLabelVar = label === undefined ? {} : { [STAGE_LABEL_VAR]: label };
 
+  // The MCP endpoint's own Access application and the Local agent's service token (mcp-access.ts), whose `aud` and client
+  // id are vars of the Worker. Declared under `Server/` like the Worker's own application.
+  const mcpAccess = yield* mcpAccessProps({
+    stage,
+    runtime: globalThis.__ALCHEMY_RUNTIME__ === true,
+    declare: {
+      serviceToken: (tokenProps) =>
+        Cloudflare.Access.ServiceToken(LOCAL_AGENT_TOKEN_ID, tokenProps).pipe(
+          Namespace.push("Server"),
+        ),
+      application: (applicationProps) =>
+        Cloudflare.Access.Application("McpAccess", applicationProps).pipe(Namespace.push("Server")),
+    },
+  });
+
   return {
     main: import.meta.url,
     compatibility: { date: "2026-08-31" },
@@ -180,6 +196,7 @@ const props = Effect.gen(function* () {
       ...(yield* browserBinding),
       // The Images binding the Session DOs' `read` prepares images with; `alchemy dev` emulates it with sharp.
       [IMAGES_BINDING]: Cloudflare.Images.Images(IMAGES_BINDING),
+      ...mcpAccess.vars,
     },
   };
 });
