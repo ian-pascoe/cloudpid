@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { MCP_HANDED_DOCUMENT } from "./mcp-registry.ts";
 import {
   environmentMcpSet,
+  mcpHandedUnreadable,
   mcpServerSetAnswer,
   mcpServerValuesAnswer,
   pendingMcpPushes,
@@ -268,6 +269,24 @@ describe("the revisions of the sets handed out", () => {
       revision: pulled.revision,
     });
     expect(pendingMcpPushes(registry, "a", 4).pushes).toEqual([]);
+  });
+});
+
+describe("the record of what the hosts were handed", () => {
+  it("is unreadable only when it exists and cannot be decoded, which the Registry says once", () => {
+    const registry = store(["a"]);
+
+    expect(mcpHandedUnreadable(registry)).toBe(false);
+
+    registry.putDocument(MCP_HANDED_DOCUMENT, "{not json", 1);
+
+    expect(mcpHandedUnreadable(registry)).toBe(true);
+
+    // The next set handed out writes it afresh.
+    registry.global(servers({ linear: LINEAR }));
+    mcpServerSetAnswer(registry, { environment: "a", heldHash: "old" }, 2);
+
+    expect(mcpHandedUnreadable(registry)).toBe(false);
   });
 });
 

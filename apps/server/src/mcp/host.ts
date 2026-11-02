@@ -111,7 +111,7 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
       store.wipedAt() ?? 0,
     );
 
-    yield* Effect.promise(() => store.destroy(revision));
+    yield* Effect.tryPromise(() => store.destroy(revision));
 
     return McpDestroyed.make({});
   }).pipe(

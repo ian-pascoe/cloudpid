@@ -92,6 +92,16 @@ const readHanded = (store: DocumentStore): Handed =>
     () => NOTHING_HANDED,
   );
 
+/**
+ * Whether the document exists but cannot be read, so that its counter starts again from 0: hosts holding later
+ * revisions then answer `Stale` to what is pushed until the counter passes them, which nothing else shows.
+ */
+export const mcpHandedUnreadable = (store: DocumentStore): boolean => {
+  const body = store.getDocument(MCP_HANDED_DOCUMENT);
+
+  return body !== null && Option.isNone(decodeHanded(body));
+};
+
 const writeHanded = (store: DocumentStore, handed: Handed, now: number): void =>
   store.putDocument(MCP_HANDED_DOCUMENT, JSON.stringify(handed), now);
 

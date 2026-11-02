@@ -31,6 +31,7 @@ import type {
 } from "@cloudpid/protocol";
 import { pageSessions, type SessionsResult } from "./session-page.ts";
 import {
+  mcpHandedUnreadable,
   mcpServerSetAnswer,
   mcpServerValuesAnswer,
   type McpValuesInput,
@@ -981,6 +982,19 @@ export const RegistryLive = Registry.make(
           openKeptVault(Redacted.value(secrets.encryptionKey), "registry"),
         );
 
+        let handedWarned = false;
+
+        /** Say once, when the `mcp-handed` document cannot be read, that its revisions start again from 0. */
+        const checkHanded = Effect.suspend(() => {
+          if (handedWarned || !mcpHandedUnreadable(store)) return Effect.void;
+
+          handedWarned = true;
+
+          return Effect.logWarning(
+            "The record of what the MCP hosts were handed cannot be read: its revisions start again from 0, and a host holding a later one answers Stale until they pass it",
+          );
+        });
+
         /** The Secrets `environment` uses, opened, for the Session DOs and the Builds: a vault that fails says why. */
         const opened = (environment: string) =>
           usedSecrets(store, vault, environment).pipe(
@@ -1636,7 +1650,8 @@ export const RegistryLive = Registry.make(
           sessionSettings: ({ session }) =>
             Effect.sync(() => sessionSettingsSource(store, session)),
           mcpServerSet: (input) =>
-            Clock.currentTimeMillis.pipe(
+            checkHanded.pipe(
+              Effect.andThen(Clock.currentTimeMillis),
               Effect.map((now) => mcpServerSetAnswer(store, input, now)),
             ),
           mcpServerValues: (input) =>
@@ -1653,7 +1668,8 @@ export const RegistryLive = Registry.make(
               );
             }),
           mcpPending: ({ environment }) =>
-            Clock.currentTimeMillis.pipe(
+            checkHanded.pipe(
+              Effect.andThen(Clock.currentTimeMillis),
               Effect.map((now) => pendingMcpPushes(store, environment, now)),
             ),
           mcpPushed: (pushed) =>
