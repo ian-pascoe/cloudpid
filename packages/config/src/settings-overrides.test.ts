@@ -1,7 +1,10 @@
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { resolveMcpServerSet } from "./mcp-server-set.ts";
 import { DEFAULT_SETTINGS, resolveLeniently, type Settings } from "./settings.ts";
 import {
   OVERRIDE_FIELD_NAMES,
@@ -284,7 +287,9 @@ describe("the fields an Environment overrides", () => {
     expect(OVERRIDE_FIELD_NAMES).toContain("extensions.<extension>.<key>");
 
     for (const field of OVERRIDE_FIELD_NAMES) {
-      if (!field.startsWith("extensions.")) expect(overrideFieldPath(field)).toBeDefined();
+      if (!field.startsWith("extensions.")) {
+        expect(overrideFieldPath(field.replace("<name>", "linear"))).toBeDefined();
+      }
     }
   });
 
@@ -404,5 +409,321 @@ describe("the change between two sets of an Environment's Overrides", () => {
       set: { spendLimit: { perSession: null } },
     });
     expect(overridesPatchBetween({ model: SONNET }, { model: SONNET })).toEqual({});
+  });
+});
+
+describe("an Environment's MCP servers", () => {
+  const LINEAR = {
+    url: "https://mcp.linear.app/mcp",
+    headers: { Authorization: "Bearer ${TOKEN}" },
+  };
+
+  const LOCAL = { command: "node", args: ["server.js"] };
+
+  /** The MCP server entries of an Environment's settings, as written. */
+  const servers = (global: Schema.Json, overrides: Schema.Json) =>
+    environment(global, overrides).mcp.servers;
+
+  describe("as Override fields", () => {
+    it("are an entry whole, and each key of an adjustment", () => {
+      expect(overrideFieldPath("mcp.servers.linear")).toEqual(["mcp", "servers", "linear"]);
+
+      for (const key of ["enabled", "exposure", "toolExposure"]) {
+        expect(overrideFieldPath(`mcp.servers.linear.${key}`)).toEqual([
+          "mcp",
+          "servers",
+          "linear",
+          key,
+        ]);
+      }
+    });
+
+    it("are not a field for another key of an entry, a section, or a name that is not one", () => {
+      for (const field of [
+        "mcp",
+        "mcp.servers",
+        "mcp.autoEnableCodemode",
+        "mcp.servers.linear.url",
+        "mcp.servers.linear.enabled.x",
+        "mcp.servers.my server.enabled",
+        `mcp.servers.${"n".repeat(65)}`,
+      ]) {
+        expect(overrideFieldPath(field)).toBeUndefined();
+      }
+    });
+
+    it("are listed in the fields to reset", () => {
+      expect(OVERRIDE_FIELD_NAMES).toEqual(
+        expect.arrayContaining([
+          "mcp.servers.<name>",
+          "mcp.servers.<name>.enabled",
+          "mcp.servers.<name>.exposure",
+          "mcp.servers.<name>.toolExposure",
+        ]),
+      );
+    });
+
+    it("are read from the Overrides: an entry as one, an adjustment key by key", () => {
+      const overrides = {
+        model: SONNET,
+        mcp: {
+          servers: {
+            own: LOCAL,
+            linear: { enabled: false, toolExposure: { "a*": "hidden" } },
+          },
+        },
+      };
+
+      expect(overrideFields(overrides)).toEqual([
+        "model",
+        "mcp.servers.own",
+        "mcp.servers.linear.enabled",
+        "mcp.servers.linear.toolExposure",
+      ]);
+      expect(Option.getOrNull(overrideValue(overrides, "mcp.servers.own"))).toEqual(LOCAL);
+      expect(Option.getOrNull(overrideValue(overrides, "mcp.servers.linear.toolExposure"))).toEqual(
+        {
+          "a*": "hidden",
+        },
+      );
+      expect(Option.isNone(overrideValue(overrides, "mcp.servers.linear.exposure"))).toBe(true);
+    });
+  });
+
+  describe("resolved over Global", () => {
+    it("inherit Global's entries", () => {
+      expect(servers({ mcp: { servers: { linear: LINEAR } } }, {})).toEqual({ linear: LINEAR });
+    });
+
+    it("take an entry of their own, which replaces Global's of that name whole", () => {
+      const own = { command: "node", args: ["mine.js"] };
+
+      expect(
+        servers(
+          { mcp: { servers: { linear: { ...LINEAR, timeout: 5 }, other: LOCAL } } },
+          {
+            mcp: { servers: { linear: own, extra: LOCAL } },
+          },
+        ),
+      ).toEqual({ linear: own, other: LOCAL, extra: LOCAL });
+    });
+
+    it("apply an adjustment over the server it adjusts: `{ ...base, ...value }`", () => {
+      expect(
+        servers(
+          {
+            mcp: {
+              servers: { linear: { ...LINEAR, exposure: "direct", toolExposure: { a: "direct" } } },
+            },
+          },
+          { mcp: { servers: { linear: { enabled: false, toolExposure: { b: "hidden" } } } } },
+        ).linear,
+      ).toEqual({
+        ...LINEAR,
+        exposure: "direct",
+        enabled: false,
+        toolExposure: { b: "hidden" },
+      });
+    });
+
+    it("keep an adjustment of a server Global does not have: its base may be a Repo's", () => {
+      expect(servers({}, { mcp: { servers: { fromRepo: { enabled: false } } } })).toEqual({
+        fromRepo: { enabled: false },
+      });
+    });
+
+    it("refuse a name that clashes with one of Global's in case or in `-`/`_`", () => {
+      const result = resolveOverrides(
+        { mcp: { servers: { "my-linear": LINEAR } } },
+        { mcp: { servers: { My_Linear: LOCAL } } },
+      );
+
+      expect(Result.isFailure(result) && result.failure.message).toBe(
+        'mcp.servers.My_Linear: clashes with "my-linear": names that differ only in case or in - and _ are one server',
+      );
+    });
+
+    it("refuse an entry that does not decode, and an adjustment that carries a definition key", () => {
+      const bad = resolveOverrides({}, { mcp: { servers: { x: { command: "a", auth: "b" } } } });
+      const adjust = resolveOverrides({}, { mcp: { servers: { x: { timeout: 3 } } } });
+
+      expect(Result.isFailure(bad) && bad.failure.message).toMatch(/^mcp\.servers\.x\.auth: /);
+      expect(Result.isFailure(adjust) && adjust.failure.message).toMatch(
+        /^mcp\.servers\.x\.timeout: /,
+      );
+    });
+
+    it("are bounded to 50 servers of their own, with their adjustments left out of the count", () => {
+      const own = (count: number) =>
+        Record.fromEntries(Arr.makeBy(count, (i): [string, Schema.Json] => [`s${i}`, LOCAL]));
+
+      const adjustments = Record.fromEntries(
+        Arr.makeBy(10, (i): [string, Schema.Json] => [`a${i}`, { enabled: false }]),
+      );
+
+      expect(
+        Result.isSuccess(
+          resolveOverrides(
+            { mcp: { servers: own(50) } },
+            {
+              mcp: {
+                servers: Record.union(
+                  Record.map(own(50), (_, key) => ({ ...LOCAL, args: [key] })),
+                  adjustments,
+                  (l) => l,
+                ),
+              },
+            },
+          ),
+        ),
+      ).toBe(true);
+
+      const over = resolveOverrides({}, { mcp: { servers: own(51) } });
+
+      expect(Result.isFailure(over) && over.failure.message).toBe(
+        "mcp.servers.s50: is over the 50 MCP servers a Scope may have",
+      );
+    });
+  });
+
+  describe("changed field by field", () => {
+    it("set an adjustment key over the others, and an entry over an adjustment", () => {
+      const adjusted = changed(
+        { mcp: { servers: { linear: { enabled: false } } } },
+        { set: { mcp: { servers: { linear: { exposure: "hidden" } } } } },
+      );
+
+      expect(adjusted).toEqual({
+        mcp: { servers: { linear: { enabled: false, exposure: "hidden" } } },
+      });
+      expect(changed(adjusted, { set: { mcp: { servers: { linear: LOCAL } } } })).toEqual({
+        mcp: { servers: { linear: LOCAL } },
+      });
+    });
+
+    it("reset an adjustment key, and the adjustment with its last key", () => {
+      const overrides = { mcp: { servers: { linear: { enabled: false, exposure: "hidden" } } } };
+      const one = changed(overrides, { reset: ["mcp.servers.linear.enabled"] });
+
+      expect(one).toEqual({ mcp: { servers: { linear: { exposure: "hidden" } } } });
+      expect(changed(one, { reset: ["mcp.servers.linear.exposure"] })).toEqual({});
+      expect(
+        changed(overrides, {
+          reset: ["mcp.servers.linear.enabled", "mcp.servers.linear.exposure"],
+        }),
+      ).toEqual({});
+    });
+
+    it("reset an entry whole", () => {
+      expect(
+        changed(
+          { model: SONNET, mcp: { servers: { own: LOCAL, other: LOCAL } } },
+          { reset: ["mcp.servers.own"] },
+        ),
+      ).toEqual({ model: SONNET, mcp: { servers: { other: LOCAL } } });
+    });
+
+    it("are given field by field", () => {
+      const result = withOverrideFields(
+        {},
+        [
+          { field: "mcp.servers.linear.enabled", value: false },
+          { field: "mcp.servers.own", value: LOCAL },
+        ],
+        DEFAULT_SETTINGS,
+      );
+
+      expect(Result.isSuccess(result) && result.success).toEqual({
+        mcp: { servers: { linear: { enabled: false }, own: LOCAL } },
+      });
+      expect(
+        Result.isFailure(
+          withOverrideFields(
+            {},
+            [{ field: "mcp.servers.linear.url", value: "x" }],
+            DEFAULT_SETTINGS,
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it("make a patch that sets what differs and resets what is gone, by field", () => {
+      expect(
+        overridesPatchBetween(
+          { mcp: { servers: { linear: { enabled: false, exposure: "hidden" }, own: LOCAL } } },
+          { mcp: { servers: { linear: { enabled: false, exposure: "direct" }, new: LOCAL } } },
+        ),
+      ).toEqual({
+        set: { mcp: { servers: { linear: { exposure: "direct" }, new: LOCAL } } },
+        reset: ["mcp.servers.own"],
+      });
+    });
+  });
+
+  describe("read leniently", () => {
+    it("drop an entry that no longer decodes, which then follows Global", () => {
+      const read = resolveOverridesLeniently(
+        { mcp: { servers: { linear: LINEAR } } },
+        {
+          model: SONNET,
+          mcp: { servers: { linear: { command: "x", auth: "y" }, good: LOCAL } },
+        },
+      );
+
+      expect(read.settings.mcp.servers).toEqual({ linear: LINEAR, good: LOCAL });
+      expect(read.overrides).toEqual({ model: SONNET, mcp: { servers: { good: LOCAL } } });
+      expect(read.dropped).toEqual([expect.stringMatching(/^mcp\.servers\.linear\.auth: /)]);
+    });
+
+    it("drop a key of an adjustment that no longer applies, and keep the others", () => {
+      const read = resolveOverridesLeniently(
+        {},
+        { mcp: { servers: { linear: { enabled: false, exposure: "visible" } } } },
+      );
+
+      expect(read.overrides).toEqual({ mcp: { servers: { linear: { enabled: false } } } });
+    });
+
+    it("drop the servers over 50", () => {
+      const own = Record.fromEntries(
+        Arr.makeBy(51, (i): [string, Schema.Json] => [`s${i}`, LOCAL]),
+      );
+
+      const read = resolveOverridesLeniently({}, { mcp: { servers: own } });
+
+      expect(Record.size(read.settings.mcp.servers)).toBe(50);
+      expect(read.dropped).toEqual([
+        "mcp.servers.s50: is over the 50 MCP servers a Scope may have",
+      ]);
+    });
+
+    it("let the Environment's own name win over a twin of it in Global, as the set does", () => {
+      const read = resolveOverridesLeniently(
+        { mcp: { servers: { Linear: LINEAR } } },
+        { mcp: { servers: { linear: LOCAL } } },
+      );
+
+      expect(read.settings.mcp.servers).toEqual({ linear: LOCAL });
+      expect(read.overrides).toEqual({ mcp: { servers: { linear: LOCAL } } });
+      expect(read.dropped).toEqual([
+        expect.stringMatching(/^mcp\.servers\.Linear: is left out: .*"linear"/),
+      ]);
+      // The set the McpHost is handed says the same.
+      expect(
+        Arr.map(
+          resolveMcpServerSet({ mcp: { servers: { Linear: LINEAR } } }, read.overrides, []).servers,
+          ({ name }) => name,
+        ),
+      ).toEqual(["linear"]);
+    });
+
+    it("still refuse the clash on a save", () => {
+      const saved = resolveOverrides(
+        { mcp: { servers: { Linear: LINEAR } } },
+        { mcp: { servers: { linear: LOCAL } } },
+      );
+
+      expect(Result.isFailure(saved)).toBe(true);
+    });
   });
 });

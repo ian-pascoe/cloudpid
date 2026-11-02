@@ -422,3 +422,83 @@ describe("overrides with fields", () => {
     expect(next.branchSummary.skipPrompt).toBe(true);
   });
 });
+
+describe("the MCP servers of the settings", () => {
+  const LINEAR = { url: "https://mcp.linear.app/mcp", enabled: false };
+
+  it("default to none", () => {
+    expect(DEFAULT_SETTINGS.mcp).toEqual({ servers: {} });
+    expect(resolved({}).mcp.servers).toEqual({});
+  });
+
+  it("are kept as written, with no default filled in", () => {
+    const settings = resolved({ mcp: { servers: { linear: LINEAR } } });
+
+    expect(settings.mcp.servers).toEqual({ linear: LINEAR });
+    expect(overridesFrom(settings)).toEqual({ mcp: { servers: { linear: LINEAR } } });
+  });
+
+  it("have a field for an entry, and for each of its `enabled`, `exposure` and `toolExposure`", () => {
+    expect(settingsFieldPath("mcp.servers.linear")).toEqual(["mcp", "servers", "linear"]);
+    expect(settingsFieldPath("mcp.servers.linear.toolExposure")).toEqual([
+      "mcp",
+      "servers",
+      "linear",
+      "toolExposure",
+    ]);
+
+    for (const field of ["mcp", "mcp.servers", "mcp.servers.linear.url", "mcp.servers.a b"]) {
+      expect(settingsFieldPath(field)).toBeUndefined();
+    }
+  });
+
+  it("are read by field", () => {
+    const settings = resolved({ mcp: { servers: { linear: LINEAR } } });
+
+    expect(settingsFieldValue(settings, "mcp.servers.linear")).toEqual(LINEAR);
+    expect(settingsFieldValue(settings, "mcp.servers.linear.enabled")).toBe(false);
+    expect(settingsFieldValue(settings, "mcp.servers.linear.exposure")).toBeNull();
+  });
+
+  it("are changed by field", () => {
+    const settings = resolved({ mcp: { servers: { linear: LINEAR } } });
+
+    expect(
+      overridesWithFields(settings, [
+        { field: "mcp.servers.linear.enabled", value: true },
+        { field: "mcp.servers.local", value: { command: "node" } },
+      ]),
+    ).toEqual({
+      mcp: { servers: { linear: { ...LINEAR, enabled: true }, local: { command: "node" } } },
+    });
+    expect(overridesWithFields(settings, [{ field: "mcp.servers.linear", value: null }])).toEqual(
+      {},
+    );
+  });
+
+  it("refuse a problem with an entry, by the keys it lies at", () => {
+    expect(rejected({ mcp: { servers: { linear: { ...LINEAR, auth: "x" } } } })).toMatch(
+      /^mcp\.servers\.linear\.auth: /,
+    );
+  });
+
+  it("are read leniently an entry at a time: an entry with a problem goes whole", () => {
+    const { settings, dropped } = resolveLeniently({
+      model: SUPPORTED_MODELS[1],
+      mcp: {
+        servers: {
+          linear: LINEAR,
+          bad: { command: "x", auth: "y" },
+          adjust: { enabled: false },
+        },
+      },
+    });
+
+    expect(settings.mcp.servers).toEqual({ linear: LINEAR });
+    expect(settings.model).toBe(SUPPORTED_MODELS[1]);
+    expect(dropped).toEqual([
+      expect.stringMatching(/^mcp\.servers\.bad\.auth: /),
+      expect.stringMatching(/^mcp\.servers\.adjust: Global holds no MCP server adjustment/),
+    ]);
+  });
+});

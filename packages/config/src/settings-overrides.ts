@@ -12,10 +12,22 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import { isJsonObject } from "./json.ts";
+import {
+  isMcpFullEntry,
+  MCP_ROOT,
+  MCP_ADJUSTMENT_KEYS,
+  mcpFieldPath,
+  mcpServersOf,
+  mcpShadowedTwins,
+  withMcpAdjustmentsFitted,
+  withMcpLayerRead,
+} from "./mcp-servers.ts";
 import { type Patch, patchOf, sameJson } from "./patch.ts";
+import { problemLines } from "./schema-problems.ts";
 import {
   DEFAULT_SETTINGS,
-  decodeSettingsOverrides,
+  decodeSettingsLayer,
   overridesFrom,
   resolveLeniently,
   type Settings,
@@ -24,9 +36,6 @@ import {
   type SettingsProblem,
   withRenamedTools,
 } from "./settings.ts";
-
-const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 /**
  * The Instructions' setting, which adds up rather than being overridden (ADR-0027): the model is shown Global's, then
@@ -62,16 +71,30 @@ const withEntries = (
   entries: ReadonlyArray<readonly [string, Schema.Json]>,
 ): Schema.JsonObject => Record.fromEntries([...Record.toEntries(value), ...entries]);
 
+/** Whether `value` is an MCP server adjustment: an object that is no full entry. */
+const isAdjustment = (value: Schema.Json | undefined): boolean =>
+  isJsonObject(value) && !isMcpFullEntry(value);
+
 /**
- * How many keys lead to one field below `root`: three for an extension's option, two below a section (a Role, a
- * compaction setting, `tools.offered`), one for a setting that is a value itself or that the settings do not have.
+ * Whether the keys `keys` lead to one Override field, given the `value` there: an extension's option is three keys
+ * deep, a Role or a compaction setting two, a setting that is a value itself one, and an MCP server's entry three
+ * (`mcp.servers.<name>`), unless it is an adjustment, whose `enabled`, `exposure` and `toolExposure` are each a field
+ * at four (`docs/architecture/mcp-configuration.md` → Scopes, adjustments and the set).
  */
-const fieldDepth = (root: string): number => {
-  if (root === "extensions") return 3;
+const isFieldAt = (keys: ReadonlyArray<string>, value: Schema.Json | undefined): boolean => {
+  const [root, second] = keys;
 
-  const defaults = defaultsOf(root);
+  if (root === "extensions") return keys.length >= 3;
 
-  return Predicate.isObject(defaults) && !Arr.isArray(defaults) ? 2 : 1;
+  if (root === MCP_ROOT) {
+    if (second !== "servers") return keys.length >= 2;
+
+    return keys.length >= 4 || (keys.length === 3 && !isAdjustment(value));
+  }
+
+  const defaults = root === undefined ? undefined : defaultsOf(root);
+
+  return keys.length >= (Predicate.isObject(defaults) && !Arr.isArray(defaults) ? 2 : 1);
 };
 
 /**
@@ -85,12 +108,19 @@ export const OVERRIDE_FIELD_NAMES: ReadonlyArray<string> = Arr.flatMap(
 
     if (root === "extensions") return ["extensions.<extension>.<key>"];
 
-    // SAFETY: a setting of depth 2 is a section, whose defaults are a plain object of its settings by name.
+    if (root === MCP_ROOT) {
+      return [
+        "mcp.servers.<name>",
+        ...Arr.map(MCP_ADJUSTMENT_KEYS, (key) => `mcp.servers.<name>.${key}`),
+      ];
+    }
+
+    // SAFETY: a setting of two keys is a section, whose defaults are a plain object of its settings by name.
     const section = defaults as Readonly<Record<string, unknown>>;
 
-    return fieldDepth(root) === 2
-      ? Arr.map(Record.keys(section), (key) => `${root}.${key}`)
-      : [root];
+    return isFieldAt([root], undefined)
+      ? [root]
+      : Arr.map(Record.keys(section), (key) => `${root}.${key}`);
   },
 );
 
@@ -103,7 +133,7 @@ export const resetsOverride = (field: string, value: Schema.Json | null): boolea
 
 /**
  * The keys of Override field `field` (`model`, `roles.small`, `compaction.enabled`, `extensions.<extension>.<key>`, whose
- * key may hold dots), or undefined for a path that is not one: a setting the settings do not have, a part of a Role, a
+ * key may hold dots, `mcp.servers.<name>` and its `enabled`, `exposure` and `toolExposure`), or undefined for a path that is not one: a setting the settings do not have, a part of a Role, a
  * whole section.
  */
 export const overrideFieldPath = (field: string): ReadonlyArray<string> | undefined => {
@@ -120,7 +150,9 @@ export const overrideFieldPath = (field: string): ReadonlyArray<string> | undefi
       : [root, second, Arr.join(rest, ".")];
   }
 
-  if (parts.length !== fieldDepth(root)) return undefined;
+  if (root === MCP_ROOT) return mcpFieldPath(parts);
+
+  if (parts.length !== (isFieldAt([root], undefined) ? 1 : 2)) return undefined;
 
   return second === undefined || Predicate.hasProperty(defaultsOf(root), second)
     ? parts
@@ -132,19 +164,16 @@ type OverrideEntry = { readonly keys: ReadonlyArray<string>; readonly value: Sch
 const entriesBelow = (
   value: Schema.Json,
   keys: ReadonlyArray<string>,
-  depth: number,
 ): ReadonlyArray<OverrideEntry> =>
-  keys.length >= depth || !isJsonObject(value)
+  isFieldAt(keys, value) || !isJsonObject(value)
     ? [{ keys, value }]
-    : Arr.flatMap(Record.toEntries(value), ([key, entry]) =>
-        entriesBelow(entry, [...keys, key], depth),
-      );
+    : Arr.flatMap(Record.toEntries(value), ([key, entry]) => entriesBelow(entry, [...keys, key]));
 
 /** Each field `overrides` hold, with its keys and its value, in the order they hold them; none that adds up. */
 const overrideEntries = (overrides: Schema.Json): ReadonlyArray<OverrideEntry> =>
   isJsonObject(overrides)
     ? Arr.flatMap(Record.toEntries(overrides), ([root, value]) =>
-        root === INSTRUCTIONS_ROOT ? [] : entriesBelow(value, [root], fieldDepth(root)),
+        root === INSTRUCTIONS_ROOT ? [] : entriesBelow(value, [root]),
       )
     : [];
 
@@ -353,17 +382,15 @@ export const resolveOverrides = (
     return Result.fail(SettingsError.make({ message: INSTRUCTIONS_OVERRIDE_PROBLEM }));
   }
 
+  const renamed = withRenamedTools(overrides);
+
   return Result.mapError(
-    decodeSettingsOverrides(
-      overriding(globalApplied(global).overrides, withRenamedTools(overrides)),
+    decodeSettingsLayer(
+      overriding(globalApplied(global).overrides, renamed),
+      renamed,
+      "environment",
     ),
-    (problems) =>
-      SettingsError.make({
-        message: Arr.join(
-          Arr.map(problems, (problem) => problem.line),
-          "\n",
-        ),
-      }),
+    (problems) => SettingsError.make({ message: problemLines(problems) }),
   );
 };
 
@@ -384,11 +411,65 @@ export type LenientOverrides = {
  */
 const MAX_LENIENT_ROUNDS = 8;
 
-/** The keys of the field a problem lies in: a problem with a Role's model drops the Role. */
-const fieldKeysOf = (problem: SettingsProblem): ReadonlyArray<string> => {
-  const [root] = problem.keys;
+/** The value of `document` at `keys`; none where there is nothing. */
+const valueAt = (document: Schema.Json, keys: ReadonlyArray<string>): Schema.Json | undefined => {
+  let held: Schema.Json | undefined = document;
 
-  return root === undefined ? [] : Arr.take(problem.keys, fieldDepth(root));
+  for (const key of keys) {
+    held = isJsonObject(held) ? held[key] : undefined;
+  }
+
+  return held;
+};
+
+/**
+ * The keys of the field a problem lies in, in `overrides`: a problem with a Role's model drops the Role, one with an
+ * MCP server's entry drops the entry, and one with a key of an adjustment drops that key.
+ */
+const fieldKeysOf = (overrides: Schema.Json, problem: SettingsProblem): ReadonlyArray<string> => {
+  for (let length = 1; length <= problem.keys.length; length += 1) {
+    const keys = Arr.take(problem.keys, length);
+
+    if (isFieldAt(keys, valueAt(overrides, keys))) return keys;
+  }
+
+  return problem.keys;
+};
+
+/** Global's overrides without what an Environment's twin shadows, and a line for each. */
+type InheritedWithoutTwins = {
+  readonly overrides: Schema.JsonObject;
+  readonly dropped: ReadonlyArray<string>;
+};
+
+/**
+ * `inherited` (Global's overrides as they apply) without the MCP servers an Environment's own entry shadows by a twin
+ * name, which differs from it only in case or in `-`/`_`: the Environment has the last word, as `resolveMcpServerSet`
+ * has it, so a stale clash leaves the settings and the set of one mind. A save refuses such a clash instead
+ * (`resolveOverrides`). `dropped` says which of Global's it left out.
+ */
+const withoutShadowedTwins = (
+  inherited: Schema.JsonObject,
+  overrides: Schema.JsonObject,
+): InheritedWithoutTwins => {
+  const own = mcpServersOf(overrides);
+  const global = mcpServersOf(inherited);
+
+  if (!isJsonObject(own) || !isJsonObject(global)) return { overrides: inherited, dropped: [] };
+
+  const fullNames = (servers: Schema.JsonObject) =>
+    Arr.filterMap(Record.toEntries(servers), ([name, value]) =>
+      isJsonObject(value) && isMcpFullEntry(value) ? Result.succeed(name) : Result.failVoid,
+    );
+
+  const shadowed = mcpShadowedTwins(fullNames(global), fullNames(own));
+
+  return {
+    overrides: Arr.reduce(shadowed, inherited, (left, { global: name }) =>
+      removeAt(left, [MCP_ROOT, "servers", name]),
+    ),
+    dropped: Arr.map(shadowed, ({ global: name, text }) => `${MCP_ROOT}.servers.${name}: ${text}`),
+  };
 };
 
 /**
@@ -411,20 +492,44 @@ export const resolveOverridesLeniently = (
     rest = removeAt(rest, [INSTRUCTIONS_ROOT]);
   }
 
+  // The MCP servers are read as the MCP server set reads them (`readMcpLayer`): an entry, and a key of an adjustment, at a time.
+  const read = withMcpLayerRead(rest, "environment");
+
+  rest = read.document;
+
+  for (const problem of read.problems) dropped.push(problem.line);
+
+  // An adjustment is held to the entry bound over the Global server it adjusts, key by key, as the set holds it.
+  const fitted = withMcpAdjustmentsFitted(inherited.overrides, rest);
+
+  rest = fitted.document;
+
+  for (const problem of fitted.problems) dropped.push(problem.line);
+
   // Dropping a field settles its problem; a few rounds cover Overrides with several.
   for (let round = 0; round < MAX_LENIENT_ROUNDS; round += 1) {
-    const result = decodeSettingsOverrides(overriding(inherited.overrides, rest));
+    const base = withoutShadowedTwins(inherited.overrides, rest);
+    const result = decodeSettingsLayer(overriding(base.overrides, rest), rest, "environment");
 
     if (Result.isSuccess(result)) {
-      return { settings: result.success, global: inherited.settings, overrides: rest, dropped };
+      return {
+        settings: result.success,
+        global: inherited.settings,
+        overrides: rest,
+        dropped: [...dropped, ...base.dropped],
+      };
     }
 
-    for (const problem of result.failure) dropped.push(problem.line);
+    const problems = result.failure;
 
-    if (Arr.some(result.failure, (problem) => problem.keys.length === 0)) break;
+    for (const problem of problems) dropped.push(problem.line);
 
-    rest = Arr.reduce(result.failure, rest, (left, problem) =>
-      removeAt(left, fieldKeysOf(problem)),
+    if (Arr.some(problems, (problem) => problem.keys.length === 0)) break;
+
+    const given = rest;
+
+    rest = Arr.reduce(problems, rest, (left, problem) =>
+      removeAt(left, fieldKeysOf(given, problem)),
     );
   }
 

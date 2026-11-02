@@ -74,7 +74,7 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 - `authServerMetadataUrl`: https, ≤2,048, fetched through `guardedFetch`. It pins the authorization server.
 - `issuer`: https, no query or fragment, ≤2,048. It pins the issuer, compared after trimming one trailing `/`.
 - `grantType`: `authorization_code` (default) | `client_credentials`.
-- `callbackPort` and `callbackUrl`: accepted and ignored, with a hint showing cloudpid's redirect URI.
+- `callbackPort` and `callbackUrl`: accepted and ignored. `@cloudpid/config` gives a hint that the key is ignored (`mcpEntryHints`); the Settings page, which knows the stage's app origin, adds cloudpid's redirect URI where it shows the hint.
 - **A Repo's `.pi/mcp.json`:** every field is allowed. `${NAME}` resolves Variables only, and naming a Secret skips the entry (ADR-0029). A literal `clientSecret` or `privateKey` is accepted, since the file is public already.
 - **The agent:** any change to `oauth` is a change to an MCP server definition and needs the owner's Approval. `clientSecret` and `privateKey` are accepted only as `${NAME}` (see [_The agent's changes_](mcp-configuration.md#the-agents-changes)).
 
