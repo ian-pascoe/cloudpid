@@ -5,30 +5,35 @@
  *
  * - **Aborts:** the call races `untilAborted()`, which resolves when the caller aborts and rejects when it dies; either
  *   way the work is interrupted, which aborts the server request (a Legacy server gets `notifications/cancelled`), and
- *   the call fails as a cut.
+ *   the call fails as a cut, one that may have run for a `tools/call` only.
  * - **Bytes:** the call's `fetch` is metered against a lease on the isolate's byte budget, given back when the call
  *   ends, or for a large result once its stream is read (`budget.ts`, `results.ts`).
  * - **`structuredContent`** is checked against the tool's `outputSchema` (The MCP core #394 D17, refined by D9.3).
  * - **`-32020`:** a `tools/call` whose headers the server rejects lists the server's tools again and is sent once more
- *   with the fresh definition, which goes back to the host for its catalog (The MCP core #394 D14). The server refused
- *   the first before running it, so the call runs at most once.
+ *   with the fresh definition (The MCP core #394 D14). The server refused the first before running it, so the call
+ *   runs at most once. The fresh tools and their schema problems, compiled as discovery compiles them, go back to the
+ *   host for its catalog, whether the second send completed or failed; so do a `tools/list` request's problems.
  */
 import { connect, type ListKind, type McpConnection } from "@cloudpid/mcp";
 import {
   Cut,
   type McpCallContext,
+  type McpEngineCompleted,
   McpEngineDiscoverResult,
   type McpEngineDiscovered,
+  type McpEngineFailed,
   type McpEngineHooks,
-  type McpEngineMethods,
   McpEnginePrior,
+  type McpEnginePriorEncoded,
   McpEngineRequest,
+  type McpEngineRequestEncoded,
   McpEngineRequestResult,
   type McpEngineState,
   McpEngineTarget,
+  type McpEngineTargetEncoded,
   type McpError,
   McpToolDefinition,
-  ProtocolViolation,
+  type McpToolProblem,
   ServerError,
   Unsupported,
 } from "@cloudpid/mcp/types";
@@ -39,14 +44,12 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
-import { type Answer, valueOf } from "./results.ts";
-import { type CallEnvironment, type CallSession, openSession } from "./session.ts";
-import { Validators } from "./validators.ts";
+import { type CallContext, type CallEnvironment, openCall } from "./call-context.ts";
+import { type Answer, malformed, toEngineValue } from "./results.ts";
+import { Validators, type ValidatorsApi } from "./validators.ts";
 
-type EngineArguments<K extends keyof McpEngineMethods> = Parameters<McpEngineMethods[K]>;
-
-/** Discovery is the host's own work (The MCP core #394 D7). */
-const HOST: McpCallContext = { origin: "host" };
+/** Discovery, and the tools listed again after a `-32020`, are the host's own work (The MCP core #394 D7). */
+const HOST_WORK: McpCallContext = { origin: "host" };
 
 /** Each list `request` walks, by the core's kind. */
 const LIST_KINDS = {
@@ -55,6 +58,16 @@ const LIST_KINDS = {
   "resources/list": "resources",
   "resources/templates/list": "resources/templates",
 } as const satisfies Record<string, ListKind>;
+
+/** One engine call: where it goes, the host's rows and hooks, the Worker around it, and whether it may run anything. */
+interface CallInput {
+  readonly target: McpEngineTargetEncoded;
+  readonly prior: McpEnginePriorEncoded;
+  readonly hooks: McpEngineHooks;
+  readonly env: CallEnvironment;
+  /** Whether the server may have run the request once it was sent: only a `tools/call`. */
+  readonly mayHaveRun: boolean;
+}
 
 /** Fails as a cut once the caller aborts the call or dies, whichever comes first (#409 answer 2). */
 const abortedBy = (hooks: McpEngineHooks, mayHaveRun: boolean) =>
@@ -69,9 +82,6 @@ const abortedBy = (hooks: McpEngineHooks, mayHaveRun: boolean) =>
       }),
     ),
   );
-
-const notJson = (what: string) =>
-  ProtocolViolation.make({ message: `Not an MCP server: ${what} is malformed` });
 
 const decodeTools = Schema.decodeUnknownEffect(Schema.Array(McpToolDefinition));
 
@@ -88,117 +98,113 @@ const decodeAbout = Schema.decodeUnknownEffect(
 
 /** Tools as the SDK listed them, as the definitions the host keeps. */
 const definitionsOf = (tools: Answer) =>
-  decodeTools(tools).pipe(Effect.mapError(() => notJson("a tool definition")));
+  decodeTools(tools).pipe(Effect.mapError(() => malformed("a tool definition")));
 
 /**
- * Runs `work` over a new connection to `target`, racing the caller's abort. The outcome, and the session whose rows,
- * lease and tokens the caller settles.
+ * Runs `work` over a new connection to the call's target, racing the caller's abort. The outcome, and the call
+ * context whose rows, lease and tokens the caller settles.
  */
 const runCall = Effect.fnUntraced(function* <A, R>(
-  target: EngineArguments<"request">[0],
-  prior: EngineArguments<"request">[1],
-  hooks: McpEngineHooks,
-  env: CallEnvironment,
-  mayHaveRun: boolean,
+  input: CallInput,
   work: (
     connection: McpConnection,
-    session: CallSession,
+    call: CallContext,
   ) => Effect.Effect<A, McpError, R | Scope.Scope>,
 ) {
   // A row this engine cannot read is absent: it probes or initializes again.
-  const rows = yield* Schema.decodeEffect(McpEnginePrior)(prior).pipe(
+  const rows = yield* Schema.decodeEffect(McpEnginePrior)(input.prior).pipe(
     Effect.orElseSucceed(() => ({})),
   );
 
-  const session = yield* openSession(rows, hooks, env);
+  const call = yield* openCall(rows, input.hooks, input.env);
 
   const outcome = yield* Effect.gen(function* () {
-    const server = yield* Schema.decodeEffect(McpEngineTarget)(target).pipe(
+    const server = yield* Schema.decodeEffect(McpEngineTarget)(input.target).pipe(
       Effect.mapError(() =>
         Unsupported.make({ message: "This engine cannot reach that kind of server" }),
       ),
     );
 
-    const connection = yield* connect(server, session.deps);
+    const connection = yield* connect(server, call.deps);
 
-    return yield* work(connection, session);
-  }).pipe(Effect.scoped, Effect.raceFirst(abortedBy(hooks, mayHaveRun)), Effect.result);
+    return yield* work(connection, call);
+  }).pipe(Effect.scoped, Effect.raceFirst(abortedBy(input.hooks, input.mayHaveRun)), Effect.result);
 
-  return { outcome, session };
+  return { outcome, call };
 });
 
-const failed = (error: McpError, state: McpEngineState) =>
-  ({ kind: "failed", error, state }) as const;
+const failed = (error: McpError, state: McpEngineState): McpEngineFailed => ({
+  kind: "failed",
+  error,
+  state,
+});
 
-const encodeDiscover = (result: McpEngineDiscoverResult) =>
-  Schema.encodeEffect(McpEngineDiscoverResult)(result).pipe(
-    Effect.catch(() =>
-      Schema.encodeEffect(McpEngineDiscoverResult)(failed(notJson("its answer"), result.state)),
-    ),
-    Effect.orDie,
-  );
-
-const encodeRequest = (result: McpEngineRequestResult) =>
-  Schema.encodeEffect(McpEngineRequestResult)(result).pipe(
-    Effect.catch(() =>
-      Schema.encodeEffect(McpEngineRequestResult)(failed(notJson("its answer"), result.state)),
-    ),
+/** `result` encoded for RPC; one that cannot be encoded (a server's odd value) fails as not MCP. */
+const encodeResult = <A extends { readonly state: McpEngineState }, I>(
+  schema: Schema.Codec<A | McpEngineFailed, I>,
+  result: A | McpEngineFailed,
+) =>
+  Schema.encodeEffect(schema)(result).pipe(
+    Effect.catch(() => Schema.encodeEffect(schema)(failed(malformed("its answer"), result.state))),
     Effect.orDie,
   );
 
 /** Discovers the server: its era, what it is, every page of its tools and prompts, and its tools' schema problems. */
 export const discover = Effect.fn("mcp.engine.discover")(function* (
-  target: EngineArguments<"discover">[0],
-  prior: EngineArguments<"discover">[1],
+  target: McpEngineTargetEncoded,
+  prior: McpEnginePriorEncoded,
   hooks: McpEngineHooks,
   env: CallEnvironment,
 ) {
   const validators = yield* Validators;
 
-  const { outcome, session } = yield* runCall(target, prior, hooks, env, false, (connection) =>
-    Effect.gen(function* () {
-      const tools = yield* connection.list("tools", HOST);
-      const prompts = yield* connection.list("prompts", HOST);
-      const definitions = yield* definitionsOf(tools.value);
-      const problems = yield* validators.compileAll(definitions);
+  const { outcome, call } = yield* runCall(
+    { target, prior, hooks, env, mayHaveRun: false },
+    (connection) =>
+      Effect.gen(function* () {
+        const tools = yield* connection.list("tools", HOST_WORK);
+        const prompts = yield* connection.list("prompts", HOST_WORK);
+        const definitions = yield* definitionsOf(tools.value);
+        const problems = yield* validators.compileAll(definitions);
 
-      const promptValues = yield* decodePrompts(prompts.value).pipe(
-        Effect.mapError(() => notJson("a prompt")),
-      );
+        const promptValues = yield* decodePrompts(prompts.value).pipe(
+          Effect.mapError(() => malformed("a prompt")),
+        );
 
-      const about = yield* decodeAbout({
-        serverInfo: connection.serverInfo,
-        capabilities: connection.capabilities,
-      }).pipe(Effect.mapError(() => notJson("its description")));
+        const about = yield* decodeAbout({
+          serverInfo: connection.serverInfo,
+          capabilities: connection.capabilities,
+        }).pipe(Effect.mapError(() => malformed("its description")));
 
-      const discovered: Mutable<Omit<McpEngineDiscovered, "state">> = {
-        kind: "discovered",
-        era: connection.era,
-        protocolVersion: connection.protocolVersion,
-        ...about,
-        tools: definitions,
-        prompts: promptValues,
-        problems,
-        fetchedAt: tools.fetchedAt,
-      };
+        const discovered: Mutable<Omit<McpEngineDiscovered, "state">> = {
+          kind: "discovered",
+          era: connection.era,
+          protocolVersion: connection.protocolVersion,
+          ...about,
+          tools: definitions,
+          prompts: promptValues,
+          problems,
+          fetchedAt: tools.fetchedAt,
+        };
 
-      if (connection.instructions !== undefined) {
-        discovered.instructions = connection.instructions;
-      }
+        if (connection.instructions !== undefined) {
+          discovered.instructions = connection.instructions;
+        }
 
-      if (tools.ttlMs !== undefined) {
-        discovered.ttlMs = tools.ttlMs;
-      }
+        if (tools.ttlMs !== undefined) {
+          discovered.ttlMs = tools.ttlMs;
+        }
 
-      return discovered;
-    }),
+        return discovered;
+      }),
   );
 
-  session.lease.release();
+  call.lease.release();
 
-  const state = session.state();
+  const state = call.state();
 
-  return yield* encodeDiscover(
+  return yield* encodeResult(
+    McpEngineDiscoverResult,
     Result.isSuccess(outcome) ? { ...outcome.success, state } : failed(outcome.failure, state),
   );
 });
@@ -211,11 +217,131 @@ const headerMismatch = (error: McpError) => isServerError(error) && error.code =
 const toolNamed = (tools: ReadonlyArray<McpToolDefinition>, name: string) =>
   Arr.findFirst(tools, (tool) => tool.name === name);
 
+type ToolCall = McpEngineRequest & { readonly op: "tools/call" };
+
+/** The server's tools, listed again after a `-32020`, and their schema problems. */
+interface Refreshed {
+  readonly tools: ReadonlyArray<McpToolDefinition>;
+  readonly problems: ReadonlyArray<McpToolProblem>;
+}
+
+/**
+ * Sends `req`; if the server rejects its headers (`-32020`), lists the server's tools again, compiles them as discovery
+ * does, and sends it once more with the tool's fresh definition (D14). What the last send gave, the definition it
+ * was sent with, and the fresh tools, if they were listed.
+ */
+const callWithRefresh = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  req: ToolCall,
+  validators: ValidatorsApi,
+) {
+  const send = (tool: McpToolDefinition) =>
+    connection
+      .callTool(
+        // SAFETY: a definition the server listed, decoded as one; the SDK reads it as its `Tool`.
+        {
+          tool: tool as Parameters<McpConnection["callTool"]>[0]["tool"],
+          arguments: req.arguments ?? {},
+        },
+        req.ctx,
+      )
+      .pipe(Effect.result);
+
+  const first = yield* send(req.tool);
+
+  if (Result.isSuccess(first) || !headerMismatch(first.failure)) {
+    return { sent: first, tool: req.tool, refreshed: Option.none<Refreshed>() };
+  }
+
+  const listed = yield* connection.list("tools", HOST_WORK);
+  const tools = yield* definitionsOf(listed.value);
+
+  const refreshed = Option.some<Refreshed>({
+    tools,
+    problems: yield* validators.compileAll(tools),
+  });
+
+  const fresh = toolNamed(tools, req.tool.name);
+
+  if (Option.isNone(fresh)) {
+    return { sent: first, tool: req.tool, refreshed };
+  }
+
+  return { sent: yield* send(fresh.value), tool: fresh.value, refreshed };
+});
+
+type Completed = Omit<McpEngineCompleted, "state">;
+
+/** A request's result before its rows are added. */
+type RequestOutcome = Completed | Omit<McpEngineFailed, "state">;
+
+/** Runs a `tools/call`, checking its `structuredContent`. */
+const runToolCall = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: ToolCall,
+  env: CallEnvironment,
+  validators: ValidatorsApi,
+) {
+  const { sent, tool, refreshed } = yield* callWithRefresh(connection, req, validators);
+  const extras = Option.getOrElse(refreshed, () => ({}));
+
+  if (Result.isFailure(sent)) {
+    return { kind: "failed", error: sent.failure, ...extras } satisfies RequestOutcome;
+  }
+
+  const { value, kind: _kind, ...meta } = sent.success;
+
+  const completed: Mutable<Completed> = {
+    kind: "complete",
+    ...meta,
+    ...extras,
+    result: yield* toEngineValue(value, call, env),
+  };
+
+  if (tool.outputSchema !== undefined && value.isError !== true) {
+    completed.structuredOutput = yield* validators.check(
+      tool.outputSchema,
+      value.structuredContent,
+    );
+  }
+
+  return completed;
+});
+
+/** Walks a list to its end; a `tools/list` also brings its tools' schema problems. */
+const runList = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: Exclude<McpEngineRequest, ToolCall>,
+  env: CallEnvironment,
+  validators: ValidatorsApi,
+) {
+  const { value, kind: _kind, ...meta } = yield* connection.list(LIST_KINDS[req.op], req.ctx);
+
+  const problems =
+    req.op === "tools/list"
+      ? Option.some(yield* validators.compileAll(yield* definitionsOf(value)))
+      : Option.none<ReadonlyArray<McpToolProblem>>();
+
+  const completed: Mutable<Completed> = {
+    kind: "complete",
+    ...meta,
+    result: yield* toEngineValue(value, call, env),
+  };
+
+  Option.map(problems, (listed) => {
+    completed.problems = listed;
+  });
+
+  return completed;
+});
+
 /** Runs one request: a `tools/call`, or a list walked to its end. An `op` this engine does not know is `Unsupported`. */
 export const request = Effect.fn("mcp.engine.request")(function* (
-  target: EngineArguments<"request">[0],
-  prior: EngineArguments<"request">[1],
-  input: EngineArguments<"request">[2],
+  target: McpEngineTargetEncoded,
+  prior: McpEnginePriorEncoded,
+  input: McpEngineRequestEncoded,
   hooks: McpEngineHooks,
   env: CallEnvironment,
 ) {
@@ -223,100 +349,29 @@ export const request = Effect.fn("mcp.engine.request")(function* (
   const decoded = yield* Schema.decodeEffect(McpEngineRequest)(input).pipe(Effect.option);
 
   if (Option.isNone(decoded)) {
-    return yield* encodeRequest(
+    return yield* encodeResult(
+      McpEngineRequestResult,
       failed(Unsupported.make({ message: "This engine does not run that request" }), {}),
     );
   }
 
   const req = decoded.value;
 
-  const { outcome, session } = yield* runCall(
-    target,
-    prior,
-    hooks,
-    env,
-    req.op === "tools/call",
-    (connection, call) =>
-      Effect.gen(function* () {
-        if (req.op !== "tools/call") {
-          const {
-            value,
-            kind: _kind,
-            ...meta
-          } = yield* connection.list(LIST_KINDS[req.op], req.ctx);
-
-          return { ...meta, result: yield* valueOf(value, call, env) };
-        }
-
-        const callWith = (tool: McpToolDefinition) =>
-          connection.callTool(
-            // SAFETY: a definition the server listed, decoded as one; the SDK reads it as its `Tool`.
-            {
-              tool: tool as Parameters<McpConnection["callTool"]>[0]["tool"],
-              arguments: req.arguments ?? {},
-            },
-            req.ctx,
-          );
-
-        let tool = req.tool;
-        let listed = Option.none<ReadonlyArray<McpToolDefinition>>();
-
-        const sent = yield* callWith(tool).pipe(
-          Effect.catchIf(headerMismatch, (mismatch) =>
-            Effect.gen(function* () {
-              const tools = yield* connection.list("tools", HOST);
-              const definitions = yield* definitionsOf(tools.value);
-              const fresh = toolNamed(definitions, req.tool.name);
-
-              if (Option.isNone(fresh)) {
-                return yield* mismatch;
-              }
-
-              tool = fresh.value;
-              listed = Option.some(definitions);
-
-              return yield* callWith(tool);
-            }),
-          ),
-        );
-
-        const { value, kind: _kind, ...meta } = sent;
-
-        const completed: Mutable<Omit<McpEngineRequestResult & { kind: "complete" }, "state">> = {
-          kind: "complete",
-          ...meta,
-          result: yield* valueOf(value, call, env),
-        };
-
-        if (tool.outputSchema !== undefined && value.isError !== true) {
-          completed.structuredOutput = yield* validators.check(
-            tool.outputSchema,
-            value.structuredContent,
-          );
-        }
-
-        Option.map(listed, (tools) => {
-          completed.tools = tools;
-        });
-
-        return completed;
-      }),
+  const { outcome, call } = yield* runCall(
+    { target, prior, hooks, env, mayHaveRun: req.op === "tools/call" },
+    (connection, context): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
+      req.op === "tools/call"
+        ? runToolCall(connection, context, req, env, validators)
+        : runList(connection, context, req, env, validators),
   );
 
-  const state = session.state();
+  const state = call.state();
+  const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);
 
-  if (Result.isFailure(outcome)) {
-    session.lease.release();
-
-    return yield* encodeRequest(failed(outcome.failure, state));
+  // A stream gives the lease back once it is read (or it expires); an inline value has been made.
+  if (result.kind === "failed" || result.result.kind === "inline") {
+    call.lease.release();
   }
 
-  const completed = outcome.success;
-
-  // A stream gives the lease back once it is read; an inline value has been made.
-  if (completed.result.kind === "inline") {
-    session.lease.release();
-  }
-
-  return yield* encodeRequest({ kind: "complete", ...completed, state });
+  return yield* encodeResult(McpEngineRequestResult, { ...result, state });
 });

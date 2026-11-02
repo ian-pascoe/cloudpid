@@ -7,6 +7,7 @@
 import {
   createMcpHandler,
   Server,
+  type Tool,
   WebStandardStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/server";
 import * as Schema from "effect/Schema";
@@ -107,6 +108,8 @@ export interface FakeOptions {
   readonly listMore?: boolean;
   /** The names of the calls whose request was cancelled while they ran. */
   readonly cancelled?: Array<string>;
+  /** Further tools listed last, which answer as `echo` does unless something in front of the server answers first. */
+  readonly moreTools?: ReadonlyArray<Tool>;
 }
 
 /**
@@ -138,10 +141,12 @@ const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions
   server.setRequestHandler("tools/list", async (request) =>
     request.params?.cursor === "page-2"
       ? {
-          tools:
-            options.listMore === true
+          tools: [
+            ...(options.listMore === true
               ? [SHOUT_TOOL, BIG_TOOL, HANG_TOOL, TYPED_TOOL, REGION_TOOL]
-              : [SHOUT_TOOL],
+              : [SHOUT_TOOL]),
+            ...(options.moreTools ?? []),
+          ],
         }
       : { tools: [ECHO_TOOL], nextCursor: "page-2" },
   );

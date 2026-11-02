@@ -46,7 +46,7 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 - **The host's cache** is in memory only. It holds a token until `exp − 60 s`, or for 15 min when there is no expiry. It drops the token on a 401, on eviction, or on `apply({ kind: "sign_ins" })`.
 - **Resource binding:** a token is attached only to requests that are same-origin with, and within the path of, the sign-in's `resource`. That is the protected resource metadata's resource (through `selectResource`), else the entry's URL.
   - Authorized requests use `redirect: "manual"`, so a redirect outside the resource fails without the token.
-  - The host replaces the exact token it sent with `[REDACTED]` in that call's result.
+  - The engine replaces every token the host's `auth` hook gave it for a call with `[REDACTED]` in that call's result, before the result leaves it ([_The engine_](mcp-connections.md#the-engine)).
   - Tokens never enter a Session, a Workspace DO or a Container.
 - **Reports and pushes:**
   - On transitions only, the host calls `reportMcpAuth({ environment, server, event: "needs_sign_in" | "step_up" | "rejected" | "working", challenge?: { resourceMetadataUrl?, scope?, error?, errorDescription? } })`.

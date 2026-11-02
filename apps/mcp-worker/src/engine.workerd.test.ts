@@ -7,6 +7,7 @@ import {
   Cut,
   McpEngineDiscoverResult,
   McpEngineRequestResult,
+  TimedOut,
   Unsupported,
 } from "@cloudpid/mcp/types";
 import * as Schema from "effect/Schema";
@@ -36,6 +37,12 @@ const target = (kind: "modern" | "legacy" | "stateful" | "headers", key: string)
 const AGENT = { origin: "agent" as const, conversation: "conversation-1" };
 
 const ECHO = { name: "echo", inputSchema: { type: "object" } };
+
+/** The problem the headers fake's `uncompilable` tool has (`fakes.fixture.ts`). */
+const UNCOMPILABLE_PROBLEM = {
+  tool: "uncompilable",
+  problem: expect.stringContaining("invalid outputSchema"),
+};
 
 /** What the fake behind `server` received and which of its calls were cancelled. */
 const seen = async (server: ReturnType<typeof target>) => {
@@ -295,9 +302,52 @@ describe("a header the server rejects (-32020)", () => {
     expect(called.kind === "complete" && called.tools?.map((tool) => tool.name)).toContain(
       "region",
     );
+    expect(called).toMatchObject({ problems: [UNCOMPILABLE_PROBLEM] });
     expect((await seen(server)).methods.filter((method) => method === "tools/call")).toHaveLength(
       2,
     );
+  });
+
+  it("returns the fresh tools and their problems when the second send fails too", async () => {
+    const server = target("headers", "stubborn");
+
+    const called = decodeRequest(
+      await env.MCP_ENGINE.request(
+        server,
+        {},
+        {
+          op: "tools/call",
+          tool: { name: "stubborn", inputSchema: { type: "object" } },
+          ctx: AGENT,
+        },
+        patient(),
+      ),
+    );
+
+    expect(called).toMatchObject({
+      kind: "failed",
+      error: { code: -32020 },
+      problems: [UNCOMPILABLE_PROBLEM],
+    });
+    expect(called.tools?.map((tool) => tool.name)).toContain("stubborn");
+    expect((await seen(server)).methods.filter((method) => method === "tools/call")).toHaveLength(
+      2,
+    );
+  });
+});
+
+describe("tools/list", () => {
+  it("returns the listed tools with their schema problems, compiled as discovery compiles them", async () => {
+    const listed = decodeRequest(
+      await env.MCP_ENGINE.request(
+        target("headers", "list-problems"),
+        {},
+        { op: "tools/list", ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(listed).toMatchObject({ kind: "complete", problems: [UNCOMPILABLE_PROBLEM] });
   });
 });
 
@@ -432,4 +482,76 @@ describe("the byte budget", () => {
     expect((await streamedText(first)).length).toBe(10 * MiB);
     expect((await streamedText(await second)).length).toBe(10 * MiB);
   });
+
+  it("lets concurrent calls that oversubscribe the pool all complete", async () => {
+    const texts = await Promise.all(
+      ["a", "b", "c", "d"].map(async (key) =>
+        streamedText(
+          decodeRequest(
+            await env.MCP_ENGINE.request(
+              target("legacy", `oversubscribe-${key}`),
+              {},
+              bigCall(3 * MiB),
+              patient(),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(texts.map((text) => text.length)).toEqual([3 * MiB, 3 * MiB, 3 * MiB, 3 * MiB]);
+  });
+
+  it.each([
+    ["aborted", "budget-abort"],
+    ["timed out", "budget-timeout"],
+  ] as const)(
+    "frees a call %s while it waits for the budget at once, and the next call goes on",
+    async (how, key) => {
+      const holder = decodeRequest(
+        await env.MCP_ENGINE.request(
+          target("legacy", `${key}-1`),
+          {},
+          bigCall(10 * MiB),
+          patient(),
+        ),
+      );
+
+      let abort: () => void = () => undefined;
+
+      const aborted = new Promise<void>((resolve) => {
+        abort = resolve;
+      });
+
+      const waiting = env.MCP_ENGINE.request(
+        { ...target("legacy", `${key}-2`), timeoutMs: how === "timed out" ? 300 : 60_000 },
+        {},
+        bigCall(10 * MiB),
+        { untilAborted: () => aborted },
+      );
+
+      if (how === "aborted") {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        abort();
+      }
+
+      expect(decodeRequest(await waiting)).toMatchObject({
+        kind: "failed",
+        error: expect.any(how === "aborted" ? Cut : TimedOut),
+      });
+
+      expect((await streamedText(holder)).length).toBe(10 * MiB);
+
+      const next = decodeRequest(
+        await env.MCP_ENGINE.request(
+          target("legacy", `${key}-3`),
+          {},
+          bigCall(10 * MiB),
+          patient(),
+        ),
+      );
+
+      expect((await streamedText(next)).length).toBe(10 * MiB);
+    },
+  );
 });

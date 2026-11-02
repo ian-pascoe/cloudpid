@@ -34,7 +34,8 @@ const bundle = async (entry: string, out: string, flags: ReadonlyArray<string>) 
 /**
  * The engine's tests run in workerd: the test Worker (`src/workerd.fixture.ts`, which `@cloudflare/vitest-plugin`
  * needs with `nodejs_compat`) calls `McpWorker`, an auxiliary Worker bundled as it deploys, without `nodejs_compat`,
- * whose every outbound `fetch` goes to the fake MCP servers, another auxiliary Worker (`src/fakes.fixture.ts`).
+ * whose every outbound `fetch` goes to the fake MCP servers, another auxiliary Worker (`src/fakes.fixture.ts`). The
+ * package's few plain tests (`src/budget.test.ts`) run in the same project, in the test Worker.
  */
 export default defineConfig(async () => {
   const engine = await bundle("./src/worker.ts", "./node_modules/.cache/workerd/mcp-worker.js", []);
@@ -75,6 +76,6 @@ export default defineConfig(async () => {
         },
       }),
     ],
-    test: { name: "workerd", testTimeout, include: ["src/**/*.workerd.test.ts"] },
+    test: { name: "workerd", testTimeout, include: ["src/**/*.test.ts"] },
   };
 });

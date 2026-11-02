@@ -307,6 +307,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       fetch,
       requestInit,
       onInsufficientScope: "throw",
+      // No resumption yet, Legacy included: a request stream that ends without its answer is a cut (D15; #542).
       reconnectionOptions: {
         maxRetries: 0,
         initialReconnectionDelay: 1000,

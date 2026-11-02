@@ -21,7 +21,7 @@ export interface CallEnvironment {
 }
 
 /** One call's connection deps, and what the call learns along the way. */
-export interface CallSession {
+export interface CallContext {
   readonly deps: McpDeps;
   readonly lease: Lease;
   /** Every access token the call sent, scrubbed from its result. */
@@ -71,7 +71,8 @@ const authFrom =
       Effect.orElseSucceed(() => undefined),
     );
 
-export const openSession = Effect.fn("mcp.engine.session")(function* (
+/** Opens one call's context: its rows, its lease on the byte budget and its deps. */
+export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   prior: McpEnginePrior,
   hooks: McpEngineHooks,
   env: CallEnvironment,
@@ -111,5 +112,5 @@ export const openSession = Effect.fn("mcp.engine.session")(function* (
     return changed;
   };
 
-  return { deps, lease, tokens, state } satisfies CallSession;
+  return { deps, lease, tokens, state } satisfies CallContext;
 });

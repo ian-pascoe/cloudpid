@@ -9,13 +9,19 @@
  * `untilAborted()` rejects and the engine aborts the server request (#409 answer 2).
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { McpEngineHooks, McpEngineMethods } from "@cloudpid/mcp/types";
+import type {
+  McpEngineHooks,
+  McpEngineMethods,
+  McpEnginePriorEncoded,
+  McpEngineRequestEncoded,
+  McpEngineTargetEncoded,
+} from "@cloudpid/mcp/types";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import { ByteBudget } from "./budget.ts";
 import { discover, request } from "./calls.ts";
-import type { CallEnvironment } from "./session.ts";
+import type { CallEnvironment } from "./call-context.ts";
 import { Validators } from "./validators.ts";
 
 /** What `McpWorker` is bound to (`resource.ts`). */
@@ -37,17 +43,15 @@ const engineRuntime = () => {
   return runtime;
 };
 
-type Args<K extends keyof McpEngineMethods> = Parameters<McpEngineMethods[K]>;
-
 export class McpEngine extends WorkerEntrypoint<McpWorkerEnv> implements McpEngineMethods {
-  discover(target: Args<"discover">[0], prior: Args<"discover">[1], hooks: McpEngineHooks) {
+  discover(target: McpEngineTargetEncoded, prior: McpEnginePriorEncoded, hooks: McpEngineHooks) {
     return this.#run(discover(target, prior, hooks, this.#environment()));
   }
 
   request(
-    target: Args<"request">[0],
-    prior: Args<"request">[1],
-    req: Args<"request">[2],
+    target: McpEngineTargetEncoded,
+    prior: McpEnginePriorEncoded,
+    req: McpEngineRequestEncoded,
     hooks: McpEngineHooks,
   ) {
     return this.#run(request(target, prior, req, hooks, this.#environment()));

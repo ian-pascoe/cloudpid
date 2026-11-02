@@ -10,9 +10,9 @@ import type { McpEngineValue } from "@cloudpid/mcp/types";
 import { ProtocolViolation } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { CallEnvironment, CallSession } from "./session.ts";
-
-const MiB = 1024 * 1024;
+import { STREAM_HOLD_MS } from "./budget.ts";
+import type { CallContext, CallEnvironment } from "./call-context.ts";
+import { MiB } from "./units.ts";
 
 /** A value serialized to more than this goes back as a byte stream (D9.2). */
 export const INLINE_LIMIT = MiB;
@@ -26,6 +26,10 @@ const REDACTED = "[REDACTED]";
 export type Answer =
   | Effect.Success<ReturnType<McpConnection["callTool"]>>["value"]
   | ReadonlyArray<ListItems[ListKind]>;
+
+/** A server's answer the engine cannot read: the server is not speaking MCP. */
+export const malformed = (what: string) =>
+  ProtocolViolation.make({ message: `Not an MCP server: ${what} is malformed` });
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json));
 
@@ -42,7 +46,7 @@ const scrubbedJson = (value: Answer, tokens: ReadonlySet<string>) =>
 
       return text;
     },
-    catch: () => ProtocolViolation.make({ message: "Not an MCP server: its answer is not JSON" }),
+    catch: () => malformed("its answer"),
   });
 
 /** `bytes` as a stream that yields one piece at each pull, calling `done` once it is read or cancelled. */
@@ -67,22 +71,18 @@ const byteStream = (bytes: Uint8Array, done: () => void) => {
 
 /**
  * `value` as the call returns it. A stream keeps the call's lease on the byte budget, and its invocation, until it is
- * read or cancelled; an inline value leaves the lease to the call.
+ * read or cancelled, or for at most `STREAM_HOLD_MS` (`budget.ts`); an inline value leaves the lease to the call.
  */
-export const valueOf = Effect.fn("mcp.engine.value")(function* (
+export const toEngineValue = Effect.fn("mcp.engine.value")(function* (
   value: Answer,
-  session: CallSession,
+  call: CallContext,
   env: CallEnvironment,
 ) {
-  const json = yield* scrubbedJson(value, session.tokens);
+  const json = yield* scrubbedJson(value, call.tokens);
   const bytes = new TextEncoder().encode(json);
 
   if (bytes.byteLength <= INLINE_LIMIT) {
-    const inline = yield* decodeJson(json).pipe(
-      Effect.mapError(() =>
-        ProtocolViolation.make({ message: "Not an MCP server: its answer is not JSON" }),
-      ),
-    );
+    const inline = yield* decodeJson(json).pipe(Effect.mapError(() => malformed("its answer")));
 
     return { kind: "inline", value: inline } satisfies McpEngineValue;
   }
@@ -90,11 +90,12 @@ export const valueOf = Effect.fn("mcp.engine.value")(function* (
   const read = Promise.withResolvers<void>();
 
   env.hold(read.promise);
+  call.lease.expireIn(STREAM_HOLD_MS);
 
   return {
     kind: "stream",
     body: byteStream(bytes, () => {
-      session.lease.release();
+      call.lease.release();
       read.resolve();
     }),
     bytes: bytes.byteLength,

@@ -13,21 +13,44 @@ import {
   rpcMethods,
 } from "@cloudpid/mcp/testing";
 
-/** A Modern server that refuses a `region` call without its `Mcp-Param-Region` header (`-32020`), as one whose tool changed. */
+/** A tool whose `outputSchema` TypeBox cannot compile: its `pattern` is not a regular expression. */
+const UNCOMPILABLE_TOOL = {
+  name: "uncompilable",
+  inputSchema: { type: "object" as const },
+  outputSchema: {
+    type: "object" as const,
+    properties: { id: { type: "string", pattern: "(" } },
+  },
+};
+
+/** A tool the server refuses every call to as a header mismatch, however often its tools are listed. */
+const STUBBORN_TOOL = { name: "stubborn", inputSchema: { type: "object" as const } };
+
+const headerMismatch = (id: string | number | null) =>
+  Response.json(
+    { jsonrpc: "2.0", id, error: { code: -32020, message: "Header mismatch" } },
+    { status: 400 },
+  );
+
+/**
+ * A Modern server that refuses a `region` call without its `Mcp-Param-Region` header (`-32020`), as one whose tool
+ * changed, and every `stubborn` call; it lists both, and a tool whose `outputSchema` cannot be compiled.
+ */
 const headersServer = (options: FakeOptions) =>
-  hostileServer(modernServer(options), (request, rpc) =>
-    rpc?.method === "tools/call" &&
-    rpc.params?.["name"] === "region" &&
-    request.headers.get("mcp-param-region") === null
-      ? Response.json(
-          {
-            jsonrpc: "2.0",
-            id: rpc.id ?? null,
-            error: { code: -32020, message: "Header mismatch" },
-          },
-          { status: 400 },
-        )
-      : undefined,
+  hostileServer(
+    modernServer({ ...options, moreTools: [UNCOMPILABLE_TOOL, STUBBORN_TOOL] }),
+    (request, rpc) => {
+      if (rpc?.method !== "tools/call") {
+        return undefined;
+      }
+
+      const name = rpc.params?.["name"];
+
+      return name === STUBBORN_TOOL.name ||
+        (name === "region" && request.headers.get("mcp-param-region") === null)
+        ? headerMismatch(rpc.id ?? null)
+        : undefined;
+    },
   );
 
 const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map([

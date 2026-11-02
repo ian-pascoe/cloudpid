@@ -209,7 +209,7 @@ const drain = (body: ReadableStream<Uint8Array> | null) => body?.cancel().catch(
 /**
  * `body` as it arrives, counted against the request's limit, watched for the answer to `request`: when the stream
  * ends or breaks without it, or runs over the limit, the stream ends with the verdict instead. With no resumption yet
- * (D15), a break is a cut and the limit spans the whole stream; both change when resumption lands.
+ * (D15; #542), a break is a cut and the limit spans the whole stream; both change when resumption lands.
  */
 const watchStream = (body: ReadableStream<Uint8Array>, request: Outgoing, verdicts: Verdicts) => {
   const limit = request.policy.limit;

@@ -319,15 +319,6 @@ export const McpToolDefinition = Schema.StructWithRest(
 
 export type McpToolDefinition = typeof McpToolDefinition.Type;
 
-/** What a call failed with, and the rows it changed before it did. */
-export const McpEngineFailed = Schema.Struct({
-  kind: Schema.Literal("failed"),
-  error: McpErrorWire,
-  state: McpEngineState,
-});
-
-export type McpEngineFailed = typeof McpEngineFailed.Type;
-
 /** A tool whose definition the engine could not use, and why: an `outputSchema` TypeBox rejects. */
 export const McpToolProblem = Schema.Struct({
   tool: Schema.String,
@@ -335,6 +326,26 @@ export const McpToolProblem = Schema.Struct({
 });
 
 export type McpToolProblem = typeof McpToolProblem.Type;
+
+/**
+ * The server's tools, listed again by a `request` because the server refused a `tools/call`'s headers (`-32020`; The
+ * MCP core #394 D14), with their schema problems compiled as discovery compiles them, for the host to update its
+ * catalog. Present on the call's result whether its second send completed or failed.
+ */
+const RefreshedTools = {
+  tools: McpToolDefinition.pipe(Schema.Array, Schema.optionalKey),
+  problems: McpToolProblem.pipe(Schema.Array, Schema.optionalKey),
+};
+
+/** What a call failed with, and the rows it changed before it did. */
+export const McpEngineFailed = Schema.Struct({
+  kind: Schema.Literal("failed"),
+  error: McpErrorWire,
+  ...RefreshedTools,
+  state: McpEngineState,
+});
+
+export type McpEngineFailed = typeof McpEngineFailed.Type;
 
 /**
  * A discovery (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): what the server is, every
@@ -425,15 +436,20 @@ export const McpEngineCompleted = Schema.Struct({
   fetchedAt: Schema.Finite,
   structuredOutput: Schema.optionalKey(McpStructuredOutput),
   /**
-   * The server's tools, listed again because it refused the call's headers (`-32020`) and the call was sent once more
-   * with the fresh definition (The MCP core #394 D14), for the host to update its catalog.
+   * `tools` and `problems` after a `-32020`, sent once more with the fresh definition; for a `tools/list` request,
+   * `problems` alone, the listed tools' schema problems.
    */
-  tools: McpToolDefinition.pipe(Schema.Array, Schema.optionalKey),
+  ...RefreshedTools,
   state: McpEngineState,
 });
 
 export type McpEngineCompleted = typeof McpEngineCompleted.Type;
 
+/**
+ * A request's result. Neither result union has a fallback member, by design: a new success shape is returned only
+ * when the request asked for it (a request flag such as `ctx.allowTask`), so an older host never receives one it
+ * cannot read (`docs/architecture/mcp.md` → Deploys); failures fall back through `McpErrorWire`.
+ */
 export const McpEngineRequestResult = Schema.Union([McpEngineCompleted, McpEngineFailed]);
 
 export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
@@ -454,17 +470,24 @@ export interface McpEngineHooks {
   readonly opened?: () => void | Promise<void>;
 }
 
+/** `McpEngine`'s arguments as they cross RPC, encoded; the engine decodes each. */
+export type McpEngineTargetEncoded = typeof McpEngineTarget.Encoded;
+
+export type McpEnginePriorEncoded = typeof McpEnginePrior.Encoded;
+
+export type McpEngineRequestEncoded = typeof McpEngineRequest.Encoded;
+
 /** `McpEngine`'s methods as the host calls them, over the `MCP_ENGINE` binding; each resolves to an encoded result. */
 export interface McpEngineMethods {
   readonly discover: (
-    target: typeof McpEngineTarget.Encoded,
-    prior: typeof McpEnginePrior.Encoded,
+    target: McpEngineTargetEncoded,
+    prior: McpEnginePriorEncoded,
     hooks: McpEngineHooks,
   ) => Promise<typeof McpEngineDiscoverResult.Encoded>;
   readonly request: (
-    target: typeof McpEngineTarget.Encoded,
-    prior: typeof McpEnginePrior.Encoded,
-    request: typeof McpEngineRequest.Encoded,
+    target: McpEngineTargetEncoded,
+    prior: McpEnginePriorEncoded,
+    request: McpEngineRequestEncoded,
     hooks: McpEngineHooks,
   ) => Promise<typeof McpEngineRequestResult.Encoded>;
 }
