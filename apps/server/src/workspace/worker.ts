@@ -3,14 +3,15 @@
 // Container's egress back to the DO (`ctx.exports.WorkspaceProxy`), and `ContainerExitReports`, which logs what the
 // Container's supervisor reports when computerd stops on its own (`ctx.exports.ContainerExitReports`), and
 // `WorkspaceContainerPreviews`, which the browser Worker binds to reach a Workspace's Container preview and nothing else
-// of the DO, and `WorkspaceMcpBridge`, which `McpWorker` binds (as `MCP_BRIDGE`) to reach a Workspace's Container MCP
+// of the DO, and `WorkspaceMcpBridge`, which `McpWorker` is to bind (as `MCP_BRIDGE`, #460) to reach a Workspace's Container MCP
 // bridge and nothing else of the DO. It is a plain (async) Worker because alchemy's Effect Workers export only their Effect-defined classes.
 // @effect-diagnostics globalConsole:off asyncFunction:off
 import { isContainerPreviewWorkspace } from "@cloudpid/extensions/browser/contract";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { WORKSPACE_BINDING } from "./binding.ts";
 import { type ExitReportProps, exitReport } from "./exit-report.ts";
-import type { McpBridgeOptions } from "./mcp-bridge.ts";
+import type { McpBridgeOptions } from "@cloudpid/sandbox-image/mcp-bridge";
+import { mcpBridgeRefusal } from "./mcp-bridge.ts";
 import type { Workspace, WorkspaceEnv } from "./Workspace.ts";
 
 export { WorkspaceProxy, WorkspaceServiceProxy } from "@cloudflare/computer";
@@ -62,9 +63,6 @@ export class WorkspaceContainerPreviews extends WorkerEntrypoint<{
   }
 }
 
-/** A Workspace's object name (`ws:<id>`, `workspaceObjectName`), as no Build's is. */
-const WORKSPACE_OBJECT = /^ws:[\w-]+$/;
-
 /**
  * A Workspace's Container MCP bridge (docs/architecture/mcp-connections.md → The stdio bridge), as `McpWorker`'s engine
  * reaches it through a service binding: this one call, not the Workspace DO's other methods, and only for a Workspace's
@@ -84,11 +82,11 @@ export class WorkspaceMcpBridge extends WorkerEntrypoint<{
     request: Request,
     options: McpBridgeOptions,
   ): Promise<Response> {
-    if (!WORKSPACE_OBJECT.test(workspace)) {
-      return Response.json(
-        { error: "no_workspace", message: "This Workspace does not exist" },
-        { status: 404 },
-      );
+    if (!isContainerPreviewWorkspace(workspace)) {
+      // Nothing will read the request's body.
+      await request.body?.cancel();
+
+      return mcpBridgeRefusal("no_workspace");
     }
 
     return this.env[WORKSPACE_BINDING].getByName(workspace).mcpBridge(request, options);

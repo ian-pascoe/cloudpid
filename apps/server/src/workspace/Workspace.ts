@@ -83,7 +83,7 @@ import {
   WorkspaceRunsModule,
 } from "./runs.ts";
 import { WorkspaceWorkStateModule } from "./work-state.ts";
-import { type HeldStop, heldStopMinutes, IdleStop } from "./idle.ts";
+import { type ContainerActivity, type HeldStop, heldStopMinutes, IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
 import {
@@ -93,19 +93,14 @@ import {
   type StoredLaunchRecord,
 } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
-import {
-  CONTAINER_PREVIEW_KEEP_ALIVE_MS,
-  ContainerPreview,
-  type ContainerPreviewActivity,
-} from "./container-preview.ts";
+import { CONTAINER_PREVIEW_KEEP_ALIVE_MS, ContainerPreview } from "./container-preview.ts";
 import {
   MCP_BRIDGE_HEALTH_INTERVAL_MS,
   MCP_BRIDGE_HEALTH_TIMEOUT_MS,
   McpBridge,
-  type McpBridgeActivity,
   type McpBridgeHealthPoll,
-  type McpBridgeOptions,
 } from "./mcp-bridge.ts";
+import type { McpBridgeOptions } from "@cloudpid/sandbox-image/mcp-bridge";
 import { ContainerResizes } from "./resize.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
@@ -227,6 +222,9 @@ const SPARE_KEY = "cloudpid:spare-preparation";
 
 /** Kept once a Session used the Workspace, so it is never prepared, nor stopped, as a spare again (`SparePreparation`). */
 const SPARE_USED_KEY = "cloudpid:spare-used";
+
+/** Written when a spare Workspace is prepared, before any Session uses it: the Workspace exists (`recorded`). */
+const SPARE_PREPARED_KEY = "cloudpid:spare-prepared";
 
 /** Where each repo's last list from the Container's git is kept (`WorkspaceChangesModule`), under `<key>:<repo>`. */
 const CHANGES_KEY = "cloudpid:changes";
@@ -803,14 +801,13 @@ export class Workspace extends ContainerHost {
       port: (port) => this.containerPort(port),
       activity: () => this.mcpBridgeActivity(),
       used: () => this.#spare.noteUse(),
-      now: () => Date.now(),
       healthPoll: () => this.mcpBridgeHealthPoll(),
       warn: (message) => console.warn(message),
     });
   }
 
   /** The uses an MCP bridge request makes of the Container: the idle stop's. A test Worker counts them. */
-  protected mcpBridgeActivity(): McpBridgeActivity {
+  protected mcpBridgeActivity(): ContainerActivity {
     return this.#idle;
   }
 
@@ -823,11 +820,22 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Whether the Workspace has a record of itself: computer's table of the mounts it has indexed, which a Workspace that
-   * was used has a row in and a destroyed one (its storage is wiped) has no table for. A table that cannot be read
-   * (a computer upgrade changed it) counts as a record, as `#mountIndexed` does.
+   * Whether the Workspace has a record of itself, which a destroyed one (its storage is wiped) has not. Any of:
+   * - a Session has used it (`SPARE_USED_KEY`): every call it makes to the Workspace, the readying's settings read
+   *   first, is a use, and none needs a file operation, so an Environment with no Repos and no Skills (which a Session
+   *   hands nothing to write) is a Workspace too;
+   * - it was prepared as a spare (`SPARE_PREPARED_KEY`), before any Session used it;
+   * - computer has indexed its mounts (`_vfs_mounts` has a row), which a Workspace that was used has, one that predates
+   *   the two marks included.
+   * A table that cannot be read (a computer upgrade changed it) counts as a record, as `#mountIndexed` does.
    */
   #recorded(): boolean {
+    const kv = this.ctx.storage.kv;
+
+    if (kv.get<boolean>(SPARE_USED_KEY) === true || kv.get<boolean>(SPARE_PREPARED_KEY) === true) {
+      return true;
+    }
+
     try {
       const table = this.#sql
         .exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_vfs_mounts'")
@@ -859,7 +867,7 @@ export class Workspace extends ContainerHost {
   }
 
   /** The uses a Container preview makes of the Container: the idle stop's. A test Worker counts them. */
-  protected containerPreviewActivity(): ContainerPreviewActivity {
+  protected containerPreviewActivity(): ContainerActivity {
     return this.#idle;
   }
 
@@ -1311,6 +1319,9 @@ export class Workspace extends ContainerHost {
     // The Secrets are kept sealed, never with the set-up the preparation stores. The Skill set is mounted now, so the
     // set-up stored stays small and a Session that takes the spare before its preparation finds the Skills.
     const { secrets, secretsUnavailable, skills, ...stored } = setup;
+
+    // The Workspace exists from here, whatever the preparation finds to write.
+    this.ctx.storage.kv.put(SPARE_PREPARED_KEY, true);
 
     if (secrets !== undefined) await this.#environmentSecrets.replace(secrets);
     else if (secretsUnavailable !== undefined) {

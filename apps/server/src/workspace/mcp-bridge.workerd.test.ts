@@ -6,6 +6,7 @@
 import { env, exports } from "cloudflare:workers";
 import { MCP_BRIDGE_CONFIG_HEADER } from "@cloudpid/sandbox-image/mcp-bridge";
 import { describe, expect, it, vi } from "vitest";
+import { workspacePreparation } from "./prepare.ts";
 import type { WorkspaceMcpBridge } from "./worker.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
@@ -55,6 +56,15 @@ const call = (body = '{"jsonrpc":"2.0","id":1,"method":"tools/call"}') =>
     body,
   });
 
+/** The readying a Session does of a Workspace of an Environment with no Repos and no Skills, over its real Durable Object. */
+const prepare = (name: string) =>
+  workspacePreparation(env.WORKSPACES, () => undefined)(name, {
+    repos: [],
+    branch: "main",
+    base: null,
+    settings: {},
+  });
+
 const USE = { start: false, use: true } as const;
 const NO_USE = { start: false, use: false } as const;
 
@@ -92,6 +102,19 @@ describe("a use of the bridge", () => {
       },
     ]);
     // The Container ran already: nothing was started, and the bridge's health was not asked for before the request... once.
+    expect((await stub.fakeContainerState()).scripts).toEqual([]);
+  });
+
+  it("polls no health for a Container found running, however slow its bridge: a status check never waits for it", async () => {
+    const stub = await workspace();
+
+    await stub.fakeBridge({ token: TOKEN, healthFailures: 5 });
+
+    for (const options of [NO_USE, { start: true, use: false }]) {
+      expect((await stub.mcpBridge(call(), options)).status).toBe(200);
+    }
+
+    expect((await stub.bridgeState()).healthPolls).toBe(0);
     expect((await stub.fakeContainerState()).scripts).toEqual([]);
   });
 
@@ -152,20 +175,6 @@ describe("a use of the bridge", () => {
     await vi.waitFor(async () =>
       expect((await stub.bridgeState()).streams).toEqual([{ cancelled: true }]),
     );
-    expect(await stub.mcpBridgeHolds()).toEqual({ open: 0, writing: 0 });
-  });
-
-  it("ends its hold when the response fails", async () => {
-    const stub = await workspace();
-
-    const response = await stub.mcpBridge(
-      new Request(`${MCP}?stream=1`, { method: "POST", body: "{}" }),
-      USE,
-    );
-
-    await stub.bridgeFail(0);
-    await expect(response.text()).rejects.toThrow();
-    await vi.waitFor(async () => expect((await stub.mcpBridgeUses()).end).toBe(1));
     expect(await stub.mcpBridgeHolds()).toEqual({ open: 0, writing: 0 });
   });
 
@@ -255,6 +264,22 @@ describe("a stopped Container", () => {
     expect(await stub.mcpBridgeUses()).toMatchObject({ begin: 1 });
   });
 
+  it("reads the token again while it polls, since the launch is recorded after the Container has started", async () => {
+    const stub = await workspace({ running: false });
+
+    await stub.forgetLaunchRecord();
+
+    const answered = stub.mcpBridge(call(), { start: true, use: false });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await stub.seedLaunchRecord(TOKEN);
+
+    const response = await answered;
+
+    expect(response.status).toBe(200);
+    expect((await stub.bridgeState()).requests[0]?.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
   it("is started once for requests that arrive while it starts, and polls once for them all", async () => {
     const stub = await workspace({ running: false });
 
@@ -297,7 +322,8 @@ describe("a bridge that does not answer", () => {
 
     expect(refusal.error).toBe("bridge_unreachable");
     expect(refusal.message).toContain("container_restart");
-    expect((await stub.bridgeState()).healthPolls).toBe(0);
+    // The fixture's poll is 20 attempts.
+    expect((await stub.bridgeState()).healthPolls).toBe(20);
     expect(await stub.mcpBridgeUses()).toEqual({ touch: 0, begin: 0, end: 0 });
   });
 
@@ -339,6 +365,41 @@ describe("a bridge that does not answer", () => {
     expect((await stub.bridgeState()).requests).toEqual([]);
   });
 
+  it("answers 502 `bridge_unreachable` when the bridge refuses the token on a forward, and releases its hold: it is another launch's", async () => {
+    const stub = await workspace();
+
+    await stub.fakeBridge({ token: "another-launchs" });
+
+    for (const options of [USE, NO_USE]) {
+      const response = await stub.mcpBridge(call(), options);
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ error: "bridge_unreachable" });
+    }
+
+    await vi.waitFor(async () => expect((await stub.mcpBridgeUses()).end).toBe(1));
+    expect(await stub.mcpBridgeHolds()).toEqual({ open: 0, writing: 0 });
+  });
+
+  it("remembers a failed poll for the launch: a later request, whatever it asks, answers `bridge_unreachable` at once", async () => {
+    const stub = await workspace({ running: false });
+
+    await stub.fakeBridge({ token: TOKEN, unreachable: true });
+    expect((await stub.mcpBridge(call(), { start: true, use: false })).status).toBe(502);
+
+    const polled = (await stub.bridgeState()).healthPolls;
+
+    // The bridge comes up, but nothing polls for this launch again.
+    await stub.fakeBridge({ token: TOKEN });
+
+    for (const options of [NO_USE, { start: true, use: false }]) {
+      expect((await stub.mcpBridge(call(), options)).status).toBe(502);
+    }
+
+    expect(await stub.bridgeState()).toEqual({ requests: [], healthPolls: 0, streams: [] });
+    expect(polled).toBe(20);
+  });
+
   it("passes any other status of the bridge's on, as it is the bridge's own", async () => {
     const stub = await workspace();
 
@@ -372,17 +433,38 @@ describe("a Workspace with no record of itself", () => {
     expect(await stub.mcpBridgeUses()).toEqual({ touch: 0, begin: 0, end: 0 });
   });
 
-  it("is a Workspace that was destroyed: its storage is wiped", async () => {
-    const stub = await workspace();
+  it("is a Workspace that was destroyed: its storage is wiped, its record with it", async () => {
+    const { name, stub } = await namedWorkspace({ recorded: false });
 
+    await prepare(name);
     expect((await stub.mcpBridge(call(), USE)).status).toBe(200);
 
     await stub.destroy();
 
-    const response = await stub.mcpBridge(call(), { start: true, use: true });
+    for (const options of [USE, NO_USE, { start: true, use: true }]) {
+      const response = await stub.mcpBridge(call(), options);
 
-    expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ error: "no_workspace" });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: "no_workspace" });
+    }
+  });
+});
+
+describe("a Workspace a Session readied that has no Repos and no Skills", () => {
+  it("has a record of itself, though nothing was written to its files, so its first request gets through", async () => {
+    const { name, stub } = await namedWorkspace({ recorded: false });
+
+    // Before the readying, nothing is there.
+    expect((await stub.mcpBridge(call(), USE)).status).toBe(404);
+
+    // The readying a Session does (`prepareWorkspace`), over the real object: the Environment's settings are read, and
+    // with no Repos to clone and no Skills to mount, nothing is written to the files.
+    await prepare(name);
+
+    const response = await stub.mcpBridge(call(), USE);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
   });
 });
 

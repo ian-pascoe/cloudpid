@@ -683,6 +683,21 @@ describe("the bridge token of a launch (docs/architecture/mcp-connections.md →
     expect(state.record?.bridgeToken).toBe("token-2");
   });
 
+  it("is minted for computer's restart of a launch with no record too, and the record is made with it", async () => {
+    const { state, container } = open();
+
+    await container.restart(specFor(BUILT_IN));
+
+    expect(state.restarts[0]?.env?.[TOKEN]).toBe("token-1");
+    expect(state.record).toMatchObject({
+      instance: "cpu-1",
+      idleMinutes: DEFAULT_CONTAINER_SETTINGS.idleMinutes,
+      bridgeToken: "token-1",
+      needsSnapshot: true,
+      ignore: BUILT_IN,
+    });
+  });
+
   it("is never in a line the launch logs", async () => {
     const { state, container } = open();
 

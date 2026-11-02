@@ -50,6 +50,9 @@ export type HoldOptions = {
   readonly writes?: boolean | undefined;
 };
 
+/** The uses of the Container a caller other than a command makes (a Container preview, an MCP bridge request): `IdleStop`'s. */
+export type ContainerActivity = Pick<IdleStop, "touch" | "hold">;
+
 /** A hold on the Container: it is in use, however quiet, until `end`. */
 export type ContainerHold = {
   /** The use the hold began with, recorded. Its failure only shortens the idle time. */

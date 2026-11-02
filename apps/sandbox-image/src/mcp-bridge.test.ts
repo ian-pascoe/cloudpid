@@ -28,6 +28,7 @@ import {
   MCP_BRIDGE_TOKEN_ENV,
   mcpBridgeConfigHeader,
   mcpBridgeKey,
+  mcpBridgeRefusalCode,
 } from "@cloudpid/sandbox-image/mcp-bridge";
 
 const script = join(sandboxImageContext, "cloudpid-mcp-bridge.ts");
@@ -36,6 +37,15 @@ const dockerfile = readFileSync(join(sandboxImageContext, "Dockerfile"), "utf8")
 const fixture = join(import.meta.dirname, "mcp-stdio.fixture.mjs");
 
 const TOKEN = "a-token-of-this-launch";
+
+describe("the refusals of WorkspaceMcpBridge", () => {
+  it("are read by their code, and a code this version does not know as the fallback, bridge_failed", () => {
+    expect(mcpBridgeRefusalCode("stopped")).toBe("stopped");
+    expect(mcpBridgeRefusalCode("no_workspace")).toBe("no_workspace");
+    expect(mcpBridgeRefusalCode("a_later_code")).toBe("bridge_failed");
+    expect(mcpBridgeRefusalCode(undefined)).toBe("bridge_failed");
+  });
+});
 
 describe("the bridge's contract with the Workspaces Worker", () => {
   /** The value of `const <name> = <value>;` in the script. */

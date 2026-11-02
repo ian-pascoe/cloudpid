@@ -605,24 +605,38 @@ export class ContainerLaunch {
       };
     }
 
-    // The restart is a launch of its own, with a token of its own, which also ends the old one's use.
-    const token = record === undefined ? undefined : this.#deps.newBridgeToken();
-
-    // computer's restart launches from the image with its own environment: no store to reset, no file its scans
-    // covered, and a disk that is not the snapshot's.
-    if (record !== undefined) {
-      const { resetStore: _reset, scanned: _scanned, diskUnchanged: _unchanged, ...rest } = record;
-
-      await this.#remember({ ...rest, bridgeToken: token });
-    }
-
     // Without a record the Container is one found running that was launched before launches were recorded (as in
     // `#start`), else this is a launch of its own and the settings decide.
+    const settings = await this.#deps.settings();
+
     const instance =
       record?.instance ??
       (this.#deps.running()
         ? UNRECORDED_INSTANCE
-        : launchSize(await this.#deps.settings(), await this.#deps.resized()));
+        : launchSize(settings, await this.#deps.resized()));
+
+    // The restart is a launch of its own, with a token of its own, which also ends the old one's use. The record is
+    // rewritten at every restart for that token, and (beside it) for what computer's restart from the image changes: no
+    // store to reset, no file its scans covered, and a disk that is not the snapshot's. Without a record it is made now,
+    // so the Container has a token whose bridge the Workspace can reach.
+    const token = this.#deps.newBridgeToken();
+
+    if (record !== undefined) {
+      const { resetStore: _reset, scanned: _scanned, diskUnchanged: _unchanged, ...rest } = record;
+
+      await this.#remember({ ...rest, bridgeToken: token });
+    } else {
+      await this.#remember({
+        instance,
+        idleMinutes: settings.idleMinutes,
+        needsSnapshot: true,
+        restoredFrom: undefined,
+        image: this.#deps.image(),
+        ignore: ignoreOf(spec),
+        bridgeToken: token,
+        launchedAt: this.#deps.now(),
+      });
+    }
 
     this.#deps.info("Container launch: restarted from the image (computer's restart)");
 
