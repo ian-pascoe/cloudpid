@@ -9,3 +9,9 @@ export * from "./container-settings.ts";
 export * from "./container-pricing.ts";
 
 export * from "./patch.ts";
+
+export * from "./mcp-servers.ts";
+
+export * from "./mcp-server-set.ts";
+
+export * from "./mcp-connection.ts";

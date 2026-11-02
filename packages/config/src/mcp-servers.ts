@@ -1,0 +1,860 @@
+// MCP server entries (`docs/architecture/mcp-configuration.md` → Entries): the `mcp.servers` root of the settings, at both
+// Scopes, and the entries of a Repo's `.pi/mcp.json`. An entry is read as written, with no default filled in, since an
+// MCP server adjustment holds only the keys it changes and `{ ...base, ...adjustment }` must not meet a default
+// (`normalizeMcpServer` gives the entry in force, with the defaults). Settings decode strictly: an entry that breaks a rule
+// is refused with a problem. A Repo's file decodes leniently, an entry at a time: the entry that breaks a rule is skipped
+// with a problem and the rest stand, except for the bounds, which skip the whole file.
+// @effect-diagnostics missingPipeableSignature:off -- predicates and builders of plain values, not combinators.
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+import { problemsOf, type SettingsProblem } from "./schema-problems.ts";
+
+/** The most an MCP server entry, and what holds entries, may be (D10 of the MCP server configuration design). */
+export const MCP_LIMITS = {
+  /** Servers per Scope and per Repo file; an Environment's adjustments are not servers and do not count. */
+  servers: 50,
+  /** A server's name, in characters. */
+  name: 64,
+  /** One entry as JSON, in bytes of UTF-8. */
+  entryBytes: 16 * 1024,
+  /** `env` keys, and `headers` keys. */
+  keys: 64,
+  toolExposureKeys: 200,
+  /** A description, in bytes of UTF-8. */
+  descriptionBytes: 1024,
+  /** A Repo's `.pi/mcp.json`, in bytes of UTF-8. */
+  repoFileBytes: 64 * 1024,
+} as const;
+
+/** How an MCP server's tools reach the model (`GLOSSARY.md` → Exposure). */
+export const MCP_EXPOSURES = ["codemode", "deferred", "direct", "hidden"] as const;
+
+export type McpExposure = (typeof MCP_EXPOSURES)[number];
+
+/** pi's `codemode-deferred`, read as `codemode` (`normalizedExposure`). */
+const CODEMODE_DEFERRED = "codemode-deferred";
+
+/** Whether an MCP server may ask the owner's models for a reply (Sampling, D2). */
+export const MCP_SAMPLING = ["ask", "allow", "off"] as const;
+
+export type McpSampling = (typeof MCP_SAMPLING)[number];
+
+/** The keys an MCP server adjustment holds; every other key is part of the MCP server definition. */
+export const MCP_ADJUSTMENT_KEYS = ["enabled", "exposure", "toolExposure"] as const;
+
+export type McpAdjustmentKey = (typeof MCP_ADJUSTMENT_KEYS)[number];
+
+/** The keys of the MCP server definition: every key but those of an adjustment (`auth` is none, it is refused). */
+export const MCP_DEFINITION_KEYS = [
+  "type",
+  "command",
+  "args",
+  "env",
+  "cwd",
+  "url",
+  "headers",
+  "oauth",
+  "timeout",
+  "description",
+  "sampling",
+] as const;
+
+const DEFINITION_KEYS = MCP_DEFINITION_KEYS;
+
+/** What a server's name looks like: `^[A-Za-z0-9_-]+$`, at most 64 characters. */
+export const MCP_NAME = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The name as tool names spell it: lower case, with `-` as `_`. Names with one spelling clash across every layer, since
+ * a tool is `mcp__<name>__<tool>` (MCP tools in a Session, D6).
+ */
+export const normalizeMcpName = (name: string): string => name.toLowerCase().replaceAll("-", "_");
+
+const utf8 = new TextEncoder();
+
+const bytesOf = (text: string): number => utf8.encode(text).length;
+
+const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
+  Predicate.isObject(value) && !Arr.isArray(value);
+
+const exposureSchema = Schema.Literals([...MCP_EXPOSURES, CODEMODE_DEFERRED]);
+
+const stringList = Schema.Array(Schema.String);
+
+const stringMap = Schema.Record(Schema.String, Schema.String);
+
+const OAuth = Schema.Struct({
+  clientId: Schema.optionalKey(Schema.String),
+  clientSecret: Schema.optionalKey(Schema.String),
+  privateKey: Schema.optionalKey(Schema.String),
+  keyId: Schema.optionalKey(Schema.String),
+  scope: Schema.optionalKey(Schema.String),
+  clientName: Schema.optionalKey(Schema.String),
+  clientRegistration: Schema.optionalKey(Schema.Literals(["auto", "cimd", "dcr"])),
+  authServerMetadataUrl: Schema.optionalKey(Schema.String),
+  issuer: Schema.optionalKey(Schema.String),
+  grantType: Schema.optionalKey(Schema.Literals(["authorization_code", "client_credentials"])),
+  /** Accepted and ignored: cloudpid's redirect URI is its own. */
+  callbackPort: Schema.optionalKey(Schema.Finite),
+  callbackUrl: Schema.optionalKey(Schema.String),
+});
+
+/** The `oauth` fields of an entry, as written (`docs/architecture/mcp-sign-in.md` → The `oauth` fields). */
+export type McpOauth = typeof OAuth.Type;
+
+/**
+ * An entry as written: a full entry (it has `command`, `url` or `type`) that defines a server, or an MCP server
+ * adjustment (only `enabled`, `exposure` and `toolExposure`). Which it is, is `isMcpFullEntry`; the rules each has are
+ * `entryProblems`.
+ */
+const McpServerFields = {
+  type: Schema.optionalKey(
+    Schema.Literals(["stdio", "http", "streamable-http"]).annotate({
+      message:
+        'must be "stdio", "http" or "streamable-http" ("sse" is refused: use Streamable HTTP)',
+    }),
+  ),
+  command: Schema.optionalKey(Schema.String),
+  args: Schema.optionalKey(stringList),
+  env: Schema.optionalKey(stringMap),
+  cwd: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
+  headers: Schema.optionalKey(stringMap),
+  oauth: Schema.optionalKey(OAuth),
+  /** pi's own sign-in setting: refused (`entryProblems`), read here only to say so. */
+  auth: Schema.optionalKey(Schema.Json),
+  enabled: Schema.optionalKey(Schema.Boolean),
+  exposure: Schema.optionalKey(exposureSchema),
+  toolExposure: Schema.optionalKey(Schema.Record(Schema.String, exposureSchema)),
+  timeout: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThan(0))),
+  description: Schema.optionalKey(Schema.String),
+  sampling: Schema.optionalKey(Schema.Literals(MCP_SAMPLING)),
+};
+
+const McpEntryStruct = Schema.Struct(McpServerFields);
+
+/** An entry as written, full or an adjustment. */
+export type McpServerValue = typeof McpEntryStruct.Type;
+
+type McpWhere = "settings" | "repo";
+
+const NAME_REFERENCE = /\$\{([^}]*)\}/g;
+
+const VALID_REFERENCE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Whether `text` is exactly one `${NAME}`. */
+const isSingleReference = (text: string): boolean => /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(text);
+
+/** The `${…}` of `text` that are not a valid `${NAME}`. */
+const malformedReferences = (text: string): boolean =>
+  Arr.some([...text.matchAll(NAME_REFERENCE)], ([, name]) => !VALID_REFERENCE.test(name ?? "")) ||
+  /\$\{(?![^}]*\})/.test(text);
+
+/** The `${NAME}` an entry's text reads, in order, without repeats. */
+export const mcpReferenceNames = (text: string): ReadonlyArray<string> =>
+  Arr.dedupe(
+    Arr.filter(
+      Arr.map([...text.matchAll(NAME_REFERENCE)], ([, name]) => name ?? ""),
+      (name) => VALID_REFERENCE.test(name),
+    ),
+  );
+
+const tildePath = (text: string): boolean => /^~(\/|$)/.test(text);
+
+/** Whether `value` has `command`, `url` or `type`: a full entry, whether or not it then decodes. */
+export const isMcpFullEntry = (value: McpServerValue | Schema.JsonObject): boolean =>
+  Predicate.hasProperty(value, "command") ||
+  Predicate.hasProperty(value, "url") ||
+  Predicate.hasProperty(value, "type");
+
+/**
+ * A relative `cwd` of a Repo's entry in `/workspace/<directory>` (`mcpRepoCwd`), or undefined where it leaves the
+ * Repo, is absolute, or starts with `~`.
+ */
+export const mcpRepoCwd = (directory: string, cwd: string | undefined): string | undefined => {
+  const base = `/workspace/${directory}`;
+
+  if (cwd === undefined || cwd === "") return base;
+
+  if (cwd.startsWith("/") || tildePath(cwd)) return undefined;
+
+  const parts: Array<string> = [];
+
+  for (const part of cwd.split("/")) {
+    if (part === "" || part === ".") continue;
+
+    if (part === "..") {
+      if (parts.length === 0) return undefined;
+
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+
+  return parts.length === 0 ? base : `${base}/${Arr.join(parts, "/")}`;
+};
+
+const oauthProblems = (
+  oauth: McpOauth,
+  where: McpWhere,
+  headers: Readonly<Record<string, string>> | undefined,
+  kind: "stdio" | "http" | undefined,
+): ReadonlyArray<Schema.FilterIssue> => {
+  const issues: Array<Schema.FilterIssue> = [];
+  const at = (key: string, issue: string) => issues.push({ path: ["oauth", key], issue });
+  const { clientId, clientSecret, privateKey, keyId, scope, clientName } = oauth;
+
+  if (kind === "stdio") {
+    issues.push({ path: ["oauth"], issue: "is for an HTTP server: a stdio server has no sign-in" });
+  }
+
+  if (Arr.some(Record.keys(headers ?? {}), (header) => header.toLowerCase() === "authorization")) {
+    issues.push({
+      path: ["oauth"],
+      issue:
+        "is refused beside an Authorization header: the server is sent that header, not signed in to",
+    });
+  }
+
+  if (clientId !== undefined && !/^[^\s\p{Cc}]{1,256}$/u.test(clientId)) {
+    at("clientId", "must be 1 to 256 printable characters, without whitespace");
+  }
+
+  if (clientSecret !== undefined) {
+    if (clientId === undefined) at("clientSecret", "needs a clientId");
+
+    if (where === "settings" && !isSingleReference(clientSecret)) {
+      at(
+        "clientSecret",
+        "must be exactly one ${NAME}, never a literal: keep the value as a Secret",
+      );
+    }
+  }
+
+  if (privateKey !== undefined) {
+    if (where === "settings" && !isSingleReference(privateKey)) {
+      at("privateKey", "must be exactly one ${NAME} holding the key, never a literal");
+    }
+
+    if (oauth.grantType !== "client_credentials") {
+      at("privateKey", 'is only for grantType "client_credentials"');
+    }
+
+    if (clientSecret !== undefined) at("privateKey", "is refused together with clientSecret");
+  }
+
+  if (keyId !== undefined && (keyId.length < 1 || keyId.length > 256)) {
+    at("keyId", "must be 1 to 256 characters");
+  }
+
+  if (scope !== undefined) {
+    const tokens = Arr.filter(scope.split(/\s+/), (token) => token !== "");
+
+    if (tokens.length > 64 || bytesOf(scope) > 1024) {
+      at("scope", "must be at most 64 tokens and 1 KiB");
+    }
+  }
+
+  if (clientName !== undefined && (clientName.length < 1 || clientName.length > 100)) {
+    at("clientName", "must be 1 to 100 characters");
+  }
+
+  if (oauth.clientRegistration === "cimd" && (clientId !== undefined || clientName !== undefined)) {
+    at("clientRegistration", '"cimd" is refused together with clientId or clientName');
+  }
+
+  for (const key of ["authServerMetadataUrl", "issuer"] as const) {
+    const text = oauth[key];
+
+    if (text === undefined) continue;
+
+    const url = Option.getOrUndefined(Option.liftThrowable((href: string) => new URL(href))(text));
+
+    if (url === undefined || url.protocol !== "https:" || text.length > 2048) {
+      at(key, "must be an https URL of at most 2,048 characters");
+    } else if (
+      key === "issuer" &&
+      (url.search !== "" || url.hash !== "" || text.includes("#") || text.includes("?"))
+    ) {
+      at(key, "must have no query or fragment");
+    }
+  }
+
+  return issues;
+};
+
+/** Why `value`, an entry as written, breaks the bounds: one line each, or none. */
+export const mcpEntryBoundsProblems = (value: McpServerValue): ReadonlyArray<string> => {
+  const problems: Array<string> = [];
+
+  if (bytesOf(JSON.stringify(value)) > MCP_LIMITS.entryBytes) {
+    problems.push(`is over ${MCP_LIMITS.entryBytes / 1024} KiB`);
+  }
+
+  for (const key of ["env", "headers"] as const) {
+    if (Record.size(value[key] ?? {}) > MCP_LIMITS.keys) {
+      problems.push(`${key} has more than ${MCP_LIMITS.keys} keys`);
+    }
+  }
+
+  if (Record.size(value.toolExposure ?? {}) > MCP_LIMITS.toolExposureKeys) {
+    problems.push(`toolExposure has more than ${MCP_LIMITS.toolExposureKeys} keys`);
+  }
+
+  if (value.description !== undefined && bytesOf(value.description) > MCP_LIMITS.descriptionBytes) {
+    problems.push(`description is over ${MCP_LIMITS.descriptionBytes / 1024} KiB`);
+  }
+
+  return problems;
+};
+
+const ADJUSTMENT_ONLY = `an MCP server adjustment holds only ${Arr.join(MCP_ADJUSTMENT_KEYS, ", ")}`;
+
+/**
+ * Every rule an entry as written must meet, as problems at the keys they lie at: that a full entry defines a server and
+ * is one kind of it, what pi has that cloudpid refuses (`auth`, `~`, `!command` values, `${NAME}` outside `env` and
+ * `headers`), `oauth`, the directory, and the bounds. An adjustment may hold nothing but its three keys.
+ */
+const entryProblems = (
+  value: McpServerValue,
+  where: McpWhere,
+): ReadonlyArray<Schema.FilterIssue> => {
+  const issues: Array<Schema.FilterIssue> = [];
+  const refuse = (key: string, issue: string) => issues.push({ path: [key], issue });
+
+  if (value.auth !== undefined) {
+    refuse(
+      "auth",
+      'is not supported: cloudpid signs in through "oauth", or sends the header you write',
+    );
+  }
+
+  for (const problem of mcpEntryBoundsProblems(value)) issues.push(problem);
+
+  if (!isMcpFullEntry(value)) {
+    for (const key of Arr.filter(DEFINITION_KEYS, (held) => value[held] !== undefined)) {
+      refuse(
+        key,
+        `${ADJUSTMENT_ONLY}: ${key} is part of the definition, so it takes an entry of its own with a command or a url`,
+      );
+    }
+
+    return issues;
+  }
+
+  const hasCommand = value.command !== undefined;
+  const hasUrl = value.url !== undefined;
+  const kind = hasCommand ? "stdio" : hasUrl ? "http" : undefined;
+
+  if (hasCommand && hasUrl) {
+    issues.push("has both a command and a url: an MCP server is one or the other");
+  } else if (kind === undefined) {
+    issues.push("does not define a server: give it a command (stdio) or a url (Streamable HTTP)");
+  } else if ((value.type === "stdio") !== (kind === "stdio") && value.type !== undefined) {
+    refuse("type", `is "${value.type}", but the entry has a ${hasCommand ? "command" : "url"}`);
+  }
+
+  if (kind === "stdio") {
+    if (value.headers !== undefined) refuse("headers", "is for an HTTP server");
+  } else if (kind === "http") {
+    for (const key of ["args", "env", "cwd"] as const) {
+      if (value[key] !== undefined) refuse(key, "is for a stdio server");
+    }
+  }
+
+  if (value.command !== undefined && value.command === "") refuse("command", "is empty");
+
+  const tilde = [
+    ...(value.command === undefined ? [] : [["command", value.command] as const]),
+    ...Arr.map(value.args ?? [], (arg, index) => [`args.${index}`, arg] as const),
+    ...(value.cwd === undefined ? [] : [["cwd", value.cwd] as const]),
+  ];
+
+  for (const [key, text] of tilde) {
+    if (tildePath(text)) refuse(key, "starts with ~, which is never expanded: write the path out");
+  }
+
+  if (
+    value.cwd !== undefined &&
+    where === "settings" &&
+    !value.cwd.startsWith("/") &&
+    !tildePath(value.cwd)
+  ) {
+    refuse("cwd", "must be an absolute path: the Session's default directory is used without one");
+  }
+
+  if (value.cwd !== undefined && where === "repo" && mcpRepoCwd("repo", value.cwd) === undefined) {
+    refuse("cwd", "must be a relative path that stays inside the Repo");
+  }
+
+  if (value.url !== undefined) {
+    const url = Option.getOrUndefined(
+      Option.liftThrowable((href: string) => new URL(href))(value.url),
+    );
+
+    if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) {
+      refuse("url", "must be an http or https URL");
+    }
+  }
+
+  const references = [
+    ...(value.command === undefined ? [] : [["command", value.command] as const]),
+    ...Arr.map(value.args ?? [], (arg, index) => [`args.${index}`, arg] as const),
+    ...(value.cwd === undefined ? [] : [["cwd", value.cwd] as const]),
+    ...(value.url === undefined ? [] : [["url", value.url] as const]),
+    ...Arr.flatMap(
+      ["issuer", "authServerMetadataUrl", "clientId", "keyId", "scope", "clientName"] as const,
+      (key) =>
+        value.oauth?.[key] === undefined ? [] : [[`oauth.${key}`, value.oauth[key]] as const],
+    ),
+  ];
+
+  for (const [key, text] of references) {
+    if (text.includes("${")) {
+      issues.push({
+        path: key.split("."),
+        issue:
+          "reads ${NAME}, which is only read in the values of env and headers (and the secrets of oauth)",
+      });
+    }
+  }
+
+  for (const key of ["env", "headers"] as const) {
+    for (const [name, text] of Record.toEntries(value[key] ?? {})) {
+      if (name === "") issues.push({ path: [key], issue: "has an empty key" });
+
+      if (text.startsWith("!")) {
+        issues.push({
+          path: [key, name],
+          issue:
+            "starts with !, which pi runs as a command and cloudpid never does: write the value, or ${NAME}",
+        });
+      } else if (malformedReferences(text)) {
+        issues.push({ path: [key, name], issue: "has a ${…} that is not a ${NAME}" });
+      }
+    }
+  }
+
+  if (value.oauth !== undefined) {
+    for (const issue of oauthProblems(value.oauth, where, value.headers, kind)) issues.push(issue);
+  }
+
+  for (const key of ["clientSecret", "privateKey"] as const) {
+    const text = value.oauth?.[key];
+
+    if (text !== undefined && where === "repo" && text.startsWith("!")) {
+      issues.push({ path: ["oauth", key], issue: "starts with !, which cloudpid never runs" });
+    }
+  }
+
+  return issues;
+};
+
+/** The schema of an entry as written, at Settings or in a Repo's file (which may hold a literal `oauth` secret). */
+const serverSchema = (where: McpWhere) =>
+  McpEntryStruct.check(Schema.makeFilter((value: McpServerValue) => entryProblems(value, where)));
+
+const SettingsServer = serverSchema("settings");
+
+const RepoServer = serverSchema("repo");
+
+/** `servers`' problems: a name that is not one, and the names that differ from an earlier one only in case or in `-`/`_`. */
+const nameProblems = (
+  servers: Readonly<Record<string, unknown>>,
+): ReadonlyArray<Schema.FilterIssue> => {
+  const seen = new Map<string, string>();
+  const issues: Array<Schema.FilterIssue> = [];
+
+  for (const name of Record.keys(servers)) {
+    if (name.length > MCP_LIMITS.name || !MCP_NAME.test(name)) {
+      issues.push({
+        path: [name],
+        issue: `is not a name: use letters, digits, - and _, at most ${MCP_LIMITS.name} characters`,
+      });
+
+      continue;
+    }
+
+    const twin = seen.get(normalizeMcpName(name));
+
+    if (twin === undefined) {
+      seen.set(normalizeMcpName(name), name);
+    } else {
+      issues.push({
+        path: [name],
+        issue: `clashes with "${twin}": names that differ only in case or in - and _ are one server`,
+      });
+    }
+  }
+
+  return issues;
+};
+
+/**
+ * The `mcp.servers` of a document of settings: servers by name. Each name must be one, and none may be the twin of
+ * another in case or in `-`/`_`. A set of servers over a Scope's 50 is `mcpLayerProblems`, since the settings of an
+ * Environment hold Global's servers too.
+ */
+export const McpServers = Schema.Record(Schema.String, SettingsServer).check(
+  Schema.makeFilter((servers: Readonly<Record<string, McpServerValue>>) => nameProblems(servers)),
+);
+
+export type McpServers = typeof McpServers.Type;
+
+/** The `mcp` root of the settings: nothing but `servers` (pi's `autoEnableCodemode` has no key). */
+export const McpSettings = Schema.Struct({ servers: McpServers });
+
+const decodeSettingsServer = Schema.decodeUnknownResult(SettingsServer, {
+  onExcessProperty: "error",
+  errors: "all",
+});
+
+const decodeRepoServer = Schema.decodeUnknownResult(RepoServer, {
+  onExcessProperty: "error",
+  errors: "all",
+});
+
+/**
+ * The entry `value` as written, or why it is not one: every problem with the keys it lies at (relative to the entry).
+ * `where` says whether it is in the Settings, which refuse a literal `oauth` secret, or in a Repo's file.
+ */
+export const decodeMcpServerValue = (
+  value: Schema.Json,
+  where: McpWhere = "settings",
+): Result.Result<McpServerValue, ReadonlyArray<SettingsProblem>> =>
+  Result.mapError(
+    (where === "settings" ? decodeSettingsServer : decodeRepoServer)(value),
+    problemsOf,
+  );
+
+/**
+ * The keys of an MCP server's field `parts` (`mcp.servers.<name>`, or its `enabled`, `exposure` or `toolExposure`), or
+ * undefined for a path that leads to none: a name that is not one, another key of an entry.
+ */
+export const mcpFieldPath = (parts: ReadonlyArray<string>): ReadonlyArray<string> | undefined => {
+  const [, servers, name, key, ...rest] = parts;
+
+  if (servers !== "servers" || name === undefined) return undefined;
+
+  if (name.length > MCP_LIMITS.name || !MCP_NAME.test(name) || rest.length > 0) return undefined;
+
+  return key === undefined || Arr.contains(MCP_ADJUSTMENT_KEYS, key) ? parts : undefined;
+};
+
+/** The `mcp.servers` of a document of settings or of Overrides, as written; none where it has none. */
+export const mcpServersOf = (document: Schema.Json): Schema.Json | undefined => {
+  const mcp = isJsonObject(document) ? document["mcp"] : undefined;
+
+  return mcp === undefined || !isJsonObject(mcp) ? undefined : mcp["servers"];
+};
+
+/**
+ * The keys a lenient read drops for a problem at `keys`: the whole entry for a problem inside an MCP server's entry, since
+ * an entry with a key left out is another server; any other problem's own keys.
+ */
+export const mcpEntryKeys = (keys: ReadonlyArray<string>): ReadonlyArray<string> =>
+  keys[0] === "mcp" && keys[1] === "servers" && keys.length > 3 ? Arr.take(keys, 3) : keys;
+
+/** The problems of the servers one layer holds, as the settings' strict reads refuse them. */
+export type McpLayerScope = "global" | "environment";
+
+/**
+ * The problems of `servers` (the `mcp.servers` of Global's document or of an Environment's Overrides) that the schema
+ * cannot see, since the settings an Environment resolves to hold Global's servers as well as its own: more than 50
+ * servers, and, at Global, an MCP server adjustment, which has no lower layer to adjust. An Environment's adjustments
+ * are not servers and do not count toward its 50 (they are bounded by the servers they adjust; counting them would
+ * stop an Environment with 50 servers of its own from switching Global's off).
+ */
+export const mcpLayerProblems = (
+  servers: Schema.Json | undefined,
+  scope: McpLayerScope,
+): ReadonlyArray<SettingsProblem> => {
+  if (servers === undefined || !isJsonObject(servers)) return [];
+
+  const problems: Array<SettingsProblem> = [];
+  let count = 0;
+
+  for (const [name, value] of Record.toEntries(servers)) {
+    const adjustment = isJsonObject(value) && !isMcpFullEntry(value);
+    const keys = ["mcp", "servers", name];
+
+    if (adjustment) {
+      if (scope === "global") {
+        problems.push({
+          keys,
+          line: `${Arr.join(keys, ".")}: Global holds no MCP server adjustment: it has no lower layer to adjust`,
+        });
+      }
+
+      continue;
+    }
+
+    count += 1;
+
+    if (count > MCP_LIMITS.servers) {
+      problems.push({
+        keys,
+        line: `${Arr.join(keys, ".")}: is over the ${MCP_LIMITS.servers} MCP servers a Scope may have`,
+      });
+    }
+  }
+
+  return problems;
+};
+
+/** An entry in force: what an MCP server is, with every default applied. */
+type McpCommon = {
+  readonly enabled: boolean;
+  readonly exposure: McpExposure;
+  readonly toolExposure: Readonly<Record<string, McpExposure>>;
+  readonly timeout: number;
+  readonly description?: string | undefined;
+  readonly sampling: McpSampling;
+};
+
+/** A command the Workspace's Container runs. */
+export type McpStdioServer = McpCommon & {
+  readonly type: "stdio";
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly env: Readonly<Record<string, string>>;
+  readonly cwd?: string | undefined;
+};
+
+/** A Streamable HTTP server. */
+export type McpHttpServer = McpCommon & {
+  readonly type: "http";
+  readonly url: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly oauth?: McpOauth | undefined;
+};
+
+/** An MCP server as the set holds it, with `${NAME}` unresolved. */
+export type McpServerEntry = McpStdioServer | McpHttpServer;
+
+/** pi's `codemode-deferred` is `codemode`. */
+export const normalizedExposure = (exposure: McpExposure | typeof CODEMODE_DEFERRED): McpExposure =>
+  exposure === CODEMODE_DEFERRED ? "codemode" : exposure;
+
+/** The default `timeout`, in seconds. */
+export const DEFAULT_MCP_TIMEOUT = 60;
+
+const oauthInForce = (oauth: McpOauth | undefined): McpOauth | undefined =>
+  oauth === undefined
+    ? undefined
+    : {
+        ...oauth,
+        clientRegistration: oauth.clientRegistration ?? "auto",
+        grantType: oauth.grantType ?? "authorization_code",
+      };
+
+/** `exposures` with `codemode-deferred` read as `codemode`. */
+const exposuresInForce = (
+  exposures: Readonly<Record<string, McpExposure | typeof CODEMODE_DEFERRED>> | undefined,
+): Readonly<Record<string, McpExposure>> => Record.map(exposures ?? {}, normalizedExposure);
+
+/**
+ * The entry in force of a full entry as written (one that decoded): its type read from `command` or `url`, the defaults
+ * applied (`enabled`, `exposure` `codemode`, `timeout` 60, `sampling` `ask`), `streamable-http` as `http`. Undefined for
+ * an MCP server adjustment.
+ */
+export const normalizeMcpServer = (value: McpServerValue): McpServerEntry | undefined => {
+  const common = {
+    enabled: value.enabled ?? true,
+    exposure: normalizedExposure(value.exposure ?? "codemode"),
+    toolExposure: exposuresInForce(value.toolExposure),
+    timeout: value.timeout ?? DEFAULT_MCP_TIMEOUT,
+    description: value.description,
+    sampling: value.sampling ?? "ask",
+  };
+
+  if (value.command !== undefined) {
+    return {
+      ...common,
+      type: "stdio",
+      command: value.command,
+      args: value.args ?? [],
+      env: value.env ?? {},
+      cwd: value.cwd,
+    };
+  }
+
+  if (value.url !== undefined) {
+    return {
+      ...common,
+      type: "http",
+      url: value.url,
+      headers: value.headers ?? {},
+      oauth: oauthInForce(value.oauth),
+    };
+  }
+
+  return undefined;
+};
+
+/** Why a Repo's file, or an entry of it, is skipped or read otherwise: the entry's name, or none for the file. */
+export type McpFileProblem = { readonly name: string | null; readonly message: string };
+
+/** An entry of a Repo's file that stands, as written (its `cwd` made absolute). */
+export type McpRepoEntry = { readonly name: string; readonly value: McpServerValue };
+
+/** What a Repo's `.pi/mcp.json` gives: the entries that stand, and a problem for each that does not or reads otherwise. */
+export type McpRepoFile = {
+  readonly entries: ReadonlyArray<McpRepoEntry>;
+  readonly problems: ReadonlyArray<McpFileProblem>;
+};
+
+const parseJson = (text: string): Option.Option<Schema.Json> =>
+  Result.getSuccess(
+    Result.try({
+      try: (): Schema.Json => JSON.parse(text),
+      catch: () => "not JSON",
+    }),
+  );
+
+const SWITCH_OFF_PROBLEM =
+  "a Repo's adjustment may only switch off (enabled: false, exposure: hidden, hidden in toolExposure)";
+
+/** Whether `value` (a decoded adjustment) only switches off. */
+const onlySwitchesOff = (value: McpServerValue): boolean =>
+  (value.enabled === undefined || value.enabled === false) &&
+  (value.exposure === undefined || value.exposure === "hidden") &&
+  Arr.every(Record.values(value.toolExposure ?? {}), (exposure) => exposure === "hidden");
+
+/** Whether `value` holds something to apply. */
+const holdsAdjustment = (value: McpServerValue): boolean =>
+  Arr.some(MCP_ADJUSTMENT_KEYS, (key) => value[key] !== undefined);
+
+const lines = (problems: ReadonlyArray<SettingsProblem>): string =>
+  Arr.join(
+    Arr.map(problems, ({ line }) => line),
+    "; ",
+  );
+
+/**
+ * The servers of a Repo's `.pi/mcp.json` (`text`, the file as read), for the Repo in directory `directory`: the
+ * Repo's entries and adjustments, or why they are skipped (ADR-0029, D6 and D10 of the MCP server configuration design).
+ *
+ * - A file that is over 64 KiB, not JSON, or without an `mcpServers` object gives no servers, with a problem; so does one
+ *   over a bound (more than 50 servers, a name over 64 characters, an entry over its bounds).
+ * - An entry that is not an object, has a name that is not one or that is the twin of an earlier entry's, breaks a
+ *   rule of Settings (an unknown key, `sse`, `auth`, `~`, a `!command` value, a bad `oauth`), or has a `cwd` that is
+ *   absolute or leaves the Repo is skipped with its problem. `cwd` is made absolute, `/workspace/<directory>/<cwd>`, and
+ *   is the Repo's directory for a stdio entry without one. A literal `oauth` secret stands: the file is public already.
+ * - `sampling: "allow"` is read as `ask`, with a problem saying to copy the entry into the Settings.
+ * - An adjustment that does more than switch off is skipped with a problem.
+ */
+export const readMcpRepoFile = (text: string, directory: string): McpRepoFile => {
+  const skipped = (message: string): McpRepoFile => ({
+    entries: [],
+    problems: [{ name: null, message }],
+  });
+
+  if (bytesOf(text) > MCP_LIMITS.repoFileBytes) {
+    return skipped(`is over ${MCP_LIMITS.repoFileBytes / 1024} KiB`);
+  }
+
+  const parsed = parseJson(text);
+
+  if (Option.isNone(parsed)) return skipped("is not valid JSON");
+
+  const servers = isJsonObject(parsed.value) ? parsed.value["mcpServers"] : undefined;
+
+  if (servers === undefined || !isJsonObject(servers)) {
+    return skipped("has no mcpServers object");
+  }
+
+  const given = Record.toEntries(servers);
+
+  if (given.length > MCP_LIMITS.servers) {
+    return skipped(`has more than ${MCP_LIMITS.servers} servers`);
+  }
+
+  const overName = Arr.findFirst(given, ([name]) => name.length > MCP_LIMITS.name);
+
+  if (Option.isSome(overName)) {
+    return skipped(`has a server name over ${MCP_LIMITS.name} characters`);
+  }
+
+  for (const [name, value] of given) {
+    if (!isJsonObject(value)) continue;
+
+    // SAFETY: the bounds read only the keys of the schema, each of which is there or not; the decode below checks types.
+    const over = mcpEntryBoundsProblems(value as McpServerValue);
+
+    if (over.length > 0) return skipped(`${name} ${over[0]}`);
+  }
+
+  const base = `/workspace/${directory}`;
+  const entries: Array<McpRepoEntry> = [];
+  const problems: Array<McpFileProblem> = [];
+  const seen = new Map<string, string>();
+
+  for (const [name, written] of given) {
+    const skip = (message: string) => problems.push({ name, message });
+
+    if (!MCP_NAME.test(name)) {
+      skip("is skipped: a name is letters, digits, - and _");
+
+      continue;
+    }
+
+    const twin = seen.get(normalizeMcpName(name));
+
+    if (twin !== undefined) {
+      skip(`is skipped: it clashes with "${twin}", a name that differs only in case or in - and _`);
+
+      continue;
+    }
+
+    seen.set(normalizeMcpName(name), name);
+
+    if (!isJsonObject(written)) {
+      skip("is skipped: an entry is an object");
+
+      continue;
+    }
+
+    const value =
+      written["sampling"] === "allow"
+        ? Record.map(written, (entry, key) => (key === "sampling" ? "ask" : entry))
+        : written;
+
+    if (written["sampling"] === "allow") {
+      skip('has sampling "allow", read as "ask": copy it into the Settings to allow it');
+    }
+
+    const decoded = decodeMcpServerValue(value, "repo");
+
+    if (Result.isFailure(decoded)) {
+      skip(`is skipped: ${lines(decoded.failure)}`);
+
+      continue;
+    }
+
+    const entry = decoded.success;
+
+    if (isMcpFullEntry(entry)) {
+      entries.push({
+        name,
+        value:
+          entry.command === undefined
+            ? entry
+            : { ...entry, cwd: mcpRepoCwd(directory, entry.cwd) ?? base },
+      });
+    } else if (!holdsAdjustment(entry)) {
+      skip("is skipped: it holds nothing");
+    } else if (!onlySwitchesOff(entry)) {
+      skip(`is skipped: ${SWITCH_OFF_PROBLEM}`);
+    } else {
+      entries.push({ name, value: entry });
+    }
+  }
+
+  return { entries, problems };
+};

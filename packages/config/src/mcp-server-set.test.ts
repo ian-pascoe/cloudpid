@@ -1,0 +1,504 @@
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Record from "effect/Record";
+import type * as Schema from "effect/Schema";
+import { describe, expect, it } from "vitest";
+import { type McpRepoLayer, resolveMcpServerSet } from "./mcp-server-set.ts";
+
+const LINEAR = { url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer ${TOKEN}" } };
+const LOCAL = { command: "node", args: ["server.js"] };
+
+const owner = (servers: Schema.Json): Schema.Json => ({ mcp: { servers } });
+
+/** A Repo's file in directory `directory`, whose slug is `acme/<directory>`. */
+const repo = (directory: string, servers: Schema.Json): McpRepoLayer => ({
+  directory,
+  slug: `acme/${directory}`,
+  path: ".pi/mcp.json",
+  text: JSON.stringify({ mcpServers: servers }),
+});
+
+const REPO_SOURCE = (directory: string) => ({
+  kind: "repo",
+  directory,
+  slug: `acme/${directory}`,
+  path: ".pi/mcp.json",
+});
+
+const resolve = (global: Schema.Json, environment: Schema.Json, ...repos: Array<McpRepoLayer>) =>
+  resolveMcpServerSet(global, environment, repos);
+
+/** The names of the set, with where each comes from. */
+const sources = (set: ReturnType<typeof resolve>) =>
+  Arr.map(set.servers, ({ name, source }) => `${name}:${source.kind}`);
+
+const server = (set: ReturnType<typeof resolve>, name: string) => {
+  const found = Arr.findFirst(set.servers, (held) => held.name === name);
+
+  if (Option.isNone(found)) throw new Error(`No server ${name}`);
+
+  return found.value;
+};
+
+describe("the MCP server set", () => {
+  it("is empty for an Environment with no server anywhere", () => {
+    expect(resolve({}, {})).toEqual({ servers: [], problems: [], orphans: [] });
+  });
+
+  it("holds Global's servers, read in force with their defaults, and no problem", () => {
+    const set = resolve(owner({ linear: LINEAR, local: LOCAL }), {});
+
+    expect(set.problems).toEqual([]);
+    expect(sources(set)).toEqual(["linear:global", "local:global"]);
+    expect(server(set, "linear")).toEqual({
+      name: "linear",
+      source: { kind: "global" },
+      server: {
+        type: "http",
+        url: LINEAR.url,
+        headers: LINEAR.headers,
+        enabled: true,
+        exposure: "codemode",
+        toolExposure: {},
+        timeout: 60,
+        sampling: "ask",
+      },
+      replacesGlobal: false,
+      shadowed: [],
+      resolvesSecrets: true,
+    });
+  });
+
+  describe("Environment over Global", () => {
+    it("takes an Environment's full entry over Global's of that name, whole", () => {
+      const set = resolve(
+        owner({ linear: { ...LINEAR, timeout: 5, description: "Global's", exposure: "direct" } }),
+        owner({ linear: { url: "https://other.example/mcp" } }),
+      );
+
+      expect(set.problems).toEqual([]);
+      expect(sources(set)).toEqual(["linear:environment"]);
+      expect(server(set, "linear")).toMatchObject({
+        replacesGlobal: true,
+        server: {
+          url: "https://other.example/mcp",
+          timeout: 60,
+          exposure: "codemode",
+          headers: {},
+        },
+      });
+      expect(server(set, "linear").server.description).toBeUndefined();
+    });
+
+    it("adds an Environment's own servers to Global's, and keeps the order: Global's, then the Environment's", () => {
+      const set = resolve(owner({ a: LOCAL, b: LOCAL }), owner({ z: LOCAL, b: LINEAR, c: LOCAL }));
+
+      expect(sources(set)).toEqual(["a:global", "b:environment", "z:environment", "c:environment"]);
+    });
+
+    it("lets the Environment's own entry win over a Global name that differs in case or in `-`/`_`, with a problem", () => {
+      const set = resolve(owner({ "my-linear": LINEAR }), owner({ My_Linear: LOCAL }));
+
+      expect(sources(set)).toEqual(["My_Linear:environment"]);
+      expect(server(set, "My_Linear").replacesGlobal).toBe(false);
+      expect(set.problems).toEqual([
+        {
+          source: { kind: "global" },
+          name: "my-linear",
+          message: expect.stringContaining('clashes with this Environment\'s "My_Linear"'),
+        },
+      ]);
+    });
+
+    it("skips the stale entries a document holds that the Settings would refuse, with their problems", () => {
+      const set = resolve(
+        owner({
+          ok: LOCAL,
+          "bad name": LOCAL,
+          bad: { command: "x", auth: "y" },
+          twin: LOCAL,
+          Twin: LOCAL,
+          adjust: { enabled: false },
+          text: "not an entry",
+        }),
+        owner({ own: LOCAL, nope: { type: "http" } }),
+      );
+
+      expect(sources(set)).toEqual(["ok:global", "twin:global", "own:environment"]);
+      expect(Arr.map(set.problems, ({ source, name }) => `${source.kind}:${name}`)).toEqual([
+        "global:bad name",
+        "global:bad",
+        "global:Twin",
+        "global:adjust",
+        "global:text",
+        "environment:nope",
+      ]);
+    });
+
+    it("stops at 50 servers a layer, and an Environment's adjustments are not among them", () => {
+      const many = (count: number, prefix: string) =>
+        Record.fromEntries(
+          Arr.makeBy(count, (i): [string, Schema.Json] => [`${prefix}${i}`, LOCAL]),
+        );
+
+      const set = resolve(
+        owner(many(51, "g")),
+        owner(Record.union(many(50, "e"), { g0: { enabled: false } }, (left) => left)),
+      );
+
+      expect(set.servers).toHaveLength(50 + 50);
+      expect(set.problems).toEqual([
+        { source: { kind: "global" }, name: "g50", message: expect.stringContaining("at most 50") },
+      ]);
+      expect(server(set, "g0").server.enabled).toBe(false);
+    });
+  });
+
+  describe("an Environment's adjustment", () => {
+    it("applies over the server it adjusts: `enabled`, `exposure`, and `toolExposure` whole", () => {
+      const set = resolve(
+        owner({
+          linear: { ...LINEAR, exposure: "direct", toolExposure: { a: "direct", b: "hidden" } },
+        }),
+        owner({ linear: { enabled: false, toolExposure: { c: "deferred" } } }),
+      );
+
+      expect(set.problems).toEqual([]);
+      expect(server(set, "linear")).toMatchObject({
+        source: { kind: "global" },
+        server: {
+          type: "http",
+          url: LINEAR.url,
+          enabled: false,
+          exposure: "direct",
+          toolExposure: { c: "deferred" },
+        },
+      });
+    });
+
+    it("switches a Global server on that Global switched off", () => {
+      const set = resolve(
+        owner({ linear: { ...LINEAR, enabled: false } }),
+        owner({ linear: { enabled: true } }),
+      );
+
+      expect(server(set, "linear").server.enabled).toBe(true);
+    });
+
+    it("never changes the definition: only a full entry of its own does", () => {
+      const set = resolve(
+        owner({ linear: { ...LINEAR, timeout: 5, sampling: "off" } }),
+        owner({ linear: { exposure: "hidden" } }),
+      );
+
+      expect(server(set, "linear").server).toMatchObject({ timeout: 5, sampling: "off" });
+    });
+
+    it("adjusts a Repo's server, which stays the Repo's", () => {
+      const set = resolve({}, owner({ api: { exposure: "direct" } }), repo("web", { api: LINEAR }));
+
+      expect(set.problems).toEqual([]);
+      expect(server(set, "api")).toMatchObject({
+        source: REPO_SOURCE("web"),
+        server: { exposure: "direct" },
+      });
+    });
+
+    it("is an orphan when no layer defines its server, a problem with the fields to reset", () => {
+      const set = resolve(
+        {},
+        owner({
+          gone: { enabled: false, toolExposure: { a: "hidden" } },
+          only: { exposure: "direct" },
+        }),
+      );
+
+      expect(set.servers).toEqual([]);
+      expect(set.orphans).toEqual([
+        { source: { kind: "environment" }, name: "gone", keys: ["enabled", "toolExposure"] },
+        { source: { kind: "environment" }, name: "only", keys: ["exposure"] },
+      ]);
+      expect(set.problems).toEqual([
+        {
+          source: { kind: "environment" },
+          name: "gone",
+          message: expect.stringContaining("no layer defines"),
+          reset: ["mcp.servers.gone.enabled", "mcp.servers.gone.toolExposure"],
+        },
+        {
+          source: { kind: "environment" },
+          name: "only",
+          message: expect.stringContaining("no layer defines"),
+          reset: ["mcp.servers.only.exposure"],
+        },
+      ]);
+    });
+
+    it("becomes an orphan when its base disappears later", () => {
+      const environment = owner({ linear: { enabled: false } });
+
+      expect(resolve(owner({ linear: LINEAR }), environment).orphans).toEqual([]);
+      expect(resolve({}, environment).orphans).toHaveLength(1);
+      expect(resolve({}, environment, repo("web", { linear: LINEAR })).orphans).toEqual([]);
+      expect(resolve({}, environment, repo("web", {})).orphans).toHaveLength(1);
+    });
+
+    it("finds its server by its exact name, and says when only a twin of it exists", () => {
+      const set = resolve(owner({ linear: LINEAR }), owner({ Linear: { enabled: false } }));
+
+      expect(server(set, "linear").server.enabled).toBe(true);
+      expect(set.orphans).toHaveLength(1);
+      expect(set.problems[0]?.message).toContain('"linear" differs from it in case');
+    });
+
+    it("is read with the Settings' rules: a stale one that does not decode is skipped", () => {
+      const set = resolve(
+        owner({ linear: LINEAR }),
+        owner({ linear: { exposure: "visible" }, other: { timeout: 3 } }),
+      );
+
+      expect(set.servers).toHaveLength(1);
+      expect(Arr.map(set.problems, ({ name }) => name)).toEqual(["linear", "other"]);
+      expect(set.orphans).toEqual([]);
+    });
+  });
+
+  describe("a Repo's servers", () => {
+    it("only add servers: after the owner's, in the Environment's Repo order", () => {
+      const set = resolve(
+        owner({ g: LOCAL }),
+        owner({ e: LOCAL }),
+        repo("web", { w: LINEAR }),
+        repo("api", { a: LINEAR, b: LOCAL }),
+      );
+
+      expect(set.problems).toEqual([]);
+      expect(sources(set)).toEqual(["g:global", "e:environment", "w:repo", "a:repo", "b:repo"]);
+      expect(server(set, "a").source).toEqual(REPO_SOURCE("api"));
+    });
+
+    it("run in the Repo's directory, and read Variables only", () => {
+      const set = resolve(
+        {},
+        {},
+        repo("api", { local: LOCAL, sub: { command: "x", cwd: "tools" } }),
+      );
+
+      expect(server(set, "local")).toMatchObject({
+        resolvesSecrets: false,
+        server: { cwd: "/workspace/api" },
+      });
+      expect(server(set, "sub").server).toMatchObject({ cwd: "/workspace/api/tools" });
+    });
+
+    it("hold the Repo's file problems, with its source", () => {
+      const set = resolve(
+        {},
+        {},
+        repo("api", { ok: LOCAL, sse: { url: "https://x.test", type: "sse" } }),
+      );
+
+      expect(sources(set)).toEqual(["ok:repo"]);
+      expect(set.problems).toEqual([
+        {
+          source: REPO_SOURCE("api"),
+          name: "sse",
+          message: expect.stringContaining("Streamable HTTP"),
+        },
+      ]);
+    });
+
+    it("read a file that is not valid as a problem of the file, with no server", () => {
+      const set = resolve(
+        {},
+        {},
+        {
+          directory: "api",
+          slug: "acme/api",
+          path: ".pi/mcp.json",
+          text: "{",
+        },
+      );
+
+      expect(set.servers).toEqual([]);
+      expect(set.problems).toEqual([
+        { source: REPO_SOURCE("api"), name: null, message: expect.any(String) },
+      ]);
+    });
+
+    it("are shadowed by an owner's server of the same name: an info mark, no problem", () => {
+      const set = resolve(
+        owner({ linear: LINEAR }),
+        {},
+        repo("web", { linear: LINEAR }),
+        repo("api", { linear: { url: "https://other.example/mcp" } }),
+      );
+
+      expect(set.problems).toEqual([]);
+      expect(sources(set)).toEqual(["linear:global"]);
+      expect(server(set, "linear").shadowed).toEqual([
+        { source: REPO_SOURCE("web"), name: "linear", differs: false },
+        { source: REPO_SOURCE("api"), name: "linear", differs: true },
+      ]);
+    });
+
+    it("are shadowed by an owner's twin of the name, and by the Environment's over Global's", () => {
+      const set = resolve(
+        owner({ "my-linear": LINEAR }),
+        owner({ Other: LOCAL }),
+        repo("web", { My_Linear: LINEAR, other: LOCAL }),
+      );
+
+      expect(set.problems).toEqual([]);
+      expect(server(set, "my-linear").shadowed).toEqual([
+        { source: REPO_SOURCE("web"), name: "My_Linear", differs: false },
+      ]);
+      expect(server(set, "Other").shadowed).toEqual([
+        { source: REPO_SOURCE("web"), name: "other", differs: true },
+      ]);
+    });
+
+    it("compares what is shadowed once normalized: defaults, the alias and `streamable-http`", () => {
+      const set = resolve(
+        owner({ linear: LINEAR }),
+        {},
+        repo("web", {
+          linear: {
+            ...LINEAR,
+            type: "streamable-http",
+            exposure: "codemode-deferred",
+            timeout: 60,
+          },
+        }),
+      );
+
+      expect(server(set, "linear").shadowed).toEqual([
+        { source: REPO_SOURCE("web"), name: "linear", differs: false },
+      ]);
+    });
+
+    it("define one name in two Repos: a problem, and the first Repo wins", () => {
+      const set = resolve({}, {}, repo("web", { linear: LINEAR }), repo("api", { Linear: LOCAL }));
+
+      expect(sources(set)).toEqual(["linear:repo"]);
+      expect(server(set, "linear").source).toEqual(REPO_SOURCE("web"));
+      expect(set.problems).toEqual([
+        {
+          source: REPO_SOURCE("api"),
+          name: "Linear",
+          message: expect.stringContaining("first Repo wins"),
+        },
+      ]);
+    });
+
+    it("read `sampling: allow` as `ask`", () => {
+      const set = resolve({}, {}, repo("api", { a: { ...LINEAR, sampling: "allow" } }));
+
+      expect(server(set, "a").server.sampling).toBe("ask");
+      expect(set.problems).toEqual([
+        {
+          source: REPO_SOURCE("api"),
+          name: "a",
+          message: expect.stringContaining("copy it into the Settings"),
+        },
+      ]);
+    });
+  });
+
+  describe("a Repo's adjustment", () => {
+    it("switches a server off, whichever layer defined it", () => {
+      const set = resolve(
+        owner({ g: LOCAL }),
+        owner({ e: LOCAL }),
+        repo("web", {
+          g: { enabled: false },
+          e: { exposure: "hidden" },
+          own: LOCAL,
+          ow: { enabled: false },
+        }),
+      );
+
+      expect(set.problems).toEqual([
+        {
+          source: REPO_SOURCE("web"),
+          name: "ow",
+          message: "adjusts a server that is not in this Environment's set",
+        },
+      ]);
+      expect(server(set, "g").server.enabled).toBe(false);
+      expect(server(set, "e").server.exposure).toBe("hidden");
+      expect(server(set, "own").server.enabled).toBe(true);
+    });
+
+    it("hides tools, ahead of the server's own keys, whose other keys stay", () => {
+      const set = resolve(
+        owner({
+          g: {
+            ...LOCAL,
+            toolExposure: { "delete_*": "hidden", search: "direct", "a*": "deferred" },
+          },
+        }),
+        {},
+        repo("web", { g: { toolExposure: { "a*": "hidden", other: "hidden" } } }),
+      );
+
+      expect(Record.toEntries(server(set, "g").server.toolExposure)).toEqual([
+        ["a*", "hidden"],
+        ["other", "hidden"],
+        ["delete_*", "hidden"],
+        ["search", "direct"],
+      ]);
+    });
+
+    it("can never switch on, loosen or change anything else: it is skipped with a problem", () => {
+      const set = resolve(
+        owner({ g: { ...LOCAL, enabled: false, exposure: "hidden" } }),
+        {},
+        repo("web", {
+          g: { enabled: true },
+          h: { exposure: "direct" },
+        }),
+      );
+
+      expect(server(set, "g").server).toMatchObject({ enabled: false, exposure: "hidden" });
+      expect(Arr.map(set.problems, ({ source, name }) => `${source.kind}:${name}`)).toEqual([
+        "repo:g",
+        "repo:h",
+      ]);
+      expect(set.problems[0]?.message).toContain("only switch off");
+    });
+
+    it("is applied before the Environment's, which has the last word", () => {
+      const set = resolve(
+        owner({ g: LOCAL }),
+        owner({ g: { enabled: true, exposure: "direct" } }),
+        repo("web", { g: { enabled: false, exposure: "hidden" } }),
+      );
+
+      expect(server(set, "g").server).toMatchObject({ enabled: true, exposure: "direct" });
+    });
+
+    it("applies the Repos' adjustments in their order, all of them only switching off", () => {
+      const set = resolve(
+        owner({ g: { ...LOCAL, toolExposure: { z: "direct" } } }),
+        {},
+        repo("web", { g: { toolExposure: { a: "hidden" } } }),
+        repo("api", { g: { toolExposure: { b: "hidden" }, enabled: false } }),
+      );
+
+      expect(server(set, "g").server).toMatchObject({
+        enabled: false,
+        toolExposure: { b: "hidden", a: "hidden", z: "direct" },
+      });
+    });
+
+    it("is an orphan, with no Reset, when the server is not in the set", () => {
+      const set = resolve({}, {}, repo("web", { gone: { enabled: false } }));
+
+      expect(set.orphans).toEqual([
+        { source: REPO_SOURCE("web"), name: "gone", keys: ["enabled"] },
+      ]);
+      expect(set.problems[0]?.reset).toBeUndefined();
+    });
+  });
+});

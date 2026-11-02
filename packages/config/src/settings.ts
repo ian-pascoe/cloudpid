@@ -8,7 +8,14 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
+import {
+  mcpFieldPath,
+  McpSettings,
+  mcpEntryKeys,
+  mcpLayerProblems,
+  mcpServersOf,
+} from "./mcp-servers.ts";
+import { problemsOf, type SettingsProblem } from "./schema-problems.ts";
 
 /** The models the model proxy serves, as `provider/modelId`: those of `~/.pi/agent/models.json` the Session registers. */
 export const SUPPORTED_MODELS = [
@@ -198,6 +205,8 @@ export const Settings = Schema.Struct({
   instructions: Schema.String.check(Schema.makeFilter(instructionsProblem)).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("")),
   ),
+  /** The MCP servers, at both Scopes (`docs/architecture/mcp-configuration.md` → Entries; `./mcp-servers.ts`). */
+  mcp: McpSettings.pipe(Schema.withDecodingDefaultKey(Effect.succeed({ servers: {} }))),
   extensions: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Json)).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed({})),
   ),
@@ -216,14 +225,6 @@ export class SettingsError extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
-const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1();
-
-const pathText = (path: ReadonlyArray<unknown> | undefined): string =>
-  Arr.join(
-    Arr.map(path ?? [], (key) => String(Predicate.hasProperty(key, "key") ? key.key : key)),
-    ".",
-  );
-
 // @effect-diagnostics-next-line schemaSync:off -- a total encoder: the schema has no transformation that can fail on a `Settings`.
 const encodeSettings = Schema.encodeSync(Settings);
 
@@ -231,21 +232,6 @@ const decodeOverrides = Schema.decodeUnknownResult(Settings, {
   onExcessProperty: "error",
   errors: "all",
 });
-
-/** One thing wrong with overrides: the keys that lead to it, and a line for a person to read. */
-export type SettingsProblem = { readonly keys: ReadonlyArray<string>; readonly line: string };
-
-const problemsOf = (error: Schema.SchemaError): ReadonlyArray<SettingsProblem> =>
-  Arr.map(formatIssues(error.issue).issues, (issue) => {
-    const path = pathText(issue.path);
-
-    return {
-      keys: Arr.map(issue.path ?? [], (key) =>
-        String(Predicate.hasProperty(key, "key") ? key.key : key),
-      ),
-      line: path === "" ? issue.message : `${path}: ${issue.message}`,
-    };
-  });
 
 const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
   Predicate.isObject(value) && !Arr.isArray(value);
@@ -288,22 +274,39 @@ export const withRenamedTools = (overrides: Schema.Json): Schema.Json => {
   return Record.map(overrides, (entry, key) => (key === "tools" ? renamedTools : entry));
 };
 
+export type { SettingsProblem };
+
 /** The settings `overrides` give over the defaults strictly, or every problem with the keys it lies at. */
 export const decodeSettingsOverrides = (
   overrides: Schema.Json,
 ): Result.Result<Settings, ReadonlyArray<SettingsProblem>> =>
   Result.mapError(decodeOverrides(overrides), problemsOf);
 
+/** The problems of Global's MCP servers that the schema cannot see (`mcpLayerProblems`). */
+const globalMcpProblems = (overrides: Schema.Json): ReadonlyArray<SettingsProblem> =>
+  mcpLayerProblems(mcpServersOf(overrides), "global");
+
 /** The settings `overrides` give over the defaults, or why they are not valid settings. */
-export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings, SettingsError> =>
-  Result.mapError(decodeOverrides(withRenamedTools(overrides)), (error) =>
+export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings, SettingsError> => {
+  const renamed = withRenamedTools(overrides);
+  const decoded = decodeOverrides(renamed);
+
+  const problems = [
+    ...(Result.isFailure(decoded) ? problemsOf(decoded.failure) : []),
+    ...globalMcpProblems(renamed),
+  ];
+
+  if (Result.isSuccess(decoded) && problems.length === 0) return Result.succeed(decoded.success);
+
+  return Result.fail(
     SettingsError.make({
       message: Arr.join(
-        Arr.map(problemsOf(error), (problem) => problem.line),
+        Arr.map(problems, (problem) => problem.line),
         "\n",
       ),
     }),
   );
+};
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
@@ -380,8 +383,9 @@ export const withoutDefaultSubagentLimits = (settings: Settings): Settings => {
 
 /**
  * The keys a settings field leads through (`docs/architecture/agent-changes.md`): a setting's dotted path (`thinkingLevel`,
- * `roles.small.model`), or `extensions.<extension>.<key>` for an extension's option, whose key may hold dots (the
- * extension's name may not). Undefined for a path that does not start at a setting or has an empty part.
+ * `roles.small.model`), `extensions.<extension>.<key>` for an extension's option, whose key may hold dots (the
+ * extension's name may not), or an MCP server's entry, `mcp.servers.<name>`, or one of its `enabled`, `exposure` and
+ * `toolExposure`. Undefined for a path that does not start at a setting or has an empty part.
  */
 export const settingsFieldPath = (field: string): ReadonlyArray<string> | undefined => {
   const parts = field.split(".");
@@ -390,6 +394,8 @@ export const settingsFieldPath = (field: string): ReadonlyArray<string> | undefi
   if (root === undefined || !SETTINGS_ROOTS.has(root) || Arr.some(parts, (part) => part === "")) {
     return undefined;
   }
+
+  if (root === "mcp") return mcpFieldPath(parts);
 
   if (root !== "extensions") return parts;
 
@@ -497,15 +503,20 @@ export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
   for (let round = 0; round < 8; round += 1) {
     const result = decodeOverrides(rest);
 
-    if (Result.isSuccess(result)) return { settings: result.success, dropped };
+    const problems = Result.isFailure(result)
+      ? problemsOf(result.failure)
+      : globalMcpProblems(rest);
 
-    const problems = problemsOf(result.failure);
+    if (Result.isSuccess(result) && problems.length === 0)
+      return { settings: result.success, dropped };
 
     for (const problem of problems) dropped.push(problem.line);
 
     if (Arr.some(problems, (problem) => problem.keys.length === 0)) break;
 
-    rest = Arr.reduce(problems, rest, (left, problem) => omitPath(left, problem.keys));
+    rest = Arr.reduce(problems, rest, (left, problem) =>
+      omitPath(left, mcpEntryKeys(problem.keys)),
+    );
   }
 
   return { settings: DEFAULT_SETTINGS, dropped };
