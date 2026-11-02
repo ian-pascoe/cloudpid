@@ -7,6 +7,12 @@ import { MAX_LABEL_LENGTH, appOrigin, labelOrigin, stageLabel } from "./deployme
 /** The registrable domain the App sandbox serves on, and nothing else: a View's origin is a subdomain of it. */
 export const APP_DOMAIN = "ianpascoe.app";
 
+/**
+ * The id of the `ianpascoe.app` zone on the account, so the stack (the sandbox's route and record) and the CI token's
+ * policy (`infra/github.ts`) look nothing up and name one zone. A zone id is not a secret.
+ */
+export const APP_ZONE_ID = "e4bbd85e38d5fc25694c911588c2ccc4";
+
 /** The characters of a View's hash: lowercase RFC 4648 base32 (`a`–`z`, `2`–`7`), unpadded. */
 const HASH_PATTERN = /^[a-z2-7]{26}$/;
 

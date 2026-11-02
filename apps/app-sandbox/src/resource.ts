@@ -1,13 +1,9 @@
+// docs/architecture/mcp-apps.md → The App sandbox (Domain and Worker; Who deploys it). The stack's declaration of the
+// App sandbox: its Worker, route and wildcard record, which only `prod` yields (`infra/alchemy.run.ts`).
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
-import { APP_DOMAIN } from "@cloudpid/server/view-host";
+import { APP_DOMAIN, APP_ZONE_ID } from "@cloudpid/server/view-host";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Effect from "effect/Effect";
-
-/**
- * The `ianpascoe.app` zone's id (the same zone `infra/github.ts` gives the deploy token), so the stack looks nothing
- * up. A zone id is not a secret.
- */
-const APP_ZONE_ID = "e4bbd85e38d5fc25694c911588c2ccc4";
 
 /**
  * The App sandbox: a public Worker on the route `*.ianpascoe.app/*` and the proxied wildcard record

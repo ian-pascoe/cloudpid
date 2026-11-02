@@ -65,10 +65,12 @@ export const proxyPage = (hostOrigin: string): string => `<!doctype html>
  *   when it is the proxy's own origin; anything else, and every other source, is dropped. The parent's messages go to
  *   the inner frame as they are (to `"*"`, as the reference's: the frame is being written and has no origin to name),
  *   and the inner frame's to the parent at the app origin, never `"*"`.
- * - **`sandbox-resource-ready`:** the one message the proxy keeps for itself: it loads `html` into the inner frame with
- *   `document.write` (so the frame inherits the header CSP, and CesiumJS-style views work), sets the frame's `sandbox`
- *   attribute from `sandbox` when it is a string, and gives the frame `allow="clipboard-write"` only when `permissions`
- *   asks for `clipboardWrite`: cloudpid grants no other permission.
+ * - **`sandbox-resource-ready`:** the one message the proxy keeps for itself. It makes the inner frame then, not before:
+ *   a frame's `sandbox` flags and permissions policy are fixed when its document is created, so `sandbox` (a string, else
+ *   the reference's `allow-scripts allow-same-origin allow-forms`) and `allow="clipboard-write"` (only when `permissions`
+ *   asks for `clipboardWrite`; cloudpid grants no other permission) are set before the frame is appended. A frame that
+ *   already exists is removed first, so a second View never inherits the first's flags. It then loads `html` with
+ *   `document.write`, so the frame inherits the header CSP and CesiumJS-style views work.
  * - **Ready:** `sandbox-proxy-ready` goes to the app origin once the listener is set.
  */
 export const PROXY_JS = String.raw`(function () {
@@ -87,9 +89,35 @@ export const PROXY_JS = String.raw`(function () {
     // A SecurityError is what an isolated frame gets, and what this wants.
   }
 
-  var inner = document.createElement("iframe");
-  inner.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
-  document.body.appendChild(inner);
+  var inner = null;
+
+  function load(params) {
+    if (inner !== null) document.body.removeChild(inner);
+
+    inner = document.createElement("iframe");
+    inner.setAttribute(
+      "sandbox",
+      typeof params.sandbox === "string" ? params.sandbox : "allow-scripts allow-same-origin allow-forms",
+    );
+
+    if (params.permissions && params.permissions.clipboardWrite) {
+      inner.setAttribute("allow", "clipboard-write");
+    }
+
+    document.body.appendChild(inner);
+
+    if (typeof params.html !== "string") return;
+
+    var doc = inner.contentDocument;
+
+    if (doc) {
+      doc.open();
+      doc.write(params.html);
+      doc.close();
+    } else {
+      inner.srcdoc = params.html;
+    }
+  }
 
   window.addEventListener("message", function (event) {
     if (event.source === window.parent) {
@@ -101,29 +129,11 @@ export const PROXY_JS = String.raw`(function () {
       var data = event.data;
 
       if (data !== null && data !== undefined && data.method === "ui/notifications/sandbox-resource-ready") {
-        var params = data.params || {};
-
-        if (typeof params.sandbox === "string") inner.setAttribute("sandbox", params.sandbox);
-
-        if (params.permissions && params.permissions.clipboardWrite) {
-          inner.setAttribute("allow", "clipboard-write");
-        }
-
-        if (typeof params.html === "string") {
-          var doc = inner.contentDocument;
-
-          if (doc) {
-            doc.open();
-            doc.write(params.html);
-            doc.close();
-          } else {
-            inner.srcdoc = params.html;
-          }
-        }
-      } else if (inner.contentWindow) {
+        load(data.params || {});
+      } else if (inner !== null && inner.contentWindow) {
         inner.contentWindow.postMessage(data, "*");
       }
-    } else if (inner.contentWindow !== null && event.source === inner.contentWindow) {
+    } else if (inner !== null && inner.contentWindow !== null && event.source === inner.contentWindow) {
       if (event.origin !== OWN) {
         console.error("[sandbox] rejected a message from the frame at", event.origin);
         return;

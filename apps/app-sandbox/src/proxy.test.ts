@@ -44,6 +44,10 @@ const frame = (name: string): Frame => {
 
 /** The inner iframe element the script makes. */
 interface Inner {
+  readonly n: number;
+  readonly attributes: Map<string, string>;
+  readonly window: Frame;
+  readonly writes: string[];
   readonly setAttribute: (name: string, value: string) => void;
   contentWindow: Frame | null;
   contentDocument: {
@@ -59,39 +63,69 @@ interface Options {
   readonly top?: "isolated" | "readable";
   readonly framed?: boolean;
   readonly metaOrigin?: string | null;
+  /** The inner frame's document can't be reached (the reference's `srcdoc` fallback). */
+  readonly unreachableDocument?: boolean;
 }
+
+type ReadyParams = {
+  readonly html?: string;
+  readonly sandbox?: string;
+  readonly permissions?: { readonly [permission: string]: { readonly [key: string]: Json } };
+};
 
 /** Runs the script served as `/proxy.js`, as a browser would, in a fake window and document. */
 const run = (options: Options = {}) => {
-  const { top = "isolated", framed = true, metaOrigin = HOST } = options;
+  const {
+    top = "isolated",
+    framed = true,
+    metaOrigin = HOST,
+    unreachableDocument = false,
+  } = options;
+
   const parent = frame("parent");
   const win = frame("proxy");
 
-  const innerWindow = frame("inner");
-  const writes: string[] = [];
-  const attributes = new Map<string, string>();
-
-  const innerDocument = {
-    open: () => {
-      writes.push("open");
-    },
-    write: (html: string) => {
-      writes.push(html);
-    },
-    close: () => {
-      writes.push("close");
-    },
-  };
-
+  /** What happened to the inner frames, in order: `create 1`, `set 1 sandbox=…`, `append 1`, `remove 1`, `write 1`. */
+  const log: string[] = [];
   const created: Inner[] = [];
 
-  const inner: Inner = {
-    setAttribute: (name, value) => {
-      attributes.set(name, value);
-    },
-    contentWindow: innerWindow,
-    contentDocument: innerDocument,
-    srcdoc: undefined,
+  const makeInner = (): Inner => {
+    const n = created.length + 1;
+    const attributes = new Map<string, string>();
+    const writes: string[] = [];
+    const window = frame(`inner ${n}`);
+
+    const inner: Inner = {
+      n,
+      attributes,
+      window,
+      writes,
+      setAttribute: (name, value) => {
+        attributes.set(name, value);
+        log.push(`set ${n} ${name}=${value}`);
+      },
+      contentWindow: window,
+      contentDocument: unreachableDocument
+        ? null
+        : {
+            open: () => {
+              log.push(`open ${n}`);
+            },
+            write: (html) => {
+              writes.push(html);
+              log.push(`write ${n}`);
+            },
+            close: () => {
+              log.push(`close ${n}`);
+            },
+          },
+      srcdoc: undefined,
+    };
+
+    created.push(inner);
+    log.push(`create ${n}`);
+
+    return inner;
   };
 
   // Reading `location` of an isolated top window throws a SecurityError.
@@ -110,12 +144,15 @@ const run = (options: Options = {}) => {
 
   const document = {
     querySelector: () => (metaOrigin === null ? null : { getAttribute: () => metaOrigin }),
-    createElement: () => {
-      created.push(inner);
-
-      return inner;
+    createElement: makeInner,
+    body: {
+      appendChild: (inner: Inner) => {
+        log.push(`append ${inner.n}`);
+      },
+      removeChild: (inner: Inner) => {
+        log.push(`remove ${inner.n}`);
+      },
     },
-    body: { appendChild: vi.fn() },
   };
 
   const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -132,7 +169,22 @@ const run = (options: Options = {}) => {
     for (const listener of win.listeners) listener(message);
   };
 
-  return { parent, win, innerWindow, inner, attributes, writes, created, send, errors, document };
+  /** The parent sends `sandbox-resource-ready`; returns the inner frame it made (the newest). */
+  const ready = (params: ReadyParams): Inner => {
+    send({
+      source: parent,
+      origin: HOST,
+      data: { method: "ui/notifications/sandbox-resource-ready", params },
+    });
+
+    const inner = created.at(-1);
+
+    if (inner === undefined) throw new Error("no inner frame was made");
+
+    return inner;
+  };
+
+  return { parent, win, created, log, send, ready, errors };
 };
 
 describe("proxyPage", () => {
@@ -163,11 +215,11 @@ describe("/proxy.js", () => {
     ]);
   });
 
-  it("makes one inner frame, sandboxed as the reference does", () => {
-    const { attributes, document } = run();
+  it("makes no inner frame before the HTML arrives: its flags are fixed when it is created", () => {
+    const { created, log } = run();
 
-    expect(attributes.get("sandbox")).toBe("allow-scripts allow-same-origin allow-forms");
-    expect(document.body.appendChild).toHaveBeenCalledTimes(1);
+    expect(created).toEqual([]);
+    expect(log).toEqual([]);
   });
 
   it("does nothing outside a frame", () => {
@@ -193,86 +245,122 @@ describe("/proxy.js", () => {
     expect(win.listeners).toEqual([]);
   });
 
-  it("loads the HTML of sandbox-resource-ready into the inner frame, and nothing else", () => {
-    const { send, parent, writes, innerWindow } = run();
+  it("makes the inner frame on sandbox-resource-ready, sandboxed as the reference does, and loads the HTML", () => {
+    const { ready, parent, log } = run();
     parent.received.length = 0;
 
-    send({
-      source: parent,
-      origin: HOST,
-      data: { method: "ui/notifications/sandbox-resource-ready", params: { html: "<p>view</p>" } },
-    });
+    const inner = ready({ html: "<p>view</p>" });
 
-    expect(writes).toEqual(["open", "<p>view</p>", "close"]);
-    expect(innerWindow.received).toEqual([]);
+    expect(inner.attributes.get("sandbox")).toBe("allow-scripts allow-same-origin allow-forms");
+    expect(inner.writes).toEqual(["<p>view</p>"]);
+    expect(log.indexOf("open 1")).toBeGreaterThan(log.indexOf("append 1"));
+    expect(inner.window.received).toEqual([]);
     expect(parent.received).toEqual([]);
   });
 
-  it("sets the inner frame's sandbox from a string and allow only for clipboard-write", () => {
-    const { send, parent, attributes } = run();
+  it("sets sandbox and allow before the frame is appended, and appends before it writes", () => {
+    const { ready, log } = run();
 
-    send({
-      source: parent,
-      origin: HOST,
-      data: {
-        method: "ui/notifications/sandbox-resource-ready",
-        params: {
-          html: "x",
-          sandbox: "allow-scripts allow-same-origin",
-          permissions: { clipboardWrite: {}, camera: {}, microphone: {}, geolocation: {} },
-        },
-      },
+    ready({
+      html: "x",
+      sandbox: "allow-scripts",
+      permissions: { clipboardWrite: {}, camera: {}, microphone: {}, geolocation: {} },
     });
 
-    expect(attributes.get("sandbox")).toBe("allow-scripts allow-same-origin");
-    expect(attributes.get("allow")).toBe("clipboard-write");
+    expect(log).toEqual([
+      "create 1",
+      "set 1 sandbox=allow-scripts",
+      "set 1 allow=clipboard-write",
+      "append 1",
+      "open 1",
+      "write 1",
+      "close 1",
+    ]);
   });
 
   it("grants no permission that isn't asked for, and never camera, microphone or geolocation", () => {
-    const { send, parent, attributes } = run();
+    const { ready } = run();
 
-    send({
-      source: parent,
-      origin: HOST,
-      data: {
-        method: "ui/notifications/sandbox-resource-ready",
-        params: { html: "x", permissions: { camera: {}, microphone: {}, geolocation: {} } },
-      },
+    const inner = ready({
+      html: "x",
+      permissions: { camera: {}, microphone: {}, geolocation: {} },
     });
 
-    expect(attributes.has("allow")).toBe(false);
+    expect(inner.attributes.has("allow")).toBe(false);
+  });
+
+  it("keeps the reference's sandbox when sandbox isn't a string", () => {
+    const { ready } = run();
+
+    expect(ready({ html: "x" }).attributes.get("sandbox")).toBe(
+      "allow-scripts allow-same-origin allow-forms",
+    );
+  });
+
+  it("replaces an existing inner frame, so the next View starts from its own flags", () => {
+    const { ready, log } = run();
+
+    ready({ html: "a", sandbox: "allow-scripts", permissions: { clipboardWrite: {} } });
+
+    const second = ready({ html: "b" });
+
+    expect(log.slice(log.indexOf("remove 1"))).toEqual([
+      "remove 1",
+      "create 2",
+      "set 2 sandbox=allow-scripts allow-same-origin allow-forms",
+      "append 2",
+      "open 2",
+      "write 2",
+      "close 2",
+    ]);
+    expect(second.attributes.has("allow")).toBe(false);
   });
 
   it("falls back to srcdoc when the inner document isn't reachable", () => {
-    const { send, parent, inner } = run();
-    inner.contentDocument = null;
+    const { ready } = run({ unreachableDocument: true });
 
-    send({
-      source: parent,
-      origin: HOST,
-      data: { method: "ui/notifications/sandbox-resource-ready", params: { html: "<p>x</p>" } },
-    });
-
-    expect(inner.srcdoc).toBe("<p>x</p>");
+    expect(ready({ html: "<p>x</p>" }).srcdoc).toBe("<p>x</p>");
   });
 
   it("relays the parent's other messages to the inner frame, as they are", () => {
-    const { send, parent, innerWindow } = run();
+    const { ready, send, parent } = run();
+    const inner = ready({ html: "x" });
     const data = { jsonrpc: "2.0", id: 1, result: { ok: true } };
 
     send({ source: parent, origin: HOST, data });
 
-    expect(innerWindow.received).toEqual([{ data, target: "*" }]);
+    expect(inner.window.received).toEqual([{ data, target: "*" }]);
+  });
+
+  it("drops the parent's other messages while there is no inner frame", () => {
+    const { send, parent, errors } = run();
+
+    send({ source: parent, origin: HOST, data: { jsonrpc: "2.0", id: 1, method: "ping" } });
+
+    expect(errors).not.toHaveBeenCalled();
   });
 
   it("relays the inner frame's messages to the parent at the app origin, never to *", () => {
-    const { send, parent, innerWindow } = run();
+    const { ready, send, parent } = run();
+    const inner = ready({ html: "x" });
     parent.received.length = 0;
     const data = { jsonrpc: "2.0", method: "ui/initialize", id: 1, params: {} };
 
-    send({ source: innerWindow, origin: OWN, data });
+    send({ source: inner.window, origin: OWN, data });
 
     expect(parent.received).toEqual([{ data, target: HOST }]);
+  });
+
+  it("drops what a replaced frame sends", () => {
+    const { ready, send, parent } = run();
+    const first = ready({ html: "a" });
+
+    ready({ html: "b" });
+    parent.received.length = 0;
+
+    send({ source: first.window, origin: OWN, data: { jsonrpc: "2.0", method: "x" } });
+
+    expect(parent.received).toEqual([]);
   });
 
   it.each([
@@ -283,7 +371,8 @@ describe("/proxy.js", () => {
     ["the app origin with a different port", `${HOST}:8443`],
     ["the app origin over http", "http://pi.ianpascoe.dev"],
   ])("drops a message from the parent frame at %s", (_, origin) => {
-    const { send, parent, innerWindow, writes, errors } = run();
+    const { ready, send, parent, created, errors } = run();
+    const inner = ready({ html: "first" });
     parent.received.length = 0;
 
     send({
@@ -293,8 +382,9 @@ describe("/proxy.js", () => {
     });
     send({ source: parent, origin, data: { jsonrpc: "2.0", id: 1, method: "ping" } });
 
-    expect(writes).toEqual([]);
-    expect(innerWindow.received).toEqual([]);
+    expect(created).toHaveLength(1);
+    expect(inner.writes).toEqual(["first"]);
+    expect(inner.window.received).toEqual([]);
     expect(parent.received).toEqual([]);
     expect(errors).toHaveBeenCalled();
   });
@@ -305,17 +395,19 @@ describe("/proxy.js", () => {
     ["a null origin", "null"],
     ["a sandbox of another View", "https://bbbbbbbbbbbbbbbbbbbbbbbbbb.ianpascoe.app"],
   ])("drops a message from the inner frame at %s", (_, origin) => {
-    const { send, parent, innerWindow, errors } = run();
+    const { ready, send, parent, errors } = run();
+    const inner = ready({ html: "x" });
     parent.received.length = 0;
 
-    send({ source: innerWindow, origin, data: { jsonrpc: "2.0", method: "x" } });
+    send({ source: inner.window, origin, data: { jsonrpc: "2.0", method: "x" } });
 
     expect(parent.received).toEqual([]);
     expect(errors).toHaveBeenCalled();
   });
 
   it("drops a message from any other window, whatever its origin", () => {
-    const { send, parent, innerWindow, writes } = run();
+    const { ready, send, parent, created } = run();
+    const inner = ready({ html: "x" });
     parent.received.length = 0;
     const stranger = frame("stranger");
 
@@ -323,18 +415,20 @@ describe("/proxy.js", () => {
       send({
         source: stranger,
         origin,
-        data: { method: "ui/notifications/sandbox-resource-ready", params: { html: "x" } },
+        data: { method: "ui/notifications/sandbox-resource-ready", params: { html: "y" } },
       });
       send({ source: null, origin, data: { jsonrpc: "2.0", method: "x" } });
     }
 
-    expect(writes).toEqual([]);
+    expect(created).toHaveLength(1);
+    expect(inner.writes).toEqual(["x"]);
     expect(parent.received).toEqual([]);
-    expect(innerWindow.received).toEqual([]);
+    expect(inner.window.received).toEqual([]);
   });
 
   it("drops the inner frame's message when the frame has gone", () => {
-    const { send, parent, inner } = run();
+    const { ready, send, parent } = run();
+    const inner = ready({ html: "x" });
     parent.received.length = 0;
     inner.contentWindow = null;
 

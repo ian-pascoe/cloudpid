@@ -6,8 +6,14 @@ import { buildCsp } from "./csp.ts";
 import { sandboxHeaders } from "./headers.ts";
 import { PROXY_JS, proxyPage } from "./proxy.ts";
 
-const notFound = (): Response =>
-  new Response("Not found", { status: 404, headers: sandboxHeaders("text/plain; charset=utf-8") });
+/** A `text/plain` answer with the fixed headers, for an error. */
+const plain = (
+  status: number,
+  body: string,
+  headers = sandboxHeaders("text/plain; charset=utf-8"),
+) => new Response(body, { status, headers });
+
+const notFound = (): Response => plain(404, "Not found");
 
 /**
  * The origin that may frame the page comes from the hostname alone (`appOriginOf`): never from the URL's query, a
@@ -23,7 +29,7 @@ const serve = (request: Request): Response => {
     const headers = sandboxHeaders("text/plain; charset=utf-8");
     headers.set("allow", "GET, HEAD");
 
-    return new Response("Method not allowed", { status: 405, headers });
+    return plain(405, "Method not allowed", headers);
   }
 
   if (url.pathname === "/proxy.js") {

@@ -20,6 +20,7 @@
  * CLOUDPID_GITHUB_APP_ID and CLOUDPID_GITHUB_APP_PRIVATE_KEY are written into both by `github-app:setup`
  * (github-app-setup.ts).
  */
+import { APP_ZONE_ID } from "@cloudpid/server/view-host";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as GitHub from "@alchemy.run/github";
@@ -39,11 +40,9 @@ const ACCESS_SERVICE_TOKENS_WRITE = { id: "a1c0fec57cf94af79479a6d827fa518c" };
 /** The `ianpascoe.dev` zone, which serves the `prod` stage's custom domain, `appOrigin("prod")` (apps/server/src/deployment.ts). */
 const DEV_ZONE_ID = "c36c6e2b6bda856f9d4f6175059c6df4";
 
-/**
- * The `ianpascoe.app` zone, which hosts nothing but the App sandbox's route and wildcard record, deployed by `prod` only
- * (docs/architecture/mcp-apps.md → The App sandbox). Its injection and challenge settings are the owner's, set by hand.
- */
-const APP_ZONE_ID = "e4bbd85e38d5fc25694c911588c2ccc4";
+// The `ianpascoe.app` zone (`APP_ZONE_ID`, apps/server/src/view-host.ts) hosts nothing but the App sandbox's route and
+// wildcard record, deployed by `prod` only (docs/architecture/mcp-apps.md → The App sandbox). Its injection and
+// challenge settings are the owner's, set by hand.
 
 export default Alchemy.Stack(
   "cloudpid-github",

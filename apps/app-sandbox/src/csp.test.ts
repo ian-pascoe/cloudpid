@@ -166,20 +166,49 @@ describe("buildCsp", () => {
     expect(directive(policy, "script-src")).toEqual(["'self'", "'unsafe-inline'"]);
   });
 
-  it("keeps an origin's scheme, host and port, and nothing else of the entry", () => {
+  it.each([
+    ["a path", "https://cdn.example.com/lib/"],
+    ["a file", "https://cdn.example.com/app.js"],
+    ["a query", "https://cdn.example.com/?v=1"],
+    ["a fragment", "https://cdn.example.com/#x"],
+    ["a username", "https://user@cdn.example.com"],
+    ["a username and password", "https://user:pw@cdn.example.com"],
+    ["a path on a wildcard host", "https://*.example.com/lib/"],
+    ["a path on a wss host", "wss://rt.example.com/socket"],
+  ])("drops an entry with %s whole, since its origin would be looser than declared", (_, entry) => {
     const policy = declare({
-      connectDomains: ["https://user:pw@api.example.com:8443/a/b?c=d#e", "https://api.example.com"],
+      connectDomains: [entry, "https://ok.example.com"],
+      resourceDomains: [entry],
+      frameDomains: [entry],
+      baseUriDomains: [entry],
+    });
+
+    expect(directive(policy, "connect-src")).toEqual(["https://ok.example.com"]);
+    expect(directive(policy, "script-src")).toEqual(["'self'", "'unsafe-inline'"]);
+    expect(directive(policy, "frame-src")).toEqual(["'none'"]);
+    expect(directive(policy, "base-uri")).toEqual(["'none'"]);
+    expect(policy).not.toContain("cdn.example.com");
+  });
+
+  it("keeps an origin with a port, or with a trailing slash, as declared", () => {
+    const policy = declare({
+      connectDomains: [
+        "https://api.example.com:8443",
+        "https://api.example.com/",
+        "wss://rt.example.com/",
+      ],
     });
 
     expect(directive(policy, "connect-src")).toEqual([
       "https://api.example.com:8443",
       "https://api.example.com",
+      "wss://rt.example.com",
     ]);
   });
 
   it("lists a domain once", () => {
     const policy = declare({
-      resourceDomains: ["https://a.example.com", "https://a.example.com/x"],
+      resourceDomains: ["https://a.example.com", "https://a.example.com/"],
     });
 
     expect(directive(policy, "script-src")).toEqual([

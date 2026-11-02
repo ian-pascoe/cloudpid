@@ -52,16 +52,24 @@ const wildcardCoversOwnHost = (base: string): boolean =>
 /** A host name, or `*.` and one, in the lowercase form `URL` gives: labels of letters, digits and `-`, with no empty one. */
 const HOST_NAME = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 
+/** The scheme every list takes; `connectDomains` also takes `wss:`. */
+const HTTPS_ONLY = ["https:"] as const;
+
 /**
- * `entry` as the one CSP source it may become, or `undefined` when it is dropped. An entry is an origin: a scheme in
- * `schemes`, a host name (a leading `*.` allowed) and an optional port, from which only those are kept; whatever else
- * it holds (a path, credentials, a `;`, a quote, a space) is not carried. Anything that doesn't parse, or names one of
- * cloudpid's own hosts, is dropped.
+ * `entry` as the one CSP source it is, or `undefined` when it is dropped. An entry is an origin and nothing more: a
+ * scheme in `schemes`, a host name (a leading `*.` allowed) and an optional port, with at most a trailing `/`. One that
+ * holds a path, a query, a fragment or credentials is dropped whole, never cut to its origin: a CSP source with a path
+ * would allow only that path, and its origin allows the whole host, which is looser than declared. Anything that
+ * doesn't parse, or names one of cloudpid's own hosts, is dropped too.
  */
-const source = (entry: string, schemes: readonly string[]): string | undefined => {
+const toCspSource = (entry: string, schemes: readonly string[]): string | undefined => {
   const url = URL.canParse(entry) ? new URL(entry) : undefined;
 
   if (url === undefined || !schemes.includes(url.protocol)) return undefined;
+
+  if (url.pathname !== "/" || url.search !== "" || url.hash !== "") return undefined;
+
+  if (url.username !== "" || url.password !== "") return undefined;
 
   const host = url.hostname;
 
@@ -76,10 +84,13 @@ const source = (entry: string, schemes: readonly string[]): string | undefined =
 const sources = (
   list: readonly string[] | undefined,
   schemes: readonly string[],
-): readonly string[] => [...new Set((list ?? []).flatMap((entry) => source(entry, schemes) ?? []))];
+): readonly string[] => [
+  ...new Set((list ?? []).flatMap((entry) => toCspSource(entry, schemes) ?? [])),
+];
 
 /** ` a b c` for the sources a directive adds after its own keywords, or nothing. */
-const added = (values: readonly string[]): string => values.map((value) => ` ${value}`).join("");
+const appendSources = (values: readonly string[]): string =>
+  values.map((value) => ` ${value}`).join("");
 
 /** A directive that is `'none'` without sources: with the policy's `default-src 'none'`, an omitted one is too. */
 const listOrNone = (values: readonly string[]): string =>
@@ -91,8 +102,9 @@ const listOrNone = (values: readonly string[]): string =>
  * - Without a usable declaration (absent, longer than 8 KiB, not JSON of the spec's shape): inline script and style,
  *   `data:` images, scripts from `'self'` (for `/proxy.js`), `connect-src 'none'`, and nothing else.
  * - `resourceDomains` add to scripts, styles, images, fonts and media; `connectDomains` are `connect-src`
- *   (`https:` and `wss:`), `frameDomains` `frame-src`, `baseUriDomains` `base-uri`. Every domain is an `https:` origin,
- *   reduced to scheme, host and port, and a domain naming cloudpid's own hosts is dropped from every list.
+ *   (`https:` and `wss:`), `frameDomains` `frame-src`, `baseUriDomains` `base-uri`. Every domain is an `https:` origin
+ *   exactly as declared, with at most a trailing `/` (an entry with a path, query, fragment or credentials is dropped,
+ *   not reduced), and a domain naming cloudpid's own hosts is dropped from every list.
  * - `object-src` and `form-action` are `'none'` and `frame-ancestors` is exactly `frameAncestor`, the stage's app origin.
  *
  * The inner View frame inherits it through `document.write`.
@@ -106,19 +118,19 @@ export const buildCsp = (csp: string | null, frameAncestor: string): string => {
     (): typeof UiCsp.Type => ({}),
   );
 
-  const resources = sources(resourceDomains, ["https:"]);
+  const resources = sources(resourceDomains, HTTPS_ONLY);
 
   return [
     "default-src 'none'",
-    `script-src 'self' 'unsafe-inline'${added(resources)}`,
-    `style-src 'unsafe-inline'${added(resources)}`,
-    `img-src data:${added(resources)}`,
+    `script-src 'self' 'unsafe-inline'${appendSources(resources)}`,
+    `style-src 'unsafe-inline'${appendSources(resources)}`,
+    `img-src data:${appendSources(resources)}`,
     ...(resources.length === 0
       ? []
-      : [`font-src${added(resources)}`, `media-src${added(resources)}`]),
-    `connect-src ${listOrNone(sources(connectDomains, ["https:", "wss:"]))}`,
-    `frame-src ${listOrNone(sources(frameDomains, ["https:"]))}`,
-    `base-uri ${listOrNone(sources(baseUriDomains, ["https:"]))}`,
+      : [`font-src${appendSources(resources)}`, `media-src${appendSources(resources)}`]),
+    `connect-src ${listOrNone(sources(connectDomains, [...HTTPS_ONLY, "wss:"]))}`,
+    `frame-src ${listOrNone(sources(frameDomains, HTTPS_ONLY))}`,
+    `base-uri ${listOrNone(sources(baseUriDomains, HTTPS_ONLY))}`,
     "object-src 'none'",
     "form-action 'none'",
     `frame-ancestors ${frameAncestor}`,
