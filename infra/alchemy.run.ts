@@ -1,3 +1,4 @@
+import { AppSandbox } from "@cloudpid/app-sandbox";
 import { Server, Workspaces } from "@cloudpid/server";
 import { checkedAppOrigin } from "@cloudpid/server/deployment";
 import * as Alchemy from "alchemy";
@@ -20,6 +21,10 @@ export default Alchemy.Stack(
     const { dev } = yield* AlchemyContext;
 
     yield* Workspaces;
+
+    // The App sandbox (`*.ianpascoe.app/*`) is deployed by `prod` only: a route pattern belongs to one Worker, and every
+    // other stage frames prod's (docs/architecture/mcp-apps.md → The App sandbox).
+    if (stage === "prod") yield* AppSandbox;
 
     // The App sandbox derives the stage's origin from its name (apps/server/src/deployment.ts, `appOrigin`), so a Worker
     // served anywhere else fails the deploy here, where the URL resolves, before the preview comment names it. `alchemy dev`

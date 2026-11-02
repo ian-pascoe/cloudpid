@@ -21,6 +21,21 @@
         "vitest": "^5.0.5",
       },
     },
+    "apps/app-sandbox": {
+      "name": "@cloudpid/app-sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@alchemy.run/cloudflare": "2.0.0-beta.84",
+        "@cloudpid/server": "workspace:*",
+        "@cloudpid/telemetry": "workspace:*",
+        "alchemy": "2.0.0-beta.84",
+        "effect": "^4.0.6",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-plugin": "^1.4.8",
+        "@cloudpid/config": "workspace:*",
+      },
+    },
     "apps/browser": {
       "name": "@cloudpid/browser",
       "version": "0.0.0",
@@ -135,6 +150,7 @@
       "dependencies": {
         "@alchemy.run/cloudflare": "2.0.0-beta.84",
         "@alchemy.run/github": "2.0.0-beta.84",
+        "@cloudpid/app-sandbox": "workspace:*",
         "@cloudpid/server": "workspace:*",
         "@effect/platform-bun": "^4.0.6",
         "@effect/platform-node": "^4.0.6",
@@ -403,6 +419,8 @@
     "@cloudflare/workerd-windows-64": ["@cloudflare/workerd-windows-64@1.20261023.1", "", { "os": "win32", "cpu": "x64" }, "sha512-279WLVjNsMycAwr0EZNiNEf0l2SY6NUtsN80NwZzbTHzakmiN+WSx4w38muxPm+PAU0oSPPAPXKVD+H6Hya8xw=="],
 
     "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261027.1", "", {}, "sha512-ZYhpdIJbEzQL68kwHRTq/B0hyBsxB7wXR17LmUln7ReWE2kxQ1LD//aTM1K8Jk/MuNBeQY66QLc9izUIOLWWyg=="],
+
+    "@cloudpid/app-sandbox": ["@cloudpid/app-sandbox@workspace:apps/app-sandbox"],
 
     "@cloudpid/browser": ["@cloudpid/browser@workspace:apps/browser"],
 
