@@ -1,5 +1,6 @@
 // docs/architecture/mcp-apps.md → The App sandbox (Stage labels and app origins). This file has no imports: the main
 // Worker's stack and the App sandbox Worker both read it.
+// @effect-diagnostics missingPipeableSignature:off -- `deployment` is a plain function of the stage and its options.
 
 /** The one person allowed through Access: the owner of this single-user deployment. */
 export const OWNER_EMAIL = "ian.g.pascoe@gmail.com";
@@ -18,6 +19,14 @@ export const ACCESS_AUDIENCE_VAR = "CLOUDPID_ACCESS_AUD";
  * sets it, and only for `alchemy dev` (no Access); neither {@link deployment} nor a deployed stage's vars carry it.
  */
 export const LOCAL_MODE_VAR = "CLOUDPID_LOCAL_MODE";
+
+/**
+ * The Worker var of the client document's switch (docs/architecture/mcp-sign-in.md → The client document and the callback
+ * outside Access): `"true"` where the stage serves the document and the sign-in ladder may use it, `"false"` where it does
+ * not. Only {@link deployment} sets it. It removes the document from the ladder for new sign-ins only; the route keeps
+ * serving.
+ */
+export const MCP_CLIENT_DOCUMENT_VAR = "MCP_CLIENT_DOCUMENT";
 
 /** The custom domain of the `prod` stage, on the `ianpascoe.dev` zone of the same account. */
 export const PRODUCTION_DOMAIN = "pi.ianpascoe.dev";
@@ -123,18 +132,31 @@ export const checkedAppOrigin = (served: {
  * This is the Worker's own, owner-only application, and it stays that: the MCP endpoint has an application of its own
  * (`mcp-access.ts`), with `public` destination `<host>/mcp` on every deployed stage, managed OAuth, the owner's Allow and
  * Service Auth for the Local agent's service token. Its `aud` and the token's client ID are the Worker's vars
- * `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`; `alchemy dev` declares neither.
+ * `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`; `alchemy dev` declares neither. A third application, the
+ * Bypass of ADR-0035 (`bypass-access.ts`), has two `public` destinations, `<host>/oauth/mcp/client.json` and
+ * `<host>/oauth/mcp/callback`, and one Bypass/Everyone policy; it too is declared only while the Worker is live. The Worker
+ * refuses every other form of those two paths itself (`sign-in-routes.ts`).
+ *
+ * `env` is the stage's own Worker vars. {@link MCP_CLIENT_DOCUMENT_VAR} is `"true"` on every live deployed stage (`prod`,
+ * `dev_$USER`, `pr-<n>`) and `"false"` under `alchemy dev` (`options.dev`), where Access cannot front `localhost` and a
+ * client document needs an https URL. It stays a switch rather than something derived from the origin: if an
+ * authorization server refuses `workers.dev` clients, one line turns the document off for every non-prod stage. The
+ * bypass is declared whatever it says, because the public callback serves DCR too.
  */
-export const deployment = (stage: string) => {
+export const deployment = (stage: string, options: { readonly dev?: boolean } = {}) => {
   const label = stageLabel(stage);
 
   const access = {
     policies: [{ decision: "allow" as const, include: [{ email: OWNER_EMAIL }] }],
   };
 
+  const env = {
+    [MCP_CLIENT_DOCUMENT_VAR]: options.dev === true ? ("false" as const) : ("true" as const),
+  };
+
   return stage === "prod"
-    ? { label: undefined, domain: PRODUCTION_DOMAIN, workersDev: false, access }
-    : { label, name: `${WORKER_NAME_PREFIX}${label}`, workersDev: true, access };
+    ? { label: undefined, domain: PRODUCTION_DOMAIN, workersDev: false, access, env }
+    : { label, name: `${WORKER_NAME_PREFIX}${label}`, workersDev: true, access, env };
 };
 
 /**
