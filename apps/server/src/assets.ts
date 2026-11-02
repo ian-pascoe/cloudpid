@@ -9,20 +9,12 @@ import { hello } from "./hello.ts";
 import { missingAsset } from "./missing-asset.ts";
 import { isAssetPath } from "./routes.ts";
 
-/**
- * How the assets answer a path that is no file: `"none"`, a 404. `"single-page-application"` would answer `index.html`
- * to every such request through the `ASSETS` binding, whatever it asked for (only Cloudflare's own routing in front of a
- * Worker looks at `Sec-Fetch-Mode`), so a missing chunk would be a 200 page. {@link serveAsset} gives the page to a
- * page load itself.
- */
-export const WEB_NOT_FOUND_HANDLING = "none" as const;
-
 /** What the Worker's `ASSETS` binding gives: the asset layer, as a `fetch`. */
 export type AssetLayer = { readonly fetch: (request: Request) => Promise<Response> };
 
-/** Whether `request` is a page load: a navigation, or a `GET` that accepts HTML. */
+/** Whether `request` is a page load: a navigation, or a `GET` or `HEAD` that accepts HTML. */
 const isPageLoad = (request: HttpServerRequest.HttpServerRequest): boolean =>
-  request.method === "GET" &&
+  (request.method === "GET" || request.method === "HEAD") &&
   (request.headers["sec-fetch-mode"] === "navigate" ||
     (request.headers.accept ?? "").includes("text/html"));
 

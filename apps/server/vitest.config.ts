@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import config, { testTimeout } from "@cloudpid/config/vitest";
+import { WEB_NOT_FOUND_HANDLING } from "./src/assets-config.ts";
 import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest/config";
 
 const workerd = "src/**/*.workerd.test.ts";
@@ -69,11 +70,11 @@ export default defineConfig({
             miniflare: {
               compatibilityDate: "2026-08-31",
               compatibilityFlags: ["nodejs_compat"],
-              // The real asset layer, as the deploy configures the web app's (`WEB_NOT_FOUND_HANDLING`).
+              // The real asset layer, as the deploy configures the web app's, `WEB_NOT_FOUND_HANDLING` included.
               assets: {
                 directory: "./src/assets.fixture",
                 binding: "ASSETS",
-                assetConfig: { not_found_handling: "none" },
+                assetConfig: { not_found_handling: WEB_NOT_FOUND_HANDLING },
               },
             },
           }),

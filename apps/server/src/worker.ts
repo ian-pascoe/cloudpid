@@ -24,7 +24,8 @@ import {
   loadTeamKeysFromAccess,
   teamKeys,
 } from "./access.ts";
-import { type AssetLayer, serveAsset, WEB_NOT_FOUND_HANDLING } from "./assets.ts";
+import { type AssetLayer, serveAsset } from "./assets.ts";
+import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
 import { buildUpkeep } from "./registry/builds.ts";
 import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
 import { skillDirectoryOver } from "./registry/skill-directory.ts";
@@ -61,8 +62,8 @@ import { Workspaces } from "./workspace/resource.ts";
 /**
  * The web app (`apps/web`), built at deploy time and served as static assets by this Worker. The Worker runs first
  * (`runWorkerFirst`), so its Access guard covers every request and the files are served after it from the `ASSETS`
- * binding (`serveAsset`): a file the build has, `index.html` for a navigation to an unknown path (`/sessions/:id`),
- * and a 404 for a missing `/assets/…` file (`missingAsset`). The Worker's bundle folds the build step away, so only the
+ * binding (`serveAsset`): a file the build has, `index.html` for any page load of a path that is no file (a navigation, or a
+ * `GET` or `HEAD` that accepts HTML: `/sessions/:id`), and a 404 for a missing `/assets/…` file (`missingAsset`). The Worker's bundle folds the build step away, so only the
  * deploy runs it.
  */
 const webAssets = Effect.gen(function* () {

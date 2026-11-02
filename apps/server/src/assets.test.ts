@@ -65,6 +65,21 @@ describe("the web app's files, served after the guard", () => {
     expect(await response.text()).toBe("<app>");
   });
 
+  it("gives a HEAD page load the app too", async () => {
+    const layer = vi.fn((request: Request) =>
+      Promise.resolve(
+        new URL(request.url).pathname === "/"
+          ? new Response(null, { status: 200 })
+          : new Response(null, { status: 404 }),
+      ),
+    );
+
+    expect((await serve(at("/sessions/abc", "HEAD", { accept: "text/html" }), layer)).status).toBe(
+      200,
+    );
+    expect((await serve(at("/favicon.ico", "HEAD"), layer)).status).toBe(404);
+  });
+
   it("does not ask the layer about a method it does not serve", async () => {
     const layer = vi.fn(() => Promise.resolve(new Response("x")));
 
