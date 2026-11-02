@@ -1,4 +1,4 @@
 {
   "extends": "@cloudpid/config/tsconfig/base.json",
-  "include": ["src", "*.ts"]
+  "include": ["src", "conformance", "*.ts"]
 }

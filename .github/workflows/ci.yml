@@ -195,25 +195,53 @@ jobs:
           done
           echo "Turbo cache: $before → $(du -sh "$TURBO_CACHE_DIR" | cut -f1), $(wc -l <<<"$hashes") tasks kept"
 
+  # The official MCP conformance suite against the core's scenario client (`packages/mcp/conformance`; `docs/architecture/
+  # mcp.md` → Testing and tracing → Conformance), once per mode: the spec version picks the scenarios the runner starts.
+  # A failure outside `baseline.json` fails the job, and so does a baseline entry that now passes, so the baseline only
+  # shrinks. The runner is pinned to the SDK's own CI version (`packages/mcp/package.json`), so it runs the same
+  # scenarios the SDK passes. A run takes seconds: the setup (install) is the cost.
+  conformance:
+    name: Conformance (${{ matrix.mode }})
+    needs: changes
+    if: github.event.action != 'closed' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: conformance-${{ matrix.mode }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    strategy:
+      # Every mode reports, so one push shows every failure.
+      fail-fast: false
+      matrix:
+        mode: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Bun, Node, Bun's packages (cached by lockfile, with a fallback), and the install.
+      - uses: ./.github/actions/setup
+
+      - run: bun --cwd packages/mcp run conformance ${{ matrix.mode }}
+
   # The one status the `main` ruleset requires (`Check`), and what the deploy jobs wait for: it passes only when every
   # part did, or for a docs-only change when `docs` did. It runs when one fails too (`!cancelled()`), so a failure
   # reports as one rather than as skipped, which a required check would count as passing.
   check:
     name: Check
-    needs: [changes, checks, docs, manifests]
+    needs: [changes, checks, conformance, docs, manifests]
     if: ${{ !cancelled() && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
           test "$CHANGES" = success
-          if [ "$CODE" = true ]; then test "$CHECKS" = success; else test "$DOCS" = success; fi
+          if [ "$CODE" = true ]; then test "$CHECKS" = success -a "$CONFORMANCE" = success; else test "$DOCS" = success; fi
           # Skipped on a push and on a docs-only change, which have no manifest to guard.
           test "$MANIFESTS" = success -o "$MANIFESTS" = skipped
         env:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           CHECKS: ${{ needs.checks.result }}
+          CONFORMANCE: ${{ needs.conformance.result }}
           DOCS: ${{ needs.docs.result }}
           MANIFESTS: ${{ needs.manifests.result }}
 

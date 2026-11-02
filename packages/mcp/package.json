@@ -11,7 +11,8 @@
   "scripts": {
     "typecheck": "effect-tsgo tsrs",
     "lint": "oxlint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "conformance": "node conformance/run.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.4.0",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@cloudpid/config": "workspace:*",
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.12",
     "@modelcontextprotocol/ext-tasks": "^0.2.2",
     "rolldown": "1.2.13"
   }

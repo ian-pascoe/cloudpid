@@ -1,0 +1,95 @@
+{
+  "2026-07-28": [
+    {
+      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+      "entries": [
+        "auth/metadata-default",
+        "auth/metadata-var1",
+        "auth/metadata-var2",
+        "auth/metadata-var3",
+        "auth/basic-cimd",
+        "auth/scope-from-www-authenticate",
+        "auth/scope-from-scopes-supported",
+        "auth/scope-omitted-when-undefined",
+        "auth/scope-step-up",
+        "auth/scope-retry-limit",
+        "auth/token-endpoint-auth-basic",
+        "auth/token-endpoint-auth-post",
+        "auth/token-endpoint-auth-none",
+        "auth/pre-registration",
+        "auth/resource-mismatch",
+        "auth/offline-access-scope",
+        "auth/offline-access-not-supported",
+        "auth/authorization-server-migration",
+        "auth/iss-supported",
+        "auth/iss-not-advertised",
+        "auth/iss-supported-missing",
+        "auth/iss-wrong-issuer",
+        "auth/iss-unexpected",
+        "auth/iss-normalized",
+        "auth/metadata-issuer-mismatch"
+      ]
+    },
+    {
+      "reason": "The core has no `input_required` or `resume` yet (the questions slice)",
+      "entries": ["sep-2322-client-request-state"]
+    },
+    {
+      "reason": "The core lists through `client.request`, which keeps tools the SDK's `listTools` would leave out, and `client.ts` calls every tool it lists, so these entries cannot go stale by themselves: when `xMcpHeaderProblems` lands (discovery, #449), `client.ts` must filter the listed tools through it, and these entries are removed in that same change",
+      "entries": [
+        "http-invalid-tool-headers:sep-2243-x-mcp-header-not-empty",
+        "http-invalid-tool-headers:sep-2243-x-mcp-header-primitive-only",
+        "http-invalid-tool-headers:sep-2243-x-mcp-header-unique",
+        "http-invalid-tool-headers:sep-2243-x-mcp-header-charset"
+      ]
+    }
+  ],
+  "2025-11-25": [
+    {
+      "reason": "The core cannot answer a Legacy server's question yet: no `onInput` (the questions slice)",
+      "entries": ["elicitation-sep1034-client-defaults"]
+    },
+    {
+      "reason": "Remote Legacy SSE resume with `Last-Event-ID` is kept (#394 D15; `mcp-connections.md` → Requests and Legacy sessions) but not built yet (#542)",
+      "entries": ["sse-retry:client-sse-retry-timing", "sse-retry:client-sse-last-event-id"]
+    },
+    {
+      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+      "entries": [
+        "auth/metadata-default",
+        "auth/metadata-var1",
+        "auth/metadata-var2",
+        "auth/metadata-var3",
+        "auth/basic-cimd",
+        "auth/scope-from-www-authenticate",
+        "auth/scope-from-scopes-supported",
+        "auth/scope-omitted-when-undefined",
+        "auth/scope-step-up",
+        "auth/scope-retry-limit",
+        "auth/token-endpoint-auth-basic",
+        "auth/token-endpoint-auth-post",
+        "auth/token-endpoint-auth-none",
+        "auth/pre-registration"
+      ]
+    }
+  ],
+  "2025-06-18": [
+    {
+      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+      "entries": [
+        "auth/token-endpoint-auth-basic",
+        "auth/token-endpoint-auth-post",
+        "auth/token-endpoint-auth-none"
+      ]
+    }
+  ],
+  "2025-03-26": [
+    {
+      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+      "entries": [
+        "auth/2025-03-26-oauth-metadata-backcompat",
+        "auth/2025-03-26-oauth-endpoint-fallback"
+      ]
+    }
+  ]
+}
