@@ -23,6 +23,10 @@ const VIEW_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Probe
 var results = { inlineScript: true, violations: [] };
 document.addEventListener("securitypolicyviolation", function (e) {
   results.violations.push(e.effectiveDirective + " " + e.blockedURI);
+  if (e.blockedURI.indexOf("www.cloudflare.com") >= 0) {
+    results.declaredViolation = { blockedURI: e.blockedURI, disposition: e.disposition, statusCode: e.statusCode,
+                                  originalPolicy: e.originalPolicy, sample: e.sample };
+  }
 });
 results.origin = location.origin;
 results.documentCookie = document.cookie;
@@ -125,7 +129,7 @@ function runFrame(spec) {
         expected["frame-src example.com (informational)"] = hit("frame-src", "example.com");
         const declaredClean = !v.some((x) => x.includes("www.cloudflare.com"));
         const cspOk = r.inlineScript === true && r.eval === "blocked" && declaredClean && Object.entries(expected).every(([k, ok]) => ok || k.endsWith("(informational)"));
-        row(spec.name + ": header CSP enforced in the View", cspOk, { expectedViolations: expected, declaredDomainsNotBlocked: declaredClean, outcomes: { connectDeclared: r.connectDeclared, imgDeclared: r.imgDeclared, connectUndeclared: r.connectUndeclared, imgUndeclared: r.imgUndeclared }, violations: v });
+        row(spec.name + ": header CSP enforced in the View", cspOk, { expectedViolations: expected, declaredDomainsNotBlocked: declaredClean, outcomes: { connectDeclared: r.connectDeclared, imgDeclared: r.imgDeclared, connectUndeclared: r.connectUndeclared, imgUndeclared: r.imgUndeclared }, violations: v, declaredViolation: r.declaredViolation });
       }
       resolve({ spec, steps });
     };
