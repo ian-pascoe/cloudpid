@@ -1,4 +1,43 @@
 {
   "$schema": "../../node_modules/@effect/tsgo/oxlint-schema.json",
-  "extends": ["../../.oxlintrc.json"]
+  "extends": ["../../.oxlintrc.json"],
+  "rules": {
+    // Replaces the root rule. The web app may import types, and only types, from `@modelcontextprotocol/ext-apps`
+    // (`import type`), for its own App bridge. A negated pattern ("!@modelcontextprotocol/ext-apps") would let value
+    // imports of its subpaths through too, so the rest of the SDK's packages are listed instead; the web app can only
+    // resolve the packages it declares (`ext-apps`), which is the first line of defence.
+    // docs/architecture/mcp.md → Packages and objects.
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "group": ["@modelcontextprotocol/ext-apps/**"],
+            "allowTypeImports": true,
+            "message": "The web app imports only types from @modelcontextprotocol/ext-apps (`import type`), for its own App bridge. See docs/architecture/mcp.md → Packages and objects."
+          },
+          {
+            "group": [
+              "@modelcontextprotocol/client",
+              "@modelcontextprotocol/client/**",
+              "@modelcontextprotocol/core",
+              "@modelcontextprotocol/core/**",
+              "@modelcontextprotocol/ext-tasks",
+              "@modelcontextprotocol/ext-tasks/**",
+              "@modelcontextprotocol/server",
+              "@modelcontextprotocol/server/**"
+            ],
+            "message": "Only packages/mcp imports the MCP SDK: it adds about 9-10 MiB of cold heap to every isolate that loads it. The web app imports @cloudpid/mcp/types. See docs/architecture/mcp.md → Packages and objects."
+          }
+        ],
+        "paths": [
+          {
+            "name": "@modelcontextprotocol/ext-apps",
+            "allowTypeImports": true,
+            "message": "The web app imports only types from @modelcontextprotocol/ext-apps (`import type`), for its own App bridge. See docs/architecture/mcp.md → Packages and objects."
+          }
+        ]
+      }
+    ]
+  }
 }
