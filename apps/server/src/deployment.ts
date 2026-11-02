@@ -4,6 +4,21 @@
 /** The one person allowed through Access: the owner of this single-user deployment. */
 export const OWNER_EMAIL = "ian.g.pascoe@gmail.com";
 
+/** The Access team (`<team>.cloudflareaccess.com`): the issuer of every assertion, and where its signing keys are. */
+export const ACCESS_TEAM_DOMAIN = "spirit-led-software.cloudflareaccess.com";
+
+/**
+ * The Worker var that carries the audience (`aud`) of the Worker's own Access application: an alchemy output, set on
+ * deployed stages only. A deployed Worker without it refuses every guarded route.
+ */
+export const ACCESS_AUDIENCE_VAR = "CLOUDPID_ACCESS_AUD";
+
+/**
+ * The Worker var that puts the Worker in local mode, where a loopback host counts as the owner. Only {@link guardVars}
+ * sets it, and only for `alchemy dev` (no Access); neither {@link deployment} nor a deployed stage's vars carry it.
+ */
+export const LOCAL_MODE_VAR = "CLOUDPID_LOCAL_MODE";
+
 /** The custom domain of the `prod` stage, on the `ianpascoe.dev` zone of the same account. */
 export const PRODUCTION_DOMAIN = "pi.ianpascoe.dev";
 
@@ -91,7 +106,10 @@ export const checkedAppOrigin = (served: {
  * Where a stage's main Worker is named, served and who may reach it. `prod` answers on its custom domain and keeps its
  * alchemy name (in alchemy a rename replaces the script and wipes its Durable Objects); every other stage (`dev_$USER`,
  * previews) stays on `workers.dev` as `cloudpid-server-<label>`, so its origin is {@link appOrigin}. The Worker's
- * Access application covers all of its URLs, so every stage admits only {@link OWNER_EMAIL}. `label` is the
+ * Access application covers all of its URLs, so every stage admits only {@link OWNER_EMAIL}; the Worker does not trust
+ * that Access ran, and verifies the assertion itself (`access.ts`) against that application's audience, a var of the
+ * Worker ({@link ACCESS_AUDIENCE_VAR}) that the stack sets from the application's output. `alchemy dev` has no Access:
+ * only {@link guardVars} sets {@link LOCAL_MODE_VAR} there, and nothing this function returns carries it. `label` is the
  * {@link stageLabel} of a non-prod stage, which the Worker reads as the {@link STAGE_LABEL_VAR} var to build its
  * `<hash>--<label>` View URLs; `prod` has none (`undefined`, so no var is set and a View's host has no suffix). Throws
  * for a stage whose label is refused, `prod` aside.
@@ -107,3 +125,14 @@ export const deployment = (stage: string) => {
     ? { label: undefined, domain: PRODUCTION_DOMAIN, workersDev: false, access }
     : { label, name: `${WORKER_NAME_PREFIX}${label}`, workersDev: true, access };
 };
+
+/**
+ * The vars of the Access guard (docs/architecture/mcp-sign-in.md → The client document and the callback outside
+ * Access, The Access guard). A deployed stage passes its application's `audience` (an alchemy output, so generic here);
+ * `alchemy dev`, which has no Access and so no audience, passes none and gets {@link LOCAL_MODE_VAR} instead. Nothing
+ * else sets the local-mode var, so a Worker is in local mode only when the stack was planned by `alchemy dev`.
+ */
+export const guardVars = <Audience>(
+  audience: Audience | undefined,
+): { readonly [ACCESS_AUDIENCE_VAR]: Audience } | { readonly [LOCAL_MODE_VAR]: "true" } =>
+  audience === undefined ? { [LOCAL_MODE_VAR]: "true" } : { [ACCESS_AUDIENCE_VAR]: audience };

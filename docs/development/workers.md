@@ -23,6 +23,7 @@ The browser and codemode sandbox Workers have `workersDev: false` and no routes:
   - Unions the other end may extend (failure tags, states) have a fallback member that reads as a generic failure, in RPC and in storage alike.
   - A removal merges at least 24 h after the change that stopped using it reached prod, or after the retention of any stored payload that can hold it.
   - Where a caller would offer something on its callee's behalf, the callee lists its features and the caller uses a new one only once it is listed.
+- **A `fetch` through a service binding into `Server` is refused.** The main Worker verifies the Access assertion on every request (`apps/server/src/access.ts`), and a service binding carries none, so it gets a 403. Internal callers use an RPC entrypoint of the Worker, never its `fetch`. Nothing calls `Server` through a binding today.
 - **`IMAGES`** (`Cloudflare.Images.Images`, declared in `apps/server/src/worker.ts`) has no backing resource and rides on the script upload. `alchemy dev` emulates it locally with sharp (size and format, not quality).
 - **Custom spans**: the Session DO imports `tracing` from `cloudflare:workers` when an object is built, not at module load, since the stack imports `Session.ts` under Node. It needs compatibility date 2026-07-28 or later (the stack uses 2026-08-31). The spend limit and usage are in `apps/server/src/session/spend.ts`.
 

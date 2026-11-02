@@ -1,8 +1,8 @@
 import { RPC_PATH } from "@cloudpid/protocol";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 
-// The main Worker's routes (`docs/architecture/client-and-protocol.md`). Every one is reachable only through the Access gate
-// in front of the Worker.
+// The main Worker's routes (`docs/architecture/client-and-protocol.md`). Every one sits behind the Access guard (`access.ts`),
+// which verifies the assertion Access adds in front of the Worker.
 
 const SESSION_ID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
