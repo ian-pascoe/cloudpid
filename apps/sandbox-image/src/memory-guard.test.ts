@@ -165,17 +165,28 @@ describe("the memory guard in the image", () => {
     expect(commandSource).toContain(fallback);
   });
 
-  it("never stops computerd, the supervisor or the guard, by the names the kernel gives them, and stops anything else", () => {
+  it("never stops computerd, the supervisor, the guard or the MCP bridge, by the names the kernel gives them, and stops anything else", () => {
     const avoid = new RegExp(MEMORY_GUARD_AVOID);
 
     // The kernel keeps 15 characters of a process's name.
-    for (const name of ["computerd", "cloudpid-supervise", "cloudpid-memory-guard"]) {
+    for (const name of [
+      "computerd",
+      "cloudpid-supervise",
+      "cloudpid-memory-guard",
+      "cloudpid-mcp-bridge",
+    ]) {
       expect(avoid.test(name.slice(0, 15)), name).toBe(true);
     }
 
     for (const name of ["node", "python3", "tsgolint", "workerd", "computerd-x", "bash"]) {
       expect(avoid.test(name), name).toBe(false);
     }
+  });
+
+  it("spares the bridge by the name it gives its process", () => {
+    expect(readFileSync(join(sandboxImageContext, "cloudpid-mcp-bridge.ts"), "utf8")).toContain(
+      'process.title = "cloudpid-mcp-bridge";',
+    );
   });
 
   it("is what every command's environment points BASH_ENV at", () => {

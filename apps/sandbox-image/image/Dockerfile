@@ -1,5 +1,5 @@
 # The Workspace Container's image (docs/architecture/container.md, ADR-0004): Ubuntu 26.04 LTS with fuse3, the
-# everyday command-line tools, a C toolchain, Docker, computerd under its supervisor with a memory guard, the
+# everyday command-line tools, a C toolchain, Docker, computerd under its supervisor with a memory guard and the MCP bridge, the
 # file-change signal's helper, and mise with its installs of the base mise.toml's Toolchains. Every program a project uses is a mise Toolchain; the image's installs are only found by mise for a
 # Workspace that asks for those versions. The image is glibc-based because computerd is a glibc Node SEA, and
 # linux/amd64 because that is what Cloudflare Containers run.
@@ -76,6 +76,11 @@ COPY --chmod=755 supervise /usr/local/bin/cloudpid-supervise
 # (docs/architecture/container.md → Memory guard).
 COPY --chmod=755 cloudpid-memory-guard /usr/local/bin/cloudpid-memory-guard
 COPY command.bash /usr/local/share/cloudpid/command.bash
+
+# The Container MCP bridge, which the supervisor starts at each Container start when the launch carries a bridge token
+# (docs/architecture/mcp-connections.md → The stdio bridge): one dependency-free Node script (Node is a mise Toolchain
+# above) that serves a stdio MCP server as Streamable HTTP. Node runs it by stripping its types, so nothing is built.
+COPY --chmod=644 cloudpid-mcp-bridge.ts /usr/local/share/cloudpid/mcp-bridge.ts
 
 # The helper the Workspace DO runs after it sends the Container its changes, so file watchers hear of them (the
 # file-change signal: docs/architecture/container.md → File-change signals). A small C program built with the image's

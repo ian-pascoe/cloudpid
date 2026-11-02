@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
+import { MCP_BRIDGE_SCRIPT, MCP_BRIDGE_TOKEN_ENV } from "@cloudpid/sandbox-image/mcp-bridge";
 import { MEMORY_GUARD_AVOID } from "@cloudpid/sandbox-image/memory-guard";
 import {
   CONTAINER_START_MARKER,
@@ -402,5 +403,95 @@ describe("the supervisor's memory guard", () => {
 
     expect(run.stdout).toBe("");
     expect(existsSync(notes)).toBe(false);
+  });
+});
+
+/**
+ * A fake node for the bridge: it records its arguments, the token it was given and its pid, says it is up, and runs
+ * until it is stopped, as the bridge does. The bridge's script is any file.
+ */
+const fakeBridgeNode = () => {
+  const dir = mkdtempSync(join(tmpdir(), "bridge-"));
+  const node = join(dir, "node");
+  const record = join(dir, "record");
+  const pid = join(dir, "pid");
+  const script = join(dir, "bridge.ts");
+
+  writeFileSync(
+    node,
+    `#!/bin/bash\nprintf '%s\\n' "$@" "token=$${MCP_BRIDGE_TOKEN_ENV}" >${record}\necho $$ >${pid}\necho "bridge up"\nexec sleep 600\n`,
+  );
+  chmodSync(node, 0o755);
+  writeFileSync(script, "// a bridge");
+
+  return {
+    record,
+    pid,
+    script,
+    env: { CLOUDPID_MCP_BRIDGE_NODE: node, CLOUDPID_MCP_BRIDGE: script },
+  };
+};
+
+describe("the supervisor's MCP bridge", () => {
+  it("looks for the bridge where the image puts it", () => {
+    expect(source).toContain(`\${CLOUDPID_MCP_BRIDGE:-${MCP_BRIDGE_SCRIPT}}`);
+    expect(source).toContain(`\${${MCP_BRIDGE_TOKEN_ENV}:-}`);
+  });
+
+  it("runs the bridge beside computerd when the launch has a token, its lines where computerd's go, and stops it with computerd", async () => {
+    const { reports, port } = await reportServer();
+    const bridge = fakeBridgeNode();
+    const computerd = fakeComputerd('sleep 0.5; echo "computerd out"; exit 1');
+
+    const run = await supervise(computerd, port, undefined, {
+      ...bridge.env,
+      [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
+    });
+
+    expect(run.status).toBe(1);
+    // Node runs the script with type stripping's warning off, and the token reaches it in its environment.
+    expect(readFileSync(bridge.record, "utf8")).toBe(
+      `--disable-warning=ExperimentalWarning\n${bridge.script}\ntoken=launch-token\n`,
+    );
+    expect(run.stdout).toContain("bridge up\n");
+    expect(reports[0]?.body).toContain("bridge up\n");
+    expect(alive(Number(readFileSync(bridge.pid, "utf8")))).toBe(false);
+  }, 15_000);
+
+  it("stops the bridge too when the supervisor is asked to stop", async () => {
+    const { reports, port } = await reportServer();
+    const bridge = fakeBridgeNode();
+
+    const computerd = fakeComputerd(
+      'trap "exit 0" TERM; sleep 0.5; echo ready; while :; do sleep 0.1; done',
+    );
+
+    const run = await supervise(computerd, port, "SIGTERM", {
+      ...bridge.env,
+      [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
+    });
+
+    expect(run.status).toBe(0);
+    expect(reports).toEqual([]);
+    expect(alive(Number(readFileSync(bridge.pid, "utf8")))).toBe(false);
+  });
+
+  it("starts no bridge without a token, or where its script is missing, and computerd runs all the same", async () => {
+    const { port } = await reportServer();
+    const bridge = fakeBridgeNode();
+
+    for (const env of [
+      bridge.env,
+      {
+        ...bridge.env,
+        CLOUDPID_MCP_BRIDGE: "/nonexistent/mcp-bridge.ts",
+        [MCP_BRIDGE_TOKEN_ENV]: "t",
+      },
+    ]) {
+      const run = await supervise(fakeComputerd("echo bye; exit 0"), port, undefined, env);
+
+      expect(run).toEqual({ status: 0, stdout: "bye\n" });
+      expect(existsSync(bridge.record)).toBe(false);
+    }
   });
 });

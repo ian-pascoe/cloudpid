@@ -35,7 +35,8 @@ export const MEMORY_GUARD_PERCENT = "15,8";
 export const MEMORY_GUARD_KIB = "1048576,524288";
 
 /**
- * The process names earlyoom never stops: computerd, which runs every command, the supervisor and the guard, as the
- * kernel keeps them (15 characters).
+ * The process names earlyoom never stops: computerd, which runs every command, the supervisor, the guard and the MCP
+ * bridge (which names its process `cloudpid-mcp-bridge`; stopping it would cut every stdio server at once, where the
+ * guard stops the one that grew), as the kernel keeps them (15 characters).
  */
-export const MEMORY_GUARD_AVOID = "^(computerd|cloudpid-superv|cloudpid-memory)$";
+export const MEMORY_GUARD_AVOID = "^(computerd|cloudpid-superv|cloudpid-memory|cloudpid-mcp-br)$";
