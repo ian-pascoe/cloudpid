@@ -4,6 +4,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { resolveMcpServerSet } from "./mcp-server-set.ts";
 import { DEFAULT_SETTINGS, resolveLeniently, type Settings } from "./settings.ts";
 import {
   OVERRIDE_FIELD_NAMES,
@@ -696,16 +697,33 @@ describe("an Environment's MCP servers", () => {
       ]);
     });
 
-    it("drop a name that clashes with Global's, which then follows Global", () => {
+    it("let the Environment's own name win over a twin of it in Global, as the set does", () => {
       const read = resolveOverridesLeniently(
         { mcp: { servers: { Linear: LINEAR } } },
         { mcp: { servers: { linear: LOCAL } } },
       );
 
-      expect(read.settings.mcp.servers).toEqual({ Linear: LINEAR });
+      expect(read.settings.mcp.servers).toEqual({ linear: LOCAL });
+      expect(read.overrides).toEqual({ mcp: { servers: { linear: LOCAL } } });
       expect(read.dropped).toEqual([
-        expect.stringMatching(/^mcp\.servers\.linear: clashes with "Linear"/),
+        expect.stringMatching(/^mcp\.servers\.Linear: Global's server is left out: .*"linear"/),
       ]);
+      // The set the McpHost is handed says the same.
+      expect(
+        Arr.map(
+          resolveMcpServerSet({ mcp: { servers: { Linear: LINEAR } } }, read.overrides, []).servers,
+          ({ name }) => name,
+        ),
+      ).toEqual(["linear"]);
+    });
+
+    it("still refuse the clash on a save", () => {
+      const saved = resolveOverrides(
+        { mcp: { servers: { Linear: LINEAR } } },
+        { mcp: { servers: { linear: LOCAL } } },
+      );
+
+      expect(Result.isFailure(saved)).toBe(true);
     });
   });
 });

@@ -14,14 +14,17 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import { isJsonObject } from "./json.ts";
 import {
   decodeMcpServerValue,
   isMcpFullEntry,
   MCP_ADJUSTMENT_KEYS,
   MCP_LIMITS,
   MCP_NAME,
+  type McpEntryHint,
   type McpServerEntry,
   type McpServerValue,
+  mcpEntryHints,
   mcpServersOf,
   normalizeMcpName,
   normalizeMcpServer,
@@ -94,9 +97,17 @@ export type McpOrphan = {
   readonly keys: ReadonlyArray<string>;
 };
 
+/** A note on a server that stands as it is (`McpEntryHint`), and where its entry is. */
+export type McpHint = McpEntryHint & {
+  readonly source: McpSource;
+  readonly name: string;
+};
+
 export type McpServerSet = {
   readonly servers: ReadonlyArray<McpResolvedServer>;
   readonly problems: ReadonlyArray<McpProblem>;
+  /** What is no problem but worth saying about the servers in the set: an ignored `oauth` field. */
+  readonly hints: ReadonlyArray<McpHint>;
   readonly orphans: ReadonlyArray<McpOrphan>;
 };
 
@@ -118,9 +129,6 @@ type Layer = {
 
 const GLOBAL: McpSource = { kind: "global" };
 const ENVIRONMENT: McpSource = { kind: "environment" };
-
-const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 /**
  * The entries and adjustments of an owner's layer (Global's document or an Environment's Overrides) that stand, each
@@ -391,5 +399,13 @@ export const resolveMcpServerSet = (
     }),
   );
 
-  return { servers, problems, orphans };
+  const hints = Arr.flatMap(working, (held) =>
+    Arr.map(mcpEntryHints(held.value), (hint): McpHint => ({
+      ...hint,
+      source: held.source,
+      name: held.name,
+    })),
+  );
+
+  return { servers, problems, orphans, hints };
 };

@@ -2,6 +2,7 @@
 // settings (`settings.ts`) and the MCP server entries they hold (`mcp-servers.ts`).
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
@@ -21,3 +22,23 @@ export const problemsOf = (error: Schema.SchemaError): ReadonlyArray<SettingsPro
 
     return { keys, line: path === "" ? issue.message : `${path}: ${issue.message}` };
   });
+
+/** The lines of `problems`, one each, for a person to read. */
+export const problemLines = (problems: ReadonlyArray<SettingsProblem>): string =>
+  Arr.join(
+    Arr.map(problems, (problem) => problem.line),
+    "\n",
+  );
+
+/**
+ * `decoded` with `extra` problems, which a schema cannot see, added to its own: it succeeds only when it decoded and
+ * there are none.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a combination of two plain results, not a combinator.
+export const withProblems = <A>(
+  decoded: Result.Result<A, ReadonlyArray<SettingsProblem>>,
+  extra: ReadonlyArray<SettingsProblem>,
+): Result.Result<A, ReadonlyArray<SettingsProblem>> =>
+  Result.isSuccess(decoded) && extra.length === 0
+    ? decoded
+    : Result.fail([...(Result.isFailure(decoded) ? decoded.failure : []), ...extra]);

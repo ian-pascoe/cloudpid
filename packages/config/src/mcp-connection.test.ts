@@ -60,6 +60,10 @@ const LOCAL = {
   cwd: "/workspace/api",
 };
 
+/** The pinned `conn` of `LINEAR` and `LOCAL` as Global's `linear` and `local`: SHA-256 of the canonical text, by hand. */
+const GOLDEN_LINEAR = "790648b0a63c2ac43c20e6b1cf099d36ddf6f4b29f25899438dc3219e2a73ca7";
+const GOLDEN_LOCAL = "9412b0d696d8f3550385af63ea823a8b6408d91976106d66446dc273ad5db170";
+
 const owner = (servers: Schema.Json): Schema.Json => ({ mcp: { servers } });
 
 const repo = (directory: string, servers: Schema.Json): McpRepoLayer => ({
@@ -103,12 +107,8 @@ describe("the connection key `conn`", () => {
   });
 
   it("has these golden values, so a change to the canonical form is seen", () => {
-    expect(conn("linear", LINEAR)).toBe(
-      "790648b0a63c2ac43c20e6b1cf099d36ddf6f4b29f25899438dc3219e2a73ca7",
-    );
-    expect(conn("local", LOCAL)).toBe(
-      "9412b0d696d8f3550385af63ea823a8b6408d91976106d66446dc273ad5db170",
-    );
+    expect(conn("linear", LINEAR)).toBe(GOLDEN_LINEAR);
+    expect(conn("local", LOCAL)).toBe(GOLDEN_LOCAL);
     expect(
       conn("signed", {
         url: "https://mcp.example.com/mcp",
@@ -129,10 +129,7 @@ describe("the connection key `conn`", () => {
     expect(text).toContain("${LINEAR_TOKEN}");
   });
 
-  describe("is left alone by editing a key outside it", () => {
-    const base = { ...LINEAR, description: "d", timeout: 30 };
-    const key = conn("linear", base);
-
+  describe("is left alone by editing a key outside it: the golden values stay", () => {
     for (const [label, edit] of [
       ["description", { description: "another" }],
       ["timeout", { timeout: 600 }],
@@ -142,9 +139,24 @@ describe("the connection key `conn`", () => {
       ["sampling", { sampling: "allow" }],
     ] as const) {
       it(label, () => {
-        expect(conn("linear", { ...base, ...edit })).toBe(key);
+        expect(conn("linear", { ...LINEAR, ...edit })).toBe(GOLDEN_LINEAR);
+        expect(conn("local", { ...LOCAL, ...edit })).toBe(GOLDEN_LOCAL);
       });
     }
+
+    it("all of them at once", () => {
+      expect(
+        conn("linear", {
+          ...LINEAR,
+          description: "d",
+          timeout: 30,
+          enabled: false,
+          exposure: "hidden",
+          toolExposure: { a: "hidden" },
+          sampling: "off",
+        }),
+      ).toBe(GOLDEN_LINEAR);
+    });
 
     it("an Environment's adjustment, which holds nothing else", () => {
       expect(
@@ -157,13 +169,7 @@ describe("the connection key `conn`", () => {
             }),
           ),
         ),
-      ).toBe(conn("linear", LINEAR));
-    });
-
-    it("the same for a stdio server", () => {
-      expect(conn("local", { ...LOCAL, description: "x", timeout: 1, sampling: "off" })).toBe(
-        conn("local", LOCAL),
-      );
+      ).toBe(GOLDEN_LINEAR);
     });
   });
 

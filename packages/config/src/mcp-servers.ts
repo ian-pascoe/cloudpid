@@ -6,11 +6,13 @@
 // with a problem and the rest stand, except for the bounds, which skip the whole file.
 // @effect-diagnostics missingPipeableSignature:off -- predicates and builders of plain values, not combinators.
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { isJsonObject, utf8Bytes } from "./json.ts";
 import { problemsOf, type SettingsProblem } from "./schema-problems.ts";
 
 /** The most an MCP server entry, and what holds entries, may be (D10 of the MCP server configuration design). */
@@ -43,6 +45,9 @@ export const MCP_SAMPLING = ["ask", "allow", "off"] as const;
 
 export type McpSampling = (typeof MCP_SAMPLING)[number];
 
+/** The root of the MCP servers in the settings: `mcp.servers.<name>`. */
+export const MCP_ROOT = "mcp";
+
 /** The keys an MCP server adjustment holds; every other key is part of the MCP server definition. */
 export const MCP_ADJUSTMENT_KEYS = ["enabled", "exposure", "toolExposure"] as const;
 
@@ -63,8 +68,6 @@ export const MCP_DEFINITION_KEYS = [
   "sampling",
 ] as const;
 
-const DEFINITION_KEYS = MCP_DEFINITION_KEYS;
-
 /** What a server's name looks like: `^[A-Za-z0-9_-]+$`, at most 64 characters. */
 export const MCP_NAME = /^[A-Za-z0-9_-]+$/;
 
@@ -73,13 +76,6 @@ export const MCP_NAME = /^[A-Za-z0-9_-]+$/;
  * a tool is `mcp__<name>__<tool>` (MCP tools in a Session, D6).
  */
 export const normalizeMcpName = (name: string): string => name.toLowerCase().replaceAll("-", "_");
-
-const utf8 = new TextEncoder();
-
-const bytesOf = (text: string): number => utf8.encode(text).length;
-
-const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 const exposureSchema = Schema.Literals([...MCP_EXPOSURES, CODEMODE_DEFERRED]);
 
@@ -102,6 +98,18 @@ const OAuth = Schema.Struct({
   callbackPort: Schema.optionalKey(Schema.Finite),
   callbackUrl: Schema.optionalKey(Schema.String),
 });
+
+/** The `oauth` fields cloudpid accepts and ignores: its redirect URI is its own (`mcpEntryHints`). */
+const OAUTH_IGNORED = ["callbackPort", "callbackUrl"] as const;
+
+/** Every `oauth` field, ignored or not. */
+const OAUTH_FIELDS: ReadonlyArray<keyof McpOauth> = Record.keys(OAuth.fields);
+
+/** The `oauth` fields that count: all but those cloudpid ignores. A new field is one edit, in the schema. */
+export const MCP_OAUTH_KEYS: ReadonlyArray<keyof McpOauth> = Arr.filter(
+  OAUTH_FIELDS,
+  (key) => !Arr.contains(OAUTH_IGNORED, key),
+);
 
 /** The `oauth` fields of an entry, as written (`docs/architecture/mcp-sign-in.md` → The `oauth` fields). */
 export type McpOauth = typeof OAuth.Type;
@@ -255,7 +263,7 @@ const oauthProblems = (
   if (scope !== undefined) {
     const tokens = Arr.filter(scope.split(/\s+/), (token) => token !== "");
 
-    if (tokens.length > 64 || bytesOf(scope) > 1024) {
+    if (tokens.length > 64 || utf8Bytes(scope) > 1024) {
       at("scope", "must be at most 64 tokens and 1 KiB");
     }
   }
@@ -292,7 +300,7 @@ const oauthProblems = (
 export const mcpEntryBoundsProblems = (value: McpServerValue): ReadonlyArray<string> => {
   const problems: Array<string> = [];
 
-  if (bytesOf(JSON.stringify(value)) > MCP_LIMITS.entryBytes) {
+  if (utf8Bytes(JSON.stringify(value)) > MCP_LIMITS.entryBytes) {
     problems.push(`is over ${MCP_LIMITS.entryBytes / 1024} KiB`);
   }
 
@@ -306,7 +314,10 @@ export const mcpEntryBoundsProblems = (value: McpServerValue): ReadonlyArray<str
     problems.push(`toolExposure has more than ${MCP_LIMITS.toolExposureKeys} keys`);
   }
 
-  if (value.description !== undefined && bytesOf(value.description) > MCP_LIMITS.descriptionBytes) {
+  if (
+    value.description !== undefined &&
+    utf8Bytes(value.description) > MCP_LIMITS.descriptionBytes
+  ) {
     problems.push(`description is over ${MCP_LIMITS.descriptionBytes / 1024} KiB`);
   }
 
@@ -337,7 +348,7 @@ const entryProblems = (
   for (const problem of mcpEntryBoundsProblems(value)) issues.push(problem);
 
   if (!isMcpFullEntry(value)) {
-    for (const key of Arr.filter(DEFINITION_KEYS, (held) => value[held] !== undefined)) {
+    for (const key of Arr.filter(MCP_DEFINITION_KEYS, (held) => value[held] !== undefined)) {
       refuse(
         key,
         `${ADJUSTMENT_ONLY}: ${key} is part of the definition, so it takes an entry of its own with a command or a url`,
@@ -408,9 +419,12 @@ const entryProblems = (
     ...(value.cwd === undefined ? [] : [["cwd", value.cwd] as const]),
     ...(value.url === undefined ? [] : [["url", value.url] as const]),
     ...Arr.flatMap(
-      ["issuer", "authServerMetadataUrl", "clientId", "keyId", "scope", "clientName"] as const,
-      (key) =>
-        value.oauth?.[key] === undefined ? [] : [[`oauth.${key}`, value.oauth[key]] as const],
+      Arr.filter(OAUTH_FIELDS, (key) => key !== "clientSecret" && key !== "privateKey"),
+      (key: keyof McpOauth) => {
+        const field = value.oauth?.[key];
+
+        return Predicate.isString(field) ? [[`oauth.${key}`, field] as const] : [];
+      },
     ),
   ];
 
@@ -507,7 +521,9 @@ export const McpServers = Schema.Record(Schema.String, SettingsServer).check(
 export type McpServers = typeof McpServers.Type;
 
 /** The `mcp` root of the settings: nothing but `servers` (pi's `autoEnableCodemode` has no key). */
-export const McpSettings = Schema.Struct({ servers: McpServers });
+export const McpSettings = Schema.Struct({
+  servers: McpServers.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
+});
 
 const decodeSettingsServer = Schema.decodeUnknownResult(SettingsServer, {
   onExcessProperty: "error",
@@ -548,7 +564,7 @@ export const mcpFieldPath = (parts: ReadonlyArray<string>): ReadonlyArray<string
 
 /** The `mcp.servers` of a document of settings or of Overrides, as written; none where it has none. */
 export const mcpServersOf = (document: Schema.Json): Schema.Json | undefined => {
-  const mcp = isJsonObject(document) ? document["mcp"] : undefined;
+  const mcp = isJsonObject(document) ? document[MCP_ROOT] : undefined;
 
   return mcp === undefined || !isJsonObject(mcp) ? undefined : mcp["servers"];
 };
@@ -697,16 +713,53 @@ export const normalizeMcpServer = (value: McpServerValue): McpServerEntry | unde
   return undefined;
 };
 
+/**
+ * A note on an entry that is accepted as it is: not a problem, and nothing is skipped. `oauth-callback-ignored`:
+ * `callbackPort` or `callbackUrl` is read and ignored, since cloudpid signs in at its own redirect URI.
+ */
+export type McpEntryHint = {
+  readonly kind: "oauth-callback-ignored";
+  /** The ignored `oauth` keys the entry holds. */
+  readonly keys: ReadonlyArray<string>;
+  readonly message: string;
+};
+
+/**
+ * The hints for entry `value` as written. The redirect URI itself depends on the stage's app origin, which is not known
+ * here: the Settings page's Sign-in disclosure shows it beside the fields (`docs/architecture/mcp-sign-in.md`), and says so
+ * where it shows this hint.
+ */
+export const mcpEntryHints = (value: McpServerValue): ReadonlyArray<McpEntryHint> => {
+  const keys = Arr.filter(OAUTH_IGNORED, (key) => value.oauth?.[key] !== undefined);
+
+  return keys.length === 0
+    ? []
+    : [
+        {
+          kind: "oauth-callback-ignored",
+          keys,
+          message: `oauth.${Arr.join(keys, " and oauth.")} ${keys.length === 1 ? "is" : "are"} accepted and ignored: cloudpid signs in at its own redirect URI, which the Settings page shows beside the oauth fields`,
+        },
+      ];
+};
+
 /** Why a Repo's file, or an entry of it, is skipped or read otherwise: the entry's name, or none for the file. */
 export type McpFileProblem = { readonly name: string | null; readonly message: string };
 
 /** An entry of a Repo's file that stands, as written (its `cwd` made absolute). */
 export type McpRepoEntry = { readonly name: string; readonly value: McpServerValue };
 
-/** What a Repo's `.pi/mcp.json` gives: the entries that stand, and a problem for each that does not or reads otherwise. */
+/** A hint (`McpEntryHint`) on an entry of a Repo's file that stands. */
+export type McpFileHint = McpEntryHint & { readonly name: string };
+
+/**
+ * What a Repo's `.pi/mcp.json` gives: the entries that stand, a problem for each that does not or reads otherwise, and
+ * the hints on those that stand.
+ */
 export type McpRepoFile = {
   readonly entries: ReadonlyArray<McpRepoEntry>;
   readonly problems: ReadonlyArray<McpFileProblem>;
+  readonly hints: ReadonlyArray<McpFileHint>;
 };
 
 const parseJson = (text: string): Option.Option<Schema.Json> =>
@@ -748,14 +801,16 @@ const lines = (problems: ReadonlyArray<SettingsProblem>): string =>
  *   is the Repo's directory for a stdio entry without one. A literal `oauth` secret stands: the file is public already.
  * - `sampling: "allow"` is read as `ask`, with a problem saying to copy the entry into the Settings.
  * - An adjustment that does more than switch off is skipped with a problem.
+ * - `oauth.callbackPort` and `oauth.callbackUrl` are read and ignored, with a hint (`mcpEntryHints`).
  */
 export const readMcpRepoFile = (text: string, directory: string): McpRepoFile => {
   const skipped = (message: string): McpRepoFile => ({
     entries: [],
     problems: [{ name: null, message }],
+    hints: [],
   });
 
-  if (bytesOf(text) > MCP_LIMITS.repoFileBytes) {
+  if (utf8Bytes(text) > MCP_LIMITS.repoFileBytes) {
     return skipped(`is over ${MCP_LIMITS.repoFileBytes / 1024} KiB`);
   }
 
@@ -793,6 +848,7 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
   const base = `/workspace/${directory}`;
   const entries: Array<McpRepoEntry> = [];
   const problems: Array<McpFileProblem> = [];
+  const hints: Array<McpFileHint> = [];
   const seen = new Map<string, string>();
 
   for (const [name, written] of given) {
@@ -840,6 +896,8 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
     const entry = decoded.success;
 
     if (isMcpFullEntry(entry)) {
+      for (const hint of mcpEntryHints(entry)) hints.push({ ...hint, name });
+
       entries.push({
         name,
         value:
@@ -856,5 +914,5 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
     }
   }
 
-  return { entries, problems };
+  return { entries, problems, hints };
 };

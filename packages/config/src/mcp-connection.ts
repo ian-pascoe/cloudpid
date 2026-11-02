@@ -10,12 +10,12 @@
 // @effect-diagnostics missingPipeableSignature:off -- hashes of plain values, not combinators.
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
-import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import { isJsonArray, isJsonObject, utf8Encoder } from "./json.ts";
 import type { McpResolvedServer, McpSource } from "./mcp-server-set.ts";
-import { normalizeMcpName, type McpOauth } from "./mcp-servers.ts";
+import { MCP_OAUTH_KEYS, normalizeMcpName, type McpOauth } from "./mcp-servers.ts";
 
 /** What keys a server: where it is defined, its name, and its entry in force. */
 export type McpKeyed = Pick<McpResolvedServer, "name" | "source" | "server">;
@@ -26,11 +26,6 @@ export type McpKeyed = Pick<McpResolvedServer, "name" | "source" | "server">;
  */
 export const mcpKeySource = (source: McpSource): string =>
   source.kind === "repo" ? `repo:${source.slug}` : "owner";
-
-const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
-
-const isJsonArray = (value: Schema.Json): value is Schema.JsonArray => Arr.isArray(value);
 
 const byKey = Order.mapInput(Order.String, (entry: readonly [string, Schema.Json]) => entry[0]);
 
@@ -57,25 +52,11 @@ const urlKey = (url: string): string => {
   return parsed.href;
 };
 
-/** The `oauth` fields that key a connection: every one but those cloudpid ignores, `callbackPort` and `callbackUrl`. */
-const OAUTH_KEYS = [
-  "clientId",
-  "clientSecret",
-  "privateKey",
-  "keyId",
-  "scope",
-  "clientName",
-  "clientRegistration",
-  "authServerMetadataUrl",
-  "issuer",
-  "grantType",
-] as const;
-
 const oauthKey = (oauth: McpOauth | undefined): Schema.Json =>
   oauth === undefined
     ? null
     : Record.fromEntries(
-        Arr.filterMap(OAUTH_KEYS, (key) => {
+        Arr.filterMap(MCP_OAUTH_KEYS, (key) => {
           const field = oauth[key];
 
           return field === undefined ? Result.failVoid : Result.succeed([key, field] as const);
@@ -119,11 +100,9 @@ const K = [
 
 const rotateRight = (word: number, bits: number): number => (word >>> bits) | (word << (32 - bits));
 
-const utf8 = new TextEncoder();
-
 /** The SHA-256 of `text` as UTF-8, as 64 hex digits. Synchronous, so it can run inside a Durable Object transaction. */
 export const sha256Hex = (text: string): string => {
-  const bytes = utf8.encode(text);
+  const bytes = utf8Encoder.encode(text);
   const padded = new Uint8Array(Math.ceil((bytes.length + 9) / 64) * 64);
 
   padded.set(bytes);

@@ -12,17 +12,20 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import { isJsonObject } from "./json.ts";
 import {
   isMcpFullEntry,
+  MCP_ROOT,
   MCP_ADJUSTMENT_KEYS,
   mcpFieldPath,
-  mcpLayerProblems,
   mcpServersOf,
+  normalizeMcpName,
 } from "./mcp-servers.ts";
 import { type Patch, patchOf, sameJson } from "./patch.ts";
+import { problemLines } from "./schema-problems.ts";
 import {
   DEFAULT_SETTINGS,
-  decodeSettingsOverrides,
+  decodeSettingsLayer,
   overridesFrom,
   resolveLeniently,
   type Settings,
@@ -31,9 +34,6 @@ import {
   type SettingsProblem,
   withRenamedTools,
 } from "./settings.ts";
-
-const isJsonObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 /**
  * The Instructions' setting, which adds up rather than being overridden (ADR-0027): the model is shown Global's, then
@@ -68,9 +68,6 @@ const withEntries = (
   value: Schema.JsonObject,
   entries: ReadonlyArray<readonly [string, Schema.Json]>,
 ): Schema.JsonObject => Record.fromEntries([...Record.toEntries(value), ...entries]);
-
-/** The root of the MCP servers (`mcp.servers.<name>`), whose Override fields depend on the entry (`isFieldAt`). */
-const MCP_ROOT = "mcp";
 
 /** Whether `value` is an MCP server adjustment: an object that is no full entry. */
 const isAdjustment = (value: Schema.Json | undefined): boolean =>
@@ -384,22 +381,14 @@ export const resolveOverrides = (
   }
 
   const renamed = withRenamedTools(overrides);
-  const decoded = decodeSettingsOverrides(overriding(globalApplied(global).overrides, renamed));
 
-  const problems = [
-    ...(Result.isFailure(decoded) ? decoded.failure : []),
-    ...mcpLayerProblems(mcpServersOf(renamed), "environment"),
-  ];
-
-  if (Result.isSuccess(decoded) && problems.length === 0) return Result.succeed(decoded.success);
-
-  return Result.fail(
-    SettingsError.make({
-      message: Arr.join(
-        Arr.map(problems, (problem) => problem.line),
-        "\n",
-      ),
-    }),
+  return Result.mapError(
+    decodeSettingsLayer(
+      overriding(globalApplied(global).overrides, renamed),
+      renamed,
+      "environment",
+    ),
+    (problems) => SettingsError.make({ message: problemLines(problems) }),
   );
 };
 
@@ -445,6 +434,52 @@ const fieldKeysOf = (overrides: Schema.Json, problem: SettingsProblem): Readonly
   return problem.keys;
 };
 
+/** Global's overrides without what an Environment's twin shadows, and a line for each. */
+type InheritedWithoutTwins = {
+  readonly overrides: Schema.JsonObject;
+  readonly dropped: ReadonlyArray<string>;
+};
+
+/**
+ * `inherited` (Global's overrides as they apply) without the MCP servers an Environment's own entry shadows by a twin
+ * name, which differs from it only in case or in `-`/`_`: the Environment has the last word, as `resolveMcpServerSet`
+ * has it, so a stale clash leaves the settings and the set of one mind. A save refuses such a clash instead
+ * (`resolveOverrides`). `dropped` says which of Global's it left out.
+ */
+const withoutShadowedTwins = (
+  inherited: Schema.JsonObject,
+  overrides: Schema.JsonObject,
+): InheritedWithoutTwins => {
+  const own = mcpServersOf(overrides);
+  const global = mcpServersOf(inherited);
+
+  if (!isJsonObject(own) || !isJsonObject(global)) return { overrides: inherited, dropped: [] };
+
+  const ownNames = Arr.filterMap(Record.toEntries(own), ([name, value]) =>
+    isJsonObject(value) && isMcpFullEntry(value) ? Result.succeed(name) : Result.failVoid,
+  );
+
+  const shadowed = Arr.filterMap(Record.toEntries(global), ([name]) => {
+    const twin = Arr.findFirst(
+      ownNames,
+      (held) => held !== name && normalizeMcpName(held) === normalizeMcpName(name),
+    );
+
+    return Option.isSome(twin) ? Result.succeed([name, twin.value] as const) : Result.failVoid;
+  });
+
+  return {
+    overrides: Arr.reduce(shadowed, inherited, (left, [name]) =>
+      removeAt(left, [MCP_ROOT, "servers", name]),
+    ),
+    dropped: Arr.map(
+      shadowed,
+      ([name, twin]) =>
+        `${MCP_ROOT}.servers.${name}: Global's server is left out: this Environment's own "${twin}" is a name that differs only in case or in - and _, and it has the last word`,
+    ),
+  };
+};
+
 /**
  * The settings an Environment's `overrides` give over `global` once every Override that does not resolve is dropped: a
  * value a release no longer takes costs only its own field, which then follows Global. Global's own stale overrides
@@ -467,16 +502,19 @@ export const resolveOverridesLeniently = (
 
   // Dropping a field settles its problem; a few rounds cover Overrides with several.
   for (let round = 0; round < MAX_LENIENT_ROUNDS; round += 1) {
-    const result = decodeSettingsOverrides(overriding(inherited.overrides, rest));
+    const base = withoutShadowedTwins(inherited.overrides, rest);
+    const result = decodeSettingsLayer(overriding(base.overrides, rest), rest, "environment");
 
-    const problems = [
-      ...(Result.isFailure(result) ? result.failure : []),
-      ...mcpLayerProblems(mcpServersOf(rest), "environment"),
-    ];
-
-    if (Result.isSuccess(result) && problems.length === 0) {
-      return { settings: result.success, global: inherited.settings, overrides: rest, dropped };
+    if (Result.isSuccess(result)) {
+      return {
+        settings: result.success,
+        global: inherited.settings,
+        overrides: rest,
+        dropped: [...dropped, ...base.dropped],
+      };
     }
+
+    const problems = result.failure;
 
     for (const problem of problems) dropped.push(problem.line);
 

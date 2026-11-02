@@ -42,7 +42,7 @@ const server = (set: ReturnType<typeof resolve>, name: string) => {
 
 describe("the MCP server set", () => {
   it("is empty for an Environment with no server anywhere", () => {
-    expect(resolve({}, {})).toEqual({ servers: [], problems: [], orphans: [] });
+    expect(resolve({}, {})).toEqual({ servers: [], problems: [], orphans: [], hints: [] });
   });
 
   it("holds Global's servers, read in force with their defaults, and no problem", () => {
@@ -67,6 +67,36 @@ describe("the MCP server set", () => {
       shadowed: [],
       resolvesSecrets: true,
     });
+  });
+
+  it("hints at an ignored `callbackPort` or `callbackUrl`, which is no problem, for every layer", () => {
+    const oauth = (fields: Schema.Json): Schema.Json => ({ url: "https://x.test", oauth: fields });
+
+    const set = resolve(
+      owner({ g: oauth({ clientId: "a", callbackPort: 8080 }), plain: oauth({ clientId: "a" }) }),
+      owner({ e: oauth({ callbackUrl: "http://localhost/cb", callbackPort: 1 }) }),
+      repo("web", { r: oauth({ callbackPort: 9 }) }),
+    );
+
+    expect(set.problems).toEqual([]);
+    expect(
+      Arr.map(set.hints, ({ source, name, kind, keys }) => ({
+        source: source.kind,
+        name,
+        kind,
+        keys,
+      })),
+    ).toEqual([
+      { source: "global", name: "g", kind: "oauth-callback-ignored", keys: ["callbackPort"] },
+      {
+        source: "environment",
+        name: "e",
+        kind: "oauth-callback-ignored",
+        keys: ["callbackPort", "callbackUrl"],
+      },
+      { source: "repo", name: "r", kind: "oauth-callback-ignored", keys: ["callbackPort"] },
+    ]);
+    expect(set.hints[0]?.message).toContain("redirect URI");
   });
 
   describe("Environment over Global", () => {

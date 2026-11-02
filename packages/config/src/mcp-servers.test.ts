@@ -5,6 +5,8 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   decodeMcpServerValue,
+  MCP_OAUTH_KEYS,
+  mcpEntryHints,
   mcpLayerProblems,
   mcpRepoCwd,
   normalizeMcpName,
@@ -341,6 +343,27 @@ describe("the `oauth` fields", () => {
     expect(refused(oauth({ grantType: "password" }))).toHaveLength(1);
   });
 
+  it("accept `callbackPort` and `callbackUrl` with a hint that names the redirect URI", () => {
+    const entry = accepted(oauth({ callbackPort: 8080, callbackUrl: "http://localhost:8080/cb" }));
+
+    expect(mcpEntryHints(entry)).toEqual([
+      {
+        kind: "oauth-callback-ignored",
+        keys: ["callbackPort", "callbackUrl"],
+        message: expect.stringContaining("redirect URI"),
+      },
+    ]);
+    expect(mcpEntryHints(accepted(oauth({ clientId: "a" })))).toEqual([]);
+    expect(mcpEntryHints(accepted(STDIO))).toEqual([]);
+  });
+
+  it("hold every field but the ignored ones in `MCP_OAUTH_KEYS`", () => {
+    expect(MCP_OAUTH_KEYS).toContain("issuer");
+    expect(MCP_OAUTH_KEYS).toContain("clientSecret");
+    expect(MCP_OAUTH_KEYS).not.toContain("callbackPort");
+    expect(MCP_OAUTH_KEYS).not.toContain("callbackUrl");
+  });
+
   it("read the registration and grant defaults in force", () => {
     expect(normalizeMcpServer(accepted(oauth({ clientId: "a" })))).toMatchObject({
       oauth: { clientId: "a", clientRegistration: "auto", grantType: "authorization_code" },
@@ -416,6 +439,12 @@ describe("the names of the `mcp.servers`", () => {
     expect(problems({ linear: { ...STDIO, auth: "oauth" } })).toMatch(
       /^mcp\.servers\.linear\.auth: /,
     );
+  });
+
+  it("take `mcp` without `servers`: it defaults to none", () => {
+    const result = resolveSettings({ mcp: {} });
+
+    expect(Result.isSuccess(result) && result.success.mcp).toEqual({ servers: {} });
   });
 
   it("hold nothing else under `mcp`", () => {
@@ -618,6 +647,24 @@ describe("a Repo's `.pi/mcp.json`", () => {
     }
 
     expect(read(named(50, "s", HTTP)).entries).toHaveLength(50);
+  });
+
+  it("hints at an ignored `callbackPort` in an entry that stands", () => {
+    const { entries, hints, problems } = read({
+      a: { ...HTTP, oauth: { callbackPort: 8080 } },
+      b: { ...HTTP, oauth: { callbackPort: 1 }, auth: "x" },
+    });
+
+    expect(problems).toHaveLength(1);
+    expect(entries).toHaveLength(1);
+    expect(hints).toEqual([
+      {
+        name: "a",
+        kind: "oauth-callback-ignored",
+        keys: ["callbackPort"],
+        message: expect.stringContaining("redirect URI"),
+      },
+    ]);
   });
 
   it("ignores the keys of the file that are not `mcpServers`", () => {

@@ -8,14 +8,17 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { isJsonArray, isJsonObject, utf8Bytes } from "./json.ts";
 import {
-  mcpFieldPath,
+  MCP_ROOT,
+  type McpLayerScope,
   McpSettings,
   mcpEntryKeys,
+  mcpFieldPath,
   mcpLayerProblems,
   mcpServersOf,
 } from "./mcp-servers.ts";
-import { problemsOf, type SettingsProblem } from "./schema-problems.ts";
+import { problemLines, problemsOf, type SettingsProblem, withProblems } from "./schema-problems.ts";
 
 /** The models the model proxy serves, as `provider/modelId`: those of `~/.pi/agent/models.json` the Session registers. */
 export const SUPPORTED_MODELS = [
@@ -145,10 +148,8 @@ const BranchSummary = Schema.Struct({
  */
 export const MAX_INSTRUCTIONS_BYTES = 64 * 1024;
 
-const utf8 = new TextEncoder();
-
 /** How many bytes of UTF-8 `text` is: what the cap on the Instructions counts. */
-export const utf8Bytes = (text: string): number => utf8.encode(text).length;
+export { utf8Bytes };
 
 /** The size of a long text such as the Instructions, as a result or a refusal says it: its lines and bytes of UTF-8. */
 export const textSize = (text: string): string => {
@@ -233,11 +234,6 @@ const decodeOverrides = Schema.decodeUnknownResult(Settings, {
   errors: "all",
 });
 
-const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
-
-const isJsonArray = (value: Schema.Json): value is Schema.JsonArray => Arr.isArray(value);
-
 /** Tools that were renamed, by their former name: an offered list that names one offers it under its new name. */
 const RENAMED_TOOLS: ReadonlyMap<string, string> = new Map([
   ["restart_container", "container_restart"],
@@ -282,29 +278,25 @@ export const decodeSettingsOverrides = (
 ): Result.Result<Settings, ReadonlyArray<SettingsProblem>> =>
   Result.mapError(decodeOverrides(overrides), problemsOf);
 
-/** The problems of Global's MCP servers that the schema cannot see (`mcpLayerProblems`). */
-const globalMcpProblems = (overrides: Schema.Json): ReadonlyArray<SettingsProblem> =>
-  mcpLayerProblems(mcpServersOf(overrides), "global");
+/**
+ * The settings `document` gives over the defaults, with every problem of the MCP servers `layer` holds that the schema
+ * cannot see (`mcpLayerProblems`, for the Scope `scope`): more than 50, and at Global an adjustment. `layer` is the
+ * document the Scope saved: Global's overrides, or an Environment's Overrides, whose merged settings are `document`.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a decode of plain documents, not a combinator.
+export const decodeSettingsLayer = (
+  document: Schema.Json,
+  layer: Schema.Json,
+  scope: McpLayerScope,
+): Result.Result<Settings, ReadonlyArray<SettingsProblem>> =>
+  withProblems(decodeSettingsOverrides(document), mcpLayerProblems(mcpServersOf(layer), scope));
 
 /** The settings `overrides` give over the defaults, or why they are not valid settings. */
 export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings, SettingsError> => {
   const renamed = withRenamedTools(overrides);
-  const decoded = decodeOverrides(renamed);
 
-  const problems = [
-    ...(Result.isFailure(decoded) ? problemsOf(decoded.failure) : []),
-    ...globalMcpProblems(renamed),
-  ];
-
-  if (Result.isSuccess(decoded) && problems.length === 0) return Result.succeed(decoded.success);
-
-  return Result.fail(
-    SettingsError.make({
-      message: Arr.join(
-        Arr.map(problems, (problem) => problem.line),
-        "\n",
-      ),
-    }),
+  return Result.mapError(decodeSettingsLayer(renamed, renamed, "global"), (problems) =>
+    SettingsError.make({ message: problemLines(problems) }),
   );
 };
 
@@ -395,7 +387,7 @@ export const settingsFieldPath = (field: string): ReadonlyArray<string> | undefi
     return undefined;
   }
 
-  if (root === "mcp") return mcpFieldPath(parts);
+  if (root === MCP_ROOT) return mcpFieldPath(parts);
 
   if (root !== "extensions") return parts;
 
@@ -501,14 +493,11 @@ export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
 
   // Dropping a path settles its problem; a few rounds cover a document with several.
   for (let round = 0; round < 8; round += 1) {
-    const result = decodeOverrides(rest);
+    const result = decodeSettingsLayer(rest, rest, "global");
 
-    const problems = Result.isFailure(result)
-      ? problemsOf(result.failure)
-      : globalMcpProblems(rest);
+    if (Result.isSuccess(result)) return { settings: result.success, dropped };
 
-    if (Result.isSuccess(result) && problems.length === 0)
-      return { settings: result.success, dropped };
+    const problems = result.failure;
 
     for (const problem of problems) dropped.push(problem.line);
 
