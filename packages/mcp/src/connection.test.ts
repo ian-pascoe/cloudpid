@@ -18,7 +18,7 @@ import {
   modernServer,
   rpcMethods,
 } from "./fakes.fixture.ts";
-import { Unsupported } from "./types.ts";
+import { ServerError, Unsupported } from "./types.ts";
 import { connect, SUPPORTED_PROTOCOL_VERSIONS } from "./index.ts";
 import type { McpCallContext } from "./types.ts";
 import { HOST, AGENT, run, testDeps, TARGET, failedWith } from "./core.fixture.ts";
@@ -107,6 +107,34 @@ describe("a Legacy session's GET stream", () => {
       ),
     ).toBe(true);
     expect(announced()).toBe(true);
+  });
+});
+
+describe("a header the server rejects (-32020)", () => {
+  it("fails the call as a ServerError, sent once: the refresh and retry are the catalog owner's", async () => {
+    const server = hostileServer(modernServer(), (_request, rpc) =>
+      rpc?.method === "tools/call"
+        ? Response.json(
+            {
+              jsonrpc: "2.0",
+              id: rpc.id ?? null,
+              error: { code: -32020, message: "Header mismatch" },
+            },
+            { status: 400 },
+          )
+        : undefined,
+    );
+
+    const ended = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
+
+        return yield* connection.callTool({ tool: ECHO_TOOL, arguments: { text: "hi" } }, AGENT);
+      }).pipe(Effect.catch((error) => Effect.succeed({ failed: error }))),
+    );
+
+    expect(ended).toEqual(failedWith(ServerError, { code: -32020 }));
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(1);
   });
 });
 

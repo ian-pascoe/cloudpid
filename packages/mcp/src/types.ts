@@ -4,10 +4,12 @@
  * (`sdk-isolation.test.ts`) fails if it comes to.
  *
  * `docs/architecture/mcp.md` → Packages and objects (the core's seam), Deploys (`prior` rows carry a format `v`).
- * What is here so far: the core's tagged `McpError`, the call context, and the `prior` rows the host keeps for the
- * engine (`docs/architecture/mcp-connections.md` → Storage).
+ * What is here so far: the core's tagged `McpError`, `McpErrorWire` (with its fallback `OtherMcpError`, and
+ * `mayHaveRun`) for the engine edge, the call context, and the `prior` rows the host keeps for the engine
+ * (`docs/architecture/mcp-connections.md` → Storage).
  */
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 /** Where a call comes from (The MCP core #394 D7, `McpCallContext`). */
 export const McpCallOrigin = Schema.Literals(["agent", "owner", "app", "host"]);
@@ -172,21 +174,61 @@ export const McpError = Schema.Union([
 export type McpError = typeof McpError.Type;
 
 /**
- * A failure whose tag this build does not know, from a newer engine: read as a generic failure that may have run
- * (an absent `mayHaveRun` means it may have).
+ * A failure whose tag this build does not know, or whose fields do not fit its tag: from a newer engine, or a broken
+ * one. It has a tag of its own, so nothing reads it as the tag it came with (`tag`), and it may have run unless it
+ * says not (`mayHaveRun`).
  */
-export const OtherMcpError = Schema.Struct({
+export class OtherMcpError extends Schema.TaggedError<
+  OtherMcpError,
+  { readonly brand: unique symbol }
+>()("OtherMcpError", {
+  message: Schema.String,
+  tag: Schema.String,
+  mayHaveRun: Schema.optionalKey(Schema.Boolean),
+}) {}
+
+/** Any failure as it crosses the edge: its own tag, a message and, maybe, whether it may have run. */
+const AnyMcpErrorFields = Schema.Struct({
   _tag: Schema.String,
   message: Schema.String,
   mayHaveRun: Schema.optionalKey(Schema.Boolean),
 });
 
-export type OtherMcpError = typeof OtherMcpError.Type;
+/** `OtherMcpError` on the wire: under the tag it came with, so it goes on as it came. */
+const OtherMcpErrorFromWire = AnyMcpErrorFields.pipe(
+  Schema.decodeTo(
+    Schema.toType(OtherMcpError),
+    SchemaTransformation.transform({
+      decode: ({ _tag, ...fields }) => OtherMcpError.make({ ...fields, tag: _tag }),
+      // An error's `message` is not its own enumerable key, so each field is named.
+      encode: (error) =>
+        error.mayHaveRun === undefined
+          ? { _tag: error.tag, message: error.message }
+          : { _tag: error.tag, message: error.message, mayHaveRun: error.mayHaveRun },
+    }),
+  ),
+);
 
 /**
  * The engine edge's failure Schema (`docs/architecture/mcp.md` → Deploys): every known tag reads as its `McpError`,
- * any other as an `OtherMcpError`, so a newer engine's new tag never fails a decode on an older host.
+ * anything else as an `OtherMcpError`, so a newer engine's new tag never fails a decode on an older host.
  */
-export const McpErrorWire = Schema.Union([...McpError.members, OtherMcpError]);
+export const McpErrorWire = Schema.Union([...McpError.members, OtherMcpErrorFromWire]);
 
 export type McpErrorWire = typeof McpErrorWire.Type;
+
+const isCut = Schema.is(Cut);
+
+const isOtherMcpError = Schema.is(OtherMcpError);
+
+/**
+ * Whether the failed request may have run: a `Cut` says, an `OtherMcpError` may have unless it says not, and every
+ * other tag reads as not.
+ */
+export const mayHaveRun = (error: McpErrorWire) => {
+  if (isCut(error)) {
+    return error.mayHaveRun;
+  }
+
+  return isOtherMcpError(error) ? (error.mayHaveRun ?? true) : false;
+};

@@ -241,13 +241,18 @@ const toJsonObject = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
 );
 
-/** The SDK validates nothing: the host validates `structuredContent` against what it compiled (D17). */
+/**
+ * The SDK validates nothing: the engine validates `structuredContent` against what it compiled (D17). `callTool`
+ * also withholds `outputSchema`, which is what stops the SDK refusing a result without `structuredContent`; this
+ * keeps the SDK from building a validator of its own (Ajv on Node, `@cfworker` on workerd) or running one on any
+ * other path.
+ */
 const noValidation = {
   getValidator:
     <T>(): JsonSchemaValidator<T> =>
     (input) => ({
       valid: true,
-      // SAFETY: no validation is the point; the host checks `structuredContent` itself (D17).
+      // SAFETY: no validation is the point; the engine checks `structuredContent` itself (D17).
       data: input as T,
       errorMessage: undefined,
     }),
@@ -582,7 +587,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           signal,
           timeout: target.timeoutMs ?? CALL_TIMEOUT_MS,
           resetTimeoutOnProgress: true,
-          // Without `outputSchema`, so the SDK checks no `structuredContent`: the host does (D17).
+          // Without `outputSchema`, so the SDK checks no `structuredContent`: the engine does (D17). With the
+          // definition given, the SDK rethrows a `-32020` header mismatch rather than refreshing `tools/list`: the
+          // refresh and one retry (D14) belong to the catalog's owner (#447, #449), so it surfaces as `ServerError`.
           toolDefinition: Struct.omit(params.tool, ["outputSchema"]),
         };
 
