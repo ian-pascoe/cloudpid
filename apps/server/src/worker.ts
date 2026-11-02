@@ -4,6 +4,7 @@ import { WebConfigLive } from "@cloudpid/extensions/web";
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
 import * as Alchemy from "alchemy";
+import * as Namespace from "alchemy/Namespace";
 import * as Command from "alchemy/Command";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Context from "effect/Context";
@@ -15,7 +16,16 @@ import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
 import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
-import { hello } from "./hello.ts";
+import { accessProps } from "./access-props.ts";
+import {
+  type GuardEnv,
+  guardAccess,
+  guardFromEnv,
+  loadTeamKeysFromAccess,
+  teamKeys,
+} from "./access.ts";
+import { type AssetLayer, serveAsset } from "./assets.ts";
+import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
 import { buildUpkeep } from "./registry/builds.ts";
 import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
 import { skillDirectoryOver } from "./registry/skill-directory.ts";
@@ -30,8 +40,7 @@ import {
   spareUpkeep,
 } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
-import { missingAsset } from "./missing-asset.ts";
-import { attachmentRoute, isAssetPath, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { GitHubAppConfig, GitHubAppConfigLive } from "./github/config.ts";
 import { serveAttachment } from "./serve-attachment.ts";
 import { FileListings, fileListingsLayer } from "./session/file-search.ts";
@@ -51,11 +60,11 @@ import type { Workspace } from "./workspace/Workspace.ts";
 import { Workspaces } from "./workspace/resource.ts";
 
 /**
- * The web app (`apps/web`), built at deploy time and served as static assets by this Worker: a request that matches a
- * file is answered by the asset layer without waking the Worker, a navigation to an unknown path (`/sessions/:id`)
- * gets `index.html`, and every other request (the Session socket, `/rpc`) reaches the Worker, a missing `/assets/…`
- * file among them (a 404 there, `missingAsset`). The Worker's bundle folds the build step away, so only the deploy
- * runs it.
+ * The web app (`apps/web`), built at deploy time and served as static assets by this Worker. The Worker runs first
+ * (`runWorkerFirst`), so its Access guard covers every request and the files are served after it from the `ASSETS`
+ * binding (`serveAsset`): a file the build has, `index.html` for any page load of a path that is no file (a navigation, or a
+ * `GET` or `HEAD` that accepts HTML: `/sessions/:id`), and a 404 for a missing `/assets/…` file (`missingAsset`). The Worker's bundle folds the build step away, so only the
+ * deploy runs it.
  */
 const webAssets = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
@@ -74,7 +83,9 @@ const webAssets = Effect.gen(function* () {
   return {
     directory: build.outdir,
     hash: build.hash.output,
-    notFoundHandling: "single-page-application" as const,
+    notFoundHandling: WEB_NOT_FOUND_HANDLING,
+    // The Worker's Access guard must see every request, the web app's files included (D9).
+    runWorkerFirst: true,
   };
 });
 
@@ -132,13 +143,23 @@ const browserBinding = Effect.gen(function* () {
 });
 
 /**
- * Deploy-time props, resolved from the stage: the Worker's name, where it is served, its Access application and, off
- * `prod`, the label var (`deployment.ts`). The stage is absent once the Worker runs (the props only matter at deploy time), so that
- * case falls back to a non-prod stage.
+ * Deploy-time props, resolved from the stage: the Worker's name, where it is served, its Access application and the
+ * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`). The stage is absent once the Worker
+ * runs (the props only matter at deploy time), so that case falls back to a non-prod stage.
  */
 const props = Effect.gen(function* () {
   const stage = Option.getOrElse(yield* Effect.serviceOption(Alchemy.Stage), () => "runtime");
-  const { label, ...workerProps } = deployment(stage);
+  const { label, access, ...workerProps } = deployment(stage);
+
+  // The Worker's own Access application, declared here as the `Server/Access` the Worker's `access: { policies }` form
+  // made (same logical id, so a deploy updates it in place), so that its `aud` can be a var of the Worker.
+  const accessGuardProps = yield* accessProps({
+    declare: Cloudflare.Access.Application("Access", {
+      type: "self_hosted",
+      policies: access.policies,
+    }).pipe(Namespace.push("Server")),
+    runtime: globalThis.__ALCHEMY_RUNTIME__ === true,
+  });
 
   // The `<label>` of the App sandbox's `<hash>--<label>` View URLs, set on non-prod stages only: prod's Views have no
   // suffix. Never taken from a request's `Host`.
@@ -148,9 +169,11 @@ const props = Effect.gen(function* () {
     main: import.meta.url,
     compatibility: { date: "2026-08-31" },
     ...workerProps,
+    ...accessGuardProps.props,
     observability: WORKER_OBSERVABILITY,
     assets: yield* webAssets,
     env: {
+      ...accessGuardProps.vars,
       ...stageLabelVar,
       ...(yield* workspaceBinding),
       ...(yield* sandboxBinding),
@@ -230,40 +253,53 @@ export default class Server extends Cloudflare.Worker<Server>()(
       },
     });
 
+    // The guard of every route (docs/architecture/mcp-sign-in.md → The Access guard): the Worker verifies the Access
+    // assertion itself and refuses the rest, so a request that reached it some other way (a bypass application's wider
+    // paths, a service binding) gets a 403. The deploy put its vars in the Worker's environment.
+    // SAFETY: the deploy sets these vars as strings (`guardVars`), and nothing else puts a value under their names.
+    const guard = guardAccess({
+      ...guardFromEnv(worker as GuardEnv),
+      keys: teamKeys(loadTeamKeysFromAccess),
+    });
+
+    // SAFETY: the Worker's assets are bound as `ASSETS` (the Fetcher of the asset layer), as the deploy declares them.
+    const assets = worker.ASSETS as AssetLayer;
+
     return {
-      fetch: Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const sessionId = sessionSocketId(request);
+      fetch: guard(
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const sessionId = sessionSocketId(request);
 
-        // Only a file the build lacks gets here: the asset layer answers the ones it has, and a navigation gets the app.
-        if (isAssetPath(request)) return missingAsset;
+          if (sessionId !== undefined)
+            return yield* connectSession(sessions, registries, sessionId);
 
-        if (sessionId !== undefined) return yield* connectSession(sessions, registries, sessionId);
+          const attachment = attachmentRoute(request);
 
-        const attachment = attachmentRoute(request);
+          if (attachment !== undefined) {
+            return yield* serveAttachment(registries, attachmentFiles, attachment);
+          }
 
-        if (attachment !== undefined) {
-          return yield* serveAttachment(registries, attachmentFiles, attachment);
-        }
+          if (isRegistryRpc(request))
+            return yield* serveRegistryRpc(registries, {
+              workspaces,
+              sessions: sessionObjects,
+              legacy,
+              spares,
+              builds,
+              lookups,
+              branches,
+              skillSearch: searchSkillsSh,
+              // The Worker's own cache: a Durable Object has none.
+              skillDirectory: skillDirectoryOver({ cache: caches.default }),
+              skillRepos,
+              background: (effect) => execution.waitUntil(effect),
+            });
 
-        if (isRegistryRpc(request))
-          return yield* serveRegistryRpc(registries, {
-            workspaces,
-            sessions: sessionObjects,
-            legacy,
-            spares,
-            builds,
-            lookups,
-            branches,
-            skillSearch: searchSkillsSh,
-            // The Worker's own cache: a Durable Object has none.
-            skillDirectory: skillDirectoryOver({ cache: caches.default }),
-            skillRepos,
-            background: (effect) => execution.waitUntil(effect),
-          });
-
-        return hello;
-      }),
+          // None of the routes above: the web app's files, served after the guard.
+          return yield* serveAsset(assets);
+        }),
+      ),
     };
   }).pipe(
     // The Worker's init is its entry point.

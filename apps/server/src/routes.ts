@@ -1,8 +1,8 @@
 import { RPC_PATH } from "@cloudpid/protocol";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 
-// The main Worker's routes (`docs/architecture/client-and-protocol.md`). Every one is reachable only through the Access gate
-// in front of the Worker.
+// The main Worker's routes (`docs/architecture/client-and-protocol.md`). Every one sits behind the Access guard (`access.ts`),
+// which verifies the assertion Access adds in front of the Worker.
 
 const SESSION_ID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
@@ -24,8 +24,8 @@ export const sessionSocketId = (request: HttpServerRequest.HttpServerRequest): s
 
 /**
  * Whether `request` asks for a file under `/assets/`, where the web build puts its hashed chunks and stylesheets. The
- * asset layer answers one that exists without waking the Worker, so a request that reaches the Worker is for a file
- * the current build does not have (a tab from before a deploy asks for its own build's chunks).
+ * Worker serves one that exists from the asset layer after its guard (`serveAsset`); one the current build does not
+ * have is a 404 (a tab from before a deploy asks for its own build's chunks).
  */
 export const isAssetPath = (request: HttpServerRequest.HttpServerRequest): boolean =>
   pathOf(request).startsWith(ASSETS_PREFIX);

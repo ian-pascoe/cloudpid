@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCESS_AUDIENCE_VAR,
+  LOCAL_MODE_VAR,
   OWNER_EMAIL,
   PRODUCTION_DOMAIN,
   WORKERS_DEV_SUBDOMAIN,
   appOrigin,
   checkedAppOrigin,
   deployment,
+  guardVars,
   stageLabel,
 } from "./deployment.ts";
 
@@ -113,5 +116,25 @@ describe("checkedAppOrigin", () => {
     ["undefined", undefined],
   ])("fails a deploy whose URL is %s", (_, url) => {
     expect(() => checkedAppOrigin({ stage: "pr-7", url })).toThrow(/app origin/i);
+  });
+});
+
+describe("the Access guard's vars", () => {
+  it.each(["prod", "dev_ian", "pr-430"])(
+    "are not in the live deployment output of %s, so no deployed Worker can be in local mode",
+    (stage) => {
+      const output = deployment(stage);
+
+      expect(JSON.stringify(output)).not.toContain(LOCAL_MODE_VAR);
+    },
+  );
+
+  it("give a deployed stage its application's audience and never the local-mode var", () => {
+    expect(guardVars("an-audience")).toEqual({ [ACCESS_AUDIENCE_VAR]: "an-audience" });
+    expect(guardVars("an-audience")).not.toHaveProperty(LOCAL_MODE_VAR);
+  });
+
+  it("give alchemy dev, which has no audience, the local-mode var alone", () => {
+    expect(guardVars(undefined)).toEqual({ [LOCAL_MODE_VAR]: "true" });
   });
 });
