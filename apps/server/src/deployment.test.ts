@@ -96,8 +96,10 @@ describe("appOrigin", () => {
 
 describe("checkedAppOrigin", () => {
   it("returns the URL when it is the stage's app origin", () => {
-    expect(checkedAppOrigin("pr-7", appOrigin("pr-7"))).toBe(appOrigin("pr-7"));
-    expect(checkedAppOrigin("prod", `https://${PRODUCTION_DOMAIN}`)).toBe(appOrigin("prod"));
+    expect(checkedAppOrigin({ stage: "pr-7", url: appOrigin("pr-7") })).toBe(appOrigin("pr-7"));
+    expect(checkedAppOrigin({ stage: "prod", url: `https://${PRODUCTION_DOMAIN}` })).toBe(
+      appOrigin("prod"),
+    );
   });
 
   it.each([
@@ -110,6 +112,6 @@ describe("checkedAppOrigin", () => {
     ["a trailing slash", `${appOrigin("pr-7")}/`],
     ["undefined", undefined],
   ])("fails a deploy whose URL is %s", (_, url) => {
-    expect(() => checkedAppOrigin("pr-7", url)).toThrow(/app origin/i);
+    expect(() => checkedAppOrigin({ stage: "pr-7", url })).toThrow(/app origin/i);
   });
 });

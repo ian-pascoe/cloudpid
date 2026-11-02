@@ -23,6 +23,20 @@ const WORKER_NAME_PREFIX = "cloudpid-server-";
 /** The longest label: with {@link WORKER_NAME_PREFIX} the name fits a DNS label (63 characters) with room to spare. */
 const MAX_LABEL_LENGTH = 35;
 
+/** Why `label`, the label of `stage`, is refused; undefined when it is fine. */
+const labelRefusal = (stage: string, label: string): string | undefined => {
+  if (label === "") return "is empty";
+
+  // On the stage, not the label: lowercasing can turn a character outside the set into one inside it ("K", the Kelvin sign).
+  if (!/^[A-Za-z0-9_-]*$/.test(stage)) return "has characters outside [A-Za-z0-9_-]";
+
+  if (label.length > MAX_LABEL_LENGTH) return `is longer than ${MAX_LABEL_LENGTH} characters`;
+
+  if (label.startsWith("-") || label.endsWith("-")) return "starts or ends with '-'";
+
+  return undefined;
+};
+
 /**
  * The stage lowercased with `_` → `-`: the part of a non-prod Worker's name (`cloudpid-server-<label>`) and of its app
  * origin that is the stage's own. A stage whose label is empty, longer than {@link MAX_LABEL_LENGTH} characters, starts
@@ -31,19 +45,11 @@ const MAX_LABEL_LENGTH = 35;
  */
 export const stageLabel = (stage: string): string => {
   const label = stage.toLowerCase().replaceAll("_", "-");
-
-  const refusals: ReadonlyArray<readonly [refused: boolean, why: string]> = [
-    [label === "", "is empty"],
-    [!/^[A-Za-z0-9_-]*$/.test(stage), "has characters outside [A-Za-z0-9_-]"],
-    [label.length > MAX_LABEL_LENGTH, `is longer than ${MAX_LABEL_LENGTH} characters`],
-    [label.startsWith("-") || label.endsWith("-"), "starts or ends with '-'"],
-  ];
-
-  const refusal = refusals.find(([refused]) => refused);
+  const refusal = labelRefusal(stage, label);
 
   if (refusal !== undefined) {
     throw new Error(
-      `Stage ${JSON.stringify(stage)} cannot be deployed: its label ${JSON.stringify(label)} ${refusal[1]}. ` +
+      `Stage ${JSON.stringify(stage)} cannot be deployed: its label ${JSON.stringify(label)} ${refusal}. ` +
         "Every non-prod stage names its main Worker cloudpid-server-<label>; rename the stage.",
     );
   }
@@ -61,10 +67,14 @@ export const appOrigin = (stage: string): string =>
     : `https://${WORKER_NAME_PREFIX}${stageLabel(stage)}.${WORKERS_DEV_SUBDOMAIN}.workers.dev`;
 
 /**
- * `url`, the main Worker's resolved URL, once it is `appOrigin(stage)`; throws otherwise, so a deploy whose Worker is
+ * The main Worker's resolved `url`, once it is `appOrigin(stage)`; throws otherwise, so a deploy whose Worker is
  * not where the App sandbox looks for it fails instead of leaving every View blocked.
  */
-export const checkedAppOrigin = (stage: string, url: string | undefined): string => {
+export const checkedAppOrigin = (served: {
+  readonly stage: string;
+  readonly url: string | undefined;
+}): string => {
+  const { stage, url } = served;
   const origin = appOrigin(stage);
 
   if (url !== origin) {

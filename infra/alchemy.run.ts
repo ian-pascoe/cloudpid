@@ -26,7 +26,9 @@ export default Alchemy.Stack(
     // serves on localhost.
     const url = dev
       ? server.url.as<string>()
-      : Output.map(server.url.as<string>(), (resolved) => checkedAppOrigin(stage, resolved));
+      : Output.map(server.url.as<string>(), (resolved) =>
+          checkedAppOrigin({ stage, url: resolved }),
+        );
 
     // A pull request's preview (stage `pr-<number>`, .github/workflows/ci.yml) posts its URL on the PR, and updates
     // that one comment on each push. Outside GitHub Actions, or on a push to `main`, there is no PR and no comment, and
