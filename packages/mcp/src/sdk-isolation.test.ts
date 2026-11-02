@@ -4,9 +4,10 @@
  * nothing from the SDK, since the SDK adds about 9-10 MiB of cold heap to every isolate that loads it.
  *
  * The bundler is rolldown, the one alchemy bundles Workers with. The module graph is checked rather than the
- * tree-shaken output: a module that is in the graph is one the isolate may evaluate. A planted import proves each
- * check can fail.
+ * tree-shaken output: a module that is in the graph is one the isolate may evaluate. An SDK import the bundler
+ * leaves external or cannot resolve counts too. A planted import proves each check can fail.
  */
+// @effect-diagnostics asyncFunction:off nodeBuiltinImport:off preferEffectArray:off
 import { resolve } from "node:path";
 import { rolldown, type OutputChunk, type Plugin } from "rolldown";
 import { describe, expect, it } from "vitest";
@@ -51,8 +52,13 @@ const plantedEntry = (entry: string, planted: ReadonlyArray<string>): Plugin => 
   },
 });
 
-/** Every SDK module in the module graph of `entry`, with `planted` specifiers imported beside it. */
-const bundledSdkModules = async (entry: string, planted: ReadonlyArray<string> = []) => {
+/**
+ * Every way the bundle of `entry` (with `planted` specifiers imported beside it) reaches the SDK: a module in its
+ * graph, an import it left external (rolldown turns an import it cannot resolve into one, silently: it is in
+ * `chunk.imports`, not in `moduleIds`, and the Worker would fail at runtime or load it from `node_modules`) or a
+ * dynamic import.
+ */
+const sdkReferences = async (entry: string, planted: ReadonlyArray<string> = []) => {
   const bundle = await rolldown({
     input: PLANTED_ENTRY,
     platform: "node",
@@ -66,11 +72,13 @@ const bundledSdkModules = async (entry: string, planted: ReadonlyArray<string> =
     const { output } = await bundle.generate({ format: "esm" });
     const chunks = output.filter((item): item is OutputChunk => item.type === "chunk");
 
-    const ids = new Set(
-      chunks.flatMap((chunk) => chunk.moduleIds.map((id) => id.replaceAll("\\", "/"))),
-    );
+    const ids = new Set([
+      ...chunks.flatMap((chunk) => chunk.moduleIds),
+      ...chunks.flatMap((chunk) => chunk.imports),
+      ...chunks.flatMap((chunk) => chunk.dynamicImports),
+    ]);
 
-    return [...ids].filter((id) => id.includes(SDK_PACKAGES));
+    return [...ids].filter((id) => id.replaceAll("\\", "/").includes(SDK_PACKAGES));
   } finally {
     await bundle.close();
   }
@@ -83,19 +91,26 @@ describe("the SDK stays out of the Workers that must not load it", () => {
   ] as const;
 
   it.each(workers)("%s bundles no @modelcontextprotocol/ module", async (_name, entry) => {
-    expect(await bundledSdkModules(entry)).toEqual([]);
+    expect(await sdkReferences(entry)).toEqual([]);
   });
 
   it.each(workers)("fails when %s imports the core", async (_name, entry) => {
-    expect(await bundledSdkModules(entry, ["@cloudpid/mcp"])).not.toEqual([]);
+    expect(await sdkReferences(entry, ["@cloudpid/mcp"])).not.toEqual([]);
   });
 
   it.each(workers)("fails when %s imports the SDK itself", async (_name, entry) => {
-    expect(await bundledSdkModules(entry, ["@modelcontextprotocol/client"])).not.toEqual([]);
+    expect(await sdkReferences(entry, ["@modelcontextprotocol/client"])).not.toEqual([]);
   });
 
+  it.each(workers)(
+    "fails when %s imports an SDK module that does not resolve",
+    async (_name, entry) => {
+      expect(await sdkReferences(entry, ["@modelcontextprotocol/not-installed"])).not.toEqual([]);
+    },
+  );
+
   it.each(workers)("passes when %s imports ./types and ./oauth", async (_name, entry) => {
-    const sdkModules = await bundledSdkModules(entry, [TYPES, OAUTH]);
+    const sdkModules = await sdkReferences(entry, [TYPES, OAUTH]);
 
     expect(sdkModules).toEqual([]);
   });
@@ -103,16 +118,14 @@ describe("the SDK stays out of the Workers that must not load it", () => {
 
 describe("@cloudpid/mcp entries", () => {
   it("`.` loads the SDK", async () => {
-    expect(await bundledSdkModules(CORE)).not.toEqual([]);
+    expect(await sdkReferences(CORE)).not.toEqual([]);
   });
 
   it("./types loads nothing from the SDK", async () => {
-    expect(await bundledSdkModules(TYPES)).toEqual([]);
-    expect(await import("./types.ts")).toBeDefined();
+    expect(await sdkReferences(TYPES)).toEqual([]);
   });
 
   it("./oauth loads nothing from the SDK", async () => {
-    expect(await bundledSdkModules(OAUTH)).toEqual([]);
-    expect(await import("./oauth.ts")).toBeDefined();
+    expect(await sdkReferences(OAUTH)).toEqual([]);
   });
 });

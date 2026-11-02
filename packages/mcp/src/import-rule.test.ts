@@ -4,6 +4,7 @@
  * `@modelcontextprotocol/ext-apps`. Each case plants a file in a real package, so that package's own `.oxlintrc.json`
  * decides, and runs oxlint on it as the package's `lint` script does.
  */
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off nodeBuiltinImport:off preferEffectArray:off
 import { execFile } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -28,19 +29,22 @@ afterEach(async () => {
   planted.clear();
 });
 
-/** Plants each of `statements` in a file of its own, so one parse error cannot hide another case's report. */
+/**
+ * Plants each of `statements` in a file of its own, so one parse error cannot hide another case's report. The files
+ * are in `.gitignore` (`planted-*`), so a crashed run leaves nothing to commit.
+ */
 const reportedCases = async (packageDirectory: string, statements: ReadonlyArray<string>) => {
   const directory = root(`${packageDirectory}/src/planted-${crypto.randomUUID()}`);
 
   planted.add(directory);
   await mkdir(directory, { recursive: true });
-  await Promise.all(
-    statements.map((statement, index) =>
-      writeFile(`${directory}/case-${index}.ts`, `${statement}\n`),
-    ),
-  );
 
-  const { stdout } = await run(OXLINT, ["--format=unix", directory], {
+  // Named files, not the directory: oxlint skips `planted-*` directories (`.gitignore`) when it walks one.
+  const files = statements.map((_statement, index) => `${directory}/case-${index}.ts`);
+
+  await Promise.all(files.map((file, index) => writeFile(file, `${statements[index]}\n`)));
+
+  const { stdout } = await run(OXLINT, ["--format=unix", ...files], {
     cwd: root(packageDirectory),
   }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
 
@@ -114,6 +118,9 @@ describe("apps/web imports types only from @modelcontextprotocol/ext-apps", () =
       [`import { createMcpHandler } from "@modelcontextprotocol/server";`, true],
       [`import { ZodError } from "@modelcontextprotocol/core";`, true],
       [`import { tasks } from "@modelcontextprotocol/ext-tasks";`, true],
+      [`import { Client } from "@modelcontextprotocol/sdk/client/index.js";`, true],
+      [`import type { Client } from "@modelcontextprotocol/sdk";`, true],
+      [`import { createServer } from "@modelcontextprotocol/node";`, true],
     ]);
   });
 });
