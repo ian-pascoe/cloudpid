@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (deploys under deferred Durable Object code updates, and two facts from the deployed verification: amended by #423)
 ---
 
 # The Environment's MCP host object lives beside the Registry and runs the MCP SDK through a stateless engine in a Worker of its own
@@ -16,8 +16,10 @@ We chose this because the host must call the Registry and Sessions must call the
 
 ## Consequences
 
-- Sessions and the host object deploy together, so their RPC can change freely. Version skew matters only between the host and the engine, and between the main Worker and `McpServer`, which only ever gain methods and optional fields.
-- The engine keeps nothing between calls. Each call rebuilds the SDK client from the host's stored era and Legacy session rows. An engine deploy cuts the calls in flight (a cut that may have run; never retried for `tools/call`) but loses no state.
-- A server's questions and progress reach a Session through callbacks passed down the call, Session → host → engine. Nothing ever calls a Session (ADR-0030, ADR-0032). RPC cannot carry an `AbortSignal`, so each call also carries a callback that stays pending until the caller aborts it and rejects if the caller dies. Either way, the engine aborts the server request.
-- Results over 1 MiB pass engine → host → Session as byte streams, which RPC neither clones nor counts against its 32 MiB limit. The engine bounds memory per isolate.
+- Sessions and the host object do not deploy together. A busy Durable Object keeps its old code, and keeps taking requests on it, until it hibernates or `max_delay` passes (300 s by default), while objects started after the deploy run the new code. The host rarely hibernates while its Sessions run, so the two run different versions, either one ahead. The stack keeps the platform's default strategy: `immediate` would reset every busy object at each merge and still not close the skew, since code updates reach every location eventually.
+- So every MCP edge only ever gains, the ones inside `Server` included, as host ↔ engine and main Worker ↔ `McpServer` always did: new methods, operations, tags and optional fields. A change of meaning is a new method or operation, never an optional field an old callee would drop. An unknown operation fails loudly, and an unknown error tag or state reads as a generic failure. Removing anything waits until no code that uses it can still run. The host lists its features at each request start, and a Session uses a new one only once it is listed.
+- After `max_delay`, a busy host or Session is replaced. New requests reach a new instance, while the old one finishes the calls it has but can no longer write to storage. A replaced host still returns its results, keeps what it can and stops its background work; what it could not keep heals as after a restart. A replaced Session can keep neither a result nor a question: it refuses the question, and the new instance settles the call as one that may have run.
+- The engine keeps nothing between calls. Each call rebuilds the SDK client from the host's stored era and Legacy session rows. An engine deploy cuts nothing: calls in flight finish on the version they started on. A call cut for another reason is a cut that may have run (never retried for `tools/call`), and loses no state.
+- A server's questions and progress reach a Session through callbacks passed down the call, Session → host → engine. Nothing ever calls a Session (ADR-0030, ADR-0032). RPC cannot carry an `AbortSignal`, so each call also carries a callback that stays pending until the caller aborts it and rejects if the caller dies. Either way, the engine aborts the server request. For this it holds each call under `ctx.waitUntil`: otherwise a dead host's call is cancelled silently, its fetches with it, and a Legacy server is never told.
+- Results over 1 MiB pass engine → host → Session as byte streams, which RPC neither clones nor counts against its 32 MiB limit. The engine bounds memory per isolate by producing each stream only as it is read, so backpressure reaches the server.
 - The Registry still never calls out. The main Worker and the Sessions carry its changes to the host, and the host calls the Registry in the same script for the MCP server set, `${NAME}` values and access tokens.

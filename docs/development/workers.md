@@ -17,9 +17,21 @@ The browser and codemode sandbox Workers have `workersDev: false` and no routes:
 ## Bindings
 
 - **Call an RPC binding's methods directly** (`binding.acquire(options)`). Reading anything else off one, such as `binding.acquire.bind`, is itself an RPC call to the binding, which fails.
-- **Workers that deploy apart only ever gain.** Each pair of Workers deploys separately, so an RPC surface between them only gains operations or trailing optional arguments, never changes existing ones.
+- **Every RPC edge only ever gains**, Durable Object ↔ Durable Object and Worker → Durable Object inside one Worker included. Workers deploy separately, and inside one Worker a busy Durable Object keeps its old code for up to `max_delay` (see _Deploys and Durable Object code updates_), so either end of an edge may run older code than the other. An RPC surface only gains methods, operations, tags and trailing optional arguments or fields, never changes existing ones:
+  - A change of meaning is a new method or operation, never an optional field: an old callee's Effect Schema drops keys it does not know.
+  - An unknown method or operation fails loudly (`Unsupported`), never as a decode error.
+  - Unions the other end may extend (failure tags, states) have a fallback member that reads as a generic failure, in RPC and in storage alike.
+  - A removal merges at least 24 h after the change that stopped using it reached prod, or after the retention of any stored payload that can hold it.
+  - Where a caller would offer something on its callee's behalf, the callee lists its features and the caller uses a new one only once it is listed.
 - **`IMAGES`** (`Cloudflare.Images.Images`, declared in `apps/server/src/worker.ts`) has no backing resource and rides on the script upload. `alchemy dev` emulates it locally with sharp (size and format, not quality).
 - **Custom spans**: the Session DO imports `tracing` from `cloudflare:workers` when an object is built, not at module load, since the stack imports `Session.ts` under Node. It needs compatibility date 2026-07-28 or later (the stack uses 2026-08-31). The spend limit and usage are in `apps/server/src/session/spend.ts`.
+
+## Deploys and Durable Object code updates
+
+- **Durable Objects defer code updates.** The stack keeps the platform's default strategy, `deferred` with a `max_delay` of 300 s ([Durable Objects code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)); it is set per Worker, for every Durable Object class in it, and alchemy cannot declare another. An idle object starts on the new code at its next request. A busy one keeps its old code, and keeps taking new requests on it, until it hibernates or `max_delay` passes. `immediate` would not close the skew either: code updates reach every location eventually.
+- **A replaced instance finishes its calls without storage.** When `max_delay` passes, new requests reach a new instance. The old one keeps running the calls it has, its callbacks still answer and it still returns results, but every storage operation fails. Nothing tells it; a failed storage operation is how it learns.
+- **Stateless invocations keep their version until they end.** A plain Worker's call in flight, an entrypoint's included, finishes on the version it started on, however many deploys follow (15 min observed).
+- **Reverts.** A rollback is a revert merged to `main`, deployed by the normal pipeline. Reverting the latest change is safe, since removals take two steps; reverting past a removal is not. A revert never drops a migration that reached prod: `migrate` numbers migrations by their position, so a reused number never runs on objects that ran the reverted one. Keep the migration and add one that undoes it. An old reader that rewrites a row drops keys it does not know, so new fields stay optional.
 
 ## The Workspace DO
 
