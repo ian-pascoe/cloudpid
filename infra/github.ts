@@ -30,6 +30,12 @@ import * as Layer from "effect/Layer";
 /** Account-scoped "Access: Apps and Policies Write" (the catalog name is shared with a zone-scoped group). */
 const ACCESS_APPS_AND_POLICIES_WRITE = { id: "1e13c5124ca64b72b1969a67e8829049" };
 
+/**
+ * Account-scoped "Access: Service Tokens Write". "Apps and Policies Write" does not cover `POST /access/service_tokens`
+ * (`1010 auth.forbidden`, #419), which the stack makes for the Local agent's token (apps/server/src/mcp-access.ts).
+ */
+const ACCESS_SERVICE_TOKENS_WRITE = { id: "a1c0fec57cf94af79479a6d827fa518c" };
+
 /** The `ianpascoe.dev` zone, which serves the `prod` stage's custom domain, `appOrigin("prod")` (apps/server/src/deployment.ts). */
 const DEV_ZONE_ID = "c36c6e2b6bda856f9d4f6175059c6df4";
 
@@ -77,7 +83,8 @@ export default Alchemy.Stack(
 
     // Everything `alchemy deploy` of alchemy.run.ts touches. Alchemy's state store needs Secrets Store Write (it
     // binds its token secret to a short-lived preview Worker on every run). Access Apps and Policies covers the
-    // Worker's Access application; Zone Read, DNS Write and Workers Routes Write, on each of the two zones below, cover
+    // Worker's Access application and the MCP endpoint's; Access Service Tokens Write the Local agent's service token.
+    // Zone Read, DNS Write and Workers Routes Write, on each of the two zones below, cover
     // the custom domain of `prod` and the App sandbox's route and record.
     // Workers Containers Write covers the Workspace DO's Container application and the push of its image to
     // Cloudflare's registry.
@@ -89,6 +96,7 @@ export default Alchemy.Stack(
         "Secrets Store Write",
         "Account Settings Read",
         ACCESS_APPS_AND_POLICIES_WRITE,
+        ACCESS_SERVICE_TOKENS_WRITE,
       ],
       resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
     };
