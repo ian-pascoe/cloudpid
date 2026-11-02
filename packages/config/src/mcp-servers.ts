@@ -466,6 +466,10 @@ const SettingsServer = serverSchema("settings");
 
 const RepoServer = serverSchema("repo");
 
+/** Why a name clashes with `twin`, which differs from it only in case or in `-`/`_`. */
+export const mcpTwinClash = (twin: string): string =>
+  `clashes with "${twin}": names that differ only in case or in - and _ are one server`;
+
 /**
  * Why `name` is not a server's name here, or undefined: it is not one (`^[A-Za-z0-9_-]+$`, at most 64 characters), or it
  * differs only in case or in `-`/`_` from a name in `seen` (normalized name to the name as spelled).
@@ -477,9 +481,7 @@ const nameProblem = (name: string, seen: ReadonlyMap<string, string>): string | 
 
   const twin = seen.get(normalizeMcpName(name));
 
-  return twin === undefined
-    ? undefined
-    : `clashes with "${twin}": names that differ only in case or in - and _ are one server`;
+  return twin === undefined ? undefined : mcpTwinClash(twin);
 };
 
 /** `servers`' problems: a name that is not one, and the names that differ from an earlier one only in case or in `-`/`_`. */
@@ -628,15 +630,15 @@ export const mcpLayerProblemOf = ({ name, keys, text }: McpLayerProblem): Settin
   return { keys: path, line: `${Arr.join(path, ".")}: ${text}` };
 };
 
-/** An entry or an adjustment of a layer that stands, as the schema reads it. */
-export type McpLayerEntry = { readonly name: string; readonly value: McpServerValue };
+/** An entry or an adjustment, by its name, as the schema reads it: of an owner's layer or a Repo's file. */
+export type McpNamedEntry = { readonly name: string; readonly value: McpServerValue };
 
 /** What one owner's layer of MCP servers holds once every part that does not stand is left out. */
 export type McpLayerRead = {
   /** The full entries that stand, in order. */
-  readonly entries: ReadonlyArray<McpLayerEntry>;
+  readonly entries: ReadonlyArray<McpNamedEntry>;
   /** The adjustments that stand, with only the keys that do: each key stands alone. */
-  readonly adjustments: ReadonlyArray<McpLayerEntry>;
+  readonly adjustments: ReadonlyArray<McpNamedEntry>;
   /** What was left out, in order. */
   readonly problems: ReadonlyArray<McpLayerProblem>;
   /** The `mcp.servers` document of what stands, as written, in order. */
@@ -654,8 +656,8 @@ export const readMcpLayer = (
   servers: Schema.Json | undefined,
   scope: McpLayerScope,
 ): McpLayerRead => {
-  const entries: Array<McpLayerEntry> = [];
-  const adjustments: Array<McpLayerEntry> = [];
+  const entries: Array<McpNamedEntry> = [];
+  const adjustments: Array<McpNamedEntry> = [];
   const problems: Array<McpLayerProblem> = [];
   const standing: Array<readonly [string, Schema.Json]> = [];
   const seen = new Map<string, string>();
@@ -727,6 +729,18 @@ export const readMcpLayer = (
   return { entries, adjustments, problems, servers: Record.fromEntries(standing) };
 };
 
+/** `document` with `servers` as the `mcp.servers` of its `mcp` root, `mcp`. */
+const withServers = (
+  document: Schema.JsonObject,
+  mcp: Schema.JsonObject,
+  servers: Schema.JsonObject,
+): Schema.JsonObject =>
+  Record.map(document, (entry, key) =>
+    key === MCP_ROOT
+      ? Record.map(mcp, (held, name) => (name === "servers" ? servers : held))
+      : entry,
+  );
+
 /** A document with its MCP servers read as a layer, and the Settings' problems for what that left out. */
 export type McpLayerDocument = {
   readonly document: Schema.JsonObject;
@@ -750,13 +764,17 @@ export const withMcpLayerRead = (
   const read = readMcpLayer(mcp["servers"], scope);
 
   return {
-    document: Record.map(document, (entry, key) =>
-      key === MCP_ROOT
-        ? Record.map(mcp, (held, name) => (name === "servers" ? read.servers : held))
-        : entry,
-    ),
+    document: withServers(document, mcp, read.servers),
     problems: Arr.map(read.problems, mcpLayerProblemOf),
   };
+};
+
+/** A Global server that an Environment's own entry shadows by a twin name, and why it is left out. */
+export type McpShadowedTwin = {
+  readonly global: string;
+  readonly environment: string;
+  /** What the Settings and the set both say of Global's, which is left out. */
+  readonly text: string;
 };
 
 /**
@@ -767,7 +785,7 @@ export const withMcpLayerRead = (
 export const mcpShadowedTwins = (
   globalNames: ReadonlyArray<string>,
   environmentNames: ReadonlyArray<string>,
-): ReadonlyArray<{ readonly global: string; readonly environment: string }> =>
+): ReadonlyArray<McpShadowedTwin> =>
   Arr.filterMap(globalNames, (global) => {
     const twin = Arr.findFirst(
       environmentNames,
@@ -775,9 +793,143 @@ export const mcpShadowedTwins = (
     );
 
     return Option.isSome(twin)
-      ? Result.succeed({ global, environment: twin.value })
+      ? Result.succeed({
+          global,
+          environment: twin.value,
+          text: `is left out: this Environment's own "${twin.value}" is a name that differs only in case or in - and _, and it has the last word`,
+        })
       : Result.failVoid;
   });
+
+type Writable<T> = { -readonly [K in keyof T]: T[K] };
+
+/** One key of an adjustment, as it changes the entry it adjusts. */
+export type McpAdjustmentStep = {
+  readonly key: string;
+  readonly set: (entry: Writable<McpServerValue>) => void;
+};
+
+/** What an adjustment's key refused for: it would make the entry over its bound once applied. */
+export const MCP_ADJUSTMENT_OVER = `makes the entry over ${MCP_LIMITS.entryBytes / 1024} KiB once applied over the server it adjusts`;
+
+/**
+ * The steps of an owner's adjustment `adjustment`: each key it holds replaces the entry's own, `{ ...base, ...value }`.
+ */
+export const mcpAdjustmentSteps = (
+  adjustment: McpServerValue,
+): ReadonlyArray<McpAdjustmentStep> => {
+  const steps: Array<McpAdjustmentStep> = [];
+
+  if (adjustment.enabled !== undefined) {
+    const enabled = adjustment.enabled;
+
+    steps.push({ key: "enabled", set: (entry) => void (entry.enabled = enabled) });
+  }
+
+  if (adjustment.exposure !== undefined) {
+    const exposure = adjustment.exposure;
+
+    steps.push({ key: "exposure", set: (entry) => void (entry.exposure = exposure) });
+  }
+
+  if (adjustment.toolExposure !== undefined) {
+    const toolExposure = adjustment.toolExposure;
+
+    steps.push({ key: "toolExposure", set: (entry) => void (entry.toolExposure = toolExposure) });
+  }
+
+  return steps;
+};
+
+/** An entry with an adjustment applied, and the keys of it that were refused. */
+export type McpAdjusted = {
+  readonly value: McpServerValue;
+  readonly refused: ReadonlyArray<string>;
+};
+
+/**
+ * `base`, an entry that stands, with `steps` applied in order, each only while the entry stays within its bound
+ * (16 KiB): a key that would push it over is `refused` and left out, so the keys that fit still apply. The Settings and
+ * the set both apply adjustments through this, so they agree on what a Global entry that grew, or an adjustment that
+ * is large, leaves in force.
+ */
+export const applyMcpAdjustmentSteps = (
+  base: McpServerValue,
+  steps: ReadonlyArray<McpAdjustmentStep>,
+): McpAdjusted => {
+  let value = base;
+  const refused: Array<string> = [];
+
+  for (const step of steps) {
+    const next: Writable<McpServerValue> = { ...value };
+
+    step.set(next);
+
+    if (utf8Bytes(JSON.stringify(next)) > MCP_LIMITS.entryBytes) {
+      refused.push(step.key);
+    } else {
+      value = next;
+    }
+  }
+
+  return { value, refused };
+};
+
+/**
+ * `document` with each adjustment of its `mcp.servers` (an Environment's Overrides) that has a base in `inherited`
+ * (Global's, as the settings hold them) held to the entry bound once applied over it (`applyMcpAdjustmentSteps`): a key
+ * that makes the entry too big is left out, as the Override field of its own that it is, and the Settings' problem says
+ * so. An adjustment of a server `inherited` lacks (a Repo's) is as it was: the Settings do not see the Repo's.
+ */
+export const withMcpAdjustmentsFitted = (
+  inherited: Schema.JsonObject,
+  document: Schema.JsonObject,
+): McpLayerDocument => {
+  const mcp = document[MCP_ROOT];
+  const servers = mcpServersOf(document);
+  const bases = mcpServersOf(inherited);
+
+  if (mcp === undefined || !isJsonObject(mcp) || !isJsonObject(servers) || !isJsonObject(bases)) {
+    return { document, problems: [] };
+  }
+
+  const problems: Array<SettingsProblem> = [];
+  const kept: Array<readonly [string, Schema.Json]> = [];
+
+  for (const [name, written] of Record.toEntries(servers)) {
+    const base = bases[name];
+    const given = isJsonObject(written) && !isMcpFullEntry(written);
+    const decodedBase = base === undefined ? undefined : decodeMcpServerValue(base);
+    const decoded = given ? decodeMcpServerValue(written) : undefined;
+
+    if (
+      !given ||
+      decodedBase === undefined ||
+      Result.isFailure(decodedBase) ||
+      decoded === undefined ||
+      Result.isFailure(decoded)
+    ) {
+      kept.push([name, written]);
+
+      continue;
+    }
+
+    const { refused } = applyMcpAdjustmentSteps(
+      decodedBase.success,
+      mcpAdjustmentSteps(decoded.success),
+    );
+
+    for (const key of refused) {
+      problems.push(mcpLayerProblemOf({ name, keys: [key], text: MCP_ADJUSTMENT_OVER }));
+    }
+
+    const left = Arr.filter(Record.toEntries(written), ([key]) => !Arr.contains(refused, key));
+
+    if (left.length > 0) kept.push([name, Record.fromEntries(left)]);
+  }
+
+  return { document: withServers(document, mcp, Record.fromEntries(kept)), problems };
+};
 
 /** An entry in force: what an MCP server is, with every default applied. */
 type McpCommon = {
@@ -882,6 +1034,9 @@ export type McpEntryHint = {
   readonly message: string;
 };
 
+/** A hint on the entry of that name. */
+export type McpNamedHint = McpEntryHint & { readonly name: string };
+
 /**
  * The hints for entry `value` as written. The redirect URI itself depends on the stage's app origin, which is not known
  * here: the Settings page's Sign-in disclosure shows it beside the fields (`docs/architecture/mcp-sign-in.md`), and says so
@@ -904,17 +1059,14 @@ export const mcpEntryHints = (value: McpServerValue): ReadonlyArray<McpEntryHint
 /** Why a Repo's file, or an entry of it, is skipped or read otherwise: the entry's name, or none for the file. */
 export type McpFileProblem = { readonly name: string | null; readonly message: string };
 
-/** An entry of a Repo's file that stands, as written (its `cwd` made absolute). */
-export type McpRepoEntry = { readonly name: string; readonly value: McpServerValue };
-
 /**
  * What a Repo's `.pi/mcp.json` gives: the entries that stand, a problem for each that does not or reads otherwise, and
  * the hints on those that stand.
  */
 export type McpRepoFile = {
-  readonly entries: ReadonlyArray<McpRepoEntry>;
+  readonly entries: ReadonlyArray<McpNamedEntry>;
   readonly problems: ReadonlyArray<McpFileProblem>;
-  readonly hints: ReadonlyArray<McpEntryHint & { readonly name: string }>;
+  readonly hints: ReadonlyArray<McpNamedHint>;
 };
 
 const parseJson = (text: string): Option.Option<Schema.Json> =>
@@ -995,9 +1147,9 @@ export const readMcpRepoFile = (text: string, directory: string): McpRepoFile =>
   }
 
   const base = `/workspace/${directory}`;
-  const entries: Array<McpRepoEntry> = [];
+  const entries: Array<McpNamedEntry> = [];
   const problems: Array<McpFileProblem> = [];
-  const hints: Array<McpRepoFile["hints"][number]> = [];
+  const hints: Array<McpNamedHint> = [];
   const seen = new Map<string, string>();
 
   for (const [name, written] of given) {

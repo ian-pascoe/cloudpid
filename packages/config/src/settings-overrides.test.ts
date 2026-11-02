@@ -706,7 +706,7 @@ describe("an Environment's MCP servers", () => {
       expect(read.settings.mcp.servers).toEqual({ linear: LOCAL });
       expect(read.overrides).toEqual({ mcp: { servers: { linear: LOCAL } } });
       expect(read.dropped).toEqual([
-        expect.stringMatching(/^mcp\.servers\.Linear: Global's server is left out: .*"linear"/),
+        expect.stringMatching(/^mcp\.servers\.Linear: is left out: .*"linear"/),
       ]);
       // The set the McpHost is handed says the same.
       expect(

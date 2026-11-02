@@ -5,7 +5,7 @@ import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type McpRepoLayer, resolveMcpServerSet } from "./mcp-server-set.ts";
-import { normalizeMcpServer } from "./mcp-servers.ts";
+import { type McpServerValue, normalizeMcpServer } from "./mcp-servers.ts";
 import { resolveOverridesLeniently } from "./settings-overrides.ts";
 import { resolveLeniently } from "./settings.ts";
 
@@ -139,7 +139,7 @@ describe("the MCP server set", () => {
         {
           source: { kind: "global" },
           name: "my-linear",
-          message: expect.stringContaining('clashes with this Environment\'s "My_Linear"'),
+          message: expect.stringContaining('this Environment\'s own "My_Linear"'),
         },
       ]);
     });
@@ -286,7 +286,7 @@ describe("the MCP server set", () => {
 
       expect(server(set, "linear").server.enabled).toBe(true);
       expect(set.orphans).toHaveLength(1);
-      expect(set.problems[0]?.message).toContain('"linear" differs from it in case');
+      expect(set.problems[0]?.message).toContain('clashes with "linear"');
     });
 
     it("is read with the Settings' rules: a stale one that does not decode is skipped", () => {
@@ -556,6 +556,23 @@ describe("the set and the Settings read the same servers", () => {
     (left) => left,
   );
 
+  /** The full entries of `servers`, in force, by name. */
+  const inForce = (servers: Readonly<Record<string, McpServerValue>>) =>
+    Record.fromEntries(
+      Arr.filterMap(Record.toEntries(servers), ([name, value]) => {
+        const server = normalizeMcpServer(value);
+
+        return server === undefined ? Result.failVoid : Result.succeed([name, server] as const);
+      }),
+    );
+
+  /** An entry of about 12 KB, and 150 patterns that together grow it past 16 KiB. */
+  const BIG = { command: "x", args: Arr.makeBy(120, (i) => `${"a".repeat(96)}${i}`) };
+
+  const PATTERNS = Record.fromEntries(
+    Arr.makeBy(150, (i): [string, "hidden"] => [`${"p".repeat(20)}_${i}_*`, "hidden"]),
+  );
+
   /** Stale documents, as `[Global's, the Environment's]`: each is something the strict reads would refuse. */
   const stale: ReadonlyArray<readonly [string, Schema.Json, Schema.Json]> = [
     [
@@ -598,6 +615,28 @@ describe("the set and the Settings read the same servers", () => {
       owner({ nobody: { enabled: false } }),
     ],
     [
+      "an adjustment that over-fills a Global entry: its other keys stand",
+      owner({ a: BIG }),
+      owner({ a: { enabled: false, toolExposure: PATTERNS } }),
+    ],
+    [
+      "an adjustment of keys that fit",
+      owner({ a: BIG }),
+      owner({ a: { enabled: false, exposure: "hidden", toolExposure: { x: "hidden" } } }),
+    ],
+    [
+      "a Global entry that grew after the adjustment was saved",
+      owner({
+        a: { ...BIG, args: [...BIG.args, ...Arr.makeBy(30, (i) => `${"b".repeat(96)}${i}`)] },
+      }),
+      owner({ a: { enabled: false, toolExposure: PATTERNS } }),
+    ],
+    [
+      "a twin-named adjustment of a Global server",
+      owner({ linear: LINEAR }),
+      owner({ Linear: { enabled: false } }),
+    ],
+    [
       "entries that are not objects",
       owner({ a: "text", b: 3, c: null, d: LOCAL }),
       owner({ e: [] }),
@@ -610,13 +649,7 @@ describe("the set and the Settings read the same servers", () => {
       const set = resolveMcpServerSet(global, environment, []);
 
       // The servers the Settings keep, in force, are the set's, with the same state.
-      const kept = Record.fromEntries(
-        Arr.filterMap(Record.toEntries(settings), ([name, value]) => {
-          const server = normalizeMcpServer(value);
-
-          return server === undefined ? Result.failVoid : Result.succeed([name, server] as const);
-        }),
-      );
+      const kept = inForce(settings);
 
       expect(
         Record.fromEntries(Arr.map(set.servers, ({ name, server }) => [name, server] as const)),
@@ -624,12 +657,14 @@ describe("the set and the Settings read the same servers", () => {
     });
   }
 
-  it("holds for Global's own document too", () => {
+  it("holds for Global's own document too, in name and in state", () => {
     for (const [, global] of stale) {
-      const kept = resolveLeniently(global).settings.mcp.servers;
+      const kept = inForce(resolveLeniently(global).settings.mcp.servers);
       const set = resolveMcpServerSet(global, {}, []);
 
-      expect(Arr.map(set.servers, ({ name }) => name)).toEqual(Record.keys(kept));
+      expect(
+        Record.fromEntries(Arr.map(set.servers, ({ name, server }) => [name, server] as const)),
+      ).toEqual(kept);
     }
   });
 
@@ -656,5 +691,36 @@ describe("the set and the Settings read the same servers", () => {
 
     expect(counted.servers).toHaveLength(50);
     expect(Arr.map(twins.servers, ({ name }) => name)).toEqual(["foo"]);
+  });
+});
+
+describe("an adjustment over an entry that would grow past 16 KiB", () => {
+  const BIG = { command: "x", args: Arr.makeBy(120, (i) => `${"a".repeat(96)}${i}`) };
+
+  const PATTERNS = Record.fromEntries(
+    Arr.makeBy(150, (i): [string, "hidden"] => [`${"p".repeat(20)}_${i}_*`, "hidden"]),
+  );
+
+  const adjusted = { a: { enabled: false, toolExposure: PATTERNS } };
+
+  it("keeps the keys that fit and refuses the one that does not, as an Override field of its own", () => {
+    const set = resolveMcpServerSet(owner({ a: BIG }), owner(adjusted), []);
+
+    expect(set.servers[0]?.server).toMatchObject({ enabled: false, toolExposure: {} });
+    expect(set.problems).toEqual([
+      {
+        source: { kind: "environment" },
+        name: "a",
+        message: expect.stringMatching(/^toolExposure: makes the entry over 16 KiB/),
+        reset: ["mcp.servers.a.toolExposure"],
+      },
+    ]);
+
+    const read = resolveOverridesLeniently(owner({ a: BIG }), owner(adjusted));
+
+    expect(read.overrides).toEqual({ mcp: { servers: { a: { enabled: false } } } });
+    expect(read.dropped).toEqual([
+      expect.stringMatching(/^mcp\.servers\.a\.toolExposure: makes the entry over 16 KiB/),
+    ]);
   });
 });

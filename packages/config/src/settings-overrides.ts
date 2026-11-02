@@ -20,6 +20,7 @@ import {
   mcpFieldPath,
   mcpServersOf,
   mcpShadowedTwins,
+  withMcpAdjustmentsFitted,
   withMcpLayerRead,
 } from "./mcp-servers.ts";
 import { type Patch, patchOf, sameJson } from "./patch.ts";
@@ -467,11 +468,7 @@ const withoutShadowedTwins = (
     overrides: Arr.reduce(shadowed, inherited, (left, { global: name }) =>
       removeAt(left, [MCP_ROOT, "servers", name]),
     ),
-    dropped: Arr.map(
-      shadowed,
-      ({ global: name, environment }) =>
-        `${MCP_ROOT}.servers.${name}: Global's server is left out: this Environment's own "${environment}" is a name that differs only in case or in - and _, and it has the last word`,
-    ),
+    dropped: Arr.map(shadowed, ({ global: name, text }) => `${MCP_ROOT}.servers.${name}: ${text}`),
   };
 };
 
@@ -501,6 +498,13 @@ export const resolveOverridesLeniently = (
   rest = read.document;
 
   for (const problem of read.problems) dropped.push(problem.line);
+
+  // An adjustment is held to the entry bound over the Global server it adjusts, key by key, as the set holds it.
+  const fitted = withMcpAdjustmentsFitted(inherited.overrides, rest);
+
+  rest = fitted.document;
+
+  for (const problem of fitted.problems) dropped.push(problem.line);
 
   // Dropping a field settles its problem; a few rounds cover Overrides with several.
   for (let round = 0; round < MAX_LENIENT_ROUNDS; round += 1) {

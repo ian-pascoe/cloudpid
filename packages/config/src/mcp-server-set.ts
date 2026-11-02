@@ -17,10 +17,16 @@ import type * as Schema from "effect/Schema";
 import {
   isMcpFullEntry,
   MCP_ADJUSTMENT_KEYS,
-  type McpEntryHint,
   type McpServerEntry,
   type McpServerValue,
+  type McpAdjustmentStep,
+  type McpLayerRead,
+  type McpNamedHint,
+  MCP_ADJUSTMENT_OVER,
+  applyMcpAdjustmentSteps,
+  mcpAdjustmentSteps,
   mcpEntryHints,
+  mcpTwinClash,
   mcpShadowedTwins,
   readMcpLayer,
   mcpServersOf,
@@ -96,10 +102,7 @@ export type McpOrphan = {
 };
 
 /** A note on a server that stands as it is (`McpEntryHint`), and where its entry is. */
-export type McpHint = McpEntryHint & {
-  readonly source: McpSource;
-  readonly name: string;
-};
+export type McpHint = McpNamedHint & { readonly source: McpSource };
 
 export type McpServerSet = {
   readonly servers: ReadonlyArray<McpResolvedServer>;
@@ -120,11 +123,6 @@ type Working = {
   readonly shadowed: ReadonlyArray<McpShadowed>;
 };
 
-type Layer = {
-  readonly entries: ReadonlyArray<{ readonly name: string; readonly value: McpServerValue }>;
-  readonly adjustments: ReadonlyArray<{ readonly name: string; readonly value: McpServerValue }>;
-};
-
 const GLOBAL: McpSource = { kind: "global" };
 const ENVIRONMENT: McpSource = { kind: "environment" };
 
@@ -136,7 +134,7 @@ const readOwnerLayer = (
   document: Schema.Json,
   source: McpSource,
   problems: Array<McpProblem>,
-): Layer => {
+): McpLayerRead => {
   const read = readMcpLayer(
     mcpServersOf(document),
     source.kind === "global" ? "global" : "environment",
@@ -150,49 +148,47 @@ const readOwnerLayer = (
     });
   }
 
-  return { entries: read.entries, adjustments: read.adjustments };
+  return read;
 };
 
 /** The keys of an adjustment, or of a Repo's. */
 const adjustmentKeys = (value: McpServerValue): ReadonlyArray<string> =>
   Arr.filter(MCP_ADJUSTMENT_KEYS, (key) => value[key] !== undefined);
 
-type Writable<T> = { -readonly [K in keyof T]: T[K] };
-
-/** The entry `value` with the keys of `adjustment` over it: `{ ...base, ...value }`. */
-const withAdjustment = (value: McpServerValue, adjustment: McpServerValue): McpServerValue => {
-  const adjusted: Writable<McpServerValue> = { ...value };
-
-  if (adjustment.enabled !== undefined) adjusted.enabled = adjustment.enabled;
-
-  if (adjustment.exposure !== undefined) adjusted.exposure = adjustment.exposure;
-
-  if (adjustment.toolExposure !== undefined) adjusted.toolExposure = adjustment.toolExposure;
-
-  return adjusted;
-};
-
 /**
- * The entry `value` as a Repo's adjustment (which only switches off, `readMcpRepoFile`) leaves it: switched off, hidden,
- * and with the `hidden` tools of the adjustment ahead of its own, where the first pattern wins, so it can hide more and
- * never less.
+ * The steps of a Repo's adjustment `adjustment` over the entry `value` (which only switches off, `readMcpRepoFile`):
+ * switched off, hidden, and the `hidden` tools of the adjustment ahead of the entry's own, where the first pattern
+ * wins, so it can hide more and never less.
  */
-const withSwitchOff = (value: McpServerValue, adjustment: McpServerValue): McpServerValue => {
-  const adjusted: Writable<McpServerValue> = { ...value };
+const switchOffSteps = (
+  value: McpServerValue,
+  adjustment: McpServerValue,
+): ReadonlyArray<McpAdjustmentStep> => {
+  const steps: Array<McpAdjustmentStep> = [];
   const hidden = adjustment.toolExposure;
 
-  if (adjustment.enabled !== undefined) adjusted.enabled = false;
-
-  if (adjustment.exposure !== undefined) adjusted.exposure = "hidden";
-
-  if (hidden !== undefined) {
-    adjusted.toolExposure = {
-      ...hidden,
-      ...Record.filter(value.toolExposure ?? {}, (_, key) => !Predicate.hasProperty(hidden, key)),
-    };
+  if (adjustment.enabled !== undefined) {
+    steps.push({ key: "enabled", set: (entry) => void (entry.enabled = false) });
   }
 
-  return adjusted;
+  if (adjustment.exposure !== undefined) {
+    steps.push({ key: "exposure", set: (entry) => void (entry.exposure = "hidden") });
+  }
+
+  if (hidden !== undefined) {
+    const own = value.toolExposure ?? {};
+
+    steps.push({
+      key: "toolExposure",
+      set: (entry) =>
+        void (entry.toolExposure = {
+          ...hidden,
+          ...Record.filter(own, (_, key) => !Predicate.hasProperty(hidden, key)),
+        }),
+    });
+  }
+
+  return steps;
 };
 
 const normalized = (value: McpServerValue): Option.Option<McpServerEntry> =>
@@ -225,12 +221,8 @@ export const resolveMcpServerSet = (
     Arr.map(environmentLayer.entries, ({ name }) => name),
   );
 
-  for (const { global: name, environment } of shadowedTwins) {
-    problems.push({
-      source: GLOBAL,
-      name,
-      message: `is skipped here: it clashes with this Environment's "${environment}", a name that differs only in case or in - and _`,
-    });
+  for (const { global: name, text } of shadowedTwins) {
+    problems.push({ source: GLOBAL, name, message: text });
   }
 
   const working: Array<Working> = Arr.filterMap(globalLayer.entries, ({ name, value }) =>
@@ -325,7 +317,13 @@ export const resolveMcpServerSet = (
         message: "adjusts a server that is not in this Environment's set",
       });
     } else {
-      working[index] = { ...held, value: withSwitchOff(held.value, value) };
+      const applied = applyMcpAdjustmentSteps(held.value, switchOffSteps(held.value, value));
+
+      for (const key of applied.refused) {
+        problems.push({ source, name, message: `${key}: ${MCP_ADJUSTMENT_OVER}` });
+      }
+
+      working[index] = { ...held, value: applied.value };
     }
   }
 
@@ -344,11 +342,22 @@ export const resolveMcpServerSet = (
         message:
           twin === undefined
             ? "adjusts a server that no layer defines any more: reset it"
-            : `adjusts a server that no layer defines any more: reset it ("${twin.name}" differs from it in case or in - and _, and a name must match exactly)`,
+            : mcpTwinClash(twin.name),
         reset: Arr.map(keys, (key) => `mcp.servers.${name}.${key}`),
       });
     } else {
-      working[index] = { ...held, value: withAdjustment(held.value, value) };
+      const applied = applyMcpAdjustmentSteps(held.value, mcpAdjustmentSteps(value));
+
+      for (const key of applied.refused) {
+        problems.push({
+          source: ENVIRONMENT,
+          name,
+          message: `${key}: ${MCP_ADJUSTMENT_OVER}`,
+          reset: [`mcp.servers.${name}.${key}`],
+        });
+      }
+
+      working[index] = { ...held, value: applied.value };
     }
   }
 
