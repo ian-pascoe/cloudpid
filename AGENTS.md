@@ -3,7 +3,7 @@
 ## Design
 
 - **Architecture**: before designing or changing architecture, packages, Durable Objects, tools, or the client protocol, read `docs/architecture/overview.md` and the area's document it lists. Code cites its section in a header comment (`docs/architecture/container.md` → Snapshots); when a change alters what that section says, update the section in the same change. Terms follow `GLOSSARY.md`; hard-to-reverse choices are ADRs in `docs/adr/`.
-- **Tool names**: every model-facing tool name is snake_case (`browser_handoff`, `subagent_wait`); wrap and rename library tools that are not.
+- **Tool names**: every model-facing tool name is snake_case (`browser_handoff`, `subagent_wait`); wrap and rename library tools that are not. MCP tools keep `mcp__<server>__<tool>` (ADR-0030).
 - **Prompt cache**: a system prompt section is read once per Context Window and then shown as it was; anything added later goes at the end of the context, since a changed section breaks the provider's prompt cache.
 
 ## Workspace

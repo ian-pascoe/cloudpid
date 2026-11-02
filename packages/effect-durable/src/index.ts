@@ -11,4 +11,9 @@ export { effectSection, frozenSection } from "./section.ts";
 
 export { effectTask, type EffectTaskDefinition, type TaskFailure } from "./task.ts";
 
-export { defineEffectTool, type EffectToolDefinition, type ToolFailure } from "./tool.ts";
+export {
+  defineEffectTool,
+  type EffectToolDefinition,
+  isToolName,
+  type ToolFailure,
+} from "./tool.ts";

@@ -39,8 +39,21 @@ export type EffectToolDefinition<
   ) => Effect.Effect<ToolExecutionResult<TDetails>, E, R>;
 };
 
-/** Every model-facing tool name is snake_case (`docs/architecture/agent-capabilities.md` → Tool naming). */
 const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
+/**
+ * The one exception to the snake_case rule: an MCP tool, `mcp__<server>__<tool>` (ADR-0030). Its server part is the
+ * server's name lower-cased with `-` as `_`, so it may hold `__` or begin with `_`; its tool part is snake_case.
+ * `@cloudpid/config`'s `mcpToolName` builds these, and its tests check that its names pass.
+ */
+const MCP_TOOL_NAME = /^mcp__[a-z0-9_]+__[a-z0-9]+(?:_[a-z0-9]+)*$/;
+
+/**
+ * Whether `name` may be a model-facing tool name: snake_case, or an MCP tool's `mcp__<server>__<tool>`
+ * (`docs/architecture/agent-capabilities.md` → Tool naming; `docs/architecture/mcp-in-a-session.md` → Tool names).
+ */
+export const isToolName = (name: string): boolean =>
+  SNAKE_CASE.test(name) || MCP_TOOL_NAME.test(name);
 
 /** Arguments the parameters do not model are rejected, by the JSON Schema and by the decoder alike. */
 const STRICT = { onExcessProperty: "error" } as const;
@@ -106,7 +119,7 @@ export const defineEffectTool = <
   R | Schema.Struct<Fields>["DecodingServices"]
 > =>
   Effect.gen(function* () {
-    if (!SNAKE_CASE.test(tool.name)) {
+    if (!isToolName(tool.name)) {
       return yield* Effect.die(new Error(`Tool name ${tool.name} is not snake_case`));
     }
 
