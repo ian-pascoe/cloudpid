@@ -31,7 +31,13 @@ import * as Layer from "effect/Layer";
 const ACCESS_APPS_AND_POLICIES_WRITE = { id: "1e13c5124ca64b72b1969a67e8829049" };
 
 /** The `ianpascoe.dev` zone, which serves the `prod` stage's custom domain, `appOrigin("prod")` (apps/server/src/deployment.ts). */
-const ZONE_ID = "c36c6e2b6bda856f9d4f6175059c6df4";
+const DEV_ZONE_ID = "c36c6e2b6bda856f9d4f6175059c6df4";
+
+/**
+ * The `ianpascoe.app` zone, which hosts nothing but the App sandbox's route and wildcard record, deployed by `prod` only
+ * (docs/architecture/mcp-apps.md → The App sandbox). Its injection and challenge settings are the owner's, set by hand.
+ */
+const APP_ZONE_ID = "e4bbd85e38d5fc25694c911588c2ccc4";
 
 export default Alchemy.Stack(
   "cloudpid-github",
@@ -71,7 +77,8 @@ export default Alchemy.Stack(
 
     // Everything `alchemy deploy` of alchemy.run.ts touches. Alchemy's state store needs Secrets Store Write (it
     // binds its token secret to a short-lived preview Worker on every run). Access Apps and Policies covers the
-    // Worker's Access application; Zone Read, DNS Write and Workers Routes Write cover the custom domain of `prod`.
+    // Worker's Access application; Zone Read, DNS Write and Workers Routes Write, on each of the two zones below, cover
+    // the custom domain of `prod` and the App sandbox's route and record.
     // Workers Containers Write covers the Workspace DO's Container application and the push of its image to
     // Cloudflare's registry.
     const accountPolicy: Cloudflare.ApiToken.Policy = {
@@ -96,7 +103,8 @@ export default Alchemy.Stack(
           permissionGroups: ["Zone Read", "DNS Write", "Workers Routes Write"],
           resources: {
             [`com.cloudflare.api.account.${accountId}`]: {
-              [`com.cloudflare.api.account.zone.${ZONE_ID}`]: "*",
+              [`com.cloudflare.api.account.zone.${DEV_ZONE_ID}`]: "*",
+              [`com.cloudflare.api.account.zone.${APP_ZONE_ID}`]: "*",
             },
           },
         },
@@ -125,7 +133,8 @@ export default Alchemy.Stack(
     });
 
     // Previews are served on `workers.dev` only, as `cloudpid-server-<label>` (their `appOrigin`, apps/server/src/deployment.ts),
-    // so their token has no zone permissions.
+    // so their token has no zone permissions: not on `ianpascoe.dev`, and not on `ianpascoe.app`, whose sandbox only `prod`
+    // deploys (a route belongs to one Worker; ADR-0031).
     const previewToken = yield* Cloudflare.ApiToken.AccountApiToken("PreviewDeployToken", {
       name: "cloudpid-ci-preview",
       accountId,
@@ -191,6 +200,6 @@ export default Alchemy.Stack(
       value: previewAnalyticsToken.value,
     });
 
-    return { environments: ["production", "preview"], zoneId: ZONE_ID };
+    return { environments: ["production", "preview"], zoneId: DEV_ZONE_ID, appZoneId: APP_ZONE_ID };
   }),
 );
