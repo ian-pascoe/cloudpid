@@ -24,7 +24,7 @@ import {
   loadTeamKeysFromAccess,
   teamKeys,
 } from "./access.ts";
-import { type AssetLayer, serveAsset } from "./assets.ts";
+import { type AssetLayer, serveAsset, WEB_NOT_FOUND_HANDLING } from "./assets.ts";
 import { buildUpkeep } from "./registry/builds.ts";
 import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
 import { skillDirectoryOver } from "./registry/skill-directory.ts";
@@ -82,7 +82,7 @@ const webAssets = Effect.gen(function* () {
   return {
     directory: build.outdir,
     hash: build.hash.output,
-    notFoundHandling: "single-page-application" as const,
+    notFoundHandling: WEB_NOT_FOUND_HANDLING,
     // The Worker's Access guard must see every request, the web app's files included (D9).
     runWorkerFirst: true,
   };
@@ -152,7 +152,7 @@ const props = Effect.gen(function* () {
 
   // The Worker's own Access application, declared here as the `Server/Access` the Worker's `access: { policies }` form
   // made (same logical id, so a deploy updates it in place), so that its `aud` can be a var of the Worker.
-  const guard = yield* accessProps({
+  const accessGuardProps = yield* accessProps({
     declare: Cloudflare.Access.Application("Access", {
       type: "self_hosted",
       policies: access.policies,
@@ -168,11 +168,11 @@ const props = Effect.gen(function* () {
     main: import.meta.url,
     compatibility: { date: "2026-08-31" },
     ...workerProps,
-    ...guard.props,
+    ...accessGuardProps.props,
     observability: WORKER_OBSERVABILITY,
     assets: yield* webAssets,
     env: {
-      ...guard.vars,
+      ...accessGuardProps.vars,
       ...stageLabelVar,
       ...(yield* workspaceBinding),
       ...(yield* sandboxBinding),

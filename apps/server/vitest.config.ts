@@ -4,6 +4,9 @@ import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest
 
 const workerd = "src/**/*.workerd.test.ts";
 
+/** The asset tests need the `ASSETS` binding, which only their own test Worker has. */
+const webAssets = "src/assets.workerd.test.ts";
+
 /**
  * A file's first Durable Object call starts its objects cold, and a `beforeAll` that makes it (`files.workerd.test.ts`'s
  * writes) took over Vitest's 10 s default on CI's runners, though not stuck: hooks get the tests' timeout.
@@ -56,8 +59,26 @@ export default defineConfig({
           testTimeout,
           hookTimeout,
           include: [workerd],
-          exclude: [...configDefaults.exclude, "src/workspace/**"],
+          exclude: [...configDefaults.exclude, "src/workspace/**", webAssets],
         },
+      }),
+      defineProject({
+        plugins: [
+          cloudflareTest({
+            main: "./src/workerd.fixture.ts",
+            miniflare: {
+              compatibilityDate: "2026-08-31",
+              compatibilityFlags: ["nodejs_compat"],
+              // The real asset layer, as the deploy configures the web app's (`WEB_NOT_FOUND_HANDLING`).
+              assets: {
+                directory: "./src/assets.fixture",
+                binding: "ASSETS",
+                assetConfig: { not_found_handling: "none" },
+              },
+            },
+          }),
+        ],
+        test: { name: "workerd-assets", testTimeout, include: [webAssets] },
       }),
       defineProject({
         plugins: [

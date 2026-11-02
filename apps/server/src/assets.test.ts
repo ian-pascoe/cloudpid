@@ -16,8 +16,8 @@ const serve = (request: Request, layer: (request: Request) => Promise<Response>)
     ),
   );
 
-const at = (path: string, method = "GET") =>
-  new Request(`https://cloudpid.test${path}`, { method });
+const at = (path: string, method = "GET", headers: Record<string, string> = {}) =>
+  new Request(`https://cloudpid.test${path}`, { method, headers });
 
 describe("the web app's files, served after the guard", () => {
   it("gives what the asset layer answers", async () => {
@@ -45,6 +45,24 @@ describe("the web app's files, served after the guard", () => {
     );
 
     expect(await response.text()).toBe("gone");
+  });
+
+  it("gives a page load of a path that is no file the app, asked of the layer as /", async () => {
+    const layer = vi.fn((request: Request) =>
+      Promise.resolve(
+        new URL(request.url).pathname === "/"
+          ? new Response("<app>", { status: 200 })
+          : new Response("nope", { status: 404 }),
+      ),
+    );
+
+    const response = await serve(
+      at("/sessions/abc", "GET", { "sec-fetch-mode": "navigate" }),
+      layer,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("<app>");
   });
 
   it("does not ask the layer about a method it does not serve", async () => {
