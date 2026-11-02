@@ -29,7 +29,9 @@ import { skillDirectoryOver } from "./registry/skill-directory.ts";
 import { githubSkillReader } from "./registry/skill-reader.ts";
 import { skillReposOver } from "./registry/skill-repo.ts";
 import { searchSkillsSh } from "./registry/skill-search.ts";
-import { Registry, RegistryLive } from "./registry/Registry.ts";
+import { McpHost, McpHostLive } from "./mcp/McpHost.ts";
+import { mcpPushes } from "./mcp/push.ts";
+import { REGISTRY_NAME, Registry, RegistryLive } from "./registry/Registry.ts";
 import {
   legacyCleanup,
   serveRegistryRpc,
@@ -226,6 +228,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
   Effect.gen(function* () {
     const sessions = yield* Session;
     const registries = yield* Registry;
+    const mcpHosts = yield* McpHost;
     // The raw environment: the Workspace DO's own stub, as the Session DOs take it.
     const worker = yield* Cloudflare.WorkerEnvironment;
     // What runs after an answer: the wipe of what is left from before Environments, and the upkeep of the spares and
@@ -262,6 +265,13 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const spares = spareUpkeep(registries, { workspaces });
     // A new good Build makes its Environment's spare stale, so the Builds' upkeep looks at the spare then.
     const builds = buildUpkeep(registries, { workspaces, spares });
+
+    // The MCP server set goes to an Environment's host after the owner's saves and Repo changes (`mcpPending` names the
+    // Environments whose set differs from what their host was told, so one with no servers is never woken).
+    const mcp = mcpPushes({
+      registry: () => registries.getByName(REGISTRY_NAME),
+      host: (name) => mcpHosts.getByName(name),
+    });
 
     // The draft composer's lookups. The listings of its `@` menu are held per isolate, as a Session holds its own, in a
     // scope that is never closed: it lives as long as the isolate.
@@ -326,6 +336,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
               legacy,
               spares,
               builds,
+              mcp,
               lookups,
               branches,
               skillSearch: searchSkillsSh,
@@ -344,8 +355,12 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // The Worker's init is its entry point.
     // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(
-      SessionLive.pipe(
-        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
+      Layer.mergeAll(
+        SessionLive.pipe(
+          Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
+        ),
+        McpHostLive,
+      ).pipe(
         // The Session DOs refuse the app's key in a variable; the Worker asks GitHub for the draft's branches as the app.
         Layer.provideMerge(GitHubAppConfigLive),
         Layer.provideMerge(

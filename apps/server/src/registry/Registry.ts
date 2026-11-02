@@ -7,6 +7,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { ContainerPatch, ContainerSettings } from "@cloudpid/config";
+import type { McpPush, McpServerSetAnswer, McpServerValuesAnswer } from "@cloudpid/mcp/types";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   AgentChange,
@@ -24,6 +25,14 @@ import type {
   SkillFile,
 } from "@cloudpid/protocol";
 import { pageSessions, type SessionsResult } from "./session-page.ts";
+import {
+  mcpServerSetAnswer,
+  mcpServerValuesAnswer,
+  type McpValuesInput,
+  pendingMcpPushes,
+  readsSecrets,
+  recordMcpPushed,
+} from "./mcp-registry.ts";
 import { EMPTY_SKILL_SET_HASH, type SkillSet } from "../workspace/skill-set-schema.ts";
 import {
   previewSkillSave,
@@ -788,6 +797,34 @@ export type RegistryMethods = {
   readonly sessionSettings: (input: {
     readonly session: string;
   }) => Effect.Effect<SessionSettingsSource>;
+  /**
+   * The host's pull (`docs/architecture/mcp-configuration.md` → From the Registry to the host): `environment`'s MCP server
+   * set's hash, and the set unless the host holds it (`heldHash`; none held is the empty set). An Environment the
+   * Registry does not list has no servers. For the `McpHost` DO only.
+   */
+  readonly mcpServerSet: (input: {
+    readonly environment: string;
+    readonly heldHash?: string | undefined;
+  }) => Effect.Effect<McpServerSetAnswer>;
+  /**
+   * The `env` and `headers` of `environment`'s MCP server `server` with every `${NAME}` resolved against the Secrets,
+   * then the Variables (a Repo's entries read Variables only), when its connection key is `conn`. Never logged and never
+   * kept by the Registry. For the `McpHost` DO only.
+   */
+  readonly mcpServerValues: (input: McpValuesInput) => Effect.Effect<McpServerValuesAnswer>;
+  /**
+   * The MCP server sets to push: `environment`'s (every Environment's when undefined) when its hash differs from what its
+   * host was last told (`mcpPushed`), an empty set only after a non-empty one. The Registry never calls out: the main
+   * Worker pushes each to `McpHost.apply`.
+   */
+  readonly mcpPending: (input: {
+    readonly environment?: string | undefined;
+  }) => Effect.Effect<ReadonlyArray<McpPush>>;
+  /** Note that the host of `environment` took the set with `hash`, so it is not pushed again. */
+  readonly mcpPushed: (input: {
+    readonly environment: string;
+    readonly hash: string;
+  }) => Effect.Effect<void>;
   /**
    * An Agent change to the Settings (`docs/architecture/agent-changes.md`): give some of their fields new values, by the rules
    * of `updateSettings` (Global, `environment` absent) or of `updateSettingsOverrides` (an Environment's Overrides), and
@@ -1574,6 +1611,25 @@ export const RegistryLive = Registry.make(
             ),
           sessionSettings: ({ session }) =>
             Effect.sync(() => sessionSettingsSource(store, session)),
+          mcpServerSet: (input) => Effect.sync(() => mcpServerSetAnswer(store, input)),
+          mcpServerValues: (input) =>
+            Effect.gen(function* () {
+              // Only an entry that may read Secrets opens the vault.
+              const kept = readsSecrets(store, input.environment, input.server)
+                ? yield* opened(input.environment)
+                : [];
+
+              return mcpServerValuesAnswer(
+                store,
+                input,
+                Record.fromEntries(Arr.map(kept, ({ name, value }) => [name, value] as const)),
+              );
+            }),
+          mcpPending: ({ environment }) => Effect.sync(() => pendingMcpPushes(store, environment)),
+          mcpPushed: ({ environment, hash }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => recordMcpPushed(store, environment, hash, now)),
+            ),
           changeSettings: ({ environment, changes: wanted, author }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>

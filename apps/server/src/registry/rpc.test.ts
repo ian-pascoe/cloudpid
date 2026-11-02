@@ -76,6 +76,7 @@ import type { RegistryMethods } from "./Registry.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
+import type { McpPushes } from "../mcp/push.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -520,6 +521,7 @@ const fakeRegistries = () => {
     );
 
   let sparesMade = 0;
+  const mcpSyncs: Array<string | undefined> = [];
 
   /** Runs once, when the next Registry `createSession` is called: what happens just before it is answered. */
   let beforeCreate: (() => void) | undefined;
@@ -1302,6 +1304,11 @@ const fakeRegistries = () => {
       }),
     // The Session DO reads what it resolves its Settings from, never the endpoint.
     sessionSettings: () => Effect.die("The endpoint reads no Session's Settings"),
+    // The host's pull and the pushes' source: the endpoint reaches the Registry only through `mcp`.
+    mcpServerSet: () => Effect.die("The endpoint answers no host"),
+    mcpServerValues: () => Effect.die("The endpoint answers no host"),
+    mcpPending: () => Effect.die("The endpoint pushes through `mcp`"),
+    mcpPushed: () => Effect.die("The endpoint pushes through `mcp`"),
     getPush: ({ endpoint }) =>
       Effect.sync(() => {
         calls.push("getPush");
@@ -1445,6 +1452,15 @@ const fakeRegistries = () => {
     legacy: Effect.sync(() => {
       calls.push("legacy");
     }),
+    /** The Environments the endpoint asked `mcp` to push the MCP server set to (undefined: every one). */
+    mcpSyncs,
+    /** What hands the set to its host, which the endpoint runs in the background after a save. */
+    mcp: {
+      sync: (environment) =>
+        Effect.sync(() => {
+          mcpSyncs.push(environment);
+        }),
+    } satisfies McpPushes,
     /** The work handed to `background` is run when the test says so. */
     background: (effect: Effect.Effect<void>) =>
       Effect.sync(() => {
@@ -1654,6 +1670,7 @@ const worker =
       legacy: fake.legacy,
       spares: fake.spareUpkeep,
       builds: fake.buildUpkeep,
+      mcp: fake.mcp,
       lookups: fake.lookups,
       branches: fake.branches,
       skillSearch: fake.skillSearch,
@@ -5627,4 +5644,106 @@ it("refuses a branch for a Fork in its source's Workspace, and an unknown source
   expect(branch).toBeInstanceOf(EnvironmentError);
   expect(unknown).toBeInstanceOf(SessionNotFound);
   expect(fake.sessions).toEqual([source]);
+});
+
+describe("handing the MCP server set to the hosts", () => {
+  it("pushes to every Environment after a save at Global, once the answer is sent", async () => {
+    const fake = fakeRegistries();
+
+    await call(fake, (registry) =>
+      registry.updateSettings({ overrides: { thinkingLevel: "low" } }),
+    );
+
+    // Handed to the background, not run before the answer.
+    expect(fake.mcpSyncs).toEqual([]);
+
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([undefined]);
+  });
+
+  it("does not push for a save the Registry rejected", async () => {
+    const fake = fakeRegistries();
+
+    await call(fake, (registry) => Effect.flip(registry.updateSettings({ overrides: null })));
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([]);
+  });
+
+  it("pushes to the Environment whose Overrides were saved, and to no other after a save refused", async () => {
+    const fake = fakeRegistries();
+
+    await call(fake, (registry) =>
+      registry.updateSettingsOverrides({
+        environment: DEFAULT_ENVIRONMENT,
+        set: { model: "anthropic/claude-sonnet-5-5" },
+      }),
+    );
+    await call(fake, (registry) =>
+      Effect.flip(
+        registry.updateSettingsOverrides({ environment: DEFAULT_ENVIRONMENT, set: null }),
+      ),
+    );
+    await call(fake, (registry) =>
+      Effect.flip(registry.updateSettingsOverrides({ environment: "0badc0de", reset: ["model"] })),
+    );
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT]);
+  });
+
+  it("pushes after the owner reverts a change of the Settings", async () => {
+    const fake = fakeRegistries();
+
+    fake.settingsChanges.push(
+      settingsChange(1, "anthropic/claude-haiku-5-5", DEFAULT_SETTINGS.model),
+    );
+
+    await call(fake, (registry) => registry.revertSettingsChange({ change: 1 }));
+    await call(fake, (registry) => Effect.flip(registry.revertSettingsChange({ change: 9 })));
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([undefined]);
+  });
+
+  it("pushes to the Environment a Repo was added to or removed from, and to none for a refusal", async () => {
+    const fake = fakeRegistries();
+
+    await call(fake, (registry) =>
+      registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/app" }),
+    );
+    await call(fake, (registry) =>
+      Effect.flip(registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "p/app" })),
+    );
+    await call(fake, (registry) =>
+      registry.removeRepo({ environment: DEFAULT_ENVIRONMENT, repo: "app" }),
+    );
+    await call(fake, (registry) =>
+      Effect.flip(registry.removeRepo({ environment: DEFAULT_ENVIRONMENT, repo: "ghost" })),
+    );
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT, DEFAULT_ENVIRONMENT]);
+  });
+
+  it("pushes for nothing else of the Settings: a Container setting or an Environment's Instructions", async () => {
+    const fake = fakeRegistries();
+
+    await call(fake, (registry) =>
+      registry.updateEnvironmentSettings({
+        environment: DEFAULT_ENVIRONMENT,
+        set: { idleMinutes: 10 },
+      }),
+    );
+    await call(fake, (registry) =>
+      registry.updateEnvironmentInstructions({
+        environment: DEFAULT_ENVIRONMENT,
+        instructions: "Be brief.",
+      }),
+    );
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([]);
+  });
 });
