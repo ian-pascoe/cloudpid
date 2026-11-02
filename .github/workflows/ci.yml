@@ -222,8 +222,13 @@ jobs:
   deploy:
     name: Deploy prod
     needs: [changes, check]
+    # `!cancelled()` and `check`'s own result, as `preview` has: without a status function the condition carries an
+    # implicit `success()`, which also needs every job `check` waits on, and `docs` and `manifests` are skipped on a push,
+    # so the deploy was skipped on every push.
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
+      !cancelled()
+      && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && needs.changes.outputs.code == 'true' && needs.check.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment:
