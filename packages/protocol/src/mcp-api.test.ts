@@ -184,8 +184,16 @@ describe("a value a newer deploy added", () => {
     });
     expect(read(Via, { era: future })).toEqual({ era: "unknown" });
     expect(read(McpSessionOrigin, { kind: future, auth: future })).toEqual({
-      kind: "mcp",
+      kind: "unknown",
       auth: "unknown",
+    });
+    expect(read(McpSessionOrigin, { kind: future, session: "s" })).toEqual({
+      kind: "unknown",
+      session: "s",
+    });
+    expect(read(McpSessionOrigin, { kind: "clone", session: "s" })).toEqual({
+      kind: "clone",
+      session: "s",
     });
 
     const summary = read(McpSessionSummary, {
@@ -198,7 +206,7 @@ describe("a value a newer deploy added", () => {
       url: "/",
     });
 
-    expect(summary.status).toBe("idle");
+    expect(summary.status).toBe("unknown");
     expect(
       read(SessionDetail, {
         session_id: "s",
@@ -213,7 +221,7 @@ describe("a value a newer deploy added", () => {
         agents: [{ agent_id: "agent-1", parent: "root", role: null, status: future }],
         workspace: { branch: null, base: null, repos: [] },
       }),
-    ).toMatchObject({ status: "unknown", agents: [{ status: "idle" }] });
+    ).toMatchObject({ status: "unknown", agents: [{ status: "unknown" }] });
   });
 });
 

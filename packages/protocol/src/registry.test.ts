@@ -63,7 +63,7 @@ describe("SessionRecord", () => {
 
   it("reads a mark with a way in or a kind this version does not know", () => {
     expect(decodeNew({ ...record, marks: { kind: "later", auth: "later" } }).marks).toEqual({
-      kind: "mcp",
+      kind: "unknown",
       auth: "unknown",
     });
   });

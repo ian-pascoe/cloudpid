@@ -21,7 +21,7 @@ export type SessionsPage = {
 };
 
 /** What `sessions()` answers: a page, or that the cursor is not one (`invalid_cursor` at the endpoint). */
-export type SessionsResult = SessionsPage | { readonly refused: "invalid-cursor" };
+export type SessionsResult = SessionsPage | { readonly refused: "invalid_cursor" };
 
 /** Where a page ends: the last Session it holds, as the list is ordered (newest first, then by id). */
 const Position = Schema.Struct({ t: Schema.Finite, i: Schema.String });
@@ -46,7 +46,7 @@ export const pageSessions = (
       ? undefined
       : Option.getOrUndefined(decodePosition(decodeBase64Url(query.cursor) ?? ""));
 
-  if (query.cursor !== undefined && after === undefined) return { refused: "invalid-cursor" };
+  if (query.cursor !== undefined && after === undefined) return { refused: "invalid_cursor" };
 
   const needle = query.query?.trim().toLowerCase() ?? "";
   const archived = query.archived === true;

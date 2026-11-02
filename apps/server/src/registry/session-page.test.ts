@@ -92,7 +92,7 @@ describe("pageSessions", () => {
 
   it("refuses what is not a cursor", () => {
     for (const cursor of ["", "!!", "e30", btoa("nope")]) {
-      expect(pageSessions(list(3), { cursor })).toEqual({ refused: "invalid-cursor" });
+      expect(pageSessions(list(3), { cursor })).toEqual({ refused: "invalid_cursor" });
     }
   });
 });

@@ -170,15 +170,78 @@ describe("renderTranscript", () => {
     expect(redactGithubTokens("ghp_short")).toBe("ghp_short");
   });
 
-  it("redacts a Secret the cut would have split", () => {
+  describe("redacts a Secret before the cut can split it", () => {
     const secret = "s3cr3t-value-that-is-long";
-    const text = `${"x".repeat(1_990)}${secret}${"y".repeat(1_990)}`;
+    const redact = (text: string) => text.replaceAll(secret, "[S]");
+    /** Starts from `from` on, one character apart: the cut's edge is in there somewhere. */
+    const starts = (from: number) => Arr.makeBy(120, (index) => from + index);
 
-    const [entry] = renderTranscript([user(1, text)], {
-      redact: (block) => block.replaceAll(secret, "[S]"),
+    /** Where the secret starts, around the head the cut keeps, so one offset straddles the edge. */
+    const around = (start: number, total: number) =>
+      `${"x".repeat(start)}${secret}${"y".repeat(total)}`;
+
+    const shows = (entry: TranscriptEntry | undefined) =>
+      entry?.text.includes("s3cr3t") === true || entry?.text.includes(secret) === true;
+
+    it("in an entry's text, at every offset near the edge of the cut", () => {
+      for (const start of starts(900)) {
+        const [entry] = renderTranscript([user(1, around(start, 4_000))], { redact });
+
+        expect(shows(entry)).toBe(false);
+        expect(entry?.text).toContain("characters cut");
+      }
     });
 
-    expect(entry?.text).not.toContain("s3cr3t");
+    it("in a tool call's arguments, and in a tool result and an error", () => {
+      for (const start of starts(20)) {
+        const call: TranscriptMessage = {
+          id: "1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-call",
+              id: "c",
+              name: "bash",
+              arguments: { command: around(start, 400) },
+            },
+          ],
+          timestamp: at,
+        };
+
+        expect(shows(renderTranscript([call], { redact })[0])).toBe(false);
+      }
+
+      for (const start of starts(650)) {
+        const result: TranscriptMessage = {
+          id: "2",
+          role: "tool",
+          parts: [
+            {
+              type: "tool-result",
+              id: "c",
+              name: "bash",
+              error: false,
+              content: [{ type: "text", text: around(start, 6_000) }],
+            },
+          ],
+          timestamp: at,
+        };
+
+        expect(shows(renderTranscript([result], { detail: "full", redact })[0])).toBe(false);
+      }
+
+      for (const start of starts(40)) {
+        const failed: TranscriptMessage = {
+          id: "3",
+          role: "assistant",
+          parts: [],
+          error: around(start, 600),
+          timestamp: at,
+        };
+
+        expect(shows(renderTranscript([failed], { redact })[0])).toBe(false);
+      }
+    });
   });
 });
 

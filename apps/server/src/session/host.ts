@@ -2460,7 +2460,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ).pipe(
           Effect.filterOrFail(Predicate.isNotUndefined, () =>
             SessionError.make({
-              operation: "conversation",
+              operation: "conversation_missing",
               message: `Conversation ${conversationId} does not exist`,
             }),
           ),

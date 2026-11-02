@@ -47,7 +47,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
-import * as Predicate from "effect/Predicate";
 import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
 import { SessionError } from "./errors.ts";
@@ -145,12 +144,6 @@ const deliveryOf = (
 
   return whenBusy === "steer" ? "steered" : "queued";
 };
-
-/** Whether a settled input has text to show: an answer, or the detail of a failure. */
-const hasText = (settled: SettledInput | undefined): boolean =>
-  settled?.status === "done"
-    ? settled.answer !== undefined && settled.answer !== ""
-    : Predicate.isString(settled?.detail);
 
 /** An agent's id for conversation `conversation`: `root` for a Session branch. */
 const agentIdOf = (state: FollowState, conversation: number): string =>
@@ -341,9 +334,29 @@ const sessionMcp = (options: SessionMcpOptions) =>
       return readable ? { ...rest, message: redact(message) } : rest;
     };
 
-    /** Every failure of the host is `unavailable`: the Session may heal. */
+    /**
+     * Every failure of the host is `unavailable`, as the Session may heal; except a conversation it does not have,
+     * which only a cursor of another Session names: that is `invalid_cursor`, which no retry mends.
+     */
     const guarded = <A>(effect: Effect.Effect<ApiResult<A>, SessionError>) =>
-      effect.pipe(Effect.catch((error) => Effect.sync(() => unavailable(error))));
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.sync(() =>
+            error.operation === "conversation_missing" ? invalidCursor : unavailable(error),
+          ),
+        ),
+      );
+
+    /** What a settled Run says: its outcome, its answer cut to `max`, and a failure's message; text only if readable. */
+    const settledReport = (settled: SettledInput | undefined, seam: Seam, max: number) => {
+      const outcome = outcomeOf(settled, seam);
+
+      return {
+        outcome,
+        answer: seam.readable ? answerOf(settled, seam.redact, max) : undefined,
+        error: outcome?.result === "failed" ? outcome.message : undefined,
+      };
+    };
 
     const status: SessionMcpService["status"] = (request = {}) =>
       guarded(
@@ -369,18 +382,15 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
           // What the last Run came to is told while no Run is going.
           if (current !== "running") {
-            const outcome = outcomeOf(settled, seam);
+            const { outcome, answer } = settledReport(settled, seam, MAX_LAST_ANSWER_CHARS);
 
             if (outcome !== undefined) report.outcome = outcome;
 
-            if (seam.readable) {
-              const answer = answerOf(settled, seam.redact, MAX_LAST_ANSWER_CHARS);
-
-              if (answer !== undefined) report.last_answer = answer;
-            } else if (hasText(settled)) {
-              report.text_withheld = "secrets_unavailable";
-            }
+            if (answer !== undefined) report.last_answer = answer;
           }
+
+          // The waiting summaries, the outcome's message and the last answer were left out or made generic.
+          if (!seam.readable) report.text_withheld = "secrets_unavailable";
 
           if (cursor !== undefined && cursor.c !== now.state.activeBranch) {
             report.branch_changed = true;
@@ -435,22 +445,22 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
             if (reason === "run_ended") {
               const settled = now.state.newestSettled;
-              const outcome = outcomeOf(settled, seam);
+
+              const { outcome, answer, error } = settledReport(
+                settled,
+                seam,
+                MAX_WAIT_ANSWER_CHARS,
+              );
 
               if (outcome !== undefined) result.outcome = outcome;
 
-              if (seam.readable) {
-                const answer = answerOf(settled, seam.redact, MAX_WAIT_ANSWER_CHARS);
+              if (error !== undefined) result.error = error;
 
-                if (outcome?.result === "failed" && outcome.message !== undefined) {
-                  result.error = outcome.message;
-                }
-
-                if (answer !== undefined) result.answer = answer;
-              } else if (hasText(settled)) {
-                result.text_withheld = "secrets_unavailable";
-              }
+              if (answer !== undefined) result.answer = answer;
             }
+
+            // However the wait ended, the activity lines, waiting summaries and Run text are left out or generic.
+            if (!seam.readable) result.text_withheld = "secrets_unavailable";
 
             return apiOk(result);
           }).pipe(
@@ -713,8 +723,11 @@ const sessionMcp = (options: SessionMcpOptions) =>
           const before = yield* host.follow();
           const seam = yield* redactor;
 
-          // Stopping an idle Session is a no-op that leaves no notice, so the call is idempotent.
-          if (before.idle) return apiOk<StopResult>({ status: statusOf(yield* snapshot(seam)) });
+          // Stopping what is not running is a no-op that leaves no notice, so the call is idempotent: with only
+          // subagents working, a plain stop has no Run to stop (it leaves them), and `subagents` is what stops them.
+          if (before.idle || (request.subagents !== true && !before.unsettled)) {
+            return apiOk<StopResult>({ status: statusOf(yield* snapshot(seam)) });
+          }
 
           yield* host.note(`Stopped from ${request.via.client?.name ?? "a client"} (MCP)`);
 

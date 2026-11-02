@@ -121,12 +121,17 @@ export const SessionVia = Schema.Struct({
 
 export type SessionVia = typeof SessionVia.Type;
 
-/** The words that say where an input or Session came from: "MCP · pi", or "MCP" when the caller gave no name. */
+const VIA_PREFIX = { mcp: "MCP", import: "Imported", unknown: "Via" } as const;
+
+/**
+ * The words that say where an input or Session came from: "MCP · pi", or "MCP" when the caller gave no name; "Via · pi"
+ * for a kind this version does not know.
+ */
 export const viaLabel = (
   via: Pick<SessionVia, "client">,
-  kind: "mcp" | "import" = "mcp",
+  kind: "mcp" | "import" | "unknown" = "mcp",
 ): string => {
-  const prefix = kind === "mcp" ? "MCP" : "Imported";
+  const prefix = VIA_PREFIX[kind];
 
   return via.client === undefined ? prefix : `${prefix} · ${via.client.name}`;
 };
@@ -564,7 +569,7 @@ export type EnvironmentsResult = typeof EnvironmentsResult.Type;
 
 /** A Session the endpoint made or imported: the audit mark of how its caller got in, never the owner's email. */
 export const MarkedOrigin = Schema.Struct({
-  kind: open(Schema.Literals(["mcp", "import"]), "mcp"),
+  kind: open(Schema.Literals(["mcp", "import", "unknown"]), "unknown"),
   client: Schema.optionalKey(McpClient),
   auth: McpAuth,
 });
@@ -573,7 +578,10 @@ export type MarkedOrigin = typeof MarkedOrigin.Type;
 
 /** Where a listed Session came from: a Fork or Clone's source, or the endpoint's marks. */
 export const McpSessionOrigin = Schema.Union([
-  Schema.Struct({ kind: open(Schema.Literals(["fork", "clone"]), "fork"), session: Schema.String }),
+  Schema.Struct({
+    kind: open(Schema.Literals(["fork", "clone", "unknown"]), "unknown"),
+    session: Schema.String,
+  }),
   MarkedOrigin,
 ]);
 
@@ -584,7 +592,7 @@ export const McpSessionSummary = Schema.Struct({
   session_id: Schema.String,
   title: Schema.NullOr(Schema.String),
   environment: Schema.Struct({ id: Schema.String, name: Schema.String }),
-  status: open(Schema.Literals(["running", "idle"]), "idle"),
+  status: open(Schema.Literals(["running", "idle", "unknown"]), "unknown"),
   origin: Schema.optionalKey(McpSessionOrigin),
   updated_at: Schema.String,
   archived: Schema.Boolean,
@@ -624,7 +632,7 @@ export const SessionDetail = Schema.Struct({
       agent_id: Schema.String,
       parent: Schema.String,
       role: Schema.NullOr(Schema.String),
-      status: open(Schema.Literals(["working", "idle"]), "idle"),
+      status: open(Schema.Literals(["working", "idle", "unknown"]), "unknown"),
     }),
   ),
   workspace: Schema.Struct({

@@ -319,6 +319,23 @@ describe("waitForChange", () => {
     });
   });
 
+  it("refuses a well-formed cursor of a conversation this Session does not have, which no retry mends", async () => {
+    const stub = fresh();
+    const elsewhere = encodeCursor({ c: 9_999, e: 0, w: 0, s: 0 });
+
+    expect(await wait(stub, elsewhere)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_cursor", retryable: false },
+    });
+    expect(await stub.mcpTranscript({ before: elsewhere })).toMatchObject({
+      ok: false,
+      error: { code: "invalid_cursor", retryable: false },
+    });
+    expect(await stub.mcpTranscript({ after: elsewhere })).toMatchObject({
+      error: { code: "invalid_cursor" },
+    });
+  });
+
   it("keeps following the branch a cursor was made on", async () => {
     const stub = fresh();
 
@@ -516,6 +533,28 @@ describe("redaction", () => {
       ok: false,
       error: { code: "unavailable", retryable: true },
     });
+  });
+
+  it("says text was withheld however the wait ended, and in a status while a Run is going", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.keptFails(true));
+    await script(stub, "hang");
+
+    const sent = await send(stub);
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.hanging.promise);
+
+    const timedOut = okValue(await wait(stub, sent.cursor, 200));
+
+    expect(timedOut).toMatchObject({ ended_by: "timeout", text_withheld: "secrets_unavailable" });
+    expect(timedOut.activity.latest).toEqual([]);
+    expect(okValue(await stub.mcpStatus())).toMatchObject({
+      status: "running",
+      text_withheld: "secrets_unavailable",
+    });
+
+    await stub.mcpStop({ via });
   });
 
   it("withholds the message of a failed Run while the kept Secrets cannot be read", async () => {

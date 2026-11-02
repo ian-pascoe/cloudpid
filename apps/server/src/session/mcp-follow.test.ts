@@ -112,7 +112,16 @@ describe("endedBy without a cursor", () => {
     expect(endedBy(snapshot({ stalled: true, idle: false }), undefined)).toBe("stalled");
   });
 
-  it("waits out an import", () => {
-    expect(endedBy(snapshot({ copying: true }), undefined)).toBeUndefined();
+  it("returns at once for an import that is going, which is no Run, and its cursor ends with the import", () => {
+    const importing = snapshot({ copying: true });
+
+    expect(endedBy(importing, undefined)).toBe("timeout");
+    expect(cursorOf(importing).i).toBe(true);
+    expect(endedBy(importing, cursorOf(importing))).toBeUndefined();
+    expect(endedBy(snapshot(), cursorOf(importing))).toBe("import_ended");
+    // A parked task or a request the import's end finds does not hide that it ended: a Run comes first, then the rest.
+    expect(endedBy(snapshot({ stalled: true, idle: false }), cursorOf(importing))).toBe(
+      "import_ended",
+    );
   });
 });

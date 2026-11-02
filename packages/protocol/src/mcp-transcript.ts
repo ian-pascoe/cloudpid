@@ -93,8 +93,11 @@ const callArguments = (value: JsonValue): string => {
 
 const oneLine = (value: string): string => value.replace(/\s+/g, " ").trim();
 
-const toolCall = (part: Extract<TranscriptPart, { type: "tool-call" }>): string => {
-  const shown = middleCut(oneLine(callArguments(part.arguments)), TOOL_ARGUMENT_CHARS);
+/** Text redacted before it is cut, so a Secret that would straddle a cut is never left as a prefix. */
+type Redact = (text: string) => string;
+
+const toolCall = (part: Extract<TranscriptPart, { type: "tool-call" }>, redact: Redact): string => {
+  const shown = middleCut(redact(oneLine(callArguments(part.arguments))), TOOL_ARGUMENT_CHARS);
 
   return shown === "" ? `→ ${part.name}` : `→ ${part.name}  ${shown}`;
 };
@@ -102,8 +105,9 @@ const toolCall = (part: Extract<TranscriptPart, { type: "tool-call" }>): string 
 const toolResult = (
   part: Extract<TranscriptPart, { type: "tool-result" }>,
   detail: TranscriptDetail,
+  redact: Redact,
 ): string => {
-  const body = text(part.content);
+  const body = redact(text(part.content));
   const pictures = images(part.content);
 
   if (detail === "full") {
@@ -143,20 +147,24 @@ const header = (message: TranscriptMessage): string => {
 };
 
 /** One message's rendered block, header first; undefined when it shows nothing (thinking is always left out). */
-const block = (message: TranscriptMessage, detail: TranscriptDetail): string | undefined => {
+const block = (
+  message: TranscriptMessage,
+  detail: TranscriptDetail,
+  redact: Redact,
+): string | undefined => {
   if (message.role === "notice") {
-    const body = oneLine(text(message.parts));
-    const title = message.title ?? "Notice";
+    const body = oneLine(redact(text(message.parts)));
+    const title = redact(message.title ?? "Notice");
 
     return `· ${body === "" ? title : `${title}: ${middleCut(body, TOOL_ERROR_LINE_CHARS)}`}`;
   }
 
   const lines: string[] = [];
-  const body = text(message.parts);
+  const body = redact(text(message.parts));
 
   if (message.role === "tool") {
     for (const part of message.parts) {
-      if (part.type === "tool-result") lines.push(toolResult(part, detail));
+      if (part.type === "tool-result") lines.push(toolResult(part, detail, redact));
     }
   } else {
     if (body !== "") lines.push(middleCut(body, ENTRY_TEXT_CHARS[detail]));
@@ -164,11 +172,11 @@ const block = (message: TranscriptMessage, detail: TranscriptDetail): string | u
     lines.push(...images(message.parts));
 
     for (const part of message.parts) {
-      if (part.type === "tool-call") lines.push(toolCall(part));
+      if (part.type === "tool-call") lines.push(toolCall(part, redact));
     }
 
     if (message.error !== undefined)
-      lines.push(`✗ ${oneLine(middleCut(message.error, TOOL_ERROR_LINE_CHARS))}`);
+      lines.push(`✗ ${oneLine(middleCut(redact(message.error), TOOL_ERROR_LINE_CHARS))}`);
   }
 
   return lines.length === 0 ? undefined : `${header(message)}\n${lines.join("\n")}`;
@@ -176,7 +184,8 @@ const block = (message: TranscriptMessage, detail: TranscriptDetail): string | u
 
 /**
  * The entries of a transcript as the endpoint shows them, oldest to newest, `redact`ed. A message with nothing to show
- * has no block. `redact` runs on each rendered block, before any page is cut, so a Secret is never split by the cut.
+ * has no block. `redact` runs on each text before it is cut to its limit, and again on the block, so no cut leaves a
+ * Secret as a prefix.
  */
 export const renderTranscript = (
   messages: readonly TranscriptMessage[],
@@ -186,7 +195,7 @@ export const renderTranscript = (
   const redact = options.redact ?? redactGithubTokens;
 
   return messages.flatMap((message): TranscriptEntry[] => {
-    const rendered = block(message, detail);
+    const rendered = block(message, detail, redact);
     const entryId = Number(message.id);
 
     if (rendered === undefined || !Number.isInteger(entryId)) return [];
