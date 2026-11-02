@@ -6,6 +6,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AttachedPage } from "./attached-pages.ts";
+import { Via } from "./mcp-api.ts";
 import { ReviewData } from "./review.ts";
 
 /** The kind of an owner's message the Session expanded. */
@@ -20,13 +21,15 @@ export type ExpandedSkill = typeof ExpandedSkill.Type;
  * The data of a `cloudpid.user` entry: the text the owner typed (`display`, empty when they typed none), the Skills
  * expanded into the model's message, the pages attached to it (`pages`, what the Session read of them; the model
  * got them as a block of page content, which the transcript shows as chips instead), and for a Review, the Annotations
- * it sent (`review`), whose Markdown ends the model message's first text, after the summary.
+ * it sent (`review`), whose Markdown ends the model message's first text, after the summary. An input sent over the MCP
+ * endpoint keeps who sent it (`via`: the client's name and how it got in, never the owner's email).
  */
 export const UserEntryData = Schema.Struct({
   display: Schema.String,
   skills: Schema.Array(ExpandedSkill),
   pages: AttachedPage.pipe(Schema.Array, Schema.optionalKey),
   review: Schema.optionalKey(ReviewData),
+  via: Schema.optionalKey(Via),
 });
 
 export type UserEntryData = typeof UserEntryData.Type;
