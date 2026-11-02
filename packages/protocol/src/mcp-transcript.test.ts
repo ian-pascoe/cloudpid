@@ -192,6 +192,23 @@ describe("renderTranscript", () => {
       }
     });
 
+    it("when it spans lines, in a tool call's string argument", () => {
+      const pem = "-----BEGIN KEY-----\nMIIEvQIBADANBgkq\nhkiG9w0BAQEFAASC\n-----END KEY-----";
+
+      const call: TranscriptMessage = {
+        id: "1",
+        role: "assistant",
+        parts: [{ type: "tool-call", id: "c", name: "bash", arguments: `cat <<EOF\n${pem}\nEOF` }],
+        timestamp: at,
+      };
+
+      const [entry] = renderTranscript([call], { redact: (text) => text.replaceAll(pem, "[S]") });
+
+      expect(entry?.text).toContain("[S]");
+      expect(entry?.text).not.toContain("MIIEvQ");
+      expect(entry?.text).not.toContain("BEGIN KEY");
+    });
+
     it("in a tool call's arguments, and in a tool result and an error", () => {
       for (const start of starts(20)) {
         const call: TranscriptMessage = {

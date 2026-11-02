@@ -131,7 +131,7 @@ import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { contextUsageOf } from "./context-usage.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
-import { attempt, refuse, SessionError } from "./errors.ts";
+import { attempt, CONVERSATION_MISSING, refuse, SessionError } from "./errors.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
@@ -2460,7 +2460,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ).pipe(
           Effect.filterOrFail(Predicate.isNotUndefined, () =>
             SessionError.make({
-              operation: "conversation_missing",
+              operation: CONVERSATION_MISSING,
               message: `Conversation ${conversationId} does not exist`,
             }),
           ),

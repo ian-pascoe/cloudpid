@@ -390,6 +390,8 @@ export const AnswerText = Schema.Struct({ text: Schema.String, truncated: Schema
 
 export type AnswerText = typeof AnswerText.Type;
 
+// A wait ended by a reason this version does not know reads as `timeout`: a deliberately generic reading, "the wait
+// ended; look again", not an alias of the real `timeout`.
 export const EndedBy = open(
   Schema.Literals(["run_ended", "owner_needed", "import_ended", "stalled", "timeout"]),
   "timeout",
@@ -397,6 +399,7 @@ export const EndedBy = open(
 
 export type EndedBy = typeof EndedBy.Type;
 
+// The only reason there is, so an unknown one reads as it: "text withheld", the generic reading, not an alias.
 /** Why the text fields were left out: the Secrets to redact them of could not be read. */
 export const TextWithheld = open(Schema.Literals(["secrets_unavailable"]), "secrets_unavailable");
 
@@ -459,6 +462,7 @@ export type TranscriptDetail = typeof TranscriptDetail.Type;
 
 export const TranscriptEntry = Schema.Struct({
   entry_id: Schema.Int,
+  // A role this version does not know reads as `notice`, the generic "an entry that is not a message".
   role: open(Schema.Literals(["user", "assistant", "tool", "notice"]), "notice"),
   /** ISO 8601; empty for an entry with no time. */
   at: Schema.String,

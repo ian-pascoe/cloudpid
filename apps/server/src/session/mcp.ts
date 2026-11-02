@@ -49,7 +49,7 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
-import { SessionError } from "./errors.ts";
+import { CONVERSATION_MISSING, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
 import { cursorOf, endedBy, statusOf, type Snapshot, waitingMark } from "./mcp-follow.ts";
 import type { FollowState, SettledInput } from "./mcp-reads.ts";
@@ -342,7 +342,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
       effect.pipe(
         Effect.catch((error) =>
           Effect.sync(() =>
-            error.operation === "conversation_missing" ? invalidCursor : unavailable(error),
+            error.operation === CONVERSATION_MISSING ? invalidCursor : unavailable(error),
           ),
         ),
       );

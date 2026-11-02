@@ -97,7 +97,8 @@ const oneLine = (value: string): string => value.replace(/\s+/g, " ").trim();
 type Redact = (text: string) => string;
 
 const toolCall = (part: Extract<TranscriptPart, { type: "tool-call" }>, redact: Redact): string => {
-  const shown = middleCut(redact(oneLine(callArguments(part.arguments))), TOOL_ARGUMENT_CHARS);
+  // Redacted as written, before its lines are joined: a multi-line Secret (a PEM key in a heredoc) is one match.
+  const shown = middleCut(oneLine(redact(callArguments(part.arguments))), TOOL_ARGUMENT_CHARS);
 
   return shown === "" ? `→ ${part.name}` : `→ ${part.name}  ${shown}`;
 };
