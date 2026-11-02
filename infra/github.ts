@@ -30,7 +30,7 @@ import * as Layer from "effect/Layer";
 /** Account-scoped "Access: Apps and Policies Write" (the catalog name is shared with a zone-scoped group). */
 const ACCESS_APPS_AND_POLICIES_WRITE = { id: "1e13c5124ca64b72b1969a67e8829049" };
 
-/** The `ianpascoe.dev` zone, which serves the `prod` stage's custom domain (apps/server/src/deployment.ts). */
+/** The `ianpascoe.dev` zone, which serves the `prod` stage's custom domain, `appOrigin("prod")` (apps/server/src/deployment.ts). */
 const ZONE_ID = "c36c6e2b6bda856f9d4f6175059c6df4";
 
 export default Alchemy.Stack(
@@ -124,7 +124,8 @@ export default Alchemy.Stack(
       value: modelProxyUrl,
     });
 
-    // Previews are served on `workers.dev` only (apps/server/src/deployment.ts), so their token has no zone permissions.
+    // Previews are served on `workers.dev` only, as `cloudpid-server-<label>` (their `appOrigin`, apps/server/src/deployment.ts),
+    // so their token has no zone permissions.
     const previewToken = yield* Cloudflare.ApiToken.AccountApiToken("PreviewDeployToken", {
       name: "cloudpid-ci-preview",
       accountId,

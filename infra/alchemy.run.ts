@@ -1,5 +1,7 @@
 import { Server, Workspaces } from "@cloudpid/server";
+import { checkedAppOrigin } from "@cloudpid/server/deployment";
 import * as Alchemy from "alchemy";
+import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as GitHub from "@alchemy.run/github";
 import * as Output from "alchemy/Output";
@@ -14,8 +16,17 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const server = yield* Server;
+    const stage = yield* Alchemy.Stage;
+    const { dev } = yield* AlchemyContext;
 
     yield* Workspaces;
+
+    // The App sandbox derives the stage's origin from its name (apps/server/src/deployment.ts, `appOrigin`), so a Worker
+    // served anywhere else fails the deploy here, where the URL resolves, before the preview comment names it. `alchemy dev`
+    // serves on localhost.
+    const url = dev
+      ? server.url.as<string>()
+      : Output.map(server.url.as<string>(), (resolved) => checkedAppOrigin(stage, resolved));
 
     // A pull request's preview (stage `pr-<number>`, .github/workflows/ci.yml) posts its URL on the PR, and updates
     // that one comment on each push. Outside GitHub Actions, or on a push to `main`, there is no PR and no comment, and
@@ -30,7 +41,7 @@ export default Alchemy.Stack(
         body: Output.interpolate`
           ## Preview deployed
 
-          **URL:** ${server.url}
+          **URL:** ${url}
 
           Built from ${github.sha.slice(0, 7)} (stage \`pr-${github.pr}\`, behind Access). It is destroyed when the
           pull request is closed.
@@ -41,6 +52,6 @@ export default Alchemy.Stack(
       });
     }
 
-    return { url: server.url.as<string>() };
+    return { url };
   }),
 );
