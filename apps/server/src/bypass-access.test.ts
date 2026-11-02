@@ -1,5 +1,4 @@
 // @effect-diagnostics asyncFunction:off
-import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import { bypassAccessProps, bypassApplicationProps } from "./bypass-access.ts";
@@ -12,15 +11,14 @@ const run = (options: {
   readonly runtime?: boolean;
 }) => {
   const declare = vi.fn(() => Effect.succeed({ aud: "the-bypass-aud" }));
-  // SAFETY: `bypassAccessProps` reads only `dev` of the context.
-  const context = AlchemyContext.of({ dotAlchemy: ".alchemy", dev: options.dev } as never);
 
   return Effect.runPromise(
     bypassAccessProps({
       stage: options.stage,
       runtime: options.runtime ?? false,
+      dev: options.dev,
       declare,
-    }).pipe(Effect.provideService(AlchemyContext, context)),
+    }),
   ).then(() => declare);
 };
 

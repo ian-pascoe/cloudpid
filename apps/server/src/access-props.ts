@@ -1,7 +1,6 @@
 // docs/architecture/mcp-sign-in.md → The client document and the callback outside Access (The Access guard): what the
 // stack gives the main Worker for its guard.
 
-import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Effect from "effect/Effect";
 import { guardVars } from "./deployment.ts";
 
@@ -21,13 +20,13 @@ export const accessProps = <
 >(options: {
   readonly declare: Effect.Effect<Application, Error, Services>;
   readonly runtime: boolean;
+  /** Whether the stack is planned by `alchemy dev` (`AlchemyContext.dev`), which the caller reads once. */
+  readonly dev: boolean;
 }) =>
   Effect.gen(function* () {
     if (options.runtime) return { props: {}, vars: {} };
 
-    const { dev } = yield* AlchemyContext;
-
-    if (dev) return { props: {}, vars: guardVars(undefined) };
+    if (options.dev) return { props: {}, vars: guardVars(undefined) };
 
     const application = yield* options.declare;
 

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CALLBACK_PATH,
   CLIENT_DOCUMENT_PATH,
+  guardedRoutes,
   rawPathOf,
   serveSignInPaths,
   signInRoute,
@@ -151,5 +152,75 @@ describe("the router ahead of the guarded routes", () => {
 
     expect(response.status).toBe(200);
     expect(guarded).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the composition the Worker serves with", () => {
+  // The Access guard's own answer to a request without an assertion is a 403; the router's is a 404. So which one a
+  // request gets says which came first.
+  const inner = vi.fn(() => Effect.succeed(HttpServerResponse.text("inside")));
+
+  const run = (url: string, guard: Parameters<typeof guardedRoutes>[0]) =>
+    Effect.runPromise(
+      guardedRoutes(guard)(Effect.suspend(inner)).pipe(
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          HttpServerRequest.fromWeb(new Request(url, { headers: { host: new URL(url).host } })),
+        ),
+      ),
+    );
+
+  const deployed = {
+    audience: "a".repeat(64),
+    localMode: false,
+    keys: () => Promise.resolve(undefined),
+  };
+
+  const origin = "https://cloudpid-server-pr-444.ian-g-pascoe.workers.dev";
+
+  it.each([
+    "/OAUTH/MCP/CLIENT.JSON",
+    "/oauth/mcp/Callback",
+    "//oauth/mcp/callback",
+    "/oauth/mcp/callback/",
+    "/oauth/mcp/callback;x",
+    "/oauth/mcp%2fcallback",
+    "/oauth/mcp/client.json",
+  ])(
+    "answers %s with the router's 404, before the guard's 403, and runs no route",
+    async (path) => {
+      inner.mockClear();
+
+      const response = await run(`${origin}${path}`, deployed);
+
+      expect(response.status).toBe(404);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(inner).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["/", "/rpc", "/oauth/mcp/start", "/assets/index.js"])(
+    "still gives %s to the guard, which refuses a request with no assertion",
+    async (path) => {
+      inner.mockClear();
+
+      const response = await run(`${origin}${path}`, deployed);
+
+      expect(response.status).toBe(403);
+      expect(inner).not.toHaveBeenCalled();
+    },
+  );
+
+  it("runs the routes behind the guard for a request it admits", async () => {
+    inner.mockClear();
+
+    const response = await run("http://localhost:1337/", {
+      audience: undefined,
+      localMode: true,
+      keys: deployed.keys,
+    });
+
+    expect(response.status).toBe(200);
+    expect(inner).toHaveBeenCalledTimes(1);
   });
 });

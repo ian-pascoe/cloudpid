@@ -3,9 +3,8 @@
 // sits beside the Worker's own owner-only application (`deployment()`) and the MCP endpoint's (`mcp-access.ts`).
 // @effect-diagnostics missingPipeableSignature:off -- plain functions of the stack's props.
 
-import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Effect from "effect/Effect";
-import { mcpHost } from "./mcp-access.ts";
+import { appHost } from "./mcp-access.ts";
 import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./sign-in-routes.ts";
 
 /**
@@ -21,8 +20,8 @@ export const bypassApplicationProps = (stage: string) =>
   ({
     type: "self_hosted",
     destinations: [
-      { type: "public", uri: `${mcpHost(stage)}${CLIENT_DOCUMENT_PATH}` },
-      { type: "public", uri: `${mcpHost(stage)}${CALLBACK_PATH}` },
+      { type: "public", uri: `${appHost(stage)}${CLIENT_DOCUMENT_PATH}` },
+      { type: "public", uri: `${appHost(stage)}${CALLBACK_PATH}` },
     ],
     policies: [{ decision: "bypass", include: [{ everyone: {} }] }],
   }) as const;
@@ -36,6 +35,8 @@ export const bypassApplicationProps = (stage: string) =>
 export const bypassAccessProps = <Application, Error, Services>(options: {
   readonly stage: string;
   readonly runtime: boolean;
+  /** Whether the stack is planned by `alchemy dev` (`AlchemyContext.dev`), which the caller reads once. */
+  readonly dev: boolean;
   readonly declare: (
     props: ReturnType<typeof bypassApplicationProps>,
   ) => Effect.Effect<Application, Error, Services>;
@@ -43,9 +44,7 @@ export const bypassAccessProps = <Application, Error, Services>(options: {
   Effect.gen(function* () {
     if (options.runtime) return;
 
-    const { dev } = yield* AlchemyContext;
-
-    if (dev) return;
+    if (options.dev) return;
 
     yield* options.declare(bypassApplicationProps(options.stage));
   });

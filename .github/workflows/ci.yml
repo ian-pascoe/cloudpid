@@ -402,9 +402,10 @@ jobs:
       # leaves the application on the account: the Bypass application of the two public sign-in paths (#444, bypass-access.ts)
       # is one. On a host with no script it reaches no Worker, but a reopened pull request would deploy into it, so delete
       # every application whose destinations are all public ones on this stage's host (`cloudpid-server-pr-<number>`
-      # exactly, never another stage's or project's). A rerun finds none. Fails only if a list or a delete fails.
+      # exactly, never another stage's or project's). A rerun finds none. It runs even when the destroy or the Container check failed:
+      # those are the cases that leave a bypass behind. Fails only if a list or a delete fails.
       - name: Delete pr-${{ github.event.pull_request.number }}'s leftover Access applications
-        if: github.event.action == 'closed'
+        if: always() && github.event.action == 'closed'
         run: |
           api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps"
           left=""

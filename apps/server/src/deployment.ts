@@ -143,7 +143,7 @@ export const checkedAppOrigin = (served: {
  * authorization server refuses `workers.dev` clients, one line turns the document off for every non-prod stage. The
  * bypass is declared whatever it says, because the public callback serves DCR too.
  */
-export const deployment = (stage: string, options: { readonly dev?: boolean } = {}) => {
+export const deployment = (stage: string, options: { readonly dev: boolean }) => {
   const label = stageLabel(stage);
 
   const access = {
@@ -151,7 +151,7 @@ export const deployment = (stage: string, options: { readonly dev?: boolean } = 
   };
 
   const env = {
-    [MCP_CLIENT_DOCUMENT_VAR]: options.dev === true ? ("false" as const) : ("true" as const),
+    [MCP_CLIENT_DOCUMENT_VAR]: options.dev ? ("false" as const) : ("true" as const),
   };
 
   return stage === "prod"

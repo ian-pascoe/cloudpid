@@ -9,6 +9,8 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import { flow } from "effect/Function";
+import { type AccessGuard, guardAccess } from "./access.ts";
 
 /** The client document's path: public on every deployed stage. */
 export const CLIENT_DOCUMENT_PATH = "/oauth/mcp/client.json";
@@ -126,3 +128,11 @@ export const serveSignInPaths = <E, R>(
 
     return notFound;
   });
+
+/**
+ * What the main Worker wraps its routes in: the sign-in paths first, then the Access guard (`guardAccess`) for every
+ * other request. The order is the point: a form of a public path must meet the router's 404, never the guard's answer
+ * and never a route behind it. `worker.ts` builds its `fetch` with this, and the test of the composition is what keeps
+ * the two from being swapped.
+ */
+export const guardedRoutes = (guard: AccessGuard) => flow(guardAccess(guard), serveSignInPaths);

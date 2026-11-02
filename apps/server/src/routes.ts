@@ -12,6 +12,8 @@ const ATTACHMENT_PATH = new RegExp(`^/sessions/(${SESSION_ID})/attachments/([^/]
 
 const ASSETS_PREFIX = "/assets/";
 
+// Normalises through `URL`: dot segments and `%2e` are resolved, and a bare `//…` is read as a host. The public sign-in paths
+// are matched on the path as it was sent instead (`rawPathOf`, sign-in-routes.ts); do not unify the two.
 const pathOf = (request: HttpServerRequest.HttpServerRequest) =>
   new URL(request.url, "http://localhost").pathname;
 

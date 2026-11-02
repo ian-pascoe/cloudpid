@@ -9,7 +9,6 @@ import * as Namespace from "alchemy/Namespace";
 import * as Command from "alchemy/Command";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Context from "effect/Context";
-import { flow } from "effect/Function";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Layer from "effect/Layer";
@@ -20,14 +19,8 @@ import { connectSession } from "./connect.ts";
 import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { accessProps } from "./access-props.ts";
 import { bypassAccessProps } from "./bypass-access.ts";
-import { serveSignInPaths } from "./sign-in-routes.ts";
-import {
-  type GuardEnv,
-  guardAccess,
-  guardFromEnv,
-  loadTeamKeysFromAccess,
-  teamKeys,
-} from "./access.ts";
+import { guardedRoutes } from "./sign-in-routes.ts";
+import { type GuardEnv, guardFromEnv, loadTeamKeysFromAccess, teamKeys } from "./access.ts";
 import { type AssetLayer, serveAsset } from "./assets.ts";
 import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
 import { buildUpkeep } from "./registry/builds.ts";
@@ -158,8 +151,9 @@ const browserBinding = Effect.gen(function* () {
  */
 const props = Effect.gen(function* () {
   const stage = Option.getOrElse(yield* Effect.serviceOption(Alchemy.Stage), () => "runtime");
+  // Read once, and passed to everything below. Where the bundle runs the props only matter at deploy time, and there is
+  // no context to read.
   const runtime = globalThis.__ALCHEMY_RUNTIME__ === true;
-  // Where the bundle runs the props only matter at deploy time, and there is no context to read.
   const dev = runtime ? false : (yield* AlchemyContext).dev;
   const { label, access, env: deploymentEnv, ...workerProps } = deployment(stage, { dev });
 
@@ -170,7 +164,8 @@ const props = Effect.gen(function* () {
       type: "self_hosted",
       policies: access.policies,
     }).pipe(Namespace.push("Server")),
-    runtime: globalThis.__ALCHEMY_RUNTIME__ === true,
+    runtime,
+    dev,
   });
 
   // The `<label>` of the App sandbox's `<hash>--<label>` View URLs, set on non-prod stages only: prod's Views have no
@@ -181,7 +176,8 @@ const props = Effect.gen(function* () {
   // id are vars of the Worker. Declared under `Server/` like the Worker's own application.
   const mcpAccess = yield* mcpAccessProps({
     stage,
-    runtime: globalThis.__ALCHEMY_RUNTIME__ === true,
+    runtime,
+    dev,
     declare: {
       serviceToken: (tokenProps) =>
         Cloudflare.Access.ServiceToken(LOCAL_AGENT_TOKEN_ID, tokenProps).pipe(
@@ -197,6 +193,7 @@ const props = Effect.gen(function* () {
   yield* bypassAccessProps({
     stage,
     runtime,
+    dev,
     declare: (applicationProps) =>
       Cloudflare.Access.Application("Bypass", applicationProps).pipe(Namespace.push("Server")),
   });
@@ -291,19 +288,18 @@ export default class Server extends Cloudflare.Worker<Server>()(
       },
     });
 
-    // The guard of every route (docs/architecture/mcp-sign-in.md → The Access guard): the Worker verifies the Access
+    // The two public sign-in paths go first, ahead of the guard: a bypass application reaches further than the two paths
+    // it names, and no other form of them may reach the single-page app's fallback or the assets (`guardedRoutes`,
+    // sign-in-routes.ts). Every form is a 404 until #450.
+    //
+    // The guard of every other route (docs/architecture/mcp-sign-in.md → The Access guard): the Worker verifies the Access
     // assertion itself and refuses the rest, so a request that reached it some other way (a bypass application's wider
     // paths, a service binding) gets a 403. The deploy put its vars in the Worker's environment.
     // SAFETY: the deploy sets these vars as strings (`guardVars`), and nothing else puts a value under their names.
-    const accessGuard = guardAccess({
+    const guard = guardedRoutes({
       ...guardFromEnv(worker as GuardEnv),
       keys: teamKeys(loadTeamKeysFromAccess),
     });
-
-    // The two public sign-in paths go first, ahead of the guard: a bypass application reaches further than the two paths
-    // it names, and no other form of them may reach the single-page app's fallback or the assets (sign-in-routes.ts).
-    // Every form is a 404 until #450.
-    const guard = flow(accessGuard, serveSignInPaths);
 
     // SAFETY: the Worker's assets are bound as `ASSETS` (the Fetcher of the asset layer), as the deploy declares them.
     const assets = worker.ASSETS as AssetLayer;

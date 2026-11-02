@@ -4,7 +4,6 @@
 // there an OAuth token minted for `/mcp`, or the service token, would open `/` and `/rpc` too (#419, "shape B").
 // @effect-diagnostics missingPipeableSignature:off -- plain functions of the stack's props.
 
-import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Effect from "effect/Effect";
 import { OWNER_EMAIL, appOrigin, stageLabel } from "./deployment.ts";
 
@@ -61,7 +60,7 @@ export const MCP_OAUTH_CONFIGURATION = {
  * subdomain>.workers.dev` elsewhere. The Worker's script name has to be known when the stack is evaluated, which
  * `appOrigin` (checked on every deploy) gives.
  */
-export const mcpHost = (stage: string): string => new URL(appOrigin(stage)).host;
+export const appHost = (stage: string): string => new URL(appOrigin(stage)).host;
 
 /**
  * The MCP endpoint's Access application, `self_hosted` with `public` destination `<host>/mcp` (which also covers its
@@ -75,7 +74,7 @@ export const mcpHost = (stage: string): string => new URL(appOrigin(stage)).host
 export const mcpApplicationProps = <TokenId>(stage: string, tokenId: TokenId) =>
   ({
     type: "self_hosted",
-    destinations: [{ type: "public", uri: `${mcpHost(stage)}${MCP_PATH}` }],
+    destinations: [{ type: "public", uri: `${appHost(stage)}${MCP_PATH}` }],
     policies: [
       { decision: "allow", include: [{ email: OWNER_EMAIL }] },
       { decision: "non_identity", include: [{ serviceToken: tokenId }] },
@@ -98,6 +97,8 @@ export const mcpAccessProps = <
 >(options: {
   readonly stage: string;
   readonly runtime: boolean;
+  /** Whether the stack is planned by `alchemy dev` (`AlchemyContext.dev`), which the caller reads once. */
+  readonly dev: boolean;
   readonly declare: {
     readonly serviceToken: (
       props: ReturnType<typeof localAgentTokenProps>,
@@ -110,9 +111,7 @@ export const mcpAccessProps = <
   Effect.gen(function* () {
     if (options.runtime) return { vars: {} };
 
-    const { dev } = yield* AlchemyContext;
-
-    if (dev) return { vars: {} };
+    if (options.dev) return { vars: {} };
 
     const token = yield* options.declare.serviceToken(localAgentTokenProps(options.stage));
 
