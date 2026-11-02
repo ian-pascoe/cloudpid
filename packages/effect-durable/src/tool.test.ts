@@ -47,7 +47,7 @@ describe("defineEffectTool", () => {
     expect(resultText(await lastToolResult())).toBe("rolled a d6");
   });
 
-  it("refuses a model-facing name that is not snake_case", () => {
+  it("refuses a model-facing name that is neither snake_case nor an MCP tool name", () => {
     const camel = defineEffectTool({
       name: "rollDie",
       description: "Roll one die",
@@ -55,7 +55,9 @@ describe("defineEffectTool", () => {
       execute: () => Effect.succeed({}),
     });
 
-    expect(() => Effect.runSync(camel)).toThrow("Tool name rollDie is not snake_case");
+    expect(() => Effect.runSync(camel)).toThrow(
+      "Tool name rollDie is not snake_case or an MCP tool name",
+    );
   });
 
   it("accepts an MCP tool's `mcp__<server>__<tool>` as the one exception", () => {

@@ -6,34 +6,9 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
+import { matchesToolPattern } from "./tool-pattern.ts";
 import type { McpResolvedServer } from "./mcp-server-set.ts";
 import type { McpExposure, McpServerEntry } from "./mcp-servers.ts";
-
-/** Whether tool `name` matches `pattern`, where `*` matches any run of characters, and nothing else is special. */
-export const matchesMcpPattern = (pattern: string, name: string): boolean => {
-  const parts = pattern.split("*");
-  const [first = "", ...rest] = parts;
-
-  if (rest.length === 0) return pattern === name;
-
-  const last = rest[rest.length - 1] ?? "";
-  const middle = rest.slice(0, -1);
-
-  if (!name.startsWith(first) || name.length < first.length + last.length) return false;
-
-  let at = first.length;
-  const end = name.length - last.length;
-
-  for (const part of middle) {
-    const found = name.indexOf(part, at);
-
-    if (found === -1 || found + part.length > end) return false;
-
-    at = found + part.length;
-  }
-
-  return name.endsWith(last) && at <= end;
-};
 
 /** The keys of an MCP server entry that decide Exposure. */
 export type McpExposureKeys = Pick<McpServerEntry, "exposure" | "toolExposure">;
@@ -71,7 +46,7 @@ const decidingKey = (
   }
 
   return Option.map(
-    Arr.findFirst(keys, (key) => key.includes("*") && matchesMcpPattern(key, tool)),
+    Arr.findFirst(keys, (key) => key.includes("*") && matchesToolPattern(key, tool)),
     (key) => [{ kind: "pattern", key }, toolExposure[key] ?? "hidden"] as const,
   );
 };
@@ -101,7 +76,7 @@ export const resolveExposure = (input: {
   const lifted =
     modelName === undefined
       ? Option.none()
-      : Arr.findFirst(offered, (pattern) => matchesMcpPattern(pattern, modelName));
+      : Arr.findFirst(offered, (pattern) => matchesToolPattern(pattern, modelName));
 
   return Option.isSome(lifted)
     ? { exposure: "direct", reason: { kind: "offered", pattern: lifted.value, from: exposure } }
@@ -130,51 +105,54 @@ export type McpWidening =
    */
   | { readonly kind: "key_ahead"; readonly key: string; readonly over: string | null };
 
-type Rule = {
-  readonly key: string;
-  readonly exposure: McpExposure;
-  /** Where it stands: exact names first, then patterns in the order written, then the server's `exposure`. */
-  readonly rank: number;
-  readonly exact: boolean;
-};
+/**
+ * One rule that decides a tool's Exposure: an exact name (which beats every pattern), a pattern (the first that matches
+ * wins, so `index` is its place among the patterns) or the server's own `exposure`, which matches every tool and is last.
+ */
+type Rule =
+  | { readonly kind: "exact"; readonly key: string; readonly exposure: McpExposure }
+  | {
+      readonly kind: "pattern";
+      readonly key: string;
+      readonly exposure: McpExposure;
+      readonly index: number;
+    }
+  | { readonly kind: "default"; readonly key: ""; readonly exposure: McpExposure };
 
-const DEFAULT_KEY = "";
-
-/** The rules of an entry in order of precedence, its server `exposure` last (as a rule that matches every tool). */
+/** The rules of an entry in order of precedence. */
 const rulesOf = (server: McpReach["server"]): ReadonlyArray<Rule> => {
   const keys = Record.keys(server.toolExposure);
+  const exposureOf = (key: string): McpExposure => server.toolExposure[key] ?? "hidden";
 
   return [
     ...Arr.map(
       Arr.filter(keys, (key) => !key.includes("*")),
-      (key) => ({
-        key,
-        exposure: server.toolExposure[key] ?? "hidden",
-        rank: -1,
-        exact: true,
-      }),
+      (key): Rule => ({ kind: "exact", key, exposure: exposureOf(key) }),
     ),
     ...Arr.map(
       Arr.filter(keys, (key) => key.includes("*")),
-      (key, index) => ({
-        key,
-        exposure: server.toolExposure[key] ?? "hidden",
-        rank: index,
-        exact: false,
-      }),
+      (key, index): Rule => ({ kind: "pattern", key, exposure: exposureOf(key), index }),
     ),
-    { key: DEFAULT_KEY, exposure: server.exposure, rank: Infinity, exact: false },
+    { kind: "default", key: "", exposure: server.exposure },
   ];
 };
 
-const isDefault = (rule: Rule): boolean => rule.rank === Infinity;
+/** The rule of `rules` that is `rule`'s own key, whatever its Exposure. */
+const findRule = (rules: ReadonlyArray<Rule>, rule: Rule): Rule | undefined =>
+  Option.getOrUndefined(
+    Arr.findFirst(rules, (other) => other.kind === rule.kind && other.key === rule.key),
+  );
 
 /** Whether `rule` stands ahead of `over`, with some tool both could decide. Patterns are taken to overlap. */
 const couldWinOver = (rule: Rule, over: Rule): boolean => {
-  if (isDefault(rule) || over.exact || rule.rank >= over.rank) return false;
+  if (rule.kind === "default" || over.kind === "exact") return false;
 
-  // An exact name is decided as `rule` says only where `over` matches that very name; two patterns are not compared.
-  return rule.exact && !isDefault(over) ? matchesMcpPattern(over.key, rule.key) : true;
+  if (rule.kind === "exact") {
+    // An exact name is decided as `rule` says only where `over` matches that very name.
+    return over.kind === "default" || matchesToolPattern(over.key, rule.key);
+  }
+
+  return over.kind === "default" || rule.index < over.index;
 };
 
 /** What switching nothing on and hiding everything looks like: where a server that had no entry started from. */
@@ -207,19 +185,14 @@ export const checkMcpWidening = (
   const rulesBefore = rulesOf(was);
   const rulesAfter = rulesOf(after.server);
 
-  const inAfter = (rule: Rule): Rule | undefined =>
-    Option.getOrUndefined(
-      Arr.findFirst(rulesAfter, (other) => other.key === rule.key && other.exact === rule.exact),
-    );
-
   const loosened = new Set<string>();
 
   for (const rule of rulesBefore) {
     if (rule.exposure !== "hidden") continue;
 
-    const now = inAfter(rule);
+    const now = findRule(rulesAfter, rule);
 
-    if (isDefault(rule)) {
+    if (rule.kind === "default") {
       if (now?.exposure !== "hidden") found.push({ kind: "exposure_unhidden" });
     } else if (now === undefined) {
       found.push({ kind: "key_removed", key: rule.key });
@@ -230,7 +203,7 @@ export const checkMcpWidening = (
   }
 
   for (const kept of rulesBefore) {
-    const over = inAfter(kept);
+    const over = findRule(rulesAfter, kept);
 
     if (kept.exposure !== "hidden" || over?.exposure !== "hidden") continue;
 
@@ -239,21 +212,16 @@ export const checkMcpWidening = (
         continue;
       }
 
-      const earlier = Arr.findFirst(
-        rulesBefore,
-        (other) => other.key === rule.key && other.exact === rule.exact,
-      );
+      const earlier = findRule(rulesBefore, rule);
 
       const alreadyAhead =
-        Option.isSome(earlier) &&
-        earlier.value.exposure !== "hidden" &&
-        couldWinOver(earlier.value, kept);
+        earlier !== undefined && earlier.exposure !== "hidden" && couldWinOver(earlier, kept);
 
       if (!alreadyAhead) {
         found.push({
           kind: "key_ahead",
           key: rule.key,
-          over: isDefault(kept) ? null : kept.key,
+          over: kept.kind === "default" ? null : kept.key,
         });
       }
     }

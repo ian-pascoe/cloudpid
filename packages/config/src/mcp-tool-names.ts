@@ -6,6 +6,7 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
+import * as Result from "effect/Result";
 import { sha256Hex } from "./mcp-connection.ts";
 import { normalizeMcpName } from "./mcp-servers.ts";
 
@@ -21,7 +22,7 @@ const CUT_LENGTH = MAX_MCP_TOOL_NAME_LENGTH - HASH_LENGTH - 1;
 /** What stands for a tool part that has no letter or digit (a tool called `-`). */
 const EMPTY_TOOL_PART = "tool";
 
-/** The server part when the name has no room for a tool part at all (a server name of 49 characters or more). */
+/** The server part when the name has no room for a tool part at all (a server name of 48 characters or more). */
 const CUT_SERVER_LENGTH = 44;
 
 /**
@@ -108,6 +109,24 @@ const PI_TOOL_NAME = /^mcp__(.+?)__(.+)$/;
 
 const piPart = (text: string): string => text.replaceAll(/[^A-Za-z0-9_]/g, "_");
 
+/** The longest of `servers` whose pi prefix `name` starts with, with that prefix. */
+const longestMatch = (
+  name: string,
+  servers: ReadonlyArray<string>,
+): { readonly server: string; readonly prefix: string } | undefined =>
+  Option.getOrUndefined(
+    Arr.head(
+      Arr.sort(
+        Arr.filterMap(servers, (server) => {
+          const prefix = `mcp__${piPart(server)}__`;
+
+          return name.startsWith(prefix) ? Result.succeed({ server, prefix }) : Result.failVoid;
+        }),
+        Order.flip(Order.mapInput(Order.Number, ({ server }: { server: string }) => server.length)),
+      ),
+    ),
+  );
+
 /**
  * A pi transcript's MCP tool name in cloudpid's spelling (`mcp__github__getUser` → `mcp__github__get_user`), through
  * the same functions as a live name; a name that is not an MCP tool's is returned as it is. `servers` are the configured
@@ -116,19 +135,12 @@ const piPart = (text: string): string => text.replaceAll(/[^A-Za-z0-9_]/g, "_");
  * server's own, so such names stay as pi wrote them or as a new tool's.
  */
 export const mcpToolNameFromPi = (name: string, servers: ReadonlyArray<string> = []): string => {
-  const known = Option.getOrUndefined(
-    Arr.head(
-      Arr.sort(
-        Arr.filter(servers, (server) => name.startsWith(`mcp__${piPart(server)}__`)),
-        Order.flip(Order.mapInput(Order.Number, (server: string) => server.length)),
-      ),
-    ),
-  );
+  const known = longestMatch(name, servers);
 
   if (known !== undefined) {
-    const tool = name.slice(`mcp__${piPart(known)}__`.length);
+    const tool = name.slice(known.prefix.length);
 
-    return tool === "" ? name : mcpToolName(known, tool);
+    return tool === "" ? name : mcpToolName(known.server, tool);
   }
 
   const match = PI_TOOL_NAME.exec(name);

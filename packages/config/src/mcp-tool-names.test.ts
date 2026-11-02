@@ -8,6 +8,9 @@ import {
   mcpToolPart,
 } from "./mcp-tool-names.ts";
 
+const isMcpToolName = (name: string): boolean =>
+  /^mcp__[a-z0-9_]+__[a-z0-9]+(?:_[a-z0-9]+)*$/.test(name);
+
 const hash = (server: string, tool: string): string => sha256Hex(`${server}\0${tool}`).slice(0, 8);
 
 describe("mcpToolPart", () => {
@@ -102,6 +105,27 @@ describe("mcpToolName", () => {
 
       expect(name).toBe(`${prefix}${tool}_${hash("s", tool)}`);
       expect(name).toHaveLength(64);
+    });
+
+    // `mcp__` and `__` take 7 characters, so a server of 48 leaves no room for a tool part under the cut of 55.
+    it.each([
+      [47, false],
+      [47, true],
+      [48, false],
+      [48, true],
+      [49, false],
+      [49, true],
+    ])("treats a server of %i characters, collision %s", (length, collides) => {
+      const long = "x".repeat(length);
+      const name = mcpToolName(long, "a".repeat(30), { collides });
+
+      expect(name).toHaveLength(length === 47 ? 64 : 5 + 44 + 2 + 8);
+      expect(name).toBe(
+        length === 47
+          ? `${`mcp__${long}__${"a".repeat(30)}`.slice(0, 55)}_${hash(long, "a".repeat(30))}`
+          : `mcp__${"x".repeat(44)}__${hash(long, "a".repeat(30))}`,
+      );
+      expect(isMcpToolName(name)).toBe(true);
     });
 
     it("keeps the shape of a name whose server leaves no room for a tool part", () => {

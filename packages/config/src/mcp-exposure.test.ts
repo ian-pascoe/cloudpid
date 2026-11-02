@@ -2,43 +2,9 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import {
-  checkMcpWidening,
-  matchesMcpPattern,
-  type McpReach,
-  resolveExposure,
-} from "./mcp-exposure.ts";
+import { checkMcpWidening, type McpReach, resolveExposure } from "./mcp-exposure.ts";
 import { resolveMcpServerSet } from "./mcp-server-set.ts";
 import type { McpExposure } from "./mcp-servers.ts";
-
-describe("matchesMcpPattern", () => {
-  it.each([
-    ["get_user", "get_user", true],
-    ["get_user", "get_users", false],
-    ["*", "", true],
-    ["*", "anything", true],
-    ["get_*", "get_user", true],
-    ["get_*", "get_", true],
-    ["get_*", "set_user", false],
-    ["*_user", "get_user", true],
-    ["*_user", "get_users", false],
-    ["a*b*c", "abc", true],
-    ["a*b*c", "a--b--c", true],
-    ["a*b*c", "a--c--b", false],
-    ["a*a", "a", false],
-    ["a*a", "aa", true],
-    ["a*b*b", "ab", false],
-    ["a*b*b", "abb", true],
-    ["*a*", "bab", true],
-    ["a.c", "abc", false],
-    ["a.c", "a.c", true],
-    ["a?", "ab", false],
-    ["get*User", "getUser", true],
-    ["get*User", "getuser", false],
-  ])("matches %s against %s: %s", (pattern, name, matches) => {
-    expect(matchesMcpPattern(pattern, name)).toBe(matches);
-  });
-});
 
 const keys = (exposure: McpExposure, toolExposure: Record<string, McpExposure> = {}) => ({
   exposure,
