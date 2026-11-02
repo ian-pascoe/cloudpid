@@ -159,7 +159,7 @@ What the owner, or the agent for the owner, sets up for Sessions to work in, und
 _Avoid_: Project, template, Machine, sandbox
 
 **Scope**:
-What a setting, Variable, Secret or Skill is kept for: Global, or one Environment. The Environment's Scope wins over Global.
+What a setting, Variable, Secret, Skill or MCP server is kept for: Global, or one Environment. The Environment's Scope wins over Global.
 _Avoid_: Level, layer, context
 
 **Global**:
@@ -473,8 +473,12 @@ An interactive page an MCP server declares for one of its tools, which cloudpid 
 _Avoid_: Widget, UI resource (the spec's name for its HTML), plugin
 
 **App View**:
-One MCP App shown for one tool call: live in the call's card, or at full size in an App Pane, while it is the newest of its server's in the conversation or the owner reopened it; otherwise collapsed to the call's result and its last App context. It may call its own server's tools but reaches the model only through an App message the owner sends and its App context.
+One MCP App shown for one tool call: live in the call's card, or at full size in an App Pane, while its call is among its server's newest App calls in the conversation or the owner reopened it; otherwise collapsed to the call's result and its last App context. It may call its own server's tools but reaches the model only through an App message the owner sends and its App context.
 _Avoid_: View (alone, beside a Live View), widget, iframe, app (alone)
+
+**App record**:
+What a Session keeps, outside History, of one tool call that has an MCP App, so that its App View can be shown again.
+_Avoid_: App state, View cache
 
 **App Pane**:
 A Pane, one per App View the owner moves there, showing it at full size.
