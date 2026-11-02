@@ -33,10 +33,10 @@ export const WORKERS_DEV_SUBDOMAIN = "ian-g-pascoe";
 export const STAGE_LABEL_VAR = "CLOUDPID_STAGE_LABEL";
 
 /** What a non-prod stage's main Worker is called, before its label. */
-const WORKER_NAME_PREFIX = "cloudpid-server-";
+export const WORKER_NAME_PREFIX = "cloudpid-server-";
 
 /** The longest label: with {@link WORKER_NAME_PREFIX} the name fits a DNS label (63 characters) with room to spare. */
-const MAX_LABEL_LENGTH = 35;
+export const MAX_LABEL_LENGTH = 35;
 
 /** Why `label`, the label of `stage`, is refused; undefined when it is fine. */
 const labelRefusal = (stage: string, label: string): string | undefined => {
@@ -73,13 +73,19 @@ export const stageLabel = (stage: string): string => {
 };
 
 /**
+ * The app origin of the non-prod stage whose {@link stageLabel} is `label`, which the App sandbox gets from the label in
+ * a View's hostname alone. `label` must already be a valid label (`stageLabel`'s output); the sandbox's hostname parser
+ * guarantees it. A label that reads "prod" is a non-prod stage's, as `PROD` is (only the exact stage `prod` is prod).
+ */
+export const labelOrigin = (label: string): string =>
+  `https://${WORKER_NAME_PREFIX}${label}.${WORKERS_DEV_SUBDOMAIN}.workers.dev`;
+
+/**
  * The origin the stage's main Worker is served on, which the App sandbox derives from a View's hostname: `prod`'s
  * custom domain, or `https://cloudpid-server-<label>.<{@link WORKERS_DEV_SUBDOMAIN}>.workers.dev`.
  */
 export const appOrigin = (stage: string): string =>
-  stage === "prod"
-    ? `https://${PRODUCTION_DOMAIN}`
-    : `https://${WORKER_NAME_PREFIX}${stageLabel(stage)}.${WORKERS_DEV_SUBDOMAIN}.workers.dev`;
+  stage === "prod" ? `https://${PRODUCTION_DOMAIN}` : labelOrigin(stageLabel(stage));
 
 /**
  * The main Worker's resolved `url`, once it is `appOrigin(stage)`; throws otherwise, so a deploy whose Worker is

@@ -100,6 +100,7 @@ infra/                    alchemy stack (alchemy.run.ts): Workers, DOs, Containe
 apps/server/              main Worker: Session, Registry, McpHost DOs; HTTP/WS API; static assets.
                           Workspaces Worker (src/workspace): Workspace DO
 apps/codemode-sandbox/    codemode sandbox Worker
+apps/app-sandbox/         App sandbox Worker (public, prod only): the MCP App proxy page on *.ianpascoe.app
 apps/browser/             browser Worker: BrowserHost DO (agents/browser on Browser Run), ContainerPreviews entrypoint
 apps/mcp-worker/          McpWorker: McpEngine (the MCP SDK, stateless) and McpServer (the MCP endpoint, /mcp)
 apps/web/                 Vite + React UI
