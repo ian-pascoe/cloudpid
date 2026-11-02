@@ -24,6 +24,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createInterface } from "node:readline";
+// Erased by type stripping: the image needs no workspace file.
+import type { McpBridgeChild, McpBridgeEra, McpBridgeStatus } from "../src/mcp-bridge.ts";
 
 // These repeat `@cloudpid/sandbox-image/mcp-bridge`.
 const LEVEL = 1;
@@ -68,7 +70,7 @@ type JsonObject = { [key: string]: Json };
 
 type RequestId = string | number;
 
-type Era = "legacy" | "modern";
+type Era = McpBridgeEra;
 
 type Config = {
   readonly command: string;
@@ -116,10 +118,11 @@ type Child = {
   discover: Json | undefined;
   readonly pending: Map<number, Pending>;
   readonly probes: Map<number, (message: JsonObject) => void>;
-  readonly queued: string[];
+  readonly queued: JsonObject[];
   readonly exitWaiters: Array<() => void>;
   getStream: ServerResponse | undefined;
-  stderr: string;
+  // The end of what it wrote to stderr (and the bridge's notes), at most STDERR_LIMIT bytes.
+  stderr: Buffer;
   exit: Exit | undefined;
   // What was asked of the process (it has not exited yet), so its exit says why.
   asked: "stopped" | "replaced" | undefined;
@@ -147,7 +150,7 @@ const parseJson = (text: string): Json | undefined => {
   }
 };
 
-const child_ = (object: JsonObject, name: string): JsonObject | undefined => {
+const objectField = (object: JsonObject, name: string): JsonObject | undefined => {
   const value = object[name];
 
   return isObject(value) ? value : undefined;
@@ -248,6 +251,11 @@ const fail = (
   res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
 };
 
+const accepted = (res: ServerResponse): void => {
+  res.writeHead(202);
+  res.end();
+};
+
 const json = (res: ServerResponse, status: number, body: Json): void => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -270,8 +278,24 @@ const signalGroup = (child: Child, signal: NodeJS.Signals): void => {
   }
 };
 
+const stderrAppend = (child: Child, chunk: Buffer): void => {
+  const all = Buffer.concat([child.stderr, chunk]);
+
+  if (all.length <= STDERR_LIMIT) {
+    child.stderr = all;
+
+    return;
+  }
+
+  // Cut on a character: past the continuation bytes (10xxxxxx) the cut may have landed among.
+  let start = all.length - STDERR_LIMIT;
+
+  while (start < all.length && (all[start] ?? 0) >> 6 === 0b10) start += 1;
+  child.stderr = all.subarray(start);
+};
+
 const stderrNote = (child: Child, text: string): void => {
-  child.stderr = `${child.stderr}${text}`.slice(-STDERR_LIMIT);
+  stderrAppend(child, Buffer.from(text));
 };
 
 /** The child's exit, settled once its output has ended: every request of it is cut, nothing is answered. */
@@ -330,8 +354,8 @@ const routeTarget = (
   child: Child,
   message: JsonObject,
 ): { readonly res: ServerResponse; readonly message: JsonObject } | undefined => {
-  const params = child_(message, "params");
-  const meta = params === undefined ? undefined : child_(params, "_meta");
+  const params = objectField(message, "params");
+  const meta = params === undefined ? undefined : objectField(params, "_meta");
   const pendings = [...child.pending.entries()];
 
   // A listen's notifications name it by its id, which the bridge rewrote: back to the caller's own.
@@ -414,7 +438,7 @@ const onChildMessage = (child: Child, message: JsonObject): void => {
   } else if (child.era === "modern") {
     stderrNote(child, `[bridge] a message for no stream was dropped: ${incoming.method}\n`);
   } else {
-    child.queued.push(JSON.stringify(message));
+    child.queued.push(message);
 
     if (child.queued.length > QUEUE_LIMIT) child.queued.shift();
   }
@@ -460,7 +484,7 @@ const spawnChild = (key: string, config: Config, era: Era | undefined): Child =>
     queued: [],
     exitWaiters: [],
     getStream: undefined,
-    stderr: "",
+    stderr: Buffer.alloc(0),
     exit: undefined,
     asked: undefined,
     discarded: false,
@@ -471,8 +495,7 @@ const spawnChild = (key: string, config: Config, era: Era | undefined): Child =>
   log(`spawn ${spawnId}: ${config.command}`);
 
   proc.stdin?.on("error", () => {});
-  proc.stderr?.setEncoding("utf8");
-  proc.stderr?.on("data", (chunk: string) => stderrNote(child, chunk));
+  proc.stderr?.on("data", (chunk: Buffer) => stderrAppend(child, chunk));
 
   if (proc.stdout !== null) {
     createInterface({ input: proc.stdout, crlfDelay: Infinity }).on("line", (line) =>
@@ -594,7 +617,7 @@ const readBody = (req: IncomingMessage, res: ServerResponse): Promise<string | u
   });
 
 const envelopeOf = (body: JsonObject): JsonObject | undefined => {
-  const meta = child_(child_(body, "params") ?? {}, "_meta");
+  const meta = objectField(objectField(body, "params") ?? {}, "_meta");
 
   if (meta === undefined) return undefined;
 
@@ -617,7 +640,11 @@ const forwardRequest = (
   headers: { [name: string]: string } = {},
 ): void => {
   const bridgeId = nextBridgeId++;
-  const progressToken = child_(child_(message.body, "params") ?? {}, "_meta")?.["progressToken"];
+
+  const progressToken = objectField(objectField(message.body, "params") ?? {}, "_meta")?.[
+    "progressToken"
+  ];
+
   const envelope = child.era === "modern" ? envelopeOf(message.body) : undefined;
 
   openSse(res, headers);
@@ -657,7 +684,7 @@ const forwardPlain = (child: Child, message: Incoming, res: ServerResponse): voi
 
   // The caller's `requestId` is its own: it names the one request of that id in flight, when there is one.
   if (message.kind === "notification" && message.method === "notifications/cancelled") {
-    const params = child_(body, "params");
+    const params = objectField(body, "params");
     const requestId = params?.["requestId"];
 
     const found = [...child.pending.entries()].filter(
@@ -667,8 +694,7 @@ const forwardPlain = (child: Child, message: Incoming, res: ServerResponse): voi
     const only = found.length === 1 ? found[0] : undefined;
 
     if (params === undefined || only === undefined) {
-      res.writeHead(202);
-      res.end();
+      accepted(res);
 
       return;
     }
@@ -677,8 +703,7 @@ const forwardPlain = (child: Child, message: Incoming, res: ServerResponse): voi
   }
 
   send(child, body);
-  res.writeHead(202);
-  res.end();
+  accepted(res);
 };
 
 const deliver = (
@@ -728,8 +753,7 @@ const handleModern = async (call: Call, message: Incoming, res: ServerResponse):
   if (message.kind !== "request") {
     // Nothing to cancel or answer at a child that is not there.
     if (live === undefined) {
-      res.writeHead(202);
-      res.end();
+      accepted(res);
     } else {
       res.setHeader(SPAWN_HEADER, live.spawnId);
       forwardPlain(live, message, res);
@@ -764,6 +788,12 @@ const handleModern = async (call: Call, message: Incoming, res: ServerResponse):
   forwardRequest(child, message, res);
 };
 
+/** A session that is not the live child's: 404, which the spec has a client answer with a new `initialize`. */
+const staleSession = (res: ServerResponse, live: Child | undefined, id: RequestId | null): void => {
+  if (live !== undefined) res.setHeader(SPAWN_HEADER, live.spawnId);
+  fail(res, 404, -32001, "session not found", id);
+};
+
 const handlePost = async (req: IncomingMessage, res: ServerResponse, call: Call): Promise<void> => {
   const text = await readBody(req, res);
 
@@ -794,8 +824,7 @@ const handlePost = async (req: IncomingMessage, res: ServerResponse, call: Call)
 
   if (call.sessionId !== undefined) {
     if (live === undefined || live.spawnId !== call.sessionId) {
-      if (live !== undefined) res.setHeader(SPAWN_HEADER, live.spawnId);
-      fail(res, 404, -32001, "session not found", message.kind === "request" ? message.id : null);
+      staleSession(res, live, message.kind === "request" ? message.id : null);
 
       return;
     }
@@ -836,8 +865,7 @@ const handleGet = (res: ServerResponse, call: Call): void => {
   }
 
   if (live === undefined || live.spawnId !== call.sessionId) {
-    if (live !== undefined) res.setHeader(SPAWN_HEADER, live.spawnId);
-    fail(res, 404, -32001, "session not found");
+    staleSession(res, live, null);
 
     return;
   }
@@ -851,7 +879,7 @@ const handleGet = (res: ServerResponse, call: Call): void => {
     if (live.getStream === res) live.getStream = undefined;
   });
 
-  for (const line of live.queued.splice(0)) res.write(`event: message\ndata: ${line}\n\n`);
+  for (const message of live.queued.splice(0)) writeSse(res, message);
 };
 
 const handleMcp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -890,7 +918,7 @@ const firstHeader = (req: IncomingMessage, name: string): string | undefined => 
 // ---- Control ----
 
 // What `GET /_bridge/status` lists (`McpBridgeChild`): a property that is `undefined` is left out of the JSON.
-const statusOf = (child: Child) => ({
+const statusOf = (child: Child): McpBridgeChild => ({
   key: child.key,
   spawnId: child.spawnId,
   command: child.config.command,
@@ -905,7 +933,7 @@ const statusOf = (child: Child) => ({
   getStream: child.getStream !== undefined,
   queued: child.queued.length,
   exit: child.exit,
-  stderrTail: child.stderr,
+  stderrTail: child.stderr.toString("utf8"),
 });
 
 const handleControl = async (
@@ -919,8 +947,10 @@ const handleControl = async (
     // Never spawns: the live children, then the last exit of each key without one.
     const all = [...children.values(), ...exited.values()];
 
+    const status: McpBridgeStatus = { level: LEVEL, children: all.map(statusOf) };
+
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ level: LEVEL, children: all.map(statusOf) }));
+    res.end(JSON.stringify(status));
   } else if (path === STOP_PATH && req.method === "POST") {
     const body = parseJson((await readBody(req, res)) ?? "");
     const key = isObject(body) ? body["key"] : undefined;

@@ -96,6 +96,9 @@ const call = (id, params) => {
       return reply(id, text("cancelled", { structuredContent: { cancelled } }));
     case "stats":
       return reply(id, text("stats", { structuredContent: { discoverCalls } }));
+    case "noisy":
+      // Multi-byte characters, more bytes than the bridge keeps (and the chunks may split one).
+      return process.stderr.write(`${"é".repeat(60_000)}end\n`, () => reply(id, text("noisy")));
     case "crash":
       process.stderr.write("fixture crashing\n");
 

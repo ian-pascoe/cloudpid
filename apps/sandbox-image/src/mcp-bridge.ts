@@ -55,7 +55,7 @@ export const MCP_BRIDGE_STATUS_PATH = "/_bridge/status";
 /** `POST` `{ key }`: stops one child (`{ stopped }`). Never spawns a child. */
 export const MCP_BRIDGE_STOP_PATH = "/_bridge/stop";
 
-/** The most of a child's stderr the bridge keeps and reports, in characters (the end of it). */
+/** The most of a child's stderr the bridge keeps and reports, in bytes (the end of it, cut on a UTF-8 character). */
 export const MCP_BRIDGE_STDERR_LIMIT = 65_536;
 
 /** How long the bridge waits for a child's answer to its `server/discover` probe before it reads the child as Legacy. */
@@ -76,9 +76,9 @@ export type McpBridgeExit = {
   readonly code: number | null;
   readonly signal: string | null;
   /** `stopped` for `POST /_bridge/stop`, `replaced` for a Legacy `initialize` that spawned again, else absent. */
-  readonly reason?: "stopped" | "replaced";
+  readonly reason?: "stopped" | "replaced" | undefined;
   /** A spawn that failed (`ENOENT` and the like). */
-  readonly error?: string;
+  readonly error?: string | undefined;
   readonly at: string;
 };
 
@@ -88,8 +88,8 @@ export type McpBridgeChild = {
   readonly spawnId: string;
   readonly command: string;
   readonly args: ReadonlyArray<string>;
-  readonly cwd?: string;
-  readonly pid?: number;
+  readonly cwd?: string | undefined;
+  readonly pid?: number | undefined;
   /** `unknown` until the child was probed or the host's hint named it. */
   readonly era: McpBridgeEra | "unknown";
   readonly state: "running" | "exited";
@@ -98,7 +98,7 @@ export type McpBridgeChild = {
   readonly listens: number;
   readonly getStream: boolean;
   readonly queued: number;
-  readonly exit?: McpBridgeExit;
+  readonly exit?: McpBridgeExit | undefined;
   readonly stderrTail: string;
 };
 

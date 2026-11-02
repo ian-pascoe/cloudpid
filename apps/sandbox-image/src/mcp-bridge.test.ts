@@ -19,6 +19,7 @@ import {
   MCP_BRIDGE_LEVEL_HEADER,
   MCP_BRIDGE_MCP_PATH,
   MCP_BRIDGE_PORT,
+  MCP_BRIDGE_PROBE_MS,
   MCP_BRIDGE_SCRIPT,
   MCP_BRIDGE_SPAWN_HEADER,
   MCP_BRIDGE_STATUS_PATH,
@@ -48,6 +49,7 @@ describe("the bridge's contract with the Workspaces Worker", () => {
     expect(constant("STDERR_LIMIT")).toBe("65_536");
     expect(MCP_BRIDGE_STDERR_LIMIT).toBe(65_536);
     expect(constant("DEFAULT_PROBE_MS")).toBe("15_000");
+    expect(MCP_BRIDGE_PROBE_MS).toBe(15_000);
 
     for (const [name, value] of [
       ["TOKEN_ENV", MCP_BRIDGE_TOKEN_ENV],
@@ -860,6 +862,23 @@ describe("a child that crashes", () => {
 
     expect(child?.state).toBe("exited");
     expect(child?.exit?.error).toContain("spawn failed");
+  });
+});
+
+describe("a child's stderr tail", () => {
+  it("is bounded in bytes, not characters, and cut on a character", async () => {
+    const server = config("modern");
+
+    await post(server, callTool(1, "noisy", {}, envelope), { era: "modern" });
+
+    const tail = (await childrenOf(server))[0]?.stderrTail ?? "";
+    const bytes = Buffer.byteLength(tail);
+
+    expect(bytes).toBeLessThanOrEqual(MCP_BRIDGE_STDERR_LIMIT);
+    // Most of the limit is kept, and what is kept is the end, with no character cut in two.
+    expect(bytes).toBeGreaterThan(MCP_BRIDGE_STDERR_LIMIT - 4);
+    expect(tail).not.toContain("\uFFFD");
+    expect(tail.endsWith("é".repeat(100) + "end\n")).toBe(true);
   });
 });
 

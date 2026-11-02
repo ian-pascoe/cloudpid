@@ -99,6 +99,10 @@ if [ -n "${CLOUDPID_MCP_BRIDGE_TOKEN:-}" ] && [ -r "$mcp_bridge" ]; then
   fi
 fi
 
+# Only the bridge holds the token (docs/architecture/mcp-connections.md → The stdio bridge): computerd, and the commands it
+# runs, are started without it.
+unset CLOUDPID_MCP_BRIDGE_TOKEN
+
 started=$SECONDS
 "$computerd" "$@" >"$scratch/out" 2>&1 &
 computerd_pid=$!

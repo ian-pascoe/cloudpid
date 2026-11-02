@@ -458,6 +458,22 @@ describe("the supervisor's MCP bridge", () => {
     expect(alive(Number(readFileSync(bridge.pid, "utf8")))).toBe(false);
   }, 15_000);
 
+  it("starts computerd without the token: only the bridge holds it", async () => {
+    const { port } = await reportServer();
+    const bridge = fakeBridgeNode();
+
+    const computerd = fakeComputerd(`echo "token=[$${MCP_BRIDGE_TOKEN_ENV}]"; exit 0`);
+
+    const run = await supervise(computerd, port, undefined, {
+      ...bridge.env,
+      [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
+    });
+
+    expect(run.stdout).toContain("token=[]\n");
+    // The bridge had it all the same.
+    expect(readFileSync(bridge.record, "utf8")).toContain("token=launch-token\n");
+  });
+
   it("stops the bridge too when the supervisor is asked to stop", async () => {
     const { reports, port } = await reportServer();
     const bridge = fakeBridgeNode();
