@@ -10,7 +10,9 @@
 // @effect-diagnostics missingPipeableSignature:off -- `byteStream` is a plain function over bytes, not a combinator.
 import type { ListItems, ListKind, McpConnection } from "@cloudpid/mcp";
 import { McpErrorWire, type McpEngineValue, ProtocolViolation } from "@cloudpid/mcp/types";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import { STREAM_HOLD_MS } from "./budget.ts";
 import type { CallContext, CallEnvironment } from "./call-context.ts";
@@ -35,11 +37,17 @@ export const malformed = (what: string) =>
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json));
 
-/** `text` with every token in `tokens` replaced, as it appears inside a JSON string. */
+/**
+ * `text` with every token in `tokens` replaced, as it appears inside a JSON string; longest first, so a token that
+ * contains another (an old one and its refresh) leaves no remainder.
+ */
 const scrubText = (text: string, tokens: ReadonlySet<string>) => {
   let scrubbed = text;
 
-  for (const token of tokens) {
+  for (const token of Arr.sort(
+    tokens,
+    Order.mapInput(Order.Number, (token: string) => -token.length),
+  )) {
     scrubbed = scrubbed.replaceAll(JSON.stringify(token).slice(1, -1), REDACTED);
   }
 

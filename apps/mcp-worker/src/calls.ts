@@ -35,6 +35,7 @@ import {
   type McpError,
   type McpErrorWire,
   McpToolDefinition,
+  type McpStructuredOutput,
   type McpToolProblem,
   ServerError,
   Unsupported,
@@ -311,6 +312,13 @@ const runToolCall = Effect.fnUntraced(function* (
 
   const { value, kind: _kind, ...meta } = sent.success;
 
+  // Checked before the value is serialized, so the stream a large one becomes, which takes the call's lease, is made
+  // last and never left behind by an abort during the check.
+  const structuredOutput =
+    tool.outputSchema !== undefined && value.isError !== true
+      ? Option.some(yield* validators.check(tool.outputSchema, value.structuredContent))
+      : Option.none<McpStructuredOutput>();
+
   const completed: Mutable<Completed> = {
     kind: "complete",
     ...meta,
@@ -318,12 +326,9 @@ const runToolCall = Effect.fnUntraced(function* (
     result: yield* toEngineValue(value, call, env),
   };
 
-  if (tool.outputSchema !== undefined && value.isError !== true) {
-    completed.structuredOutput = yield* validators.check(
-      tool.outputSchema,
-      value.structuredContent,
-    );
-  }
+  Option.map(structuredOutput, (checked) => {
+    completed.structuredOutput = checked;
+  });
 
   return completed;
 });

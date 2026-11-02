@@ -1,7 +1,9 @@
 // A stream's reads are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
+import { ServerError } from "@cloudpid/mcp/types";
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { byteStream } from "./results.ts";
+import { byteStream, scrubError } from "./results.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -53,5 +55,21 @@ describe("byteStream", () => {
     await sleep(80);
 
     expect(seen.done).toBe(1);
+  });
+});
+
+describe("scrubError", () => {
+  it("replaces a token that contains another whole, leaving no remainder", async () => {
+    const old = "token-0123";
+    const refreshed = `${old}-refreshed`;
+
+    const scrubbed = await Effect.runPromise(
+      scrubError(
+        ServerError.make({ message: `refused ${refreshed} and ${old}` }),
+        new Set([old, refreshed]),
+      ),
+    );
+
+    expect(scrubbed).toMatchObject({ message: "refused [REDACTED] and [REDACTED]" });
   });
 });

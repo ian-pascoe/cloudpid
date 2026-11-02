@@ -141,15 +141,12 @@ export const withCall = Effect.fnUntraced(function* <A, E, R>(
   env: CallEnvironment,
   use: (call: CallContext) => Effect.Effect<A, E, R>,
 ) {
-  const call = yield* openCall(prior, hooks, env);
-
-  return yield* use(call).pipe(
-    Effect.onExit((exit) =>
-      Effect.sync(() => {
-        if (Exit.isFailure(exit) || !call.handedOff()) {
-          call.lease.release();
-        }
-      }),
-    ),
+  // Opened uninterruptibly with its release attached, so no interruption can leave the lease held.
+  return yield* Effect.acquireUseRelease(openCall(prior, hooks, env), use, (call, exit) =>
+    Effect.sync(() => {
+      if (Exit.isFailure(exit) || !call.handedOff()) {
+        call.lease.release();
+      }
+    }),
   );
 });
