@@ -4,7 +4,7 @@
 // child gets them by its delegation, not its selection.
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
-import { matchesPattern } from "../patterns.ts";
+import { matchesToolPattern } from "@cloudpid/config";
 import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
 import { SKILL_SEARCH_TOOL } from "../skill-search-tool.ts";
 import { SETTINGS_TOOL_PREFIX } from "../settings.ts";
@@ -117,7 +117,7 @@ const resolveWithin = (
 
   const configured = Arr.flatMap(keys, (key) =>
     Arr.flatMap(toolsets[key], (pattern) => {
-      const found = Arr.filter(ceiling, (name) => matchesPattern(pattern, name));
+      const found = Arr.filter(ceiling, (name) => matchesToolPattern(pattern, name));
 
       if (found.length === 0) {
         warnings.push(`${key} pattern ${JSON.stringify(pattern)} matched none of your tools`);

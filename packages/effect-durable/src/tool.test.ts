@@ -8,7 +8,8 @@ import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
 import { answer, callTool, context, openFauxHarness, resultText } from "./harness.fixture.ts";
 import { ChordContext } from "./chord.ts";
-import { defineEffectTool } from "./tool.ts";
+import { mcpToolName, mcpToolNames } from "@cloudpid/config";
+import { defineEffectTool, isToolName } from "./tool.ts";
 
 const Sides = Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 20 }));
 
@@ -46,7 +47,7 @@ describe("defineEffectTool", () => {
     expect(resultText(await lastToolResult())).toBe("rolled a d6");
   });
 
-  it("refuses a model-facing name that is not snake_case", () => {
+  it("refuses a model-facing name that is neither snake_case nor an MCP tool name", () => {
     const camel = defineEffectTool({
       name: "rollDie",
       description: "Roll one die",
@@ -54,7 +55,20 @@ describe("defineEffectTool", () => {
       execute: () => Effect.succeed({}),
     });
 
-    expect(() => Effect.runSync(camel)).toThrow("Tool name rollDie is not snake_case");
+    expect(() => Effect.runSync(camel)).toThrow(
+      "Tool name rollDie is not snake_case or an MCP tool name",
+    );
+  });
+
+  it("accepts an MCP tool's `mcp__<server>__<tool>` as the one exception", () => {
+    const github = defineEffectTool({
+      name: "mcp__github__get_user",
+      description: "Get a user",
+      parameters: Schema.Struct({}),
+      execute: () => Effect.succeed({}),
+    });
+
+    expect(Effect.runSync(github).name).toBe("mcp__github__get_user");
   });
 
   it("answers arguments its Schema rejects with an error result, without running", async () => {
@@ -318,5 +332,79 @@ describe("defineEffectTool", () => {
     await prompt("trace");
 
     expect(spans).toEqual(["none"]);
+  });
+});
+
+describe("isToolName", () => {
+  it.each(["read", "roll_die", "browser_handoff", "tool_search", "a1", "mcp_x", "mcp"])(
+    "accepts the snake_case name %s",
+    (name) => {
+      expect(isToolName(name)).toBe(true);
+    },
+  );
+
+  it.each([
+    "mcp__github__get_user",
+    "mcp__github__get_user_1a2b3c4d",
+    "mcp__my_server__list_items",
+    "mcp__a__b__x",
+    "mcp___x__y",
+    "mcp__s__2fa",
+  ])("accepts the MCP tool name %s", (name) => {
+    expect(isToolName(name)).toBe(true);
+  });
+
+  it.each([
+    "rollDie",
+    "Roll_die",
+    "roll__die",
+    "_roll",
+    "roll_",
+    "",
+    "mcp__github",
+    "mcp__github__",
+    "mcp__github__getUser",
+    "mcp__GitHub__get_user",
+    "mcp__github__get_user_",
+    "mcp__github__get-user",
+    "MCP__github__get_user",
+    "x__github__get_user",
+    "mcp__",
+    "mcp____x",
+  ])("refuses %s: the exception is only for `mcp__<server>__<tool>`", (name) => {
+    expect(isToolName(name)).toBe(false);
+  });
+
+  it("accepts every name the MCP naming function gives", () => {
+    const tools = [
+      "getUser",
+      "get_user",
+      "get-user",
+      "---",
+      "_",
+      "tool",
+      "x".repeat(80),
+      "y".repeat(55),
+      `${"a".repeat(46)}_${"b".repeat(10)}`,
+      "résumé",
+      "2fa",
+    ];
+
+    for (const server of [
+      "github",
+      "My-Server",
+      "a--b",
+      "-",
+      "_x",
+      "z".repeat(64),
+      "q".repeat(49),
+    ]) {
+      for (const name of mcpToolNames(server, tools).values()) {
+        expect(isToolName(name), name).toBe(true);
+        expect(name.length).toBeLessThanOrEqual(64);
+      }
+
+      expect(isToolName(mcpToolName(server, "getUser", { collides: true }))).toBe(true);
+    }
   });
 });

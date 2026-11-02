@@ -28,6 +28,7 @@ import {
   ThinkingLevel,
   textSize,
   utf8Bytes,
+  matchesToolPattern,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange } from "@cloudpid/protocol";
@@ -49,7 +50,6 @@ import {
 } from "./environment.ts";
 import { formatScope } from "./instructions.ts";
 import { ChangeOutput, outputSchema } from "./outputs.ts";
-import { matchesPattern } from "./patterns.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
@@ -951,7 +951,7 @@ export const SettingsTools: Effect.Effect<
   });
 
   const offered = (current: ReadonlyArray<string>, pattern: string) =>
-    Arr.filter(current, (entry) => matchesPattern(entry, pattern));
+    Arr.filter(current, (entry) => matchesToolPattern(entry, pattern));
 
   const offerNote =
     "A tool that a conversation has loaded with tool_search stays offered to it. A pattern is a tool's name, or a name with * for any run of characters (context_*): snake_case, and one that matches no tool does nothing.";

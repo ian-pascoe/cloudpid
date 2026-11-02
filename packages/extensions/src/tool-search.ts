@@ -21,7 +21,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";
-import { matchesPattern } from "./patterns.ts";
+import { matchesToolPattern } from "@cloudpid/config";
 
 export const extensionName = "tool-search";
 
@@ -82,7 +82,7 @@ const byFamily = (names: ReadonlyArray<string>): string => {
 /** Whether the options offer tool `name`. */
 export const isOffered = (options: ToolSearchOptions, name: string): boolean =>
   Arr.contains(ALWAYS_OFFERED, name) ||
-  Arr.some(options.offered, (pattern) => matchesPattern(pattern, name));
+  Arr.some(options.offered, (pattern) => matchesToolPattern(pattern, name));
 
 /** `tool` with its `deferred` flag set as `defer` says. */
 const withDeferral = (tool: ToolRegistration, defer: boolean): ToolRegistration => {

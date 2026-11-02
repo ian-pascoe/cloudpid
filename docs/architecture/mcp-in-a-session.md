@@ -38,7 +38,7 @@ MCP tools reach a Session as one `mcp` Session extension built from the Environm
 
 ## Exposure
 
-Exposure decides how each tool is registered. It is resolved by one pure function in `@cloudpid/config`. The function takes the server's `exposure` (default `codemode`, with alias `codemode-deferred`), then `toolExposure`, keyed by the server's own tool names as pi's are (not cloudpid's snake_case spelling), where exact names beat `*` patterns and the first matching pattern wins. The MCP inventory itself knows nothing of Exposure ([MCP tools in a Session](https://github.com/ian-pascoe/cloudpid/issues/381) D2).
+Exposure decides how each tool is registered. It is resolved by one pure function, `resolveExposure` (`packages/config/src/mcp-exposure.ts`), which also says what decided each tool. The function takes the server's `exposure` (default `codemode`, with alias `codemode-deferred`), then `toolExposure`, keyed by the server's own tool names as pi's are (not cloudpid's snake_case spelling), where exact names beat `*` patterns and the first matching pattern wins. The MCP inventory itself knows nothing of Exposure ([MCP tools in a Session](https://github.com/ian-pascoe/cloudpid/issues/381) D2).
 
 | Exposure   | Registration                              | Reached by                                                                                                                            |
 | ---------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -69,13 +69,13 @@ Exposure decides how each tool is registered. It is resolved by one pure functio
 
 ## Tool names
 
-- **Shape:** `mcp__<server>__<tool>`, both parts snake_case, computed by one pure normalization in `@cloudpid/config` (beside the Exposure resolver) that prompts, the importer of pi transcripts and `settings_mcp_*` share ([MCP tools in a Session](https://github.com/ian-pascoe/cloudpid/issues/381) D6).
+- **Shape:** `mcp__<server>__<tool>`, both parts snake_case, computed by one pure normalization in `@cloudpid/config` (`mcpToolName`, `mcpToolNames` and the importer's `mcpToolNameFromPi`, in `mcp-tool-names.ts` beside the Exposure resolver) that prompts, the importer of pi transcripts and `settings_mcp_*` share ([MCP tools in a Session](https://github.com/ian-pascoe/cloudpid/issues/381) D6).
   - **Server part:** lowercased, with `-` → `_`.
-  - **Tool part:** `_` inserted before each uppercase run, lowercased, `[^a-z0-9]` → `_`, runs of `_` collapsed and ends trimmed (`getUser` → `get_user`).
-- **Collisions:** every member of a collision gets `_` plus 8 hex digits of `sha256("server\0tool")`. Since every member is renamed, a name never depends on the order a server lists its tools in.
-- **Length:** a name over 64 characters is cut to 55, then `_` and the hash. This is the providers' limit: Anthropic `^[a-zA-Z0-9_-]{1,64}$`, OpenAI ≤ 64.
+  - **Tool part:** `_` inserted before each uppercase run, lowercased, `[^a-z0-9]` → `_`, runs of `_` collapsed and ends trimmed (`getUser` → `get_user`). It is runs of `a-z0-9` joined by single `_`, and may begin with a digit (`2fa`). A tool with no letter or digit (`-`) becomes `tool`, and the collision rule tells it from a real `tool`.
+- **Collisions:** every member of a collision gets `_` plus 8 hex digits of `sha256("server\0tool")`, with the normalized server name and the tool as the server calls it (so a change of the server name's case or `-` renames nothing). A hashed name that equals another tool's plain name hashes that one too. Since every member is renamed, a name never depends on the order a server lists its tools in.
+- **Length:** a name over 64 characters is cut to 55 (a trailing `_` trimmed), then `_` and the hash. This is the providers' limit: Anthropic `^[a-zA-Z0-9_-]{1,64}$`, OpenAI ≤ 64. A server name of 48 characters or more leaves no room for a tool part in those 55: the name is then `mcp__<server cut to 44>__<hash>`.
 - **Server names** clash case-insensitively and `-`/`_`-insensitively, across every layer of the set.
-- **Exception to the rule:** the double underscore of `mcp__` is an exception to the Tool-names rule, and `@cloudpid/effect-durable`'s `SNAKE_CASE` check learns it.
+- **Exception to the rule:** the double underscore of `mcp__` is an exception to the Tool-names rule, and `@cloudpid/effect-durable`'s tool-name check (`isToolName`) learns it: `mcp__<server>__<tool>`, the server part lower-case `[a-z0-9_]` (it may hold `__`) and the tool part runs of `[a-z0-9]` joined by `_` (a digit may lead). Nothing else is excepted.
 - **Where cloudpid's spelling is used:** `tools.offered`, toolsets, Notes and imported pi transcripts. The Session-import translator maps pi's `mcp__x__getUser` through the same function and leaves unknown names as they are (see [_Translation_](mcp-endpoint.md#translation); [ADR-0030](../adr/0030-mcp-tools-reach-a-session-as-an-extension-rebuilt-from-the-mcp-inventory.md)).
 - **In owner UI:** the configured server name is shown; model-facing text uses the normalized `<server>` part.
 
