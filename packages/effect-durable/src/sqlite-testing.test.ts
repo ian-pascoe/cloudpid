@@ -17,6 +17,8 @@ const fakeStorage = () => {
       return Promise.resolve();
     },
     delete: (key: string) => Promise.resolve(kv.delete(key)),
+    list: () => Promise.resolve(new Map(kv)),
+    transaction: <T>(closure: () => Promise<T>): Promise<T> => closure(),
     transactionSync: <T>(closure: () => T): T => closure(),
     sql: { exec: (query: string) => query.length, databaseSize: 4096 },
   };
@@ -51,6 +53,8 @@ describe("refusingStorage", () => {
     await expect(gate.storage.get("a")).rejects.toThrow("get");
     await expect(gate.storage.put("a", 1)).rejects.toThrow("put");
     await expect(gate.storage.delete("a")).rejects.toThrow("delete");
+    await expect(gate.storage.list()).rejects.toThrow("list");
+    await expect(gate.storage.transaction(() => Promise.resolve(1))).rejects.toThrow("transaction");
   });
 
   it("refuses a method captured before the trip, when it is called", async () => {
