@@ -1,22 +1,25 @@
 /**
  * The engine's byte budget, one per isolate (`docs/architecture/mcp-connections.md` → The engine, Memory; #382 D9.1):
- * 24 MiB of counted bytes in flight, as an 8 MiB pool shared by calls of up to 4 MiB and one large slot for a call
- * whose bytes pass 4 MiB (up to 16 MiB, past which the core's byte limits fail the request).
+ * an 8 MiB pool shared by calls of up to 4 MiB and one large slot for a call whose bytes pass 4 MiB (up to 16 MiB,
+ * past which the core's byte limits fail the request).
  *
  * Each call takes a `Lease`, and its `fetch` is metered against it: every chunk of a response to a POST is charged
  * before the core reads it, so a call that must wait stops reading, which is backpressure on the server. A call
- * keeps what it was charged until it ends, since its bytes live on as the parsed and serialized result. A call that
- * passes 4 MiB moves from the pool to the large slot, and a call in the large slot is charged nothing more. A GET
- * stream is not charged: it lives only as long as its call, and its events are capped by the core.
+ * keeps what it was charged until it ends, since its bytes live on as the parsed and serialized result; a call that
+ * waits keeps what it holds counted. A call that passes 4 MiB moves to the large slot, keeping its pool bytes until it
+ * gets the slot, and a call in the large slot is charged nothing more. A GET stream is not charged: it lives only as
+ * long as its call, and its events are capped by the core.
  *
- * - **No hold-and-wait:** a call that must wait gives back all it holds and waits, first in, first out, for its whole
- *   need at once (what it held plus the new chunk, or the large slot), so waiting calls never wait on each other. What
- *   a waiting call has read is not counted while it waits; it reads nothing more until it is let in.
+ * - **Deadlock:** calls that hold pool bytes and wait for more can wait on each other. When every call holding pool
+ *   bytes is waiting for the pool, the oldest waiter is let in over budget, and every later charge of its own is too,
+ *   until it ends or moves to the large slot; one call at a time, so the pool overshoots by at most 4 MiB. While any
+ *   holder is still running, nobody overshoots. The large slot needs no such rule: its holder is charged nothing more,
+ *   so it never waits.
  * - **Release is immediate:** it gives back what the call holds and drops its waiter, whatever the call's charges are
  *   doing, so an abort or a timeout frees the budget at once.
- * - **A large result's stream** holds the call's lease until it is read or cancelled, but at most `STREAM_HOLD_MS`:
- *   after that the lease is taken back by the next call that asks the budget, or by the timer of a call waiting on it,
- *   since an unread stream would otherwise hold its bytes for the isolate's lifetime.
+ * - **A returned stream** holds its call's lease until it is read or cancelled, but expires once it has gone unread
+ *   for `STREAM_HOLD_MS` (each pull renews it): the next call that asks the budget takes it back, or the timer of a
+ *   call waiting on the budget, which checks again at least every `STREAM_HOLD_MS` while it waits.
  */
 // @effect-diagnostics asyncFunction:off -- the meter is a `fetch` and a byte stream, Promise-based at their seams.
 // @effect-diagnostics globalFetch:off -- it wraps the `fetch` it is given, and builds the `Response` the core reads.
@@ -33,7 +36,7 @@ export const POOL_CALL_LIMIT = 4 * MiB;
 /** The pool shared by calls of up to 4 MiB. */
 export const POOL_BYTES = 8 * MiB;
 
-/** How long a returned stream may hold its call's lease unread. */
+/** How long a returned stream may go unread and still hold its call's lease. */
 export const STREAM_HOLD_MS = 60_000;
 
 /** What one call holds of the budget. */
@@ -42,7 +45,7 @@ export interface Lease {
   readonly charge: (bytes: number) => Promise<void>;
   /** Gives back all the call holds, and drops its waiter; once only. */
   readonly release: () => void;
-  /** Releases the lease `ms` from now if nothing has by then: its call returned a stream that holds it. */
+  /** Releases the lease `ms` from now, unless renewed or released by then: a returned stream holds it. */
   readonly expireIn: (ms: number) => void;
 }
 
@@ -58,86 +61,150 @@ export class ByteBudget extends Context.Service<ByteBudget, ByteBudgetApi>()(
   static readonly layer = Layer.sync(ByteBudget, () => makeBudget());
 }
 
-/** A call waiting for `permits`; `grant` runs synchronously as they are taken for it. */
-interface Waiter {
-  readonly permits: number;
-  readonly grant: () => void;
-}
-
-/**
- * A FIFO semaphore over plain Promises. A release grants waiters synchronously: the calls of one isolate are separate
- * invocations, and a wake scheduled on a timer of the releasing call's invocation never runs once that invocation
- * ends, as it may as soon as its stream is read (which is why this is not Effect's `Semaphore`).
- */
-class Permits {
-  readonly #waiters: Array<Waiter> = [];
-
-  #free: number;
-
-  constructor(permits: number) {
-    this.#free = permits;
-  }
-
-  /** Takes `permits` if no one waits and they are free. */
-  tryTake(permits: number) {
-    if (this.#waiters.length > 0 || this.#free < permits) {
-      return false;
-    }
-
-    this.#free -= permits;
-
-    return true;
-  }
-
-  wait(waiter: Waiter) {
-    this.#waiters.push(waiter);
-  }
-
-  cancel(waiter: Waiter) {
-    const index = this.#waiters.indexOf(waiter);
-
-    if (index >= 0) {
-      this.#waiters.splice(index, 1);
-      // The waiters behind it may fit now.
-      this.release(0);
-    }
-  }
-
-  release(permits: number) {
-    this.#free += permits;
-
-    for (
-      let next = this.#waiters[0];
-      next !== undefined && next.permits <= this.#free;
-      next = this.#waiters[0]
-    ) {
-      this.#waiters.shift();
-      this.#free -= next.permits;
-      next.grant();
-    }
-  }
-}
-
 export interface BudgetOptions {
   /** The wall clock, for leases' expiry. */
   readonly now?: () => number;
+  /** How often, at most, a waiting call checks for expired leases (`STREAM_HOLD_MS`). */
+  readonly recheckMs?: number;
 }
 
+/** What a waiting call waits for: pool bytes, or the large slot. */
+interface Wait {
+  readonly on: "pool" | "large";
+  readonly need: number;
+  readonly done: () => void;
+}
+
+/** One lease's holdings. */
+interface Holding {
+  pooled: number;
+  inLarge: boolean;
+  released: boolean;
+  waiting: Wait | undefined;
+}
+
+/**
+ * A budget over plain Promises. A release lets waiters in synchronously: the calls of one isolate are separate
+ * invocations, and a wake scheduled on a timer of the releasing call's invocation never runs once that invocation
+ * ends, as it may as soon as its stream is read (which is why this is not Effect's `Semaphore`).
+ */
 export const makeBudget = (options: BudgetOptions = {}): ByteBudgetApi => {
   const now = options.now ?? Date.now;
-  const pool = new Permits(POOL_BYTES);
-  const large = new Permits(1);
-  /** Leases whose call has returned, by when they are released. */
-  const expiring = new Map<() => void, number>();
+  const recheckMs = options.recheckMs ?? STREAM_HOLD_MS;
+  const live = new Set<Holding>();
+  const poolWaiters: Array<Holding> = [];
+  const largeWaiters: Array<Holding> = [];
+  /** Leases a returned stream holds, by when they expire. */
+  const expiring = new Map<Holding, number>();
+  let poolFree = POOL_BYTES;
+  let largeHolder: Holding | undefined;
+  /** The one call let in over budget to break a deadlock, until it leaves the pool. */
+  let overBudget: Holding | undefined;
+
+  const settle = (holding: Holding) => {
+    const wait = holding.waiting;
+
+    holding.waiting = undefined;
+    wait?.done();
+  };
+
+  const leavePool = (holding: Holding) => {
+    poolFree += holding.pooled;
+    holding.pooled = 0;
+
+    if (overBudget === holding) {
+      overBudget = undefined;
+    }
+  };
+
+  const takePool = (holding: Holding, bytes: number) => {
+    poolFree -= bytes;
+    holding.pooled += bytes;
+  };
+
+  const enterLarge = (holding: Holding) => {
+    largeHolder = holding;
+    holding.inLarge = true;
+    leavePool(holding);
+  };
+
+  /** Every call holding pool bytes waits for more of them, so none can give any back. */
+  const deadlocked = () => {
+    for (const holding of live) {
+      if (holding.pooled > 0 && holding.waiting?.on !== "pool") {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  /** Lets waiters in, first in first out, while they fit; then breaks a deadlock. */
+  const drain = () => {
+    const nextLarge = largeWaiters[0];
+
+    if (largeHolder === undefined && nextLarge !== undefined) {
+      largeWaiters.shift();
+      enterLarge(nextLarge);
+      settle(nextLarge);
+    }
+
+    for (
+      let next = poolWaiters[0];
+      next?.waiting !== undefined && next.waiting.need <= poolFree;
+      next = poolWaiters[0]
+    ) {
+      poolWaiters.shift();
+      takePool(next, next.waiting.need);
+      settle(next);
+    }
+
+    const oldest = poolWaiters[0];
+
+    if (overBudget === undefined && oldest?.waiting !== undefined && deadlocked()) {
+      poolWaiters.shift();
+      overBudget = oldest;
+      takePool(oldest, oldest.waiting.need);
+      settle(oldest);
+    }
+  };
+
+  const release = (holding: Holding) => {
+    if (holding.released) {
+      return;
+    }
+
+    holding.released = true;
+    live.delete(holding);
+    expiring.delete(holding);
+
+    for (const queue of [poolWaiters, largeWaiters]) {
+      const index = queue.indexOf(holding);
+
+      if (index >= 0) {
+        queue.splice(index, 1);
+      }
+    }
+
+    settle(holding);
+
+    if (largeHolder === holding) {
+      largeHolder = undefined;
+      holding.inLarge = false;
+    }
+
+    leavePool(holding);
+    drain();
+  };
 
   /** Releases every lease past its expiry; how long until the next one expires, if any does. */
   const reclaim = () => {
     const at = now();
     let next = Number.POSITIVE_INFINITY;
 
-    for (const [release, expires] of expiring) {
+    for (const [holding, expires] of expiring) {
       if (expires <= at) {
-        release();
+        release(holding);
       } else {
         next = Math.min(next, expires - at);
       }
@@ -146,136 +213,90 @@ export const makeBudget = (options: BudgetOptions = {}): ByteBudgetApi => {
     return next;
   };
 
+  /** Queues `holding` for `need`, holding what it holds, until it is let in or released. */
+  const waitFor = (holding: Holding, on: Wait["on"], need: number) => {
+    const done = Promise.withResolvers<void>();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const wait: Wait = {
+      on,
+      need,
+      done: () => {
+        // This may run in another call's invocation, where clearing this call's timer does nothing; harmless, since
+        // `watch` checks the wait is still current before it arms again.
+        clearTimeout(timer);
+        done.resolve();
+      },
+    };
+
+    // While it waits, this call's own invocation is alive, so its timer runs: it takes back expired leases, checking
+    // at least every `recheckMs`, since a holder may start expiring after this call began to wait.
+    const watch = () => {
+      const next = reclaim();
+
+      if (holding.waiting === wait) {
+        timer = setTimeout(watch, Math.min(next, recheckMs));
+      }
+    };
+
+    holding.waiting = wait;
+    (on === "pool" ? poolWaiters : largeWaiters).push(holding);
+    drain();
+    watch();
+
+    return done.promise;
+  };
+
+  const chargeNow = async (holding: Holding, bytes: number) => {
+    reclaim();
+
+    if (holding.released || holding.inLarge) {
+      return;
+    }
+
+    if (holding.pooled + bytes > POOL_CALL_LIMIT) {
+      if (largeHolder === undefined && largeWaiters.length === 0) {
+        enterLarge(holding);
+        drain();
+
+        return;
+      }
+
+      await waitFor(holding, "large", 1);
+
+      return;
+    }
+
+    if (overBudget === holding || (poolWaiters.length === 0 && poolFree >= bytes)) {
+      takePool(holding, bytes);
+
+      return;
+    }
+
+    await waitFor(holding, "pool", bytes);
+  };
+
   return {
     lease: () => {
-      let pooled = 0;
-      let inLarge = false;
-      let released = false;
+      const holding: Holding = { pooled: 0, inLarge: false, released: false, waiting: undefined };
 
-      let waiting:
-        | { readonly permits: Permits; readonly waiter: Waiter; readonly done: () => void }
-        | undefined;
+      live.add(holding);
 
       // A call's charges run one after another, so a move to the large slot never races a pool charge.
       let queue = Promise.resolve();
 
-      /** Waits in `permits` for `need`, holding nothing, until granted or released. */
-      const waitFor = (permits: Permits, need: number, granted: () => void) => {
-        const done = Promise.withResolvers<void>();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-
-        const settle = () => {
-          clearTimeout(timer);
-          waiting = undefined;
-          done.resolve();
-        };
-
-        const waiter: Waiter = {
-          permits: need,
-          grant: () => {
-            granted();
-            settle();
-          },
-        };
-
-        // While it waits, this call's own invocation is alive, so its timer runs: it takes back expired leases.
-        const watch = () => {
-          const next = reclaim();
-
-          if (waiting?.waiter === waiter && Number.isFinite(next)) {
-            timer = setTimeout(watch, next);
-          }
-        };
-
-        waiting = { permits, waiter, done: settle };
-        permits.wait(waiter);
-        watch();
-
-        return done.promise;
-      };
-
-      const chargeNow = async (bytes: number) => {
-        reclaim();
-
-        if (released || inLarge) {
-          return;
-        }
-
-        if (pooled + bytes > POOL_CALL_LIMIT) {
-          pool.release(pooled);
-          pooled = 0;
-
-          if (large.tryTake(1)) {
-            inLarge = true;
-
-            return;
-          }
-
-          await waitFor(large, 1, () => {
-            inLarge = true;
-          });
-
-          return;
-        }
-
-        if (pool.tryTake(bytes)) {
-          pooled += bytes;
-
-          return;
-        }
-
-        const need = pooled + bytes;
-
-        pool.release(pooled);
-        pooled = 0;
-
-        if (pool.tryTake(need)) {
-          pooled = need;
-
-          return;
-        }
-
-        await waitFor(pool, need, () => {
-          pooled = need;
-        });
-      };
-
-      const release = () => {
-        if (released) {
-          return;
-        }
-
-        released = true;
-        expiring.delete(release);
-
-        if (waiting !== undefined) {
-          const { permits, waiter, done } = waiting;
-
-          permits.cancel(waiter);
-          done();
-        }
-
-        if (inLarge) {
-          inLarge = false;
-          large.release(1);
-        } else {
-          pool.release(pooled);
-          pooled = 0;
-        }
-      };
-
       return {
         charge: (bytes) => {
-          const charged = queue.then(() => chargeNow(bytes));
+          const charged = queue.then(() => chargeNow(holding, bytes));
 
           queue = charged.catch(() => undefined);
 
           return charged;
         },
-        release,
+        release: () => release(holding),
         expireIn: (ms) => {
-          if (!released) {
-            expiring.set(release, now() + ms);
+          if (!holding.released) {
+            expiring.set(holding, now() + ms);
           }
         },
       };

@@ -8,6 +8,7 @@
 import type { McpDeps, RowStore } from "@cloudpid/mcp";
 import type { McpEngineHooks, McpEnginePrior, McpEngineState } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { ByteBudget, type Lease, meteredFetch } from "./budget.ts";
@@ -26,6 +27,10 @@ export interface CallContext {
   readonly lease: Lease;
   /** Every access token the call sent, scrubbed from its result. */
   readonly tokens: ReadonlySet<string>;
+  /** Hands the lease to the result's stream, which gives it back once read (`results.ts`). */
+  readonly handOff: () => void;
+  /** Whether the lease was handed to a stream. */
+  readonly handedOff: () => boolean;
   /** The rows the call changed. */
   readonly state: () => McpEngineState;
 }
@@ -112,5 +117,39 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     return changed;
   };
 
-  return { deps, lease, tokens, state } satisfies CallContext;
+  let handed = false;
+
+  return {
+    deps,
+    lease,
+    tokens,
+    state,
+    handOff: () => {
+      handed = true;
+    },
+    handedOff: () => handed,
+  } satisfies CallContext;
+});
+
+/**
+ * Runs `use` over a new call context. The call's lease goes back once `use` ends, however it ends (a defect or an
+ * interruption included), unless `use` succeeded having handed the lease to a stream, which gives it back itself.
+ */
+export const withCall = Effect.fnUntraced(function* <A, E, R>(
+  prior: McpEnginePrior,
+  hooks: McpEngineHooks,
+  env: CallEnvironment,
+  use: (call: CallContext) => Effect.Effect<A, E, R>,
+) {
+  const call = yield* openCall(prior, hooks, env);
+
+  return yield* use(call).pipe(
+    Effect.onExit((exit) =>
+      Effect.sync(() => {
+        if (Exit.isFailure(exit) || !call.handedOff()) {
+          call.lease.release();
+        }
+      }),
+    ),
+  );
 });

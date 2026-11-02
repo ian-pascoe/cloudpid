@@ -5,8 +5,8 @@
  *
  * TypeBox runs through its interpreted fallback: acceleration (`new Function`) is switched off, since a Worker may
  * not evaluate code once it has started, whatever `allow_eval_during_startup` allows at startup, and nothing compiles
- * at module scope. Schemas compile at discovery, yielding between schemas; a call whose schema is not cached (after a
- * restart, or a deploy) compiles it then. The cache keeps 2,000 schemas, dropping the least recently used.
+ * at module scope. Schemas compile wherever the engine lists tools (discovery, a `-32020` refresh, a `tools/list`
+ * request), yielding between schemas; a call whose schema is not cached (after a restart, or a deploy) compiles it then. The cache keeps 2,000 schemas, dropping the least recently used.
  */
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";

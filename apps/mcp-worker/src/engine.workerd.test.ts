@@ -12,6 +12,7 @@ import {
 } from "@cloudpid/mcp/types";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { MiB } from "./units.ts";
 import type { Caller } from "./workerd.fixture.ts";
 
 declare global {
@@ -57,8 +58,6 @@ const seen = async (server: ReturnType<typeof target>) => {
 };
 
 const decodeRequest = Schema.decodeSync(McpEngineRequestResult);
-
-const MiB = 1024 * 1024;
 
 const BIG = { name: "big", inputSchema: { type: "object" } };
 
@@ -371,9 +370,63 @@ describe("access tokens", () => {
       },
     });
   });
+
+  it("scrubs the token from a server's error", async () => {
+    const token = "secret-token-0123456789";
+
+    const called = decodeRequest(
+      await env.MCP_ENGINE.request(
+        target("headers", "token-error"),
+        {},
+        {
+          op: "tools/call",
+          tool: { name: "complain", inputSchema: { type: "object" } },
+          arguments: { text: `you sent ${token}` },
+          ctx: AGENT,
+        },
+        { ...patient(), auth: async () => token },
+      ),
+    );
+
+    expect(called).toMatchObject({
+      kind: "failed",
+      error: { message: expect.stringContaining("you sent [REDACTED]") },
+    });
+    expect(JSON.stringify(called)).not.toContain(token);
+  });
 });
 
 describe("aborts", () => {
+  /** Hooks of a caller that has already aborted. */
+  const aborted = () => ({ untilAborted: () => Promise.resolve() });
+
+  it("fails an aborted discovery as a cut that ran nothing", async () => {
+    const discovered = Schema.decodeSync(McpEngineDiscoverResult)(
+      await env.MCP_ENGINE.discover(target("legacy", "abort-discover"), {}, aborted()),
+    );
+
+    expect(discovered).toMatchObject({
+      kind: "failed",
+      error: expect.objectContaining({ constructor: Cut, mayHaveRun: false }),
+    });
+  });
+
+  it("fails an aborted list as a cut that ran nothing", async () => {
+    const listed = decodeRequest(
+      await env.MCP_ENGINE.request(
+        target("legacy", "abort-list"),
+        {},
+        { op: "tools/list", ctx: AGENT },
+        aborted(),
+      ),
+    );
+
+    expect(listed).toMatchObject({
+      kind: "failed",
+      error: expect.objectContaining({ constructor: Cut, mayHaveRun: false }),
+    });
+  });
+
   it("aborts the server request when the caller aborts, and fails as a cut that may have run", async () => {
     const server = target("stateful", "abort");
     let abort: () => void = () => undefined;

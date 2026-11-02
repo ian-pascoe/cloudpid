@@ -7,7 +7,8 @@
  *   way the work is interrupted, which aborts the server request (a Legacy server gets `notifications/cancelled`), and
  *   the call fails as a cut, one that may have run for a `tools/call` only.
  * - **Bytes:** the call's `fetch` is metered against a lease on the isolate's byte budget, given back when the call
- *   ends, or for a large result once its stream is read (`budget.ts`, `results.ts`).
+ *   ends however it ends, or for a large result once its stream is read (`budget.ts`, `results.ts`).
+ * - **Tokens:** every token the host's `auth` hook gave the call is scrubbed from its result and from its error.
  * - **`structuredContent`** is checked against the tool's `outputSchema` (The MCP core #394 D17, refined by D9.3).
  * - **`-32020`:** a `tools/call` whose headers the server rejects lists the server's tools again and is sent once more
  *   with the fresh definition (The MCP core #394 D14). The server refused the first before running it, so the call
@@ -32,6 +33,7 @@ import {
   McpEngineTarget,
   type McpEngineTargetEncoded,
   type McpError,
+  type McpErrorWire,
   McpToolDefinition,
   type McpToolProblem,
   ServerError,
@@ -44,8 +46,8 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
-import { type CallContext, type CallEnvironment, openCall } from "./call-context.ts";
-import { type Answer, malformed, toEngineValue } from "./results.ts";
+import { type CallContext, type CallEnvironment, withCall } from "./call-context.ts";
+import { type Answer, malformed, scrubError, toEngineValue } from "./results.ts";
 import { Validators, type ValidatorsApi } from "./validators.ts";
 
 /** Discovery, and the tools listed again after a `-32020`, are the host's own work (The MCP core #394 D7). */
@@ -101,8 +103,9 @@ const definitionsOf = (tools: Answer) =>
   decodeTools(tools).pipe(Effect.mapError(() => malformed("a tool definition")));
 
 /**
- * Runs `work` over a new connection to the call's target, racing the caller's abort. The outcome, and the call
- * context whose rows, lease and tokens the caller settles.
+ * Runs `work` over a new connection to the call's target, racing the caller's abort: the outcome, its error scrubbed
+ * of the call's tokens, and the rows the call changed. The call's lease goes back when it ends, however it ends,
+ * unless it succeeded with a stream, which holds the lease until it is read (`call-context.ts`, `withCall`).
  */
 const runCall = Effect.fnUntraced(function* <A, R>(
   input: CallInput,
@@ -116,24 +119,40 @@ const runCall = Effect.fnUntraced(function* <A, R>(
     Effect.orElseSucceed(() => ({})),
   );
 
-  const call = yield* openCall(rows, input.hooks, input.env);
+  return yield* withCall(rows, input.hooks, input.env, (call) =>
+    Effect.gen(function* () {
+      const outcome = yield* Effect.gen(function* () {
+        const server = yield* Schema.decodeEffect(McpEngineTarget)(input.target).pipe(
+          Effect.mapError(() =>
+            Unsupported.make({ message: "This engine cannot reach that kind of server" }),
+          ),
+        );
 
-  const outcome = yield* Effect.gen(function* () {
-    const server = yield* Schema.decodeEffect(McpEngineTarget)(input.target).pipe(
-      Effect.mapError(() =>
-        Unsupported.make({ message: "This engine cannot reach that kind of server" }),
-      ),
-    );
+        const connection = yield* connect(server, call.deps);
 
-    const connection = yield* connect(server, call.deps);
+        return yield* work(connection, call);
+      }).pipe(
+        Effect.scoped,
+        Effect.raceFirst(abortedBy(input.hooks, input.mayHaveRun)),
+        Effect.result,
+      );
 
-    return yield* work(connection, call);
-  }).pipe(Effect.scoped, Effect.raceFirst(abortedBy(input.hooks, input.mayHaveRun)), Effect.result);
+      if (Result.isSuccess(outcome)) {
+        return { outcome, state: call.state() };
+      }
 
-  return { outcome, call };
+      // A stream made before the call failed is never returned, so its lease goes back now.
+      call.lease.release();
+
+      return {
+        outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
+        state: call.state(),
+      };
+    }),
+  );
 });
 
-const failed = (error: McpError, state: McpEngineState): McpEngineFailed => ({
+const failed = (error: McpErrorWire, state: McpEngineState): McpEngineFailed => ({
   kind: "failed",
   error,
   state,
@@ -158,7 +177,7 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
 ) {
   const validators = yield* Validators;
 
-  const { outcome, call } = yield* runCall(
+  const { outcome, state } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: false },
     (connection) =>
       Effect.gen(function* () {
@@ -198,10 +217,6 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
         return discovered;
       }),
   );
-
-  call.lease.release();
-
-  const state = call.state();
 
   return yield* encodeResult(
     McpEngineDiscoverResult,
@@ -287,7 +302,11 @@ const runToolCall = Effect.fnUntraced(function* (
   const extras = Option.getOrElse(refreshed, () => ({}));
 
   if (Result.isFailure(sent)) {
-    return { kind: "failed", error: sent.failure, ...extras } satisfies RequestOutcome;
+    return {
+      kind: "failed",
+      error: yield* scrubError(sent.failure, call.tokens),
+      ...extras,
+    } satisfies RequestOutcome;
   }
 
   const { value, kind: _kind, ...meta } = sent.success;
@@ -357,7 +376,7 @@ export const request = Effect.fn("mcp.engine.request")(function* (
 
   const req = decoded.value;
 
-  const { outcome, call } = yield* runCall(
+  const { outcome, state } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: req.op === "tools/call" },
     (connection, context): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
       req.op === "tools/call"
@@ -365,13 +384,7 @@ export const request = Effect.fn("mcp.engine.request")(function* (
         : runList(connection, context, req, env, validators),
   );
 
-  const state = call.state();
   const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);
-
-  // A stream gives the lease back once it is read (or it expires); an inline value has been made.
-  if (result.kind === "failed" || result.result.kind === "inline") {
-    call.lease.release();
-  }
 
   return yield* encodeResult(McpEngineRequestResult, { ...result, state });
 });

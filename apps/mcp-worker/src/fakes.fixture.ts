@@ -10,6 +10,7 @@ import {
   legacyStatefulServer,
   legacyStatelessServer,
   modernServer,
+  type RpcBody,
   rpcMethods,
 } from "@cloudpid/mcp/testing";
 
@@ -26,6 +27,16 @@ const UNCOMPILABLE_TOOL = {
 /** A tool the server refuses every call to as a header mismatch, however often its tools are listed. */
 const STUBBORN_TOOL = { name: "stubborn", inputSchema: { type: "object" as const } };
 
+/** A tool the server answers with a JSON-RPC error whose message is the call's `text`, echoed. */
+const COMPLAIN_TOOL = { name: "complain", inputSchema: { type: "object" as const } };
+
+const complaint = (rpc: RpcBody) =>
+  Response.json({
+    jsonrpc: "2.0",
+    id: rpc.id ?? null,
+    error: { code: -32000, message: `Refused: ${JSON.stringify(rpc.params?.["arguments"])}` },
+  });
+
 const headerMismatch = (id: string | number | null) =>
   Response.json(
     { jsonrpc: "2.0", id, error: { code: -32020, message: "Header mismatch" } },
@@ -34,7 +45,8 @@ const headerMismatch = (id: string | number | null) =>
 
 /**
  * A Modern server that refuses a `region` call without its `Mcp-Param-Region` header (`-32020`), as one whose tool
- * changed, and every `stubborn` call; it lists both, and a tool whose `outputSchema` cannot be compiled.
+ * changed, and every `stubborn` call; it lists both, and a tool whose `outputSchema` cannot be compiled. A `complain`
+ * call fails with its arguments in the error's message.
  */
 const headersServer = (options: FakeOptions) =>
   hostileServer(
@@ -45,6 +57,10 @@ const headersServer = (options: FakeOptions) =>
       }
 
       const name = rpc.params?.["name"];
+
+      if (name === COMPLAIN_TOOL.name) {
+        return complaint(rpc);
+      }
 
       return name === STUBBORN_TOOL.name ||
         (name === "region" && request.headers.get("mcp-param-region") === null)

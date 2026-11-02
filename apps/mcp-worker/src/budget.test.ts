@@ -1,7 +1,7 @@
 // The budget's leases are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off
 import { describe, expect, it } from "vitest";
-import { type Lease, makeBudget, POOL_CALL_LIMIT } from "./budget.ts";
+import { makeBudget, POOL_CALL_LIMIT } from "./budget.ts";
 import { MiB } from "./units.ts";
 
 /** Whether `promise` has settled once pending callbacks have run. */
@@ -17,45 +17,88 @@ const settled = async (promise: Promise<unknown>) => {
   return done;
 };
 
-/** Charges `bytes` to `lease` in one go, as a fetch's first chunk would. */
-const charged = (lease: Lease, bytes: number) => lease.charge(bytes);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("the byte budget", () => {
-  it("lets calls that oversubscribe the pool all go on: a waiting call holds nothing", async () => {
+  it("lets the oldest waiter in over budget when every pool holder is waiting, one call at a time", async () => {
     const budget = makeBudget();
     const [a, b, c] = [budget.lease(), budget.lease(), budget.lease()];
 
-    // Between them they hold the whole pool, so none can take a mebibyte more while the others hold theirs.
-    await charged(a, 3 * MiB);
-    await charged(b, 3 * MiB);
-    await charged(c, 2 * MiB);
+    // Between them they hold the whole pool, and each waits for a mebibyte more.
+    await a.charge(3 * MiB);
+    await b.charge(3 * MiB);
+    await c.charge(2 * MiB);
 
-    const more = [a.charge(MiB), b.charge(MiB), c.charge(MiB)];
+    const more = [a.charge(MiB), b.charge(MiB), c.charge(MiB)] as const;
 
-    // Whoever waits gives back what it holds, so the one before it goes on.
-    expect(await settled(more[0]!)).toBe(true);
-    expect(await settled(more[1]!)).toBe(true);
+    // The oldest, `a`, goes on over budget; the others keep what they hold and wait.
+    expect(await settled(more[0])).toBe(true);
+    expect(await settled(more[1])).toBe(false);
+    expect(await settled(more[2])).toBe(false);
 
-    a.release();
-    expect(await settled(more[2]!)).toBe(true);
+    // Over budget, `a` is never held back, until it moves to the large slot and gives its pool bytes back.
+    expect(await settled(a.charge(MiB))).toBe(true);
+    expect(await settled(more[1])).toBe(true);
+    expect(await settled(more[2])).toBe(true);
+  });
 
-    b.release();
-    c.release();
+  it("lets nobody in over budget while a pool holder is still running", async () => {
+    const budget = makeBudget();
+    const [running, a, b, fresh] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
 
-    // All given back: two calls take the whole pool at once.
-    const [d, e] = [budget.lease(), budget.lease()];
+    // The pool is full; `a` and `b` wait for more, `running` does not.
+    await running.charge(POOL_CALL_LIMIT);
+    await a.charge(3 * MiB);
+    await b.charge(MiB);
 
-    expect(await settled(charged(d, POOL_CALL_LIMIT))).toBe(true);
-    expect(await settled(charged(e, POOL_CALL_LIMIT))).toBe(true);
+    const more = [a.charge(MiB), b.charge(MiB), fresh.charge(MiB)] as const;
+
+    for (const charge of more) {
+      expect(await settled(charge)).toBe(false);
+    }
+
+    running.release();
+
+    for (const charge of more) {
+      expect(await settled(charge)).toBe(true);
+    }
+  });
+
+  it("keeps a waiting call's bytes counted", async () => {
+    const budget = makeBudget();
+
+    const [holder, growing, other, last] = [
+      budget.lease(),
+      budget.lease(),
+      budget.lease(),
+      budget.lease(),
+    ];
+
+    await holder.charge(10 * MiB);
+    await growing.charge(3 * MiB);
+
+    // Waiting for the large slot, `growing` keeps its 3 MiB: 5 MiB are left, not 8.
+    const stuck = growing.charge(2 * MiB);
+
+    expect(await settled(stuck)).toBe(false);
+    expect(await settled(other.charge(POOL_CALL_LIMIT))).toBe(true);
+
+    const waits = last.charge(2 * MiB);
+
+    expect(await settled(waits)).toBe(false);
+
+    // The large slot frees, `growing` moves to it and gives its pool bytes back.
+    holder.release();
+    expect(await settled(stuck)).toBe(true);
+    expect(await settled(waits)).toBe(true);
   });
 
   it("gives back a waiting call's bytes at once when it is released, and drops its waiter", async () => {
     const budget = makeBudget();
     const [a, b, waiting] = [budget.lease(), budget.lease(), budget.lease()];
 
-    await charged(a, POOL_CALL_LIMIT);
-    await charged(b, POOL_CALL_LIMIT);
-    await charged(waiting, 0);
+    await a.charge(POOL_CALL_LIMIT);
+    await b.charge(POOL_CALL_LIMIT);
 
     const stuck = waiting.charge(MiB);
 
@@ -66,17 +109,14 @@ describe("the byte budget", () => {
     expect(await settled(stuck)).toBe(true);
 
     a.release();
-
-    const next = budget.lease();
-
-    expect(await settled(charged(next, POOL_CALL_LIMIT))).toBe(true);
+    expect(await settled(budget.lease().charge(POOL_CALL_LIMIT))).toBe(true);
   });
 
   it("drops a call waiting for the large slot when it is released", async () => {
     const budget = makeBudget();
     const [holder, waiting, next] = [budget.lease(), budget.lease(), budget.lease()];
 
-    await charged(holder, 10 * MiB);
+    await holder.charge(10 * MiB);
 
     const stuck = waiting.charge(10 * MiB);
 
@@ -85,25 +125,7 @@ describe("the byte budget", () => {
     expect(await settled(stuck)).toBe(true);
 
     holder.release();
-    expect(await settled(charged(next, 10 * MiB))).toBe(true);
-  });
-
-  it("gives back a waiting call's pool bytes while it waits for the large slot", async () => {
-    const budget = makeBudget();
-    const [holder, growing, small] = [budget.lease(), budget.lease(), budget.lease()];
-
-    await charged(holder, 10 * MiB);
-    await charged(growing, 3 * MiB);
-
-    const stuck = growing.charge(2 * MiB);
-
-    expect(await settled(stuck)).toBe(false);
-    // The 3 MiB it held are free for others while it waits.
-    expect(await settled(charged(small, POOL_CALL_LIMIT))).toBe(true);
-    small.release();
-
-    holder.release();
-    expect(await settled(stuck)).toBe(true);
+    expect(await settled(next.charge(10 * MiB))).toBe(true);
   });
 
   it("takes back an unread stream's lease once it expires, waking the call waiting on it", async () => {
@@ -112,7 +134,7 @@ describe("the byte budget", () => {
     const budget = makeBudget({ now: () => now });
     const [holder, waiting] = [budget.lease(), budget.lease()];
 
-    await charged(holder, 10 * MiB);
+    await holder.charge(10 * MiB);
     holder.expireIn(50);
 
     const stuck = waiting.charge(10 * MiB);
@@ -120,9 +142,49 @@ describe("the byte budget", () => {
     expect(await settled(stuck)).toBe(false);
 
     now = 50;
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await sleep(80);
 
     expect(await settled(stuck)).toBe(true);
+  });
+
+  it("wakes a call that began to wait before the lease it waits on started to expire", async () => {
+    let now = 0;
+
+    const budget = makeBudget({ now: () => now, recheckMs: 20 });
+    const [holder, waiting] = [budget.lease(), budget.lease()];
+
+    await holder.charge(10 * MiB);
+
+    const stuck = waiting.charge(10 * MiB);
+
+    expect(await settled(stuck)).toBe(false);
+
+    holder.expireIn(50);
+    now = 50;
+    await sleep(60);
+
+    expect(await settled(stuck)).toBe(true);
+  });
+
+  it("renews an expiry, so a stream read slowly keeps its lease", async () => {
+    let now = 0;
+
+    const budget = makeBudget({ now: () => now });
+    const holder = budget.lease();
+
+    await holder.charge(10 * MiB);
+    holder.expireIn(50);
+    now = 40;
+    holder.expireIn(50);
+    now = 60;
+
+    const next = budget.lease().charge(10 * MiB);
+
+    expect(await settled(next)).toBe(false);
+
+    now = 90;
+    expect(await settled(budget.lease().charge(MiB))).toBe(true);
+    expect(await settled(next)).toBe(true);
   });
 
   it("takes back an expired lease when the next call asks", async () => {
@@ -131,10 +193,10 @@ describe("the byte budget", () => {
     const budget = makeBudget({ now: () => now });
     const holder = budget.lease();
 
-    await charged(holder, 10 * MiB);
+    await holder.charge(10 * MiB);
     holder.expireIn(50);
     now = 50;
 
-    expect(await settled(charged(budget.lease(), 10 * MiB))).toBe(true);
+    expect(await settled(budget.lease().charge(10 * MiB))).toBe(true);
   });
 });
