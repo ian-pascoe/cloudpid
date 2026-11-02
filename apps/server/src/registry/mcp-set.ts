@@ -10,13 +10,12 @@ import {
   mcpConnectionKey,
   type McpRepoLayer,
   type McpResolvedServer,
-  type McpSource,
   mcpServerIdentity,
   resolveMcpServerSet,
   sha256Hex,
   sortedJson,
 } from "@cloudpid/config";
-import type { McpApplySet, McpSetEntry, McpSetSource } from "@cloudpid/mcp/types";
+import type { McpApplySet, McpSetEntry } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 
@@ -39,14 +38,19 @@ const decodeEntry = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
 );
 
-const setSource = (source: McpSource): McpSetSource => source;
-
 /** `server` as plain JSON: the keys an entry in force leaves undefined are not there. */
 const entryJson = (server: McpResolvedServer["server"]): Readonly<Record<string, Schema.Json>> =>
   decodeEntry(JSON.stringify(server));
 
+/** The set before it is handed out: the Registry gives it a `revision` then. */
+export type McpSetContent = Omit<McpApplySet, "revision">;
+
+/** The servers of `layers` as `resolveMcpServerSet` resolves them: the set's entries, and what a value is read from. */
+export const resolvedMcpServers = (layers: McpSetLayers): ReadonlyArray<McpResolvedServer> =>
+  resolveMcpServerSet(layers.global, layers.overrides, layers.repos).servers;
+
 const setEntry = (resolved: McpResolvedServer): McpSetEntry => {
-  const source = setSource(resolved.source);
+  const { source } = resolved;
   const server = entryJson(resolved.server);
 
   return {
@@ -60,14 +64,11 @@ const setEntry = (resolved: McpResolvedServer): McpSetEntry => {
 };
 
 /**
- * The MCP server set of an Environment from its layers, as `apply({ kind: "set" })` takes it: every server of
+ * The MCP server set of an Environment from its layers, as `apply({ kind: "set" })` takes it less its `revision`: every server of
  * `resolveMcpServerSet`, switched off ones included (the host keeps their inventory), with the hash of the whole.
  */
-export const mcpServerSetOf = (layers: McpSetLayers): McpApplySet => {
-  const entries = Arr.map(
-    resolveMcpServerSet(layers.global, layers.overrides, layers.repos).servers,
-    setEntry,
-  );
+export const mcpServerSetOf = (layers: McpSetLayers): McpSetContent => {
+  const entries = Arr.map(resolvedMcpServers(layers), setEntry);
 
   return { kind: "set", hash: hashEntries(entries), entries };
 };
@@ -81,5 +82,4 @@ export const shouldPushMcpSet = (handed: string | undefined, current: string): b
   current !== (handed ?? EMPTY_MCP_SET_HASH);
 
 /** How many MCP servers the set of `layers` has, for `sessionSettings`: a Session with none never wakes its host. */
-export const mcpServerCountOf = (layers: McpSetLayers): number =>
-  resolveMcpServerSet(layers.global, layers.overrides, layers.repos).servers.length;
+export const mcpServerCountOf = (layers: McpSetLayers): number => resolvedMcpServers(layers).length;

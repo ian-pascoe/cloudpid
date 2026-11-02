@@ -10,7 +10,13 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { mcpServerSetAnswer, pendingMcpPushes, recordMcpPushed } from "./mcp-registry.ts";
+import {
+  mcpServerSetAnswer,
+  pendingMcpPushes,
+  recordMcpDeleted,
+  recordMcpDestroyed,
+  recordMcpPushed,
+} from "./mcp-registry.ts";
 import { EMPTY_MCP_SET_HASH } from "./mcp-set.ts";
 import { sessionSettingsSource, updateSettingsOverrides, writeSettings } from "./settings.ts";
 import type { TestRegistry } from "./store.fixture.ts";
@@ -51,11 +57,13 @@ const inRegistry = <A>(
         if (saved === null || Result.isFailure(saved)) throw new Error("bad Overrides");
       },
       push: (environment) => {
-        const pending = pendingMcpPushes(store, environment);
+        const { pushes } = pendingMcpPushes(store, environment, 6);
 
-        for (const { environment: id, set } of pending) recordMcpPushed(store, id, set.hash, 6);
+        for (const { environment: id, set } of pushes) {
+          recordMcpPushed(store, { environment: id, hash: set.hash, revision: set.revision }, 6);
+        }
 
-        return Arr.map(pending, ({ environment: id }) => id).sort();
+        return Arr.map(pushes, ({ environment: id }) => id).sort();
       },
     });
   });
@@ -86,7 +94,7 @@ describe("the MCP server set over the Registry's storage", () => {
 
       expect(push(DEFAULT_ENVIRONMENT)).toEqual([DEFAULT_ENVIRONMENT]);
       expect(
-        mcpServerSetAnswer(store, { environment: DEFAULT_ENVIRONMENT, heldHash: "old" }).set?.[0]
+        mcpServerSetAnswer(store, { environment: DEFAULT_ENVIRONMENT, heldHash: "old" }, 7).set?.[0]
           ?.server,
       ).toMatchObject({ enabled: false });
     }));
@@ -99,7 +107,7 @@ describe("the MCP server set over the Registry's storage", () => {
 
       expect(push()).toEqual([DEFAULT_ENVIRONMENT, STAGING].sort());
       expect(push()).toEqual([]);
-      expect(mcpServerSetAnswer(store, { environment: STAGING })).toEqual({
+      expect(mcpServerSetAnswer(store, { environment: STAGING }, 7)).toEqual({
         hash: EMPTY_MCP_SET_HASH,
         signInsRevision: 0,
       });
@@ -109,12 +117,32 @@ describe("the MCP server set over the Registry's storage", () => {
     inRegistry(({ setGlobal, store }) => {
       setGlobal(servers({ linear: LINEAR, local: LOCAL }));
 
-      const answer = mcpServerSetAnswer(store, { environment: STAGING });
+      const answer = mcpServerSetAnswer(store, { environment: STAGING }, 7);
 
       expect(Arr.map(answer.set ?? [], ({ name }) => name)).toEqual(["linear", "local"]);
-      expect(mcpServerSetAnswer(store, { environment: STAGING, heldHash: answer.hash }).set).toBe(
-        undefined,
-      );
+      expect(
+        mcpServerSetAnswer(store, { environment: STAGING, heldHash: answer.hash }, 8).set,
+      ).toBe(undefined);
+    }));
+
+  it("notes a deleted Environment's host to be wiped only once it was handed a set", () =>
+    inRegistry(({ setGlobal, push, store }) => {
+      setGlobal(servers({ linear: LINEAR }));
+      push();
+      store.createEnvironment("6b6b6b6b", "Spare", 11);
+
+      // Spare was never handed a set (a pull for an Environment that had none, say): nothing to wipe.
+      expect(store.deleteEnvironment("6b6b6b6b")).toBe("deleted");
+      recordMcpDeleted(store, "6b6b6b6b", 12);
+
+      expect(store.deleteEnvironment(STAGING)).toBe("deleted");
+      recordMcpDeleted(store, STAGING, 12);
+
+      expect(pendingMcpPushes(store, undefined, 13).destroys).toEqual([STAGING]);
+
+      recordMcpDestroyed(store, STAGING, 14);
+
+      expect(pendingMcpPushes(store, undefined, 15).destroys).toEqual([]);
     }));
 
   it("tells a Session's Settings how many servers its Environment's set has", () =>

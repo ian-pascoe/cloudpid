@@ -14,9 +14,11 @@ import {
   type McpApply,
   type McpApplyResult,
   McpApplySet,
+  McpDestroyed,
   type McpRequestStart,
   type McpRequestStartAnswer,
   type McpServerSetAnswer,
+  McpStale,
 } from "@cloudpid/mcp/types";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -56,15 +58,22 @@ const applied = (set: McpApplySet, changed: boolean): McpApplied =>
   McpApplied.make({ hash: set.hash, changed });
 
 /**
- * Keep `set` as the Environment's set. A set the host holds changes nothing, and neither does an empty one when it
- * holds none: it is never written for an Environment that never had a server.
+ * Keep `set` as the Environment's set unless the host holds a later one: a set with a revision below the held one is
+ * `Stale`, and the held set stays. The same hash under a newer revision only moves the revision up. An empty set is
+ * kept like any other, so a host emptied of its servers holds the empty set, not the one before.
  */
-const applySet = (set: McpApplySet): Effect.Effect<McpApplied, never, McpHostStore> =>
+const applySet = (set: McpApplySet): Effect.Effect<McpApplied | McpStale, never, McpHostStore> =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
-    const held = store.heldHash();
+    const held = store.held();
 
-    if (held === set.hash || (held === undefined && set.entries.length === 0)) {
+    if (held !== undefined && set.revision < held.revision) {
+      return McpStale.make({ hash: held.hash, revision: held.revision });
+    }
+
+    if (held?.hash === set.hash) {
+      if (set.revision > held.revision) yield* Effect.sync(() => store.setRevision(set.revision));
+
       return applied(set, false);
     }
 
@@ -74,8 +83,9 @@ const applySet = (set: McpApplySet): Effect.Effect<McpApplied, never, McpHostSto
   });
 
 /**
- * `apply`: the pushes and teardown. Only `set` exists so far; any other `kind` fails as `HostUnsupported`, never as
- * a decode error, so a newer caller's operation is refused loudly, and a `set` that is malformed as `HostFailed`.
+ * `apply`: the pushes and teardown. `set` keeps the Environment's set and `destroy` wipes the storage; any other
+ * `kind` fails as `HostUnsupported`, never as a decode error, so a newer caller's operation is refused loudly, and a
+ * `set` that is malformed as `HostFailed`.
  */
 export const apply = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostStore> =>
   Effect.gen(function* () {
@@ -83,6 +93,14 @@ export const apply = (input: McpApply): Effect.Effect<McpApplyResult, never, Mcp
 
     if (Option.isNone(kind)) {
       return HostFailed.make({ message: "apply takes an object with a kind" });
+    }
+
+    if (kind.value.kind === "destroy") {
+      const store = yield* McpHostStore;
+
+      yield* Effect.sync(() => store.destroy());
+
+      return McpDestroyed.make({});
     }
 
     if (kind.value.kind !== "set") {
@@ -111,10 +129,15 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostStore | Mc
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const registry = yield* McpRegistryPort;
-    const answer = yield* registry.serverSet({ environment, heldHash: store.heldHash() });
+    const answer = yield* registry.serverSet({ environment, heldHash: store.held()?.hash });
 
-    if (answer.set !== undefined) {
-      yield* applySet({ kind: "set", hash: answer.hash, entries: answer.set });
+    if (answer.set !== undefined && answer.revision !== undefined) {
+      yield* applySet({
+        kind: "set",
+        hash: answer.hash,
+        revision: answer.revision,
+        entries: answer.set,
+      });
     }
   }).pipe(
     Effect.catchCause((cause) =>
@@ -125,8 +148,10 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostStore | Mc
 /**
  * `requestStart`: marks the conversation active and says what the Session needs to build its tools. A Context Window's
  * first request (`windowOpened`) pulls the set first. The inventory is discovered later, so the answer has no servers
- * yet, and its `version` is the held set's hash, which changes with any change to the set; the features are those the
- * host lists, the ones a Session may use.
+ * yet, and its `version` is the held set's hash, which changes with any change to the set (a placeholder until the
+ * inventory's own version, #449); the features are those the host lists, the ones a Session may use. The Registry is
+ * asked only here and never at the host's start: a host that no Session wakes holds the set it was last pushed, and
+ * `windowOpened` heals what a lost push left.
  */
 export const requestStart = (
   environment: string | undefined,
@@ -139,7 +164,7 @@ export const requestStart = (
     const store = yield* McpHostStore;
 
     return {
-      version: store.heldHash() ?? "",
+      version: store.held()?.hash ?? "",
       promptsVersion: "",
       features: MCP_HOST_FEATURES,
       servers: {},

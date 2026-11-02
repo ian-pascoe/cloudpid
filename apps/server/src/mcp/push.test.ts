@@ -5,8 +5,10 @@
 import {
   HostUnsupported,
   McpApplied,
+  type McpApply,
   type McpApplyResult,
-  type McpApplySet,
+  McpDestroyed,
+  McpStale,
   type McpPush,
 } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
@@ -17,18 +19,22 @@ import { mcpPushes } from "./push.ts";
 // decode (`readMcpApplyResult`) is what must read it.
 const newerResult = JSON.parse('{"_tag":"Deferred","message":"later"}') as McpApplyResult;
 
-const set = (hash: string): McpApplySet => ({ kind: "set", hash, entries: [] });
-
-const push = (environment: string, hash: string): McpPush => ({ environment, set: set(hash) });
+/** A set to push, whose revision is its place in the list `scripted` is given. */
+const push = (environment: string, hash: string, revision = 1): McpPush => ({
+  environment,
+  set: { kind: "set", hash, revision, entries: [] },
+});
 
 /** A Registry that has `pending` to push, and hosts that answer as `answers` say (by host name) or take the set. */
 const scripted = (
   pending: ReadonlyArray<McpPush>,
   answers: Record<string, () => Effect.Effect<McpApplyResult>> = {},
+  destroys: ReadonlyArray<string> = [],
 ) => {
   const asked: Array<string | undefined> = [];
-  const applied: Array<readonly [string, McpApplySet]> = [];
-  const pushed: Array<readonly [string, string]> = [];
+  const applied: Array<readonly [string, McpApply]> = [];
+  const pushed: Array<readonly [string, string, number]> = [];
+  const destroyed: Array<string> = [];
 
   const pushes = mcpPushes({
     registry: () => ({
@@ -36,13 +42,20 @@ const scripted = (
         Effect.sync(() => {
           asked.push(environment);
 
-          return pending.filter(
-            (one) => environment === undefined || one.environment === environment,
-          );
+          return {
+            pushes: pending.filter(
+              (one) => environment === undefined || one.environment === environment,
+            ),
+            destroys: destroys.filter((one) => environment === undefined || one === environment),
+          };
         }),
-      mcpPushed: ({ environment, hash }) =>
+      mcpPushed: ({ environment, hash, revision }) =>
         Effect.sync(() => {
-          pushed.push([environment, hash]);
+          pushed.push([environment, hash, revision]);
+        }),
+      mcpDestroyed: ({ environment }) =>
+        Effect.sync(() => {
+          destroyed.push(environment);
         }),
     }),
     host: (name) => ({
@@ -53,29 +66,33 @@ const scripted = (
           return (
             answers[name] ??
             (() =>
-              Effect.succeed<McpApplyResult>(McpApplied.make({ hash: input.hash, changed: true })))
+              Effect.succeed<McpApplyResult>(
+                input.kind === "set"
+                  ? McpApplied.make({ hash: input.hash, changed: true })
+                  : McpDestroyed.make({}),
+              ))
           )();
         }),
     }),
   });
 
-  return { pushes, asked, applied, pushed };
+  return { pushes, asked, applied, pushed, destroyed };
 };
 
 describe("pushing the MCP server set", () => {
   it("calls the host of each Environment with a set to push, by its name, and records what it took", async () => {
-    const world = scripted([push("a", "h1"), push("b", "h2")]);
+    const world = scripted([push("a", "h1", 1), push("b", "h2", 2)]);
 
     await Effect.runPromise(world.pushes.sync(undefined));
 
     expect(world.asked).toEqual([undefined]);
-    expect(world.applied.map(([name, one]) => [name, one.hash])).toEqual([
+    expect(world.applied.map(([name, one]) => [name, one.kind === "set" ? one.hash : ""])).toEqual([
       ["mcp:a", "h1"],
       ["mcp:b", "h2"],
     ]);
     expect(world.pushed).toEqual([
-      ["a", "h1"],
-      ["b", "h2"],
+      ["a", "h1", 1],
+      ["b", "h2", 2],
     ]);
   });
 
@@ -106,7 +123,46 @@ describe("pushing the MCP server set", () => {
     await Effect.runPromise(world.pushes.sync(undefined));
 
     expect(world.applied).toHaveLength(2);
-    expect(world.pushed).toEqual([["b", "h2"]]);
+    expect(world.pushed).toEqual([["b", "h2", 1]]);
+  });
+
+  it("records the revision the set was pushed under, and nothing for a host that holds a later set (Stale)", async () => {
+    const world = scripted([push("a", "h5", 5), push("b", "h6", 6)], {
+      "mcp:a": () => Effect.succeed(McpStale.make({ hash: "h7", revision: 7 })),
+    });
+
+    await Effect.runPromise(world.pushes.sync(undefined));
+
+    expect(world.pushed).toEqual([["b", "h6", 6]]);
+  });
+
+  it("wipes the host of a deleted Environment, and records it once the host answered", async () => {
+    const world = scripted([push("a", "h1")], {}, ["gone", "stuck"]);
+
+    await Effect.runPromise(world.pushes.sync(undefined));
+
+    expect(world.applied.map(([name, one]) => [name, one.kind])).toEqual([
+      ["mcp:a", "set"],
+      ["mcp:gone", "destroy"],
+      ["mcp:stuck", "destroy"],
+    ]);
+    expect(world.destroyed).toEqual(["gone", "stuck"]);
+  });
+
+  it("records no wipe for a host that did not answer, and goes on", async () => {
+    const world = scripted(
+      [],
+      {
+        "mcp:stuck": () => Effect.die(new Error("Network connection lost.")),
+        "mcp:odd": () => Effect.succeed(HostUnsupported.make({ message: "no", op: "destroy" })),
+      },
+      ["stuck", "odd", "gone"],
+    );
+
+    await Effect.runPromise(world.pushes.sync(undefined));
+
+    expect(world.applied).toHaveLength(3);
+    expect(world.destroyed).toEqual(["gone"]);
   });
 
   it("reads a result of a tag it does not know as a failure, and a host that cannot be reached as one", async () => {
@@ -118,7 +174,7 @@ describe("pushing the MCP server set", () => {
 
     await Effect.runPromise(world.pushes.sync(undefined));
 
-    expect(world.pushed).toEqual([["c", "h3"]]);
+    expect(world.pushed).toEqual([["c", "h3", 1]]);
   });
 
   it("never fails when the Registry cannot say what to push", async () => {
@@ -126,6 +182,7 @@ describe("pushing the MCP server set", () => {
       registry: () => ({
         mcpPending: () => Effect.die(new Error("The Registry is gone")),
         mcpPushed: () => Effect.void,
+        mcpDestroyed: () => Effect.void,
       }),
       host: () => ({ apply: () => Effect.die(new Error("never called")) }),
     });

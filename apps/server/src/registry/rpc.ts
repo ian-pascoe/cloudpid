@@ -741,7 +741,9 @@ export const serveRegistryRpc = <R = never>(
         registry
           .renameEnvironment({ id: environment, name })
           .pipe(Effect.flatMap((naming) => named(naming, name, environment))),
-      deleteEnvironment: ({ environment }) => deleteEnvironment(environment),
+      deleteEnvironment: ({ environment }) =>
+        // The Registry noted the host to wipe; the sync wipes it, and every one that an earlier sync did not.
+        deleteEnvironment(environment).pipe(Effect.tap(() => background(mcp.sync(undefined)))),
       addRepo: ({ environment, source, name }) =>
         Effect.gen(function* () {
           const found = yield* Effect.fromResult(parseRepoSource(source)).pipe(

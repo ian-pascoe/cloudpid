@@ -3,7 +3,8 @@
 // never the SDK (`docs/architecture/mcp.md` → Packages and objects), and is never woken for an Environment without
 // MCP servers (the main Worker pushes nothing to one, and a Session skips `requestStart`).
 //
-// Here: the set's storage, `apply({ kind: "set" })` and the pull at `windowOpened`. `servers`, `request`, discovery and
+// Here: the set's storage with its revision, `apply({ kind: "set" })` and `apply({ kind: "destroy" })`, and the pull at
+// `windowOpened`. `servers`, `request`, discovery and
 // the rest of `apply` come with their slices; an `apply` kind this build does not know fails as `HostUnsupported`.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { McpServerSetAnswer } from "@cloudpid/mcp/types";

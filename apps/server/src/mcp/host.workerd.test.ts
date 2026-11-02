@@ -1,4 +1,4 @@
-// `McpHost`'s storage, `apply({ kind: "set" })` and the pull at `windowOpened` over real Durable Object SQLite and a
+// `McpHost`'s storage, `apply({ kind: "set" })`, `apply({ kind: "destroy" })` and the pull at `windowOpened` over real Durable Object SQLite and a
 // scripted Registry (`docs/architecture/mcp-connections.md` → The host object, Storage, RPC; `mcp-configuration.md` →
 // From the Registry to the host).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
@@ -9,9 +9,11 @@ import {
   HostUnsupported,
   MCP_HOST_FEATURES,
   McpApplied,
+  McpDestroyed,
   type McpApplyResult,
   type McpApplySet,
   type McpSetEntry,
+  McpStale,
 } from "@cloudpid/mcp/types";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -45,16 +47,22 @@ const entry = (name: string, extra: Partial<McpSetEntry> = {}): McpSetEntry => (
   ...extra,
 });
 
-const setOf = (hash: string, ...names: ReadonlyArray<string>): McpApplySet => ({
+const setOf = (hash: string, revision: number, ...names: ReadonlyArray<string>): McpApplySet => ({
   kind: "set",
   hash,
+  revision,
   entries: names.map((name) => entry(name)),
 });
 
 /** Whether an `apply` answer is the generic failure. */
 const failed = (result: McpApplyResult): boolean => Predicate.isTagged(result, "HostFailed");
 
-const EMPTY: McpApplySet = { kind: "set", hash: "empty", entries: [] };
+const emptyAt = (revision: number): McpApplySet => ({
+  kind: "set",
+  hash: "empty",
+  revision,
+  entries: [],
+});
 
 const CALLER = { session: "s-1", conversation: "1", workspace: "w-1" };
 
@@ -62,7 +70,7 @@ describe("apply({ kind: 'set' })", () => {
   it("keeps the set as received, in order, and answers that it changed", async () => {
     const host = hostOf("a");
 
-    expect(await host.apply(setOf("h1", "linear", "docs", "alpha"))).toEqual(
+    expect(await host.apply(setOf("h1", 1, "linear", "docs", "alpha"))).toEqual(
       McpApplied.make({ hash: "h1", changed: true }),
     );
 
@@ -86,9 +94,9 @@ describe("apply({ kind: 'set' })", () => {
   it("changes nothing for the set it holds", async () => {
     const host = hostOf("a");
 
-    await host.apply(setOf("h1", "linear"));
+    await host.apply(setOf("h1", 1, "linear"));
 
-    expect(await host.apply(setOf("h1", "linear"))).toEqual(
+    expect(await host.apply(setOf("h1", 1, "linear"))).toEqual(
       McpApplied.make({ hash: "h1", changed: false }),
     );
   });
@@ -96,8 +104,8 @@ describe("apply({ kind: 'set' })", () => {
   it("replaces the whole set: a server that left is gone, and the order follows the new set", async () => {
     const host = hostOf("a");
 
-    await host.apply(setOf("h1", "linear", "docs"));
-    await host.apply(setOf("h2", "docs", "alpha"));
+    await host.apply(setOf("h1", 1, "linear", "docs"));
+    await host.apply(setOf("h2", 2, "docs", "alpha"));
 
     const stored = await host.readSet();
 
@@ -108,27 +116,72 @@ describe("apply({ kind: 'set' })", () => {
   it("keeps the set across an eviction, so a new instance reads what the old one kept", async () => {
     const host = hostOf("a");
 
-    await host.apply(setOf("h1", "linear"));
+    await host.apply(setOf("h1", 1, "linear"));
     await evictDurableObject(host);
 
     expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["linear"]);
-    expect(await host.apply(setOf("h1", "linear"))).toEqual(
+    expect(await host.apply(setOf("h1", 1, "linear"))).toEqual(
       McpApplied.make({ hash: "h1", changed: false }),
     );
   });
 
-  it("keeps an empty set only after a non-empty one: it is never written for a host that holds none", async () => {
+  it("keeps an empty set like any other: a host that never had a server holds it, and one that had holds no more", async () => {
     const never = hostOf("a");
 
-    expect(await never.apply(EMPTY)).toEqual(McpApplied.make({ hash: "empty", changed: false }));
-    expect(await never.readSet()).toBeNull();
+    expect(await never.apply(emptyAt(1))).toEqual(
+      McpApplied.make({ hash: "empty", changed: true }),
+    );
+    expect(await never.readSet()).toMatchObject({ hash: "empty", revision: 1, servers: [] });
 
     const had = hostOf("b");
 
-    await had.apply(setOf("h1", "linear"));
+    await had.apply(setOf("h1", 1, "linear"));
 
-    expect(await had.apply(EMPTY)).toEqual(McpApplied.make({ hash: "empty", changed: true }));
-    expect(await had.readSet()).toMatchObject({ hash: "empty", servers: [] });
+    expect(await had.apply(emptyAt(2))).toEqual(McpApplied.make({ hash: "empty", changed: true }));
+    expect(await had.readSet()).toMatchObject({ hash: "empty", revision: 2, servers: [] });
+  });
+
+  it("refuses a set older than the one held as Stale, and keeps the held one, so an out-of-order push is harmless", async () => {
+    const host = hostOf("a");
+
+    await host.apply(setOf("h6", 6, "linear", "docs"));
+
+    // Push 5 was slow: it arrives after the pull that handed out 6.
+    expect(await host.apply(setOf("h5", 5, "alpha"))).toEqual(
+      McpStale.make({ hash: "h6", revision: 6 }),
+    );
+    expect(await host.readSet()).toMatchObject({ hash: "h6", revision: 6 });
+    expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["linear", "docs"]);
+
+    // The same set again under its own revision is held, not stale.
+    expect(await host.apply(setOf("h6", 6, "linear", "docs"))).toEqual(
+      McpApplied.make({ hash: "h6", changed: false }),
+    );
+  });
+
+  it("takes the same set under a newer revision as unchanged, and raises the revision it holds", async () => {
+    const host = hostOf("a");
+
+    await host.apply(setOf("h1", 1, "linear"));
+
+    expect(await host.apply(setOf("h1", 4, "linear"))).toEqual(
+      McpApplied.make({ hash: "h1", changed: false }),
+    );
+    expect(await host.readSet()).toMatchObject({ hash: "h1", revision: 4 });
+    expect(await host.apply(setOf("h0", 3, "alpha"))).toEqual(
+      McpStale.make({ hash: "h1", revision: 4 }),
+    );
+  });
+
+  it("keeps the revision across an eviction", async () => {
+    const host = hostOf("a");
+
+    await host.apply(setOf("h6", 6, "linear"));
+    await evictDurableObject(host);
+
+    expect(await host.apply(setOf("h5", 5, "docs"))).toEqual(
+      McpStale.make({ hash: "h6", revision: 6 }),
+    );
   });
 
   it("holds ${NAME} as written and nothing resolved: no value is in the tables", async () => {
@@ -137,6 +190,7 @@ describe("apply({ kind: 'set' })", () => {
     await host.apply({
       kind: "set",
       hash: "h1",
+      revision: 1,
       entries: [
         entry("linear", {
           server: {
@@ -170,12 +224,16 @@ describe("apply({ kind: 'set' })", () => {
     const host = hostOf("a");
 
     expect(failed(await host.apply(JSON.parse('{"kind":"set","hash":"h"}')))).toBe(true);
+    // No revision: it cannot be ordered against the one held.
+    expect(failed(await host.apply(JSON.parse('{"kind":"set","hash":"h","entries":[]}')))).toBe(
+      true,
+    );
     expect(failed(await host.apply(JSON.parse("[]")))).toBe(true);
     expect(await host.readSet()).toBeNull();
 
     // A newer Registry's extra keys are dropped, not refused.
     const newer = JSON.parse(
-      '{"kind":"set","hash":"h","later":1,"entries":[{"name":"a","source":{"kind":"workspace"},"server":{},"hash":"x","conn":"y","identity":"z","later":true}]}',
+      '{"kind":"set","hash":"h","revision":1,"later":1,"entries":[{"name":"a","source":{"kind":"workspace"},"server":{},"hash":"x","conn":"y","identity":"z","later":true}]}',
     );
 
     expect(await host.apply(newer)).toEqual(McpApplied.make({ hash: "h", changed: true }));
@@ -188,7 +246,7 @@ describe("apply({ kind: 'set' })", () => {
   it("answers with a failure, never a throw, while its storage refuses (a replaced instance), and a new instance reads what it kept", async () => {
     const host = hostOf("a");
 
-    await host.apply(setOf("h1", "linear"));
+    await host.apply(setOf("h1", 1, "linear"));
 
     await runInDurableObject(host, async (_instance: TestMcpHost, state) => {
       const gate = refusingStorage(state.storage);
@@ -197,7 +255,7 @@ describe("apply({ kind: 'set' })", () => {
       gate.trip();
 
       const result = await Effect.runPromise(
-        apply(setOf("h2", "other")).pipe(Effect.provideService(McpHostStore, store)),
+        apply(setOf("h2", 2, "other")).pipe(Effect.provideService(McpHostStore, store)),
       );
 
       expect(failed(result)).toBe(true);
@@ -206,6 +264,37 @@ describe("apply({ kind: 'set' })", () => {
     await evictDurableObject(host);
 
     expect((await host.readSet())?.hash).toBe("h1");
+  });
+});
+
+describe("apply({ kind: 'destroy' })", () => {
+  it("wipes the storage, and the host holds nothing and takes a set again from revision 1", async () => {
+    const host = hostOf("a");
+
+    await host.apply(setOf("h9", 9, "linear"));
+
+    expect(await host.apply(JSON.parse('{"kind":"destroy"}'))).toEqual(McpDestroyed.make({}));
+    expect(await host.readSet()).toBeNull();
+    expect(await host.dump()).not.toContain("linear");
+
+    // The tables are there again, empty: a set is kept, whatever its revision.
+    expect(await host.apply(setOf("h1", 1, "docs"))).toEqual(
+      McpApplied.make({ hash: "h1", changed: true }),
+    );
+    expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["docs"]);
+  });
+
+  it("is answered again for a host that was wiped already, and stays wiped across an eviction", async () => {
+    const host = hostOf("a");
+
+    await host.apply(setOf("h1", 1, "linear"));
+    await host.apply(JSON.parse('{"kind":"destroy"}'));
+
+    expect(await host.apply(JSON.parse('{"kind":"destroy"}'))).toEqual(McpDestroyed.make({}));
+
+    await evictDurableObject(host);
+
+    expect(await host.readSet()).toBeNull();
   });
 });
 
@@ -221,7 +310,7 @@ describe("requestStart", () => {
       watches: { changed: [], ended: [] },
     });
 
-    await host.apply(setOf("h1", "linear"));
+    await host.apply(setOf("h1", 1, "linear"));
 
     expect((await host.requestStart({ caller: CALLER })).version).toBe("h1");
   });
@@ -241,6 +330,7 @@ describe("requestStart", () => {
     await host.script({
       hash: "h1",
       signInsRevision: 0,
+      revision: 1,
       set: [entry("linear"), entry("docs")],
     });
 
@@ -258,7 +348,7 @@ describe("requestStart", () => {
   it("carries the hash it holds, and keeps its set when the Registry says it holds the current one", async () => {
     const host = hostOf("staging");
 
-    await host.apply(setOf("h1", "linear"));
+    await host.apply(setOf("h1", 1, "linear"));
     await host.script({ hash: "h1", signInsRevision: 0 });
     await host.requestStart({ caller: CALLER, windowOpened: true });
 
@@ -269,32 +359,42 @@ describe("requestStart", () => {
   it("heals a push that was lost: the Registry's newer set replaces the one held", async () => {
     const host = hostOf("staging");
 
-    await host.apply(setOf("h1", "linear"));
-    await host.script({ hash: "h2", signInsRevision: 0, set: [entry("docs")] });
+    await host.apply(setOf("h1", 1, "linear"));
+    await host.script({ hash: "h2", signInsRevision: 0, revision: 2, set: [entry("docs")] });
 
     expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h2");
     expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["docs"]);
   });
 
-  it("takes an empty answer for a host that holds none as nothing to keep", async () => {
+  it("keeps the set an answer carries only with its revision, which an older Registry would not give", async () => {
     const host = hostOf("staging");
 
-    await host.script({ hash: "empty", signInsRevision: 0, set: [] });
+    await host.script({ hash: "h1", signInsRevision: 0, set: [entry("linear")] });
     await host.requestStart({ caller: CALLER, windowOpened: true });
 
     expect(await host.readSet()).toBeNull();
   });
 
+  it("does not let a pull bring back an older set than the one pushed meanwhile", async () => {
+    const host = hostOf("staging");
+
+    await host.apply(setOf("h7", 7, "linear"));
+    await host.script({ hash: "h6", signInsRevision: 0, revision: 6, set: [entry("docs")] });
+
+    expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h7");
+    expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["linear"]);
+  });
+
   it("answers, holding what it has, when the Registry cannot be asked, and heals at the next window", async () => {
     const host = hostOf("staging");
 
-    await host.apply(setOf("h1", "linear"));
+    await host.apply(setOf("h1", 1, "linear"));
     await host.script(null);
 
     expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h1");
     expect((await host.readSet())?.hash).toBe("h1");
 
-    await host.script({ hash: "h2", signInsRevision: 0, set: [entry("docs")] });
+    await host.script({ hash: "h2", signInsRevision: 0, revision: 2, set: [entry("docs")] });
 
     expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h2");
   });
@@ -305,7 +405,7 @@ describe("requestStart", () => {
 
     expect((await stray.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("");
     expect(await stray.asked()).toEqual([]);
-    expect(failed(await stray.apply(setOf("h1", "linear")))).toBe(true);
+    expect(failed(await stray.apply(setOf("h1", 1, "linear")))).toBe(true);
     expect(await stray.readSet()).toBeNull();
   });
 });

@@ -59,13 +59,24 @@ export const McpApplySet = Schema.Struct({
   kind: Schema.Literal("set"),
   /** SHA-256 over the entries' names and hashes, in order. */
   hash: Schema.String,
+  /**
+   * The Registry's own order of the sets it hands out, which only rises: the host refuses a set whose revision is below
+   * the one it holds, so a push that arrives after a later pull, or two pushes out of order, never bring back an older
+   * set.
+   */
+  revision: Schema.Int,
   entries: Schema.Array(McpSetEntry),
 });
 
 export type McpApplySet = typeof McpApplySet.Type;
 
-/** What `apply` takes. The other kinds (`sign_ins`, `reload`, `end_watches`, `destroy`) are added by their slices. */
-export const McpApply = McpApplySet;
+/** `apply({ kind: "destroy" })`: an Environment was deleted; the host wipes its storage. */
+export const McpApplyDestroy = Schema.Struct({ kind: Schema.Literal("destroy") });
+
+export type McpApplyDestroy = typeof McpApplyDestroy.Type;
+
+/** What `apply` takes. The other kinds (`sign_ins`, `reload`, `end_watches`) are added by their slices. */
+export const McpApply = Schema.Union([McpApplySet, McpApplyDestroy]);
 
 export type McpApply = typeof McpApply.Type;
 
@@ -76,6 +87,19 @@ export const McpApplied = Schema.TaggedStruct("Applied", {
 });
 
 export type McpApplied = typeof McpApplied.Type;
+
+/** The set was refused as older than the one the host holds (`revision`), which it kept. */
+export const McpStale = Schema.TaggedStruct("Stale", {
+  hash: Schema.String,
+  revision: Schema.Int,
+});
+
+export type McpStale = typeof McpStale.Type;
+
+/** The host's storage was wiped (`apply({ kind: "destroy" })`). */
+export const McpDestroyed = Schema.TaggedStruct("Destroyed", {});
+
+export type McpDestroyed = typeof McpDestroyed.Type;
 
 /** An operation this build of the host does not know (`op`: the `kind` or method asked for). */
 export const HostUnsupported = Schema.TaggedStruct("HostUnsupported", {
@@ -100,8 +124,13 @@ export const McpHostFailure = Schema.Union([HostUnsupported, HostFailed]);
 
 export type McpHostFailure = typeof McpHostFailure.Type;
 
-/** What `apply` answers: the set was taken, or why not. */
-export const McpApplyResult = Schema.Union([McpApplied, ...McpHostFailure.members]);
+/** What `apply` answers: the set was taken or refused as stale, the storage wiped, or why not. */
+export const McpApplyResult = Schema.Union([
+  McpApplied,
+  McpStale,
+  McpDestroyed,
+  ...McpHostFailure.members,
+]);
 
 export type McpApplyResult = typeof McpApplyResult.Type;
 
@@ -161,18 +190,11 @@ export const McpCaller = Schema.Struct({
 export type McpCaller = typeof McpCaller.Type;
 
 /**
- * `requestStart`'s arguments (`docs/architecture/mcp-connections.md` → RPC). `waitFor` and `waitMs` come with the
- * inventory's 10 s wait.
+ * `requestStart`'s arguments (`docs/architecture/mcp-connections.md` → RPC). `known`, `waitFor` and `waitMs` come with
+ * the inventory (#449).
  */
 export const McpRequestStart = Schema.Struct({
   caller: McpCaller,
-  /** What the Session holds of the inventory, to tell a change. */
-  known: Schema.optionalKey(
-    Schema.Struct({
-      version: Schema.optionalKey(Schema.String),
-      promptsVersion: Schema.optionalKey(Schema.String),
-    }),
-  ),
   /** Set on a Context Window's first request: the host asks the Registry for the set, so a lost push heals. */
   windowOpened: Schema.optionalKey(Schema.Boolean),
 });
@@ -211,6 +233,8 @@ export const McpServerSetAnswer = Schema.Struct({
   /** Bumped by an MCP sign-in, sign-out or rebind (`docs/architecture/mcp-sign-in.md`); 0 until sign-ins exist. */
   signInsRevision: Schema.Int,
   set: McpSetEntry.pipe(Schema.Array, Schema.optionalKey),
+  /** With `set`: its place in the Registry's order of the sets it hands out (`McpApplySet.revision`). */
+  revision: Schema.optionalKey(Schema.Int),
 });
 
 export type McpServerSetAnswer = typeof McpServerSetAnswer.Type;
@@ -222,6 +246,17 @@ export const McpPush = Schema.Struct({
 });
 
 export type McpPush = typeof McpPush.Type;
+
+/**
+ * What the Registry hands the main Worker at a sync: the sets to push, and the Environments deleted since whose host
+ * must be wiped (`apply({ kind: "destroy" })`).
+ */
+export const McpPending = Schema.Struct({
+  pushes: Schema.Array(McpPush),
+  destroys: Schema.Array(Schema.String),
+});
+
+export type McpPending = typeof McpPending.Type;
 
 /**
  * The Registry's answer to the host's `mcpServerValues({ environment, server, conn })`: the entry's `env` and `headers`

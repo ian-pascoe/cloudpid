@@ -13,6 +13,8 @@ import {
   mcpServerValuesAnswer,
   pendingMcpPushes,
   readsSecrets,
+  recordMcpDeleted,
+  recordMcpDestroyed,
   recordMcpPushed,
   type McpSetStore,
 } from "./mcp-registry.ts";
@@ -27,6 +29,7 @@ const servers = (value: Schema.Json): Schema.Json => ({ mcp: { servers: value } 
 /** A store with Environments `ids`, each with the Settings Overrides and Container settings Overrides given. */
 const store = (ids: ReadonlyArray<string>) => {
   const documents = new Map<string, string>();
+  let live = [...ids];
   const overrides = new Map<string, Schema.Json>(Arr.map(ids, (id) => [id, {}] as const));
   const container = new Map<string, Schema.Json>(Arr.map(ids, (id) => [id, {}] as const));
 
@@ -34,12 +37,14 @@ const store = (ids: ReadonlyArray<string>) => {
     readonly global: (document: Schema.Json) => void;
     readonly overridesOf: (id: string, document: Schema.Json) => void;
     readonly variables: (id: string, variables: Record<string, string>) => void;
+    readonly remove: (id: string) => void;
   } = {
     getDocument: (name) => documents.get(name) ?? null,
     putDocument: (name, body) => void documents.set(name, body),
-    getSettingsOverrides: (id) => overrides.get(id) ?? null,
-    getEnvironmentSettings: (id) => container.get(id) ?? null,
-    listEnvironments: () => Arr.map(ids, (id) => ({ id, name: id, repos: [], createdAt: 0 })),
+    getSettingsOverrides: (id) => (live.includes(id) ? (overrides.get(id) ?? null) : null),
+    getEnvironmentSettings: (id) => (live.includes(id) ? (container.get(id) ?? null) : null),
+    listEnvironments: () => Arr.map(live, (id) => ({ id, name: id, repos: [], createdAt: 0 })),
+    remove: (id) => void (live = live.filter((kept) => kept !== id)),
     global: (document) => void documents.set(SETTINGS_DOCUMENT, JSON.stringify(document)),
     overridesOf: (id, document) => void overrides.set(id, document),
     variables: (id, variables) => void container.set(id, { variables }),
@@ -48,17 +53,37 @@ const store = (ids: ReadonlyArray<string>) => {
   return fake;
 };
 
+/** The Registry's record of what the hosts were handed, as it keeps it. */
+// SAFETY: the document is the Registry's own, which this file's pushes wrote.
+const handedOf = (registry: McpSetStore) =>
+  JSON.parse(registry.getDocument(MCP_HANDED_DOCUMENT) ?? "{}") as {
+    readonly handed: Record<string, { readonly hash: string; readonly revision: number }>;
+    readonly destroy: ReadonlyArray<string>;
+  };
+
+/** The sets pending for `environment`, each noted as pushed under its revision. */
+const pushAll = (registry: McpSetStore, environment: string | undefined, now = 1) => {
+  const { pushes } = pendingMcpPushes(registry, environment, now);
+
+  for (const { environment: id, set } of pushes) {
+    recordMcpPushed(registry, { environment: id, hash: set.hash, revision: set.revision }, now);
+  }
+
+  return pushes;
+};
+
 describe("the host's pull (mcpServerSet)", () => {
   it("answers the set when the host holds another, and only its hash when it holds this one", () => {
     const registry = store(["a"]);
 
     registry.global(servers({ linear: LINEAR }));
 
-    const first = mcpServerSetAnswer(registry, { environment: "a", heldHash: "old" });
+    const first = mcpServerSetAnswer(registry, { environment: "a", heldHash: "old" }, 1);
 
     expect(first.set?.map(({ name }) => name)).toEqual(["linear"]);
+    expect(first.revision).toBe(1);
     expect(first.signInsRevision).toBe(0);
-    expect(mcpServerSetAnswer(registry, { environment: "a", heldHash: first.hash })).toEqual({
+    expect(mcpServerSetAnswer(registry, { environment: "a", heldHash: first.hash }, 2)).toEqual({
       hash: first.hash,
       signInsRevision: 0,
     });
@@ -69,27 +94,51 @@ describe("the host's pull (mcpServerSet)", () => {
 
     registry.overridesOf("b", servers({ local: LOCAL }));
 
-    expect(mcpServerSetAnswer(registry, { environment: "a" })).toEqual({
+    expect(mcpServerSetAnswer(registry, { environment: "a" }, 1)).toEqual({
       hash: EMPTY_MCP_SET_HASH,
       signInsRevision: 0,
     });
-    expect(mcpServerSetAnswer(registry, { environment: "b" }).set).toHaveLength(1);
+    expect(mcpServerSetAnswer(registry, { environment: "b" }, 1).set).toHaveLength(1);
   });
 
-  it("answers an Environment it does not list as one with no servers", () => {
-    expect(mcpServerSetAnswer(store([]), { environment: "gone", heldHash: "old" })).toEqual({
+  it("answers an Environment it does not list as one with no servers, and notes nothing of it", () => {
+    const registry = store([]);
+
+    expect(mcpServerSetAnswer(registry, { environment: "gone", heldHash: "old" }, 1)).toEqual({
       hash: EMPTY_MCP_SET_HASH,
       signInsRevision: 0,
       set: [],
+      revision: 1,
     });
-    expect(environmentMcpSet(store([]), "gone")).toBeNull();
+    expect(environmentMcpSet(registry, "gone")).toBeNull();
+    expect(handedOf(registry).handed).toEqual({});
+  });
+
+  it("notes the set it answers as handed, so a later change is pushed though no push was ever made", () => {
+    const registry = store(["a"]);
+
+    registry.global(servers({ linear: LINEAR }));
+
+    const answer = mcpServerSetAnswer(registry, { environment: "a", heldHash: "old" }, 1);
+
+    // The same set: nothing to push.
+    expect(pendingMcpPushes(registry, "a", 2).pushes).toEqual([]);
+
+    // A failed push, a pull, and the Environment's last server removed: the host must be told the empty set.
+    registry.global({});
+
+    const { pushes } = pendingMcpPushes(registry, "a", 3);
+
+    expect(pushes.map(({ set }) => set.hash)).toEqual([EMPTY_MCP_SET_HASH]);
+    expect(pushes[0]?.set.entries).toEqual([]);
+    expect(answer.hash).not.toBe(EMPTY_MCP_SET_HASH);
   });
 });
 
 describe("the Environments to push to", () => {
   it("is none while no Environment has a server, so no host is woken", () => {
-    expect(pendingMcpPushes(store(["a", "b"]), undefined)).toEqual([]);
-    expect(pendingMcpPushes(store(["a"]), "a")).toEqual([]);
+    expect(pendingMcpPushes(store(["a", "b"]), undefined, 1)).toEqual({ pushes: [], destroys: [] });
+    expect(pendingMcpPushes(store(["a"]), "a", 1)).toEqual({ pushes: [], destroys: [] });
   });
 
   it("is each Environment whose set differs from what its host was told, once a Global save changed it", () => {
@@ -98,19 +147,17 @@ describe("the Environments to push to", () => {
     registry.global(servers({ linear: LINEAR }));
     registry.overridesOf("b", servers({ linear: { url: "https://b.example/mcp" } }));
 
-    const pending = pendingMcpPushes(registry, undefined);
-
-    expect(Arr.map(pending, ({ environment }) => environment)).toEqual(["a", "b"]);
-
-    for (const { environment, set } of pending) recordMcpPushed(registry, environment, set.hash, 1);
-
-    expect(pendingMcpPushes(registry, undefined)).toEqual([]);
+    expect(Arr.map(pushAll(registry, undefined), ({ environment }) => environment)).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(pendingMcpPushes(registry, undefined, 2).pushes).toEqual([]);
 
     // A Global edit that Environment b's own entry hides: only a is pushed to.
     registry.global(servers({ linear: { ...LINEAR, description: "issues" } }));
 
     expect(
-      Arr.map(pendingMcpPushes(registry, undefined), ({ environment }) => environment),
+      Arr.map(pendingMcpPushes(registry, undefined, 3).pushes, ({ environment }) => environment),
     ).toEqual(["a"]);
   });
 
@@ -118,19 +165,14 @@ describe("the Environments to push to", () => {
     const registry = store(["a"]);
 
     registry.global(servers({ linear: LINEAR }));
-    pendingMcpPushes(registry, "a").forEach(({ environment, set }) =>
-      recordMcpPushed(registry, environment, set.hash, 1),
-    );
+    pushAll(registry, "a");
 
     registry.global({});
 
-    const [empty] = pendingMcpPushes(registry, "a");
+    const [empty] = pushAll(registry, "a", 2);
 
-    expect(empty?.set).toEqual({ kind: "set", hash: EMPTY_MCP_SET_HASH, entries: [] });
-
-    recordMcpPushed(registry, "a", EMPTY_MCP_SET_HASH, 2);
-
-    expect(pendingMcpPushes(registry, "a")).toEqual([]);
+    expect(empty?.set).toMatchObject({ kind: "set", hash: EMPTY_MCP_SET_HASH, entries: [] });
+    expect(pendingMcpPushes(registry, "a", 3).pushes).toEqual([]);
   });
 
   it("keeps a set pending until its push is recorded, so a push that failed is made again", () => {
@@ -138,8 +180,8 @@ describe("the Environments to push to", () => {
 
     registry.global(servers({ linear: LINEAR }));
 
-    expect(pendingMcpPushes(registry, "a")).toHaveLength(1);
-    expect(pendingMcpPushes(registry, "a")).toHaveLength(1);
+    expect(pendingMcpPushes(registry, "a", 1).pushes).toHaveLength(1);
+    expect(pendingMcpPushes(registry, "a", 2).pushes).toHaveLength(1);
   });
 
   it("looks only at the Environment it is asked about", () => {
@@ -147,21 +189,85 @@ describe("the Environments to push to", () => {
 
     registry.global(servers({ linear: LINEAR }));
 
-    expect(Arr.map(pendingMcpPushes(registry, "b"), ({ environment }) => environment)).toEqual([
-      "b",
-    ]);
+    expect(
+      Arr.map(pendingMcpPushes(registry, "b", 1).pushes, ({ environment }) => environment),
+    ).toEqual(["b"]);
   });
 
   it("keeps no hash of an Environment that is gone, and no value", () => {
     const registry = store(["a"]);
 
     registry.global(servers({ linear: LINEAR }));
-    recordMcpPushed(registry, "gone", "h", 1);
-    recordMcpPushed(registry, "a", "i", 2);
+    recordMcpPushed(registry, { environment: "gone", hash: "h", revision: 1 }, 1);
+    recordMcpPushed(registry, { environment: "a", hash: "i", revision: 2 }, 2);
 
-    expect(Record.keys(JSON.parse(registry.getDocument(MCP_HANDED_DOCUMENT) ?? "{}"))).toEqual([
-      "a",
-    ]);
+    expect(Record.keys(handedOf(registry).handed)).toEqual(["a"]);
+  });
+});
+
+describe("the revisions of the sets handed out", () => {
+  it("rise with every set handed out, pushed or answered to a pull", () => {
+    const registry = store(["a", "b"]);
+
+    registry.global(servers({ linear: LINEAR }));
+
+    expect(
+      Arr.map(pendingMcpPushes(registry, undefined, 1).pushes, ({ set }) => set.revision),
+    ).toEqual([1, 2]);
+    expect(mcpServerSetAnswer(registry, { environment: "a", heldHash: "old" }, 2).revision).toBe(3);
+  });
+
+  it("is never lowered by a push that was answered late: the later pull's set stays recorded", () => {
+    const registry = store(["a"]);
+
+    registry.global(servers({ linear: LINEAR }));
+
+    const [slow] = pendingMcpPushes(registry, "a", 1).pushes;
+
+    registry.global(servers({ linear: LINEAR, local: LOCAL }));
+
+    const pulled = mcpServerSetAnswer(registry, { environment: "a", heldHash: "old" }, 2);
+
+    // The slow push's host answer arrives after the pull was answered.
+    recordMcpPushed(
+      registry,
+      { environment: "a", hash: slow?.set.hash ?? "", revision: slow?.set.revision ?? 0 },
+      3,
+    );
+
+    expect(handedOf(registry).handed["a"]).toEqual({
+      hash: pulled.hash,
+      revision: pulled.revision,
+    });
+    expect(pendingMcpPushes(registry, "a", 4).pushes).toEqual([]);
+  });
+});
+
+describe("the hosts to wipe", () => {
+  it("is an Environment deleted after its host was handed a set, until the wipe is recorded", () => {
+    const registry = store(["a", "b"]);
+
+    registry.global(servers({ linear: LINEAR }));
+    pushAll(registry, undefined);
+    registry.remove("a");
+    recordMcpDeleted(registry, "a", 2);
+
+    expect(pendingMcpPushes(registry, undefined, 3).destroys).toEqual(["a"]);
+    expect(pendingMcpPushes(registry, "b", 3).destroys).toEqual([]);
+    expect(pendingMcpPushes(registry, "a", 3).pushes).toEqual([]);
+
+    recordMcpDestroyed(registry, "a", 4);
+
+    expect(pendingMcpPushes(registry, undefined, 5).destroys).toEqual([]);
+  });
+
+  it("is none for an Environment whose host was never handed a set: it holds nothing and is not woken", () => {
+    const registry = store(["a"]);
+
+    registry.remove("a");
+    recordMcpDeleted(registry, "a", 1);
+
+    expect(pendingMcpPushes(registry, undefined, 2).destroys).toEqual([]);
   });
 });
 

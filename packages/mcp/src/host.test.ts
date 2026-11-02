@@ -10,9 +10,11 @@ import {
   HostFailed,
   HostUnsupported,
   McpApplied,
+  McpDestroyed,
   McpApplySet,
   McpServerSetAnswer,
   McpSetSource,
+  McpStale,
   readMcpApplyResult,
 } from "./types.ts";
 
@@ -24,6 +26,10 @@ describe("readMcpApplyResult", () => {
     expect(read('{"_tag":"Applied","hash":"h","changed":true}')).toEqual(
       McpApplied.make({ hash: "h", changed: true }),
     );
+    expect(read('{"_tag":"Stale","hash":"h","revision":6}')).toEqual(
+      McpStale.make({ hash: "h", revision: 6 }),
+    );
+    expect(read('{"_tag":"Destroyed"}')).toEqual(McpDestroyed.make({}));
     expect(read('{"_tag":"HostUnsupported","message":"no","op":"x"}')).toEqual(
       HostUnsupported.make({ message: "no", op: "x" }),
     );
@@ -63,6 +69,7 @@ describe("the set's schemas", () => {
     const set = Schema.decodeUnknownSync(McpApplySet)({
       kind: "set",
       hash: "h",
+      revision: 2,
       entries: [entry],
       alsoLater: 1,
     });

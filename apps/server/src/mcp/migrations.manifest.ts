@@ -4,4 +4,4 @@
 // edit or remove a line: CI's `Migration manifests` job (`scripts/check-migration-manifests.sh`) fails a pull request
 // that does. A revert keeps the migration and adds one that undoes it (`docs/development/workers.md` → Deploys and
 // Durable Object code updates → Reverts).
-export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = ["cfd5dfc1f9afabf5"];
+export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = ["9c69f0cfca03c2e1"];

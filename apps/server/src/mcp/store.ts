@@ -1,5 +1,5 @@
 // `McpHost`'s storage (`docs/architecture/mcp-connections.md` → Storage): the MCP server set as received, with the hash
-// the Registry gave it. What the host holds is what the Registry pushed, `${NAME}` unresolved, so no resolved value is
+// and the revision the Registry gave it. What the host holds is what the Registry pushed, `${NAME}` unresolved, so no resolved value is
 // ever here; the rest of the tables (inventories, status, eras, sessions, watches, App HTML) come with the slices that
 // use them. Migrations only add, and each shipped one has its digest in `migrations.manifest.ts`.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
@@ -12,12 +12,13 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 export const MIGRATIONS: ReadonlyArray<Migration> = [
-  // 1: the set as received (`mcp_meta` is one row, which exists once a set has been applied).
+  // 1: the set as received (`mcp_meta` is one row, which exists once a set has been applied; `revision` is the
+  // Registry's order of the sets it hands out, so an older one is refused).
   (sql) => {
     sql.exec(`CREATE TABLE mcp_meta (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       set_hash TEXT NOT NULL,
-      sign_ins_revision INTEGER NOT NULL DEFAULT 0
+      revision INTEGER NOT NULL
     ) STRICT`);
     sql.exec(`CREATE TABLE mcp_servers (
       name TEXT PRIMARY KEY,
@@ -51,17 +52,21 @@ export type StoredServer = {
 /** The stored set: its hash, and its servers in the order the Registry gave them. */
 export type StoredSet = {
   readonly hash: string;
-  readonly signInsRevision: number;
+  readonly revision: number;
   readonly servers: ReadonlyArray<StoredServer>;
 };
 
 export type McpHostStoreService = {
   /** The stored set, or null before one was applied. A row that no longer decodes is left out. */
   readonly readSet: () => StoredSet | null;
-  /** The hash of the stored set; undefined before one was applied (which reads as the empty set). */
-  readonly heldHash: () => string | undefined;
+  /** The hash and revision of the stored set; undefined before one was applied (which reads as the empty set). */
+  readonly held: () => { readonly hash: string; readonly revision: number } | undefined;
   /** Replace the stored set with `set`, whole or not at all. */
-  readonly replaceSet: (set: McpApplySet, signInsRevision?: number) => void;
+  readonly replaceSet: (set: McpApplySet) => void;
+  /** Keep the set as it is under a newer `revision`. */
+  readonly setRevision: (revision: number) => void;
+  /** Wipe the storage: every table's rows, and the tables, which are made again empty. */
+  readonly destroy: () => void;
 };
 
 /** The host's storage, as its methods use it: the object's SQLite store, or a fake that fails on demand. */
@@ -69,8 +74,11 @@ export class McpHostStore extends Context.Service<McpHostStore, McpHostStoreServ
   "@cloudpid/server/mcp/store/McpHostStore",
 ) {}
 
-/** The part of the object's storage the store uses: its SQLite database and transactions over it. */
-export type McpHostStorage = MigrationStorage;
+/**
+ * The part of the object's storage the store uses: its SQLite database, transactions over it, and `deleteAll`, which
+ * for a SQLite-backed object takes effect for the next statement though it answers a Promise.
+ */
+export type McpHostStorage = MigrationStorage & { readonly deleteAll: () => Promise<void> };
 
 type ServerRow = {
   readonly name: string;
@@ -85,20 +93,21 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
 
   const { sql } = storage;
 
-  const heldHash = (): string | undefined =>
-    sql.exec<{ set_hash: string }>("SELECT set_hash FROM mcp_meta WHERE id = 1").toArray()[0]
-      ?.set_hash;
+  const held = (): { readonly hash: string; readonly revision: number } | undefined => {
+    const [meta] = sql
+      .exec<{ set_hash: string; revision: number }>(
+        "SELECT set_hash, revision FROM mcp_meta WHERE id = 1",
+      )
+      .toArray();
+
+    return meta === undefined ? undefined : { hash: meta.set_hash, revision: meta.revision };
+  };
 
   return {
-    heldHash,
+    held,
 
     readSet: () => {
-      const [meta] = sql
-        .exec<{
-          set_hash: string;
-          sign_ins_revision: number;
-        }>("SELECT set_hash, sign_ins_revision FROM mcp_meta WHERE id = 1")
-        .toArray();
+      const meta = held();
 
       if (meta === undefined) return null;
 
@@ -109,8 +118,8 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
         .toArray();
 
       return {
-        hash: meta.set_hash,
-        signInsRevision: meta.sign_ins_revision,
+        hash: meta.hash,
+        revision: meta.revision,
         servers: Arr.filterMap(rows, (row) => {
           const entry = decodeEntry(row.entry_json);
 
@@ -126,7 +135,7 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
       };
     },
 
-    replaceSet: (set, signInsRevision) => {
+    replaceSet: (set) => {
       storage.transactionSync(() => {
         sql.exec("DELETE FROM mcp_servers");
 
@@ -149,14 +158,21 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
         }
 
         sql.exec(
-          `INSERT INTO mcp_meta (id, set_hash, sign_ins_revision) VALUES (1, ?, ?)
-           ON CONFLICT (id) DO UPDATE SET set_hash = excluded.set_hash,
-             sign_ins_revision = CASE WHEN ? THEN excluded.sign_ins_revision ELSE sign_ins_revision END`,
+          `INSERT INTO mcp_meta (id, set_hash, revision) VALUES (1, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET set_hash = excluded.set_hash, revision = excluded.revision`,
           set.hash,
-          signInsRevision ?? 0,
-          signInsRevision === undefined ? 0 : 1,
+          set.revision,
         );
       });
+    },
+
+    setRevision: (revision) => {
+      sql.exec("UPDATE mcp_meta SET revision = ? WHERE id = 1", revision);
+    },
+
+    destroy: () => {
+      void storage.deleteAll();
+      migrate(storage, MIGRATIONS);
     },
   };
 };

@@ -1309,6 +1309,7 @@ const fakeRegistries = () => {
     mcpServerValues: () => Effect.die("The endpoint answers no host"),
     mcpPending: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpPushed: () => Effect.die("The endpoint pushes through `mcp`"),
+    mcpDestroyed: () => Effect.die("The endpoint pushes through `mcp`"),
     getPush: ({ endpoint }) =>
       Effect.sync(() => {
         calls.push("getPush");
@@ -5725,6 +5726,26 @@ describe("handing the MCP server set to the hosts", () => {
     await fake.runBackground();
 
     expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT, DEFAULT_ENVIRONMENT]);
+  });
+
+  it("wipes the hosts after an Environment was deleted, once the answer is sent, and not after a refusal", async () => {
+    const fake = fakeRegistries();
+    const id = await makeEnvironment(fake, "Cloudpid");
+
+    await call(fake, (registry) =>
+      Effect.flip(registry.deleteEnvironment({ environment: DEFAULT_ENVIRONMENT })),
+    );
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([]);
+
+    await call(fake, (registry) => registry.deleteEnvironment({ environment: id }));
+
+    expect(fake.mcpSyncs).toEqual([]);
+
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([undefined]);
   });
 
   it("pushes for nothing else of the Settings: a Container setting or an Environment's Instructions", async () => {
