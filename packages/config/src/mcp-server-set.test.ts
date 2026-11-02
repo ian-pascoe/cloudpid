@@ -724,3 +724,90 @@ describe("an adjustment over an entry that would grow past 16 KiB", () => {
     ]);
   });
 });
+
+describe("switching a server off next to the entry bound", () => {
+  /** An entry of exactly 16 KiB as written: any key added to it is over the bound. */
+  const FULL = (() => {
+    const bare = { command: "x", args: [""] };
+    const room = 16 * 1024 - new TextEncoder().encode(JSON.stringify(bare)).length;
+
+    return { ...bare, args: ["a".repeat(room)] };
+  })();
+
+  const HIDDEN = { x: "hidden" } as const;
+
+  it("fills the bound exactly", () => {
+    expect(new TextEncoder().encode(JSON.stringify(FULL)).length).toBe(16 * 1024);
+  });
+
+  it("lets an Environment switch a Global server off, in the Settings and in the set", () => {
+    const environment = owner({ a: { enabled: false, exposure: "hidden" } });
+    const set = resolveMcpServerSet(owner({ a: FULL }), environment, []);
+    const read = resolveOverridesLeniently(owner({ a: FULL }), environment);
+
+    expect(set.problems).toEqual([]);
+    expect(set.servers[0]?.server).toMatchObject({ enabled: false, exposure: "hidden" });
+    expect(read.dropped).toEqual([]);
+    expect(read.overrides).toEqual({
+      mcp: { servers: { a: { enabled: false, exposure: "hidden" } } },
+    });
+    expect(read.settings.mcp.servers.a).toMatchObject({ enabled: false, exposure: "hidden" });
+  });
+
+  it("lets a Repo switch a Global server off", () => {
+    const set = resolveMcpServerSet(owner({ a: FULL }), {}, [
+      repo("web", { a: { enabled: false, exposure: "hidden" } }),
+    ]);
+
+    expect(set.problems).toEqual([]);
+    expect(set.servers[0]?.server).toMatchObject({ enabled: false, exposure: "hidden" });
+  });
+
+  it("lets an Environment switch a Repo's server off", () => {
+    const set = resolveMcpServerSet({}, owner({ a: { enabled: false, exposure: "hidden" } }), [
+      repo("web", { a: FULL }),
+    ]);
+
+    expect(set.problems).toEqual([]);
+    expect(set.servers[0]?.server).toMatchObject({ enabled: false, exposure: "hidden" });
+  });
+
+  it("still refuses the toolExposure that does not fit beside it, and keeps the switch-off", () => {
+    const environment = owner({ a: { enabled: false, toolExposure: HIDDEN } });
+    const set = resolveMcpServerSet(owner({ a: FULL }), environment, []);
+    const read = resolveOverridesLeniently(owner({ a: FULL }), environment);
+
+    expect(set.servers[0]?.server).toMatchObject({ enabled: false, toolExposure: {} });
+    expect(set.problems).toEqual([
+      expect.objectContaining({ message: expect.stringMatching(/^toolExposure: /) }),
+    ]);
+    expect(read.overrides).toEqual({ mcp: { servers: { a: { enabled: false } } } });
+
+    const repoSet = resolveMcpServerSet(owner({ a: FULL }), {}, [
+      repo("web", { a: { enabled: false, toolExposure: HIDDEN } }),
+    ]);
+
+    expect(repoSet.servers[0]?.server).toMatchObject({ enabled: false, toolExposure: {} });
+    expect(repoSet.problems).toHaveLength(1);
+  });
+
+  it("refuses the toolExposure that grows a Repo's entry past the bound, keeping the switch-off", () => {
+    const set = resolveMcpServerSet({}, owner({ a: { enabled: false, toolExposure: HIDDEN } }), [
+      repo("web", { a: FULL }),
+    ]);
+
+    expect(set.servers[0]?.server).toMatchObject({ enabled: false, toolExposure: {} });
+    expect(set.problems).toEqual([
+      expect.objectContaining({ message: expect.stringMatching(/^toolExposure: /) }),
+    ]);
+  });
+
+  it("does not count the switch-off against the toolExposure that follows it", () => {
+    const base = { ...FULL, args: ["a".repeat(16 * 1024 - 120)] };
+    const environment = owner({ a: { enabled: false, exposure: "hidden", toolExposure: HIDDEN } });
+    const set = resolveMcpServerSet(owner({ a: base }), environment, []);
+
+    expect(set.problems).toEqual([]);
+    expect(set.servers[0]?.server).toMatchObject({ toolExposure: HIDDEN, enabled: false });
+  });
+});

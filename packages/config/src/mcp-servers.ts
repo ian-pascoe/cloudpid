@@ -12,6 +12,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { isJsonObject, utf8Bytes } from "./json.ts";
 import { problemLines, problemsOf, type SettingsProblem } from "./schema-problems.ts";
 
@@ -285,11 +286,18 @@ const oauthProblems = (
   return issues;
 };
 
+/**
+ * The size of an entry as written, in bytes, without `enabled` and `exposure`: they are not the server, and leaving
+ * them out means switching a server off, which adds the key to an entry that lacks it, never makes it too big.
+ */
+export const mcpEntryBytes = (value: McpServerValue): number =>
+  utf8Bytes(JSON.stringify(Struct.omit(value, ["enabled", "exposure"])));
+
 /** Why `value`, an entry as written, breaks the bounds: one line each, or none. */
 export const mcpEntryBoundsProblems = (value: McpServerValue): ReadonlyArray<string> => {
   const problems: Array<string> = [];
 
-  if (utf8Bytes(JSON.stringify(value)) > MCP_LIMITS.entryBytes) {
+  if (mcpEntryBytes(value) > MCP_LIMITS.entryBytes) {
     problems.push(`is over ${MCP_LIMITS.entryBytes / 1024} KiB`);
   }
 
@@ -849,9 +857,12 @@ export type McpAdjusted = {
 
 /**
  * `base`, an entry that stands, with `steps` applied in order, each only while the entry stays within its bound
- * (16 KiB): a key that would push it over is `refused` and left out, so the keys that fit still apply. The Settings and
- * the set both apply adjustments through this, so they agree on what a Global entry that grew, or an adjustment that
- * is large, leaves in force.
+ * (16 KiB): a key that would grow it over is `refused` and left out, so the keys that fit still apply. The bound
+ * is measured without `enabled` and `exposure` (`mcpEntryBytes`), so switching a server off is always possible and
+ * only `toolExposure` growth is fitted; a key that does not grow the entry is never refused, which matters for a
+ * Repo's entry, held with the `cwd` it was given and so over the bound by it. The Settings and the set both apply
+ * adjustments through this, so they agree on what a Global entry that grew, or an adjustment that is large, leaves
+ * in force.
  */
 export const applyMcpAdjustmentSteps = (
   base: McpServerValue,
@@ -865,7 +876,9 @@ export const applyMcpAdjustmentSteps = (
 
     step.set(next);
 
-    if (utf8Bytes(JSON.stringify(next)) > MCP_LIMITS.entryBytes) {
+    const size = mcpEntryBytes(next);
+
+    if (size > MCP_LIMITS.entryBytes && size > mcpEntryBytes(value)) {
       refused.push(step.key);
     } else {
       value = next;
