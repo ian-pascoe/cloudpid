@@ -10,7 +10,12 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { ACCESS_TEAM_DOMAIN, OWNER_EMAIL } from "./deployment.ts";
+import {
+  ACCESS_AUDIENCE_VAR,
+  ACCESS_TEAM_DOMAIN,
+  LOCAL_MODE_VAR,
+  OWNER_EMAIL,
+} from "./deployment.ts";
 
 /** The header Access adds to every request it admits, and a request that skipped Access lacks. */
 export const ACCESS_ASSERTION_HEADER = "cf-access-jwt-assertion";
@@ -30,7 +35,9 @@ export type Refusal =
   | "wrong_audience"
   | "not_owner"
   | "common_name"
-  | "not_local";
+  | "not_local"
+  /** The check itself failed (a lookup or a verification threw): the request is refused, never a 500. */
+  | "error";
 
 /** The guard's answer for one request. */
 export type Verdict =
@@ -39,7 +46,7 @@ export type Verdict =
 
 const refuse = (reason: Refusal): Verdict => ({ admitted: false, reason });
 
-const OWNER: Verdict = { admitted: true };
+const ADMITTED: Verdict = { admitted: true };
 
 /** Finds a team signing key by its `kid`: `undefined` when the team does not have it, or its keys cannot be read. */
 export type TeamKeyLookup = (kid: string) => Promise<CryptoKey | undefined>;
@@ -62,16 +69,17 @@ const Claims = Schema.Struct({
 const decodeHeader = Schema.decodeUnknownOption(Schema.fromJsonString(Header));
 const decodeClaims = Schema.decodeUnknownOption(Schema.fromJsonString(Claims));
 
-const Jwks = Schema.Struct({
-  keys: Schema.Array(
-    Schema.Struct({
-      kid: Schema.String,
-      kty: Schema.Literal("RSA"),
-      n: Schema.String,
-      e: Schema.String,
-    }),
-  ),
+/** A key set's entries are read one by one: a key this guard cannot use must not lock everyone out. */
+const Jwks = Schema.Struct({ keys: Schema.Array(Schema.Unknown) });
+
+const RsaKey = Schema.Struct({
+  kid: Schema.String,
+  kty: Schema.Literal("RSA"),
+  n: Schema.String,
+  e: Schema.String,
 });
+
+const decodeRsaKey = Schema.decodeUnknownOption(RsaKey);
 
 const decodeJwks = Schema.decodeUnknownOption(Schema.fromJsonString(Jwks));
 
@@ -184,7 +192,7 @@ export const classifyAssertion = async (
 
   if (email !== OWNER_EMAIL) return refuse("not_owner");
 
-  return OWNER;
+  return ADMITTED;
 };
 
 /** How long the team's keys are kept: Access rotates them about every six weeks and publishes the next ahead of time. */
@@ -220,17 +228,25 @@ const importTeamKeys = async (body: string): Promise<Map<string, CryptoKey>> => 
 
   const keys = new Map<string, CryptoKey>();
 
-  for (const jwk of decoded.value.keys) {
-    keys.set(
-      jwk.kid,
-      await crypto.subtle.importKey(
-        "jwk",
-        { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
-        KEY_ALGORITHM,
-        false,
-        ["verify"],
-      ),
-    );
+  for (const entry of decoded.value.keys) {
+    const jwk = decodeRsaKey(entry);
+
+    if (Option.isNone(jwk)) continue;
+
+    try {
+      keys.set(
+        jwk.value.kid,
+        await crypto.subtle.importKey(
+          "jwk",
+          { kty: "RSA", n: jwk.value.n, e: jwk.value.e, alg: "RS256", ext: true },
+          KEY_ALGORITHM,
+          false,
+          ["verify"],
+        ),
+      );
+    } catch {
+      // A key that cannot be imported finds nothing; the others still do.
+    }
   }
 
   return keys;
@@ -245,24 +261,19 @@ export const teamKeys = (load: LoadTeamKeys, clock: () => number = Date.now): Te
   let kept = new Map<string, CryptoKey>();
   let keptAt: number | undefined;
   let attemptedAt: number | undefined;
-  let reading: Promise<void> | undefined;
 
-  const read = () => {
-    attemptedAt = clock();
-    reading ??= load()
-      .then(importTeamKeys)
-      .then(
-        (keys) => {
-          kept = keys;
-          keptAt = clock();
-        },
-        () => undefined,
-      )
-      .finally(() => {
-        reading = undefined;
-      });
-
-    return reading;
+  // Every lookup that needs the keys reads them itself: a read is never shared, since a promise another request began
+  // may not be awaited from this one in workerd ("Cannot perform I/O on behalf of a different request"). The kept keys
+  // are plain values and are shared.
+  const read = async () => {
+    try {
+      kept = await importTeamKeys(await load());
+      keptAt = clock();
+    } catch {
+      // Nothing newer was read: the kept keys, if still young, stay.
+    } finally {
+      attemptedAt = clock();
+    }
   };
 
   const fresh = () => keptAt !== undefined && clock() - keptAt < KEYS_MAX_AGE_MS;
@@ -272,15 +283,9 @@ export const teamKeys = (load: LoadTeamKeys, clock: () => number = Date.now): Te
 
     if (key !== undefined) return key;
 
-    // A read already under way answers this one too.
-    if (reading !== undefined) {
-      await reading;
-
-      return fresh() ? kept.get(kid) : undefined;
-    }
-
     const cooldown = fresh() ? UNKNOWN_KEY_COOLDOWN_MS : FAILED_READ_COOLDOWN_MS;
 
+    // Only a finished read starts the cooldown, so the lookups of a cold start (a page load makes several) all read.
     if (attemptedAt !== undefined && clock() - attemptedAt < cooldown) return undefined;
 
     await read();
@@ -289,16 +294,10 @@ export const teamKeys = (load: LoadTeamKeys, clock: () => number = Date.now): Te
   };
 };
 
-/** The hosts `alchemy dev` serves the Worker on. */
-const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/** The hosts `alchemy dev` serves the Worker on, with an optional port and nothing else: no userinfo, path or dot. */
+const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
 
-const isLoopbackHost = (host: string): boolean => {
-  try {
-    return LOOPBACK_HOSTNAMES.has(new URL(`http://${host}`).hostname);
-  } catch {
-    return false;
-  }
-};
+const isLoopbackHost = (host: string): boolean => LOOPBACK_HOST.test(host);
 
 /** What the guard reads of a request. */
 export type GuardedRequest = {
@@ -326,17 +325,39 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
   if (guard.localMode) {
     const loopback = request.hosts.length > 0 && Arr.every(request.hosts, isLoopbackHost);
 
-    return loopback ? OWNER : refuse("not_local");
+    return loopback ? ADMITTED : refuse("not_local");
   }
 
   if (guard.audience === undefined || guard.audience === "") return refuse("not_configured");
 
-  return classifyAssertion(request.assertion, {
-    audience: guard.audience,
-    keys: guard.keys,
-    now: request.now,
-  });
+  try {
+    return await classifyAssertion(request.assertion, {
+      audience: guard.audience,
+      keys: guard.keys,
+      now: request.now,
+    });
+  } catch {
+    // A lookup or a verification that throws (a signature of the wrong length, say) is a refusal, not a 500.
+    return refuse("error");
+  }
 };
+
+/** What the Worker's environment holds of the guard's vars (`ACCESS_AUDIENCE_VAR`, `LOCAL_MODE_VAR`), as strings. */
+export type GuardEnv = {
+  readonly [ACCESS_AUDIENCE_VAR]?: string;
+  readonly [LOCAL_MODE_VAR]?: string;
+};
+
+/**
+ * The guard's deployment, read from the Worker's raw environment as `CONTAINER_FUSE` is, not through `Config`: a
+ * `Config` read of the local-mode var would fail on the boolean alchemy's runtime makes of `"true"`, and at plan time
+ * would bind a same-named value of the deploying shell onto the Worker as a secret, putting a deployed Worker in local
+ * mode.
+ */
+export const guardFromEnv = (env: GuardEnv): Pick<AccessGuard, "audience" | "localMode"> => ({
+  audience: env[ACCESS_AUDIENCE_VAR],
+  localMode: env[LOCAL_MODE_VAR] === "true",
+});
 
 const forbidden = HttpServerResponse.text("Forbidden", {
   status: 403,

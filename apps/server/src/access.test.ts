@@ -7,6 +7,7 @@ import {
   ACCESS_ASSERTION_HEADER,
   admit,
   guardAccess,
+  guardFromEnv,
   teamKeys,
   type AccessGuard,
 } from "./access.ts";
@@ -290,6 +291,26 @@ describe("the assertion's classification", () => {
     });
   });
 
+  it("refuses, rather than failing, when a lookup or a verification throws", async () => {
+    const assertion = await sign(team, ownerClaims());
+    const request = { assertion, hosts: ["x.workers.dev"], now: NOW };
+
+    expect(await admit(request, guard({ keys: () => Promise.reject(new Error("boom")) }))).toEqual({
+      admitted: false,
+      reason: "error",
+    });
+
+    // A key that is not a verification key: `verify` throws.
+    const signingOnly = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, [
+      "sign",
+    ]);
+
+    expect(
+      // SAFETY: an HMAC key, not a key pair.
+      await admit(request, guard({ keys: () => Promise.resolve(signingOnly as CryptoKey) })),
+    ).toEqual({ admitted: false, reason: "error" });
+  });
+
   it("refuses when the team's keys cannot be read", async () => {
     const down = guard({
       keys: teamKeys(
@@ -325,6 +346,10 @@ describe("local mode (alchemy dev)", () => {
     ["a deployed host", ["cloudpid-server-pr-1.ian-g-pascoe.workers.dev"]],
     ["a look-alike", ["localhost.evil.test"]],
     ["a loopback Host over a foreign URL", ["localhost:1337", "evil.test"]],
+    ["userinfo that reads as localhost", ["evil.test@localhost"]],
+    ["userinfo before an evil host", ["localhost:1337@evil.test"]],
+    ["a path", ["localhost/evil"]],
+    ["a trailing dot", ["localhost."]],
     ["no host", []],
   ])("refuses %s even in local mode", async (_name, hosts) => {
     expect(await admit({ assertion: undefined, hosts, now: NOW }, local)).toEqual({
@@ -340,6 +365,30 @@ describe("local mode (alchemy dev)", () => {
       admitted: false,
       reason: "missing",
     });
+  });
+});
+
+describe("the guard's vars", () => {
+  it("are read from the Worker's environment as strings", () => {
+    expect(guardFromEnv({ CLOUDPID_ACCESS_AUD: "an-aud" })).toEqual({
+      audience: "an-aud",
+      localMode: false,
+    });
+    expect(guardFromEnv({ CLOUDPID_LOCAL_MODE: "true" })).toEqual({
+      audience: undefined,
+      localMode: true,
+    });
+  });
+
+  it.each(["false", "1", "True", "", "yes"])(
+    "do not put the Worker in local mode for %j",
+    (value) => {
+      expect(guardFromEnv({ CLOUDPID_LOCAL_MODE: value }).localMode).toBe(false);
+    },
+  );
+
+  it("put nothing in local mode when the var is absent", () => {
+    expect(guardFromEnv({})).toEqual({ audience: undefined, localMode: false });
   });
 });
 
@@ -391,13 +440,33 @@ describe("the team's keys", () => {
     expect(await keys("team-key")).toBeDefined();
   });
 
-  it("answer concurrent lookups with one read", async () => {
+  it("answer concurrent lookups of a cold start, each reading for itself: a read is not shared across requests", async () => {
     const load = vi.fn(() => Promise.resolve(team.jwks));
     const keys = teamKeys(load, () => NOW * 1000);
     const found = await Promise.all([keys("team-key"), keys("team-key"), keys("team-key")]);
 
     expect(found.every((key) => key !== undefined)).toBe(true);
-    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it("skip a key that is not RSA or is incomplete, and keep the others", async () => {
+    const mixed = JSON.stringify({
+      keys: [
+        { kid: "ec", kty: "EC", crv: "P-256", x: "x", y: "y" },
+        { kid: "broken", kty: "RSA" },
+        "not a key",
+        ...JSON.parse(team.jwks).keys,
+      ],
+    });
+
+    const keys = teamKeys(
+      () => Promise.resolve(mixed),
+      () => NOW * 1000,
+    );
+
+    expect(await keys("team-key")).toBeDefined();
+    expect(await keys("ec")).toBeUndefined();
+    expect(await keys("broken")).toBeUndefined();
   });
 
   it("find nothing in a body that is not a key set", async () => {
@@ -458,6 +527,20 @@ describe("the guard on a request", () => {
       expect(response.status).toBe(403);
     }
 
+    expect(inner).not.toHaveBeenCalled();
+  });
+
+  it("answers 403, not a defect, when the check itself throws", async () => {
+    inner.mockClear();
+
+    const response = await run(
+      new Request("https://x.workers.dev/", {
+        headers: { [ACCESS_ASSERTION_HEADER]: await sign(team, ownerClaims()) },
+      }),
+      { keys: () => Promise.reject(new Error("boom")) },
+    );
+
+    expect(response.status).toBe(403);
     expect(inner).not.toHaveBeenCalled();
   });
 

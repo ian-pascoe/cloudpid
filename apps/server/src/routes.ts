@@ -24,8 +24,8 @@ export const sessionSocketId = (request: HttpServerRequest.HttpServerRequest): s
 
 /**
  * Whether `request` asks for a file under `/assets/`, where the web build puts its hashed chunks and stylesheets. The
- * asset layer answers one that exists without waking the Worker, so a request that reaches the Worker is for a file
- * the current build does not have (a tab from before a deploy asks for its own build's chunks).
+ * Worker serves one that exists from the asset layer after its guard (`serveAsset`); one the current build does not
+ * have is a 404 (a tab from before a deploy asks for its own build's chunks).
  */
 export const isAssetPath = (request: HttpServerRequest.HttpServerRequest): boolean =>
   pathOf(request).startsWith(ASSETS_PREFIX);
