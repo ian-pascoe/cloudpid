@@ -11,7 +11,7 @@ set -euo pipefail
 base=${1:?usage: check-migration-manifests.sh <base commit>}
 
 # The digests in a manifest, one per line, in order.
-digests() { { grep -oE '^[[:space:]]*"[0-9a-f]{16}"' | tr -d ' "' ; } || true; }
+digests() { { grep -oE '^[[:space:]]*"[0-9a-f]{16}"' | tr -d '[:blank:]"' ; } || true; }
 
 failed=0
 

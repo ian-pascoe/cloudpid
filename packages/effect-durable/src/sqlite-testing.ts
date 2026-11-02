@@ -1,4 +1,5 @@
-// Test helpers for Durable Object SQLite (`docs/development/workers.md` → workerd tests and → Deploys and Durable Object code updates).
+// Test helpers for Durable Object SQLite (`docs/development/workers.md` → workerd tests; → Deploys and Durable Object
+// code updates).
 // The Web Crypto digest is Promise-based, so the migration checks are too.
 // @effect-diagnostics asyncFunction:off
 import * as Arr from "effect/Array";
@@ -9,11 +10,32 @@ const refusal = (operation: string) =>
     `Durable Object storage refused ${operation}: this instance was replaced by a code update (refusingStorage)`,
   );
 
+/** The storage members that return a Promise: the platform rejects these, so a tripped gate does too. */
+const ASYNC_MEMBERS: ReadonlySet<string> = new Set([
+  "get",
+  "put",
+  "delete",
+  "deleteAll",
+  "list",
+  "getAlarm",
+  "setAlarm",
+  "deleteAlarm",
+  "sync",
+  "transaction",
+  "getCurrentBookmark",
+  "getBookmarkForTime",
+  "onNextSessionRestoreBookmark",
+]);
+
 /** What `refusingStorage` returns: the wrapped storage, and the switch that makes it refuse. */
 export type RefusingStorage<S extends object> = {
-  /** Behaves as the storage it wraps until `trip()`; then every operation on it throws. */
+  /** Behaves as the storage it wraps until `trip()`; then every operation on it fails. */
   readonly storage: S;
-  /** The code update reached this instance: from now on `storage` refuses every operation, `sql.exec`, `transactionSync`, `get` and `put` included. */
+  /**
+   * The code update reached this instance: from now on `storage` refuses every operation. `sql.exec`, `transactionSync`
+   * and the other synchronous members throw; `get`, `put` and the other Promise-returning ones return a rejected
+   * Promise.
+   */
   readonly trip: () => void;
   readonly tripped: () => boolean;
 };
@@ -32,20 +54,25 @@ export const refusingStorage = <S extends object>(storage: S): RefusingStorage<S
     new Proxy(target, {
       get: (object, key) => {
         // A proxy trap is dynamic by nature: any member of a platform object, read as the object itself reads it.
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- see above
-        if (typeof key === "symbol") return Reflect.get(object, key, object); // oxlint-disable-line anti-slop/no-reflect-get -- see above
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof, anti-slop/no-reflect-get -- see above
+        if (typeof key === "symbol") return Reflect.get(object, key, object);
 
         // Methods and getters run on the real object, not the proxy.
         // oxlint-disable-next-line anti-slop/no-reflect-get -- see above
         const value: unknown = Reflect.get(object, key, object);
         const name = `${path}${String(key)}`;
 
-        // A wrapped storage is a platform object, whose members are told apart at run time: there is no schema to parse.
+        // A wrapped storage is a platform object, whose members are told apart at run time: there is no schema to
+        // parse.
         // oxlint-disable-next-line anti-slop/no-runtime-typeof -- see above
         if (typeof value === "function") {
           // Refused when called, not when read, so a method captured before the trip refuses too.
           return (...args: ReadonlyArray<unknown>) => {
-            if (tripped) throw refusal(name);
+            if (tripped) {
+              if (path === "" && ASYNC_MEMBERS.has(name)) return Promise.reject(refusal(name));
+
+              throw refusal(name);
+            }
 
             return value.apply(object, args);
           };
@@ -137,8 +164,9 @@ export const migrationDigests = async (
  * every push to it), empty when nothing is. `migrate` numbers migrations by position, so a migration at a shipped
  * position that changed or went missing (a revert that dropped it) lets the next new one reuse its number, and it never
  * runs on objects that ran the old one. A migration not in `shipped` yet is a problem too, so each is recorded before
- * it can be edited unseen; the manifest itself is append-only, which `scripts/check-migration-manifests.sh` enforces in CI, since a revert removes its line too; two branches that add one conflict on the same line of the manifest, the signal that they
- * both took the next number.
+ * it can be edited unseen. The manifest itself is append-only, since a revert removes its line too:
+ * `scripts/check-migration-manifests.sh` enforces that in CI. Two branches that add a migration conflict on the same
+ * line of the manifest, the signal that they both took the next number.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const shippedMigrationProblems = async (

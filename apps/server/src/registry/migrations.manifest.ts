@@ -1,8 +1,9 @@
 // The Registry's migrations that reached `main`, and so prod (it deploys on every push), one digest per position
 // (`migrationDigests`, `@cloudpid/effect-durable/sqlite/testing`). `migrations.manifest.test.ts` fails a migration
 // here that changed or went missing, and a migration not recorded yet: append its digest in the PR that adds it. Never
-// edit or remove a line (CI's `Migration manifests` job fails a pull request that does, `scripts/check-migration-manifests.sh`); a revert keeps the migration and adds one that undoes it
-// (`docs/development/workers.md` → Deploys and Durable Object code updates → Reverts).
+// edit or remove a line: CI's `Migration manifests` job (`scripts/check-migration-manifests.sh`) fails a pull request
+// that does. A revert keeps the migration and adds one that undoes it (`docs/development/workers.md` → Deploys and
+// Durable Object code updates → Reverts).
 export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   "81ed258ca2c773a6",
   "800ce6a0d7b456ef",

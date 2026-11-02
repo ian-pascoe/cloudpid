@@ -19,9 +19,14 @@
     },
     // Tests of the Container's scripts skip on a host without its Linux tools, but
     // never under `CI`, so a run with it hashes apart from one without.
+    // `@cloudpid/effect-durable` tests the migration manifest check, a script at the root.
     "test": {
       "dependsOn": ["transit"],
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "$TURBO_ROOT$/scripts/check-migration-manifests.sh"
+      ],
       "env": ["CI"]
     },
     "build": {

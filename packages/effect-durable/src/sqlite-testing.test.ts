@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Migration } from "./sqlite.ts";
 import { migrationDigests, refusingStorage, shippedMigrationProblems } from "./sqlite-testing.ts";
 
-/** A storage shaped like a Durable Object's: the KV API, `transactionSync`, and `sql` with `exec` and `databaseSize`. */
+/** A storage shaped like a Durable Object's: the KV API, `transactionSync`, and `sql` (`exec`, `databaseSize`). */
 const fakeStorage = () => {
   const kv = new Map<string, number>();
 
@@ -47,9 +47,10 @@ describe("refusingStorage", () => {
     expect(() => gate.storage.sql.exec("SELECT 1")).toThrow("sql.exec");
     expect(() => gate.storage.sql.databaseSize).toThrow("sql.databaseSize");
     expect(() => gate.storage.transactionSync(() => "ran")).toThrow("transactionSync");
-    expect(() => gate.storage.get("a")).toThrow("get");
-    expect(() => gate.storage.put("a", 1)).toThrow("put");
-    expect(() => gate.storage.delete("a")).toThrow("delete");
+    // The platform rejects its Promise-returning members, rather than throwing from the call.
+    await expect(gate.storage.get("a")).rejects.toThrow("get");
+    await expect(gate.storage.put("a", 1)).rejects.toThrow("put");
+    await expect(gate.storage.delete("a")).rejects.toThrow("delete");
   });
 
   it("refuses a method captured before the trip, when it is called", async () => {
@@ -62,7 +63,7 @@ describe("refusingStorage", () => {
     gate.trip();
 
     expect(() => exec("SELECT 1")).toThrow("sql.exec");
-    expect(() => put("a", 1)).toThrow("put");
+    await expect(put("a", 1)).rejects.toThrow("put");
   });
 
   it("refuses a call a transaction started before the trip, and leaves the real storage as it was", async () => {

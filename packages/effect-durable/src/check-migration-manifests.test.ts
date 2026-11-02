@@ -102,6 +102,15 @@ describe("scripts/check-migration-manifests.sh", () => {
     expect(check(base).status).toBe(1);
   });
 
+  it("reads digests however the manifest indents them", () => {
+    const base = commit("base", [a, b]);
+
+    writeFileSync(join(repo, manifest), file([a, b, c]).replaceAll("  ", "\t"));
+    commit("tabs");
+
+    expect(check(base).status).toBe(0);
+  });
+
   it("passes when the base has no manifest yet", () => {
     writeFileSync(join(repo, "README"), "x");
 

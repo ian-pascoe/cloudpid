@@ -572,8 +572,9 @@ const DEFAULT_MACHINE = "default";
 /**
  * The schema, one step per version, applied in order: version N is in place once step N has run. Steps only add
  * (tables, nullable or defaulted columns, rows), except step 11, the cutover to Environments, which drops. A step is
- * never edited once released: add the next one (`migrations.manifest.ts` fails a step that changed or went missing). Each step and its version record run in one transaction, so a step
- * that fails partway leaves no trace and is retried whole.
+ * never edited once released: add the next one (`migrations.manifest.ts` fails a step that changed or went missing).
+ * Each step and its version record run in one transaction, so a step that fails partway leaves no trace and is retried
+ * whole.
  */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   // 1: the first deployed schema, whose stores recorded no version.

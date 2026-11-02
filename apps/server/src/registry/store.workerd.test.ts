@@ -1845,7 +1845,7 @@ describe("the Registry store", () => {
 
     await registry.createEnvironment("0000abcd", "Cloudpid", 500);
 
-    await runInDurableObject(registry, (_instance: TestRegistry, state) => {
+    await runInDurableObject(registry, async (_instance: TestRegistry, state) => {
       const gate = refusingStorage(state.storage);
       // The old instance opened its store before the code update reached it.
       const store = openRegistryStore(gate.storage);
@@ -1861,8 +1861,8 @@ describe("the Registry store", () => {
       expect(() => store.deleteEnvironment("0000abcd")).toThrow();
       expect(() => gate.storage.transactionSync(() => 1)).toThrow();
       expect(() => gate.storage.sql.exec("SELECT 1")).toThrow();
-      expect(() => gate.storage.get("anything")).toThrow();
-      expect(() => gate.storage.put("anything", 1)).toThrow();
+      await expect(gate.storage.get("anything")).rejects.toThrow();
+      await expect(gate.storage.put("anything", 1)).rejects.toThrow();
     });
 
     await evictDurableObject(registry);

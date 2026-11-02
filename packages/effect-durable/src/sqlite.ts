@@ -1,6 +1,10 @@
-// Versioned SQLite schemas for Durable Objects (`docs/architecture/mcp-connections.md` → Storage; `docs/development/workers.md` → Deploys and Durable Object code updates).
+// Versioned SQLite schemas for Durable Objects (`docs/architecture/mcp-connections.md` → Storage;
+// `docs/development/workers.md` → Deploys and Durable Object code updates).
 
-/** One schema step. It only adds (tables, nullable or defaulted columns, rows), except where its own comment says it drops. */
+/**
+ * One schema step. It only adds (tables, nullable or defaulted columns, rows), except where its own comment says it
+ * drops.
+ */
 export type Migration = (sql: SqlStorage) => void;
 
 /** The part of a Durable Object's storage `migrate` uses: its SQLite database, and transactions over it. */
