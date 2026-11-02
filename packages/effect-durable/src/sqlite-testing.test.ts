@@ -52,6 +52,19 @@ describe("refusingStorage", () => {
     expect(() => gate.storage.delete("a")).toThrow("delete");
   });
 
+  it("refuses a method captured before the trip, when it is called", async () => {
+    const gate = refusingStorage(fakeStorage());
+    const { exec } = gate.storage.sql;
+    const { put } = gate.storage;
+
+    expect(exec("SELECT 1")).toBe(8);
+
+    gate.trip();
+
+    expect(() => exec("SELECT 1")).toThrow("sql.exec");
+    expect(() => put("a", 1)).toThrow("put");
+  });
+
   it("refuses a call a transaction started before the trip, and leaves the real storage as it was", async () => {
     const real = fakeStorage();
     const gate = refusingStorage(real);
@@ -100,7 +113,8 @@ describe("shippedMigrationProblems", () => {
   });
 
   it("fails a revert that let a new migration take a shipped migration's number", async () => {
-    // Migration 2 was reverted away, and a different change took its place.
+    // Migration 2 was replaced by a different change, the manifest line kept. (A revert that drops the line too is
+    // `scripts/check-migration-manifests.sh`'s, in `check-migration-manifests.test.ts`.)
     const problems = await shippedMigrationProblems([create("a"), create("other")], await shipped);
 
     expect(problems).toEqual([expect.stringMatching(/^Migration 2 changed/)]);

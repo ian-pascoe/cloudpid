@@ -103,6 +103,26 @@ jobs:
           version=$(sed -nE 's/^    "oxfmt": \["oxfmt@([^"]+)".*/\1/p' bun.lock)
           bunx "oxfmt@$version" --check
 
+  # A pull request may only append to a migration manifest (`migrations.manifest.ts`): a plain `git revert` of the change
+  # that added a migration removes its line too, which would let the next migration reuse its number (`docs/development/
+  # workers.md` → Deploys and Durable Object code updates → Reverts). Needs only the base commit, not the history.
+  manifests:
+    name: Migration manifests
+    needs: changes
+    if: github.event_name == 'pull_request' && github.event.action != 'closed' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          scripts/check-migration-manifests.sh "$BASE_SHA"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
   # What `bun run check` runs, split over runners so they run at once: the server's tests alone took about 4½ minutes on
   # one runner, sharing its 4 cores with every other task, while the rest was done in about 1½. Each part has its own
   # turbo cache, so a part whose inputs did not change replays its logs.
@@ -180,7 +200,7 @@ jobs:
   # reports as one rather than as skipped, which a required check would count as passing.
   check:
     name: Check
-    needs: [changes, checks, docs]
+    needs: [changes, checks, docs, manifests]
     if: ${{ !cancelled() && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -188,11 +208,14 @@ jobs:
       - run: |
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then test "$CHECKS" = success; else test "$DOCS" = success; fi
+          # Skipped on a push and on a docs-only change, which have no manifest to guard.
+          test "$MANIFESTS" = success -o "$MANIFESTS" = skipped
         env:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           CHECKS: ${{ needs.checks.result }}
           DOCS: ${{ needs.docs.result }}
+          MANIFESTS: ${{ needs.manifests.result }}
 
   # Deploys `prod` on push to main with a scoped API token from the `production` environment
   # (credentials as code: infra/github.ts, docs/development/infra.md → CI credentials).

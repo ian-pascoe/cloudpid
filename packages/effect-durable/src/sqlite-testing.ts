@@ -43,13 +43,12 @@ export const refusingStorage = <S extends object>(storage: S): RefusingStorage<S
         // A wrapped storage is a platform object, whose members are told apart at run time: there is no schema to parse.
         // oxlint-disable-next-line anti-slop/no-runtime-typeof -- see above
         if (typeof value === "function") {
-          return tripped
-            ? () => {
-                throw refusal(name);
-              }
-            : // SAFETY: a function member of the storage, called with its own arguments.
-              // oxlint-disable-next-line anti-slop/no-unknown-returns -- the member's own return value, passed on
-              (value as (...args: ReadonlyArray<unknown>) => unknown).bind(object);
+          // Refused when called, not when read, so a method captured before the trip refuses too.
+          return (...args: ReadonlyArray<unknown>) => {
+            if (tripped) throw refusal(name);
+
+            return value.apply(object, args);
+          };
         }
 
         // oxlint-disable-next-line anti-slop/no-runtime-typeof -- see above
@@ -138,7 +137,7 @@ export const migrationDigests = async (
  * every push to it), empty when nothing is. `migrate` numbers migrations by position, so a migration at a shipped
  * position that changed or went missing (a revert that dropped it) lets the next new one reuse its number, and it never
  * runs on objects that ran the old one. A migration not in `shipped` yet is a problem too, so each is recorded before
- * it can be edited unseen; two branches that add one conflict on the same line of the manifest, the signal that they
+ * it can be edited unseen; the manifest itself is append-only, which `scripts/check-migration-manifests.sh` enforces in CI, since a revert removes its line too; two branches that add one conflict on the same line of the manifest, the signal that they
  * both took the next number.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
