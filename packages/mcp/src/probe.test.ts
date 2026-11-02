@@ -56,6 +56,10 @@ const outcome = (deps: McpDeps, clock = recordingClock().clock) =>
 const probes = (server: FakeServer) =>
   rpcMethods(server).filter((method) => method === "server/discover").length;
 
+/** The URL paths of the requests that reached `server`. */
+const paths = (server: FakeServer) =>
+  server.received.map((received) => new URL(received.url).pathname);
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -236,6 +240,7 @@ describe("the probe's outcome table", () => {
     );
 
     expect(await outcome(testDeps(fetchTo(server)))).toEqual({ connected: "modern" });
+    expect(paths(server)).toContain("/mcp/");
   });
 
   it("a redirect within the origin while a token is in play: not followed", async () => {
@@ -248,12 +253,7 @@ describe("the probe's outcome table", () => {
     const deps = testDeps(fetchTo(server), { auth: () => Effect.succeed("token") });
 
     expect(await outcome(deps)).toEqual(failedWith(ServerError, { status: 307 }));
-    expect(
-      server.received.every(
-        (received) =>
-          new URL(received.headers.get("host") ?? "x", "https://x").pathname !== "/mcp/",
-      ),
-    ).toBe(true);
+    expect(new Set(paths(server))).toEqual(new Set(["/mcp"]));
   });
 
   it.each([

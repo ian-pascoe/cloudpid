@@ -4,9 +4,12 @@
  * (`docs/architecture/mcp.md` → Testing and tracing).
  */
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import {
+  ECHO_TOOL,
+  SHOUT_TOOL,
   type FakeServer,
   fetchTo,
   hostileServer,
@@ -19,6 +22,16 @@ import { Unsupported } from "./types.ts";
 import { connect, SUPPORTED_PROTOCOL_VERSIONS } from "./index.ts";
 import type { McpCallContext } from "./types.ts";
 import { HOST, AGENT, run, testDeps, TARGET, failedWith } from "./core.fixture.ts";
+
+/** `echo`, declared with an outputSchema its answers never meet. */
+const COUNTING_TOOL = {
+  ...ECHO_TOOL,
+  outputSchema: {
+    type: "object" as const,
+    properties: { count: { type: "number" } },
+    required: ["count"],
+  },
+};
 
 const servers: ReadonlyArray<readonly [string, () => FakeServer, string]> = [
   ["Modern", modernServer, "modern"],
@@ -36,7 +49,7 @@ describe.each(servers)("against a %s server", (_name, makeServer, era) => {
         const tools = yield* connection.list("tools", HOST);
 
         const called = yield* connection.callTool(
-          { name: "shout", arguments: { text: "hi" } },
+          { tool: SHOUT_TOOL, arguments: { text: "hi" } },
           AGENT,
         );
 
@@ -49,6 +62,75 @@ describe.each(servers)("against a %s server", (_name, makeServer, era) => {
     expect(tools.value.map((tool) => tool.name)).toEqual(["echo", "shout"]);
     expect(called.value.content).toEqual([{ type: "text", text: "HI" }]);
     expect(rpcMethods(server).filter((method) => method === "tools/list")).toHaveLength(2);
+  });
+
+  it("leaves structuredContent to the host: a tool with an outputSchema may answer without it", async () => {
+    const server = makeServer();
+
+    const called = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
+
+        return yield* connection.callTool(
+          { tool: COUNTING_TOOL, arguments: { text: "hi" } },
+          AGENT,
+        );
+      }),
+    );
+
+    expect(called.kind).toBe("complete");
+    expect(called.value.content).toEqual([{ type: "text", text: "hi" }]);
+  });
+});
+
+describe("a Legacy session's GET stream", () => {
+  it("is opened, and carries the server's notifications to the client", async () => {
+    const server = legacyStatefulServer();
+    const announced = () => server.streamed.join("").includes("notifications/tools/list_changed");
+
+    await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
+
+        // Each call sends a notification on the GET stream; the stream may open after the first.
+        for (let calls = 0; calls < 20 && !announced(); calls++) {
+          yield* connection.callTool({ tool: ECHO_TOOL, arguments: { text: "hi" } }, AGENT);
+          yield* Effect.sleep(Duration.millis(10));
+        }
+      }),
+    );
+
+    expect(
+      server.received.some(
+        (received) =>
+          received.method === "GET" && received.headers.get("mcp-session-id") === "session-1",
+      ),
+    ).toBe(true);
+    expect(announced()).toBe(true);
+  });
+});
+
+describe("structuredContent", () => {
+  it("passes through unchecked when it does not match the tool's outputSchema", async () => {
+    const server = hostileServer(legacyStatelessServer(), (_request, rpc) =>
+      rpc?.method === "tools/call"
+        ? Response.json({
+            jsonrpc: "2.0",
+            id: rpc.id ?? null,
+            result: { content: [], structuredContent: { count: "many" } },
+          })
+        : undefined,
+    );
+
+    const called = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
+
+        return yield* connection.callTool({ tool: COUNTING_TOOL, arguments: {} }, AGENT);
+      }),
+    );
+
+    expect(called.value.structuredContent).toEqual({ count: "many" });
   });
 });
 
@@ -73,7 +155,7 @@ describe("what the client declares", () => {
         const connection = yield* connect(TARGET, declaringDeps(server, asked));
 
         yield* connection.list("tools", HOST);
-        yield* connection.callTool({ name: "echo", arguments: { text: "hi" } }, AGENT);
+        yield* connection.callTool({ tool: ECHO_TOOL, arguments: { text: "hi" } }, AGENT);
       }),
     );
 

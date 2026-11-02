@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { AGENT, HOST, memoryStore, run, TARGET, testDeps } from "./core.fixture.ts";
 import {
+  ECHO_TOOL,
   type FakeServer,
   fetchTo,
   hostileServer,
@@ -17,7 +18,7 @@ import {
   modernServer,
   rpcMethods,
 } from "./fakes.fixture.ts";
-import { connect, type McpDeps } from "./index.ts";
+import { connect, type McpDeps, type RowStore } from "./index.ts";
 
 const HOUR = 60 * 60 * 1000;
 
@@ -29,7 +30,11 @@ const listAndCall = (deps: McpDeps) =>
     Effect.gen(function* () {
       const connection = yield* connect(TARGET, deps);
       const tools = yield* connection.list("tools", HOST);
-      const called = yield* connection.callTool({ name: "echo", arguments: { text: "hi" } }, AGENT);
+
+      const called = yield* connection.callTool(
+        { tool: ECHO_TOOL, arguments: { text: "hi" } },
+        AGENT,
+      );
 
       return {
         era: connection.era,
@@ -164,6 +169,21 @@ describe("the Legacy session row", () => {
 });
 
 describe("an era drop", () => {
+  /** A Modern server that answers its first `tools/call` with `refusal`. */
+  const refusingCallOnce = (refusal: (id: string | number | undefined) => Response) => {
+    let refused = false;
+
+    return hostileServer(modernServer(), (_request, rpc) => {
+      if (rpc?.method !== "tools/call" || refused) {
+        return undefined;
+      }
+
+      refused = true;
+
+      return refusal(rpc.id);
+    });
+  };
+
   /** A Modern era row, from connecting once to a Modern server. */
   const modernRow = async () => {
     const eras = memoryStore();
@@ -206,22 +226,39 @@ describe("an era drop", () => {
     ],
   ])("sends a refused call once more after a %s", async (_name, refusal) => {
     const eras = await modernRow();
-    let refused = false;
-
-    const server = hostileServer(modernServer(), (_request, rpc) => {
-      if (rpc?.method !== "tools/call" || refused) {
-        return undefined;
-      }
-
-      refused = true;
-
-      return refusal(rpc.id);
-    });
+    const server = refusingCallOnce(refusal);
 
     const connected = await listAndCall(testDeps(fetchTo(server), { eras: eras.store }));
 
     expect(connected.called).toEqual([{ type: "text", text: "hi" }]);
     expect(count(server, "server/discover")).toBe(1);
     expect(count(server, "tools/call")).toBe(2);
+  });
+
+  it("probes again and sends a refused call once more on a connection that probed Modern itself", async () => {
+    const server = refusingCallOnce(() => new Response("Not found", { status: 404 }));
+    const eras = memoryStore();
+    const writes: Array<string> = [];
+
+    const store: RowStore = {
+      get: eras.store.get,
+      set: (row) =>
+        Effect.andThen(
+          Effect.sync(() => writes.push("set")),
+          eras.store.set(row),
+        ),
+      drop: Effect.andThen(
+        Effect.sync(() => writes.push("drop")),
+        eras.store.drop,
+      ),
+    };
+
+    const connected = await listAndCall(testDeps(fetchTo(server), { eras: store }));
+
+    expect(connected.called).toEqual([{ type: "text", text: "hi" }]);
+    expect(count(server, "server/discover")).toBe(2);
+    expect(count(server, "tools/call")).toBe(2);
+    expect(writes).toEqual(["set", "drop", "set"]);
+    expect(eras.current()).toMatchObject({ v: 1, era: "modern" });
   });
 });

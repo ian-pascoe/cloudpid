@@ -11,9 +11,10 @@ import {
 } from "@modelcontextprotocol/server";
 import * as Schema from "effect/Schema";
 
-/** One request that reached a fake: its HTTP method, headers and, for a POST, its JSON-RPC body. */
+/** One request that reached a fake: its HTTP method, URL, headers and, for a POST, its JSON-RPC body. */
 export interface Received {
   readonly method: string;
+  readonly url: string;
   readonly headers: Headers;
   readonly rpc: RpcBody | undefined;
 }
@@ -39,15 +40,19 @@ export interface FakeServer {
   readonly received: Array<Received>;
 }
 
-/** The tools every fake offers, on two pages. */
-export const FAKE_TOOLS = [
-  { name: "echo", description: "Echo its text.", inputSchema: { type: "object" as const } },
-  {
-    name: "shout",
-    description: "Echo its text in capitals.",
-    inputSchema: { type: "object" as const },
-  },
-];
+/** The fakes' tool that echoes its text. */
+export const ECHO_TOOL = {
+  name: "echo",
+  description: "Echo its text.",
+  inputSchema: { type: "object" as const },
+};
+
+/** The fakes' tool that echoes its text in capitals. */
+export const SHOUT_TOOL = {
+  name: "shout",
+  description: "Echo its text in capitals.",
+  inputSchema: { type: "object" as const },
+};
 
 const EchoArguments = Schema.Struct({ text: Schema.String });
 
@@ -60,8 +65,8 @@ const fakeMcp = (sends?: (server: Server) => Promise<void>) => {
 
   server.setRequestHandler("tools/list", async (request) =>
     request.params?.cursor === "page-2"
-      ? { tools: [FAKE_TOOLS[1]!] }
-      : { tools: [FAKE_TOOLS[0]!], nextCursor: "page-2" },
+      ? { tools: [SHOUT_TOOL] }
+      : { tools: [ECHO_TOOL], nextCursor: "page-2" },
   );
   server.setRequestHandler("tools/call", async (request) => {
     await sends?.(server);
@@ -98,6 +103,7 @@ const recording = (handle: (request: Request) => Promise<Response>): FakeServer 
     handle: async (request) => {
       received.push({
         method: request.method,
+        url: request.url,
         headers: new Headers(request.headers),
         rpc: await readRpc(request),
       });
@@ -128,10 +134,34 @@ export const legacyStatelessServer = (): FakeServer =>
     return transport.handleRequest(request);
   });
 
-/** A Legacy server with sessions: answers on SSE, keeps a GET stream per session, and forgets sessions on demand. */
+/**
+ * A Legacy server with sessions: answers on SSE, keeps a GET stream per session (recording what the client reads of
+ * it), and forgets sessions on demand.
+ */
 export const legacyStatefulServer = () => {
   const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>();
+  const streamed: Array<string> = [];
   let next = 0;
+
+  /** `response`, with what the client reads of a GET stream recorded in `streamed`. */
+  const recordStream = (request: Request, response: Response) => {
+    if (request.method !== "GET" || response.body === null) {
+      return response;
+    }
+
+    const decoder = new TextDecoder();
+
+    const body = response.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform: (chunk, controller) => {
+          streamed.push(decoder.decode(chunk, { stream: true }));
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+
+    return new Response(body, response);
+  };
 
   const fake = recording(async (request) => {
     const id = request.headers.get("mcp-session-id");
@@ -144,7 +174,7 @@ export const legacyStatefulServer = () => {
             { jsonrpc: "2.0", id: null, error: { code: -32001, message: "Session not found" } },
             { status: 404 },
           )
-        : transport.handleRequest(request);
+        : recordStream(request, await transport.handleRequest(request));
     }
 
     const transport = new WebStandardStreamableHTTPServerTransport({
@@ -165,6 +195,8 @@ export const legacyStatefulServer = () => {
   return {
     ...fake,
     sessions,
+    /** The text the client has read of the GET streams. */
+    streamed,
     /** Forget every session, as a restarted server does. */
     forget: () => sessions.clear(),
   };

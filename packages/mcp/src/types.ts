@@ -170,3 +170,23 @@ export const McpError = Schema.Union([
 ]);
 
 export type McpError = typeof McpError.Type;
+
+/**
+ * A failure whose tag this build does not know, from a newer engine: read as a generic failure that may have run
+ * (an absent `mayHaveRun` means it may have).
+ */
+export const OtherMcpError = Schema.Struct({
+  _tag: Schema.String,
+  message: Schema.String,
+  mayHaveRun: Schema.optionalKey(Schema.Boolean),
+});
+
+export type OtherMcpError = typeof OtherMcpError.Type;
+
+/**
+ * The engine edge's failure Schema (`docs/architecture/mcp.md` → Deploys): every known tag reads as its `McpError`,
+ * any other as an `OtherMcpError`, so a newer engine's new tag never fails a decode on an older host.
+ */
+export const McpErrorWire = Schema.Union([...McpError.members, OtherMcpError]);
+
+export type McpErrorWire = typeof McpErrorWire.Type;

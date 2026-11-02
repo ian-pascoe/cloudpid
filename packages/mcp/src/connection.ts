@@ -6,7 +6,7 @@
  * Everything outside the core is injected: `fetch`, `auth`, the era and Legacy session stores, `capabilities(ctx)`,
  * `extensions` and `clientInfo`; the clock is Effect's. The connection opens from the stored rows when it can (a
  * Modern server with no round trip, a Legacy session with no `initialize`), probes the era otherwise, and keeps the
- * rows current: an unknown row format reads as absent, a Legacy row is probed again once 24 h old, a Modern-cached
+ * rows current: an unknown row format reads as absent, a Legacy row is probed again once 24 h old, a Modern
  * server's 400, 404 or 405 drops the era and sends the request again once, and a Legacy session's 404 initializes
  * again and sends it again once.
  */
@@ -43,6 +43,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { classify, type Failure } from "./failures.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
 import { tapFetch, Verdicts } from "./tap.ts";
@@ -115,11 +116,13 @@ export interface Outcome<A> {
   readonly fetchedAt: number;
 }
 
-/** A `tools/call`: the tool's name and arguments, and its definition when the caller has it (D13, D14). */
+/**
+ * A `tools/call`: the tool's definition, from the host's catalog (D13, D14), and the arguments. The call goes by the
+ * definition's name, and its `inputSchema` gives the `Mcp-Param` headers.
+ */
 export interface CallToolParams {
-  readonly name: string;
+  readonly tool: Tool;
   readonly arguments?: Readonly<Record<string, Schema.Json>>;
-  readonly tool?: Tool;
 }
 
 /** One connection to one MCP server (The MCP core #394 D7). */
@@ -258,8 +261,6 @@ interface Live {
   readonly serverInfo: Implementation | undefined;
   readonly capabilities: ServerCapabilities;
   readonly instructions: string | undefined;
-  /** How it opened: from the era row (a Modern server's era drop), the Legacy session row (a 404), or fresh. */
-  readonly from: Plan["kind"];
   readonly sessionId: string | undefined;
 }
 
@@ -377,7 +378,6 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           // SAFETY: the row holds what `getServerCapabilities()` returned at `initialize`.
           capabilities: plan.row.capabilities as ServerCapabilities,
           instructions: plan.row.instructions,
-          from: plan.kind,
           sessionId: plan.row.sessionId,
         } satisfies Live;
       }
@@ -404,7 +404,6 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         serverInfo: client.getServerVersion(),
         capabilities: client.getServerCapabilities() ?? {},
         instructions: client.getInstructions(),
-        from: plan.kind,
         sessionId: transport.sessionId,
       } satisfies Live;
     });
@@ -450,7 +449,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
   /**
    * Runs `send` on the live client. When the server refused it before it ran, recovers and sends it once more: a
-   * Modern-cached server's era drop (400 with no Modern error, 404, 405, `-32022`) probes again; a Legacy session's
+   * Modern server's era drop (400 with no Modern error, 404, 405, `-32022`) probes again; a Legacy session's
    * 404 initializes again.
    */
   const request = <A>(
@@ -567,7 +566,11 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
   const callTool = (params: CallToolParams, ctx: McpCallContext) =>
     Effect.gen(function* () {
-      const call: CallToolRequestParams = { name: params.name, arguments: { ...params.arguments } };
+      const call: CallToolRequestParams = {
+        name: params.tool.name,
+        arguments: { ...params.arguments },
+      };
+
       const meta = metaFor(ctx);
 
       if (meta !== undefined) {
@@ -579,11 +582,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           signal,
           timeout: target.timeoutMs ?? CALL_TIMEOUT_MS,
           resetTimeoutOnProgress: true,
+          // Without `outputSchema`, so the SDK checks no `structuredContent`: the host does (D17).
+          toolDefinition: Struct.omit(params.tool, ["outputSchema"]),
         };
-
-        if (params.tool !== undefined) {
-          options.toolDefinition = params.tool;
-        }
 
         return client.callTool(call, options);
       }, true);
@@ -657,9 +658,9 @@ const unreached = (failed: Failure) => isUnreachable(failed.error) || isTimedOut
 const eraInDoubt = (failed: Failure) =>
   !unreached(failed) && !isSignInRequired(failed.error) && !isStepUpRequired(failed.error);
 
-/** A Modern-cached server refused a request before it ran: its era no longer holds (D3). */
+/** A Modern server refused a request before it ran: its era no longer holds (D3). */
 const eraDropped = (live: Live, failed: Failure) =>
-  live.from === "modern" &&
+  live.era === "modern" &&
   (failed.status === 400 ||
     failed.status === 404 ||
     failed.status === 405 ||
