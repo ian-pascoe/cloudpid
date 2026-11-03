@@ -4,7 +4,7 @@
 // against Variables only. The host keeps the answer in memory only. Nothing here logs a value.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, not combinators.
 import type { McpResolvedServer } from "@cloudpid/config";
-import type { McpServerValuesAnswer } from "@cloudpid/mcp/types";
+import type { McpServerValuesAnswer, McpSignInSecretRef } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
@@ -64,4 +64,42 @@ export const resolveMcpServerValues = (
     headers: server.type === "http" ? values : {},
     missing: Arr.sort(Arr.fromIterable(missing), Order.String),
   };
+};
+
+/** The client secret of an entry, resolved at use (→ The `oauth` fields). */
+export type OauthSecret =
+  | { readonly status: "none" }
+  | { readonly status: "ok"; readonly value: string; readonly ref: McpSignInSecretRef | null }
+  | { readonly status: "missing"; readonly name: string };
+
+const WHOLE_REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+
+/**
+ * `resolved`'s `oauth.clientSecret`: exactly one `${NAME}`, read from the Secrets (an owner's entry only) and then the
+ * Variables, with the reference it resolved to; or a literal, which only a Repo's file may hold (it has no reference). A name
+ * with no value is `missing`. Nothing here logs a value.
+ */
+export const resolveOauthSecret = (
+  resolved: McpResolvedServer,
+  sources: McpValueSources,
+): OauthSecret => {
+  const text = resolved.server.type === "http" ? resolved.server.oauth?.clientSecret : undefined;
+
+  if (text === undefined) return { status: "none" };
+
+  const name = WHOLE_REFERENCE.exec(text)?.[1];
+
+  if (name === undefined) return { status: "ok", value: text, ref: null };
+
+  const secret = resolved.resolvesSecrets ? Record.get(sources.secrets, name) : Option.none();
+
+  if (Option.isSome(secret)) {
+    return { status: "ok", value: secret.value, ref: { scope: "secret", name } };
+  }
+
+  const variable = Record.get(sources.variables, name);
+
+  return Option.isSome(variable)
+    ? { status: "ok", value: variable.value, ref: { scope: "variable", name } }
+    : { status: "missing", name };
 };

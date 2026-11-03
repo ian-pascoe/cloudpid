@@ -8,7 +8,7 @@
 // No answer but `ok` holds a token, and no log line, status or error does: a failure says which row by its hash, and a
 // reason is the owner-facing last error (≤300 chars) or what the Registry found.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-import { mcpSignInKey, type McpSignInKey } from "@cloudpid/config";
+import { mcpSignInKey, type McpResolvedServer, type McpSignInKey } from "@cloudpid/config";
 import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import { stepUpScope } from "@cloudpid/mcp/oauth";
 import type {
@@ -45,24 +45,10 @@ export type SignInTarget =
   | { readonly status: "not_applicable"; readonly reason: string };
 
 /**
- * The sign-in of `server` in `environment`'s set (→ MCP sign-ins, Which servers): OAuth applies only to HTTP entries
- * without an `Authorization` header, and `client_credentials` signs in on its own (not built here yet).
+ * The sign-in `resolved` uses (→ MCP sign-ins, Which servers): OAuth applies only to HTTP entries without an
+ * `Authorization` header, and `client_credentials` signs in on its own (not built here yet).
  */
-export const signInTarget = (
-  store: ResolvedServersStore,
-  environment: string,
-  server: string,
-): SignInTarget => {
-  if (store.getSettingsOverrides(environment) === null) {
-    return { status: "unknown", reason: "The Environment is not registered" };
-  }
-
-  const resolved = resolvedServer(store, environment, server);
-
-  if (resolved === undefined) {
-    return { status: "unknown", reason: "The server is not in the Environment's MCP set" };
-  }
-
+export const signInTargetOf = (resolved: McpResolvedServer): SignInTarget => {
   const entry = resolved.server;
 
   if (entry.type !== "http") {
@@ -90,6 +76,23 @@ export const signInTarget = (
     : { status: "target", key, configuredScope: entry.oauth?.scope };
 };
 
+/** The sign-in of `server` in `environment`'s set, or why it has none. */
+export const signInTarget = (
+  store: ResolvedServersStore,
+  environment: string,
+  server: string,
+): SignInTarget => {
+  if (store.getSettingsOverrides(environment) === null) {
+    return { status: "unknown", reason: "The Environment is not registered" };
+  }
+
+  const resolved = resolvedServer(store, environment, server);
+
+  return resolved === undefined
+    ? { status: "unknown", reason: "The server is not in the Environment's MCP set" }
+    : signInTargetOf(resolved);
+};
+
 /** `text` cut to `limit` characters at a code point, for a row that holds what a server said. */
 export const clip = (text: string, limit: number): string => {
   const points = Array.from(text);
@@ -102,7 +105,7 @@ const scopesOf = (list: string | undefined): ReadonlyArray<string> =>
   (list ?? "").split(/\s+/).filter((scope) => scope !== "");
 
 /** The scopes of space-separated `lists`, once each, in the order they first appear. */
-const mergeScopes = (...lists: ReadonlyArray<string | undefined>): string | null => {
+export const mergeScopes = (...lists: ReadonlyArray<string | undefined>): string | null => {
   const scopes = new Set(Arr.flatMap(lists, scopesOf));
 
   return scopes.size === 0 ? null : [...scopes].join(" ");

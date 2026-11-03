@@ -13,6 +13,11 @@ const server: ServerOptions = {
     // Only the socket and the Attachments: the page at /sessions/:id is the app itself.
     "^/sessions/[^/]+/socket$": { target: WORKER, ws: true },
     "^/sessions/[^/]+/attachments/": WORKER,
+    // MCP sign-ins (docs/architecture/mcp-sign-in.md → The client document and the callback outside Access): the start, and
+    // the authorization server's answer at `http://localhost:5173/oauth/mcp/callback`. Vite's string form of a target sets
+    // `changeOrigin`, which rewrites `Host` to the Worker's own; the Worker takes the origin a sign-in started on from
+    // `Host`, so this one keeps the browser's.
+    "/oauth/mcp/": { target: WORKER, changeOrigin: false },
   },
 };
 

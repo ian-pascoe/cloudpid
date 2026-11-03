@@ -14,20 +14,24 @@
 // it), that rises with a sign-in, sign-out or rebind (and a drop of tokens): the host compares it at `windowOpened`, so a
 // push it lost is healed. No row's sealed value is ever read into a listing (`McpSignInRecord` has none).
 //
-// The store holds more than this slice calls: the tables and their bounds are this ticket's (#442), and the slices that
-// follow are what use them, so some of the surface has no caller yet:
-//   - #450 (start and complete a sign-in): `put` with its tokens, registrations (`getRegistration`, `putRegistration`,
-//     `deleteRegistration`), bindings (`getBinding`, `putBinding`), the pending row (`putPending`, `takePending`,
-//     `getPending`, `deletePending`) and the step-up bookkeeping a completed step-up writes (`SignInWrite.wantedScope`,
-//     `stepUpCount`);
-//   - #454 (refresh and step-up): `replaceTokens`, `dropTokens` and `update` through `Refresh` (`mcp-sign-in-registry.ts`);
+// What calls it (`mcp-sign-in-flow.ts` is #450's start and callback; `mcp-sign-in-registry.ts` the Registry's reports and
+// answers):
+//   - `mcp-sign-in-flow.ts`: `put` with its tokens and the step-up bookkeeping a completed step-up writes
+//     (`SignInWrite.wantedScope`, `stepUpCount`), registrations (`getRegistration`, `putRegistration`,
+//     `deleteRegistration`), bindings (`getBinding`, `putBinding`), the pending row (`putPending`, `takePending`),
+//     `dropTokens` at a change of issuer, `noteChallenge`/`update` for a failure's reason, `get` and `revision` for the row
+//     and the answer, and `resolveWaiters`;
+//   - `mcp-sign-in-registry.ts`: `get`, `touch`, `noteChallenge`, `update`, `dropTokens` and `resolveWaiters`.
+// What has no caller yet, for the slices that follow (the tables and their bounds are #442's):
+//   - #454 (refresh and step-up): `replaceTokens`, through `Refresh`;
 //   - #469 (Settings, sign-out): `list`, `delete`, and `dropUnnamedBindings` once no server set names a binding;
-//   - #470 (Sign-in requests): the waiters (`addWaiter`, `waiters`, `removeWaiter`).
+//   - #470 (Sign-in requests): the waiters (`addWaiter`, `waiters`, `removeWaiter`);
+//   - no caller: `getPending` and `deletePending` (the callback takes the row with `takePending`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off cryptoRandomUUID:off
 import { type McpSignInKey, sha256Hex } from "@cloudpid/config";
 import { MAX_METADATA_BYTES, byteLength } from "@cloudpid/mcp/oauth";
 import { SealedValue } from "@cloudpid/extensions/secrets/core";
-import { McpAuthChallenge } from "@cloudpid/mcp/types";
+import { McpAuthChallenge, McpSignInSecretRef } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -82,17 +86,12 @@ export type ClientKind = (typeof CLIENT_KINDS)[number];
 
 const isClientKind = Schema.is(Schema.Literals(CLIENT_KINDS));
 
-/** A secret or key as a reference to a Secret or Variable: never a copy. */
-const SecretRef = Schema.Struct({ scope: Schema.String, name: Schema.String });
-
-export type McpSecretRef = typeof SecretRef.Type;
-
 /** The client a sign-in signs in as. */
 export type McpSignInClient = {
   readonly id: string;
   readonly kind: ClientKind;
   /** Where a configured client's secret or key is kept: `{scope, name}`, never its value. */
-  readonly secretRef: McpSecretRef | null;
+  readonly secretRef: McpSignInSecretRef | null;
   /** The registration (`mcp_client_registrations` key) a `registered` client's id and secret are in. */
   readonly registration: string | null;
 };
@@ -275,7 +274,7 @@ const decodeSealed = Schema.decodeUnknownOption(Schema.fromJsonString(SealedValu
 
 const decodeChallenge = Schema.decodeUnknownOption(Schema.fromJsonString(McpAuthChallenge));
 
-const decodeSecretRef = Schema.decodeUnknownOption(Schema.fromJsonString(SecretRef));
+const decodeSecretRef = Schema.decodeUnknownOption(Schema.fromJsonString(McpSignInSecretRef));
 
 const sealedOf = (text: string | null): SealedValue | null =>
   text === null ? null : Option.getOrNull(decodeSealed(text));

@@ -2,6 +2,7 @@
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Predicate from "effect/Predicate";
 import { describe, expect, it, vi } from "vitest";
 import {
   CALLBACK_PATH,
@@ -105,12 +106,23 @@ describe("the path of a request's URL", () => {
   });
 });
 
+/** What serves the two exact paths: each answers with what it was given, so a test sees which one ran. */
+const handlers = {
+  clientDocument: Effect.succeed(HttpServerResponse.text("document")),
+  callback: (path: string) => Effect.succeed(HttpServerResponse.text(`callback ${path}`)),
+};
+
+const bodyOf = (response: HttpServerResponse.HttpServerResponse): string =>
+  Predicate.isTagged(response.body, "Uint8Array")
+    ? new TextDecoder().decode(response.body.body)
+    : "";
+
 describe("the router ahead of the guarded routes", () => {
   const guarded = vi.fn(() => Effect.succeed(HttpServerResponse.text("guarded")));
 
   const run = (url: string) =>
     Effect.runPromise(
-      serveSignInPaths(Effect.suspend(guarded)).pipe(
+      serveSignInPaths(handlers)(Effect.suspend(guarded)).pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
           HttpServerRequest.fromWeb(new Request(url)),
@@ -121,9 +133,20 @@ describe("the router ahead of the guarded routes", () => {
   const origin = "https://cloudpid-server-pr-444.ian-g-pascoe.workers.dev";
 
   it.each([
-    `${origin}/oauth/mcp/client.json`,
-    `${origin}/oauth/mcp/callback?code=x&state=y`,
-    `${origin}/oauth/mcp/callback/${HASH}`,
+    [`${origin}/oauth/mcp/client.json`, "document"],
+    [`${origin}/oauth/mcp/callback?code=x&state=y`, "callback /oauth/mcp/callback"],
+    [`${origin}/oauth/mcp/callback/${HASH}`, `callback /oauth/mcp/callback/${HASH}`],
+  ])("hands %s to its handler, never to the guarded routes", async (url, answer) => {
+    guarded.mockClear();
+
+    const response = await run(url);
+
+    expect(response.status).toBe(200);
+    expect(bodyOf(response)).toBe(answer);
+    expect(guarded).not.toHaveBeenCalled();
+  });
+
+  it.each([
     `${origin}/oauth/mcp/Callback`,
     `${origin}//oauth/mcp/callback`,
     `${origin}/oauth/mcp/callback/${HASH}/x`,
@@ -143,6 +166,7 @@ describe("the router ahead of the guarded routes", () => {
     `${origin}/`,
     `${origin}/rpc`,
     `${origin}/oauth/mcp/start?server=x`,
+    `${origin}/oauth/mcp/start`,
     `${origin}/sessions/0190f0a8-1b2c-7d3e-8f40-123456789abc`,
     `${origin}/assets/index.js`,
   ])("hands %s to the guarded routes", async (url) => {
@@ -162,7 +186,10 @@ describe("the composition the Worker serves with", () => {
 
   const run = (url: string, guard: Parameters<typeof guardedRoutes>[0]) =>
     Effect.runPromise(
-      guardedRoutes(guard)(Effect.suspend(inner)).pipe(
+      guardedRoutes(
+        guard,
+        handlers,
+      )(Effect.suspend(inner)).pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
           HttpServerRequest.fromWeb(new Request(url, { headers: { host: new URL(url).host } })),
@@ -185,7 +212,7 @@ describe("the composition the Worker serves with", () => {
     "/oauth/mcp/callback/",
     "/oauth/mcp/callback;x",
     "/oauth/mcp%2fcallback",
-    "/oauth/mcp/client.json",
+    `/oauth/mcp/callback/${HASH}/x`,
   ])(
     "answers %s with the router's 404, before the guard's 403, and runs no route",
     async (path) => {
@@ -195,6 +222,19 @@ describe("the composition the Worker serves with", () => {
 
       expect(response.status).toBe(404);
       expect(response.headers["cache-control"]).toBe("no-store");
+      expect(inner).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["/oauth/mcp/client.json", "/oauth/mcp/callback", `/oauth/mcp/callback/${HASH}`])(
+    "serves %s to its handler with no assertion at all, never reading identity",
+    async (path) => {
+      inner.mockClear();
+
+      const response = await run(`${origin}${path}`, deployed);
+
+      expect(response.status).toBe(200);
+      expect(bodyOf(response)).toMatch(/^(document|callback )/);
       expect(inner).not.toHaveBeenCalled();
     },
   );

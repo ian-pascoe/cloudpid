@@ -15,6 +15,10 @@ export { DnsResolver } from "./web/dns.ts";
 
 export { WebToolError } from "./web/errors.ts";
 
+export { guardedFetch } from "./web/guarded-fetch.ts";
+
+export type { WebRequest } from "./web/transport.ts";
+
 export { WebTransport } from "./web/transport.ts";
 
 /** The network the tools use in a Worker: `fetch`, and DNS-over-HTTPS lookups for the SSRF guard. */
