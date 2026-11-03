@@ -49,7 +49,7 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
-import { CONVERSATION_MISSING, SessionError } from "./errors.ts";
+import { CONVERSATION_MISSING, isWithdrawn, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
 import { cursorOf, endedBy, statusOf, type Snapshot, waitingMark } from "./mcp-follow.ts";
 import type { FollowState, SettledInput } from "./mcp-reads.ts";
@@ -706,15 +706,20 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
           return apiOk<SubmitResult>({ delivery, cursor: submitCursor(after, id, mark) });
         }).pipe(
-          Effect.catchTag("SessionError", (error) =>
-            // The Session's own refusal of this input (too large to store, say) is the caller's to fix. A message Stop
-            // withdrew before it was placed (`WITHDRAWN`) has no submission to follow: it is `unavailable`, to send again.
-            Effect.succeed(
+          Effect.catchTag("SessionError", (error) => {
+            // A message Stop withdrew before it was placed has no submission to follow. It is `stopped` and not
+            // retryable: the owner stopped it, and sending it again would place it after their Stop.
+            if (isWithdrawn(error)) {
+              return Effect.succeed(apiFailure("stopped", error.message, { retryable: false }));
+            }
+
+            // The Session's own refusal of this input (too large to store, say) is the caller's to fix.
+            return Effect.succeed(
               error.operation === "submit"
                 ? apiFailure("invalid_argument", error.message)
                 : unavailable(error),
-            ),
-          ),
+            );
+          }),
         ),
       );
 

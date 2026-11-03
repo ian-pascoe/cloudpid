@@ -2,7 +2,7 @@
 // The Session tree's moves over the Session's open Harness (GLOSSARY.md → Session tree, ADR-0017): which Session branch
 // is active, the tree a client shows, `/tree`'s navigation and the chevrons' switch, and stopping every branch. What the
 // tree is made of, in plain functions over pi-durable's records, is `tree.ts`'s.
-import { stopConversation } from "@cloudpid/extensions/subagents";
+import { type BeforeAbort, stopConversation } from "@cloudpid/extensions/subagents";
 import type { BranchSummaryRequest, Navigated, SessionTree, TreePoint } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, Usage } from "@earendil-works/pi-ai";
@@ -71,13 +71,15 @@ export type BranchesOptions = {
   readonly refusal: () => string | undefined;
   /** Whether a message is in line for `conversation`, being prepared or placed: the tree does not move until it is placed. */
   readonly preparing: (conversation: ConversationId) => boolean;
+  /** What the Session does for a conversation just before a Stop aborts it: withdraw the messages in its line. */
+  readonly beforeAbort: BeforeAbort;
   /** Runs `effect` in turn with the owner's messages, so none lands on a branch being left. */
   readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 };
 
 /** The Session tree's moves, and the reads the Session host shares with them. */
 export const sessionBranches = (options: BranchesOptions) => {
-  const { harness, root, inArrivalOrder } = options;
+  const { harness, root, inArrivalOrder, beforeAbort } = options;
 
   /** The Session tree as the Session keeps it: the root conversation active until a branch is made. */
   const treeState = attempt("snapshot", () => harness.snapshot(SessionTreeDoc, context)).pipe(
@@ -330,13 +332,14 @@ export const sessionBranches = (options: BranchesOptions) => {
     const current = yield* active;
 
     yield* attempt("abort", () =>
-      stopConversation(harness, current.id, { subagents: true }, context),
+      stopConversation(harness, current.id, { subagents: true }, context, beforeAbort),
     );
 
     for (const id of branchIds(yield* treeState)) {
       if (id === current.id) continue;
 
       yield* attempt("abort", async () => {
+        await beforeAbort(id);
         await (await harness.conversation(id, context))?.abort(context);
       });
     }

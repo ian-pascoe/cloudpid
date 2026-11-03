@@ -131,7 +131,14 @@ import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { contextUsageOf } from "./context-usage.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
-import { attempt, CONVERSATION_MISSING, refuse, SessionError } from "./errors.ts";
+import {
+  attempt,
+  CONVERSATION_MISSING,
+  isWithdrawn,
+  refuse,
+  SessionError,
+  withdrawnFailure,
+} from "./errors.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
@@ -183,6 +190,19 @@ const NOTIFY_KEY = "notify-submissions";
 const INPUTS_KEY = "mcp-inputs";
 
 const MAX_INPUTS = 64;
+
+/**
+ * The request IDs of the messages Stop withdrew from a line, with when, kept in the Session's key-value storage: such a
+ * message leaves no submission, so a client that sends it again under the same `requestId` after a reconnect would
+ * otherwise place it after the Stop. Kept for `WITHDRAWN_KEPT_MS`, the newest `MAX_WITHDRAWN`.
+ */
+const WITHDRAWN_KEY = "withdrawn-requests";
+
+const WITHDRAWN_KEPT_MS = 10 * 60 * 1000;
+
+const MAX_WITHDRAWN = 64;
+
+type WithdrawnRequest = { readonly requestId: string; readonly at: number };
 
 /** An entry ID from the number a client passed in a cursor. */
 // SAFETY: entry IDs are positive integers; the caller checked the number is one it was given.
@@ -771,6 +791,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const admission = admissionLines(inArrivalOrder);
 
+  // The Harness's stop (`stopConversation`, which deleting an agent shares) is Promise-based and calls this before it
+  // aborts each conversation: it runs the Effect that withdraws the conversation's line, with the services this Effect
+  // runs with, and hands pi-durable back a Promise. Every stop goes through it, so none can leave a line behind.
+  const runForStop = Effect.runPromiseWith(yield* Effect.context<never>());
+
+  const beforeAbort = (conversationId: ConversationId): Promise<void> =>
+    runForStop(admission.withdrawLine(conversationId));
+
   const { kv } = storage;
 
   /** What this Session picked: a field is absent while the Session follows the default. */
@@ -810,6 +838,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     pendingCompactions,
     refusal: () => (isFilling(kv) ? STILL_FILLING : undefined),
     preparing: (conversation) => admission.isPreparing(conversation),
+    beforeAbort,
     inArrivalOrder,
   });
 
@@ -1828,25 +1857,71 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         );
 
+  /** Whether Stop withdrew a message sent under `requestId` lately. */
+  const wasWithdrawn = (requestId: string) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.map((now) =>
+        Arr.some(
+          kv.get<ReadonlyArray<WithdrawnRequest>>(WITHDRAWN_KEY) ?? [],
+          (kept) => kept.requestId === requestId && now - kept.at < WITHDRAWN_KEPT_MS,
+        ),
+      ),
+    );
+
+  /** Keep `requestId` as withdrawn: the recent ones only, and at most `MAX_WITHDRAWN`. */
+  const rememberWithdrawn = (requestId: string) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.tap((now) =>
+        Effect.sync(() => {
+          const recent = Arr.filter(
+            kv.get<ReadonlyArray<WithdrawnRequest>>(WITHDRAWN_KEY) ?? [],
+            (kept) => kept.requestId !== requestId && now - kept.at < WITHDRAWN_KEPT_MS,
+          );
+
+          kv.put(WITHDRAWN_KEY, [...recent.slice(-(MAX_WITHDRAWN - 1)), { requestId, at: now }]);
+        }),
+      ),
+    );
+
   /**
    * Admit `prompt` in two steps (docs/architecture/mcp-in-a-session.md → Getting a prompt at send). It first takes its
    * place in the line of its conversation, where it waits for the messages sent before it; the Session tree does not
    * move while it is in line. It is then prepared, with no lock held, so a slow expansion or page read holds back
    * neither Stop nor another conversation. Last it is placed, briefly under `inArrivalOrder`: checked, then admitted.
-   * Stop withdraws it until it is placed: it then fails as `withdrawn()` and places nothing.
+   * Stop withdraws it until it is placed: it then fails as `withdrawnFailure()`, places nothing, and its `requestId`
+   * is remembered for a while (`WITHDRAWN_KEY`).
    */
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
-    admission.inLine(
-      addressed(prompt.conversationId).pipe(Effect.map((conversation) => conversation.id)),
-      (conversationId) =>
-        // A message the Session would refuse is not expanded first.
-        unlessForking.pipe(
-          Effect.andThen(draftOf({ ...prompt, conversationId })),
-          Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
-        ),
-      (conversationId, draft) =>
-        guard(conversationId, draft).pipe(Effect.andThen(admitDraft(conversationId, draft, true))),
-    );
+    Effect.gen(function* () {
+      const { requestId } = prompt;
+
+      // Sent again after Stop withdrew it (a client that saw no answer): it is withdrawn again, not placed after the Stop.
+      if (requestId !== undefined && (yield* wasWithdrawn(requestId))) {
+        return yield* withdrawnFailure();
+      }
+
+      return yield* admission
+        .inLine(
+          addressed(prompt.conversationId).pipe(Effect.map((conversation) => conversation.id)),
+          (conversationId) =>
+            // A message the Session would refuse is not expanded first.
+            unlessForking.pipe(
+              Effect.andThen(draftOf({ ...prompt, conversationId })),
+              Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
+            ),
+          (conversationId, draft) =>
+            guard(conversationId, draft).pipe(
+              Effect.andThen(admitDraft(conversationId, draft, true)),
+            ),
+        )
+        .pipe(
+          Effect.tapError((error) =>
+            requestId !== undefined && isWithdrawn(error)
+              ? rememberWithdrawn(requestId)
+              : Effect.void,
+          ),
+        );
+    });
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {
     const submission = yield* admit(prompt);
@@ -2661,11 +2736,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     switchBranch: (conversationId) =>
       branches.switchBranch(conversationId).pipe(Effect.tap(usageChanged)),
     // What stopped reaches the Registry's summary of the subagents at once: an archived Session keeps it.
-    stopEverything: admission.withdrawAll.pipe(
-      Effect.andThen(branches.stopEverything),
-      Effect.andThen(settleAgents),
-      Effect.asVoid,
-    ),
+    stopEverything: branches.stopEverything.pipe(Effect.andThen(settleAgents), Effect.asVoid),
     forkSource: forks.forkSource,
     exportEntries: forks.exportEntries,
     importStart: forks.importStart,
@@ -2690,23 +2761,29 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       return { model: pick.model !== undefined, thinkingLevel: pick.thinkingLevel !== undefined };
     }),
     abort: (options = {}) =>
-      Effect.all([addressed(options.conversationId), Effect.context<never>()]).pipe(
-        Effect.flatMap(([conversation, services]) =>
+      addressed(options.conversationId).pipe(
+        Effect.flatMap((conversation) =>
           attempt("abort", () =>
             stopConversation(
               harness.harness,
               conversation.id,
               { subagents: options.subagents === true },
               context,
-              // The messages of each conversation stopped that are still in its line are withdrawn, then it is aborted.
-              (id) => Effect.runPromiseWith(services)(admission.withdraw(id)),
+              beforeAbort,
             ),
           ),
         ),
       ),
     deleteSubagent: (agent, workspace) =>
       attempt("deleteSubagent", () =>
-        deleteAgent(harness.harness, agent, workspace, options.subagentWorkspaces, context),
+        deleteAgent(
+          harness.harness,
+          agent,
+          workspace,
+          options.subagentWorkspaces,
+          context,
+          beforeAbort,
+        ),
       ),
     close: Effect.sync(() => agentsReport.stop()).pipe(
       Effect.andThen(attempt("close", () => harness.harness.close(context))),

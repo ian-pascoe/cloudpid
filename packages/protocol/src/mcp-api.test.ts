@@ -152,6 +152,7 @@ describe("a value a newer deploy added", () => {
 
   it("reads known members as they are", () => {
     expect(read(ApiErrorCode, "branch_taken")).toBe("branch_taken");
+    expect(read(ApiErrorCode, "stopped")).toBe("stopped");
     expect(read(McpSessionStatus, "waiting_for_owner")).toBe("waiting_for_owner");
     expect(read(EndedBy, "owner_needed")).toBe("owner_needed");
   });
@@ -160,6 +161,16 @@ describe("a value a newer deploy added", () => {
     expect(read(ApiError, { code: future, message: "m", retryable: true })).toMatchObject({
       code: "unavailable",
       retryable: true,
+    });
+    // A reader that does not know `stopped` (a message the owner's Stop withdrew) sees `unavailable` and, as the flag
+    // travels, that sending it again will not help.
+    expect(read(ApiError, { code: future, message: "m", retryable: false })).toMatchObject({
+      code: "unavailable",
+      retryable: false,
+    });
+    expect(apiFailure("stopped", "m", { retryable: false })).toMatchObject({
+      ok: false,
+      error: { code: "stopped", retryable: false },
     });
     expect(
       read(ApiResult(Schema.String), {

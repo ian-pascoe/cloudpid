@@ -424,7 +424,13 @@ describe("pages attached to a message", () => {
 
     const owner = await connect(stub);
 
-    owner.send({ type: "submit", id: "s-1", input: "first", pages: [{ ownerTabId: "slow" }] });
+    owner.send({
+      type: "submit",
+      id: "s-1",
+      input: "first",
+      requestId: "r-1",
+      pages: [{ ownerTabId: "slow" }],
+    });
     owner.send({ type: "submit", id: "s-2", input: "second" });
 
     // The first is being prepared (its slow page read takes 150 ms), and the second waits behind it.
@@ -435,6 +441,11 @@ describe("pages attached to a message", () => {
     expect(await owner.answer("s-1")).toEqual({ type: "result", id: "s-1", result: null });
     expect(await owner.answer("s-2")).toEqual({ type: "result", id: "s-2", result: null });
     expect((await owner.answer("stop")).type).toBe("result");
+
+    // Sent again under its `requestId` (a client that saw no answer, after a reconnect), it is withdrawn again: it
+    // left no submission for the Session to find, and placing it now would place it after the Stop.
+    owner.send({ type: "submit", id: "s-1b", input: "first", requestId: "r-1" });
+    expect(await owner.answer("s-1b")).toEqual({ type: "result", id: "s-1b", result: null });
 
     // Neither was placed: the model was not asked, and a message sent after the Stop is.
     owner.send({ type: "submit", id: "s-3", input: "third" });

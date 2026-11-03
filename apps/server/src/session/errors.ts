@@ -36,12 +36,12 @@ export const refuse = (message: string): SessionError =>
   SessionError.make({ operation: "command", message });
 
 /** The failure of a message Stop withdrew before it was placed: nothing was sent. */
-export const withdrawn = (): SessionError =>
+export const withdrawnFailure = (): SessionError =>
   SessionError.make({
     operation: WITHDRAWN,
     message: "Stopped before it was sent: nothing was sent, so send it again.",
   });
 
 /** Whether `error` says Stop withdrew the message. */
-export const isWithdrawn = (error: unknown): error is SessionError =>
+export const isWithdrawn = (error: { readonly _tag: string }): boolean =>
   Schema.is(SessionError)(error) && error.operation === WITHDRAWN;

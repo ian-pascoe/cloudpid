@@ -53,6 +53,7 @@ import {
   type SlashCommand,
 } from "./host.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
+import { isWithdrawn } from "./errors.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
@@ -147,10 +148,14 @@ export class TestSubagentSession extends DurableObject {
                 setTitle: () => Effect.void,
               }),
               sessionSettingsLayer({
-                read: Effect.sync(() => ({
-                  global: ctx.storage.kv.get<Schema.Json>("overrides") ?? {},
-                  overrides: {},
-                })),
+                // The read of the settings is the first step of placing a message, so holding it holds a message
+                // in the middle of being placed (`holdPlacing`).
+                read: Effect.promise(() => this.#placing?.promise ?? Promise.resolve()).pipe(
+                  Effect.as({
+                    global: ctx.storage.kv.get<Schema.Json>("overrides") ?? {},
+                    overrides: {},
+                  }),
+                ),
                 kv: ctx.storage.kv,
               }),
             ),
@@ -403,6 +408,39 @@ export class TestSubagentSession extends DurableObject {
     return this.#runtime.runPromise(
       Effect.flatMap(SessionHost, (host) =>
         host.submit({ requestId: text, input: text, ...this.#held(text) }),
+      ),
+    );
+  }
+
+  /** While set, a message being placed waits for `finishPlacing`: the read of the settings that starts it is held. */
+  #placing: PromiseWithResolvers<void> | undefined;
+
+  /** Hold the placing of the next message, once it starts, until `finishPlacing`. */
+  holdPlacing(): void {
+    this.#placing = Promise.withResolvers<void>();
+  }
+
+  /** Let the held placing end, and every later one go on. */
+  finishPlacing(): void {
+    this.#placing?.resolve();
+    this.#placing = undefined;
+  }
+
+  /**
+   * Submit `text` to the root, or to `conversationId`, and say how it ended: `placed`, or `withdrawn` when Stop withdrew it
+   * before it was placed. Any other failure rejects.
+   */
+  submitOutcome(text: string, conversationId?: ConversationId): Promise<"placed" | "withdrawn"> {
+    const prompt: Types.Mutable<Prompt> = { requestId: text, input: text, ...this.#held(text) };
+
+    if (conversationId !== undefined) prompt.conversationId = conversationId;
+
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) =>
+        host.submit(prompt).pipe(
+          Effect.as("placed" as const),
+          Effect.catchIf(isWithdrawn, () => Effect.succeed("withdrawn" as const)),
+        ),
       ),
     );
   }

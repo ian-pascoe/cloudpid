@@ -1,23 +1,27 @@
 // The lines an owner's messages wait in before they are placed: one per conversation, so a message that is slow to
 // prepare holds back only the ones sent after it to the same conversation (docs/architecture/mcp-in-a-session.md →
 // Getting a prompt at send). The Session's lock (`inArrivalOrder`) is not held while a message waits or prepares. Stop
-// withdraws the messages in a conversation's line that are not yet being placed.
+// withdraws the messages in a conversation's line that are not yet being placed (same section).
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Semaphore from "effect/Semaphore";
-import { type SessionError, withdrawn } from "./errors.ts";
+import { type SessionError, withdrawnFailure } from "./errors.ts";
+
+/**
+ * Where a message in a line stands: `in-line` while it waits its turn or is prepared, `placing` once it holds the lock to
+ * be placed (Stop leaves it, and withdraws it as queued input once it is placed), `withdrawn` once Stop reached it first
+ * (it places nothing).
+ */
+type MemberState = "in-line" | "placing" | "withdrawn";
 
 /** A message in a line. */
 type Member = {
   /** Done when the message has left the line, however it ended. */
   readonly left: Deferred.Deferred<void>;
-  /** Done when Stop withdraws the message: what it prepares is cancelled. */
+  /** Done when Stop withdraws the message: whatever it is preparing is cancelled. */
   readonly cancel: Deferred.Deferred<void>;
-  /** Whether Stop withdrew it. A withdrawn message places nothing. */
-  withdrawn: boolean;
-  /** Whether it is being placed: Stop leaves it, and it is withdrawn as queued input once it is placed. */
-  placing: boolean;
+  state: MemberState;
 };
 
 /** Where a message stands in its conversation's line: wait for `turn`, and `leave` when done, however it ended. */
@@ -44,16 +48,26 @@ export const admissionLines = (
   /** The messages in line, being prepared or being placed, for each conversation. */
   const members = new Map<ConversationId, Set<Member>>();
 
-  // Synchronous, so that taking a place is one step with being first or last in line.
-  const join = (key: ConversationId): Place => {
+  // A message that has been sent but has not joined its line is still on its way: it waits for the lock, which a
+  // `navigate` may hold across a summary, and only then knows its conversation. Each Stop is counted, and where it
+  // reached which conversation is kept while a message is on its way, so such a message sent before the Stop joins
+  // withdrawn.
+  let stops = 0;
+  let onTheirWay = 0;
+  const stoppedAt = new Map<ConversationId, number>();
+
+  // Synchronous, so that taking a place is one step with being first or last in line. `seen` is the stop count when the
+  // message was sent.
+  const join = (key: ConversationId, seen: number): Place => {
     const previous = tails.get(key);
 
     const member: Member = {
       left: Deferred.makeUnsafe<void>(),
       cancel: Deferred.makeUnsafe<void>(),
-      withdrawn: false,
-      placing: false,
+      state: (stoppedAt.get(key) ?? 0) > seen ? "withdrawn" : "in-line",
     };
+
+    if (member.state === "withdrawn") Deferred.doneUnsafe(member.cancel, Effect.void);
 
     tails.set(key, member.left);
     members.set(key, (members.get(key) ?? new Set()).add(member));
@@ -75,6 +89,13 @@ export const admissionLines = (
     };
   };
 
+  /** A message has joined its line, or failed on its way. */
+  const arrived = Effect.sync(() => {
+    onTheirWay -= 1;
+
+    if (onTheirWay === 0) stoppedAt.clear();
+  });
+
   /**
    * Run `prepare` in the line of the conversation `which` finds, after every message that joined it earlier has left,
    * then `place` under `inArrivalOrder`, and let the next message go when it ends. The conversation is found, and the
@@ -83,75 +104,85 @@ export const admissionLines = (
    * which keeps the tree where it is. A message interrupted while it waits still waits for its turn and for the lock,
    * so the ones behind it never get ahead of the ones before it.
    *
-   * A message `withdraw` reached before it is placed fails with `withdrawn()`: what it was preparing is cancelled, it
-   * places nothing, and it still waits for its turn to leave, so the ones behind it keep their order.
+   * A message `withdrawLine` reached before it is placed (or sent before it, though it joined its line after) fails as
+   * `withdrawnFailure()`: what it was preparing is cancelled, it places nothing, and it still waits for its turn to
+   * leave, so the ones behind it keep their order.
    */
   const inLine = <E1, R1, P, E2, R2, A, E3, R3>(
     which: Effect.Effect<ConversationId, E1, R1>,
     prepare: (conversationId: ConversationId) => Effect.Effect<P, E2, R2>,
     place: (conversationId: ConversationId, prepared: P) => Effect.Effect<A, E3, R3>,
   ): Effect.Effect<A, E1 | E2 | E3 | SessionError, R1 | R2 | R3> =>
-    Effect.uninterruptibleMask((restore) =>
-      arriving(
-        inArrivalOrder(restore(which).pipe(Effect.map((key) => ({ key, place: join(key) })))),
-      ).pipe(
-        Effect.flatMap(({ key, place: line }) => {
-          const { member } = line;
+    Effect.suspend(() => {
+      const seen = stops;
 
-          const stopped = Effect.suspend(() => Effect.fail(withdrawn()));
+      onTheirWay += 1;
 
-          const cancelled = Deferred.await(member.cancel).pipe(Effect.andThen(stopped));
+      return Effect.uninterruptibleMask((restore) =>
+        arriving(
+          inArrivalOrder(
+            restore(which).pipe(Effect.map((key) => ({ key, line: join(key, seen) }))),
+          ),
+        ).pipe(
+          Effect.ensuring(arrived),
+          Effect.flatMap(({ key, line }) => {
+            const { member } = line;
 
-          // Checked and set in one step under the lock, so Stop either reaches the message first or finds it placing.
-          const placed = (prepared: P) =>
-            Effect.suspend((): Effect.Effect<A, E3 | SessionError, R3> => {
-              if (member.withdrawn) return stopped;
+            const withdrawnFail = Effect.suspend(() => Effect.fail(withdrawnFailure()));
 
-              member.placing = true;
+            const cancelled = Deferred.await(member.cancel).pipe(Effect.andThen(withdrawnFail));
 
-              return place(key, prepared);
-            }).pipe(inArrivalOrder);
+            // Checked and set in one step under the lock, so Stop either reaches the message first or finds it placing.
+            const placed = (prepared: P) =>
+              Effect.suspend((): Effect.Effect<A, E3 | SessionError, R3> => {
+                if (member.state === "withdrawn") return withdrawnFail;
 
-          const run = Effect.suspend(() =>
-            member.withdrawn
-              ? stopped
-              : Effect.raceFirst(prepare(key), cancelled).pipe(Effect.flatMap(placed)),
-          );
+                member.state = "placing";
 
-          return line.turn.pipe(Effect.andThen(restore(run)), Effect.ensuring(line.leave));
-        }),
-      ),
-    );
+                return place(key, prepared);
+              }).pipe(inArrivalOrder);
+
+            const run = Effect.suspend(() =>
+              member.state === "withdrawn"
+                ? withdrawnFail
+                : Effect.raceFirst(prepare(key), cancelled).pipe(Effect.flatMap(placed)),
+            );
+
+            return line.turn.pipe(Effect.andThen(restore(run)), Effect.ensuring(line.leave));
+          }),
+        ),
+      );
+    });
 
   /**
-   * Withdraw the messages in conversation `key`'s line that are not being placed: each is cancelled and answers as
-   * withdrawn. Done once the ones being placed are, so that a Stop that goes on to abort the conversation finds them
-   * queued and withdraws them as it does the rest. Other conversations' lines are untouched.
+   * Withdraw the messages in conversation `key`'s line that are not being placed, and the ones sent before this Stop
+   * that are still on their way to it: each is cancelled and fails as withdrawn. Done once the ones being placed are, so
+   * that a Stop that goes on to abort the conversation finds them queued and withdraws them as it does the rest. Other
+   * conversations' lines are untouched.
    */
-  const withdraw = (key: ConversationId): Effect.Effect<void> =>
+  const withdrawLine = (key: ConversationId): Effect.Effect<void> =>
     Effect.suspend(() => {
+      stops += 1;
+
+      if (onTheirWay > 0) stoppedAt.set(key, stops);
+
       const placing: Array<Deferred.Deferred<void>> = [];
-      const cancelling: Array<Member> = [];
+      const reached: Array<Member> = [];
 
       for (const member of members.get(key) ?? []) {
-        if (member.placing) {
-          placing.push(member.left);
-        } else {
-          member.withdrawn = true;
-          cancelling.push(member);
+        if (member.state === "placing") placing.push(member.left);
+
+        if (member.state === "in-line") {
+          member.state = "withdrawn";
+          reached.push(member);
         }
       }
 
       // After every one is marked: cancelling a message may carry the one behind it on at once.
-      for (const member of cancelling) Deferred.doneUnsafe(member.cancel, Effect.void);
+      for (const member of reached) Deferred.doneUnsafe(member.cancel, Effect.void);
 
       return Effect.forEach(placing, (left) => Deferred.await(left), { discard: true });
     });
-
-  /** `withdraw` for every conversation with a line (Stop all). */
-  const withdrawAll: Effect.Effect<void> = Effect.suspend(() =>
-    Effect.forEach([...members.keys()], withdraw, { discard: true }),
-  );
 
   /** Whether a message is in line for conversation `key`, not yet placed. */
   const isPreparing = (key: ConversationId): boolean => members.has(key);
@@ -159,5 +190,5 @@ export const admissionLines = (
   /** Whether a message is in line for any conversation. */
   const anyPreparing = (): boolean => members.size > 0;
 
-  return { inLine, withdraw, withdrawAll, isPreparing, anyPreparing };
+  return { inLine, withdrawLine, isPreparing, anyPreparing };
 };

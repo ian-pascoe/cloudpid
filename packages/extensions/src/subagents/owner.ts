@@ -63,21 +63,25 @@ const below = (state: SubagentsState, agentId: string): AgentRecord[] =>
     byDepthDescending,
   );
 
+/** What the Session does for a conversation just before it is aborted (see `stopConversation`). */
+export type BeforeAbort = (conversationId: ConversationId) => Promise<void>;
+
 /**
  * Abort the work of the agent whose conversation is `conversationId`, and withdraw its queued input. With
  * `subagents`, everything below it stops too, background work and the reports it held included: a subagent's own
  * subagents are agents of their own, and keep working otherwise. The caller has checked that it is an agent's.
- * `reaching` is called with each conversation just before it is aborted, and waited for: the Session withdraws the
- * messages in that conversation's line there, so a message not yet placed is not placed after the Stop.
+ * `beforeAbort` is called with each conversation just before it is aborted, and waited for: the Session withdraws the
+ * messages in that conversation's line there, so a message not yet placed is not placed after the Stop. It is required,
+ * so that no way of stopping a conversation can leave its line behind.
  */
 export const stopConversation = async (
   harness: OwnerHarness,
   conversationId: ConversationId,
   options: { readonly subagents: boolean },
   context: Context,
-  reaching?: (conversationId: ConversationId) => Promise<void>,
+  beforeAbort: BeforeAbort,
 ): Promise<void> => {
-  await reaching?.(conversationId);
+  await beforeAbort(conversationId);
   await (
     await harness.conversation(conversationId, context)
   )?.abort(context, {
@@ -105,7 +109,7 @@ export const stopConversation = async (
     for (const agent of fresh) {
       stopped.add(agent.id);
 
-      await reaching?.(agent.conversationId);
+      await beforeAbort(agent.conversationId);
       await (
         await harness.conversation(agent.conversationId, context)
       )?.abort(context, {
@@ -134,6 +138,7 @@ export const deleteAgent = async (
   workspace: string,
   workspaces: SubagentWorkspaceHost | undefined,
   context: Context,
+  beforeAbort: BeforeAbort,
 ): Promise<OwnerDeletion> => {
   const agent = (await readState(harness, context)).agents[agentId];
 
@@ -141,7 +146,7 @@ export const deleteAgent = async (
     return { deleted: [], kept: [] };
   }
 
-  await stopConversation(harness, agent.conversationId, { subagents: true }, context);
+  await stopConversation(harness, agent.conversationId, { subagents: true }, context, beforeAbort);
 
   const gone = await harness.commit(
     async (tx) => deleteSubtree(await tx.doc(SubagentsDoc), agentId, agent.conversationId),
@@ -150,6 +155,7 @@ export const deleteAgent = async (
 
   // One spawned after the stop is deleted too: stop it now that it can spawn no more.
   for (const each of gone) {
+    await beforeAbort(each.conversationId);
     await (
       await harness.conversation(each.conversationId, context)
     )?.abort(context, { background: true });

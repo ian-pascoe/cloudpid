@@ -105,6 +105,7 @@ import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
+import { isWithdrawn } from "./errors.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
@@ -1220,6 +1221,19 @@ export class TestSession extends DurableObject {
 
   submit({ requestId, text }: TestPrompt): Promise<number> {
     return this.#runtime.runPromise(this.#host.submit({ requestId, input: text }));
+  }
+
+  /**
+   * Submit `text` with its preparation held for good (a page read that never ends), and say how it ended: `withdrawn`
+   * when Stop withdrew it, `placed` otherwise. Any other failure rejects.
+   */
+  submitHeld({ requestId, text }: TestPrompt): Promise<"placed" | "withdrawn"> {
+    return this.#runtime.runPromise(
+      this.#host.submit({ requestId, input: text, attachPages: Effect.never }).pipe(
+        Effect.as("placed" as const),
+        Effect.catchIf(isWithdrawn, () => Effect.succeed("withdrawn" as const)),
+      ),
+    );
   }
 
   prompt({ requestId, text }: TestPrompt): Promise<Answer> {

@@ -20,21 +20,6 @@ declare global {
   }
 }
 
-/** How a submit ended: placed, or withdrawn by Stop. */
-const PLACED = "placed";
-const WITHDRAWN = "withdrawn";
-
-/** The end of `submit`: it was placed, withdrawn by Stop, or failed for another reason (which is thrown). */
-const settled = (submit: Promise<number>): Promise<string> =>
-  submit.then(
-    () => PLACED,
-    (error: Error) => {
-      if (error.message.includes("Stopped before it was sent")) return WITHDRAWN;
-
-      throw error;
-    },
-  );
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Poll `check` inside the object until it holds. */
@@ -255,8 +240,8 @@ describe("admitting a message", () => {
       instance.holdPreparing("a1");
       instance.holdPreparing("c1");
 
-      const root = [instance.submit("a1"), instance.submit("a2")].map(settled);
-      const sub = settled(instance.submitTo(child, "c1"));
+      const root = [instance.submitOutcome("a1"), instance.submitOutcome("a2")];
+      const sub = instance.submitOutcome("c1", child);
 
       await sleep(50);
 
@@ -273,8 +258,8 @@ describe("admitting a message", () => {
       return { withdrawn, other: await sub };
     });
 
-    expect(outcomes.withdrawn).toEqual([WITHDRAWN, WITHDRAWN]);
-    expect(outcomes.other).toBe(PLACED);
+    expect(outcomes.withdrawn).toEqual(["withdrawn", "withdrawn"]);
+    expect(outcomes.other).toBe("placed");
     await eventually(stub, (instance) => instance.idle());
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
@@ -300,8 +285,8 @@ describe("admitting a message", () => {
       instance.holdPreparing("a1");
       instance.holdPreparing("c1");
 
-      const root = settled(instance.submit("a1"));
-      const sub = settled(instance.submitTo(child, "c1"));
+      const root = instance.submitOutcome("a1");
+      const sub = instance.submitOutcome("c1", child);
 
       await sleep(50);
       await instance.abort({ conversationId: child });
@@ -313,7 +298,7 @@ describe("admitting a message", () => {
       return { withdrawn, other: await root };
     });
 
-    expect(outcomes).toEqual({ withdrawn: WITHDRAWN, other: PLACED });
+    expect(outcomes).toEqual({ withdrawn: "withdrawn", other: "placed" });
   });
 
   it("withdraws every conversation's line on Stop all", async () => {
@@ -323,7 +308,7 @@ describe("admitting a message", () => {
       instance.holdPreparing("a1");
       instance.holdPreparing("c1");
 
-      const lines = [instance.submit("a1"), instance.submitTo(child, "c1")].map(settled);
+      const lines = [instance.submitOutcome("a1"), instance.submitOutcome("c1", child)];
 
       await sleep(50);
       await instance.stopEverything();
@@ -331,13 +316,102 @@ describe("admitting a message", () => {
       return Promise.all(lines);
     });
 
-    expect(withdrawn).toEqual([WITHDRAWN, WITHDRAWN]);
+    expect(withdrawn).toEqual(["withdrawn", "withdrawn"]);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
     ).toEqual([]);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, child)),
     ).toEqual([]);
+  });
+
+  it("withdraws the line of every subagent below the conversation when Stop reaches them with subagents", async () => {
+    const { stub, child } = await withChild();
+
+    const withdrawn = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      instance.holdPreparing("a1");
+      instance.holdPreparing("c1");
+
+      const lines = [instance.submitOutcome("a1"), instance.submitOutcome("c1", child)];
+
+      await sleep(50);
+      await instance.abort({ subagents: true });
+
+      return Promise.all(lines);
+    });
+
+    expect(withdrawn).toEqual(["withdrawn", "withdrawn"]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, child)),
+    ).toEqual([]);
+  });
+
+  it("places a message that is being placed when Stop arrives, and Stop waits for it, then aborts it as it does queued input", async () => {
+    const { stub } = await withChild();
+
+    const order = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      const order: string[] = [];
+
+      // The message is prepared at once, and held in the middle of being placed.
+      instance.holdPlacing();
+
+      const placed = instance.submitOutcome("a1").then((outcome) => {
+        order.push(outcome);
+      });
+
+      await sleep(50);
+
+      const stopped = instance.abort().then(() => {
+        order.push("stopped");
+      });
+
+      await sleep(50);
+      // Stop does not cut the placing, and does not go on to abort before it is done.
+      expect(order).toEqual([]);
+      instance.finishPlacing();
+      await Promise.all([placed, stopped]);
+
+      return order;
+    });
+
+    expect(order).toEqual(["placed", "stopped"]);
+    // What was placed was aborted: nothing is left running or queued.
+    await eventually(stub, (instance) => instance.idle());
+  });
+
+  it("withdraws a message sent before Stop that was still waiting for the lock a move of the Session tree held", async () => {
+    const { stub, child } = await withChild();
+
+    const outcomes = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      const summarizing = instance.holdSummary();
+      const moving = instance.navigateToStart(true);
+
+      // The move holds the lock while its summary is made: the message is sent meanwhile, and is not in a line yet.
+      await summarizing;
+
+      const before = instance.submitOutcome("c1", child);
+
+      await sleep(50);
+      await instance.abort({ conversationId: child });
+
+      // Sent after the Stop, it is for the conversation as it is after it.
+      const after = instance.submitOutcome("c2", child);
+
+      await sleep(50);
+      instance.finishSummary();
+
+      const went = await moving;
+
+      if ("failure" in went) throw new Error(went.failure);
+
+      return { before: await before, after: await after };
+    });
+
+    expect(outcomes).toEqual({ before: "withdrawn", after: "placed" });
+    await eventually(stub, (instance) => instance.idle());
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, child)),
+    ).toEqual(["c2"]);
   });
 
   it("leaves the tree free to move once Stop withdrew the message that kept it", async () => {
@@ -348,7 +422,7 @@ describe("admitting a message", () => {
       async (instance: TestSubagentSession) => {
         instance.holdPreparing("a1");
 
-        const slow = settled(instance.submit("a1"));
+        const slow = instance.submitOutcome("a1");
 
         await sleep(50);
 

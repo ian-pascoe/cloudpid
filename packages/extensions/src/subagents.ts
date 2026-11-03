@@ -54,6 +54,7 @@ export {
   deleteAgent,
   isAgentConversation,
   isAgentConversationIn,
+  type BeforeAbort,
   type OwnerDeleteHarness,
   type OwnerDeletion,
   type OwnerHarness,
