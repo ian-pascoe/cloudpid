@@ -398,8 +398,9 @@ const appHtml = (
  * `request({ op: "prompts/get" })`: the owner's pick of a prompt, got when its message is sent (`docs/architecture/
  * mcp-in-a-session.md` → Getting a prompt at send). The checks of a call (a server that may be called, in the request's
  * Workspace if it is stdio) and a prompt the server's inventory lists; it is a read, so the server cannot have run
- * anything if it is cut. Bounded at 30 s, or the entry's lower `timeout`. A question the server asks goes to the
- * caller's `onInput` as a call's does (`ctx.answers`).
+ * anything if it is cut. Bounded at 30 s, or the entry's lower `timeout`. `ctx.answers` and `onInput` are passed on as
+ * a call's are, when the caller has them; the Session does not yet (#492), so a question the server asks during the
+ * get is cancelled.
  */
 const promptGet = (
   environment: string | undefined,

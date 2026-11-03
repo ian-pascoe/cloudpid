@@ -461,7 +461,7 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
   - **An embedded blob** becomes an image if it is one, else a file.
   - **Files** are written by the Session without waking the Container.
   - **`audience`** is ignored; other annotations are dropped.
-- **Cleaning:** the content is cleaned, redacted, then escaped before storage. Secret References in arguments are neither resolved nor blocked.
+- **Cleaning:** the content is cleaned and redacted before storage. A prompt's own text is then defanged, not escaped: only the tags that would close or open the message's own blocks (`mcp_prompt`, `prompt_message`, `mcp_resources`, `resource`) are neutralised, so its Markdown reads as written; an embedded resource is escaped in full. Secret References in arguments are neither resolved nor blocked.
 - **Size:** the block plus the typed text is at most 1 MiB, and the whole input at most 1.9 MB (`MAX_STORED_INPUT_BYTES`). Anything larger is refused with `MCP_PROMPT_TOO_LARGE`.
 - **The transcript:** `cloudpid.user` data adds `mcpPrompt { server, command, name, title?, arguments (redacted), description?, parts, resources, sampling?, elicitation? }`.
   - `description` is the result's, up to 1,000 characters, and never sent to the model. `resources` holds at most 20, shaped as for tool cards.
@@ -495,15 +495,18 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
 - **The catalog:** `catalog` adds `prompts` and `mcpServers` when there are any (`mcp-prompt-catalog.ts`), from `McpHost.servers({ parts: ["prompts"] })`, so nothing reads a server and no Container starts. `completions` is `false` until completion lands; the field is the seam.
 - **Submit:** `submit.mcpPrompt { server, name, arguments? }` is prepared with the rest of the message (`mcpPromptDraft`, `host.ts`): the Session checks the prompt is offered, the arguments (`promptArgumentsProblem`), takes the held Secrets out of what it keeps, gets the prompt once and makes the message (`mcp-prompt.ts`), in the order the section above gives, with the pages after the typed text and before the owner's own images. A resent `requestId` that was admitted does not get it again. A refusal is an `error` with `code` and `server` (`ErrorMessage`, `SessionError`), and nothing is placed: the owner's text and chip are intact for the client to give back. A typed `/mcp__<name>` that was not picked is refused (`MCP_PROMPT_FAILED`). A message that the guard refuses is `MCP_PROMPT_TOO_LARGE`. A Review cannot carry a prompt.
 - **The message:** the block's prose is cleaned, redacted and defanged of structural tags (not escaped, so a prompt's Markdown reads as written); embedded resources are escaped in `<mcp_resources>`. An embedded text over `MCP_PROMPT_INLINE_TEXT_BYTES` (128 KiB) goes to a file, until Attached resources have a guard to share. The entry's `mcpPrompt.parts` carry no text (the block is in the message), so the 1.9 MB guard counts the content once. Files (images past the budget, audio, a large or binary resource) are written by the Session to `/workspace/.cloudpid/uploads/<session>/` through the lookup environment, which does not wake the Container.
+- **Naming:** `mcp__` is reserved: a Prompt template named so is left out of the catalog (`catalogEntries`). A message with no typed text is named by its chip label, `<server> · <title, else name>` (`mcpPromptLabel`, `ownerDisplay`), in the title and the tree; the composer's restore of the typed text (`ownerMessageText`) stays what was typed, since the chip comes back through `Navigated.mcpPrompt`.
 - **The transcript projection** (`projectEntry`) shows the typed text without the block or the inline prompt images, and carries `mcpPrompt` (with the block as `text`) on the message for the client's disclosure.
 - **Freshness:** `promptsVersion` moves with the prompts alone and `version` does not, so a prompts-only change does not install `mcp` again (`packages/extensions/src/mcp.test.ts`).
 
-**Left for the web change and later:**
+**Left for the web change (the second half, which closes #463):**
 
-- The `/` menu rows, `ArgumentForm`, the chip, `Navigated.mcpPrompt` (Branch restoring the chip), the transcript's chip line and disclosure, `/export`, and the draft composer's catalog (through the Registry's `draftCatalog`).
+- The `/` menu rows, `ArgumentForm`, the chip, `Navigated.mcpPrompt` (Branch restoring the chip), the transcript's chip line and disclosure, `/export`, and the draft composer's catalog (through the Registry's `draftCatalog`). The composer treats an `error` on a prompt send, with a code or without (a newer client against an older Session), as a refusal and gives the chip back.
 - Completion (`mcp_complete`, `mcp_completion`).
-- A server's Sampling or Elicitation request during a get (the request carries no `ctx.answers`, so the core declares nothing a server could ask a question with) and `mcpPrompt.sampling` / `mcpPrompt.elicitation`; the lane row "Getting <title> from <server>…".
-- Refreshing the list on `list_changed`, `ttlMs` and an unknown name (`Freshness`): the catalog is the host's inventory as discovery left it.
+- Freshness: refreshing the list on `list_changed`, on `ttlMs` and after a get fails with an unknown name (_Freshness_). Until then the catalog is the host's inventory as discovery left it.
+- The lane row "Getting <title> from <server>…".
+
+**Left for later:** a server's Sampling or Elicitation request during a get. The request carries no `ctx.answers`, so a question a server asks during the get, which a Legacy server may, since its elicitation capability is declared for the whole connection, is cancelled ([#492](https://github.com/ian-pascoe/cloudpid/issues/492)); `mcpPrompt.sampling` and `mcpPrompt.elicitation` wait for it.
 
 ## Roots
 
