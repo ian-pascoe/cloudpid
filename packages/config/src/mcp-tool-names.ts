@@ -13,6 +13,22 @@ import { normalizeMcpName } from "./mcp-servers.ts";
 /** The providers' limit on a tool name: Anthropic `^[a-zA-Z0-9_-]{1,64}$`, OpenAI at most 64. */
 export const MAX_MCP_TOOL_NAME_LENGTH = 64;
 
+/** What every MCP tool's model-facing name starts with. */
+export const MCP_TOOL_NAME_PREFIX = "mcp__";
+
+/** Whether `name` is an MCP tool's model-facing name (`mcp__<server>__<tool>`). */
+export const isMcpToolName = (name: string): boolean => name.startsWith(MCP_TOOL_NAME_PREFIX);
+
+/**
+ * `mcp__<server>`, server `server`'s part of its tools' names: its `codemode` namespace, and with `__` the start of each
+ * of its tools' names (`mcpToolPrefix`).
+ */
+export const mcpServerNamespace = (server: string): string =>
+  `${MCP_TOOL_NAME_PREFIX}${normalizeMcpName(server)}`;
+
+/** `mcp__<server>__`, what every name of server `server`'s tools starts with. */
+export const mcpToolPrefix = (server: string): string => `${mcpServerNamespace(server)}__`;
+
 /** The hex digits of the hash a collision or a long name adds. */
 const HASH_LENGTH = 8;
 
@@ -54,7 +70,7 @@ export const mcpToolName = (
   options: { readonly collides?: boolean } = {},
 ): string => {
   const serverPart = normalizeMcpName(server);
-  const prefix = `mcp__${serverPart}__`;
+  const prefix = mcpToolPrefix(server);
   const plain = `${prefix}${mcpToolPart(tool)}`;
   const collides = options.collides ?? false;
 
@@ -64,7 +80,9 @@ export const mcpToolName = (
 
   if (plain.length + 1 + HASH_LENGTH <= MAX_MCP_TOOL_NAME_LENGTH) return `${plain}_${hash}`;
 
-  if (prefix.length >= CUT_LENGTH) return `mcp__${serverPart.slice(0, CUT_SERVER_LENGTH)}__${hash}`;
+  if (prefix.length >= CUT_LENGTH) {
+    return `${MCP_TOOL_NAME_PREFIX}${serverPart.slice(0, CUT_SERVER_LENGTH)}__${hash}`;
+  }
 
   // The cut leaves a tool part that starts with a letter or digit, so trimming `_` never reaches the server part.
   return `${plain.slice(0, CUT_LENGTH).replaceAll(/_+$/g, "")}_${hash}`;

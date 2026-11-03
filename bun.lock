@@ -224,6 +224,7 @@
       "dependencies": {
         "@cloudpid/config": "workspace:*",
         "@cloudpid/effect-durable": "workspace:*",
+        "@cloudpid/mcp": "workspace:*",
         "@cloudpid/protocol": "workspace:*",
         "@earendil-works/chord": "^1.4.0",
         "@earendil-works/pi-ai": "^1.4.0",

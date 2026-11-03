@@ -23,6 +23,9 @@ import {
   McpDestroyed,
   McpNoServer,
   McpReloaded,
+  type McpHostRequest,
+  type McpHostRequestHooks,
+  type McpHostRequestResult,
   type McpRequestStart,
   type McpRequestStartResult,
   McpServerLog,
@@ -61,6 +64,7 @@ import { McpEngineClient, type McpEngineClientService } from "./engine.ts";
 import { serverHashes } from "./inventory.ts";
 import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
+import { request } from "./request.ts";
 import { type ServerView, type Trigger, viewServers } from "./server-state.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 import { McpTokens } from "./tokens.ts";
@@ -629,6 +633,14 @@ export type McpHostMethods = {
   readonly serverLog: (request: McpServerLogRequest) => Effect.Effect<McpServerLogResult>;
   /** The pushes: the Environment's MCP server set. An operation this host does not know is `HostUnsupported`. */
   readonly apply: (input: McpApply) => Effect.Effect<McpApplyResult>;
+  /**
+   * A Session's call to one server (`./request.ts`), with its hooks, which live as long as the caller's invocation. An
+   * `op` this host does not know is `HostUnsupported`.
+   */
+  readonly request: (
+    input: typeof McpHostRequest.Encoded,
+    hooks: McpHostRequestHooks,
+  ) => Effect.Effect<McpHostRequestResult>;
 };
 
 /**
@@ -644,9 +656,10 @@ export const mcpHostMethods = (
     Effect.flatMap(runtime.contextEffect, (context) => Effect.provideContext(effect, context));
 
   return {
-    requestStart: (request) => provided(requestStart(environment, request)),
-    servers: (request) => provided(servers(environment, request)),
-    serverLog: (request) => provided(serverLog(request)),
+    requestStart: (input) => provided(requestStart(environment, input)),
+    servers: (input) => provided(servers(environment, input)),
+    serverLog: (input) => provided(serverLog(input)),
+    request: (input, hooks) => provided(request(environment, input, hooks ?? {})),
     apply: (input) =>
       environment === undefined
         ? Effect.succeed(HostFailed.make({ message: "The MCP host's name is unknown" }))

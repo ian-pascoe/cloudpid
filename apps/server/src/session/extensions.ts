@@ -21,6 +21,7 @@ import {
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { Instructions, type InstructionsSettings } from "@cloudpid/extensions/instructions";
+import { emptyMcpExtension } from "@cloudpid/extensions/mcp";
 import { ResultBounds } from "@cloudpid/extensions/result-bounds";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
@@ -68,7 +69,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * after a change (`SettingsReload`); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
  * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `settings_instructions_set`,
  * `environment_container_size_limit_set`, `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
- * (`docs/architecture/agent-changes.md` → Approval); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
+ * (`docs/architecture/agent-changes.md` → Approval); `mcp`, the Environment's MCP tools, which the Session builds at each
+ * request start and installs again with `codemode` and `tool_search` (`./mcp-host.ts`); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/architecture/agent-capabilities.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
@@ -117,6 +119,8 @@ export const sessionExtensions: Effect.Effect<
   EnvironmentTools,
   SettingsTools,
   ApprovalTools,
+  // The MCP tools, none until the first request start builds them from the Environment's `McpHost` (`./mcp-host.ts`).
+  Effect.succeed(emptyMcpExtension),
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),
 ]).pipe(

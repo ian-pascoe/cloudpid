@@ -11,7 +11,10 @@ import {
   RemoteCodemodeSandbox,
 } from "@earendil-works/pi-codemode/portable";
 import type { Extension } from "@earendil-works/pi-durable";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import {
+  type CodemodeNamespace,
+  createCodemodeExtension,
+} from "@earendil-works/pi-durable/codemode";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
@@ -66,5 +69,14 @@ export const remoteSandbox = (
  */
 export const Codemode: Effect.Effect<Extension, never, CodemodeSandbox> = Effect.map(
   CodemodeSandbox,
-  (sandbox) => createCodemodeExtension({ sandbox, models: false }),
+  (sandbox) => codemodeWith(sandbox, []),
 );
+
+/**
+ * The `codemode` extension over `sandbox` with `namespaces`: the MCP servers, which the Session installs it again with
+ * when its MCP tools change (`./mcp-host.ts`).
+ */
+export const codemodeWith = (
+  sandbox: CodemodeSandboxBase,
+  namespaces: ReadonlyArray<CodemodeNamespace>,
+): Extension => createCodemodeExtension({ sandbox, models: false, namespaces });

@@ -24,11 +24,17 @@
 // while the refresh still fails, and the refresh's own success is what clears it. A report carries the challenge of
 // the 401 or 403 (`resource_metadata`, `scope`, `error`, `error_description`) so the Registry can keep it. No token is
 // logged, put on a span, or kept anywhere but the cache of `McpTokens` and the one call's target.
+//
+// A Session's request (`requestAccess`, #452) has the same rules, through the engine's `auth(stale)` hook
+// (`engineAuth`) instead of the target's headers: the call's invocation holds the hook, and the engine's connection
+// asks it again with `stale` after a 401, retrying once. What the answer says is reported as a discovery's is. A
+// request leaves the server's state as it was: the next discovery records it.
 // @effect-diagnostics missingPipeableSignature:off -- the discovery's operations, not combinators.
 import {
   type McpAuthChallenge,
   type McpAuthEvent,
   type McpEngineDiscoverResult,
+  type McpEngineRequestResult,
   type McpEngineTarget,
   type McpServerState,
   type McpSignInNote,
@@ -42,7 +48,10 @@ import * as Record from "effect/Record";
 import type { McpEngineUnreachable } from "./engine.ts";
 import { McpRegistryPort } from "./registry-port.ts";
 import type { ServerView } from "./server-state.ts";
-import { McpTokens, type NoToken, type TokenFor } from "./tokens.ts";
+import { engineAuth, McpTokens, type NoToken, type TokenAccess, type TokenFor } from "./tokens.ts";
+
+/** An engine's answer to a discovery or a request: what the reports read of it. */
+type EngineAnswer = McpEngineDiscoverResult | McpEngineRequestResult;
 
 /** What a discovery's access comes to: no call made, or the engine's answer. */
 export type DiscoveryAccess =
@@ -61,17 +70,17 @@ const withBearer = (target: McpEngineTarget, token: string): McpEngineTarget => 
 const hasOwnAuthorization = (target: McpEngineTarget): boolean =>
   Arr.some(Record.keys(target.headers ?? {}), (name) => name.toLowerCase() === "authorization");
 
-const isSignInRequired = (result: McpEngineDiscoverResult): boolean =>
+const isSignInRequired = (result: EngineAnswer): boolean =>
   result.kind === "failed" && Predicate.isTagged(result.error, "SignInRequired");
 
 /** The challenge of the 401 a failed result carries, when it is one and its `WWW-Authenticate` had parameters. */
-const signInChallengeOf = (result: McpEngineDiscoverResult): McpAuthChallenge | undefined =>
+const signInChallengeOf = (result: EngineAnswer): McpAuthChallenge | undefined =>
   result.kind === "failed" && Predicate.isTagged(result.error, "SignInRequired")
     ? result.error.challenge
     : undefined;
 
 /** What a failed result that is a 403 for more scope asks for: its challenge (with the scope), else just the scope. */
-const stepUpOf = (result: McpEngineDiscoverResult): McpAuthChallenge | undefined => {
+const stepUpOf = (result: EngineAnswer): McpAuthChallenge | undefined => {
   if (result.kind !== "failed" || !Predicate.isTagged(result.error, "StepUpRequired")) {
     return undefined;
   }
@@ -245,7 +254,7 @@ const afterAnswer = (
   subject: Subject,
   previous: McpServerState | undefined,
   note: McpSignInNote | undefined,
-  result: McpEngineDiscoverResult,
+  result: EngineAnswer,
 ) =>
   Effect.gen(function* () {
     const wanted = stepUpOf(result);
@@ -259,8 +268,83 @@ const afterAnswer = (
     }
 
     const working =
-      result.kind === "discovered" &&
+      (result.kind === "discovered" || result.kind === "complete") &&
       (previous === "sign_in" || previous === "rejected" || note?.status === "rejected");
 
     if (working) yield* reportAuth(subject, "working");
+  });
+
+/**
+ * What a request to `view`'s server is sent with: `blocked` when there is no token to call with (no call is made, as a
+ * discovery would make none), else the `auth` hook to pass the engine (none for a server with no token, or one whose
+ * entry sets its own `Authorization`), and what to report once the engine answered.
+ */
+export type RequestAccess =
+  | { readonly kind: "blocked"; readonly state: McpServerState; readonly message: string }
+  | {
+      readonly kind: "open";
+      readonly auth?: (stale: boolean) => Effect.Effect<string | undefined>;
+      readonly answered: (
+        result: McpEngineRequestResult,
+      ) => Effect.Effect<void, never, McpRegistryPort>;
+    };
+
+/**
+ * The access a request to `view`'s server at `target` has (`docs/architecture/mcp-sign-in.md` → Tokens reach the host
+ * object), with the rules of `authorizedDiscovery`: a `required` for a server not waiting for a sign-in calls without a
+ * token, and a 401 then reports `needs_sign_in`; a token goes through `engineAuth`, whose `stale` ask refreshes it once,
+ * and a 401 after that reports `rejected` unless the Registry's note says so already; a 403 for more scope reports
+ * `step_up` unless the note names it; and a call that works on a token noted `rejected` reports `working`.
+ */
+export const requestAccess = (environment: string, view: ServerView, target: McpEngineTarget) =>
+  Effect.gen(function* () {
+    const tokens = yield* McpTokens;
+    const asked: TokenFor = { environment, server: view.server.name, url: target.url };
+    const previous = view.state;
+
+    if (hasOwnAuthorization(target)) {
+      return { kind: "open", answered: () => Effect.void } satisfies RequestAccess;
+    }
+
+    const access = yield* tokens.access(asked);
+
+    if (access.kind !== "token") {
+      const blocked = blockedBy(access, previous);
+
+      if (blocked !== undefined) return { kind: "blocked", ...blocked } satisfies RequestAccess;
+
+      return {
+        kind: "open",
+        answered: (result) =>
+          isSignInRequired(result)
+            ? reportAuth(asked, "needs_sign_in", signInChallengeOf(result))
+            : afterAnswer(asked, previous, undefined, result),
+      } satisfies RequestAccess;
+    }
+
+    /** The last access the hook handed the engine, and whether the server refused one. */
+    let last: TokenAccess = access;
+    let refused = false;
+
+    const auth = engineAuth(tokens, asked, (seen, stale) => {
+      last = seen;
+
+      if (stale) refused = true;
+    });
+
+    return {
+      kind: "open",
+      auth,
+      answered: (result) => {
+        const note = last.kind === "token" ? last.note : undefined;
+
+        if (!isSignInRequired(result)) return afterAnswer(asked, previous, note, result);
+
+        // Refused again after the refresh (or the same token handed back): a change only if the Registry's note on it
+        // is not `rejected` yet. Refused with no token to retry with: the Registry's answer already says why.
+        return refused && last.kind === "token" && note?.status !== "rejected"
+          ? reportAuth(asked, "rejected", signInChallengeOf(result))
+          : Effect.void;
+      },
+    } satisfies RequestAccess;
   });

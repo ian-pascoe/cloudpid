@@ -446,12 +446,10 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // The Worker's init is its entry point.
     // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(
-      Layer.mergeAll(
-        SessionLive.pipe(
-          Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
-        ),
-        McpHostLive,
-      ).pipe(
+      SessionLive.pipe(
+        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
+        // The Session DOs call their Environment's MCP host.
+        Layer.provideMerge(McpHostLive),
         // The Session DOs refuse the app's key in a variable; the Worker asks GitHub for the draft's branches as the app.
         Layer.provideMerge(GitHubAppConfigLive),
         Layer.provideMerge(

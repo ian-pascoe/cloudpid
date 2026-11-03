@@ -6,16 +6,19 @@
  */
 // @effect-diagnostics globalFetch:off -- the engine reaches remote servers with the Worker's own `fetch`, under the core's tap.
 import type { McpDeps, RowStore } from "@cloudpid/mcp";
-import type {
-  McpEngineHooks,
-  McpEnginePrior,
-  McpEngineState,
-  McpLogEntry,
+import {
+  MCP_PROGRESS_PER_SECOND,
+  type McpEngineHooks,
+  type McpEnginePrior,
+  type McpEngineState,
+  type McpLogEntry,
+  type McpProgress,
 } from "@cloudpid/mcp/types";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import type { Mutable } from "effect/Types";
 import type * as Schema from "effect/Schema";
 import { ByteBudget, type Lease, meteredFetch } from "./budget.ts";
 import { callLogs } from "./logs.ts";
@@ -72,6 +75,34 @@ const notifier = (opened: NonNullable<McpEngineHooks["opened"]>) => () => {
   void Promise.resolve(opened()).catch(() => undefined);
 };
 
+/**
+ * The host's `onProgress` hook as the core's: at most `MCP_PROGRESS_PER_SECOND` notices a second reach it, the rest
+ * dropped (the next one to pass says where the call is), and a hook that fails fails nothing. `now` is the clock, in
+ * milliseconds.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a hook of two values, not a combinator.
+export const progressTo = (
+  onProgress: NonNullable<McpEngineHooks["onProgress"]>,
+  now: () => number,
+) => {
+  const gap = 1000 / MCP_PROGRESS_PER_SECOND;
+  let last = Number.NEGATIVE_INFINITY;
+
+  return (progress: McpProgress) => {
+    const at = now();
+
+    if (at - last < gap) return;
+
+    last = at;
+
+    try {
+      void Promise.resolve(onProgress(progress)).catch(() => undefined);
+    } catch {
+      // A stub whose caller is gone may throw at once: the notice is dropped, and the call goes on.
+    }
+  };
+};
+
 /** The host's `auth` hook as the core's, remembering each token it gives. */
 const authFrom =
   (auth: NonNullable<McpEngineHooks["auth"]>, tokens: Set<string>) => (stale: boolean) =>
@@ -125,8 +156,12 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     onLog: logs.hear,
   } satisfies McpDeps;
 
-  const deps: McpDeps =
-    hooks.auth === undefined ? base : { ...base, auth: authFrom(hooks.auth, tokens) };
+  const deps: Mutable<McpDeps> = { ...base };
+
+  if (hooks.auth !== undefined) deps.auth = authFrom(hooks.auth, tokens);
+
+  // A Worker's clock moves with I/O, and each notice arrives by I/O.
+  if (hooks.onProgress !== undefined) deps.onProgress = progressTo(hooks.onProgress, Date.now);
 
   const state = () => {
     const changed: { -readonly [K in keyof McpEngineState]: McpEngineState[K] } = {};

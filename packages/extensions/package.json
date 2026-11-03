@@ -37,7 +37,8 @@
     "./images": "./src/images.ts",
     "./result-bounds": "./src/result-bounds.ts",
     "./bash-routing": "./src/bash-routing.ts",
-    "./tool-search": "./src/tool-search.ts"
+    "./tool-search": "./src/tool-search.ts",
+    "./mcp": "./src/mcp.ts"
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs",
@@ -47,6 +48,7 @@
   "dependencies": {
     "@cloudpid/config": "workspace:*",
     "@cloudpid/effect-durable": "workspace:*",
+    "@cloudpid/mcp": "workspace:*",
     "@cloudpid/protocol": "workspace:*",
     "@earendil-works/chord": "^1.4.0",
     "@earendil-works/pi-ai": "^1.4.0",

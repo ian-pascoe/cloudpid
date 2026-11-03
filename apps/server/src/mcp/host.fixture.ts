@@ -3,7 +3,10 @@
 // The workerd test Durable Object that hosts `McpHost`'s methods over its SQLite storage, as the McpHost DO does, in one
 // long-lived runtime, with a Registry and an engine the test scripts (`docs/architecture/mcp-connections.md` →
 // Testing): what the pull asks and the Registry answers (or that it cannot), the `${NAME}` values it resolves, what
-// each discovery of a server's URL answers (or holds until released or aborted), and a clock the test moves forward.
+// each discovery of and request to a server's URL answers (or holds until released or aborted), and a clock the test
+// moves forward.
+// A test may hand the engine's work to the real `McpEngine` instead (`useRealEngine`), the test Worker's own entrypoint,
+// over RPC, so a call goes Session → host → engine → a fake server end to end.
 import {
   HostFailed,
   type McpAccessTokenAnswer,
@@ -12,8 +15,13 @@ import {
   type McpApplyResult,
   type McpEngineDiscoverResult,
   type McpEngineMethods,
+  type McpHostRequest,
+  type McpHostRequestHooks,
+  type McpHostRequestResult,
   type McpEnginePriorEncoded,
   type McpAuthReport,
+  type McpEngineRequestEncoded,
+  type McpEngineRequestResult,
   type McpEngineTargetEncoded,
   type McpRequestStart,
   type McpRequestStartAnswer,
@@ -55,6 +63,26 @@ export type EngineScript = {
   readonly result: typeof McpEngineDiscoverResult.Encoded;
   readonly hold?: boolean;
   readonly reject?: string;
+};
+
+/**
+ * One scripted request: as `EngineScript`, with the engine's answer to a request, and the `auth(stale)` asks the engine
+ * makes first, in order, as its connection does (`[false]` for a token, `[false, true]` for a 401 and its retry).
+ */
+export type RequestScript = {
+  readonly result: typeof McpEngineRequestResult.Encoded;
+  readonly hold?: boolean;
+  readonly reject?: string;
+  readonly auth?: ReadonlyArray<boolean>;
+};
+
+/**
+ * A request the engine was given: the target, the rows passed as `prior`, the request, the hooks' names, and the
+ * tokens its `auth` asks were answered with.
+ */
+export type EngineRequest = EngineCall & {
+  readonly request: McpEngineRequestEncoded;
+  readonly tokens: ReadonlyArray<string | undefined>;
 };
 
 /** A discovery the engine was asked for: the target as it crossed, the rows passed as `prior`, and the hooks' names. */
@@ -127,7 +155,10 @@ export const hostServicesOver = (store: McpHostStoreService) =>
       accessToken: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
       reportAuth: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
     },
-    engine: mcpEngineClient({ discover: async (target) => unscripted(target.url) }),
+    engine: mcpEngineClient({
+      discover: async (target) => unscripted(target.url),
+      request: () => Promise.reject(new Error("Nothing scripted")),
+    }),
   });
 
 export class TestMcpHost extends DurableObject {
@@ -159,10 +190,39 @@ export class TestMcpHost extends DurableObject {
 
   readonly #spans: Array<Tracer.NativeSpan> = [];
 
+  readonly #requestScripts = new Map<string, Array<RequestScript>>();
+
+  readonly #requests: Array<EngineRequest> = [];
+
   #offset = 0;
 
-  readonly #engine: Pick<McpEngineMethods, "discover"> = {
+  /** The real engine, once a test asks for it: the test Worker's `McpEngine` entrypoint, over RPC. */
+  #real: McpEngineMethods | undefined;
+
+  readonly #engine: McpEngineMethods = {
+    request: async (target, prior, request, hooks) => {
+      if (this.#real !== undefined) return this.#real.request(target, prior, request, hooks);
+
+      const tokens: Array<string | undefined> = [];
+
+      // @effect-diagnostics-next-line preferEffectRecord:off -- the hooks' names as they crossed, whatever they are.
+      this.#requests.push({ target, prior, request, hooks: Object.keys(hooks), tokens });
+
+      const script = this.#requestScripts.get(target.url)?.shift();
+
+      if (script === undefined) throw new Error(`No request scripted for ${target.url}`);
+
+      for (const stale of script.auth ?? []) tokens.push(await hooks.auth?.(stale));
+
+      if (script.hold === true) await this.#holdUntilReleased(target.url);
+
+      if (script.reject !== undefined) throw new Error(script.reject);
+
+      return script.result;
+    },
     discover: async (target, prior, hooks) => {
+      if (this.#real !== undefined) return this.#real.discover(target, prior, hooks);
+
       // @effect-diagnostics-next-line preferEffectRecord:off -- the hooks' names as they crossed, whatever they are.
       this.#calls.push({ target, prior, hooks: Object.keys(hooks) });
 
@@ -171,11 +231,7 @@ export class TestMcpHost extends DurableObject {
 
       if (script === undefined) return unscripted(target.url);
 
-      if (script.hold === true) {
-        await new Promise<void>((resolve) => {
-          this.#held.set(target.url, [...(this.#held.get(target.url) ?? []), resolve]);
-        });
-      }
+      if (script.hold === true) await this.#holdUntilReleased(target.url);
 
       if (script.reject !== undefined) throw new Error(script.reject);
 
@@ -264,6 +320,15 @@ export class TestMcpHost extends DurableObject {
 
   readonly #methods = mcpHostMethods(environmentOfMcpHost(this.ctx.id.name), this.#runtime);
 
+  /**
+   * Hand every discovery and request to the real `McpEngine`, the test Worker's own entrypoint (`ctx.exports`), whose
+   * outbound `fetch`es the test routes to its fake servers.
+   */
+  useRealEngine(): void {
+    // SAFETY: the test Worker exports `McpEngine` (`workerd.fixture.ts`), whose loopback stub answers its methods.
+    this.#real = (this.ctx.exports as { readonly McpEngine: McpEngineMethods }).McpEngine;
+  }
+
   /** Script the Registry's answer to the pull. */
   script(answer: McpServerSetAnswer | null): void {
     this.#answer = answer;
@@ -294,7 +359,24 @@ export class TestMcpHost extends DurableObject {
     this.#scripts.set(url, [...(this.#scripts.get(url) ?? []), ...scripts]);
   }
 
-  /** Let the held discoveries of `url` answer. */
+  /** Queue the engine's answers to the next requests to `url`, in order. */
+  scriptRequest(url: string, scripts: ReadonlyArray<RequestScript>): void {
+    this.#requestScripts.set(url, [...(this.#requestScripts.get(url) ?? []), ...scripts]);
+  }
+
+  /** The requests the engine was given, in order. */
+  engineRequests(): ReadonlyArray<EngineRequest> {
+    return this.#requests;
+  }
+
+  /** Pending until `release(url)`. */
+  #holdUntilReleased(url: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.#held.set(url, [...(this.#held.get(url) ?? []), resolve]);
+    });
+  }
+
+  /** Let the held discoveries and requests of `url` answer. */
   release(url: string): void {
     for (const resolve of this.#held.get(url) ?? []) resolve();
 
@@ -346,6 +428,14 @@ export class TestMcpHost extends DurableObject {
 
   async servers(request: McpServersRequest): Promise<McpServersAnswer> {
     return answered(await Effect.runPromise(this.#methods.servers(request)));
+  }
+
+  /** A Session's call, as the McpHost DO answers it: with the caller's hooks, which live as long as this call. */
+  request(
+    input: typeof McpHostRequest.Encoded,
+    hooks: McpHostRequestHooks,
+  ): Promise<McpHostRequestResult> {
+    return Effect.runPromise(this.#methods.request(input, hooks));
   }
 
   /** The set as the store holds it. */

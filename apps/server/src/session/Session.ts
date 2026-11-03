@@ -37,6 +37,8 @@ import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
+import { McpHost } from "../mcp/McpHost.ts";
+import { mcpHostName } from "../mcp/name.ts";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { workersTracing } from "../tracing.ts";
 import { buildUpkeep } from "../registry/builds.ts";
@@ -53,7 +55,12 @@ import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
-import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
+import {
+  CodemodeSandbox,
+  type CodemodeSandboxNamespace,
+  codemodeWith,
+  remoteSandbox,
+} from "./codemode.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { IMAGES_BINDING } from "./images.ts";
@@ -72,6 +79,7 @@ import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
+import { mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import {
@@ -238,6 +246,8 @@ export const SessionLive = Session.make(
       secrets: yield* SecretsConfig,
       web: yield* WebConfig,
       registries: yield* Registry,
+      // The Environments' MCP hosts, whose tools the Session's `mcp` extension calls.
+      mcpHosts: yield* McpHost,
       // The other Sessions' objects, which deleting an Environment the owner approved wipes (`environment_delete`).
       // This class's own namespace, which alchemy hands its constructor (not `yield* Session`: this Layer provides it).
       // SAFETY: the namespace of the class this constructor makes, whose objects answer `SessionMethods`.
@@ -248,7 +258,7 @@ export const SessionLive = Session.make(
     };
   }).pipe(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
-    Effect.map(({ github, proxy, registries, sessions, secrets, state, web, worker }) =>
+    Effect.map(({ github, proxy, registries, mcpHosts, sessions, secrets, state, web, worker }) =>
       Effect.gen(function* () {
         // One tracer for the object's life: its spans are custom spans of the Worker's trace (`docs/architecture/operations.md` → Telemetry).
         const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
@@ -462,6 +472,19 @@ export const SessionLive = Session.make(
         // The Images binding `read` prepares images with, so each fits the conversation.
         // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
         const images = worker[IMAGES_BINDING] as ImagesBinding;
+
+        // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
+        const mcpTools = sessionMcp({
+          session: name,
+          host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
+          kv,
+          workspace: Effect.tryPromise(() => placement()).pipe(
+            Effect.map(({ workspace: id, object }) => (id === null ? null : object)),
+          ),
+          ready: (object) =>
+            Effect.tryPromise(() => workspaces.getByName(object).noteSessionActivity()),
+          codemode: (namespaces) => codemodeWith(sandbox, namespaces),
+        });
 
         // When the browser was last used is kept in this object's storage; the host's alarm closes it once idle.
         const sessionBrowser = browserSessionLayer({ host: browser, storage: kv });
@@ -797,6 +820,7 @@ export const SessionLive = Session.make(
                   Effect.provideServiceEffect(InstructionsSettings, instructionsSettings),
                 ),
                 reload: reloadSessionExtensions,
+                mcp: mcpTools,
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,

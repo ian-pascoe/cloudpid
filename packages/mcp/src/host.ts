@@ -257,23 +257,49 @@ export const McpApplyResultWire = Schema.Union([
 
 export type McpApplyResultWire = typeof McpApplyResultWire.Type;
 
-const decodeApplyResult = Schema.decodeUnknownOption(McpApplyResultWire);
-
 /**
- * `answer`, an `apply` answer as it crossed the edge, as a result this build knows. Anything that is no result at all
- * reads as `HostFailed` too.
+ * The reader of one host method's answers as they cross the edge, into a result this build knows: a failure under a tag
+ * it does not know is `HostFailed` (`OtherHostFailureFromWire`), and so is anything that is no result at all, never a
+ * decode error (`docs/architecture/mcp.md` → Deploys). `what` names the method in the message.
  */
-export const readMcpApplyResult = (answer: Schema.Json): McpApplyResult =>
-  Option.getOrElse(decodeApplyResult(answer), () =>
-    HostFailed.make({ message: "The MCP host answered with something that is no result" }),
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a reader built from a schema, not a combinator.
+export const hostAnswerReader = <
+  const Members extends ReadonlyArray<Schema.Codec<unknown, unknown>>,
+>(
+  result: Schema.Union<Members>,
+  what: string,
+) => {
+  const decode = Schema.decodeUnknownOption(
+    Schema.Union([...result.members, OtherHostFailureFromWire]),
   );
+
+  return (
+    answer: Schema.Json | Schema.Union<Members>["Encoded"],
+  ): Schema.Union<Members>["Type"] | HostFailed =>
+    Option.getOrElse(decode(answer), () =>
+      HostFailed.make({
+        message: `The MCP host answered ${what} with something that is no result`,
+      }),
+    );
+};
+
+/** `answer`, an `apply` answer as it crossed the edge, as a result this build knows. */
+export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostAnswerReader(
+  McpApplyResult,
+  "apply",
+);
 
 /**
  * The features the host lists at `requestStart`: a Session uses one only once it is listed (`mcp.md` → Deploys).
- * `inventory`: `requestStart` answers the MCP inventory's versions and servers and takes `known`, `waitFor` and
- * `waitMs`, and the host answers `servers` and `apply({ kind: "reload" })`.
+ *
+ * - `inventory`: `requestStart` answers the MCP inventory's versions and servers and takes `known`, `waitFor` and
+ *   `waitMs`, and the host answers `servers` and `apply({ kind: "reload" })`.
+ * - `call`: the host answers `request({ op: "tools/call" })`, with its `untilAborted` and `onProgress` hooks.
+ *
+ * The Session side's own list, `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`), names those of these its MCP tools
+ * need; a feature added here reaches the Session only once that list names it.
  */
-export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory"];
+export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
 export const McpCaller = Schema.Struct({
@@ -379,6 +405,14 @@ export const McpRequestStartResult = Schema.Union([McpRequestStartAnswer, HostFa
 export type McpRequestStartResult = typeof McpRequestStartResult.Type;
 
 /**
+ * `answer`, a `requestStart` answer as it crossed the edge, as a result this build knows: one it cannot read, or a
+ * failure it does not know, is `HostFailed`, never an empty inventory that would read as no servers.
+ */
+export const readMcpRequestStartResult: (
+  answer: typeof McpRequestStartResult.Encoded,
+) => McpRequestStartResult = hostAnswerReader(McpRequestStartResult, "requestStart");
+
+/**
  * `servers`' arguments (`docs/architecture/mcp-connections.md` → RPC): the servers by name (every one when absent),
  * the parts to add (a part this build does not know is left out), how long to wait for one being discovered, and the
  * caller's Workspace. It never starts a Container.
@@ -457,6 +491,10 @@ export type McpServersAnswer = typeof McpServersAnswer.Type;
 export const McpServersResult = Schema.Union([McpServersAnswer, HostFailed]);
 
 export type McpServersResult = typeof McpServersResult.Type;
+
+/** `answer`, a `servers` answer as it crossed the edge, as a result this build knows; anything else is `HostFailed`. */
+export const readMcpServersResult: (answer: typeof McpServersResult.Encoded) => McpServersResult =
+  hostAnswerReader(McpServersResult, "servers");
 
 /**
  * `serverLog`'s arguments (`docs/architecture/mcp-connections.md` → Telemetry): the server by name, and the Workspace

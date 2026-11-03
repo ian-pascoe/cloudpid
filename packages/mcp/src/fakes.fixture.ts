@@ -75,6 +75,24 @@ export const HANG_TOOL = {
   inputSchema: { type: "object" as const },
 };
 
+/**
+ * The fakes' tool that reports progress: `steps` notices (`1/steps`, with a message), then answers `done`, or with
+ * `hang`, waits until cancelled, as `hang` does. A request that asked for no progress gets none.
+ */
+export const PROGRESS_TOOL = {
+  name: "progress",
+  description: "Report progress, then answer or wait until cancelled.",
+  inputSchema: {
+    type: "object" as const,
+    properties: { steps: { type: "number" }, hang: { type: "boolean" } },
+  },
+};
+
+const ProgressArguments = Schema.Struct({
+  steps: Schema.Int,
+  hang: Schema.optionalKey(Schema.Boolean),
+});
+
 /** The fakes' tool with an `outputSchema`: it answers with the `structuredContent` it is given. */
 export const TYPED_TOOL = {
   name: "typed",
@@ -144,7 +162,7 @@ const untilAborted = (signal: AbortSignal, aborted: () => void) =>
 
 /**
  * An SDK server answering `tools/list` a page at a time and `tools/call` for its tools: `echo` and `shout`, and
- * `big`, `hang`, `typed` and `region`, listed only with `listMore`.
+ * `big`, `hang`, `typed` and `region`, listed only with `listMore`, and `progress`, listed only in `moreTools`.
  */
 const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions = {}) => {
   const server = new Server(
@@ -192,6 +210,29 @@ const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions
 
       case "hang":
         return untilAborted(ctx.mcpReq.signal, () => options.cancelled?.push(request.params.name));
+
+      case "progress": {
+        const { steps, hang } = Schema.decodeUnknownSync(ProgressArguments)(
+          request.params.arguments,
+        );
+
+        const token = ctx.mcpReq._meta?.progressToken;
+
+        for (let step = 1; token !== undefined && step <= steps; step++) {
+          await ctx.mcpReq.notify({
+            method: "notifications/progress",
+            params: { progressToken: token, progress: step, total: steps, message: `step ${step}` },
+          });
+        }
+
+        if (hang === true) {
+          return untilAborted(ctx.mcpReq.signal, () =>
+            options.cancelled?.push(request.params.name),
+          );
+        }
+
+        return { content: [{ type: "text", text: "done" }] };
+      }
 
       case "region": {
         const { region } = Schema.decodeUnknownSync(RegionArguments)(request.params.arguments);

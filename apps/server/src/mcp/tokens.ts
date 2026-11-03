@@ -229,26 +229,31 @@ const tokensOver = (registry: McpRegistryPortService): McpTokensService => {
 /**
  * The engine's `auth(stale)` hook for one server (`McpEngineHooks.auth`): the token the host holds for it, asked again
  * with `stale` after the server refused the one given. Remembers the token it gave, so the Registry is told which one
- * was refused. A request's engine call passes it as `auth` (a background call has none: a function stub does not
+ * was refused, and tells `seen` each access it handed over (and whether it answered a refusal). A request's engine
+ * call passes it as `auth` (a background call has none: a function stub does not
  * outlive its invocation, #409, so discovery passes the token in the target's headers instead).
  */
 export const engineAuth = (
   tokens: McpTokensService,
   input: TokenFor,
+  seen?: (access: TokenAccess, stale: boolean) => void,
 ): ((stale: boolean) => Effect.Effect<string | undefined>) => {
   let given: string | undefined;
 
-  return (stale) =>
-    (stale && given !== undefined
-      ? tokens.refused({ ...input, token: given })
-      : tokens.access(input)
+  return (stale) => {
+    const refused = stale ? given : undefined;
+
+    return (
+      refused === undefined ? tokens.access(input) : tokens.refused({ ...input, token: refused })
     ).pipe(
       Effect.map((access) => {
+        seen?.(access, refused !== undefined);
         given = access.kind === "token" ? access.token : undefined;
 
         return given;
       }),
     );
+  };
 };
 
 /** The host's tokens, kept in its runtime for the object's life. */

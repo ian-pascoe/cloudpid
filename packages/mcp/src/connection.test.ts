@@ -10,15 +10,17 @@ import { describe, expect, it } from "vitest";
 import {
   ECHO_TOOL,
   SHOUT_TOOL,
+  type FakeOptions,
   type FakeServer,
   fetchTo,
   hostileServer,
   legacyStatefulServer,
   legacyStatelessServer,
   modernServer,
+  PROGRESS_TOOL,
   rpcMethods,
 } from "./fakes.fixture.ts";
-import { ServerError, Unsupported } from "./types.ts";
+import { type McpProgress, ServerError, Unsupported } from "./types.ts";
 import { connect, SUPPORTED_PROTOCOL_VERSIONS } from "./index.ts";
 import type { McpCallContext } from "./types.ts";
 import { HOST, AGENT, run, testDeps, TARGET, failedWith } from "./core.fixture.ts";
@@ -33,13 +35,16 @@ const COUNTING_TOOL = {
   },
 };
 
-const servers: ReadonlyArray<readonly [string, () => FakeServer, string]> = [
-  ["Modern", modernServer, "modern"],
-  ["Legacy stateless", legacyStatelessServer, "legacy"],
-  ["Legacy stateful with a GET stream", legacyStatefulServer, "legacy"],
+/** Each fake: its name, how to make it, its era, and whether it answers a call on a stream it can send progress on. */
+const servers: ReadonlyArray<
+  readonly [string, (options?: FakeOptions) => FakeServer, string, boolean]
+> = [
+  ["Modern", modernServer, "modern", true],
+  ["Legacy stateless", legacyStatelessServer, "legacy", false],
+  ["Legacy stateful with a GET stream", legacyStatefulServer, "legacy", true],
 ];
 
-describe.each(servers)("against a %s server", (_name, makeServer, era) => {
+describe.each(servers)("against a %s server", (_name, makeServer, era, streams) => {
   it("lists every page of tools and calls one", async () => {
     const server = makeServer();
 
@@ -62,6 +67,48 @@ describe.each(servers)("against a %s server", (_name, makeServer, era) => {
     expect(tools.value.map((tool) => tool.name)).toEqual(["echo", "shout"]);
     expect(called.value.content).toEqual([{ type: "text", text: "HI" }]);
     expect(rpcMethods(server).filter((method) => method === "tools/list")).toHaveLength(2);
+  });
+
+  it("passes a call's progress to onProgress, and asks for none without it", async () => {
+    const server = makeServer({ moreTools: [PROGRESS_TOOL] });
+    const seen: Array<McpProgress> = [];
+
+    const called = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, {
+          ...testDeps(fetchTo(server)),
+          onProgress: (progress) => seen.push(progress),
+        });
+
+        const withProgress = yield* connection.callTool(
+          { tool: PROGRESS_TOOL, arguments: { steps: 2 } },
+          AGENT,
+        );
+
+        const quiet = yield* connect(TARGET, testDeps(fetchTo(server)));
+
+        yield* quiet.callTool({ tool: PROGRESS_TOOL, arguments: { steps: 2 } }, AGENT);
+
+        return withProgress;
+      }),
+    );
+
+    expect(called.value.content).toEqual([{ type: "text", text: "done" }]);
+    // A server that answers with plain JSON has no stream to send progress on.
+    expect(seen).toEqual(
+      streams
+        ? [
+            { progress: 1, total: 2, message: "step 1" },
+            { progress: 2, total: 2, message: "step 2" },
+          ]
+        : [],
+    );
+    // The call without `onProgress` asked for none: its request carried no progress token.
+    const calls = server.received.filter((received) => received.rpc?.method === "tools/call");
+
+    expect(calls.map((received) => JSON.stringify(received.rpc).includes("progressToken"))).toEqual(
+      [true, false],
+    );
   });
 
   it("leaves structuredContent to the host: a tool with an outputSchema may answer without it", async () => {

@@ -56,16 +56,21 @@ export type SessionSettingsValues = {
   readonly spendLimit: number | null;
   /** The owner's Instructions, which every conversation's model is shown from the start of its Context Window. */
   readonly instructions: InstructionsInForce;
+  /**
+   * The Session's Environment (null: none, or a source kept before Sessions were told it), whose `McpHost` its MCP
+   * tools come from, and how many MCP servers its set has: with none, the host is never woken.
+   */
+  readonly mcp: { readonly environment: string | null; readonly servers: number };
 };
 
 /**
- * The parts of `settings` a Session uses, with its Environment's own Instructions `environment` (none for a Session in
- * no Environment).
+ * The parts of `settings` a Session uses, with what `source` says of its Environment: its own Instructions, its ID and
+ * its MCP server count (none for a Session in no Environment).
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a conversion of two values, not a combinator.
 export const valuesFrom = (
   settings: Settings,
-  environment?: EnvironmentInstructions | null,
+  source?: Omit<SettingsSource, "global" | "overrides">,
 ): SessionSettingsValues => ({
   agent: { model: parseModelId(settings.model), thinkingLevel: settings.thinkingLevel },
   compaction: settings.compaction,
@@ -76,7 +81,8 @@ export const valuesFrom = (
   toolSearch: { offered: settings.tools.offered },
   spendLimit: settings.spendLimit.perSession,
   // An Environment's settings carry Global's Instructions: its Overrides hold none, and its own add to them (ADR-0027).
-  instructions: { global: settings.instructions, environment: environment ?? undefined },
+  instructions: { global: settings.instructions, environment: source?.instructions ?? undefined },
+  mcp: { environment: source?.environment ?? null, servers: source?.mcp?.servers ?? 0 },
 });
 
 export type SessionSettingsService = {
@@ -139,6 +145,10 @@ export type SettingsSource = {
   readonly global: Schema.Json;
   readonly overrides: Schema.Json;
   readonly instructions?: EnvironmentInstructions | null;
+  /** The Session's Environment, null with none; absent from a source kept before Sessions were told it. */
+  readonly environment?: string | null;
+  /** How many MCP servers the Environment's set has; absent from an older Registry's answer. */
+  readonly mcp?: { readonly servers: number };
 };
 
 /** Where what was last read is kept. */
@@ -192,7 +202,7 @@ export const sessionSettingsLayer = (
 
       let current = valuesFrom(
         kept === undefined ? DEFAULT_SETTINGS : yield* resolveLogged(kept),
-        kept?.instructions,
+        kept,
       );
 
       /** When the last read failed, while its backoff may still run. */
@@ -205,7 +215,7 @@ export const sessionSettingsLayer = (
             Effect.tap((settings) =>
               Effect.sync(() => {
                 kv.put(SOURCE_KEY, source);
-                current = valuesFrom(settings, source.instructions);
+                current = valuesFrom(settings, source);
               }),
             ),
           ),

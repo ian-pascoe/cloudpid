@@ -270,6 +270,29 @@ export type SessionStorage = DurableObjectSqliteStorage & {
   deleteAlarm(): Promise<void>;
 };
 
+/** The Session's MCP tools, as the Session host runs them (`SessionHostOptions.mcp`). */
+export type SessionHostMcp<R> = {
+  /**
+   * A message's request start, in its prepare step, outside the Session's locks, once the settings are read: the host
+   * calls that find what the MCP tools of conversation `conversationId` are built from. `window` is its Context Window
+   * (its head marker's entry). A Stop that withdraws the message interrupts it.
+   */
+  readonly start: (
+    conversationId: ConversationId,
+    window: string,
+    values: SessionSettingsValues,
+  ) => Effect.Effect<void, never, R>;
+  /**
+   * The extensions to install over those of the same name for what the MCP tools are built from now (`mcp`, `codemode`
+   * and `tool-search`), none when that is what is installed. Run under the install lock: at the object's start before
+   * anything resumes, after each request start, and after each settings read that installs again.
+   */
+  readonly reinstall: (
+    installed: readonly Extension[],
+    values: SessionSettingsValues,
+  ) => readonly Extension[];
+};
+
 export type SessionHostOptions<R = never> = {
   /** The object's `ctx.storage`. */
   readonly storage: SessionStorage;
@@ -309,6 +332,12 @@ export type SessionHostOptions<R = never> = {
         previous: SessionSettingsValues,
       ) => readonly Extension[])
     | undefined;
+  /**
+   * The Session's MCP tools (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension). Every install of the
+   * extensions that follow the settings or the MCP inventory (`reload`, `reinstall`) runs under one lock, built there
+   * from the extensions installed and the settings in force then, so an older build never lands over a newer one.
+   */
+  readonly mcp?: SessionHostMcp<R> | undefined;
   /**
    * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
    * this is undefined too.
@@ -738,12 +767,43 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const changes = runChanges(storage.kv);
 
   // Before anything resumes, so resumed tool calls find their tools.
-  const installed = yield* options.extensions.pipe(
+  let installed = yield* options.extensions.pipe(
     Effect.provideService(AgentChangeLog, { record: changes.record }),
     Effect.provideService(SettingsReload, { apply: Effect.suspend(() => reloadSettings) }),
   );
 
   for (const extension of installed) yield* harness.install(extension);
+
+  /** Install `extensions` over the installed ones of the same name, which later reloads are given in their place. */
+  const installOver = (extensions: readonly Extension[]) =>
+    Effect.forEach(extensions, (extension) =>
+      harness.install(extension).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            installed = Arr.map(installed, (each) =>
+              each.name === extension.name ? extension : each,
+            );
+          }),
+        ),
+      ),
+    );
+
+  /**
+   * Every install after the start runs here, one at a time and to its end: what it installs is built under the lock from
+   * the extensions installed and the settings in force then, so an older build never lands over a newer one.
+   */
+  const installing = Semaphore.withPermit(yield* Semaphore.make(1));
+
+  /** Install again what the MCP tools are built from now, if it is not what is installed. */
+  const reinstallMcp = Effect.suspend(() =>
+    options.mcp === undefined
+      ? Effect.void
+      : installOver(options.mcp.reinstall(installed, settings.current())),
+  );
+
+  // What the MCP tools were last built from, before anything resumes: a resumed Run or call finds the tools, and the
+  // declarations, that its Context Window was shown.
+  yield* reinstallMcp;
 
   /** The settings the extensions were last built for. */
   let built = settings.current();
@@ -768,14 +828,56 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           for (const listener of usageListeners) listener();
         }
 
-        if (options.reload === undefined) return;
+        const { reload } = options;
 
-        for (const extension of options.reload(installed, values, previous)) {
-          yield* harness.install(extension);
-        }
+        yield* Effect.suspend(() =>
+          reload === undefined ? Effect.void : installOver(reload(installed, values, previous)),
+        ).pipe(Effect.andThen(reinstallMcp), installing, Effect.uninterruptible);
       }),
     ),
   );
+
+  /** The Context Window conversation `conversationId` is in: its head marker's entry, or `start` before any. */
+  const windowOf = (conversationId: ConversationId) =>
+    attempt("headMarker", async () => {
+      const marker = await harness.harness.commit(
+        (tx) => tx.latestHeadMarker(conversationId),
+        context,
+      );
+
+      return String(marker?.id ?? "start");
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("The conversation's Context Window is unknown", error).pipe(
+          Effect.as("unknown"),
+        ),
+      ),
+    );
+
+  /**
+   * A message's request start, in its prepare step: the settings read, then the MCP request start, whose build is
+   * installed before the message is placed. Starts of different conversations run side by side; their installs take the
+   * install lock in turn, each installing the newest build.
+   */
+  const startRequest = (conversationId: ConversationId) => {
+    const { mcp } = options;
+
+    return refreshSettings.pipe(
+      Effect.andThen(
+        mcp === undefined
+          ? Effect.void
+          : windowOf(conversationId).pipe(
+              Effect.flatMap((window) =>
+                Effect.provideContext(
+                  mcp.start(conversationId, window, settings.current()),
+                  services,
+                ),
+              ),
+              Effect.andThen(reinstallMcp.pipe(installing, Effect.uninterruptible)),
+            ),
+      ),
+    );
+  };
 
   // Alarm decisions run one at a time, so an idle check never deletes the heartbeat a concurrent submit just armed.
   const serially = Semaphore.withPermit(yield* Semaphore.make(1));
@@ -1331,20 +1433,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   /**
    * Admit `draft` to conversation `conversationId` (the active branch's by default). `named` says whether the Session may
    * be named after it: only the owner's own messages to the active branch name it, a subagent's conversation being the
-   * root agent's own work and a Rollover request not being the owner's words. Refused while the Session is being filled
-   * as a Fork or Clone, or carries its files to one.
+   * root agent's own work and a Rollover request not being the owner's words. `started` says whether its request start
+   * (`startRequest`) ran already, in its prepare step. Refused while the Session is being filled as a Fork or Clone, or
+   * carries its files to one.
    */
   const admitDraft = (
     conversationId: ConversationId | undefined,
     draft: InputSubmissionDraft,
-    named: boolean,
+    { named, started = false }: { readonly named: boolean; readonly started?: boolean },
   ): Effect.Effect<Submission, SessionError> =>
     Effect.gen(function* () {
       yield* unlessForking;
 
       // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never
       // holds up the alarm or a status report.
-      yield* refreshSettings;
+      if (!started) yield* refreshSettings;
 
       // A Container stopped for having been held without activity is shown before the message that follows it.
       yield* showHeldStops;
@@ -1914,14 +2017,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       return yield* admission.inLine(
         addressed(prompt.conversationId).pipe(Effect.map((conversation) => conversation.id)),
         (conversationId) =>
-          // A message the Session would refuse is not expanded first.
+          // A message the Session would refuse is not expanded first. Its request starts before it is placed: the
+          // settings read and the MCP tools built, which may wait for a server's discovery.
           unlessForking.pipe(
+            Effect.andThen(startRequest(conversationId)),
             Effect.andThen(draftOf({ ...prompt, conversationId })),
             Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
           ),
         (conversationId, draft) =>
           guard(conversationId, draft).pipe(
-            Effect.andThen(admitDraft(conversationId, draft, true)),
+            Effect.andThen(admitDraft(conversationId, draft, { named: true, started: true })),
           ),
         requestId,
       );
@@ -2033,9 +2138,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
           Effect.andThen(Effect.all([Clock.currentTimeMillis, Random.nextInt])),
           Effect.flatMap(([now, random]) =>
-            admitDraft(conversation.id, ownerRollover(focus, `${now}-${random}`), false).pipe(
-              inArrivalOrder,
-            ),
+            admitDraft(conversation.id, ownerRollover(focus, `${now}-${random}`), {
+              named: false,
+            }).pipe(inArrivalOrder),
           ),
           Effect.as({ notice: "Asked the agent to roll over." } satisfies CommandOutcome),
         );

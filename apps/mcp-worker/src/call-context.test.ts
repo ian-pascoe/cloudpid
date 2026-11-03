@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vitest";
 import { ByteBudget, makeBudget } from "./budget.ts";
-import { withCall } from "./call-context.ts";
+import { progressTo, withCall } from "./call-context.ts";
 import { MiB } from "./units.ts";
 
 const hooks = { untilAborted: () => new Promise<void>(() => undefined) };
@@ -86,5 +86,35 @@ describe("withCall", () => {
     );
 
     expect(held).toEqual(["sk-held-secret"]);
+  });
+});
+
+describe("progressTo", () => {
+  it("passes at most ten notices a second on, and a hook that throws fails nothing", () => {
+    const seen: Array<number> = [];
+    let now = 0;
+
+    const report = progressTo(
+      (progress) => {
+        seen.push(progress.progress);
+
+        if (progress.progress === 3) throw new Error("the caller is gone");
+      },
+      () => now,
+    );
+
+    for (const [at, step] of [
+      [0, 1],
+      [50, 2],
+      [100, 3],
+      [150, 4],
+      [260, 5],
+      [300, 6],
+    ] as const) {
+      now = at;
+      report({ progress: step });
+    }
+
+    expect(seen).toEqual([1, 3, 5]);
   });
 });
