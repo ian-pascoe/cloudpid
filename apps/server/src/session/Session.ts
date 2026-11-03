@@ -908,7 +908,12 @@ export const SessionLive = Session.make(
             invoked("session.mcp.transcript", mcp.transcriptPage(request)),
           submit: (request) => invoked("session.mcp.submit", mcp.submit(request)),
           stop: (request) => invoked("session.mcp.stop", mcp.stop(request)),
-          configure: (request) => invoked("session.mcp.configure", mcp.configure(request)),
+          configure: (request) =>
+            invoked(
+              "session.mcp.configure",
+              // Open pages are told the pick, as for the socket's `configure`.
+              mcp.configure(request).pipe(Effect.tap(() => sockets.announcePicks)),
+            ),
           destroy: () =>
             invoked(
               "session.destroy",

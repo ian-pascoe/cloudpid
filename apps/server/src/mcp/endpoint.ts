@@ -11,7 +11,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { AccessCaller } from "../access.ts";
 import type { Builds } from "../registry/builds.ts";
 import { REGISTRY_NAME, type Registry } from "../registry/Registry.ts";
-import type { Spares } from "../registry/rpc.ts";
+import { type Spares, upkeepAfterStart } from "../registry/rpc.ts";
 import type { Session } from "../session/Session.ts";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { mcpApiService, type McpBackend } from "./api.ts";
@@ -69,9 +69,8 @@ const forwardedRequest = (source: Request): Request => {
 
 /** The Registry's and the Sessions' side of one request: each call is one RPC. */
 const backendOf = (
-  endpoint: Omit<McpEndpoint, "background"> & {
-    readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void>;
-  },
+  endpoint: Pick<McpEndpoint, "registries" | "sessions" | "spares" | "builds">,
+  background: (effect: Effect.Effect<void>) => Effect.Effect<void>,
 ): McpBackend => {
   const registry = endpoint.registries.getByName(REGISTRY_NAME);
 
@@ -104,11 +103,7 @@ const backendOf = (
           Effect.tap((created) =>
             "refused" in created
               ? Effect.void
-              : endpoint.background(
-                  Effect.all([endpoint.spares.of(environment), endpoint.builds.of(environment)], {
-                    discard: true,
-                  }),
-                ),
+              : background(upkeepAfterStart(endpoint, environment)),
           ),
         ),
     configure: (id, request) =>
@@ -139,7 +134,7 @@ export const serveMcpRoute = <R = never>(endpoint: McpEndpoint<R>) =>
     const background = (effect: Effect.Effect<void>) =>
       Effect.provideContext(endpoint.background(effect), services);
 
-    const service = mcpApiService(backendOf({ ...endpoint, background }), {
+    const service = mcpApiService(backendOf(endpoint, background), {
       origin: new URL(source.url).origin,
       caller,
       version: endpoint.version,

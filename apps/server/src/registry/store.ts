@@ -143,6 +143,12 @@ export type SessionRefusal =
   /** `maxRunning` Sessions started over the MCP endpoint or imported are running already (`createSession`'s `maxRunning`). */
   | { readonly refused: "too-many-running"; readonly limit: number };
 
+/**
+ * A Session `createSession` answers: `repeated` says it was made for an earlier start of the same `requestId`, so a start
+ * that is sent again knows it made nothing and does not set it up a second time.
+ */
+export type CreatedSession = SessionRecord & { readonly repeated?: true };
+
 /** What became of a record: deleted, not registered, or kept because something is still bound to it. */
 export type Deletion = "deleted" | "missing" | "in-use";
 
@@ -227,7 +233,7 @@ export type RegistryStore = {
       readonly maxRunning?: number | undefined;
     },
     now: number,
-  ) => SessionRecord | SessionRefusal;
+  ) => CreatedSession | SessionRefusal;
   /** The Session registered under `id`, or null. */
   readonly getSession: (id: string) => SessionRecord | null;
   /**
@@ -531,6 +537,13 @@ export const REQUEST_MEMORY_MS = 24 * 60 * 60 * 1000;
  * pass the running cap in that moment. A Session whose status never changed in this time is not counted.
  */
 export const STARTING_MS = 2 * 60 * 1000;
+
+/**
+ * A Session that is idle and whose status has never changed (`setSessionStatus` moves `updated_at`; nothing else of a
+ * marked Session does, in the minutes that matter): it was made and its first Run has not reported yet. SQL for
+ * `runningMarked`'s `WHERE`.
+ */
+const STILL_STARTING = "status = 'idle' AND updated_at = created_at";
 
 /** The two columns that keep a Session's origin: a Fork or Clone's source, or the endpoint's marks as JSON. */
 const originColumns = (
@@ -1186,7 +1199,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count FROM sessions
           WHERE origin_kind IN ('mcp', 'import') AND archived_at IS NULL
-            AND (status = 'running' OR (status = 'idle' AND updated_at = created_at AND created_at > ?))`,
+            AND (status = 'running' OR (${STILL_STARTING} AND created_at > ?))`,
         now - STARTING_MS,
       )
       .toArray();
@@ -1196,13 +1209,13 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
   return {
     createSession: (input, now) =>
-      storage.transactionSync((): SessionRecord | SessionRefusal => {
+      storage.transactionSync((): CreatedSession | SessionRefusal => {
         const { requestId } = input;
 
         if (requestId !== undefined) {
           const earlier = requestedSession(requestId, now);
 
-          if (earlier !== null) return earlier;
+          if (earlier !== null) return { ...earlier, repeated: true };
         }
 
         // Checked before anything is registered: a refusal returned from here does not roll a transaction back.

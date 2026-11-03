@@ -5,7 +5,6 @@
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { Secrets } from "@cloudpid/extensions/secrets";
-import { parseModelId } from "@cloudpid/config";
 import {
   type ApiResult,
   apiFailure,
@@ -41,7 +40,6 @@ import {
   type WaitRequest,
   type WaitingRequest,
 } from "@cloudpid/protocol";
-import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -54,6 +52,7 @@ import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
 import { CONVERSATION_MISSING, isWithdrawn, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
+import { agentChange } from "./sockets.ts";
 import { cursorOf, endedBy, statusOf, type Snapshot, waitingMark } from "./mcp-follow.ts";
 import type { FollowState, SettledInput } from "./mcp-reads.ts";
 
@@ -665,7 +664,12 @@ const sessionMcp = (options: SessionMcpOptions) =>
             );
           }
 
-          if (yield* options.archived) {
+          const earlier =
+            request.requestId === undefined ? undefined : yield* host.admitted(request.requestId);
+
+          // A request id that was admitted before is answered with the first send's result: a repeated start finds its
+          // Session as it was left, even archived since.
+          if (earlier === undefined && (yield* options.archived)) {
             return apiFailure(
               "session_archived",
               "This Session is archived: unarchive it in cloudpid first.",
@@ -675,15 +679,12 @@ const sessionMcp = (options: SessionMcpOptions) =>
           const seam = yield* redactor;
           const before = yield* host.follow();
 
-          if (before.copying) {
+          if (earlier === undefined && before.copying) {
             return apiFailure(
               "session_importing",
               "This Session is still importing: wait for it to finish.",
             );
           }
-
-          const earlier =
-            request.requestId === undefined ? undefined : yield* host.admitted(request.requestId);
 
           if (earlier === undefined && request.whenBusy === "reject" && before.unsettled) {
             return apiFailure(
@@ -740,7 +741,11 @@ const sessionMcp = (options: SessionMcpOptions) =>
             return apiOk<StopResult>({ status: statusOf(yield* snapshot(seam)) });
           }
 
-          yield* host.note(`Stopped from ${request.via.client?.name ?? "a client"} (MCP)`);
+          yield* host.note(
+            request.via.client === undefined
+              ? "Stopped over MCP"
+              : `Stopped from ${request.via.client.name} (MCP)`,
+          );
 
           const stopped = yield* host
             .abort({ subagents: request.subagents === true })
@@ -755,17 +760,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
       );
 
     const configure: SessionMcpService["configure"] = (request) =>
-      guarded(
-        Effect.suspend(() => {
-          const change: Types.Mutable<AgentChange> = {};
-
-          if (request.model !== undefined) change.model = parseModelId(request.model);
-
-          if (request.thinkingLevel !== undefined) change.thinkingLevel = request.thinkingLevel;
-
-          return host.configure(change).pipe(Effect.as(apiOk(null)));
-        }),
-      );
+      guarded(host.configure(agentChange(request)).pipe(Effect.as(apiOk(null))));
 
     return {
       status,

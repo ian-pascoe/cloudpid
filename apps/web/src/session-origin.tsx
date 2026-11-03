@@ -1,6 +1,6 @@
 // What a Session came from, under its title (`docs/architecture/mcp-endpoint.md` → Access and identity, Marks): a Fork or
 // Clone's source, or "MCP · pi" / "Imported · pi" for a Session the MCP endpoint started or imported.
-import { type SessionOrigin, type SessionRecord, viaLabel } from "@cloudpid/protocol";
+import { type SessionOrigin, type SessionRecord, sessionOriginLabel } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -45,5 +45,5 @@ export const Origin = ({ session }: { session: SessionRecord }) =>
   session.origin !== undefined ? (
     <ForkedFrom origin={session.origin} />
   ) : session.marks !== undefined ? (
-    <>{viaLabel(session.marks, session.marks.kind)}</>
+    <>{sessionOriginLabel(session.marks, session.marks.kind)}</>
   ) : undefined;

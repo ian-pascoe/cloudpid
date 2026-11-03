@@ -526,8 +526,9 @@ describe("the Registry store", () => {
         { id: "s-2", title: null, workspace: newWorkspace("5e6f7a8b"), requestId: "req-1" },
         2_000,
       ),
-    ).toEqual(first);
+    ).toEqual({ ...first, repeated: true });
     expect(await sessionIds(registry)).toEqual(["s-1"]);
+    expect(first).not.toHaveProperty("repeated");
 
     // Another request, and none at all, are new starts.
     await registry.createSession(
@@ -664,7 +665,10 @@ describe("the Registry store", () => {
 
       await start(registry, "s-2", 1_000);
 
-      expect(await start(registry, "s-3", 2_000, { requestId: "req-1" })).toEqual(first);
+      expect(await start(registry, "s-3", 2_000, { requestId: "req-1" })).toEqual({
+        ...first,
+        repeated: true,
+      });
       expect(await sessionIds(registry)).toEqual(["s-2", "s-1"]);
     });
 

@@ -2,12 +2,13 @@
 // builds per `/mcp` request and passes to `McpServer`, over the Registry and the Sessions it already has. It owns
 // authorization (the guard has run), validation, the Registry and Session calls, cursors and rendering; `McpServer` owns
 // the SDK, the schemas and the text. The caller's identity is closed over it and is never an argument. Failures travel
-// as values (`ApiResult`); nothing streams. The four read operations are here; an operation `describe()` does not list
+// as values (`ApiResult`); nothing streams. The read operations and `start`, `send` and `stop` are here; an operation `describe()` does not list
 // answers `unsupported`, which is also how `McpServer` knows to leave its tool out.
 // @effect-diagnostics globalDate:off preferEffectArray:off missingPipeableSignature:off -- epoch times said as ISO text; short native lists.
 import { isModelId, SUPPORTED_MODELS, ThinkingLevel, THINKING_LEVELS } from "@cloudpid/config";
 import {
   type ApiDescription,
+  type ApiError,
   type ApiResult,
   apiFailure,
   apiOk,
@@ -20,12 +21,12 @@ import {
   MAX_MCP_RUNNING,
   MCP_API_LIMITS,
   type MarkedOrigin,
-  type McpWhenBusy,
   SESSION_ID,
   type McpAuth,
   type McpSessionOrigin,
   type McpSessionSummary,
   ownBranchProblem,
+  type SendRequest,
   type SessionDetail,
   type SessionRecord,
   SessionTitle,
@@ -35,6 +36,7 @@ import {
   type StartRequest,
   type StartResult,
   type StopRequest,
+  type StopSessionRequest,
   type StopResult,
   type SubmitRequest,
   type SubmitResult,
@@ -52,7 +54,7 @@ import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { Caller } from "../access.ts";
 import type { SessionsResult } from "../registry/session-page.ts";
-import type { SessionRefusal } from "../registry/store.ts";
+import type { CreatedSession, SessionRefusal } from "../registry/store.ts";
 
 /** The operations this version of `Server` has: `McpServer` serves a tool only when its operation is listed. */
 export const MCP_API_OPERATIONS_SERVED = [
@@ -100,7 +102,7 @@ export interface McpBackend {
     readonly marks: MarkedOrigin;
     readonly requestId?: string | undefined;
     readonly maxRunning: number;
-  }) => Effect.Effect<SessionRecord | SessionRefusal>;
+  }) => Effect.Effect<CreatedSession | SessionRefusal>;
   /** The Session object's `configure()`. */
   readonly configure: (id: string, request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
   /** The Session object's `submit()`. */
@@ -135,18 +137,8 @@ export interface McpApiService {
     request: TranscriptRequest & { readonly session_id: string },
   ) => Effect.Effect<ApiResult<TranscriptPage & { readonly session_id: string }>>;
   readonly start: (request: StartRequest) => Effect.Effect<ApiResult<StartResult>>;
-  readonly send: (request: {
-    readonly session_id: string;
-    readonly text: string;
-    readonly when_busy?: McpWhenBusy;
-    readonly request_id?: string;
-    readonly via: Via;
-  }) => Effect.Effect<ApiResult<SubmitResult>>;
-  readonly stop: (request: {
-    readonly session_id: string;
-    readonly subagents?: boolean;
-    readonly via: Via;
-  }) => Effect.Effect<ApiResult<StopResult>>;
+  readonly send: (request: SendRequest) => Effect.Effect<ApiResult<SubmitResult>>;
+  readonly stop: (request: StopSessionRequest) => Effect.Effect<ApiResult<StopResult>>;
   /** Counts a call; present when the caller is over its rate. */
   readonly limited: Effect.Effect<{ readonly retryAfterS: number } | undefined>;
   readonly auth: McpAuth;
@@ -283,6 +275,32 @@ const sessionViaOf = (via: Via, caller: Caller, auth: McpAuth): SessionVia => {
 const namesOf = (environments: ReadonlyArray<EnvironmentRecord>) =>
   new Map(Arr.map(environments, (environment) => [environment.id, environment.name] as const));
 
+const unreachable = apiFailure(
+  "unavailable",
+  "The Session service could not be reached: try again shortly.",
+);
+
+/**
+ * A failure after the Registry made the Session names it (`details.session_id` and `url`), so the caller can use it, or
+ * repeat the start under the same `request_id`, rather than make a second one.
+ */
+const madeButNotStarted = (
+  error: ApiError,
+  session: { readonly id: string; readonly url: string },
+  hasRequestId: boolean,
+): ApiResult<never> => {
+  const hint = !error.retryable
+    ? ""
+    : hasRequestId
+      ? " Repeat session_start with the same request_id to send it."
+      : " Send it with session_send to that session_id.";
+
+  return apiFailure(error.code, `${error.message} The Session was made (${session.url}).${hint}`, {
+    retryable: error.retryable,
+    details: { session_id: session.id, url: session.url },
+  });
+};
+
 /** Why a start was refused, as the endpoint says it. */
 const refusedStart = (
   refusal: SessionRefusal,
@@ -304,7 +322,7 @@ const refusedStart = (
     case "too-many-running":
       return apiFailure(
         "too_many_running",
-        `${String(refusal.limit)} Sessions started over MCP are running: wait for one to finish (session_wait) or stop one (session_stop), then start again.`,
+        `${String(refusal.limit)} Sessions started over MCP are running: check them with session_get, or stop one with session_stop, then start again.`,
         { retryable: true, details: { limit: refusal.limit } },
       );
     case "no-workspace":
@@ -539,30 +557,39 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
           if ("refused" in created) return refusedStart(created, resolved.value, request.branch);
 
           const id = created.id;
+          const url = `${context.origin}/sessions/${id}`;
 
-          // A repeated `request_id` finds the same Session, and the same first message below (the Session knows the id).
-          if (model !== undefined || thinking !== undefined) {
-            const pick: Types.Mutable<ConfigureRequest> = {};
+          // The Registry made the Session, so every failure from here names it: the caller can use it, or repeat the start.
+          const sendFirst = Effect.gen(function* () {
+            // Only the first start of a `request_id` picks the model: a repeat finds the Session as it was left, and
+            // heals at most the first message (the Session's own dedupe of the same id).
+            if (created.repeated !== true && (model !== undefined || thinking !== undefined)) {
+              const pick: Types.Mutable<ConfigureRequest> = {};
 
-            if (model !== undefined) pick.model = model;
+              if (model !== undefined) pick.model = model;
 
-            if (thinking !== undefined) pick.thinkingLevel = thinking;
+              if (thinking !== undefined) pick.thinkingLevel = thinking;
 
-            const configured = yield* backend.configure(id, pick);
+              const configured = yield* backend.configure(id, pick);
 
-            if (!configured.ok) return configured;
+              if (!configured.ok) return configured;
+            }
+
+            const first: Types.Mutable<SubmitRequest> = {
+              input: text,
+              via: sessionViaOf(via, context.caller, identity.auth),
+            };
+
+            if (request.request_id !== undefined) first.requestId = request.request_id;
+
+            return yield* backend.submit(id, first);
+          }).pipe(Effect.catchCause(() => Effect.succeed(unreachable)));
+
+          const sent = yield* sendFirst;
+
+          if (!sent.ok) {
+            return madeButNotStarted(sent.error, { id, url }, request.request_id !== undefined);
           }
-
-          const first: Types.Mutable<SubmitRequest> = {
-            input: text,
-            via: sessionViaOf(via, context.caller, identity.auth),
-          };
-
-          if (request.request_id !== undefined) first.requestId = request.request_id;
-
-          const sent = yield* backend.submit(id, first);
-
-          if (!sent.ok) return sent;
 
           const environment = Arr.findFirst(
             environments,
@@ -575,7 +602,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
           return apiOk<StartResult>({
             session_id: id,
             title: created.title,
-            url: `${context.origin}/sessions/${id}`,
+            url,
             status: status?.ok === true ? status.value.status : "running",
             cursor: sent.value.cursor,
             environment: {

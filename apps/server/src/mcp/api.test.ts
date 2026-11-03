@@ -524,19 +524,63 @@ describe("start", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it("answers what the Session refused of the first message, and a failed hop as unavailable", async () => {
+  it("names the Session on every failure after it was made, so a retry need not make another", async () => {
     const stopped = apiFailure("stopped", "Stopped before it was sent.", { retryable: false });
+    const refused = apiFailure("invalid_argument", "The model cannot be picked.");
 
-    const withdrawn = await run(
-      service({ submit: () => Effect.succeed(stopped) }).start({ text: "go", via: VIA }),
+    const cases = {
+      withdrawn: service({ submit: () => Effect.succeed(stopped) }),
+      down: service({ submit: () => Effect.die("object reset") }),
+      configureRefused: service({ configure: () => Effect.succeed(refused) }),
+      configureDown: service({ configure: () => Effect.die("object reset") }),
+    };
+
+    const results = {
+      withdrawn: await run(cases.withdrawn.start({ text: "go", via: VIA })),
+      down: await run(cases.down.start({ text: "go", request_id: "r-1", via: VIA })),
+      configureRefused: await run(
+        cases.configureRefused.start({ text: "go", model: "anthropic/claude-opus-5-5", via: VIA }),
+      ),
+      configureDown: await run(
+        cases.configureDown.start({ text: "go", thinking: "low", via: VIA }),
+      ),
+    };
+
+    const named = { session_id: ID, url: `${ORIGIN}/sessions/${ID}` };
+
+    expect(results.withdrawn).toMatchObject({
+      ok: false,
+      error: { code: "stopped", retryable: false, details: named },
+    });
+    expect(results.down).toMatchObject({
+      ok: false,
+      error: { code: "unavailable", retryable: true, details: named },
+    });
+    expect(results.configureRefused).toMatchObject({
+      ok: false,
+      error: { code: "invalid_argument", details: named },
+    });
+    expect(results.configureDown).toMatchObject({
+      ok: false,
+      error: { code: "unavailable", retryable: true, details: named },
+    });
+
+    // A retryable failure says how to go on: the same request_id, or session_send when there is none.
+    expect(!results.down.ok && results.down.error.message).toContain("same request_id");
+    expect(!results.configureDown.ok && results.configureDown.error.message).toContain(
+      "session_send",
+    );
+  });
+
+  it("does not name a tool that is not served in a refusal", async () => {
+    const cap = await run(
+      service({
+        createSession: () => Effect.succeed({ refused: "too-many-running", limit: 10 }),
+      }).start({ text: "go", via: VIA }),
     );
 
-    const down = await run(
-      service({ submit: () => Effect.die("object reset") }).start({ text: "go", via: VIA }),
-    );
-
-    expect(withdrawn).toMatchObject({ ok: false, error: { code: "stopped", retryable: false } });
-    expect(down).toMatchObject({ ok: false, error: { code: "unavailable", retryable: true } });
+    expect(!cap.ok && cap.error.message).not.toContain("session_wait");
+    expect(!cap.ok && cap.error.message).toContain("session_stop");
   });
 
   it("says the Session is running when it cannot yet say", async () => {
@@ -545,6 +589,132 @@ describe("start", () => {
     );
 
     expect(result.ok && result.value.status).toBe("running");
+  });
+});
+
+/** A Registry and a Session that remember, as the real ones do: one Session per `request_id`, one first message per id. */
+const remembering = () => {
+  const made: Array<string> = [];
+  const sent: Array<string> = [];
+  const configured: Array<string> = [];
+  let cut = false;
+  const sessions = new Map<string, SessionRecord>();
+  const delivered = new Map<string, { delivery: "started"; cursor: string }>();
+
+  const overrides: Partial<McpBackend> = {
+    createSession: ({ requestId, environment }) =>
+      Effect.sync(() => {
+        const earlier = requestId === undefined ? undefined : sessions.get(requestId);
+
+        if (earlier !== undefined) return { ...earlier, repeated: true as const };
+
+        const id = `0190f0a8-1b2c-7d3e-8f40-${String(made.length).padStart(12, "0")}`;
+        const created = record({ id, environment });
+
+        made.push(id);
+
+        if (requestId !== undefined) sessions.set(requestId, created);
+
+        return created;
+      }),
+    configure: (id) =>
+      Effect.sync(() => {
+        configured.push(id);
+
+        return { ok: true as const, value: null };
+      }),
+    submit: (id, request) =>
+      Effect.suspend(() => {
+        const key = `${id}/${request.requestId ?? ""}`;
+        const first = request.requestId === undefined ? undefined : delivered.get(key);
+
+        if (first !== undefined) return Effect.succeed({ ok: true as const, value: first });
+
+        if (cut) return Effect.die("the Session was reset");
+
+        const value = { delivery: "started" as const, cursor: `cursor-${String(sent.length)}` };
+
+        sent.push(request.input);
+
+        if (request.requestId !== undefined) delivered.set(key, value);
+
+        return Effect.succeed({ ok: true as const, value });
+      }),
+  };
+
+  return {
+    overrides,
+    made,
+    sent,
+    configured,
+    cutBeforeSubmit: (on: boolean) => {
+      cut = on;
+    },
+  };
+};
+
+describe("a repeated start", () => {
+  it("makes one Session and sends one first message, and answers the first one's cursor", async () => {
+    const memory = remembering();
+    const api = service(memory.overrides);
+
+    const start = () =>
+      api.start({
+        text: "Fix it",
+        request_id: "req-1",
+        model: "anthropic/claude-opus-5-5",
+        via: VIA,
+      });
+
+    const first = await run(start());
+    const again = await run(start());
+
+    expect(first.ok && again.ok && again.value.session_id).toBe(first.ok && first.value.session_id);
+    expect(first.ok && again.ok && again.value.cursor).toBe(first.ok && first.value.cursor);
+    expect(memory.made).toHaveLength(1);
+    expect(memory.sent).toEqual(["Fix it"]);
+    // The model is picked once: a repeat never configures the Session it finds.
+    expect(memory.configured).toHaveLength(1);
+  });
+
+  it("heals a start cut between making the Session and sending its first message, without a second Session", async () => {
+    const memory = remembering();
+    const api = service(memory.overrides);
+
+    const start = () =>
+      api.start({ text: "Fix it", request_id: "req-1", thinking: "low", via: VIA });
+
+    memory.cutBeforeSubmit(true);
+
+    const cut = await run(start());
+
+    expect(cut).toMatchObject({
+      ok: false,
+      error: { retryable: true, details: { session_id: memory.made[0] } },
+    });
+    expect(memory.sent).toEqual([]);
+
+    memory.cutBeforeSubmit(false);
+
+    const healed = await run(start());
+
+    expect(healed).toMatchObject({ ok: true, value: { session_id: memory.made[0] } });
+    expect(memory.made).toHaveLength(1);
+    expect(memory.sent).toEqual(["Fix it"]);
+    // Only the first start picked the model; the repeat healed the message alone.
+    expect(memory.configured).toHaveLength(1);
+  });
+
+  it("makes another Session for another request_id, and for none", async () => {
+    const memory = remembering();
+    const api = service(memory.overrides);
+
+    await run(api.start({ text: "a", request_id: "req-1", via: VIA }));
+    await run(api.start({ text: "b", request_id: "req-2", via: VIA }));
+    await run(api.start({ text: "c", via: VIA }));
+    await run(api.start({ text: "d", via: VIA }));
+
+    expect(memory.made).toHaveLength(4);
   });
 });
 

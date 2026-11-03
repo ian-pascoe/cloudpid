@@ -64,6 +64,7 @@ import {
   type StoredEnvironmentSecret,
   type SessionAgent,
   type SessionRecord,
+  type CreatedSession,
   type SessionRefusal,
   type SessionStatus,
   type SpareUpkeep,
@@ -100,7 +101,7 @@ export class TestRegistry extends DurableObject {
       maxRunning?: number;
     },
     now: number,
-  ): SessionRecord | SessionRefusal {
+  ): CreatedSession | SessionRefusal {
     return this.#store.createSession(input, now);
   }
 

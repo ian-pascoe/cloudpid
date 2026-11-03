@@ -144,10 +144,10 @@ export type SessionVia = typeof SessionVia.Type;
 const VIA_PREFIX = { mcp: "MCP", import: "Imported", unknown: "Via" } as const;
 
 /**
- * The words that say where an input or Session came from: "MCP · pi", or "MCP" when the caller gave no name; "Via · pi"
- * for a kind this version does not know.
+ * The words that say where a Session came from (its origin chip): "MCP · pi", or "MCP" when the caller gave no name;
+ * "Via · pi" for a kind this version does not know. An input's chip is {@link inputViaChipLabel}.
  */
-export const viaLabel = (
+export const sessionOriginLabel = (
   via: Pick<SessionVia, "client">,
   kind: "mcp" | "import" | "unknown" = "mcp",
 ): string => {
@@ -156,8 +156,8 @@ export const viaLabel = (
   return via.client === undefined ? prefix : `${prefix} · ${via.client.name}`;
 };
 
-/** The words that mark an input sent over the endpoint: "via pi (MCP)", or "via MCP" when the caller gave no name. */
-export const inputViaLabel = (via: Pick<SessionVia, "client">): string =>
+/** The words that mark an input sent over the endpoint (its chip; a Session's is {@link sessionOriginLabel}): "via pi (MCP)", or "via MCP" when the caller gave no name. */
+export const inputViaChipLabel = (via: Pick<SessionVia, "client">): string =>
   via.client === undefined ? "via MCP" : `via ${via.client.name} (MCP)`;
 
 /**
@@ -698,6 +698,26 @@ export const SessionDetail = Schema.Struct({
 
 export type SessionDetail = typeof SessionDetail.Type;
 
+/** `session_send`'s arguments, as `McpApi.send` takes them. */
+export const SendRequest = Schema.Struct({
+  session_id: Schema.String,
+  text: Schema.String,
+  when_busy: Schema.optionalKey(McpWhenBusy),
+  request_id: Schema.optionalKey(Schema.String),
+  via: Via,
+});
+
+export type SendRequest = typeof SendRequest.Type;
+
+/** `session_stop`'s arguments, as `McpApi.stop` takes them. */
+export const StopSessionRequest = Schema.Struct({
+  session_id: Schema.String,
+  subagents: Schema.optionalKey(Schema.Boolean),
+  via: Via,
+});
+
+export type StopSessionRequest = typeof StopSessionRequest.Type;
+
 /** `session_start`'s arguments, as `McpApi.start` takes them (the environment is an id or an exact name). */
 export const StartRequest = Schema.Struct({
   environment: Schema.optionalKey(Schema.String),
@@ -753,19 +773,8 @@ export interface McpApi {
   transcript(
     request: TranscriptRequest & { readonly session_id: string },
   ): Promise<ApiResult<TranscriptPage & { readonly session_id: string }>>;
-  send(
-    request: {
-      readonly session_id: string;
-      readonly text: string;
-      readonly when_busy?: McpWhenBusy;
-      readonly request_id?: string;
-    } & { readonly via: Via },
-  ): Promise<ApiResult<SubmitResult>>;
-  stop(
-    request: { readonly session_id: string; readonly subagents?: boolean } & {
-      readonly via: Via;
-    },
-  ): Promise<ApiResult<StopResult>>;
+  send(request: SendRequest): Promise<ApiResult<SubmitResult>>;
+  stop(request: StopSessionRequest): Promise<ApiResult<StopResult>>;
   /**
    * Present when the caller is over its rate; `McpServer` answers `rate_limited` with it. A getter of the `RpcTarget`,
    * read once per `tools/call` (and counted then): over RPC it is awaited, so an older `Server` that has none reads as

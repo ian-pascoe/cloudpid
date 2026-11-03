@@ -1,6 +1,6 @@
 // docs/architecture/mcp-endpoint.md → The handler, Tools, Limits and errors, Telemetry and testing: `serveMcp` on a fake `api`.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off preferEffectRecord:off
-import { apiFailure, apiOk, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
+import { apiFailure, apiOk, MAX_MCP_RUNNING, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import { clientOf } from "./caller.ts";
@@ -499,6 +499,53 @@ describe("the write tools", () => {
     expect(going.content[0]?.text).toContain("Stopping");
     expect(going.structuredContent).toMatchObject({ status: "running", stopping: true });
     expect(going.structuredContent.next).toContain("session_get");
+  });
+
+  it("names session_wait nowhere while the Server does not serve it: descriptions, next sentences, instructions", async () => {
+    const api = writing({
+      start: () => Promise.resolve(apiOk(started)),
+      send: () => Promise.resolve(apiOk({ delivery: "started" as const, cursor: CURSOR })),
+      stop: () => Promise.resolve(apiOk({ status: "running" as const, stopping: true })),
+    });
+
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
+
+    for (const tool of result?.tools ?? []) {
+      expect(JSON.stringify(tool)).not.toContain("session_wait");
+    }
+
+    for (const [name, args] of [
+      ["session_start", { text: "go" }],
+      ["session_send", { session_id: ID, text: "go" }],
+      ["session_stop", { session_id: ID }],
+    ] as const) {
+      const called = await call(name, args, api);
+
+      expect(JSON.stringify(called)).not.toContain("session_wait");
+    }
+
+    const init = await messageOf(
+      await serve(
+        post(
+          rpc("initialize", {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "t", version: "1" },
+          }),
+        ),
+        api,
+      ),
+    );
+
+    expect(init.result?.instructions).not.toContain("session_wait");
+  });
+
+  it("says how many Sessions may run at once from the contract's own number", async () => {
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), writing()));
+
+    const start = (result?.tools ?? []).find((tool) => tool.name === "session_start");
+
+    expect(JSON.stringify(start)).toContain(`At most ${String(MAX_MCP_RUNNING)} Sessions`);
   });
 
   it("refuses an empty message, a made-up when_busy and a long request_id before calling the api", async () => {

@@ -27,7 +27,7 @@ import {
   MCP_API_LIMITS,
   runOutcome,
   SubmitRequest,
-  viaLabel,
+  sessionOriginLabel,
   whenBusyOf,
 } from "./mcp-api.ts";
 
@@ -100,9 +100,9 @@ describe("runOutcome", () => {
 
 describe("marks", () => {
   it("name the client, or say MCP alone", () => {
-    expect(viaLabel({ client: { name: "pi" } })).toBe("MCP · pi");
-    expect(viaLabel({})).toBe("MCP");
-    expect(viaLabel({ client: { name: "pi" } }, "import")).toBe("Imported · pi");
+    expect(sessionOriginLabel({ client: { name: "pi" } })).toBe("MCP · pi");
+    expect(sessionOriginLabel({})).toBe("MCP");
+    expect(sessionOriginLabel({ client: { name: "pi" } }, "import")).toBe("Imported · pi");
   });
 
   it("map the tool's when_busy onto the socket's", () => {

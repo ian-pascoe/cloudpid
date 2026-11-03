@@ -126,6 +126,17 @@ export type RegistryRpcObjects<R = never> = {
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
 
+/**
+ * What runs after a Session started in `environment`: it took the Environment's spare or made a Workspace, so the next
+ * spare is made ahead, and its Build is kept current. The owner's starts and the MCP endpoint's share it.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const upkeepAfterStart = (
+  { spares, builds }: { readonly spares: Pick<Spares, "of">; readonly builds: Pick<Builds, "of"> },
+  environment: string,
+): Effect.Effect<void> =>
+  Effect.all([spares.of(environment), builds.of(environment)], { discard: true });
+
 /** How many legacy objects one cleanup wipes. */
 const LEGACY_BATCH = 10;
 
@@ -505,9 +516,7 @@ export const serveRegistryRpc = <R = never>(
         if ("refused" in created) return yield* refused(created, origin.environment, branch);
 
         if (carried !== undefined) {
-          // The Session took the Environment's spare or made a Workspace: either way, the next one is made ahead.
-          yield* background(spares.of(carried.environment));
-          yield* background(builds.of(carried.environment));
+          yield* background(upkeepAfterStart({ spares, builds }, carried.environment));
         }
 
         return created;
@@ -668,9 +677,7 @@ export const serveRegistryRpc = <R = never>(
 
           if ("refused" in created) return yield* refused(created, made, branch);
 
-          // The Session took the Environment's spare or made a Workspace: either way, the next one is made ahead.
-          yield* background(spares.of(made));
-          yield* background(builds.of(made));
+          yield* background(upkeepAfterStart({ spares, builds }, made));
 
           return created;
         }),

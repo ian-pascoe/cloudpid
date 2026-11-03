@@ -5,7 +5,13 @@
  * with their operations. `McpServer` owns all of this, and the main Worker's `api` none of it.
  */
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- short plain lists of sentences and tool specs.
-import { ApiResult, type McpApi, type McpToolName, type Via } from "@cloudpid/protocol/mcp-api";
+import {
+  ApiResult,
+  MAX_MCP_RUNNING,
+  type McpApi,
+  type McpToolName,
+  type Via,
+} from "@cloudpid/protocol/mcp-api";
 import {
   EnvironmentsListInput,
   EnvironmentsListResult,
@@ -259,8 +265,7 @@ const sessionTranscript = defineTool({
 const sessionStart = defineTool({
   name: "session_start",
   title: "Start a Session",
-  description:
-    "Start a new Session in an Environment with a first message, which begins its first Run at once. Omit environment only for work tied to no Repo. The Session gets a new Workspace (a branch of its own, unless you name one). It runs in the background: follow it with the cursor in the result. Send request_id so a retry after a connection error does not start a second Session. At most 10 Sessions started over MCP run at once.",
+  description: `Start a new Session in an Environment with a first message, which begins its first Run at once. Omit environment only for work tied to no Repo. The Session gets a new Workspace (a branch of its own, unless you name one) and runs in the background. Send request_id so a retry after a connection error does not start a second Session. At most ${String(MAX_MCP_RUNNING)} Sessions started over MCP run at once.`,
   annotations: WRITE,
   input: SessionStartInput,
   output: SessionStartResult,

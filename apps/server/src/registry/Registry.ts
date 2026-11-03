@@ -171,6 +171,7 @@ import {
   type RepoChange,
   type SessionAgent,
   type SessionRecord,
+  type CreatedSession,
   type SessionRefusal,
   type SubagentWorkspaceRefusal,
   type SessionStatus,
@@ -340,7 +341,7 @@ export type RegistryMethods = {
     /** How the MCP endpoint's caller got in, for a Session it starts or imports. */
     readonly marks?: MarkedOrigin | undefined;
     /**
-     * Made for this request within the last 24 h and still there: that Session is answered, and no other is registered.
+     * Made for this request within the last 24 h and still there: that Session is answered (with `repeated: true`), and no other is registered.
      */
     readonly requestId?: string | undefined;
     /**
@@ -348,7 +349,7 @@ export type RegistryMethods = {
      * endpoint's running cap, counted here so concurrent starts cannot pass it together (a `requestId` that finds its Session is answered first).
      */
     readonly maxRunning?: number | undefined;
-  }) => Effect.Effect<SessionRecord | SessionRefusal>;
+  }) => Effect.Effect<CreatedSession | SessionRefusal>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
   /** Every Session, newest first. */
