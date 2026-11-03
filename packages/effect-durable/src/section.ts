@@ -26,18 +26,27 @@ export const effectSection = <E, R>(
  * system prompt, the head of its cache prefix. A Handoff starts a context with nothing shown, and the next request
  * reads again. `read` giving `undefined` omits the section and so freezes nothing; a failure is thrown, as
  * `effectSection`'s is, which keeps nothing frozen either. An empty string is a text: it freezes "nothing to show".
+ *
+ * `whenShown` runs, with the text, in each request that finds the section already shown, for a section that must hear
+ * of every request after its first (the `mcp_servers` section tells a conversation what changed since). It never
+ * changes the text, and its failure is thrown as `read`'s is.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- as `effectSection`.
 export const frozenSection = <E, R>(
   key: string,
   read: (input: PromptInput) => Effect.Effect<string | undefined, E, R>,
+  options?: {
+    readonly whenShown?: (input: PromptInput, shown: string) => Effect.Effect<void, E, R>;
+  },
 ): Effect.Effect<PromptSection, never, R> =>
   effectSection(
     key,
     (input) => {
       const shown = input.shown[key];
 
-      return shown === undefined ? read(input) : Effect.succeed(shown);
+      return shown === undefined
+        ? read(input)
+        : Effect.as(options?.whenShown?.(input, shown) ?? Effect.void, shown);
     },
     { tag: false },
   );
