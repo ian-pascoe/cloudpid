@@ -41,6 +41,7 @@ import {
   readMcpRequestStartResult,
   readMcpServersResult,
 } from "@cloudpid/mcp/types";
+import type { McpPromptErrorCode } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
@@ -184,28 +185,22 @@ const PROMPT_STREAM_IDLE_MS = 30_000;
 
 const NO_PROMPTS: PromptCatalog = { prompts: [], mcpServers: [] };
 
-/** A refusal of a prompt get, before it is a `SessionError`. */
+/** A refusal of a prompt get, before it is a `SessionError` that names the server. */
 type PromptGetRefusal = {
-  readonly code:
-    | "MCP_PROMPT_ARGUMENTS"
-    | "MCP_SIGN_IN_REQUIRED"
-    | "MCP_PROMPT_TOO_LARGE"
-    | "MCP_PROMPT_FAILED";
+  readonly code: McpPromptErrorCode;
   readonly message: string;
-  readonly server?: string;
 };
 
-const refusalOf = (
-  code: PromptGetRefusal["code"],
-  message: string,
-  server?: string,
-): PromptGetRefusal => (server === undefined ? { code, message } : { code, message, server });
+const refusalOf = (code: McpPromptErrorCode, message: string): PromptGetRefusal => ({
+  code,
+  message,
+});
 
 /** The failure a `CallFailed`'s error is. */
 const callFailure = (error: McpErrorWire, server: string): PromptGetRefusal =>
   Match.value(error).pipe(
     Match.tag("SignInRequired", () =>
-      refusalOf("MCP_SIGN_IN_REQUIRED", `Sign in to ${server} to use its prompts`, server),
+      refusalOf("MCP_SIGN_IN_REQUIRED", `Sign in to ${server} to use its prompts`),
     ),
     Match.tag("TooLarge", () =>
       refusalOf("MCP_PROMPT_TOO_LARGE", `${server}'s prompt is too large`),
@@ -227,8 +222,14 @@ const failureOf = (
   Match.value(result).pipe(
     Match.tag("Completed", () => undefined),
     Match.tag("CallFailed", ({ error }) => callFailure(error, server)),
-    Match.tag("UnknownServer", "NotAllowed", "HostFailed", "HostLost", ({ message }) =>
-      refusalOf("MCP_PROMPT_FAILED", message),
+    // A host that does not know the op says so in its own words.
+    Match.tag(
+      "UnknownServer",
+      "NotAllowed",
+      "HostFailed",
+      "HostLost",
+      "HostUnsupported",
+      ({ message }) => refusalOf("MCP_PROMPT_FAILED", message),
     ),
     Match.orElse(() =>
       refusalOf("MCP_PROMPT_FAILED", `${server} answered a prompt get with something else`),
@@ -426,7 +427,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
 
     // Every refusal names the server, as the composer's form says which one it is about.
     const refused = (refusal: PromptGetRefusal) =>
-      SessionError.make({ operation: "submit", ...refusal, server: refusal.server ?? call.server });
+      SessionError.make({ operation: "submit", ...refusal, server: call.server });
 
     if (environment === null || options.session === undefined) {
       return Effect.fail(

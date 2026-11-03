@@ -3,6 +3,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off schemaSync:off -- plain assertions over JSON.
 import type { McpServerInventory } from "@cloudpid/mcp/types";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { promptMessage, type PromptFile, type PromptInput } from "./mcp-prompt.ts";
@@ -178,9 +179,16 @@ const text = (role: "user" | "assistant", value: string) => ({
 const made = async (result: Schema.Json, extra: Partial<PromptInput> = {}) => {
   const message = await promptMessage(input(result, extra));
 
-  if ("code" in message) throw new Error(`refused: ${message.message}`);
+  if (Result.isFailure(message)) throw new Error(`refused: ${message.failure.message}`);
 
-  return message;
+  return message.success;
+};
+
+/** Why a result is refused, or undefined when it is made into a message. */
+const refused = async (result: Schema.Json, extra: Partial<PromptInput> = {}) => {
+  const message = await promptMessage(input(result, extra));
+
+  return Result.isFailure(message) ? message.failure : undefined;
 };
 
 describe("a prompt's result as the owner's message", () => {
@@ -395,21 +403,19 @@ describe("a prompt's result as the owner's message", () => {
         ],
       },
     ] satisfies ReadonlyArray<Schema.Json>) {
-      expect(await promptMessage(input(result))).toMatchObject({ code: "MCP_PROMPT_FAILED" });
+      expect(await refused(result)).toMatchObject({ code: "MCP_PROMPT_FAILED" });
     }
 
     expect(
-      await promptMessage(
-        input(
-          {
-            messages: [
-              { role: "user", content: { type: "audio", data: "AAAA", mimeType: "audio/wav" } },
-            ],
-          },
-          {
-            save: () => Promise.reject(new Error("disk")),
-          },
-        ),
+      await refused(
+        {
+          messages: [
+            { role: "user", content: { type: "audio", data: "AAAA", mimeType: "audio/wav" } },
+          ],
+        },
+        {
+          save: () => Promise.reject(new Error("disk")),
+        },
       ),
     ).toEqual({
       code: "MCP_PROMPT_FAILED",
@@ -418,9 +424,9 @@ describe("a prompt's result as the owner's message", () => {
 
     const big = { messages: [text("user", "x".repeat(1024 * 1024 - 100))] };
 
-    expect(await promptMessage(input(big, { typed: "y".repeat(200) }))).toMatchObject({
+    expect(await refused(big, { typed: "y".repeat(200) })).toMatchObject({
       code: "MCP_PROMPT_TOO_LARGE",
     });
-    expect(await promptMessage(input(big, { typed: "y" }))).not.toHaveProperty("code");
+    expect(await refused(big, { typed: "y" })).toBeUndefined();
   });
 });

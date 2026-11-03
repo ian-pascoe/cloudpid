@@ -110,6 +110,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Queue from "effect/Queue";
@@ -145,6 +146,15 @@ import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
 import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure } from "./errors.ts";
 import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
 import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
+import {
+  imageCharacters,
+  promptContent,
+  promptData,
+  promptPartCount,
+  promptRefusal,
+  redactedError,
+  typedAndBeside,
+} from "./mcp-prompt-send.ts";
 import { linkSkillReferences } from "./skill-references.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
@@ -1979,51 +1989,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
-  /** The typed text of `input` and its other blocks (the Attachments' paths and pictures): all of them when none is typed. */
-  const typedAndRest = (input: UserInput) => {
-    if (Predicate.isString(input)) return { typed: input, rest: [] };
-
-    const first = Arr.findFirstIndex(input, (block) => block.type === "text");
-    const block = Option.flatMap(first, (at) => Arr.get(input, at));
-
-    if (Option.isNone(first) || Option.isNone(block) || block.value.type !== "text") {
-      return { typed: "", rest: input };
-    }
-
-    return block.value.text.startsWith(`@${UPLOADS_ROOT}/`)
-      ? { typed: "", rest: input }
-      : { typed: block.value.text, rest: Arr.remove(input, first.value) };
-  };
-
-  /** `error` with its message redacted: what a server answers may carry an argument's value. */
-  const redactedError = (error: SessionError, redact: <A>(value: A) => A) => {
-    const redacted: Types.Mutable<ConstructorParameters<typeof SessionError>[0]> = {
-      operation: error.operation,
-      message: redact(error.message),
-    };
-
-    if (error.code !== undefined) redacted.code = error.code;
-
-    if (error.server !== undefined) redacted.server = error.server;
-
-    return SessionError.make(redacted);
-  };
-
   /**
-   * The draft of a message that names an MCP prompt: the prompt is got now, once, as the message is admitted
-   * (`docs/architecture/mcp-in-a-session.md` → Getting a prompt at send), and its block, its images and the typed text are
-   * the message's parts, in that order, with what the owner attached after them (`from` parts into the draft). Anything
-   * that goes wrong refuses the send with a code, and nothing is placed.
+   * Check the pick `picked` of `prompt` before anything is asked of a server: this Session has MCP prompts, the message
+   * is no Review, the Environment still offers the prompt and the arguments are sound. What it answers is what the get
+   * sends: the prompt as the catalog lists it, and the arguments cleaned (`promptArguments`).
    */
-  const mcpPromptDraft = (
-    prompt: Prompt,
-    picked: NonNullable<Prompt["mcpPrompt"]>,
-  ): Effect.Effect<{ readonly draft: InputSubmissionDraft; readonly from: number }, SessionError> =>
+  const checkedPick = (prompt: Prompt, picked: NonNullable<Prompt["mcpPrompt"]>) =>
     Effect.gen(function* () {
       const { ref } = picked;
 
       const refused = (code: McpPromptErrorCode, message: string) =>
-        SessionError.make({ operation: "submit", message, code, server: ref.server });
+        promptRefusal(code, message, ref.server);
 
       const prompts = options.mcp?.prompts;
 
@@ -2034,6 +2010,84 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       if (prompt.review !== undefined) {
         return yield* refused("MCP_PROMPT_FAILED", "An MCP prompt cannot go with a Review");
       }
+
+      const values = settings.current();
+      const catalog = yield* prompts.catalog(values);
+
+      const offered = Arr.findFirst(
+        catalog.prompts,
+        (each) => each.server === ref.server && each.name === ref.name,
+      );
+
+      if (Option.isNone(offered)) {
+        return yield* refused(
+          "MCP_PROMPT_FAILED",
+          `${ref.server} does not offer the prompt ${ref.name} (any more)`,
+        );
+      }
+
+      const wanted = ref.arguments ?? {};
+      const problem = promptArgumentsProblem(offered.value.arguments, wanted);
+
+      if (problem !== undefined) return yield* refused("MCP_PROMPT_ARGUMENTS", problem);
+
+      return {
+        prompts,
+        values,
+        entry: offered.value,
+        sent: promptArguments(offered.value.arguments, wanted),
+      };
+    });
+
+  /**
+   * Where the files of a prompt's result go: the Session's uploads directory, written through the lookup environment,
+   * which never starts the Container (ADR-0018). A result with no such file never needs it, so an environment that is
+   * not there is only a refusal of the files.
+   */
+  const promptFiles = (conversation: Conversation, session: string | undefined) =>
+    Effect.gen(function* () {
+      const env = yield* environment(conversation, { lookup: true }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(
+            "The Workspace environment for a prompt's files is not there",
+            error,
+          ).pipe(Effect.as(undefined)),
+        ),
+      );
+
+      // The files this send makes are named by a number of its own and their order.
+      const tag = (yield* Random.nextInt).toString(36);
+      let files = 0;
+
+      const save = async (file: PromptFile): Promise<string> => {
+        if (env === undefined || session === undefined) {
+          throw new Error("This Session has no Workspace to keep the file in");
+        }
+
+        const path = attachmentPath(session, promptFileName(file, `${tag}${files++}`));
+        const written = await env.writeFile(path, file.bytes, context);
+
+        if (!written.ok) throw new Error(written.error.message);
+
+        return path;
+      };
+
+      return { env, save };
+    });
+
+  /**
+   * The draft of a message that names an MCP prompt: the prompt is got now, once, as the message is admitted
+   * (`docs/architecture/mcp-in-a-session.md` → Getting a prompt at send), and its block, its images and the typed text are
+   * the message's parts, in the order `promptContent` names, with what the owner attached after them (`from`, the
+   * parts that are the prompt's own: `promptPartCount`). Anything that goes wrong refuses the send with a code, and
+   * nothing is placed.
+   */
+  const mcpPromptDraft = (
+    prompt: Prompt,
+    picked: NonNullable<Prompt["mcpPrompt"]>,
+  ): Effect.Effect<{ readonly draft: InputSubmissionDraft; readonly from: number }, SessionError> =>
+    Effect.gen(function* () {
+      const { ref } = picked;
 
       const {
         conversationId: _conversationId,
@@ -2050,66 +2104,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         return { draft: { type: "input" as const, content: input, ...rest }, from: 0 };
       }
 
+      const { prompts, values, entry, sent } = yield* checkedPick(prompt, picked);
+
       const conversation = yield* addressed(prompt.conversationId);
-      const values = settings.current();
-      const catalog = yield* prompts.catalog(values);
-
-      const offered = Arr.findFirst(
-        catalog.prompts,
-        (each) => each.server === ref.server && each.name === ref.name,
-      );
-
-      if (Option.isNone(offered)) {
-        return yield* refused(
-          "MCP_PROMPT_FAILED",
-          `${ref.server} does not offer the prompt ${ref.name} (any more)`,
-        );
-      }
-
-      const entry = offered.value;
-      const wanted = ref.arguments ?? {};
-      const problem = promptArgumentsProblem(entry.arguments, wanted);
-
-      if (problem !== undefined) return yield* refused("MCP_PROMPT_ARGUMENTS", problem);
-
-      const sent = promptArguments(entry.arguments, wanted);
       const redact = yield* picked.redact;
       const workspace = yield* subagentWorkspaceOf(conversation.id);
-
-      // The lookup environment never starts the Container (ADR-0018): files the prompt holds are written to the Workspace.
-      const env = yield* environment(conversation, { lookup: true }).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning(
-            "The Workspace environment for a prompt's files is not there",
-            error,
-          ).pipe(Effect.as(undefined)),
-        ),
-      );
-
-      const { typed, rest: beside } = typedAndRest(input);
-
-      const imageBudget =
-        INLINE_IMAGE_BUDGET -
-        Arr.reduce(beside, 0, (sum, block) =>
-          block.type === "image" ? sum + block.data.length : sum,
-        );
-
-      // The files this send makes are named by a number of its own and their order.
-      const tag = (yield* Random.nextInt).toString(36);
-      let files = 0;
-
-      const save = async (file: PromptFile): Promise<string> => {
-        if (env === undefined || prompts.session === undefined) {
-          throw new Error("This Session has no Workspace to keep the file in");
-        }
-
-        const path = attachmentPath(prompts.session, promptFileName(file, `${tag}${files++}`));
-        const written = await env.writeFile(path, file.bytes, context);
-
-        if (!written.ok) throw new Error(written.error.message);
-
-        return path;
-      };
+      const { env, save } = yield* promptFiles(conversation, prompts.session);
+      const { typed, beside } = typedAndBeside(input);
 
       const made = yield* prompts
         .get(
@@ -2128,49 +2129,35 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               title: entry.title,
               result,
               typed,
-              imageBudget,
+              imageBudget: INLINE_IMAGE_BUDGET - imageCharacters(beside),
               redact,
               save,
             }),
         )
         .pipe(Effect.mapError((error) => redactedError(error, redact)));
 
-      if ("code" in made) return yield* refused(made.code, redact(made.message));
+      if (Result.isFailure(made)) {
+        return yield* promptRefusal(made.failure.code, redact(made.failure.message), ref.server);
+      }
+
+      const message = made.success;
 
       // `$name` Skill links still apply to the typed text; no command runs.
       const skills =
         typed.includes("$") && env !== undefined ? yield* orNone("Skills", skillsIn(env)) : [];
 
-      const linked = linkSkillReferences(typed, skills);
-
-      const data: Types.Mutable<McpPromptData> = {
-        server: ref.server,
-        command: entry.command,
-        name: ref.name,
-        arguments: redact(sent),
-        parts: made.parts,
-        resources: made.resources,
-      };
-
-      if (entry.title !== undefined) data.title = entry.title;
-
-      if (made.description !== undefined) data.description = made.description;
-
-      const content = [
-        { type: "text" as const, text: made.block },
-        ...made.images,
-        ...(linked === "" ? [] : [{ type: "text" as const, text: linked }]),
-        ...beside,
-      ];
-
       return {
         draft: {
           type: "input" as const,
-          content,
+          content: promptContent(message, linkSkillReferences(typed, skills), beside),
           ...rest,
-          entry: ownerEntry({ display: typed, skills: [], mcpPrompt: data }),
+          entry: ownerEntry({
+            display: typed,
+            skills: [],
+            mcpPrompt: promptData(entry, redact(sent), message),
+          }),
         },
-        from: 1 + made.images.length,
+        from: promptPartCount(message),
       };
     });
 

@@ -27,7 +27,7 @@ export * from "./host.ts";
 
 export * from "./log.ts";
 
-export { isJsonObject, JsonObject } from "./json.ts";
+export { isJsonObject, JsonObject, jsonListOf, present } from "./json.ts";
 
 export { xMcpHeaderProblems } from "./tool-headers.ts";
 

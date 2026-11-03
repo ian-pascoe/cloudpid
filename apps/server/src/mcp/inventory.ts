@@ -13,9 +13,11 @@ import { boundedText, MAX_MCP_PROMPT_ARGUMENTS, MAX_MCP_PROMPT_NAME } from "@clo
 import {
   isJsonObject,
   JsonObject,
+  jsonListOf,
   type McpEngineDiscovered,
   McpEngineEra,
   McpInventoryProblem,
+  present,
   type McpServerState,
   type McpToolDefinition,
   xMcpHeaderProblems,
@@ -23,7 +25,6 @@ import {
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
@@ -44,14 +45,14 @@ export const MAX_INSTRUCTIONS_BYTES = 16 * 1024;
 /** At most 100 prompts and 64 KiB of their metadata. */
 export const MAX_PROMPTS = 100;
 
-export const MAX_PROMPT_BYTES = 64 * 1024;
+export const MAX_MCP_PROMPT_BYTES = 64 * 1024;
 
 /** A prompt's `title` is cut at 120 characters, its `description` at 1,000 and an argument's at 500. */
-export const MAX_PROMPT_TITLE = 120;
+export const MAX_MCP_PROMPT_TITLE = 120;
 
-export const MAX_PROMPT_DESCRIPTION = 1000;
+export const MAX_MCP_PROMPT_DESCRIPTION = 1000;
 
-export const MAX_PROMPT_ARGUMENT_DESCRIPTION = 500;
+export const MAX_MCP_PROMPT_ARGUMENT_DESCRIPTION = 500;
 
 /** How long a list stays fresh: a Modern server's `ttlMs`, at least a minute and at most 24 h, else 10 min. */
 export const DEFAULT_TTL_MS = 10 * MINUTE_MS;
@@ -115,22 +116,9 @@ const withDescriptionCut = (tool: McpToolDefinition): McpToolDefinition =>
     ? { ...tool, description: tool.description.slice(0, MAX_DESCRIPTION) }
     : tool;
 
-const decodeArguments = Schema.decodeUnknownOption(Schema.Array(Schema.Json));
-
 /** `value` as text cut to `max` characters with control characters stripped, or nothing when it is no text. */
 const textOf = (value: Schema.Json | undefined, max: number): string | undefined =>
   Predicate.isString(value) ? boundedText(value, max) : undefined;
-
-/** `entries` with the keys whose value is `undefined` left out. */
-const defined = (entries: Readonly<Record<string, Schema.Json | undefined>>): JsonObject => {
-  const kept: Record<string, Schema.Json> = {};
-
-  for (const [key, value] of Record.toEntries(entries)) {
-    if (value !== undefined) kept[key] = value;
-  }
-
-  return kept;
-};
 
 /**
  * A listed prompt as the inventory keeps it, or why it is not offered (`docs/architecture/mcp-in-a-session.md` → The `/`
@@ -147,7 +135,7 @@ export const vetPrompt = (prompt: JsonObject): Result.Result<JsonObject, string>
     return Result.fail(`its name is over ${String(MAX_MCP_PROMPT_NAME)} characters`);
   }
 
-  const declared = Option.getOrElse(decodeArguments(prompt["arguments"]), () => []);
+  const declared = jsonListOf(prompt["arguments"]);
 
   if (declared.length > MAX_MCP_PROMPT_ARGUMENTS) {
     return Result.fail(`it has more than ${String(MAX_MCP_PROMPT_ARGUMENTS)} arguments`);
@@ -170,20 +158,20 @@ export const vetPrompt = (prompt: JsonObject): Result.Result<JsonObject, string>
 
     seen.add(argumentName);
     kept.push(
-      defined({
+      present({
         name: argumentName,
-        title: textOf(argument?.["title"], MAX_PROMPT_TITLE),
-        description: textOf(argument?.["description"], MAX_PROMPT_ARGUMENT_DESCRIPTION),
+        title: textOf(argument?.["title"], MAX_MCP_PROMPT_TITLE),
+        description: textOf(argument?.["description"], MAX_MCP_PROMPT_ARGUMENT_DESCRIPTION),
         required: argument?.["required"] === true ? true : undefined,
       }),
     );
   }
 
   return Result.succeed(
-    defined({
+    present({
       name,
-      title: textOf(prompt["title"], MAX_PROMPT_TITLE),
-      description: textOf(prompt["description"], MAX_PROMPT_DESCRIPTION),
+      title: textOf(prompt["title"], MAX_MCP_PROMPT_TITLE),
+      description: textOf(prompt["description"], MAX_MCP_PROMPT_DESCRIPTION),
       arguments: kept.length === 0 ? undefined : kept,
     }),
   );
@@ -265,7 +253,7 @@ export const inventoryRows = (discovered: McpEngineDiscovered, now: number): Inv
   const prompts = takeWithinBounds(
     Arr.filterMap(vetted, ({ vetted: result }) => result),
     MAX_PROMPTS,
-    MAX_PROMPT_BYTES,
+    MAX_MCP_PROMPT_BYTES,
   );
 
   const instructions =

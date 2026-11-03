@@ -4,7 +4,7 @@
 // a refusal is the caller's.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off -- the Workspace's file writes are Promise-native, and the walk is over short lists of JSON.
 import { normalizeMcpName } from "@cloudpid/config";
-import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
+import { isJsonObject, type JsonObject, jsonListOf, present } from "@cloudpid/mcp/types";
 import {
   boundedText,
   cleanText,
@@ -19,6 +19,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 const encoder = new TextEncoder();
@@ -33,7 +34,7 @@ export const MAX_MCP_PROMPT_BLOCK_BYTES = 1024 * 1024;
  * Attached resources have a guard of their own (`docs/architecture/mcp-in-a-session.md` → Attached resources), the two
  * share this one.
  */
-export const MCP_PROMPT_INLINE_TEXT_BYTES = 128 * 1024;
+export const MAX_MCP_PROMPT_INLINE_TEXT_BYTES = 128 * 1024;
 
 /** The URIs a prompt's resource references keep, in characters. */
 const MAX_URI = 2048;
@@ -117,20 +118,11 @@ type Item = { readonly role: "user" | "assistant"; readonly content: JsonObject 
 
 const refusal = (message: string): PromptRefusal => ({ code: "MCP_PROMPT_FAILED", message });
 
-const malformed = (why: string): PromptRefusal =>
-  refusal(`The server's prompt is malformed: ${why}`);
-
-const decodeList = Schema.decodeUnknownOption(Schema.Array(Schema.Json));
-
-/** `value` as a list of JSON, or none. */
-const listOf = (value: Schema.Json | undefined): ReadonlyArray<Schema.Json> =>
-  Option.getOrElse(decodeList(value), () => []);
-
-const isRefusal = <A extends object>(value: A | PromptRefusal): value is PromptRefusal =>
-  "code" in value && "message" in value;
+/** A result that is not a prompt. */
+const malformed = (why: string) => Result.fail(refusal(`The server's prompt is malformed: ${why}`));
 
 /** The content blocks of the result's messages, in order; or why the result is not a prompt. */
-const itemsOf = (result: Schema.Json): ReadonlyArray<Item> | PromptRefusal => {
+const itemsOf = (result: Schema.Json): Result.Result<ReadonlyArray<Item>, PromptRefusal> => {
   if (!isJsonObject(result)) return malformed("it is not an object");
 
   const messages = result["messages"];
@@ -139,7 +131,7 @@ const itemsOf = (result: Schema.Json): ReadonlyArray<Item> | PromptRefusal => {
 
   const items: Array<Item> = [];
 
-  for (const message of listOf(messages)) {
+  for (const message of jsonListOf(messages)) {
     if (!isJsonObject(message)) return malformed("a message is not an object");
 
     const { role, content } = message;
@@ -147,14 +139,14 @@ const itemsOf = (result: Schema.Json): ReadonlyArray<Item> | PromptRefusal => {
     if (role !== "user" && role !== "assistant") return malformed("a message has no role");
 
     // The spec's content is one block; a list of blocks is read the same way.
-    for (const block of Arr.isArray(content) ? listOf(content) : [content]) {
+    for (const block of Arr.isArray(content) ? jsonListOf(content) : [content]) {
       if (!isJsonObject(block)) return malformed("a message has no content");
 
       items.push({ role, content: block });
     }
   }
 
-  return items;
+  return Result.succeed(items);
 };
 
 /** The tags a prompt's own text must not close or open: the message's own blocks. */
@@ -193,13 +185,6 @@ const fileFacts = (mimeType: string | undefined, bytes: number): string =>
 const asString = (value: Schema.Json | undefined): string | undefined =>
   Predicate.isString(value) ? value : undefined;
 
-/** `fields` without the ones that are `undefined`, so a record built from them has no key for what is absent. */
-const present = <A extends object>(fields: A) =>
-  // SAFETY: only the keys whose value is not `undefined` are kept, which is what `Exclude<A[K], undefined>` says.
-  Record.filter(fields as Readonly<Record<string, unknown>>, Predicate.isNotUndefined) as {
-    [K in keyof A]?: Exclude<A[K], undefined>;
-  };
-
 /** What one content block became: its text in the block, the part and resource it keeps. */
 type Made = {
   readonly line: string;
@@ -217,23 +202,43 @@ type Walk = {
 };
 
 /** The files the Workspace keeps: written, or why not. */
-const saved = async (input: PromptInput, file: PromptFile): Promise<string | PromptRefusal> => {
+const saved = async (
+  input: PromptInput,
+  file: PromptFile,
+): Promise<Result.Result<string, PromptRefusal>> => {
   try {
-    return await input.save(file);
+    return Result.succeed(await input.save(file));
   } catch {
-    return refusal("The prompt's content could not be saved to the Workspace");
+    return Result.fail(refusal("The prompt's content could not be saved to the Workspace"));
   }
 };
 
+/** The result of making one content block. */
+type Making = Result.Result<Made, PromptRefusal>;
+
+/**
+ * Counts an image of the result and, when it is a type the providers take and fits what the budget has left, takes its
+ * room: the image to send inline. Undefined for one that goes to a file.
+ */
+const takeInline = (walk: Walk, data: string, mimeType: string): PromptImage | undefined => {
+  walk.images += 1;
+
+  if (!isInlineImageType(mimeType) || data.length > walk.budget) return undefined;
+
+  walk.budget -= data.length;
+
+  return { type: "image", data, mimeType };
+};
+
 /** A text block. */
-const textBlock = (walk: Walk, role: Item["role"], content: JsonObject): Made | PromptRefusal => {
+const textBlock = (walk: Walk, role: Item["role"], content: JsonObject): Making => {
   const text = asString(content["text"]);
 
   if (text === undefined) return malformed("a text has no text");
 
   const line = proseOf(walk.input, text);
 
-  return { line, part: { role, type: "text", bytes: bytesOf(line) } };
+  return Result.succeed({ line, part: { role, type: "text", bytes: bytesOf(line) } });
 };
 
 /** An image or an audio block: an image within the budget goes inline, anything else to a file. */
@@ -242,7 +247,7 @@ const mediaBlock = async (
   role: Item["role"],
   type: "image" | "audio",
   content: JsonObject,
-): Promise<Made | PromptRefusal> => {
+): Promise<Making> => {
   const data = asString(content["data"]);
   const mimeType = asString(content["mimeType"]);
 
@@ -250,18 +255,14 @@ const mediaBlock = async (
 
   const size = base64Bytes(data);
 
-  if (type === "image") {
-    walk.images += 1;
+  const image = type === "image" ? takeInline(walk, data, mimeType) : undefined;
 
-    if (isInlineImageType(mimeType) && data.length <= walk.budget) {
-      walk.budget -= data.length;
-
-      return {
-        line: `[image ${String(walk.images)}]`,
-        part: { role, type, mimeType, bytes: size },
-        image: { type: "image", data, mimeType },
-      };
-    }
+  if (image !== undefined) {
+    return Result.succeed({
+      line: `[image ${String(walk.images)}]`,
+      part: { role, type, mimeType, bytes: size },
+      image,
+    });
   }
 
   const bytes = decodeBase64(data);
@@ -270,22 +271,22 @@ const mediaBlock = async (
 
   const path = await saved(walk.input, { kind: type, mimeType, bytes });
 
-  if (!Predicate.isString(path)) return path;
+  if (Result.isFailure(path)) return Result.fail(path.failure);
 
   const line =
     type === "image"
-      ? `[image ${String(walk.images)}: ${path} ${fileFacts(mimeType, size)}]`
-      : `[audio: ${path} ${fileFacts(mimeType, size)}]`;
+      ? `[image ${String(walk.images)}: ${path.success} ${fileFacts(mimeType, size)}]`
+      : `[audio: ${path.success} ${fileFacts(mimeType, size)}]`;
 
-  return {
+  return Result.succeed({
     line,
-    part: { role, type, mimeType, bytes: size, path },
-    resource: { uri: path, mimeType, size, kind: "spill", path },
-  };
+    part: { role, type, mimeType, bytes: size, path: path.success },
+    resource: { uri: path.success, mimeType, size, kind: "spill", path: path.success },
+  });
 };
 
 /** A `resource_link`: pi's line for it, with no read clause (the resource tools do not reach a server's resources yet). */
-const linkBlock = (walk: Walk, role: Item["role"], content: JsonObject): Made | PromptRefusal => {
+const linkBlock = (walk: Walk, role: Item["role"], content: JsonObject): Making => {
   const uri = asString(content["uri"]);
 
   if (uri === undefined) return malformed("a resource link has no uri");
@@ -305,11 +306,11 @@ const linkBlock = (walk: Walk, role: Item["role"], content: JsonObject): Made | 
   const why = described === undefined ? "" : `: ${described}`;
   const shown = boundedText(uri, MAX_URI);
 
-  return {
+  return Result.succeed({
     line: proseOf(walk.input, `[Resource ${uri}${label}${inParens}${why}]`),
     part: { role, type: "resource_link", ...present({ uri: shown, mimeType }) },
     resource: { uri: shown, kind: "link", ...present({ mimeType, size }) },
-  };
+  });
 };
 
 /** An embedded resource: text in an untrusted `<mcp_resources>` block, in place; an image inline; the rest in a file. */
@@ -317,7 +318,7 @@ const embeddedBlock = async (
   walk: Walk,
   role: Item["role"],
   content: JsonObject,
-): Promise<Made | PromptRefusal> => {
+): Promise<Making> => {
   const { input } = walk;
   const embedded = content["resource"];
 
@@ -334,46 +335,46 @@ const embeddedBlock = async (
   const mime = mimeType === undefined ? "" : ` mime_type="${attribute(input, mimeType)}"`;
   const where = `server="${attribute(input, normalizeMcpName(input.server))}" uri="${attribute(input, shown)}"${mime}`;
 
-  const filed = (path: string, size: number): Made => ({
-    line: `<mcp_resources>\n<resource ${where} path="${attribute(input, path)}"/>\n</mcp_resources>`,
-    part: { role, type: "resource", uri: shown, bytes: size, path, ...present({ mimeType }) },
-    resource: { uri: shown, size, kind: "spill", path, ...present({ mimeType }) },
-  });
+  const filed = (path: string, size: number): Making =>
+    Result.succeed({
+      line: `<mcp_resources>\n<resource ${where} path="${attribute(input, path)}"/>\n</mcp_resources>`,
+      part: { role, type: "resource", uri: shown, bytes: size, path, ...present({ mimeType }) },
+      resource: { uri: shown, size, kind: "spill", path, ...present({ mimeType }) },
+    });
 
   if (text !== undefined) {
     const cleaned = input.redact(cleanText(text));
     const size = bytesOf(cleaned);
 
-    if (size <= MCP_PROMPT_INLINE_TEXT_BYTES) {
-      return {
+    if (size <= MAX_MCP_PROMPT_INLINE_TEXT_BYTES) {
+      return Result.succeed({
         line: `<mcp_resources>\n<resource ${where}>${escapePageText(cleaned)}</resource>\n</mcp_resources>`,
         part: { role, type: "resource", uri: shown, bytes: size, ...present({ mimeType }) },
         resource: { uri: shown, size, kind: "text", ...present({ mimeType }) },
-      };
+      });
     }
 
     const path = await saved(input, { kind: "resource", mimeType, bytes: encoder.encode(cleaned) });
 
-    return Predicate.isString(path) ? filed(path, size) : path;
+    return Result.isFailure(path) ? Result.fail(path.failure) : filed(path.success, size);
   }
 
   if (blob === undefined) return malformed("an embedded resource has no content");
 
   const size = base64Bytes(blob);
 
-  if (mimeType !== undefined && isInlineImageType(mimeType)) {
-    walk.images += 1;
+  const image =
+    mimeType !== undefined && isInlineImageType(mimeType)
+      ? takeInline(walk, blob, mimeType)
+      : undefined;
 
-    if (blob.length <= walk.budget) {
-      walk.budget -= blob.length;
-
-      return {
-        line: `[image ${String(walk.images)}]`,
-        part: { role, type: "image", mimeType, bytes: size, uri: shown },
-        resource: { uri: shown, mimeType, size, kind: "image" },
-        image: { type: "image", data: blob, mimeType },
-      };
-    }
+  if (image !== undefined) {
+    return Result.succeed({
+      line: `[image ${String(walk.images)}]`,
+      part: { role, type: "image", mimeType: image.mimeType, bytes: size, uri: shown },
+      resource: { uri: shown, mimeType: image.mimeType, size, kind: "image" },
+      image,
+    });
   }
 
   const bytes = decodeBase64(blob);
@@ -382,11 +383,11 @@ const embeddedBlock = async (
 
   const path = await saved(input, { kind: "resource", mimeType, bytes });
 
-  return Predicate.isString(path) ? filed(path, size) : path;
+  return Result.isFailure(path) ? Result.fail(path.failure) : filed(path.success, size);
 };
 
 /** One content block as the block and the entry have it; nothing for a kind this build does not know. */
-const madeOf = (walk: Walk, { role, content }: Item): Promise<Made | PromptRefusal | undefined> => {
+const madeOf = (walk: Walk, { role, content }: Item): Promise<Making | undefined> => {
   switch (asString(content["type"])) {
     case "text":
       return Promise.resolve(textBlock(walk, role, content));
@@ -411,10 +412,14 @@ const madeOf = (walk: Walk, { role, content }: Item): Promise<Made | PromptRefus
  * (images past the budget, audio, a large or binary embedded resource) in files the caller's `save` writes. A result
  * that is not a prompt, a file that cannot be written, or a block over its bound is refused.
  */
-export const promptMessage = async (input: PromptInput): Promise<PromptMessage | PromptRefusal> => {
-  const items = itemsOf(input.result);
+export const promptMessage = async (
+  input: PromptInput,
+): Promise<Result.Result<PromptMessage, PromptRefusal>> => {
+  const read = itemsOf(input.result);
 
-  if (isRefusal(items)) return items;
+  if (Result.isFailure(read)) return Result.fail(read.failure);
+
+  const items = read.success;
 
   const walk: Walk = { input, images: 0, budget: input.imageBudget };
   const segments: Array<string> = [];
@@ -427,9 +432,9 @@ export const promptMessage = async (input: PromptInput): Promise<PromptMessage |
 
     if (made === undefined) continue;
 
-    if (isRefusal(made)) return made;
+    if (Result.isFailure(made)) return Result.fail(made.failure);
 
-    const { line, part, resource, image } = made;
+    const { line, part, resource, image } = made.success;
 
     segments.push(
       item.role === "assistant"
@@ -451,10 +456,10 @@ export const promptMessage = async (input: PromptInput): Promise<PromptMessage |
   const block = `${open}\n${Arr.join(segments, "\n\n")}\n</mcp_prompt>`;
 
   if (bytesOf(block) + bytesOf(input.typed) > MAX_MCP_PROMPT_BLOCK_BYTES) {
-    return {
+    return Result.fail({
       code: "MCP_PROMPT_TOO_LARGE",
       message: "The prompt is too large to send: its text and yours are over 1 MiB",
-    };
+    });
   }
 
   const described = isJsonObject(input.result) ? asString(input.result["description"]) : undefined;
@@ -465,5 +470,5 @@ export const promptMessage = async (input: PromptInput): Promise<PromptMessage |
       ? undefined
       : input.redact(boundedText(described, MAX_MCP_PROMPT_RESULT_DESCRIPTION));
 
-  return { block, images, description, parts, resources };
+  return Result.succeed({ block, images, description, parts, resources });
 };

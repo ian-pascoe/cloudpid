@@ -6,16 +6,15 @@ import { mcpToolNames } from "@cloudpid/config";
 import {
   isJsonObject,
   type JsonObject,
+  jsonListOf,
   type McpServerInventory,
   readMcpServerState,
   type McpServerState,
 } from "@cloudpid/mcp/types";
 import type { McpCatalogServer, McpPromptArgument, McpPromptEntry } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
-import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { vetPrompt } from "../mcp/inventory.ts";
 
@@ -24,8 +23,6 @@ export type PromptCatalog = {
   readonly prompts: ReadonlyArray<McpPromptEntry>;
   readonly mcpServers: ReadonlyArray<McpCatalogServer>;
 };
-
-const decodeList = Schema.decodeUnknownOption(Schema.Array(Schema.Json));
 
 /** Where a server's definition is, as the menu names it: `owner`, or `repo:<owner/repo>` for a Repo's `.pi/mcp.json`. */
 const sourceOf = (source: McpServerInventory["source"]): string =>
@@ -42,23 +39,20 @@ const rowState = (state: McpServerState): McpCatalogServer["state"] => {
 
 /** A vetted prompt's arguments as the form shows them. */
 const argumentsOf = (prompt: JsonObject): ReadonlyArray<McpPromptArgument> =>
-  Arr.filterMap(
-    Option.getOrElse(decodeList(prompt["arguments"]), () => []),
-    (each) => {
-      if (!isJsonObject(each) || !Predicate.isString(each["name"])) return Result.failVoid;
+  Arr.filterMap(jsonListOf(prompt["arguments"]), (each) => {
+    if (!isJsonObject(each) || !Predicate.isString(each["name"])) return Result.failVoid;
 
-      const argument: Mutable<McpPromptArgument> = {
-        name: each["name"],
-        required: each["required"] === true,
-      };
+    const argument: Mutable<McpPromptArgument> = {
+      name: each["name"],
+      required: each["required"] === true,
+    };
 
-      if (Predicate.isString(each["title"])) argument.title = each["title"];
+    if (Predicate.isString(each["title"])) argument.title = each["title"];
 
-      if (Predicate.isString(each["description"])) argument.description = each["description"];
+    if (Predicate.isString(each["description"])) argument.description = each["description"];
 
-      return Result.succeed(argument);
-    },
-  );
+    return Result.succeed(argument);
+  });
 
 /** `prompt`, a vetted prompt of `server`, as a menu entry under `command`. */
 const entryOf = (
