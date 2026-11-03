@@ -151,10 +151,13 @@ export class TestSubagentSession extends DurableObject {
                 // The read of the settings is the first step of placing a message, so holding it holds a message
                 // in the middle of being placed (`holdPlacing`).
                 read: Effect.promise(() => this.#placing?.promise ?? Promise.resolve()).pipe(
-                  Effect.as({
-                    global: ctx.storage.kv.get<Schema.Json>("overrides") ?? {},
-                    overrides: {},
-                  }),
+                  // Read after the hold, at each read: `Effect.as` would take the overrides once, when the layer is built.
+                  Effect.andThen(
+                    Effect.sync(() => ({
+                      global: ctx.storage.kv.get<Schema.Json>("overrides") ?? {},
+                      overrides: {},
+                    })),
+                  ),
                 ),
                 kv: ctx.storage.kv,
               }),
