@@ -7,6 +7,7 @@
  * the other end may extend has a fallback member, which the reader takes as a generic failure. A token is in the
  * `ok` answer only: no other answer, report or error carries one.
  */
+import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 
 /** `mcpAccessToken({ environment, server, stale? })`: the host asks before it connects to an OAuth-capable HTTP server. */
@@ -331,3 +332,7 @@ export const readMcpSignInCompleteAnswer = (
         status: "unavailable",
         message: "The Registry answered with something this build does not know",
       };
+
+/** The scopes of a space-separated list (an OAuth `scope` value), as the Registry and the host both read one. */
+export const scopesOf = (list: string | undefined): ReadonlyArray<string> =>
+  Arr.filter((list ?? "").split(/\s+/), (scope) => scope !== "");

@@ -2,8 +2,9 @@
 // object; ADR-0034): `mcpAccessToken`, which hands a short-lived access token over Durable Object RPC (the host keeps it in
 // memory only), `reportMcpAuth`, which records the transitions a host sees, and `signInsRevision`. Only the Registry holds
 // tokens at rest. The sign-in is found from the Environment's own MCP server set (its source, normalized name and URL),
-// never from what the host says. The Registry never calls out: a refresh is a seam (`Refresh`, #454, which fills it with
-// refreshing and single-flight), and what a report resolves goes back in the answer.
+// never from what the host says. The Registry never calls out to a host: a refresh is a seam (`Refresh`, filled by
+// `mcp-sign-in-refresh.ts` with single-flight, backoff and the authorization server's answers), and what a report
+// resolves goes back in the answer.
 //
 // No answer but `ok` holds a token, and no log line, status or error does: a failure says which row by its hash, and a
 // reason is the owner-facing last error (≤300 chars) or what the Registry found.
@@ -11,6 +12,7 @@
 import { mcpSignInKey, type McpResolvedServer, type McpSignInKey } from "@cloudpid/config";
 import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import { stepUpScope } from "@cloudpid/mcp/oauth";
+import { scopesOf } from "@cloudpid/mcp/types";
 import type {
   McpAccessTokenAnswer,
   McpAccessTokenInput,
@@ -100,10 +102,6 @@ export const clip = (text: string, limit: number): string => {
   return points.length <= limit ? text : points.slice(0, limit).join("");
 };
 
-/** The scopes of a space-separated list. */
-const scopesOf = (list: string | undefined): ReadonlyArray<string> =>
-  (list ?? "").split(/\s+/).filter((scope) => scope !== "");
-
 /** The scopes of space-separated `lists`, once each, in the order they first appear. */
 export const mergeScopes = (...lists: ReadonlyArray<string | undefined>): string | null => {
   const scopes = new Set(Arr.flatMap(lists, scopesOf));
@@ -118,14 +116,22 @@ const sameScopeSet = (left: string, right: string): boolean => {
   return a.size === b.size && [...a].every((scope) => b.has(scope));
 };
 
-/** What a refresh answers: the token to use, or why there is none. The seam #454 fills. */
-export type Refresh = (
-  row: McpSignInRow,
-  tokens: McpTokens,
-  trigger: "expiry" | "401",
-) => Effect.Effect<McpAccessTokenAnswer>;
+/** What a refresh is asked: the sign-in, its open tokens, and why the access token is wanted anew. */
+export type RefreshRequest = {
+  readonly environment: string;
+  /** The server's name as the host spells it, to find the entry a configured client's secret is read from. */
+  readonly server: string;
+  readonly key: McpSignInKey;
+  readonly row: McpSignInRow;
+  readonly tokens: McpTokens;
+  /** `expiry`: the token is in its last minute; `401`: the server just refused it. */
+  readonly trigger: "expiry" | "401";
+};
 
-/** Until a refresh is built, a token past its time is not served and nothing reaches an authorization server. */
+/** What a refresh answers: the token to use, or why there is none (`mcp-sign-in-refresh.ts`). */
+export type Refresh = (request: RefreshRequest, now: number) => Effect.Effect<McpAccessTokenAnswer>;
+
+/** Without a refresh, a token past its time is not served and nothing reaches an authorization server. */
 const NO_REFRESH: Refresh = () =>
   Effect.succeed({
     status: "unavailable",
@@ -202,7 +208,7 @@ const answerFor = (
 
         const mustRefresh = refused && !tokenRejected;
         // The token is asked for again from a minute before it expires (`REFRESH_MARGIN_MS`); the last minute's token is
-        // never served, not even without a refresh token (#454 settles that with the refresh).
+        // never served as it is: a refresh is asked for it (`Refresh`), or it is withheld when there is no refresh token.
         const expiring = row.expiresAt !== null && row.expiresAt - REFRESH_MARGIN_MS <= now;
 
         if (!mustRefresh && !expiring) {
@@ -215,8 +221,8 @@ const answerFor = (
           const reason = "The sign-in expired and has no refresh token: sign in again";
 
           // A token past its time with nothing to refresh it is gone: the row says `required` too, so Settings does not
-          // show it as signed in. A token in its last minute, or one the server refused, is withheld but kept: whether
-          // to serve the last minute is #454's, with refresh (→ Refresh and step-up).
+          // show it as signed in. A token in its last minute, or one the server refused, is withheld but kept: a token
+          // that has a refresh token is refreshed (→ Refresh and step-up).
           if (row.expiresAt !== null && row.expiresAt <= now) {
             deps.signIns.dropTokens(key.hash, reason, now);
           }
@@ -224,14 +230,24 @@ const answerFor = (
           return Effect.succeed<McpAccessTokenAnswer>({ status: "required", reason });
         }
 
-        return (deps.refresh ?? NO_REFRESH)(row, held, expiring ? "expiry" : "401");
+        return (deps.refresh ?? NO_REFRESH)(
+          {
+            environment: input.environment,
+            server: input.server,
+            key,
+            row,
+            tokens: held,
+            trigger: expiring ? "expiry" : "401",
+          },
+          now,
+        );
       },
     }),
   );
 };
 
 /** The `ok` answer for `row`'s `tokens`. */
-const okAnswer = (
+export const okAnswer = (
   row: McpSignInRow,
   tokens: McpTokens,
   key: McpSignInKey,

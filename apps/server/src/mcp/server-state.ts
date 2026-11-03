@@ -108,8 +108,12 @@ export const currentVersions = Effect.gen(function* () {
   return { views, versions: versionsOf(views) };
 });
 
-/** What makes a discovery due: a demand (a Session's request, a status read), a set change, or a reload. */
-export type Trigger = "demand" | "set" | "reload";
+/**
+ * What makes a discovery due: a demand (a Session's request, a status read), a set change, a reload, or a change of an
+ * MCP sign-in (`signed_in`, `replaced` or `rebound` pushed for the server, or a pull that finds the sign-ins revision
+ * moved).
+ */
+export type Trigger = "demand" | "set" | "reload" | "sign_in";
 
 /** Whether `view` is due a discovery at `now` for `trigger`; `usedRecently` says whether a Session used the host. */
 export const isDue = (
@@ -123,6 +127,22 @@ export const isDue = (
   if (trigger === "reload") return true;
 
   const { status } = view;
+
+  // A sign-in changed: a server that is not working is asked at once, a backoff or a host failure's hold
+  // notwithstanding (the change may be what it waited for): `sign_in`, `rejected`, `unavailable` and `not_discovered`, and `failed` or
+  // `unknown` once a minute has passed since they were last tried. Which servers the trigger is started for is the
+  // caller's (the host's `takeSignIns` names the sign-in's servers; its pull names only those at `sign_in` or
+  // `rejected`).
+  if (trigger === "sign_in") {
+    return (
+      status !== undefined &&
+      Match.value(status.state).pipe(
+        Match.whenOr("sign_in", "rejected", "unavailable", "not_discovered", () => true),
+        Match.whenOr("failed", "unknown", () => now - status.since >= RETRY_FLOOR_MS),
+        Match.orElse(() => false),
+      )
+    );
+  }
 
   if (status === undefined) return trigger === "demand" || usedRecently;
 

@@ -7,6 +7,8 @@ import {
   Cut,
   McpEngineDiscoverResult,
   McpEngineRequestResult,
+  SignInRequired,
+  StepUpRequired,
   TimedOut,
   Unsupported,
 } from "@cloudpid/mcp/types";
@@ -28,7 +30,10 @@ declare global {
 }
 
 /** A target on a fake of `kind`, fresh for `key`. */
-const target = (kind: "modern" | "legacy" | "stateful" | "headers" | "logging", key: string) => ({
+const target = (
+  kind: "modern" | "legacy" | "stateful" | "headers" | "logging" | "unauthorized" | "forbidden",
+  key: string,
+) => ({
   kind: "http" as const,
   conn: `conn-${key}`,
   name: key,
@@ -448,6 +453,44 @@ describe("access tokens", () => {
       error: { message: expect.stringContaining("you sent [REDACTED]") },
     });
     expect(JSON.stringify(called)).not.toContain(token);
+  });
+});
+
+describe("an OAuth wall", () => {
+  const discover = async (server: ReturnType<typeof target>) =>
+    Schema.decodeSync(McpEngineDiscoverResult)(
+      await env.MCP_ENGINE.discover(server, {}, patient()),
+    );
+
+  it("fails a 401 as a sign-in with the parameters of its WWW-Authenticate challenge", async () => {
+    expect(await discover(target("unauthorized", "wall"))).toMatchObject({
+      kind: "failed",
+      error: expect.objectContaining({
+        constructor: SignInRequired,
+        rejected: false,
+        challenge: {
+          resourceMetadataUrl: "https://unauthorized.test/.well-known/oauth-protected-resource",
+          error: "invalid_token",
+          errorDescription: "expired",
+        },
+      }),
+    });
+  });
+
+  it("fails a 403 for more scope as a step-up with the scope and the challenge", async () => {
+    expect(await discover(target("forbidden", "wall"))).toMatchObject({
+      kind: "failed",
+      error: expect.objectContaining({
+        constructor: StepUpRequired,
+        scope: "write",
+        challenge: {
+          resourceMetadataUrl: "https://forbidden.test/.well-known/oauth-protected-resource",
+          scope: "write",
+          error: "insufficient_scope",
+          errorDescription: "Needs write",
+        },
+      }),
+    });
   });
 });
 

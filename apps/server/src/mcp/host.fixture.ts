@@ -6,11 +6,14 @@
 // each discovery of a server's URL answers (or holds until released or aborted), and a clock the test moves forward.
 import {
   HostFailed,
+  type McpAccessTokenAnswer,
+  type McpAccessTokenInput,
   type McpApply,
   type McpApplyResult,
   type McpEngineDiscoverResult,
   type McpEngineMethods,
   type McpEnginePriorEncoded,
+  type McpAuthReport,
   type McpEngineTargetEncoded,
   type McpRequestStart,
   type McpRequestStartAnswer,
@@ -24,7 +27,9 @@ import {
 import { DurableObject } from "cloudflare:workers";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -119,6 +124,8 @@ export const hostServicesOver = (store: McpHostStoreService) =>
     registry: {
       serverSet: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
       serverValues: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
+      accessToken: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
+      reportAuth: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
     },
     engine: mcpEngineClient({ discover: async (target) => unscripted(target.url) }),
   });
@@ -134,11 +141,21 @@ export class TestMcpHost extends DurableObject {
   /** What the Registry answers for a server's values, by name; none resolves every name to `value`. */
   readonly #values = new Map<string, McpServerValuesAnswer>();
 
+  /** What the Registry answers `mcpAccessToken` for a server, in order, the last one for good; none: `required`. */
+  readonly #tokens = new Map<string, Array<McpAccessTokenAnswer | "unreachable">>();
+
+  readonly #tokenAsks: Array<McpAccessTokenInput> = [];
+
+  readonly #reports: Array<McpAuthReport> = [];
+
   readonly #scripts = new Map<string, Array<EngineScript>>();
 
   readonly #held = new Map<string, Array<() => void>>();
 
   readonly #calls: Array<EngineCall> = [];
+
+  /** Every span the host's runtime made, with its attributes, and every log line, as text. */
+  readonly #observed: Array<string> = [];
 
   readonly #spans: Array<Tracer.NativeSpan> = [];
 
@@ -188,6 +205,32 @@ export class TestMcpHost extends DurableObject {
                 missing: [],
               },
           ),
+        accessToken: (input) =>
+          Effect.suspend(() => {
+            this.#tokenAsks.push(input);
+
+            const queue = this.#tokens.get(input.server);
+            const next = queue === undefined || queue.length === 0 ? undefined : queue[0];
+
+            // The last scripted answer stays.
+            if (queue !== undefined && queue.length > 1) queue.shift();
+
+            if (next === "unreachable") {
+              return Effect.fail(
+                McpRegistryUnavailable.make({ message: "The Registry did not answer" }),
+              );
+            }
+
+            return Effect.succeed<McpAccessTokenAnswer>(
+              next ?? { status: "required", reason: "Not signed in" },
+            );
+          }),
+        reportAuth: (report) =>
+          Effect.sync(() => {
+            this.#reports.push(report);
+
+            return { status: "recorded", resolved: [] };
+          }),
       },
       engine: mcpEngineClient(this.#engine),
       references: Layer.mergeAll(
@@ -201,12 +244,20 @@ export class TestMcpHost extends DurableObject {
             span: (options) => {
               const span = new Tracer.NativeSpan(options);
 
+              this.#observed.push(span.name);
+
+              // The attributes are read when the span is read: they are set after it starts.
               this.#spans.push(span);
 
               return span;
             },
           }),
         ),
+        Logger.layer([
+          Logger.make((entry) => {
+            this.#observed.push(`${JSON.stringify(entry.message)} ${Cause.pretty(entry.cause)}`);
+          }),
+        ]),
       ),
     }),
   );
@@ -221,6 +272,21 @@ export class TestMcpHost extends DurableObject {
   /** Script the Registry's answer for `server`'s `${NAME}` values. */
   scriptValues(server: string, answer: McpServerValuesAnswer): void {
     this.#values.set(server, answer);
+  }
+
+  /** Script the Registry's answers to `mcpAccessToken` for `server`, in order; the last one stays. */
+  scriptToken(server: string, answers: ReadonlyArray<McpAccessTokenAnswer | "unreachable">): void {
+    this.#tokens.set(server, [...answers]);
+  }
+
+  /** What the host asked `mcpAccessToken` for, in order. */
+  tokenAsks(): ReadonlyArray<McpAccessTokenInput> {
+    return this.#tokenAsks;
+  }
+
+  /** What the host reported to the Registry, in order. */
+  reports(): ReadonlyArray<McpAuthReport> {
+    return this.#reports;
   }
 
   /** Queue the engine's answers to the next discoveries of `url`, in order. */
@@ -290,6 +356,18 @@ export class TestMcpHost extends DurableObject {
   /** The era and Legacy session rows of `conn`. */
   prior(conn: string): McpEnginePriorEncoded {
     return this.#store.prior(conn);
+  }
+
+  /** What the host's runtime logged, and every span it made with its attributes, as text: to look for what must not be there. */
+  observed(): string {
+    return JSON.stringify([
+      this.#observed,
+      this.#spans.map(({ name, attributes, events }) => ({
+        name,
+        attributes: [...attributes],
+        events,
+      })),
+    ]);
   }
 
   /** Every table's rows as text, to look for what must not be there. */

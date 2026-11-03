@@ -137,6 +137,57 @@ describe("the probe's outcome table", () => {
     );
   });
 
+  it("403 insufficient_scope: the step-up carries the challenge's parameters", async () => {
+    const server = probeAnswered(
+      () =>
+        new Response("Forbidden", {
+          status: 403,
+          headers: {
+            "www-authenticate":
+              'Bearer error="insufficient_scope", scope="files:write", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource", error_description="More scope"',
+          },
+        }),
+    );
+
+    expect(await outcome(testDeps(fetchTo(server)))).toEqual(
+      failedWith(StepUpRequired, {
+        scope: "files:write",
+        challenge: {
+          resourceMetadataUrl: "https://mcp.example.com/.well-known/oauth-protected-resource",
+          scope: "files:write",
+          error: "insufficient_scope",
+          errorDescription: "More scope",
+        },
+      }),
+    );
+  });
+
+  it("401: the failure carries the challenge's parameters, with or without a token sent", async () => {
+    const header =
+      'Bearer error="invalid_token", error_description="expired", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"';
+
+    const challenge = {
+      resourceMetadataUrl: "https://mcp.example.com/.well-known/oauth-protected-resource",
+      error: "invalid_token",
+      errorDescription: "expired",
+    };
+
+    const unauthorized = () =>
+      new Response("Unauthorized", { status: 401, headers: { "www-authenticate": header } });
+
+    expect(await outcome(testDeps(fetchTo(probeAnswered(unauthorized))))).toEqual(
+      failedWith(SignInRequired, { rejected: false, challenge }),
+    );
+
+    const rejected = testDeps(fetchTo(probeAnswered(unauthorized)), {
+      auth: (stale) => Effect.succeed(stale ? "fresh-token" : "old-token"),
+    });
+
+    expect(await outcome(rejected)).toEqual(
+      failedWith(SignInRequired, { rejected: true, challenge }),
+    );
+  });
+
   it("any other 403: failed", async () => {
     const server = probeAnswered(() => new Response("Forbidden", { status: 403 }));
 

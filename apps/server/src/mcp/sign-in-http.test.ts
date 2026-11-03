@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { describe, expect, it, vi } from "vitest";
+import { type McpSignInCarry, noSignInCarry } from "./sign-in-carry.ts";
 import {
   serveCallback,
   serveClientDocument,
@@ -130,10 +131,15 @@ describe("the client document", () => {
 });
 
 describe("the callback", () => {
-  const get = (registryOf: SignInRegistry, query: string, method = "GET") =>
+  const get = (
+    registryOf: SignInRegistry,
+    query: string,
+    method = "GET",
+    carry: McpSignInCarry = noSignInCarry,
+  ) =>
     serve(
       new Request(`${ORIGIN}${CALLBACK}${query}`, { method }),
-      serveCallback(() => registryOf, CALLBACK),
+      serveCallback(() => registryOf, CALLBACK, carry),
     );
 
   it.each([
@@ -183,6 +189,60 @@ describe("the callback", () => {
       code: "abc",
       iss: "https://as.example",
       errorDescription: "d".repeat(1024),
+    });
+  });
+
+  describe("a completed sign-in's carry to the hosts", () => {
+    const signedIn: McpSignInCompleteAnswer = {
+      status: "signed_in",
+      server: "sentry",
+      environments: [
+        { id: "env_1", name: "Work" },
+        { id: "env_2", name: "Home" },
+      ],
+      resolved: [],
+      revision: 4,
+    };
+
+    const carrying = () => {
+      const carry = vi.fn(() => Effect.void);
+
+      return { carry, use: (): McpSignInCarry => ({ carry }) };
+    };
+
+    it("is told the server, the Environments that use it and the revision, before the page answers", async () => {
+      const carrier = carrying();
+
+      const response = await get(
+        registry({ complete: signedIn }).use(),
+        `?state=${STATE}&code=abc`,
+        "GET",
+        carrier.use(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(carrier.carry).toHaveBeenCalledTimes(1);
+      expect(carrier.carry.mock.calls[0]).toEqual([
+        {
+          change: "signed_in",
+          server: "sentry",
+          environments: signedIn.environments,
+          revision: 4,
+        },
+      ]);
+    });
+
+    it("is not told of a sign-in that did not complete", async () => {
+      const carrier = carrying();
+
+      await get(
+        registry({ complete: { status: "expired" } }).use(),
+        `?state=${STATE}&code=abc`,
+        "GET",
+        carrier.use(),
+      );
+
+      expect(carrier.carry).not.toHaveBeenCalled();
     });
   });
 

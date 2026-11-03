@@ -12,6 +12,8 @@ import {
   McpApplied,
   McpDestroyed,
   McpApplySet,
+  McpApplySignIns,
+  McpSignInsTaken,
   McpServerSetAnswer,
   McpSetSource,
   McpStale,
@@ -32,6 +34,12 @@ describe("readMcpApplyResult", () => {
     expect(read('{"_tag":"Destroyed"}')).toEqual(McpDestroyed.make({}));
     expect(read('{"_tag":"HostUnsupported","message":"no","op":"x"}')).toEqual(
       HostUnsupported.make({ message: "no", op: "x" }),
+    );
+  });
+
+  it("reads the sign-ins answer, and keeps the servers it reached", () => {
+    expect(read('{"_tag":"SignInsTaken","servers":["linear"]}')).toEqual(
+      McpSignInsTaken.make({ servers: ["linear"] }),
     );
   });
 
@@ -89,5 +97,23 @@ describe("the set's schemas", () => {
       hash: "h",
       signInsRevision: 0,
     });
+  });
+});
+
+describe("the sign-ins operation", () => {
+  const decode = Schema.decodeUnknownSync(McpApplySignIns);
+
+  it("reads a change this build knows and one a newer build adds, dropping keys it does not know", () => {
+    const base = { kind: "sign_ins", servers: ["linear"], revision: 3 };
+
+    expect(decode({ ...base, change: "signed_in", later: 1 })).toEqual({
+      ...base,
+      change: "signed_in",
+    });
+    expect(decode({ ...base, change: "refreshed_somehow" }).change).toBe("refreshed_somehow");
+  });
+
+  it("refuses one with no revision, which could not be ordered", () => {
+    expect(() => decode({ kind: "sign_ins", change: "signed_in", servers: ["linear"] })).toThrow();
   });
 });

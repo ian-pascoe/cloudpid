@@ -110,16 +110,17 @@ export type FlowDeps = {
 };
 
 /** The code of an authorization server error, as a page may show it: a plain token of at most 64 characters. */
-const errorCodeOf = (text: string): string => (/^[\w.:-]{1,64}$/.test(text) ? text : "error");
+export const errorCodeOf = (text: string): string =>
+  /^[\w.:-]{1,64}$/.test(text) ? text : "error";
 
 /** Why a start or a callback went no further: the owner is told `message`, which never holds a secret. */
-class FlowProblem extends Schema.TaggedError<FlowProblem, { readonly brand: unique symbol }>()(
-  "FlowProblem",
-  { message: Schema.String, code: Schema.optional(Schema.String) },
-) {}
+export class FlowProblem extends Schema.TaggedError<
+  FlowProblem,
+  { readonly brand: unique symbol }
+>()("FlowProblem", { message: Schema.String, code: Schema.optional(Schema.String) }) {}
 
 /** `text` as the owner is told it: one cut to what a row may hold. */
-const told = (text: string): string => clip(text, MAX_SIGN_IN_ERROR_LENGTH);
+export const told = (text: string): string => clip(text, MAX_SIGN_IN_ERROR_LENGTH);
 
 /** What went wrong in `error`, for the owner: an OAuth error's code and description, or a registration's status and body. */
 const describe = (error: Error): string => {
@@ -145,11 +146,11 @@ const attempt = <A>(what: string, run: () => Promise<A>): Effect.Effect<A, FlowP
       }),
   });
 
-const hostOf = (url: string): string => (URL.canParse(url) ? new URL(url).host : url);
+export const hostOf = (url: string): string => (URL.canParse(url) ? new URL(url).host : url);
 
 /** The vault's own failure, said without a value. */
 const vaultFailure = (error: SecretVaultError): FlowProblem =>
-  FlowProblem.make({ message: error.message });
+  FlowProblem.make({ message: error.message, code: "vault" });
 
 /** The servers `environment`'s set resolves to (Global's own layers for `all`), or null when it is not registered. */
 const serversOf = (
@@ -199,7 +200,7 @@ type SignInEntry = {
 };
 
 /** The server `name` of `environment`'s set (Global's own for `all`) as a sign-in target, or why it is none. */
-const findEntry = (
+export const findEntry = (
   store: FlowStore,
   environment: string,
   name: string,
@@ -272,7 +273,7 @@ const RecordedMetadata = Schema.StructWithRest(
 const decodeMetadata = Schema.decodeUnknownOption(Schema.fromJsonString(RecordedMetadata));
 
 /** The recorded metadata as the pi-mcp functions take it; `none` for a pending row that holds none. */
-const metadataOf = (text: string): Option.Option<AuthorizationServerMetadata> =>
+export const metadataOf = (text: string): Option.Option<AuthorizationServerMetadata> =>
   Option.map(decodeMetadata(text), (metadata) => ({
     ...metadata,
     response_types_supported: [...metadata.response_types_supported],
@@ -1130,12 +1131,17 @@ export const completeMcpSignIn = (
     Effect.withSpan("mcp.oauth.callback"),
   );
 
-/** The client information a code is exchanged with: its id, and its secret when it has one. */
-const clientInformation = (
-  deps: FlowDeps,
+/**
+ * The client information a code is exchanged with, or a refresh token is sent with: its id, and its secret when it has one.
+ * A problem's `code` says what kind: `vault` (the keys do not open), `gone` (the registration is gone, or the entry's
+ * client is not the one the sign-in was made with: the tokens are of no use) or `secret_missing` (the entry's secret
+ * resolves to nothing for now).
+ */
+export const clientInformation = (
+  deps: Pick<FlowDeps, "store" | "signIns" | "sources">,
   vault: KeptVault,
   environment: string,
-  context: PendingContext,
+  context: Pick<PendingContext, "client" | "server">,
 ): Effect.Effect<{ readonly client_id: string; readonly client_secret?: string }, FlowProblem> =>
   Effect.gen(function* () {
     const { client } = context;
@@ -1147,7 +1153,10 @@ const clientInformation = (
         client.registration === null ? null : deps.signIns.getRegistration(client.registration);
 
       if (kept === null || client.registration === null) {
-        return yield* FlowProblem.make({ message: "The client registration is gone: start again" });
+        return yield* FlowProblem.make({
+          message: "The client registration is gone: start again",
+          code: "gone",
+        });
       }
 
       if (kept.sealedSecret === null) return { client_id: kept.clientId };
@@ -1168,6 +1177,7 @@ const clientInformation = (
     if (entry.oauth?.clientId !== client.id) {
       return yield* FlowProblem.make({
         message: "The entry's client changed while you signed in: start again",
+        code: "gone",
       });
     }
 
@@ -1180,6 +1190,7 @@ const clientInformation = (
     if (secret.status === "missing") {
       return yield* FlowProblem.make({
         message: `The client secret \${${secret.name}} is no longer set`,
+        code: "secret_missing",
       });
     }
 

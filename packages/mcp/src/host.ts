@@ -102,8 +102,53 @@ export const McpApplyReload = Schema.Struct({
 
 export type McpApplyReload = typeof McpApplyReload.Type;
 
-/** What `apply` takes. The other kinds (`sign_ins`, `end_watches`) are added by their slices. */
-export const McpApply = Schema.Union([McpApplySet, McpApplyDestroy, McpApplyReload]);
+/** What happened to a sign-in (`apply({ kind: "sign_ins" })`'s `change`). */
+export const MCP_SIGN_IN_CHANGES = ["signed_in", "signed_out", "replaced", "rebound"] as const;
+
+/**
+ * The changes after which the host rediscovers the servers that waited for the sign-in; the rest only drop its tokens.
+ */
+export const REDISCOVERING_CHANGES: ReadonlyArray<(typeof MCP_SIGN_IN_CHANGES)[number]> = [
+  "signed_in",
+  "replaced",
+  "rebound",
+];
+
+/**
+ * A change this build does not know is a string, read as an unknown one: the host drops its tokens for the servers and
+ * rediscovers nothing, which is what a newer sender's change that this build cannot act on would need at least
+ * (`docs/architecture/mcp.md` → Deploys).
+ */
+export const McpSignInChange = Schema.Union([Schema.Literals(MCP_SIGN_IN_CHANGES), Schema.String]);
+
+export type McpSignInChange = typeof McpSignInChange.Type;
+
+/**
+ * `apply({ kind: "sign_ins" })` (`docs/architecture/mcp-sign-in.md` → Tokens reach the host object → Reports and
+ * pushes): an MCP sign-in changed, which the main Worker carries from the Registry's answer to each host whose
+ * Environment uses it. `servers` are the names the sign-in's servers go by in that Environment's set (compared as the
+ * sign-in key does, normalized), and `revision` the sign-ins revision the change raised it to, which the host keeps
+ * only when it is the very next one after the revision the host holds, so a lost push is never hidden by a later one:
+ * the host's next pull finds the gap and heals it. `signed_in`, `replaced` and `rebound` (`REDISCOVERING_CHANGES`) make
+ * the host drop the servers' cached tokens and rediscover those of them that are not working at once; `signed_out`
+ * drops the tokens and the servers' sessions and rediscovers nothing.
+ */
+export const McpApplySignIns = Schema.Struct({
+  kind: Schema.Literal("sign_ins"),
+  change: McpSignInChange,
+  servers: Schema.Array(Schema.String),
+  revision: Schema.Finite,
+});
+
+export type McpApplySignIns = typeof McpApplySignIns.Type;
+
+/** What `apply` takes. The other kind (`end_watches`) is added by its slice. */
+export const McpApply = Schema.Union([
+  McpApplySet,
+  McpApplyDestroy,
+  McpApplyReload,
+  McpApplySignIns,
+]);
 
 export type McpApply = typeof McpApply.Type;
 
@@ -135,6 +180,13 @@ export const McpReloaded = Schema.TaggedStruct("Reloaded", {
 
 export type McpReloaded = typeof McpReloaded.Type;
 
+/** A sign-in change was taken (`apply({ kind: "sign_ins" })`): the names of the set's servers it reached. */
+export const McpSignInsTaken = Schema.TaggedStruct("SignInsTaken", {
+  servers: Schema.Array(Schema.String),
+});
+
+export type McpSignInsTaken = typeof McpSignInsTaken.Type;
+
 /** An operation this build of the host does not know (`op`: the `kind` or method asked for). */
 export const HostUnsupported = Schema.TaggedStruct("HostUnsupported", {
   message: Schema.String,
@@ -158,12 +210,16 @@ export const McpHostFailure = Schema.Union([HostUnsupported, HostFailed]);
 
 export type McpHostFailure = typeof McpHostFailure.Type;
 
-/** What `apply` answers: the set was taken or refused as stale, the storage wiped, the servers reloaded, or why not. */
+/**
+ * What `apply` answers: the set was taken or refused as stale, the storage wiped, the servers reloaded, a sign-in
+ * change taken, or why not.
+ */
 export const McpApplyResult = Schema.Union([
   McpApplied,
   McpStale,
   McpDestroyed,
   McpReloaded,
+  McpSignInsTaken,
   ...McpHostFailure.members,
 ]);
 

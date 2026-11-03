@@ -3,13 +3,16 @@
 // never the SDK (`docs/architecture/mcp.md` → Packages and objects), and is never woken for an Environment without
 // MCP servers (the main Worker pushes nothing to one, and a Session skips `requestStart`).
 //
-// Here: the set's storage with its revision, `apply` (`set`, `reload`, `destroy`), the pull at `windowOpened`, and the
-// MCP inventory (`requestStart`, `servers`) with its discoveries through `McpEngine`, over one `ManagedRuntime` kept
-// for the object's life. `request` and the rest of `apply` come with their slices; an `apply` kind this build does not
+// Here: the set's storage with its revision, `apply` (`set`, `reload`, `sign_ins`, `destroy`), the pull at
+// `windowOpened`, the MCP inventory (`requestStart`, `servers`) with its discoveries through `McpEngine`, and the host's
+// access tokens (`ask` of the Registry, kept in memory, and the reports of what a server answered: `McpRegistryPort`'s
+// `accessToken` and `reportAuth` below), over one `ManagedRuntime` kept for the object's life. `request` and the rest of `apply` come with their slices; an `apply` kind this build does not
 // know fails as `HostUnsupported`.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import {
+  McpAccessTokenAnswer,
+  McpAuthReportAnswer,
   type McpEngineMethods,
   McpServerSetAnswer,
   McpServerValuesAnswer,
@@ -41,13 +44,25 @@ const decodeAnswer = Schema.decodeUnknownEffect(McpServerSetAnswer);
 
 const decodeValues = Schema.decodeUnknownEffect(McpServerValuesAnswer);
 
-/** A failed Registry call for `what`, as the host reads it: the Registry unavailable, never with a value in it. */
-const registryUnavailable = (what: string) => (cause: Cause.Cause<unknown>) =>
-  Effect.fail(
-    McpRegistryUnavailable.make({
-      message: `The Registry did not answer for ${what}: ${Cause.pretty(cause)}`,
-    }),
-  );
+const decodeToken = Schema.decodeUnknownEffect(McpAccessTokenAnswer);
+
+const decodeReport = Schema.decodeUnknownEffect(McpAuthReportAnswer);
+
+/**
+ * A failed Registry call for `what`, as the host reads it: the Registry unavailable, never with a value in it. `cause`
+ * is `false` for a call whose answer holds a secret (a token): a decode failure's text can quote the value, so the
+ * message says only which call failed.
+ */
+const registryUnavailable =
+  (what: string, { cause: detailed = true }: { readonly cause?: boolean } = {}) =>
+  (cause: Cause.Cause<unknown>) =>
+    Effect.fail(
+      McpRegistryUnavailable.make({
+        message: detailed
+          ? `The Registry did not answer for ${what}: ${Cause.pretty(cause)}`
+          : `The Registry did not answer for ${what}`,
+      }),
+    );
 
 export const McpHostLive = McpHost.make(
   Effect.all({
@@ -79,6 +94,25 @@ export const McpHostLive = McpHost.make(
               .pipe(
                 Effect.flatMap(decodeValues),
                 Effect.catchCause(registryUnavailable("an MCP server's values")),
+              ),
+          // A token is in the answer: the failure a call leaves says which call, never what it held.
+          accessToken: (input) =>
+            registries
+              .getByName(REGISTRY_NAME)
+              .mcpAccessToken(input)
+              .pipe(
+                Effect.flatMap(decodeToken),
+                Effect.catchCause(
+                  registryUnavailable("an MCP server's access token", { cause: false }),
+                ),
+              ),
+          reportAuth: (report) =>
+            registries
+              .getByName(REGISTRY_NAME)
+              .reportMcpAuth(report)
+              .pipe(
+                Effect.flatMap(decodeReport),
+                Effect.catchCause(registryUnavailable("an MCP sign-in report")),
               ),
         };
 

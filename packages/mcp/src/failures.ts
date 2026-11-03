@@ -27,9 +27,11 @@ import {
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import { VERDICT_KEY, type Verdicts } from "./tap.ts";
 import {
   Cut,
+  type McpAuthChallenge,
   McpError,
   NotFound,
   ProtocolViolation,
@@ -41,12 +43,74 @@ import {
   Unsupported,
 } from "./types.ts";
 
+/**
+ * The parameters of a `WWW-Authenticate` challenge as a report carries them, leaving out what the header did not have.
+ */
+export const authChallenge = (params: {
+  readonly resourceMetadataUrl?: URL | undefined;
+  readonly scope?: string | undefined;
+  readonly error?: string | undefined;
+  readonly errorDescription?: string | undefined;
+}): McpAuthChallenge | undefined => {
+  const challenge: Types.Mutable<McpAuthChallenge> = {};
+  let found = false;
+
+  if (params.resourceMetadataUrl !== undefined) {
+    challenge.resourceMetadataUrl = params.resourceMetadataUrl.href;
+    found = true;
+  }
+
+  if (params.scope !== undefined) {
+    challenge.scope = params.scope;
+    found = true;
+  }
+
+  if (params.error !== undefined) {
+    challenge.error = params.error;
+    found = true;
+  }
+
+  if (params.errorDescription !== undefined) {
+    challenge.errorDescription = params.errorDescription;
+    found = true;
+  }
+
+  return found ? challenge : undefined;
+};
+
+/** A 403's failure for more scope, with the scope and the challenge of its `WWW-Authenticate` when it had them. */
+const stepUpRequired = (
+  message: string,
+  scope: string | undefined,
+  challenge: McpAuthChallenge | undefined,
+): StepUpRequired => {
+  const fields: Types.Mutable<ConstructorParameters<typeof StepUpRequired>[0]> = { message };
+
+  if (scope !== undefined) fields.scope = scope;
+
+  if (challenge !== undefined) fields.challenge = challenge;
+
+  return StepUpRequired.make(fields);
+};
+
+/** A 401's failure, with the challenge of its `WWW-Authenticate` when it had one. */
+export const signInRequired = (
+  message: string,
+  rejected: boolean,
+  challenge: McpAuthChallenge | undefined,
+): SignInRequired =>
+  challenge === undefined
+    ? SignInRequired.make({ message, rejected })
+    : SignInRequired.make({ message, rejected, challenge });
+
 /** What the core knows about the request that failed. */
 export interface FailedRequest {
   /** Whether a `tools/call` was sent, so a cut may have run it. */
   readonly mayHaveRun: boolean;
   /** Whether the last attempt carried an access token. */
   readonly tokenSent: boolean;
+  /** The parameters of the last 401's `WWW-Authenticate`, when it had any (`authChallenge`). */
+  readonly challenge?: McpAuthChallenge | undefined;
   readonly verdicts: Verdicts;
 }
 
@@ -97,12 +161,11 @@ const causes = (cause: unknown) => {
 
 const fromStatus = (status: number, message: string, request: FailedRequest): McpError => {
   if (status === 401) {
-    return SignInRequired.make({
-      message: request.tokenSent
-        ? "The server refused the access token"
-        : "The server requires signing in",
-      rejected: request.tokenSent,
-    });
+    const message = request.tokenSent
+      ? "The server refused the access token"
+      : "The server requires signing in";
+
+    return signInRequired(message, request.tokenSent, request.challenge);
   }
 
   if (status === 403) {
@@ -165,13 +228,14 @@ const fromCause = (cause: unknown, request: FailedRequest): Failure | undefined 
   if (cause instanceof InsufficientScopeError) {
     const message = "The server needs a token with more scope";
 
-    return {
-      error:
-        cause.requiredScope === undefined
-          ? StepUpRequired.make({ message })
-          : StepUpRequired.make({ message, scope: cause.requiredScope }),
-      status: 403,
-    };
+    const challenge = authChallenge({
+      resourceMetadataUrl: cause.resourceMetadataUrl,
+      scope: cause.requiredScope,
+      error: "insufficient_scope",
+      errorDescription: cause.errorDescription,
+    });
+
+    return { error: stepUpRequired(message, cause.requiredScope, challenge), status: 403 };
   }
 
   if (cause instanceof UnauthorizedError) {

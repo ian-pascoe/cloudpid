@@ -106,6 +106,9 @@ const RegionArguments = Schema.Struct({ region: Schema.String });
 export interface FakeOptions {
   /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
   readonly listMore?: boolean;
+  /** What the server says of itself: its `instructions` (default `Use the echo tool.`) and the name in its `serverInfo`. */
+  readonly instructions?: string;
+  readonly serverName?: string;
   /** The names of the calls whose request was cancelled while they ran. */
   readonly cancelled?: Array<string>;
   /** Further tools listed last, which answer as `echo` does unless something in front of the server answers first. */
@@ -145,13 +148,13 @@ const untilAborted = (signal: AbortSignal, aborted: () => void) =>
  */
 const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions = {}) => {
   const server = new Server(
-    { name: "fake", version: "1.0.0" },
+    { name: options.serverName ?? "fake", version: "1.0.0" },
     {
       capabilities:
         options.logs === undefined
           ? { tools: { listChanged: true } }
           : { tools: { listChanged: true }, logging: {} },
-      instructions: "Use the echo tool.",
+      instructions: options.instructions ?? "Use the echo tool.",
     },
   );
 
