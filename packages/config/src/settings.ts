@@ -13,6 +13,8 @@ import {
   MCP_ROOT,
   type McpLayerScope,
   McpSettings,
+  type McpSettingsProblem,
+  mcpSettingsProblems,
   mcpFieldPath,
   mcpLayerProblems,
   mcpServersOf,
@@ -479,6 +481,8 @@ export type LenientSettings = {
   readonly settings: Settings;
   /** One line per setting dropped, as `resolveSettings` words it: empty when every override resolved. */
   readonly dropped: ReadonlyArray<string>;
+  /** The problems among them that lie in an MCP server's entry, structured (`McpSettingsProblem`). */
+  readonly mcpProblems: ReadonlyArray<McpSettingsProblem>;
 };
 
 /**
@@ -490,6 +494,7 @@ export type LenientSettings = {
 export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
   const renamed = withRenamedTools(overrides);
   const dropped: string[] = [];
+  const found: SettingsProblem[] = [];
 
   // The MCP servers are read as the MCP server set reads them (`readMcpLayer`): an entry at a time.
   const mcp = isJsonObject(renamed)
@@ -498,22 +503,34 @@ export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
 
   let rest = mcp.document;
 
-  for (const problem of mcp.problems) dropped.push(problem.line);
+  for (const problem of mcp.problems) {
+    dropped.push(problem.line);
+    found.push(problem);
+  }
 
   // Dropping a path settles its problem; a few rounds cover a document with several.
   for (let round = 0; round < 8; round += 1) {
     const result = decodeSettingsLayer(rest, rest, "global");
 
-    if (Result.isSuccess(result)) return { settings: result.success, dropped };
+    if (Result.isSuccess(result)) {
+      return {
+        settings: result.success,
+        dropped,
+        mcpProblems: mcpSettingsProblems(found, "global"),
+      };
+    }
 
     const problems = result.failure;
 
-    for (const problem of problems) dropped.push(problem.line);
+    for (const problem of problems) {
+      dropped.push(problem.line);
+      found.push(problem);
+    }
 
     if (Arr.some(problems, (problem) => problem.keys.length === 0)) break;
 
     rest = Arr.reduce(problems, rest, (left, problem) => omitPath(left, problem.keys));
   }
 
-  return { settings: DEFAULT_SETTINGS, dropped };
+  return { settings: DEFAULT_SETTINGS, dropped, mcpProblems: mcpSettingsProblems(found, "global") };
 };

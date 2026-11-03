@@ -11,6 +11,7 @@ import {
   DEFAULT_SETTINGS,
   overridesFrom,
 } from "@cloudpid/config";
+import { McpServersList } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -386,6 +387,7 @@ describe("every section", () => {
       listSettingsChanges: () => Effect.succeed([]),
       listEnvironmentSkills: () => Effect.succeed([]),
       listSkillDirectory: () => Effect.succeed({ total: 0, hasMore: false, skills: [] }),
+      mcpServers: () => Effect.succeed(McpServersList.make({ version: "1", servers: [] })),
       getSettings: () =>
         Effect.succeed({
           settings: DEFAULT_SETTINGS,

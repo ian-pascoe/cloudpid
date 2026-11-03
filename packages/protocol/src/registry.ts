@@ -1,6 +1,12 @@
 // The Registry operations (`docs/architecture/client-and-protocol.md`): listing and creating Sessions, Environments and
 // Workspaces. They hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import { Settings, SettingsError, ContainerOverrides, ContainerSettings } from "@cloudpid/config";
+import {
+  ContainerOverrides,
+  ContainerSettings,
+  McpSettingsProblem,
+  Settings,
+  SettingsError,
+} from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -344,6 +350,8 @@ export const SettingsState = Schema.Struct({
   overrides: Schema.Json,
   /** Why the saved overrides were not used, when they no longer resolve: the settings are then the defaults. */
   problem: Schema.optionalKey(Schema.String),
+  /** The part of `problem` that lies in an MCP server's entry, structured; left out with none, or by an older Registry. */
+  mcpProblems: McpSettingsProblem.pipe(Schema.Array, Schema.optionalKey),
   /**
    * By field (`@cloudpid/config` → `overrideFields`: `model`, `roles.small`, `extensions.<extension>.<key>`), the
    * Environments that override it, newest first, so a change at Global does nothing for them. A field none overrides
@@ -368,6 +376,11 @@ export const SettingsOverridesState = Schema.Struct({
   overrides: Schema.Json,
   /** Why some saved Overrides were left out, when they no longer resolve: those fields inherit Global. */
   problem: Schema.optionalKey(Schema.String),
+  /**
+   * The part of `problem` that lies in an MCP server's entry, structured, from the Environment's Overrides and from the
+   * Global servers its own entries shadow; left out with none, or by an older Registry.
+   */
+  mcpProblems: McpSettingsProblem.pipe(Schema.Array, Schema.optionalKey),
   /**
    * The Environment's own Instructions, empty for none: no Override, since they add up (ADR-0027). Its Sessions are
    * shown Global's (`settings.instructions`), then these.

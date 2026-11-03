@@ -111,6 +111,7 @@ describe("an Environment's Settings Overrides", () => {
         global: { ...DEFAULT_SETTINGS, model: SONNET },
         overrides: {},
         instructions: "",
+        mcpProblems: [],
       });
 
       expect(saved(update(STAGING, { set: { model: SONNET } })).overrides).toEqual({

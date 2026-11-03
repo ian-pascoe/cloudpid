@@ -12,12 +12,13 @@ import {
 const GLOBAL = "*";
 
 describe("the Settings sections of a Scope", () => {
-  it("are, at Global, the Settings, the Container settings, the Environments, Skills, Variables, Secrets, Notifications and Agent changes", () => {
+  it("are, at Global, the Settings, the MCP servers, the Container settings, the Environments, Skills, Variables, Secrets, Notifications and Agent changes", () => {
     expect(sectionsAt(GLOBAL).map((slug) => sectionLabel(slug, GLOBAL))).toEqual([
       "General",
       "Instructions",
       "Models",
       "Tools",
+      "MCP servers",
       "Limits",
       "Container",
       "Setup",
@@ -37,6 +38,7 @@ describe("the Settings sections of a Scope", () => {
       "Instructions",
       "Models",
       "Tools",
+      "MCP servers",
       "Limits",
       "Container",
       "Setup",

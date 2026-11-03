@@ -18,7 +18,9 @@ import {
   MCP_ROOT,
   MCP_ADJUSTMENT_KEYS,
   mcpFieldPath,
+  type McpSettingsProblem,
   mcpServersOf,
+  mcpSettingsProblems,
   mcpShadowedTwins,
   withMcpAdjustmentsFitted,
   withMcpLayerRead,
@@ -403,6 +405,8 @@ export type LenientOverrides = {
   readonly overrides: Schema.JsonObject;
   /** One line per Override dropped: empty when every one resolved. */
   readonly dropped: ReadonlyArray<string>;
+  /** The problems among them that lie in an MCP server's entry, structured, each in the layer it is in. */
+  readonly mcpProblems: ReadonlyArray<McpSettingsProblem>;
 };
 
 /**
@@ -440,6 +444,8 @@ const fieldKeysOf = (overrides: Schema.Json, problem: SettingsProblem): Readonly
 type InheritedWithoutTwins = {
   readonly overrides: Schema.JsonObject;
   readonly dropped: ReadonlyArray<string>;
+  /** The Global servers left out, structured: each is a problem of Global's. */
+  readonly problems: ReadonlyArray<SettingsProblem>;
 };
 
 /**
@@ -455,7 +461,9 @@ const withoutShadowedTwins = (
   const own = mcpServersOf(overrides);
   const global = mcpServersOf(inherited);
 
-  if (!isJsonObject(own) || !isJsonObject(global)) return { overrides: inherited, dropped: [] };
+  if (!isJsonObject(own) || !isJsonObject(global)) {
+    return { overrides: inherited, dropped: [], problems: [] };
+  }
 
   const fullNames = (servers: Schema.JsonObject) =>
     Arr.filterMap(Record.toEntries(servers), ([name, value]) =>
@@ -469,6 +477,10 @@ const withoutShadowedTwins = (
       removeAt(left, [MCP_ROOT, "servers", name]),
     ),
     dropped: Arr.map(shadowed, ({ global: name, text }) => `${MCP_ROOT}.servers.${name}: ${text}`),
+    problems: Arr.map(shadowed, ({ global: name, text }) => ({
+      keys: [MCP_ROOT, "servers", name],
+      line: `${MCP_ROOT}.servers.${name}: ${text}`,
+    })),
   };
 };
 
@@ -484,6 +496,7 @@ export const resolveOverridesLeniently = (
 ): LenientOverrides => {
   const inherited = globalApplied(global);
   const dropped: string[] = isJsonObject(overrides) ? [] : [NOT_AN_OBJECT];
+  const found: SettingsProblem[] = [];
   const renamed = withRenamedTools(overrides);
   let rest: Schema.JsonObject = isJsonObject(renamed) ? renamed : {};
 
@@ -497,14 +510,20 @@ export const resolveOverridesLeniently = (
 
   rest = read.document;
 
-  for (const problem of read.problems) dropped.push(problem.line);
+  for (const problem of read.problems) {
+    dropped.push(problem.line);
+    found.push(problem);
+  }
 
   // An adjustment is held to the entry bound over the Global server it adjusts, key by key, as the set holds it.
   const fitted = withMcpAdjustmentsFitted(inherited.overrides, rest);
 
   rest = fitted.document;
 
-  for (const problem of fitted.problems) dropped.push(problem.line);
+  for (const problem of fitted.problems) {
+    dropped.push(problem.line);
+    found.push(problem);
+  }
 
   // Dropping a field settles its problem; a few rounds cover Overrides with several.
   for (let round = 0; round < MAX_LENIENT_ROUNDS; round += 1) {
@@ -517,12 +536,19 @@ export const resolveOverridesLeniently = (
         global: inherited.settings,
         overrides: rest,
         dropped: [...dropped, ...base.dropped],
+        mcpProblems: [
+          ...mcpSettingsProblems(found, "environment"),
+          ...mcpSettingsProblems(base.problems, "global"),
+        ],
       };
     }
 
     const problems = result.failure;
 
-    for (const problem of problems) dropped.push(problem.line);
+    for (const problem of problems) {
+      dropped.push(problem.line);
+      found.push(problem);
+    }
 
     if (Arr.some(problems, (problem) => problem.keys.length === 0)) break;
 
@@ -533,5 +559,11 @@ export const resolveOverridesLeniently = (
     );
   }
 
-  return { settings: inherited.settings, global: inherited.settings, overrides: {}, dropped };
+  return {
+    settings: inherited.settings,
+    global: inherited.settings,
+    overrides: {},
+    dropped,
+    mcpProblems: mcpSettingsProblems(found, "environment"),
+  };
 };
