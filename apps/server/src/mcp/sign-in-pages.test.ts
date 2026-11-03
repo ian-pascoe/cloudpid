@@ -15,6 +15,7 @@ import {
   type Page,
   SIGN_IN_CHANNEL,
   startProblemPage,
+  startPromptPage,
 } from "./sign-in-pages.ts";
 
 const sha256Source = async (text: string): Promise<string> => {
@@ -122,6 +123,22 @@ describe("every callback page", () => {
 
   it.each(pages())("%s carries its outcome for the channel", (name, page) => {
     expect(page.html).toContain(`data-outcome="${name}"`);
+  });
+
+  it("offers Start again on the signed-in page too, back to where the owner was", () => {
+    const page = callbackPage({
+      status: "signed_in",
+      server: "sentry",
+      environments: [],
+      resolved: [],
+      revision: 1,
+      retry: { environment: "env_1", server: "sentry" },
+      returnPath: "/settings",
+    });
+
+    expect(page.html).toContain(
+      `href="/oauth/mcp/start?environment=env_1&amp;server=sentry&amp;return=%2Fsettings"`,
+    );
   });
 
   it("offers Start again on a failure that has a server to start, back to where the owner was", () => {
@@ -243,6 +260,28 @@ describe("the issuer interstitial", () => {
 
     expect(page.html).toContain("repo:acme/app");
     expect(page.html).toContain("from your Variables");
+  });
+});
+
+describe("the page a start asks on", () => {
+  it("says what will start, escaped, and posts it to this origin only", () => {
+    const page = startPromptPage({
+      environment: "all",
+      server: `<i>"s"</i>`,
+      stepUp: true,
+      requester: { session: "s1", request: "r1" },
+      back: "/settings",
+    });
+
+    expect(page.status).toBe(200);
+    expect(page.headers["content-security-policy"]).toContain("form-action 'self'");
+    expect(page.headers["content-security-policy"]).toContain("script-src 'none'");
+    expect(page.html).not.toContain("<i>");
+    expect(page.html).toContain("All Environments");
+    expect(page.html).toContain(`<form method="post" action="/oauth/mcp/start">`);
+    expect(page.html).toContain(`name="step_up" value="1"`);
+    expect(page.html).toContain(`name="return" value="/settings"`);
+    expect(page.html).toContain(">Continue</button>");
   });
 });
 

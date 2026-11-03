@@ -47,6 +47,48 @@ const requestOf = (input: string | URL, init: RequestInit | undefined): WebReque
   return request;
 };
 
+/**
+ * `response` with its body ended by `signal`: a server that drips its body is cut off with the request's timeout, not
+ * waited for. The body is read through a stream that errors, and cancels its source, when the signal aborts.
+ */
+const endedBy = (response: Response, signal: AbortSignal): Response => {
+  const source = response.body;
+
+  if (source === null) return response;
+
+  const reader = source.getReader();
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal.addEventListener(
+        "abort",
+        () => {
+          controller.error(signal.reason);
+          reader.cancel(signal.reason).catch(() => undefined);
+        },
+        { once: true },
+      );
+    },
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch {
+        // The stream was errored by the signal (or its source failed): the reader has nothing more to say.
+      }
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+};
+
 /** `response` with its body read to the bound, as the whole text; fails when it is longer. */
 const bounded = async (response: Response, limit: number): Promise<Response> => {
   const text = await boundedText(response, limit);
@@ -70,13 +112,16 @@ const failure = (error: WebToolError): Error => new Error(error.message);
 
 /**
  * An `OAuthFetch` over `guardedFetch` and the Worker's network (`fetch` and DNS-over-HTTPS), timed out after
- * {@link OAUTH_FETCH_TIMEOUT_MS} and bounded to {@link MAX_METADATA_BYTES}. Over the `network` it is given, so a test
- * answers requests without one.
+ * {@link OAUTH_FETCH_TIMEOUT_MS} (the whole exchange, the body's read included) and bounded to {@link MAX_METADATA_BYTES}.
+ * Over the `network` it is given, so a test answers requests without one, and with the `timeoutMs` it is given.
  */
 export const guardedOAuthFetch =
-  (network: typeof WebNetworkLive = WebNetworkLive): OAuthFetch =>
+  (
+    network: typeof WebNetworkLive = WebNetworkLive,
+    timeoutMs: number = OAUTH_FETCH_TIMEOUT_MS,
+  ): OAuthFetch =>
   async (input, init) => {
-    const timeout = AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS);
+    const timeout = AbortSignal.timeout(timeoutMs);
     const signals = [timeout];
 
     if (init?.signal !== undefined && init.signal !== null) signals.push(init.signal);
@@ -90,7 +135,7 @@ export const guardedOAuthFetch =
         { signal: AbortSignal.any(signals) },
       );
 
-      return await bounded(sent.response, MAX_METADATA_BYTES);
+      return await bounded(endedBy(sent.response, AbortSignal.any(signals)), MAX_METADATA_BYTES);
     } catch (error) {
       throw timeout.aborted ? new Error("The request timed out") : error;
     }

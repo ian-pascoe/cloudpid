@@ -16,10 +16,7 @@ const DOCUMENT_PATH = "/oauth/mcp/client.json";
 const CALLBACK_PATH = "/oauth/mcp/callback";
 
 /** The two origins of `alchemy dev` (the stage's `Host`es there): workerd's own, and Vite's, which proxies the sign-in paths. */
-export const LOCAL_ORIGINS: ReadonlyArray<string> = [
-  "http://localhost:1337",
-  "http://localhost:5173",
-];
+const LOCAL_ORIGINS: ReadonlyArray<string> = ["http://localhost:1337", "http://localhost:5173"];
 
 /** The client document's URL, which is the client id at an authorization server that supports it. */
 export const clientDocumentUrl = (origin: string): string => `${origin}${DOCUMENT_PATH}`;

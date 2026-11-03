@@ -4,7 +4,7 @@
 // against Variables only. The host keeps the answer in memory only. Nothing here logs a value.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, not combinators.
 import type { McpResolvedServer } from "@cloudpid/config";
-import type { McpServerValuesAnswer } from "@cloudpid/mcp/types";
+import type { McpServerValuesAnswer, McpSignInSecretRef } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
@@ -67,7 +67,7 @@ export const resolveMcpServerValues = (
 };
 
 /** Where the `oauth.clientSecret` of an entry came from: a `{scope, name}` reference, never a copy. */
-export type OauthSecretRef = { readonly scope: "secret" | "variable"; readonly name: string };
+export type OauthSecretRef = McpSignInSecretRef;
 
 /** The client secret of an entry, resolved at use (→ The `oauth` fields). */
 export type OauthSecret =

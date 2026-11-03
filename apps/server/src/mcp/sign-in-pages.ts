@@ -9,13 +9,14 @@
 // escaped and at most 300 characters. The message it posts on `BroadcastChannel("cloudpid:mcp-sign-in")` is the outcome and
 // nothing else. No page ever redirects on its own: on the installed iOS PWA the sign-in opens in an in-app sheet.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-import { sha256Hex } from "@cloudpid/config";
 import type {
   McpSignInConfirmation,
   McpSignInFailure,
   McpSignInKnownCompleteAnswer,
 } from "@cloudpid/mcp/types";
+import { MCP_SIGN_IN_GLOBAL } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
+import { sha256Bytes } from "./sign-in-client.ts";
 
 /** The channel the callback page tells Settings (any open tab of the app) on. */
 export const SIGN_IN_CHANNEL = "cloudpid:mcp-sign-in";
@@ -42,12 +43,8 @@ export const PAGE_STYLE =
   "button.primary{background:#f2f2f7;color:#000}.note{color:#aaa}}";
 
 /** `'sha256-…'` for `text`, as a CSP source expression. */
-export const cspHash = (text: string): string => {
-  const hex = sha256Hex(text);
-  const bytes = Arr.makeBy(32, (index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16));
-
-  return `'sha256-${btoa(String.fromCharCode(...bytes))}'`;
-};
+export const cspHash = (text: string): string =>
+  `'sha256-${btoa(String.fromCharCode(...sha256Bytes(text)))}'`;
 
 /** `text` safe in HTML text and in a double-quoted attribute. */
 export const escapeHtml = (text: string): string =>
@@ -148,82 +145,75 @@ const environmentsLine = (names: ReadonlyArray<string>): string =>
     ? "No Environment uses this sign-in yet."
     : `Used by ${Arr.join(names, ", ")}.`;
 
-/** What a page says of a failed callback. */
-type FailureText = { readonly title: string; readonly lines: ReadonlyArray<string> };
-
-/** The title and lines of a failed callback. */
-const failureText = (failure: McpSignInFailure): FailureText => {
-  const detail = failure.message === undefined ? [] : [failure.message];
-
-  switch (failure.status) {
-    case "expired":
-      return {
-        title: "This sign-in link has expired",
-        lines: [
-          "It was already used, replaced by a newer sign-in, or older than 10 minutes. Nothing was saved.",
-        ],
-      };
-    case "declined":
-      return {
-        title: "Sign-in declined",
-        lines: ["You declined at the server's page. Nothing changed."],
-      };
-    case "provider_error":
-      return {
-        title: "The server could not sign you in",
-        lines: [
-          failure.code === undefined ? "Its error:" : `Its error code: ${failure.code}.`,
-          ...detail,
-        ],
-      };
-    case "missing_code":
-      return {
-        title: "The answer was incomplete",
-        lines: ["It carried no code. Nothing was saved."],
-      };
-    case "iss_mismatch":
-      return {
-        title: "The answer came from another server",
-        lines: [
-          "It was not from the authorization server the sign-in started at. Nothing was saved.",
-        ],
-      };
-    case "path_mismatch":
-      return {
-        title: "The answer came to the wrong address",
-        lines: ["Nothing was saved."],
-      };
-    case "unconfirmed":
-      return { title: "The issuer was not confirmed", lines: ["Nothing was saved."] };
-    case "exchange_failed":
-      return {
-        title: "The server refused the sign-in",
-        lines: [
-          failure.code === undefined
-            ? "Exchanging the code failed. The old sign-in is unchanged."
-            : `Exchanging the code failed (${failure.code}). The old sign-in is unchanged.`,
-          ...detail,
-        ],
-      };
-    default:
-      return {
-        title: "The sign-in could not be completed",
-        lines: ["Nothing was saved.", ...detail],
-      };
-  }
+/** What a failed callback's page says and answers: its HTTP status (a decline is no error, an unreadable store is the server's), title and lines. */
+type FailureEntry = {
+  readonly status: number;
+  readonly title: string;
+  readonly lines: (failure: McpSignInFailure) => ReadonlyArray<string>;
 };
 
-/** The HTTP status of each failed outcome's page: a decline is no error, and an unreadable store is the server's. */
-const FAILURE_STATUS: Readonly<Record<McpSignInFailure["status"], number>> = {
-  expired: 400,
-  declined: 200,
-  provider_error: 400,
-  missing_code: 400,
-  iss_mismatch: 400,
-  exchange_failed: 400,
-  path_mismatch: 400,
-  unconfirmed: 400,
-  unavailable: 503,
+const detailOf = (failure: McpSignInFailure): ReadonlyArray<string> =>
+  failure.message === undefined ? [] : [failure.message];
+
+/** Every failed outcome of a callback (→ Page outcomes), keyed by its status so none can be left out. */
+const FAILURES: Readonly<Record<McpSignInFailure["status"], FailureEntry>> = {
+  expired: {
+    status: 400,
+    title: "This sign-in link has expired",
+    lines: () => [
+      "It was already used, replaced by a newer sign-in, or older than 10 minutes. Nothing was saved.",
+    ],
+  },
+  declined: {
+    status: 200,
+    title: "Sign-in declined",
+    lines: () => ["You declined at the server's page. Nothing changed."],
+  },
+  provider_error: {
+    status: 400,
+    title: "The server could not sign you in",
+    lines: (failure) => [
+      failure.code === undefined ? "Its error:" : `Its error code: ${failure.code}.`,
+      ...detailOf(failure),
+    ],
+  },
+  missing_code: {
+    status: 400,
+    title: "The answer was incomplete",
+    lines: () => ["It carried no code. Nothing was saved."],
+  },
+  iss_mismatch: {
+    status: 400,
+    title: "The answer came from another server",
+    lines: () => [
+      "It was not from the authorization server the sign-in started at. Nothing was saved.",
+    ],
+  },
+  exchange_failed: {
+    status: 400,
+    title: "The server refused the sign-in",
+    lines: (failure) => [
+      failure.code === undefined
+        ? "Exchanging the code failed. The old sign-in is unchanged."
+        : `Exchanging the code failed (${failure.code}). The old sign-in is unchanged.`,
+      ...detailOf(failure),
+    ],
+  },
+  path_mismatch: {
+    status: 400,
+    title: "The answer came to the wrong address",
+    lines: () => ["Nothing was saved."],
+  },
+  unconfirmed: {
+    status: 400,
+    title: "The issuer was not confirmed",
+    lines: () => ["Nothing was saved."],
+  },
+  unavailable: {
+    status: 503,
+    title: "The sign-in could not be completed",
+    lines: (failure) => ["Nothing was saved.", ...detailOf(failure)],
+  },
 };
 
 /** The page of a callback's outcome (→ Page outcomes); every one says it can be closed and offers Back and Start again. */
@@ -237,17 +227,17 @@ export const callbackPage = (answer: McpSignInKnownCompleteAnswer): Page => {
         environmentsLine(Arr.map(answer.environments, ({ name }) => name)),
       ],
       fields: [],
-      actions: exits(answer.returnPath, undefined),
+      actions: exits(answer.returnPath, answer.retry),
       formAction: false,
     });
   }
 
-  const { title, lines } = failureText(answer);
+  const failure = FAILURES[answer.status];
 
-  return render(FAILURE_STATUS[answer.status], {
-    title,
+  return render(failure.status, {
+    title: failure.title,
     outcome: answer.status,
-    lines,
+    lines: failure.lines(answer),
     fields: [],
     actions: exits(answer.returnPath, answer.retry),
     formAction: false,
@@ -275,6 +265,53 @@ export const startProblemPage = (message: string, status: number, back: string |
     actions: `<p class="note">You can close this tab.</p>${link(back ?? "/", "Back")}`,
     formAction: false,
   });
+
+/** What a start link names, for the page that asks before it starts. */
+type PromptLink = {
+  readonly environment: string;
+  readonly server: string;
+  readonly stepUp: boolean;
+  readonly requester: { readonly session: string; readonly request: string } | undefined;
+  readonly back: string | undefined;
+};
+
+/**
+ * The page of a start link that did not come from a tab of the app (typed in, or the navigation back from an Access
+ * login): nothing starts until its Continue, a `POST` the Worker takes only from its own origin.
+ */
+export const startPromptPage = (prompt: PromptLink): Page => {
+  const hidden = (name: string, value: string): string =>
+    `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
+
+  const form =
+    `<form method="post" action="/oauth/mcp/start">` +
+    hidden("environment", prompt.environment) +
+    hidden("server", prompt.server) +
+    (prompt.stepUp ? hidden("step_up", "1") : "") +
+    (prompt.requester === undefined
+      ? ""
+      : hidden("session", prompt.requester.session) + hidden("request", prompt.requester.request)) +
+    (prompt.back === undefined ? "" : hidden("return", prompt.back)) +
+    `<button class="primary" type="submit">Continue</button></form>` +
+    link(prompt.back ?? "/", "Back");
+
+  return render(200, {
+    title: prompt.stepUp ? "Allow more access?" : "Sign in?",
+    outcome: undefined,
+    lines: [
+      "cloudpid will open the server's own page to sign in. Continue only if you asked for this.",
+    ],
+    fields: [
+      ["Server", prompt.server],
+      [
+        "Environment",
+        prompt.environment === MCP_SIGN_IN_GLOBAL ? "All Environments" : prompt.environment,
+      ],
+    ],
+    actions: form,
+    formAction: true,
+  });
+};
 
 /** What Cancel says: the pending row is deleted and nothing changed. */
 export const cancelledPage = (): Page =>

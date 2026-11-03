@@ -1,6 +1,6 @@
 // The origin a sign-in starts on (`docs/architecture/mcp-sign-in.md` → The client document and the callback outside Access).
 import { describe, expect, it } from "vitest";
-import { callbackUrl, clientDocumentUrl, LOCAL_ORIGINS, signInOrigin } from "./sign-in-origin.ts";
+import { callbackUrl, clientDocumentUrl, signInOrigin } from "./sign-in-origin.ts";
 
 const DEPLOYED = "https://cloudpid-server-pr-450.ian-g-pascoe.workers.dev";
 
@@ -25,11 +25,14 @@ describe("a live stage", () => {
 });
 
 describe("alchemy dev", () => {
-  it.each(LOCAL_ORIGINS)("starts on %s when Host names it", (origin) => {
-    expect(
-      signInOrigin({ deployedOrigin: undefined, localMode: true, host: new URL(origin).host }),
-    ).toBe(origin);
-  });
+  it.each(["http://localhost:1337", "http://localhost:5173"])(
+    "starts on %s when Host names it",
+    (origin) => {
+      expect(
+        signInOrigin({ deployedOrigin: undefined, localMode: true, host: new URL(origin).host }),
+      ).toBe(origin);
+    },
+  );
 
   it("reads Host case-insensitively", () => {
     expect(

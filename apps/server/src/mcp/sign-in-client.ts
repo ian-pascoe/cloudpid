@@ -10,7 +10,7 @@ import * as Result from "effect/Result";
 import { callbackUrl, clientDocumentUrl } from "./sign-in-origin.ts";
 
 /** The longest `client_name` (`oauth.clientName`: 1–100 characters). */
-export const MAX_CLIENT_NAME_LENGTH = 100;
+const MAX_CLIENT_NAME_LENGTH = 100;
 
 /** The stage a client name is made for: its label (absent on `prod`) and whether it runs under `alchemy dev`. */
 export type StageNaming = {
@@ -50,7 +50,7 @@ export const clientDocument = (input: {
 });
 
 /** The 12 characters of an issuer's hash in the redirect URI of an authorization server that does not advertise `iss`. */
-export const issuerHash = (issuer: string): string => sha256Hex(issuer).slice(0, 12);
+const issuerHash = (issuer: string): string => sha256Hex(issuer).slice(0, 12);
 
 /**
  * The redirect URI a DCR client registers: the callback, and below it the issuer's hash when the authorization server
@@ -77,16 +77,17 @@ export const randomToken = (): string => base64Url(crypto.getRandomValues(new Ui
 /** What a `state` looks like: what {@link randomToken} makes. The callback gives the Registry no other. */
 export const WELL_FORMED_STATE = /^[A-Za-z0-9_-]{43}$/;
 
-/** The PKCE `S256` challenge of `verifier` (RFC 7636 §4.2): the SHA-256 of its ASCII bytes, Base64url-encoded. */
-export const pkceChallenge = (verifier: string): string => {
-  const hex = sha256Hex(verifier);
+/** The 32 bytes of the SHA-256 of `text`. */
+export const sha256Bytes = (text: string): Uint8Array => {
+  const hex = sha256Hex(text);
 
-  return base64Url(
-    Uint8Array.from(
-      Arr.makeBy(32, (index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)),
-    ),
+  return Uint8Array.from(
+    Arr.makeBy(32, (index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)),
   );
 };
+
+/** The PKCE `S256` challenge of `verifier` (RFC 7636 §4.2): the SHA-256 of its ASCII bytes, Base64url-encoded. */
+export const pkceChallenge = (verifier: string): string => base64Url(sha256Bytes(verifier));
 
 /** What the authorization URL is built from. */
 export type AuthorizationRequest = {
@@ -136,10 +137,6 @@ export const authorizationUrl = (request: AuthorizationRequest): Result.Result<U
 
   if (request.scope !== undefined && request.scope !== "") {
     url.searchParams.set("scope", request.scope);
-  }
-
-  if (request.scope?.split(/\s+/).includes("offline_access") === true) {
-    url.searchParams.set("prompt", "consent");
   }
 
   if (request.resource !== undefined) url.searchParams.set("resource", request.resource);

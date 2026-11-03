@@ -4,13 +4,13 @@
 //
 // The two public routes (`serveClientDocument`, `serveCallback`) never read identity: the callback's safety is the
 // single-use `state`, the verifier only the Registry holds, the exact path and the `iss` check. `serveStart` is called only
-// behind the Access guard; it also needs `Sec-Fetch-Site: same-origin` (a link, not an RPC, so the owner's click is what
-// starts it), and its `POST` an `Origin` equal to the origin the start was made on. Nothing here logs a URL, a query or a
-// body: a callback's address holds a single-use code.
+// behind the Access guard; a link from a tab of the app (`Sec-Fetch-Site: same-origin`) starts at once, any other `GET` gets a
+// page whose Continue is a `POST` (the owner's own click), and a `POST` needs an `Origin` equal to the origin the start was
+// made on and the same-origin header. Nothing here logs a URL, a query or a body: a callback's address holds a single-use
+// code.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
 import { boundedText } from "@cloudpid/mcp/oauth";
 import {
-  MCP_SIGN_IN_GLOBAL,
   type McpSignInStage,
   readMcpSignInCompleteAnswer,
   readMcpSignInConfirmAnswer,
@@ -43,6 +43,7 @@ import {
   invalidCallbackPage,
   type Page,
   startProblemPage,
+  startPromptPage,
 } from "./sign-in-pages.ts";
 
 /** The Registry methods the routes call, on its object. */
@@ -126,8 +127,9 @@ export const serveClientDocument = Effect.fn("mcp.oauth.client_document")(functi
 
   if (request.method !== "GET" && request.method !== "HEAD") return methodNotAllowed("GET, HEAD");
 
-  const origin = isOn(env[LOCAL_MODE_VAR]) ? undefined : env[APP_ORIGIN_VAR];
-  const status = origin === undefined || origin === "" ? 404 : 200;
+  // The document is public on a live stage and answers 404 under `alchemy dev`, where no `Host` is read.
+  const stage = stageOf(env, undefined);
+  const status = stage === undefined ? 404 : 200;
 
   yield* Effect.annotateCurrentSpan({
     "http.user_agent": request.headers["user-agent"] ?? "",
@@ -135,13 +137,11 @@ export const serveClientDocument = Effect.fn("mcp.oauth.client_document")(functi
     "http.status_code": status,
   });
 
-  if (origin === undefined || origin === "") return notFound;
-
-  const label = env[STAGE_LABEL_VAR];
+  if (stage === undefined) return notFound;
 
   const document = clientDocument({
-    origin,
-    clientName: clientNameFor({ label: label === "" ? undefined : label, local: false }),
+    origin: stage.origin,
+    clientName: clientNameFor({ label: stage.label, local: false }),
   });
 
   return HttpServerResponse.fromWeb(
@@ -151,6 +151,22 @@ export const serveClientDocument = Effect.fn("mcp.oauth.client_document")(functi
     }),
   );
 });
+
+/**
+ * A call to the Registry and its answer as this build reads it. A Registry that cannot be reached (or dies on the call) is
+ * logged without a word of the request, and answers `unreachable`, which the page then says.
+ */
+const askRegistry = <A, B, E>(
+  call: Effect.Effect<A, E>,
+  read: (answer: A) => B,
+  unreachable: { readonly log: string; readonly answer: A },
+): Effect.Effect<B> =>
+  call.pipe(
+    Effect.map(read),
+    Effect.catchCause(() =>
+      Effect.logWarning(unreachable.log).pipe(Effect.as(read(unreachable.answer))),
+    ),
+  );
 
 // The callback (→ The callback) -----------------------------------------------------------------------------------------
 
@@ -207,21 +223,17 @@ export const serveCallback = (registry: () => SignInRegistry, path: string) =>
 
     if (input === undefined) return respond(invalidCallbackPage());
 
-    const answer = yield* registry()
-      .completeMcpSignIn(input)
-      .pipe(
-        Effect.map(readMcpSignInCompleteAnswer),
-        Effect.catchCause(() =>
-          Effect.logWarning("The MCP sign-in callback could not reach the Registry").pipe(
-            Effect.as(
-              readMcpSignInCompleteAnswer({
-                status: "unavailable",
-                message: "cloudpid could not reach its store. Nothing was saved.",
-              }),
-            ),
-          ),
-        ),
-      );
+    const answer = yield* askRegistry(
+      registry().completeMcpSignIn(input),
+      readMcpSignInCompleteAnswer,
+      {
+        log: "The MCP sign-in callback could not reach the Registry",
+        answer: {
+          status: "unavailable",
+          message: "cloudpid could not reach its store. Nothing was saved.",
+        },
+      },
+    );
 
     return respond(callbackPage(answer));
   });
@@ -250,72 +262,52 @@ const parameter = (query: URLSearchParams, name: string): string | undefined => 
 
 const MAX_FORM_BYTES = 2048;
 
-/**
- * `GET`/`POST /oauth/mcp/start`, behind Access: the owner's link starts a sign-in and answers in that tab with a 303 to the
- * authorization page, the issuer interstitial or an error page; the interstitial's Continue and Cancel are the `POST`. Both
- * need the origin the sign-in starts on (the stage's own, or one of `alchemy dev`'s two, from `Host`), a `GET` needs
- * `Sec-Fetch-Site: same-origin`, and a `POST` an `Origin` equal to that origin.
- */
-export const serveStart = (registry: () => SignInRegistry, env: SignInEnv) =>
+/** What a start link, or the form of its confirmation, names. */
+type StartLink = {
+  readonly environment: string;
+  readonly server: string;
+  readonly stepUp: boolean;
+  readonly requester: { readonly session: string; readonly request: string } | undefined;
+  readonly back: string | undefined;
+};
+
+/** The link a start is made from, in a query or a form, or undefined when it names no server. */
+const startLinkOf = (source: URLSearchParams): StartLink | undefined => {
+  const environment = parameter(source, "environment");
+  const server = parameter(source, "server");
+
+  if (environment === undefined || server === undefined) return undefined;
+
+  const session = parameter(source, "session");
+  const request = parameter(source, "request");
+
+  return {
+    environment,
+    server,
+    stepUp: source.get("step_up") === "1",
+    requester: session !== undefined && request !== undefined ? { session, request } : undefined,
+    back: safeReturnPath(source.get("return")),
+  };
+};
+
+/** Starts the sign-in a link names, and answers in the owner's tab: a 303 to the authorization page, or a page. */
+const startSignIn = (registry: () => SignInRegistry, stage: McpSignInStage, link: StartLink) =>
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const stage = stageOf(env, request.headers.host);
-    const query = queryOf(request.url);
-    const back = safeReturnPath(query.get("return"));
-
-    if (request.method !== "GET" && request.method !== "POST") return methodNotAllowed("GET, POST");
-
-    if (stage === undefined) {
-      return respond(startProblemPage("This address cannot start a sign-in.", 400, undefined));
-    }
-
-    if (request.headers["sec-fetch-site"] !== "same-origin") {
-      return respond(
-        startProblemPage(
-          "Start a sign-in from the link in cloudpid, not from another site.",
-          403,
-          undefined,
-        ),
-      );
-    }
-
-    if (request.method === "POST") return yield* answerConfirmation(registry, request, stage);
-
-    const environment = parameter(query, "environment");
-    const server = parameter(query, "server");
-
-    if (environment === undefined || server === undefined) {
-      return respond(startProblemPage("The link names no server to sign in to.", 400, back));
-    }
-
-    const session = parameter(query, "session");
-    const requested = parameter(query, "request");
-
-    const answer = yield* registry()
-      .startMcpSignIn({
-        environment,
-        server,
+    const answer = yield* askRegistry(
+      registry().startMcpSignIn({
+        environment: link.environment,
+        server: link.server,
         stage,
-        stepUp: query.get("step_up") === "1",
-        requester:
-          session !== undefined && requested !== undefined
-            ? { session, request: requested }
-            : undefined,
-        returnPath: back,
-      })
-      .pipe(
-        Effect.map(readMcpSignInStartAnswer),
-        Effect.catchCause(() =>
-          Effect.logWarning("The MCP sign-in start could not reach the Registry").pipe(
-            Effect.as(
-              readMcpSignInStartAnswer({
-                status: "problem",
-                message: "cloudpid could not reach its store. Try again.",
-              }),
-            ),
-          ),
-        ),
-      );
+        stepUp: link.stepUp,
+        requester: link.requester,
+        returnPath: link.back,
+      }),
+      readMcpSignInStartAnswer,
+      {
+        log: "The MCP sign-in start could not reach the Registry",
+        answer: { status: "problem", message: "cloudpid could not reach its store. Try again." },
+      },
+    );
 
     switch (answer.status) {
       case "redirect":
@@ -323,18 +315,61 @@ export const serveStart = (registry: () => SignInRegistry, env: SignInEnv) =>
       case "confirm":
         return respond(interstitialPage(answer.confirmation));
       case "problem":
-        return respond(startProblemPage(answer.message, 400, back));
+        return respond(startProblemPage(answer.message, 400, link.back));
     }
   });
 
-/** The interstitial's `POST`: Continue sends the owner on, Cancel deletes the pending row. */
-const answerConfirmation = (
+/**
+ * `GET`/`POST /oauth/mcp/start`, behind Access. A link from a tab of the app (`Sec-Fetch-Site: same-origin`) starts the
+ * sign-in and answers in that tab with a 303 to the authorization page, the issuer interstitial or an error page. Any other
+ * `GET` (a typed address, or the navigation back from an Access login, which is cross-site) starts nothing: it shows a page
+ * whose Continue is a `POST`, which is the owner's own click. A `POST` needs an `Origin` equal to the origin the start was
+ * made on and `Sec-Fetch-Site: same-origin`, so a page of another site cannot make it. The origin is the stage's own, or one
+ * of `alchemy dev`'s two, from `Host`. The `POST` is also the issuer interstitial's Continue and Cancel.
+ */
+export const serveStart = (registry: () => SignInRegistry, env: SignInEnv) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+
+    if (request.method !== "GET" && request.method !== "POST") return methodNotAllowed("GET, POST");
+
+    const stage = stageOf(env, request.headers.host);
+
+    if (stage === undefined) {
+      return respond(startProblemPage("This address cannot start a sign-in.", 400, undefined));
+    }
+
+    if (request.method === "POST") return yield* answerForm(registry, request, stage);
+
+    const query = queryOf(request.url);
+    const link = startLinkOf(query);
+
+    if (link === undefined) {
+      return respond(
+        startProblemPage(
+          "The link names no server to sign in to.",
+          400,
+          safeReturnPath(query.get("return")),
+        ),
+      );
+    }
+
+    return request.headers["sec-fetch-site"] === "same-origin"
+      ? yield* startSignIn(registry, stage, link)
+      : respond(startPromptPage(link));
+  });
+
+/** The `POST`: the start a prompt page confirmed, or the issuer interstitial's Continue or Cancel. */
+const answerForm = (
   registry: () => SignInRegistry,
   request: HttpServerRequest.HttpServerRequest,
   stage: McpSignInStage,
 ) =>
   Effect.gen(function* () {
-    if (request.headers.origin !== stage.origin) {
+    if (
+      request.headers.origin !== stage.origin ||
+      request.headers["sec-fetch-site"] !== "same-origin"
+    ) {
       return respond(
         startProblemPage("This answer did not come from cloudpid's own page.", 403, undefined),
       );
@@ -351,30 +386,37 @@ const answerConfirmation = (
       : undefined;
 
     const form = new URLSearchParams(text ?? "");
-    const state = form.get("state") ?? "";
-    const decision = form.get("decision") ?? "";
 
-    if (text === undefined || !WELL_FORMED_STATE.test(state)) {
+    if (text === undefined) {
       return respond(
         startProblemPage("This answer is not one cloudpid asked for.", 400, undefined),
       );
     }
 
-    const answer = yield* registry()
-      .confirmMcpSignIn({ state, decision })
-      .pipe(
-        Effect.map(readMcpSignInConfirmAnswer),
-        Effect.catchCause(() =>
-          Effect.logWarning("The MCP sign-in confirmation could not reach the Registry").pipe(
-            Effect.as(
-              readMcpSignInConfirmAnswer({
-                status: "problem",
-                message: "cloudpid could not reach its store. Try again.",
-              }),
-            ),
-          ),
-        ),
+    if (!form.has("state")) {
+      const link = startLinkOf(form);
+
+      return link === undefined
+        ? respond(startProblemPage("This answer is not one cloudpid asked for.", 400, undefined))
+        : yield* startSignIn(registry, stage, link);
+    }
+
+    const state = form.get("state") ?? "";
+
+    if (!WELL_FORMED_STATE.test(state)) {
+      return respond(
+        startProblemPage("This answer is not one cloudpid asked for.", 400, undefined),
       );
+    }
+
+    const answer = yield* askRegistry(
+      registry().confirmMcpSignIn({ state, decision: form.get("decision") ?? "" }),
+      readMcpSignInConfirmAnswer,
+      {
+        log: "The MCP sign-in confirmation could not reach the Registry",
+        answer: { status: "problem", message: "cloudpid could not reach its store. Try again." },
+      },
+    );
 
     switch (answer.status) {
       case "redirect":
@@ -393,7 +435,3 @@ const answerConfirmation = (
         return respond(startProblemPage(answer.message, 400, undefined));
     }
   });
-
-/** Whether `environment` is Global's own (`environment=all` of the start link). */
-export const isGlobalEnvironment = (environment: string): boolean =>
-  environment === MCP_SIGN_IN_GLOBAL;

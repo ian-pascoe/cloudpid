@@ -347,14 +347,45 @@ describe("the start", () => {
 
   it.each([
     ["no Sec-Fetch-Site", {}],
-    ["a cross-site fetch", { "sec-fetch-site": "cross-site" }],
+    ["a cross-site fetch (the way back from an Access login)", { "sec-fetch-site": "cross-site" }],
     ["a same-site fetch", { "sec-fetch-site": "same-site" }],
-    ["a navigation from nowhere", { "sec-fetch-site": "none" }],
-  ])("is refused for %s, and the Registry is never called", async (_name, headers) => {
-    const scripted = registry({ start: { status: "redirect", url: "https://as.example/a" } });
-    const response = await start(scripted.use(), LIVE, { headers });
+    ["a typed address", { "sec-fetch-site": "none" }],
+  ])(
+    "starts nothing for %s: it asks first, and the Registry is never called",
+    async (_name, headers) => {
+      const scripted = registry({ start: { status: "redirect", url: "https://as.example/a" } });
+      const response = await start(scripted.use(), LIVE, { headers });
+      const html = await response.text();
 
-    expect(response.status).toBe(403);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBe(null);
+      expect(response.headers.get("content-security-policy")).toContain("form-action 'self'");
+      expect(html).toContain(`<form method="post" action="/oauth/mcp/start">`);
+      expect(html).toContain(`name="environment" value="env_1"`);
+      expect(html).toContain(`name="server" value="sentry"`);
+      expect(html).toContain(`name="return" value="/settings"`);
+      expect(scripted.startMcpSignIn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("carries a step-up and the requester through the page it asks on", async () => {
+    const response = await start(registry({}).use(), LIVE, {
+      url: `${ORIGIN}${link}&step_up=1&session=sess_1&request=req_1&x=<b>`,
+    });
+
+    const html = await response.text();
+
+    expect(html).toContain(`name="step_up" value="1"`);
+    expect(html).toContain(`name="session" value="sess_1"`);
+    expect(html).toContain(`name="request" value="req_1"`);
+    expect(html).not.toContain("<b>");
+  });
+
+  it("is a problem page for a link that names no server, whatever its headers", async () => {
+    const scripted = registry({});
+    const response = await start(scripted.use(), LIVE, { url: `${ORIGIN}/oauth/mcp/start` });
+
+    expect(response.status).toBe(400);
     expect(scripted.startMcpSignIn).not.toHaveBeenCalled();
   });
 
@@ -435,6 +466,37 @@ describe("the start", () => {
         state: STATE,
         decision: "continue",
       });
+    });
+
+    it("starts the sign-in a prompt page confirmed, with the link's values", async () => {
+      const scripted = registry({
+        start: { status: "redirect", url: "https://as.example/authorize" },
+      });
+
+      const response = await post(
+        scripted,
+        "environment=env_1&server=sentry&step_up=1&session=s1&request=r1&return=%2Fsettings",
+      );
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe("https://as.example/authorize");
+      expect(scripted.confirmMcpSignIn).not.toHaveBeenCalled();
+      expect(scripted.startMcpSignIn.mock.calls[0]?.[0]).toMatchObject({
+        environment: "env_1",
+        server: "sentry",
+        stepUp: true,
+        requester: { session: "s1", request: "r1" },
+        returnPath: "/settings",
+      });
+    });
+
+    it("is refused for a form that is neither a start nor an answer", async () => {
+      const scripted = registry({});
+      const response = await post(scripted, "decision=continue");
+
+      expect(response.status).toBe(400);
+      expect(scripted.startMcpSignIn).not.toHaveBeenCalled();
+      expect(scripted.confirmMcpSignIn).not.toHaveBeenCalled();
     });
 
     it("says Cancel changed nothing", async () => {

@@ -3,7 +3,7 @@
 // `state` and the PKCE pair, and every outcome of the callback. The authorization server is a table of responses; nothing
 // reaches the network.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off
 import { sha256Hex } from "@cloudpid/config";
 import { type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type { OAuthFetch } from "@cloudpid/mcp/oauth";
@@ -19,6 +19,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
 import { pkceChallenge } from "../mcp/sign-in-client.ts";
 import {
@@ -188,6 +189,8 @@ type Flow = {
   readonly signIns: McpSignIns;
   readonly vault: KeptVault;
   readonly calls: Array<Call>;
+  /** Every span the start, the confirmation and the callback made, with its attributes. */
+  readonly spans: Array<Tracer.NativeSpan>;
   readonly setGlobal: (value: Schema.Json) => void;
   readonly keyHash: (name: string) => string;
   readonly start: (
@@ -220,6 +223,20 @@ const run = <A>(
       const signIns = openMcpSignIns(state.storage, store);
       const vault = await Effect.runPromise(openKeptVault(MASTER, MCP_OAUTH_PURPOSE));
       const net = network(routes);
+      const spans: Array<Tracer.NativeSpan> = [];
+
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+
+          spans.push(span);
+
+          return span;
+        },
+      });
+
+      const traced = <A>(effect: Effect.Effect<A>): Promise<A> =>
+        Effect.runPromise(effect.pipe(Effect.provideService(Tracer.Tracer, tracer)));
 
       const deps: FlowDeps = {
         store,
@@ -238,7 +255,7 @@ const run = <A>(
       };
 
       const start: Flow["start"] = (over = {}, now = NOW) =>
-        Effect.runPromise(
+        traced(
           startMcpSignIn(
             deps,
             { environment: DEFAULT_ENVIRONMENT, server: "sentry", stage: STAGE, ...over },
@@ -247,10 +264,10 @@ const run = <A>(
         );
 
       const confirm: Flow["confirm"] = (token, decision = "continue", now = NOW) =>
-        Effect.runPromise(confirmMcpSignIn(deps, { state: token, decision }, now));
+        traced(confirmMcpSignIn(deps, { state: token, decision }, now));
 
       const complete: Flow["complete"] = (token, over = {}, now = NOW + 1000) =>
-        Effect.runPromise(
+        traced(
           completeMcpSignIn(
             deps,
             { state: token, path: "/oauth/mcp/callback", code: CODE, iss: AS, ...over },
@@ -282,6 +299,7 @@ const run = <A>(
         signIns,
         vault,
         calls: net.calls,
+        spans,
         setGlobal: (value) => {
           writeSettings(store, servers(value), 5);
         },
@@ -750,7 +768,7 @@ describe("state and PKCE", () => {
       expect(url.searchParams.get("resource")).toBe(SERVER_URL);
       // The challenge says what the scope was: the protected resource's, and `offline_access` the server lists.
       expect(url.searchParams.get("scope")).toBe("read offline_access");
-      expect(url.searchParams.get("prompt")).toBe("consent");
+      expect(url.searchParams.has("prompt")).toBe(false);
 
       const hash = keyHash("sentry");
       const pending = signIns.getPending(hash, NOW);
@@ -1275,4 +1293,64 @@ describe("what a start refuses", () => {
         expect(signIns.getPending(keyHash("sentry"), NOW)).toBeNull();
       },
     ));
+});
+
+/** The attributes of the span named `name`, as an object. */
+const attributesOf = (spans: ReadonlyArray<Tracer.NativeSpan>, name: string) =>
+  Object.fromEntries(spans.find((span) => span.name === name)?.attributes ?? []);
+
+describe("the spans", () => {
+  it("say the start's outcome, and a refusal's, without a code, state or URL", () =>
+    run(sentry(), async ({ setGlobal, start, spans }) => {
+      setGlobal({ sentry: { url: SERVER_URL } });
+
+      await start();
+      await start({ server: "nothing" });
+
+      const started = spans.filter((span) => span.name === "mcp.oauth.start");
+
+      expect(started.map((span) => Object.fromEntries(span.attributes)["mcp.outcome"])).toEqual([
+        "redirect",
+        "problem",
+      ]);
+
+      const text = JSON.stringify(started.map((span) => [...span.attributes]));
+
+      expect(text).not.toContain("code_challenge");
+      expect(text).not.toContain("state=");
+    }));
+
+  it("say the callback's outcome, the OAuth error code and the token endpoint's status", () =>
+    run(
+      sentry({
+        [`POST ${AS}/token`]: () =>
+          new Response(JSON.stringify({ error: "invalid_grant", error_description: "used" }), {
+            status: 400,
+          }),
+      }),
+      async ({ setGlobal, signIn, complete, spans }) => {
+        setGlobal({ sentry: { url: SERVER_URL } });
+
+        await complete(stateOf(await signIn()));
+
+        expect(attributesOf(spans, "mcp.oauth.callback")).toMatchObject({
+          "mcp.outcome": "exchange_failed",
+          "mcp.oauth_error": "invalid_grant",
+          "http.status_code": 400,
+        });
+        expect(JSON.stringify([...(spans.at(-1)?.attributes ?? [])])).not.toContain(CODE);
+      },
+    ));
+
+  it("say a signed-in callback's outcome and the token endpoint's status", () =>
+    run(sentry(), async ({ setGlobal, signIn, complete, spans }) => {
+      setGlobal({ sentry: { url: SERVER_URL } });
+
+      await complete(stateOf(await signIn()));
+
+      expect(attributesOf(spans, "mcp.oauth.callback")).toMatchObject({
+        "mcp.outcome": "signed_in",
+        "http.status_code": 200,
+      });
+    }));
 });

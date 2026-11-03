@@ -9,8 +9,6 @@ import {
   clientDocument,
   clientNameFor,
   dcrRedirectUri,
-  issuerHash,
-  MAX_CLIENT_NAME_LENGTH,
   pkceChallenge,
   randomToken,
   safeReturnPath,
@@ -34,7 +32,7 @@ describe("the client name", () => {
   it("shortens the configured part and never the suffix", () => {
     const name = clientNameFor({ label: "pr-1", local: true }, "🙂".repeat(300));
 
-    expect(Array.from(name)).toHaveLength(MAX_CLIENT_NAME_LENGTH);
+    expect(Array.from(name)).toHaveLength(100);
     expect(name.endsWith(" (pr-1, local)")).toBe(true);
   });
 });
@@ -67,9 +65,14 @@ describe("the DCR redirect URI", () => {
       advertisesIss: false,
     });
 
-    expect(uri).toBe(`${ORIGIN}/oauth/mcp/callback/${issuerHash("https://as.example")}`);
-    expect(issuerHash("https://as.example")).toMatch(/^[0-9a-f]{12}$/);
-    expect(issuerHash("https://other.example")).not.toBe(issuerHash("https://as.example"));
+    const other = dcrRedirectUri({
+      origin: ORIGIN,
+      issuer: "https://other.example",
+      advertisesIss: false,
+    });
+
+    expect(uri).toMatch(new RegExp(`^${ORIGIN}/oauth/mcp/callback/[0-9a-f]{12}$`));
+    expect(other).not.toBe(uri);
   });
 });
 
@@ -151,7 +154,7 @@ describe("the authorization URL", () => {
     expect(query.has("prompt")).toBe(false);
   });
 
-  it("adds the scope and the resource, and asks for consent when it asks for offline access", () => {
+  it("adds the scope and the resource, and never forces the consent screen", () => {
     const query = urlOf(
       authorizationUrl(
         request({ scope: "read offline_access", resource: "https://mcp.example/mcp" }),
@@ -160,7 +163,7 @@ describe("the authorization URL", () => {
 
     expect(query.get("scope")).toBe("read offline_access");
     expect(query.get("resource")).toBe("https://mcp.example/mcp");
-    expect(query.get("prompt")).toBe("consent");
+    expect(query.has("prompt")).toBe(false);
   });
 
   it("keeps the query an endpoint already has", () => {

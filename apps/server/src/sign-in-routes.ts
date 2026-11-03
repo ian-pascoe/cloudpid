@@ -118,10 +118,17 @@ const notFound = HttpServerResponse.text("Not Found", {
 export const isStartRequest = (request: HttpServerRequest.HttpServerRequest): boolean =>
   rawPathOf(request.url) === START_PATH;
 
+/** A handler of one request: it reads the request itself, and answers (a failure is its own to turn into a page). */
+type SignInHandler = Effect.Effect<
+  HttpServerResponse.HttpServerResponse,
+  never,
+  HttpServerRequest.HttpServerRequest
+>;
+
 /** What serves the two exact public paths: the client document, and the callback at its path (with its hash, if any). */
-export type SignInHandlers<E, R> = {
-  readonly clientDocument: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>;
-  readonly callback: (path: string) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>;
+export type SignInHandlers = {
+  readonly clientDocument: SignInHandler;
+  readonly callback: (path: string) => SignInHandler;
 };
 
 /**
@@ -131,13 +138,13 @@ export type SignInHandlers<E, R> = {
  * (`signInRoute`).
  */
 export const serveSignInPaths =
-  <HE, HR>(handlers: SignInHandlers<HE, HR>) =>
+  (handlers: SignInHandlers) =>
   <E, R>(
     guarded: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   ): Effect.Effect<
     HttpServerResponse.HttpServerResponse,
-    E | HE,
-    R | HR | HttpServerRequest.HttpServerRequest
+    E,
+    R | HttpServerRequest.HttpServerRequest
   > =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -163,5 +170,5 @@ export const serveSignInPaths =
  * and never a route behind it. `worker.ts` builds its `fetch` with this, and the test of the composition is what keeps
  * the two from being swapped.
  */
-export const guardedRoutes = <HE, HR>(guard: AccessGuard, handlers: SignInHandlers<HE, HR>) =>
+export const guardedRoutes = (guard: AccessGuard, handlers: SignInHandlers) =>
   flow(guardAccess(guard), serveSignInPaths(handlers));

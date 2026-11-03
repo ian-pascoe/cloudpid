@@ -12,7 +12,7 @@
 // sign-in raises the sign-ins revision, which the hosts pull at `windowOpened`.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
 import { type McpResolvedServer, type McpSignInKey } from "@cloudpid/config";
-import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
+import type { KeptVault, SealedValue, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import {
   type AuthorizationServerMetadata,
   clientSecretExpiresAt,
@@ -38,6 +38,8 @@ import {
   type McpSignInConfirmInput,
   type McpSignInEnvironment,
   type McpSignInFailure,
+  MCP_SIGN_IN_FAILURES,
+  McpSignInSecretRef,
   type McpSignInStartAnswer,
   type McpSignInStartInput,
 } from "@cloudpid/mcp/types";
@@ -79,7 +81,7 @@ import {
 } from "./mcp-sign-ins.ts";
 import { mcpLayersOf } from "./settings.ts";
 import { resolvedMcpServers } from "./mcp-set.ts";
-import { resolvedServer, type ResolvedServersStore } from "./mcp-registry.ts";
+import { environmentResolvedServers, type ResolvedServersStore } from "./mcp-registry.ts";
 import { type McpValueSources, resolveOauthSecret } from "./mcp-values.ts";
 import type { RegistryStore } from "./store.ts";
 
@@ -149,48 +151,46 @@ const hostOf = (url: string): string => (URL.canParse(url) ? new URL(url).host :
 const vaultFailure = (error: SecretVaultError): FlowProblem =>
   FlowProblem.make({ message: error.message });
 
-const bindingNamedBy = (store: FlowStore): ((keyHash: string, clientId: string) => boolean) => {
-  const sets = [
-    resolvedMcpServers(mcpLayersOf(store, {})),
-    ...Arr.map(store.listEnvironments(), ({ id }) => {
-      const overrides = store.getSettingsOverrides(id);
+/** The servers `environment`'s set resolves to (Global's own layers for `all`), or null when it is not registered. */
+const serversOf = (
+  store: FlowStore,
+  environment: string,
+): ReadonlyArray<McpResolvedServer> | null =>
+  environment === MCP_SIGN_IN_GLOBAL
+    ? resolvedMcpServers(mcpLayersOf(store, {}))
+    : environmentResolvedServers(store, environment);
 
-      return overrides === null ? [] : resolvedMcpServers(mcpLayersOf(store, overrides));
-    }),
-  ];
+/** Whether `resolved` is an HTTP server that signs in under the key `hash`, with `clientId` when one is given. */
+const usesSignIn = (resolved: McpResolvedServer, hash: string, clientId?: string): boolean => {
+  const target = signInTargetOf(resolved);
 
-  return (keyHash, clientId) =>
-    Arr.some(sets, (servers) =>
-      Arr.some(servers, (resolved) => {
-        const target = signInTargetOf(resolved);
-
-        return (
-          target.status === "target" &&
-          target.key.hash === keyHash &&
-          resolved.server.type === "http" &&
-          resolved.server.oauth?.clientId === clientId
-        );
-      }),
-    );
+  return (
+    target.status === "target" &&
+    target.key.hash === hash &&
+    (clientId === undefined ||
+      (resolved.server.type === "http" && resolved.server.oauth?.clientId === clientId))
+  );
 };
+
+/** Whether some set (Global's, or an Environment's) names a server that signs in under `keyHash` as the client `clientId`. */
+const bindingNamedBy =
+  (store: FlowStore) =>
+  (keyHash: string, clientId: string): boolean =>
+    Arr.some([MCP_SIGN_IN_GLOBAL, ...Arr.map(store.listEnvironments(), ({ id }) => id)], (id) =>
+      Arr.some(serversOf(store, id) ?? [], (resolved) => usesSignIn(resolved, keyHash, clientId)),
+    );
 
 /** The Environments whose set holds a server that uses the sign-in `hash`. */
 const environmentsUsing = (store: FlowStore, hash: string): ReadonlyArray<McpSignInEnvironment> =>
-  Arr.filter(store.listEnvironments(), ({ id }) => {
-    const overrides = store.getSettingsOverrides(id);
-
-    return (
-      overrides !== null &&
-      Arr.some(resolvedMcpServers(mcpLayersOf(store, overrides)), (resolved) => {
-        const target = signInTargetOf(resolved);
-
-        return target.status === "target" && target.key.hash === hash;
-      })
-    );
-  }).map(({ id, name }) => ({ id, name }));
+  Arr.map(
+    Arr.filter(store.listEnvironments(), ({ id }) =>
+      Arr.some(serversOf(store, id) ?? [], (resolved) => usesSignIn(resolved, hash)),
+    ),
+    ({ id, name }) => ({ id, name }),
+  );
 
 /** The entry a start names, and the sign-in it uses. */
-type Entry = {
+type SignInEntry = {
   readonly resolved: McpResolvedServer;
   readonly key: McpSignInKey;
   readonly url: string;
@@ -203,19 +203,14 @@ const findEntry = (
   store: FlowStore,
   environment: string,
   name: string,
-): Effect.Effect<Entry, FlowProblem> => {
-  const overrides =
-    environment === MCP_SIGN_IN_GLOBAL ? {} : store.getSettingsOverrides(environment);
+): Effect.Effect<SignInEntry, FlowProblem> => {
+  const servers = serversOf(store, environment);
 
-  if (overrides === null) return FlowProblem.make({ message: "The Environment is not registered" });
+  if (servers === null) return FlowProblem.make({ message: "The Environment is not registered" });
 
-  const resolved =
-    environment === MCP_SIGN_IN_GLOBAL
-      ? Arr.findFirst(
-          resolvedMcpServers(mcpLayersOf(store, {})),
-          (candidate) => candidate.name === name,
-        ).pipe(Option.getOrUndefined)
-      : resolvedServer(store, environment, name);
+  const resolved = Arr.findFirst(servers, (candidate) => candidate.name === name).pipe(
+    Option.getOrUndefined,
+  );
 
   if (resolved === undefined) {
     return FlowProblem.make({ message: "The server is not in the Environment's MCP set" });
@@ -254,7 +249,7 @@ const PendingContext = Schema.Struct({
   client: Schema.Struct({
     id: Schema.String,
     kind: Schema.Literals(["configured", "document", "registered", "client_grant"]),
-    secretRef: Schema.NullOr(Schema.Struct({ scope: Schema.String, name: Schema.String })),
+    secretRef: Schema.NullOr(McpSignInSecretRef),
     registration: Schema.NullOr(Schema.String),
   }),
 });
@@ -283,23 +278,30 @@ const metadataOf = (text: string): Option.Option<AuthorizationServerMetadata> =>
     response_types_supported: [...metadata.response_types_supported],
   }));
 
+/** What the scope of a start is made from. */
+type ScopeSources = {
+  /** The wanted scope of a step-up. */
+  readonly wanted: string | null;
+  /** The entry's own `oauth.scope`. */
+  readonly configured: string | undefined;
+  /** The scope of the last challenge. */
+  readonly challenged: string | undefined;
+  /** What the protected resource's metadata lists. */
+  readonly supportedByResource: ReadonlyArray<string> | undefined;
+  readonly metadata: AuthorizationServerMetadata;
+};
+
 /** The scope requested: the entry's, the challenged and the protected resource's, with `offline_access` when the server lists it. */
-const requestedScope = (
-  wanted: string | null,
-  entry: Entry,
-  challenged: string | undefined,
-  supportedByResource: ReadonlyArray<string> | undefined,
-  metadata: AuthorizationServerMetadata,
-): string | undefined => {
+const requestedScope = (sources: ScopeSources): string | undefined => {
   const base =
-    wanted ??
-    mergeScopes(entry.oauth?.scope, challenged) ??
-    mergeScopes(supportedByResource?.join(" "));
+    sources.wanted ??
+    mergeScopes(sources.configured, sources.challenged) ??
+    mergeScopes(sources.supportedByResource?.join(" "));
 
   if (base === null) return undefined;
 
   const offline =
-    metadata.scopes_supported?.includes("offline_access") === true &&
+    sources.metadata.scopes_supported?.includes("offline_access") === true &&
     !base.split(" ").includes("offline_access");
 
   return offline ? `${base} offline_access` : base;
@@ -316,7 +318,16 @@ type Chosen = {
   readonly client: McpSignInClient;
   readonly redirectUri: string;
   readonly confirmation: { readonly previousIssuer: string | undefined } | undefined;
-  readonly secret: { readonly scope: string; readonly name: string } | undefined;
+  readonly secret: McpSignInSecretRef | undefined;
+};
+
+/** What a start learned about the authorization server before it chooses a client. */
+type Discovered = {
+  readonly metadata: AuthorizationServerMetadata;
+  readonly authorizationServerUrl: string;
+  readonly pin: IssuerPin;
+  /** The scope the start asks for. */
+  readonly scope: string | undefined;
 };
 
 /**
@@ -327,17 +338,15 @@ type Chosen = {
 const chooseClient = (
   deps: FlowDeps,
   vault: KeptVault,
-  entry: Entry,
+  entry: SignInEntry,
   input: McpSignInStartInput,
-  metadata: AuthorizationServerMetadata,
-  authorizationServerUrl: string,
-  pin: IssuerPin,
-  scope: string | undefined,
+  discovered: Discovered,
   now: number,
 ): Effect.Effect<Chosen, FlowProblem> =>
   Effect.gen(function* () {
     const { stage } = input;
     const { oauth } = entry;
+    const { metadata, authorizationServerUrl, pin, scope } = discovered;
     const issuer = metadata.issuer;
     const plainCallback = callbackUrl(stage.origin);
 
@@ -451,12 +460,12 @@ const chooseClient = (
       clientMetadata.token_endpoint_auth_method = "none";
     }
 
-    const registration_: RegisterOptions = { metadata, clientMetadata, fetch: deps.fetch };
+    const registrationOptions: RegisterOptions = { metadata, clientMetadata, fetch: deps.fetch };
 
-    if (scope !== undefined) registration_.scope = scope;
+    if (scope !== undefined) registrationOptions.scope = scope;
 
     const registered = yield* attempt(`${hostOf(issuer)} refused the registration`, () =>
-      registerClient(authorizationServerUrl, registration_),
+      registerClient(authorizationServerUrl, registrationOptions),
     ).pipe(
       Effect.mapError((problem) => {
         // The hint is the part to act on: it is kept whole, and the refusal's own text gives way to it.
@@ -599,13 +608,13 @@ export const startMcpSignIn = (
 
     yield* Effect.annotateCurrentSpan({ "mcp.issuer_host": hostOf(metadata.issuer) });
 
-    const scope = requestedScope(
-      input.stepUp === true ? (row?.wantedScope ?? null) : null,
-      entry,
-      challenge?.scope,
-      info.resourceMetadata?.scopes_supported,
+    const scope = requestedScope({
+      wanted: input.stepUp === true ? (row?.wantedScope ?? null) : null,
+      configured: entry.oauth?.scope,
+      challenged: challenge?.scope,
+      supportedByResource: info.resourceMetadata?.scopes_supported,
       metadata,
-    );
+    });
 
     const resource = yield* Effect.try({
       try: () => selectResource(serverUrl, info.resourceMetadata),
@@ -624,10 +633,7 @@ export const startMcpSignIn = (
       vault,
       entry,
       input,
-      metadata,
-      info.authorizationServerUrl,
-      pin,
-      scope,
+      { metadata, authorizationServerUrl: info.authorizationServerUrl, pin, scope },
       now,
     );
 
@@ -727,8 +733,11 @@ export const startMcpSignIn = (
     } satisfies McpSignInStartAnswer;
   }).pipe(
     Effect.catchTag("FlowProblem", (problem) =>
-      Effect.succeed<McpSignInStartAnswer>({ status: "problem", message: problem.message }),
+      Effect.annotateCurrentSpan({ "mcp.oauth_error": problem.code }).pipe(
+        Effect.as<McpSignInStartAnswer>({ status: "problem", message: problem.message }),
+      ),
     ),
+    Effect.tap((answer) => Effect.annotateCurrentSpan({ "mcp.outcome": answer.status })),
     Effect.withSpan("mcp.oauth.start"),
   );
 
@@ -793,11 +802,295 @@ export const confirmMcpSignIn = (
     ),
   );
 
+/** A callback that saved nothing, and why: what `recordFailure` turns into the answer for the page. */
+class Refusal extends Schema.TaggedError<Refusal, { readonly brand: unique symbol }>()("Refusal", {
+  status: Schema.Literals(MCP_SIGN_IN_FAILURES),
+  message: Schema.optional(Schema.String),
+  code: Schema.optional(Schema.String),
+}) {}
+
+/** The pending row of a callback, read: what it recorded of the sign-in and of the authorization server. */
+type Loaded = {
+  readonly pending: McpPendingSignIn;
+  readonly context: PendingContext;
+  readonly metadata: AuthorizationServerMetadata;
+};
+
+/** A refusal as the answer for the page: a row that holds no tokens keeps the reason, for the Settings row and the open request. */
+const recordFailure = (
+  deps: FlowDeps,
+  { pending, context }: Loaded,
+  refusal: Refusal,
+  now: number,
+): McpSignInFailure => {
+  const reason = refusal.message === undefined ? undefined : told(refusal.message);
+  const row = deps.signIns.get(context.key.hash);
+
+  if (reason !== undefined && (row === null || !row.hasTokens)) {
+    // A refusal for want of room leaves nothing to note on.
+    if (row === null) deps.signIns.noteChallenge(context.key, {}, now);
+
+    deps.signIns.update(context.key.hash, { lastError: reason }, now);
+  }
+
+  return {
+    status: refusal.status,
+    code: refusal.code,
+    message: reason,
+    retry: { environment: pending.environment, server: context.server },
+    returnPath: pending.returnPath ?? undefined,
+  };
+};
+
+/** The code of an answer that is one this sign-in asked for (its path, no error, the right issuer), or why it is none. */
+const answeredCode = (
+  { pending, metadata }: Loaded,
+  input: McpSignInCompleteInput,
+): Effect.Effect<string, Refusal> => {
+  if (pending.awaitingConfirmation) {
+    return Refusal.make({
+      status: "unconfirmed",
+      message: "The issuer was not confirmed: start again",
+    });
+  }
+
+  // The path is the redirect URI's own: a callback at another path (another issuer's hash, say) is nothing saved.
+  if (!URL.canParse(pending.redirectUri) || new URL(pending.redirectUri).pathname !== input.path) {
+    return Refusal.make({
+      status: "path_mismatch",
+      message: "The answer came to another address than the sign-in started with",
+    });
+  }
+
+  if (input.error !== undefined) {
+    const reported = errorCodeOf(input.error);
+
+    return reported === "access_denied"
+      ? Refusal.make({ status: "declined", code: reported })
+      : Refusal.make({
+          status: "provider_error",
+          message: input.errorDescription ?? reported,
+          code: reported,
+        });
+  }
+
+  // RFC 9207: never send a code from another authorization server to this one.
+  if (
+    (input.iss !== undefined || metadata.authorization_response_iss_parameter_supported === true) &&
+    input.iss !== metadata.issuer
+  ) {
+    return Refusal.make({
+      status: "iss_mismatch",
+      message: "The answer came from another authorization server: nothing was saved",
+    });
+  }
+
+  return input.code === undefined || input.code === ""
+    ? Refusal.make({ status: "missing_code", message: "The answer carried no code" })
+    : Effect.succeed(input.code);
+};
+
+/** The status of the token endpoint's last answer, kept for the span. */
+type TokenEndpointStatus = { status: number | undefined };
+
+/** What the token endpoint issued. */
+type IssuedTokens = Awaited<ReturnType<typeof exchangeAuthorizationCode>>;
+
+/**
+ * The code exchanged for tokens at the token endpoint, with the verifier only the Registry holds and the client's secret
+ * when it has one, and the tokens sealed. The token endpoint's HTTP status goes on the span (never the code or a token).
+ */
+const exchangeForTokens = (
+  deps: FlowDeps,
+  { pending, context, metadata }: Loaded,
+  code: string,
+): Effect.Effect<{ readonly tokens: IssuedTokens; readonly sealed: SealedValue }, Refusal> =>
+  Effect.gen(function* () {
+    // Opened first: a vault that fails to open is the store's problem, not the server's.
+    const opening = yield* Effect.result(
+      Effect.gen(function* () {
+        const vault = yield* deps.vault.pipe(Effect.mapError(vaultFailure));
+
+        const verifier = yield* openValue(
+          vault,
+          PENDING_TABLE,
+          context.key.hash,
+          pending.sealedVerifier,
+        ).pipe(Effect.mapError(vaultFailure));
+
+        return {
+          vault,
+          verifier,
+          information: yield* clientInformation(deps, vault, pending.environment, context),
+        };
+      }),
+    );
+
+    if (Result.isFailure(opening)) {
+      return yield* Refusal.make({ status: "unavailable", message: opening.failure.message });
+    }
+
+    const { vault, verifier, information } = opening.success;
+    const seen: TokenEndpointStatus = { status: undefined };
+
+    const exchange: ExchangeOptions = {
+      metadata,
+      clientInformation: information,
+      fetch: async (input, init) => {
+        const response = await deps.fetch(input, init);
+
+        seen.status = response.status;
+
+        return response;
+      },
+      code,
+      codeVerifier: verifier,
+      redirectUrl: pending.redirectUri,
+    };
+
+    if (pending.resource !== null) exchange.resource = pending.resource;
+
+    const exchanged = yield* Effect.result(
+      attempt("The authorization server refused the code", () =>
+        exchangeAuthorizationCode(context.authorizationServerUrl, exchange),
+      ),
+    );
+
+    yield* Effect.annotateCurrentSpan({ "http.status_code": seen.status });
+
+    if (Result.isFailure(exchanged)) {
+      const { code: refusedCode, message } = exchanged.failure;
+
+      // A registration the server no longer knows is dropped, so the next start registers again.
+      if (refusedCode === "invalid_client" && context.client.registration !== null) {
+        deps.signIns.deleteRegistration(context.client.registration);
+      }
+
+      return yield* Refusal.make({ status: "exchange_failed", message, code: refusedCode });
+    }
+
+    const tokens = exchanged.success;
+
+    if (tokens.token_type.toLowerCase() !== "bearer") {
+      return yield* Refusal.make({
+        status: "exchange_failed",
+        message: `The server issued a ${clip(tokens.token_type, 32)} token, not a Bearer one`,
+      });
+    }
+
+    const sealing = yield* Effect.result(sealTokens(vault, context.key.hash, tokens));
+
+    if (Result.isFailure(sealing)) {
+      return yield* Refusal.make({ status: "unavailable", message: sealing.failure.message });
+    }
+
+    if (sealing.success.status === "too_large") {
+      return yield* Refusal.make({
+        status: "exchange_failed",
+        message: `The server's ${sealing.success.token === "access_token" ? "access" : "refresh"} token is longer than 16 KiB`,
+      });
+    }
+
+    return { tokens, sealed: sealing.success.sealed };
+  });
+
+/** The sign-in written for the tokens just issued, and the answer: who uses it, and which Sign-in requests it resolved. */
+const saveSignIn = (
+  deps: FlowDeps,
+  { pending, context }: Loaded,
+  issued: { readonly tokens: IssuedTokens; readonly sealed: SealedValue },
+  now: number,
+): Effect.Effect<McpSignInCompleteAnswer, Refusal> =>
+  Effect.gen(function* () {
+    const { tokens, sealed } = issued;
+
+    // A configured client is bound to the issuer it signed in at; a rebind raises the revision, and the new sign-in
+    // replaces the old issuer's tokens below.
+    if (context.client.kind === "configured") {
+      const bound = deps.signIns.putBinding(
+        {
+          keyHash: context.key.hash,
+          clientId: context.client.id,
+          issuer: pending.issuer,
+          boundAt: now,
+        },
+        bindingNamedBy(deps.store),
+      );
+
+      if (bound.status === "refused") {
+        return yield* Refusal.make({ status: "exchange_failed", message: bound.message });
+      }
+    }
+
+    // A completed step-up keeps the wanted scope and the count, which the next challenge is compared to; a sign-in from
+    // Settings writes both reset.
+    const before = deps.signIns.get(context.key.hash);
+    const keepStepUp = pending.stepUp && before !== null;
+    const expiresIn = tokens.expires_in;
+
+    const put = deps.signIns.put(
+      {
+        key: context.key,
+        status: "ok",
+        issuer: pending.issuer,
+        metadata: pending.metadata,
+        discovery: context.discovery,
+        resource: pending.resource ?? context.key.url,
+        client: context.client,
+        scope: tokens.scope ?? pending.scope,
+        expiresAt:
+          expiresIn !== undefined && Number.isFinite(expiresIn) && expiresIn > 0
+            ? now + expiresIn * 1000
+            : null,
+        wantedScope: keepStepUp ? before.wantedScope : null,
+        stepUpCount: keepStepUp ? before.stepUpCount : 0,
+        sealed,
+      },
+      now,
+    );
+
+    if (put.status === "refused") {
+      return yield* Refusal.make({ status: "exchange_failed", message: put.message });
+    }
+
+    const resolved = deps.signIns.resolveWaiters(context.key.hash, now);
+
+    return {
+      status: "signed_in",
+      server: context.server,
+      environments: environmentsUsing(deps.store, context.key.hash),
+      resolved: Arr.map(resolved, ({ session, request }) => ({ session, request })),
+      revision: deps.signIns.revision(),
+      retry: { environment: pending.environment, server: context.server },
+      returnPath: pending.returnPath ?? undefined,
+    } satisfies McpSignInCompleteAnswer;
+  });
+
+/** What a callback whose pending row was read comes to: the sign-in saved, or the failure the page tells. */
+const answerCallback = (
+  deps: FlowDeps,
+  input: McpSignInCompleteInput,
+  loaded: Loaded,
+  now: number,
+): Effect.Effect<McpSignInCompleteAnswer> =>
+  Effect.gen(function* () {
+    const code = yield* answeredCode(loaded, input);
+    const issued = yield* exchangeForTokens(deps, loaded, code);
+
+    return yield* saveSignIn(deps, loaded, issued, now);
+  }).pipe(
+    Effect.catchTag("Refusal", (refusal) =>
+      Effect.annotateCurrentSpan({ "mcp.oauth_error": refusal.code }).pipe(
+        Effect.as<McpSignInCompleteAnswer>(recordFailure(deps, loaded, refusal, now)),
+      ),
+    ),
+  );
+
 /**
  * The callback (→ The callback): takes the pending row of the `state` first, then checks its path, `error` and `iss` (RFC
  * 9207), exchanges the code, seals the tokens and writes the sign-in. Whatever goes wrong saves nothing and leaves the old
  * tokens as they were; the answer names the outcome for the page. `signed_in` names the Environments that use the sign-in
- * and the Sign-in requests it resolved.
+ * and the Sign-in requests it resolved. The span says the outcome, the OAuth error code and the token endpoint's status.
  */
 export const completeMcpSignIn = (
   deps: FlowDeps,
@@ -821,209 +1114,17 @@ export const completeMcpSignIn = (
       } satisfies McpSignInFailure;
     }
 
-    const ctx = context.value;
-    const meta = metadata.value;
+    const loaded: Loaded = { pending, context: context.value, metadata: metadata.value };
 
     yield* Effect.annotateCurrentSpan({
-      "mcp.server": ctx.key.name,
-      "mcp.source_kind": ctx.key.source.startsWith("repo:") ? "repo" : "owner",
+      "mcp.server": loaded.context.key.name,
+      "mcp.source_kind": loaded.context.key.source.startsWith("repo:") ? "repo" : "owner",
       "mcp.issuer_host": hostOf(pending.issuer),
-      "mcp.client_kind": ctx.client.kind,
+      "mcp.client_kind": loaded.context.client.kind,
       "mcp.step_up": pending.stepUp,
     });
 
-    /** A failure: nothing saved. A row that holds no tokens keeps the reason, for the Settings row and the open request. */
-    const failed = (
-      status: McpSignInFailure["status"],
-      message?: string,
-      code?: string,
-    ): McpSignInFailure => {
-      const reason = message === undefined ? undefined : told(message);
-      const row = deps.signIns.get(ctx.key.hash);
-
-      if (reason !== undefined && (row === null || !row.hasTokens)) {
-        // A refusal for want of room leaves nothing to note on.
-        if (row === null) deps.signIns.noteChallenge(ctx.key, {}, now);
-
-        deps.signIns.update(ctx.key.hash, { lastError: reason }, now);
-      }
-
-      return {
-        status,
-        code,
-        message: reason,
-        retry: { environment: pending.environment, server: ctx.server },
-        returnPath: pending.returnPath ?? undefined,
-      };
-    };
-
-    if (pending.awaitingConfirmation) {
-      return failed("unconfirmed", "The issuer was not confirmed: start again");
-    }
-
-    // The path is the redirect URI's own: a callback at another path (another issuer's hash, say) is nothing saved.
-    if (
-      !URL.canParse(pending.redirectUri) ||
-      new URL(pending.redirectUri).pathname !== input.path
-    ) {
-      return failed(
-        "path_mismatch",
-        "The answer came to another address than the sign-in started with",
-      );
-    }
-
-    if (input.error !== undefined) {
-      const reported = errorCodeOf(input.error);
-
-      return reported === "access_denied"
-        ? failed("declined", undefined, reported)
-        : failed("provider_error", input.errorDescription ?? reported, reported);
-    }
-
-    // RFC 9207: never send a code from another authorization server to this one.
-    if (
-      (input.iss !== undefined || meta.authorization_response_iss_parameter_supported === true) &&
-      input.iss !== meta.issuer
-    ) {
-      return failed(
-        "iss_mismatch",
-        "The answer came from another authorization server: nothing was saved",
-      );
-    }
-
-    const { code } = input;
-
-    if (code === undefined || code === "") {
-      return failed("missing_code", "The answer carried no code");
-    }
-
-    // What the exchange needs, opened: the verifier only the Registry holds, and the client's secret when it has one.
-    const prepared = yield* Effect.result(
-      Effect.gen(function* () {
-        const kept = yield* deps.vault.pipe(Effect.mapError(vaultFailure));
-
-        const opened = yield* openValue(
-          kept,
-          PENDING_TABLE,
-          ctx.key.hash,
-          pending.sealedVerifier,
-        ).pipe(Effect.mapError(vaultFailure));
-
-        return {
-          vault: kept,
-          verifier: opened,
-          information: yield* clientInformation(deps, kept, pending.environment, ctx),
-        };
-      }),
-    );
-
-    if (Result.isFailure(prepared)) return failed("unavailable", prepared.failure.message);
-
-    const { vault, verifier, information } = prepared.success;
-
-    const exchange: ExchangeOptions = {
-      metadata: meta,
-      clientInformation: information,
-      fetch: deps.fetch,
-      code,
-      codeVerifier: verifier,
-      redirectUrl: pending.redirectUri,
-    };
-
-    if (pending.resource !== null) exchange.resource = pending.resource;
-
-    const exchanged = yield* Effect.result(
-      attempt("The authorization server refused the code", () =>
-        exchangeAuthorizationCode(ctx.authorizationServerUrl, exchange),
-      ),
-    );
-
-    if (Result.isFailure(exchanged)) {
-      const { code, message } = exchanged.failure;
-
-      // A registration the server no longer knows is dropped, so the next start registers again.
-      if (code === "invalid_client" && ctx.client.registration !== null) {
-        deps.signIns.deleteRegistration(ctx.client.registration);
-      }
-
-      return failed("exchange_failed", message, code);
-    }
-
-    const tokens = exchanged.success;
-
-    if (tokens.token_type.toLowerCase() !== "bearer") {
-      return failed(
-        "exchange_failed",
-        `The server issued a ${clip(tokens.token_type, 32)} token, not a Bearer one`,
-      );
-    }
-
-    const sealing = yield* Effect.result(sealTokens(vault, ctx.key.hash, tokens));
-
-    if (Result.isFailure(sealing)) return failed("unavailable", sealing.failure.message);
-
-    const sealed = sealing.success;
-
-    if (sealed.status === "too_large") {
-      return failed(
-        "exchange_failed",
-        `The server's ${sealed.token === "access_token" ? "access" : "refresh"} token is longer than 16 KiB`,
-      );
-    }
-
-    // A configured client is bound to the issuer it signed in at; a rebind raises the revision, and the new sign-in
-    // replaces the old issuer's tokens below.
-    if (ctx.client.kind === "configured") {
-      const bound = deps.signIns.putBinding(
-        { keyHash: ctx.key.hash, clientId: ctx.client.id, issuer: pending.issuer, boundAt: now },
-        bindingNamedBy(deps.store),
-      );
-
-      if (bound.status === "refused") return failed("exchange_failed", bound.message);
-    }
-
-    // A completed step-up keeps the wanted scope and the count, which the next challenge is compared to; a sign-in from
-    // Settings writes both reset.
-    const before = deps.signIns.get(ctx.key.hash);
-    const keepStepUp = pending.stepUp && before !== null;
-
-    const expiresIn = tokens.expires_in;
-
-    const put = deps.signIns.put(
-      {
-        key: ctx.key,
-        status: "ok",
-        issuer: pending.issuer,
-        metadata: pending.metadata,
-        discovery: ctx.discovery,
-        resource: pending.resource ?? ctx.key.url,
-        client: ctx.client,
-        scope: tokens.scope ?? pending.scope,
-        expiresAt:
-          expiresIn !== undefined && Number.isFinite(expiresIn) && expiresIn > 0
-            ? now + expiresIn * 1000
-            : null,
-        wantedScope: keepStepUp ? before.wantedScope : null,
-        stepUpCount: keepStepUp ? before.stepUpCount : 0,
-        sealed: sealed.sealed,
-      },
-      now,
-    );
-
-    if (put.status === "refused") return failed("exchange_failed", put.message);
-
-    const resolved = deps.signIns.resolveWaiters(ctx.key.hash, now);
-
-    yield* Effect.annotateCurrentSpan({ "mcp.outcome": "signed_in" });
-
-    return {
-      status: "signed_in",
-      server: ctx.server,
-      environments: environmentsUsing(deps.store, ctx.key.hash),
-      resolved: Arr.map(resolved, ({ session, request }) => ({ session, request })),
-      revision: deps.signIns.revision(),
-      returnPath: pending.returnPath ?? undefined,
-    } satisfies McpSignInCompleteAnswer;
+    return yield* answerCallback(deps, input, loaded, now);
   }).pipe(
     Effect.tap((answer) => Effect.annotateCurrentSpan({ "mcp.outcome": answer.status })),
     Effect.withSpan("mcp.oauth.callback"),
@@ -1034,10 +1135,10 @@ const clientInformation = (
   deps: FlowDeps,
   vault: KeptVault,
   environment: string,
-  ctx: PendingContext,
+  context: PendingContext,
 ): Effect.Effect<{ readonly client_id: string; readonly client_secret?: string }, FlowProblem> =>
   Effect.gen(function* () {
-    const { client } = ctx;
+    const { client } = context;
 
     if (client.kind === "document") return { client_id: client.id };
 
@@ -1062,7 +1163,7 @@ const clientInformation = (
     }
 
     // A configured client: the entry as it is now, so a rotated secret is the one used, and a changed entry is no sign-in.
-    const entry = yield* findEntry(deps.store, environment, ctx.server);
+    const entry = yield* findEntry(deps.store, environment, context.server);
 
     if (entry.oauth?.clientId !== client.id) {
       return yield* FlowProblem.make({

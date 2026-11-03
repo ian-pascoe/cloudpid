@@ -148,4 +148,35 @@ describe("an OAuth request", () => {
 
     await expect(pending).rejects.toThrow();
   });
+
+  it("times out a body that drips, as it does a request that never answers", async () => {
+    const encoder = new TextEncoder();
+
+    const dripping = network(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode("{"));
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+
+    await expect(guardedOAuthFetch(dripping.layer, 50)("https://as.example/x")).rejects.toThrow(
+      "The request timed out",
+    );
+  });
+
+  it("times out a request that never answers", async () => {
+    const hanging = Layer.mergeAll(
+      Layer.succeed(WebTransport, { fetch: () => Effect.never }),
+      Layer.succeed(DnsResolver, { resolve: () => Effect.succeed(["93.184.216.34"]) }),
+    );
+
+    await expect(guardedOAuthFetch(hanging, 50)("https://as.example/x")).rejects.toThrow(
+      "The request timed out",
+    );
+  });
 });

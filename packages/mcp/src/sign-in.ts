@@ -156,6 +156,14 @@ export const McpSignInStartInput = Schema.Struct({
 
 export type McpSignInStartInput = typeof McpSignInStartInput.Type;
 
+/** Where an entry's `oauth.clientSecret` resolves: a `{scope, name}` reference, never a copy of the value. */
+export const McpSignInSecretRef = Schema.Struct({
+  scope: Schema.Literals(["secret", "variable"]),
+  name: Schema.String,
+});
+
+export type McpSignInSecretRef = typeof McpSignInSecretRef.Type;
+
 /** What the issuer interstitial shows: never a secret's value. */
 export const McpSignInConfirmation = Schema.Struct({
   /** The one-time field of Continue and Cancel: the `state` of the pending row. */
@@ -168,8 +176,8 @@ export const McpSignInConfirmation = Schema.Struct({
   /** The issuer the client was bound to before, on a change. */
   previousIssuer: Schema.optional(Schema.String),
   clientId: Schema.String,
-  /** Where the client secret resolves: `Secret` or `Variable`, and the `${NAME}`'s name. */
-  secret: Schema.optional(Schema.Struct({ scope: Schema.String, name: Schema.String })),
+  /** Where the client secret resolves: a `secret` or a `variable`, and the `${NAME}`'s name. */
+  secret: Schema.optional(McpSignInSecretRef),
 });
 
 export type McpSignInConfirmation = typeof McpSignInConfirmation.Type;
@@ -287,7 +295,7 @@ const KnownCompleteAnswer = Schema.Union([
     environments: Schema.Array(McpSignInEnvironment),
     resolved: Schema.Array(McpResolvedWaiter),
     revision: Schema.Finite,
-    returnPath: Schema.optional(Schema.String),
+    ...McpSignInRetry.fields,
   }),
   Schema.Struct({
     status: Schema.Literals(MCP_SIGN_IN_FAILURES),
