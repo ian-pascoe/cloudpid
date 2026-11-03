@@ -150,6 +150,8 @@ export interface SessionClient {
    * conversation (the root's, or subagent conversation `conversationId`'s) is answered, as a submit sent before it can
    * land before the snapshot, and sent again under the same `requestId` after a reconnect if no answer came. Done
    * once it is queued; the Session's refusal shows as the state's `failure`, or its thread's.
+   * A message Stop withdrew before it was placed is answered with `null`: done, with nothing queued and no failure, as
+   * withdrawn queued input goes.
    */
   readonly submit: (
     message: string | OutgoingMessage,

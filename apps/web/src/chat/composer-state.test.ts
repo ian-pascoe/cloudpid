@@ -16,6 +16,7 @@ import {
   copyAtom,
   DOWNLOAD_LINK_MS,
   sessionCommandAtom,
+  stoppable,
   wideAtom,
 } from "./composer-state.ts";
 import { refusedFirstMessagesAtom } from "../draft-state.ts";
@@ -468,4 +469,12 @@ describe("one composer's state", () => {
       });
     }),
   );
+});
+
+describe("stoppable", () => {
+  it("offers Stop while a Run is going, and while a message waits to be answered with none", () => {
+    expect(stoppable(true, [])).toBe(true);
+    expect(stoppable(false, [{ id: "1", text: "look" }])).toBe(true);
+    expect(stoppable(false, [])).toBe(false);
+  });
 });

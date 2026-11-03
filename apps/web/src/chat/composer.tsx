@@ -53,6 +53,7 @@ import {
   copyAtom,
   type Note,
   sessionCommandAtom,
+  stoppable,
   wideAtom,
 } from "./composer-state.ts";
 import { type ConversationKey, conversationKey, useShownSessionId } from "./conversation.ts";
@@ -141,6 +142,8 @@ const ComposerBox = ({
 
   const aui = useAui();
   const running = useAuiState((state) => state.thread.isRunning);
+  // A message still in its conversation's line is stopped too (Stop withdraws it), though no Run is going yet.
+  const stopping = stoppable(running, sending);
   const canSend = useAuiState((state) => state.composer.canSend);
 
   const state = useAtomValue(ComposerScope.use());
@@ -203,7 +206,7 @@ const ComposerBox = ({
       description: "Stop the run",
       argument: "none",
       run: () => {
-        if (!aui.thread.getState().isRunning) return "Nothing is running.";
+        if (!stoppable(aui.thread.getState().isRunning, sending)) return "Nothing is running.";
 
         aui.thread.cancelRun();
 
@@ -490,7 +493,7 @@ const ComposerBox = ({
                   <ListPlus aria-hidden />
                 </button>
               )}
-              {running && !hasMessage && onStopAll !== undefined && (
+              {stopping && !hasMessage && onStopAll !== undefined && (
                 <Menu
                   label="More ways to stop"
                   title="More ways to stop"
@@ -503,7 +506,7 @@ const ComposerBox = ({
                   </MenuItem>
                 </Menu>
               )}
-              {running && !hasMessage ? (
+              {stopping && !hasMessage ? (
                 <button
                   type="button"
                   aria-label="Stop"

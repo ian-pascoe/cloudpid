@@ -138,7 +138,9 @@ export const viaLabel = (
 
 /**
  * Domain failures (`isError` results); the endpoint's `unsupported` and `unavailable` end the list. A code this version
- * does not know (a newer deploy's) reads as `unavailable`, the generic failure that may heal.
+ * does not know (a newer deploy's) reads as `unavailable`, the generic failure that may heal; the error's `retryable`
+ * travels with it, so a reader that does not know `stopped` (a message the owner's Stop withdrew) still sees that
+ * sending it again will not help.
  */
 export const ApiErrorCode = open(
   Schema.Literals([
@@ -150,6 +152,7 @@ export const ApiErrorCode = open(
     "session_importing",
     "session_archived",
     "branch_taken",
+    "stopped",
     "input_too_large",
     "too_many_running",
     "too_many_waits",

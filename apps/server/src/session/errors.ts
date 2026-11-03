@@ -5,6 +5,12 @@ import * as Schema from "effect/Schema";
 /** The `operation` of a `SessionError` for a conversation the Session does not have (a cursor of another Session names one). */
 export const CONVERSATION_MISSING = "conversation_missing";
 
+/**
+ * The `operation` of the `SessionError` a message fails with when Stop withdrew it before it was placed
+ * (docs/architecture/mcp-in-a-session.md → Getting a prompt at send). Not a failure: the owner pressed Stop.
+ */
+export const WITHDRAWN = "withdrawn";
+
 /** A Harness or Durable Object storage call failed. */
 export class SessionError extends Schema.TaggedError<
   SessionError,
@@ -28,3 +34,17 @@ export const attempt = <A>(
 /** A failure the owner is told about, with why. */
 export const refuse = (message: string): SessionError =>
   SessionError.make({ operation: "command", message });
+
+/** The failure of a message Stop withdrew before it was placed: nothing was sent. */
+export const withdrawnFailure = (): SessionError =>
+  SessionError.make({
+    operation: WITHDRAWN,
+    message: "Stopped before it was sent: nothing was sent, so send it again.",
+  });
+
+/**
+ * Whether `error` says Stop withdrew the message. Not a type guard: callers hold errors of several kinds (`SessionError`
+ * and others), and narrowing them to `SessionError` would make their other branches `never`. It takes anything tagged.
+ */
+export const isWithdrawn = (error: { readonly _tag: string }): boolean =>
+  Schema.is(SessionError)(error) && error.operation === WITHDRAWN;

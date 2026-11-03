@@ -570,4 +570,23 @@ describe("redaction", () => {
     expect(ended.error).toBeUndefined();
     expect(ended.text_withheld).toBe("secrets_unavailable");
   });
+
+  it("answers stopped, not retryable, to a send Stop withdrew before it was placed, and to its resend", async () => {
+    const stub = fresh();
+
+    // A message held while it is prepared, as an Attached page's read or a template's expansion holds it.
+    const held = stub.submitHeld({ requestId: "r-1", text: "held" });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The Session shows no Run, yet the message in its line is stopped: it does not count as idle.
+    expect(okValue(await stub.mcpStop({ via })).status).toBe("idle");
+    expect(await held).toBe("withdrawn");
+
+    const resent = await stub.mcpSubmit({ input: "held", requestId: "r-1", via });
+
+    expect(resent).toMatchObject({ ok: false, error: { code: "stopped", retryable: false } });
+    // Nothing was placed: a new message is the first of the conversation.
+    expect(await send(stub, { requestId: "r-2" })).toMatchObject({ delivery: "started" });
+  });
 });

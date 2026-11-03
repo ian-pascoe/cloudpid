@@ -19,6 +19,14 @@ import type { ConversationKey } from "./conversation.ts";
 import { searchFilesAtom } from "./file-search.ts";
 import { composerPrefillAtom } from "./tree-state.ts";
 
+/**
+ * Whether Stop and `/stop` have something to stop: a Run is going, or a message of this conversation is still being sent
+ * (`sending`: it waits for the Session's answer, perhaps in the conversation's line, where Stop withdraws it).
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a test of two values, not a combinator.
+export const stoppable = (running: boolean, sending: readonly unknown[]): boolean =>
+  running || sending.length > 0;
+
 const WIDE_QUERY = "(min-width: 640px)";
 
 /** Whether the screen has room for the composer's long placeholder; on a phone it would wrap. */

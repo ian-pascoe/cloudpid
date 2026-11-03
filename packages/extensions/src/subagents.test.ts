@@ -17,6 +17,9 @@ import { decodeProgramCall, programExtension } from "./program.fixture.ts";
 import { deleteAgent, isAgentConversation, stopConversation } from "./subagents/owner.ts";
 import { conversationWorkspace, SubagentsDoc } from "./subagents/state.ts";
 
+/** A Session with no lines of messages to withdraw before it aborts. */
+const noop = () => Promise.resolve();
+
 describe("subagents", () => {
   it("reports a child's answer back to its parent as a follow-up when nobody waits for it", async () => {
     const session = await openSubagentHarness((request) => {
@@ -941,7 +944,7 @@ describe("subagents", () => {
         async () => (await session.state()).agents["agent-1"]?.turns[0]?.delivery === "pending",
         "the report to be held",
       );
-      await stopConversation(session.harness, ROOT_CONVERSATION_ID, { subagents }, context);
+      await stopConversation(session.harness, ROOT_CONVERSATION_ID, { subagents }, context, noop);
       await run;
       await session.settle();
 
@@ -1400,12 +1403,12 @@ describe("Subagent Workspaces", () => {
 
     // A Workspace left under the ID by another agent's spawn deletes no agent that does not work in it.
     expect(
-      await deleteAgent(session.harness, "agent-1", "0000000f", workspaces.host, context),
+      await deleteAgent(session.harness, "agent-1", "0000000f", workspaces.host, context, noop),
     ).toEqual({ deleted: [], kept: [] });
     expect(workspaces.removed).toEqual([]);
 
     expect(
-      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context),
+      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context, noop),
     ).toEqual({
       deleted: ["agent-1"],
       kept: [],
@@ -1415,11 +1418,66 @@ describe("Subagent Workspaces", () => {
 
     // Asked again, as a retried RPC does, nothing more is deleted.
     expect(
-      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context),
+      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context, noop),
     ).toEqual({
       deleted: [],
       kept: [],
     });
+  });
+
+  it("tells the Session of each conversation it stops before it aborts it when the owner deletes a child", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    const child = (await session.state()).agents["agent-1"]?.conversationId;
+    const order: string[] = [];
+
+    // The Harness's conversations, noting each abort.
+    const conversation = session.harness.conversation.bind(session.harness);
+
+    session.harness.conversation = async (id, withContext) => {
+      const found = await conversation(id, withContext);
+
+      if (found === undefined) return found;
+
+      const abort = found.abort.bind(found);
+
+      found.abort = (...args) => {
+        order.push(`abort ${id}`);
+
+        return abort(...args);
+      };
+
+      return found;
+    };
+
+    await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context, (id) => {
+      order.push(`before ${id}`);
+
+      return Promise.resolve();
+    });
+
+    expect(child).toBeDefined();
+    // Each conversation is told of before it is aborted.
+    expect(order.indexOf(`before ${child}`)).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf(`before ${child}`)).toBeLessThan(order.indexOf(`abort ${child}`));
   });
 });
 

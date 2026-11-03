@@ -411,4 +411,56 @@ describe("pages attached to a message", () => {
     expect(texts.indexOf("first")).toBeGreaterThanOrEqual(0);
     expect(texts.indexOf("first")).toBeLessThan(texts.indexOf("second"));
   });
+
+  it("answers a message Stop withdrew while its page was read, and the one waiting behind it, with null, as withdrawn queued input is gone", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.script(["Three."]);
+      instance.setOwnerTabPages([
+        { ownerTabId: "slow", url: "https://slow.example/", title: "Slow" },
+      ]);
+    });
+
+    const owner = await connect(stub);
+
+    owner.send({
+      type: "submit",
+      id: "s-1",
+      input: "first",
+      requestId: "r-1",
+      pages: [{ ownerTabId: "slow" }],
+    });
+    owner.send({ type: "submit", id: "s-2", input: "second" });
+
+    // The first is being prepared (its slow page read takes 150 ms), and the second waits behind it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    owner.send({ type: "abort", id: "stop" });
+
+    expect(await owner.answer("s-1")).toEqual({ type: "result", id: "s-1", result: null });
+    expect(await owner.answer("s-2")).toEqual({ type: "result", id: "s-2", result: null });
+    expect((await owner.answer("stop")).type).toBe("result");
+
+    // Sent again under its `requestId` (a client that saw no answer, after a reconnect), it is withdrawn again: it
+    // left no submission for the Session to find, and placing it now would place it after the Stop.
+    owner.send({ type: "submit", id: "s-1b", input: "first", requestId: "r-1" });
+    expect(await owner.answer("s-1b")).toEqual({ type: "result", id: "s-1b", result: null });
+
+    // Neither was placed: the model was not asked, and a message sent after the Stop is.
+    owner.send({ type: "submit", id: "s-3", input: "third" });
+    expect(await owner.answer("s-3")).toMatchObject({
+      type: "result",
+      result: { submissionId: expect.any(Number) },
+    });
+    await idle(stub);
+
+    const requests = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.requestUserMessages(),
+    );
+
+    expect(JSON.stringify(requests)).not.toContain("first");
+    expect(JSON.stringify(requests)).not.toContain("second");
+    expect(JSON.stringify(requests)).toContain("third");
+  });
 });
