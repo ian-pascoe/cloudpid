@@ -160,7 +160,7 @@ describe("a request", () => {
 
     // An `op` a later build sends, as it crosses the edge to this host (parsed, so it is not typed as ours).
     const later: typeof McpHostRequest.Encoded = JSON.parse(
-      JSON.stringify({ ...call("docs", "search"), op: "resources/read" }),
+      JSON.stringify({ ...call("docs", "search"), op: "prompts/get" }),
     );
 
     expect(await tagOf(host, later)).toBe("HostUnsupported");
