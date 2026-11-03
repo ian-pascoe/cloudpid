@@ -145,6 +145,7 @@ export const ASK_TOOL = {
       message: { type: "string" },
       requestedSchema: { type: "object" },
       standalone: { type: "boolean" },
+      giveUpMs: { type: "number" },
     },
   },
 };
@@ -154,11 +155,13 @@ const AskArguments = Schema.Struct({
   requestedSchema: Schema.optionalKey(Schema.Json),
   /** Ask on the server's standalone stream (the GET stream), as `server.elicitInput` does, not on the call's own. */
   standalone: Schema.optionalKey(Schema.Boolean),
+  /** Stop waiting for the answer after this many milliseconds: the server cancels its own request. */
+  giveUpMs: Schema.optionalKey(Schema.Int),
 });
 
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
 export interface FakeOptions {
-  /** List `big`, `hang`, `typed`, `region` and `ask` after `echo` and `shout`; they answer whether listed or not. */
+  /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
   readonly listMore?: boolean;
   /** What the server says of itself: its `instructions` (default `Use the echo tool.`) and the name in its `serverInfo`. */
   readonly instructions?: string;
@@ -202,7 +205,7 @@ const untilAborted = (signal: AbortSignal, aborted: () => void) =>
 
 /**
  * An SDK server answering `tools/list` a page at a time and `tools/call` for its tools: `echo` and `shout`, and
- * `big`, `hang`, `typed` and `region`, listed only with `listMore`, and `progress`, listed only in `moreTools`.
+ * `big`, `hang`, `typed` and `region`, listed only with `listMore`, and `progress` and `ask`, listed only in `moreTools`.
  */
 const fakeMcp = (
   sends?: (server: Server) => Promise<void>,
@@ -234,7 +237,7 @@ const fakeMcp = (
       ? {
           tools: [
             ...(options.listMore === true
-              ? [SHOUT_TOOL, BIG_TOOL, HANG_TOOL, TYPED_TOOL, REGION_TOOL, ASK_TOOL]
+              ? [SHOUT_TOOL, BIG_TOOL, HANG_TOOL, TYPED_TOOL, REGION_TOOL]
               : [SHOUT_TOOL]),
             ...(options.moreTools ?? []),
           ],
@@ -295,9 +298,9 @@ const fakeMcp = (
       }
 
       case "ask": {
-        const { message, requestedSchema, standalone } = Schema.decodeUnknownSync(AskArguments)(
-          request.params.arguments,
-        );
+        const { message, requestedSchema, standalone, giveUpMs } = Schema.decodeUnknownSync(
+          AskArguments,
+        )(request.params.arguments);
 
         try {
           // SAFETY: the test gives a form's schema, which the SDK's own check reads.
@@ -310,7 +313,10 @@ const fakeMcp = (
           const answer =
             standalone === true
               ? await server.elicitInput(params)
-              : await ctx.mcpReq.send({ method: "elicitation/create", params });
+              : await ctx.mcpReq.send(
+                  { method: "elicitation/create", params },
+                  giveUpMs === undefined ? undefined : { signal: AbortSignal.timeout(giveUpMs) },
+                );
 
           // SAFETY: an elicitation result is JSON.
           options.asked?.push({ ...answer } as Json);

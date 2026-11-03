@@ -8,9 +8,13 @@
 import type { McpDeps, RowStore } from "@cloudpid/mcp";
 import {
   MCP_PROGRESS_PER_SECOND,
+  McpInputAnswer,
+  McpInputRequest as McpInputRequestSchema,
+  type McpCallContext,
   type McpEngineHooks,
   type McpEnginePrior,
   type McpEngineState,
+  type McpInputRequest,
   type McpLogEntry,
   type McpProgress,
 } from "@cloudpid/mcp/types";
@@ -18,8 +22,8 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import type * as Schema from "effect/Schema";
 import type { McpBridgeBinding } from "./binding.ts";
 import { ByteBudget, type Lease, meteredFetch } from "./budget.ts";
 import { callLogs } from "./logs.ts";
@@ -126,6 +130,44 @@ const authFrom =
       Effect.orElseSucceed(() => undefined),
     );
 
+/** What the server gets of a question the caller cannot take: the question is cancelled, and it may ask again. */
+const CANCELLED: McpInputAnswer = { kind: "answered", result: { action: "cancel" } };
+
+const decodeAnswer = Schema.decodeUnknownEffect(McpInputAnswer);
+
+const encodeInput = Schema.encodeEffect(McpInputRequestSchema);
+
+/**
+ * The host's `onInput` hook as the core's (`docs/architecture/mcp-server-requests.md` → Questions): a caller that cannot
+ * answer (its RPC broke, its Session gone) cancels the question, and an answer this build does not know (a newer
+ * Session's) is a refusal, since the gain-only edge never gives an older engine a member it must act on. Nothing of a
+ * question or its answer is kept or logged here.
+ */
+const inputFrom =
+  (onInput: NonNullable<McpEngineHooks["onInput"]>) =>
+  (request: McpInputRequest): Effect.Effect<McpInputAnswer> =>
+    encodeInput(request).pipe(
+      Effect.flatMap((encoded) => Effect.tryPromise(() => onInput(encoded))),
+      Effect.flatMap((answer) =>
+        decodeAnswer(answer).pipe(
+          Effect.orElseSucceed((): McpInputAnswer => ({
+            kind: "refused",
+            message: "cloudpid could not read the answer to the question",
+          })),
+        ),
+      ),
+      Effect.orElseSucceed(() => CANCELLED),
+    );
+
+/** The host's `onInputEnded` hook as the core's: a notice that is lost fails nothing. */
+const endedFrom = (ended: NonNullable<McpEngineHooks["onInputEnded"]>) => (key: string) => {
+  try {
+    void Promise.resolve(ended(key)).catch(() => undefined);
+  } catch {
+    // A stub whose caller is gone may throw at once: the notice is dropped.
+  }
+};
+
 /** Opens one call's context: its rows, its lease on the byte budget and its deps. */
 export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   prior: McpEnginePrior,
@@ -165,8 +207,12 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     ),
     eras: eras.store,
     sessions: sessions.store,
-    // Roots are offered on a bridge connection only (`routeVia`); the questions a server may ask come with later slices.
-    capabilities: () => ({}),
+    // Roots are offered on a bridge connection only (`routeVia`). A Legacy connection declares the form of an
+    // elicitation connection-wide, at `initialize`, whatever call opens it: a question on a call that cannot take it is
+    // cancelled (`docs/architecture/mcp-server-requests.md` → Questions). A Modern request declares per request, and
+    // none yet.
+    capabilities: (ctx?: McpCallContext) =>
+      ctx === undefined ? { elicitation: { form: {} } } : {},
     clientInfo: { name: "cloudpid", version: env.version },
     onLog: logs.hear,
   } satisfies McpDeps;
@@ -174,6 +220,10 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   const deps: Mutable<McpDeps> = { ...base };
 
   if (hooks.auth !== undefined) deps.auth = authFrom(hooks.auth, tokens);
+
+  if (hooks.onInput !== undefined) deps.onInput = inputFrom(hooks.onInput);
+
+  if (hooks.onInputEnded !== undefined) deps.onInputEnded = endedFrom(hooks.onInputEnded);
 
   // A Worker's clock moves with I/O, and each notice arrives by I/O.
   if (hooks.onProgress !== undefined) deps.onProgress = progressTo(hooks.onProgress, Date.now);

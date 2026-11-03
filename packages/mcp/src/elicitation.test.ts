@@ -73,7 +73,7 @@ describe("a Legacy server's elicitation", () => {
   it("is answered with what onInput gives, and carries the server's message and schema to it", async () => {
     const asked: Array<string> = [];
     const seen: Array<McpInputRequest> = [];
-    const server = legacyStatefulServer({ listMore: true, asked: [] });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL], asked: [] });
 
     const outcome = await call(
       asking(server, (request) => {
@@ -102,7 +102,7 @@ describe("a Legacy server's elicitation", () => {
     ["declined", "decline"],
     ["cancelled", "cancel"],
   ] as const)("is %s when the owner says so", async (_name, action) => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
 
     const outcome = await call(
       asking(server, () => Effect.succeed({ kind: "answered" as const, result: { action } })),
@@ -127,8 +127,41 @@ describe("a Legacy server's elicitation", () => {
     expect(options.asked).toEqual([{ error: "unsupported elicitation form: x" }]);
   });
 
+  it("is withdrawn, the caller told, when the server stops waiting for it", async () => {
+    const options = { moreTools: [ASK_TOOL], asked: [] };
+    const server = legacyStatefulServer(options);
+    const ended: Array<string> = [];
+
+    const outcome = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(
+          TARGET,
+          asking(server, () => Effect.never, {
+            onInputEnded: (key) => {
+              ended.push(key);
+            },
+          }),
+        );
+
+        return yield* connection
+          .callTool(
+            {
+              tool: ASK_TOOL,
+              arguments: { message: "Who?", requestedSchema: FORM, giveUpMs: 100 },
+            },
+            ASKING,
+          )
+          .pipe(Effect.result);
+      }),
+    );
+
+    expect(Result.isSuccess(outcome)).toBe(true);
+    expect(ended).toHaveLength(1);
+    expect(options.asked).toHaveLength(1);
+  });
+
   it("is cancelled without asking when the server asks on its standalone stream, not the call's", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
     let asked = 0;
 
     const outcome = await run(
@@ -162,7 +195,7 @@ describe("a Legacy server's elicitation", () => {
   });
 
   it("is cancelled without asking when the call can answer nothing", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
     let asked = 0;
 
     const outcome = await call(
@@ -179,7 +212,7 @@ describe("a Legacy server's elicitation", () => {
   });
 
   it("is cancelled when no onInput is given, though the connection declares the form", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
 
     const { onInput: _none, ...withoutInput } = asking(server, () => Effect.never);
     const outcome = await call(withoutInput, ASKING);
@@ -188,7 +221,7 @@ describe("a Legacy server's elicitation", () => {
   });
 
   it("is cancelled once the wait ends, whatever onInput does", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
 
     const outcome = await call(
       asking(server, () => Effect.never),
@@ -199,7 +232,7 @@ describe("a Legacy server's elicitation", () => {
   });
 
   it("pauses the call's timeout while it waits", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
 
     // The call's timeout is 150 ms and the owner takes 500 ms: the call still ends well.
     const slow = await call(
@@ -216,7 +249,7 @@ describe("a Legacy server's elicitation", () => {
   });
 
   it("times a call out that keeps waiting past its timeout with no question", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
 
     const outcome = await run(
       Effect.gen(function* () {
@@ -235,7 +268,7 @@ describe("a Legacy server's elicitation", () => {
   });
 
   it("never sends the call's header to the server", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
 
     await call(
       asking(server, () =>
@@ -249,7 +282,7 @@ describe("a Legacy server's elicitation", () => {
   });
 
   it("declares the form at initialize, and initializes again a session that was opened without it", async () => {
-    const server = legacyStatefulServer({ listMore: true });
+    const server = legacyStatefulServer({ moreTools: [ASK_TOOL] });
     const sessions = memoryStore();
 
     // A first connection declaring nothing opens a session; the next, declaring the form, may not use it.

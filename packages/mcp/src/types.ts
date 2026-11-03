@@ -813,6 +813,8 @@ export interface McpEngineHooks {
   readonly onInput?: (
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
+  /** The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. */
+  readonly onInputEnded?: (key: string) => void | Promise<void>;
 }
 
 /** `McpEngine`'s arguments as they cross RPC, encoded; the engine decodes each. */
@@ -962,6 +964,8 @@ export interface McpHostRequestHooks {
   readonly onInput?: (
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
+  /** The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. */
+  readonly onInputEnded?: (key: string) => void | Promise<void>;
 }
 
 /** The request completed: the server's result (a `tools/call`'s, `isError` included) and how it fits the output schema. */
