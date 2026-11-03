@@ -10,17 +10,28 @@
 //   - waiters 100, then refused; each expires after 30 days;
 //   - recorded metadata and discovery each ≤64 KiB. A token is held to 16 KiB where it is sealed.
 //
-// The revision (`signInsRevision`) is one counter, kept in `documents`, that rises with a sign-in, sign-out or rebind (and
-// a drop of tokens): the host compares it at `windowOpened`, so a push it lost is healed. No row's sealed value is ever read
-// into a listing (`McpSignInRecord` has none).
+// The revision (`signInsRevision`) is one counter, kept in `documents` (`signInsRevisionOf` reads it, `putDocument` writes
+// it), that rises with a sign-in, sign-out or rebind (and a drop of tokens): the host compares it at `windowOpened`, so a
+// push it lost is healed. No row's sealed value is ever read into a listing (`McpSignInRecord` has none).
+//
+// The store holds more than this slice calls: the tables and their bounds are this ticket's (#442), and the slices that
+// follow are what use them, so some of the surface has no caller yet:
+//   - #450 (start and complete a sign-in): `put` with its tokens, registrations (`getRegistration`, `putRegistration`,
+//     `deleteRegistration`), bindings (`getBinding`, `putBinding`), the pending row (`putPending`, `takePending`,
+//     `getPending`, `deletePending`) and the step-up bookkeeping a completed step-up writes (`SignInWrite.wantedScope`,
+//     `stepUpCount`);
+//   - #454 (refresh and step-up): `replaceTokens`, `dropTokens` and `update` through `Refresh` (`mcp-sign-in-registry.ts`);
+//   - #469 (Settings, sign-out): `list`, `delete`, and `dropUnnamedBindings` once no server set names a binding;
+//   - #470 (Sign-in requests): the waiters (`addWaiter`, `waiters`, `removeWaiter`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off cryptoRandomUUID:off
-import { sha256Hex } from "@cloudpid/config";
+import { type McpSignInKey, sha256Hex } from "@cloudpid/config";
 import { MAX_METADATA_BYTES, byteLength } from "@cloudpid/mcp/oauth";
 import { SealedValue } from "@cloudpid/extensions/secrets/core";
 import { McpAuthChallenge } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type { DocumentStore } from "./settings.ts";
 import type { RegistryStorage } from "./store.ts";
 
 /** How many of each the store holds. */
@@ -45,12 +56,11 @@ const parseRevision = (body: string | null | undefined): number => {
 };
 
 /**
- * The revision of the sign-ins as a store's documents hold it, for the answer to the host's pull (mcpServerSet): the
- * counter the sign-in store itself reads and rises.
+ * The revision of the sign-ins as a store's documents hold it: the one way to read it, for the sign-in store's own
+ * `revision` and for the answer to the host's pull (`mcpServerSet`).
  */
-export const signInsRevisionOf = (store: {
-  readonly getDocument: (name: string) => string | null;
-}): number => parseRevision(store.getDocument(SIGN_INS_REVISION_DOCUMENT));
+export const signInsRevisionOf = (documents: Pick<DocumentStore, "getDocument">): number =>
+  parseRevision(documents.getDocument(SIGN_INS_REVISION_DOCUMENT));
 
 /** What a sign-in's status is: `ok`, or what stands in the way (`required`: it has no tokens). */
 export const SIGN_IN_STATUSES = [
@@ -87,17 +97,9 @@ export type McpSignInClient = {
   readonly registration: string | null;
 };
 
-/** The three parts of a sign-in's key, and their hash (`mcpSignInKey`). */
-export type McpSignInKeyParts = {
-  readonly hash: string;
-  readonly source: string;
-  readonly name: string;
-  readonly url: string;
-};
-
 /** A sign-in's row, but for its tokens, which stay sealed in the store (`McpSignInRow`). */
 export type McpSignInRecord = {
-  readonly key: McpSignInKeyParts;
+  readonly key: McpSignInKey;
   /** New with each completed sign-in or step-up; the same through refreshes (the MCP sign-in id). */
   readonly grantId: string;
   readonly status: SignInStatus;
@@ -131,9 +133,13 @@ export type McpSignInRow = McpSignInRecord & {
   readonly sealed: SealedValue | null;
 };
 
-/** What `putSignIn` writes: the whole row, which replaces the one under the key. */
+/**
+ * What `put` writes: the whole row, which replaces the one under the key. A completed step-up (#450) writes the row with
+ * its new tokens and scope, status `ok`, and `wantedScope` and `stepUpCount` as they were, which is what the next
+ * `step_up` report compares its scope set to; a sign-in from Settings writes both reset.
+ */
 export type SignInWrite = {
-  readonly key: McpSignInKeyParts;
+  readonly key: McpSignInKey;
   readonly status: SignInStatus;
   readonly issuer: string | null;
   readonly metadata: string | null;
@@ -154,8 +160,10 @@ export type McpStoreRefusal = {
   readonly message: string;
 };
 
-/** Where the owner makes room: Global's MCP servers page lists the sign-ins. */
-const SIGN_INS_PAGE = "Global's MCP servers page (/settings/all/mcp#sign-ins)";
+/** Where the owner makes room: Global's MCP servers page, whose sign-ins list is at this path. */
+const MCP_SERVERS_PAGE = "Global's MCP servers page";
+
+const SIGN_INS_PATH = "/settings/all/mcp#sign-ins";
 
 const refusal = (reason: McpStoreRefusal["reason"], message: string): McpStoreRefusal => ({
   status: "refused",
@@ -438,7 +446,7 @@ export type McpSignIns = {
    * that hold tokens. The revision stays.
    */
   readonly noteChallenge: (
-    key: McpSignInKeyParts,
+    key: McpSignInKey,
     challenge: McpAuthChallenge,
     now: number,
   ) => McpStoreRefusal | { readonly status: "noted" };
@@ -462,6 +470,7 @@ export type McpSignIns = {
   readonly delete: (keyHash: string, now: number) => boolean;
 
   readonly getRegistration: (key: string) => McpRegistration | null;
+  /** Refused when the registration's `clientInfo` is over 64 KiB, or the store is full of registrations in use. */
   readonly putRegistration: (
     registration: McpRegistration,
   ) => { readonly status: "put" } | McpStoreRefusal;
@@ -479,11 +488,15 @@ export type McpSignIns = {
   /** Drop every binding no server set names. */
   readonly dropUnnamedBindings: (named: (keyHash: string, clientId: string) => boolean) => number;
 
-  /** Keep `pending` as the key's one pending row (a newer start replaces it), at most 20, the oldest dropped. */
-  readonly putPending: (pending: McpPendingSignIn) => void;
+  /**
+   * Keep `pending` as the key's one pending row (a newer start replaces it), at most 20, the oldest dropped and the
+   * expired ones swept. Refused when its metadata or client is over 64 KiB.
+   */
+  readonly putPending: (pending: McpPendingSignIn) => { readonly status: "put" } | McpStoreRefusal;
   /** Take the pending row of a `state`'s hash, deleting it first (a code is used once). */
   readonly takePending: (hash: string, now: number) => PendingTaken;
-  readonly getPending: (keyHash: string) => McpPendingSignIn | null;
+  /** The key's pending row, unless it has expired at `now` (10 min after its start). */
+  readonly getPending: (keyHash: string, now: number) => McpPendingSignIn | null;
   readonly deletePending: (keyHash: string) => boolean;
 
   readonly addWaiter: (
@@ -498,9 +511,10 @@ export type McpSignIns = {
   readonly removeWaiter: (session: string, request: string) => boolean;
 };
 
-/** The sign-in store over `storage`. */
+/** The sign-in store over `storage`, with the revision kept in `documents` (the Registry store's). */
 export const openMcpSignIns = (
   storage: Pick<RegistryStorage, "sql" | "transactionSync">,
+  documents: Pick<DocumentStore, "getDocument" | "putDocument">,
 ): McpSignIns => {
   const { sql } = storage;
 
@@ -520,24 +534,41 @@ export const openMcpSignIns = (
   const count = (table: string): number =>
     one<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)?.n ?? 0;
 
-  const revision = (): number => {
-    const body = one<{ body: string }>(
-      "SELECT body FROM documents WHERE name = ?",
-      SIGN_INS_REVISION_DOCUMENT,
-    )?.body;
+  /** Whether `table` has a row where `condition` holds for `bindings`. */
+  const exists = (table: string, condition: string, ...bindings: Array<string>): boolean =>
+    (one<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE ${condition}`, ...bindings)?.n ??
+      0) > 0;
 
-    return parseRevision(body);
-  };
+  const revision = (): number => signInsRevisionOf(documents);
 
   const rise = (now: number): void => {
-    sql.exec(
-      `INSERT INTO documents (name, body, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(name) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at`,
-      SIGN_INS_REVISION_DOCUMENT,
-      String(revision() + 1),
-      now,
-    );
+    documents.putDocument(SIGN_INS_REVISION_DOCUMENT, String(revision() + 1), now);
   };
+
+  /** The open waiters of a key at `now`, in the order they asked. */
+  const openWaiters = (keyHash: string, now: number): ReadonlyArray<McpSignInWaiter> =>
+    Arr.map(
+      rows<WaiterRow>(
+        "SELECT * FROM mcp_sign_in_waiters WHERE key_hash = ? AND expires_at > ? ORDER BY id ASC",
+        keyHash,
+        now,
+      ),
+      toWaiter,
+    );
+
+  const bindingRow = (keyHash: string, clientId: string): BindingRow | undefined =>
+    one<BindingRow>(
+      "SELECT * FROM mcp_client_bindings WHERE key_hash = ? AND client_id = ?",
+      keyHash,
+      clientId,
+    );
+
+  /** Refused: a recorded document (`what`) over 64 KiB. */
+  const tooLarge = (what: string): McpStoreRefusal =>
+    refusal("too_large", `The ${what} is longer than ${MAX_METADATA_BYTES / 1024} KiB`);
+
+  const overBound = (...texts: ReadonlyArray<string | null>): boolean =>
+    Arr.some(texts, (text) => text !== null && byteLength(text) > MAX_METADATA_BYTES);
 
   const getRow = (keyHash: string): SignInRow | undefined =>
     one<SignInRow>("SELECT * FROM mcp_sign_ins WHERE key_hash = ?", keyHash);
@@ -562,17 +593,17 @@ export const openMcpSignIns = (
 
   const full = refusal(
     "full",
-    `At most ${MAX_MCP_SIGN_INS} MCP sign-ins are kept, and every one holds tokens: sign out of one on ${SIGN_INS_PAGE} first`,
+    `At most ${MAX_MCP_SIGN_INS} MCP sign-ins are kept, and every one holds tokens: sign out of one on ${MCP_SERVERS_PAGE} (${SIGN_INS_PATH}) first`,
   );
 
   const registrationFull = refusal(
     "full",
-    `At most ${MAX_MCP_REGISTRATIONS} client registrations are kept, and every one is in use: sign out of the sign-ins that use one on ${SIGN_INS_PAGE} first`,
+    `At most ${MAX_MCP_REGISTRATIONS} client registrations are kept, and every one is in use: sign out of the sign-ins that use one on ${MCP_SERVERS_PAGE} (${SIGN_INS_PATH}) first`,
   );
 
   const bindingFull = refusal(
     "full",
-    `At most ${MAX_MCP_BINDINGS} client bindings are kept, and every one is named by an MCP server: remove one from the MCP servers on ${SIGN_INS_PAGE.replace(/ \(.*$/, "")} first`,
+    `At most ${MAX_MCP_BINDINGS} client bindings are kept, and every one is named by an MCP server: remove one from the MCP servers on ${MCP_SERVERS_PAGE} first`,
   );
 
   return {
@@ -588,14 +619,8 @@ export const openMcpSignIns = (
         toRecord,
       ),
     put: (write, now) => {
-      if (
-        (write.metadata !== null && byteLength(write.metadata) > MAX_METADATA_BYTES) ||
-        (write.discovery !== null && byteLength(write.discovery) > MAX_METADATA_BYTES)
-      ) {
-        return refusal(
-          "too_large",
-          `The authorization server's metadata is longer than ${MAX_METADATA_BYTES / 1024} KiB`,
-        );
+      if (overBound(write.metadata, write.discovery)) {
+        return tooLarge("authorization server's metadata");
       }
 
       return transactionSync((): McpSignInPut => {
@@ -752,13 +777,12 @@ export const openMcpSignIns = (
     },
     putRegistration: (registration) =>
       transactionSync(() => {
-        const exists =
-          one<{ n: number }>(
-            "SELECT COUNT(*) AS n FROM mcp_client_registrations WHERE key_hash = ?",
-            registration.key,
-          )?.n === 1;
+        if (overBound(registration.clientInfo)) return tooLarge("client registration");
 
-        if (!exists && count("mcp_client_registrations") >= MAX_MCP_REGISTRATIONS) {
+        if (
+          !exists("mcp_client_registrations", "key_hash = ?", registration.key) &&
+          count("mcp_client_registrations") >= MAX_MCP_REGISTRATIONS
+        ) {
           const unreferenced = one<{ key_hash: string }>(
             `SELECT key_hash FROM mcp_client_registrations
              WHERE key_hash NOT IN (SELECT registration FROM mcp_sign_ins WHERE registration IS NOT NULL)
@@ -793,11 +817,7 @@ export const openMcpSignIns = (
         return { status: "put" as const };
       }),
     deleteRegistration: (key) => {
-      const existed =
-        one<{ n: number }>(
-          "SELECT COUNT(*) AS n FROM mcp_client_registrations WHERE key_hash = ?",
-          key,
-        )?.n === 1;
+      const existed = exists("mcp_client_registrations", "key_hash = ?", key);
 
       sql.exec("DELETE FROM mcp_client_registrations WHERE key_hash = ?", key);
 
@@ -805,11 +825,7 @@ export const openMcpSignIns = (
     },
 
     getBinding: (keyHash, clientId) => {
-      const row = one<BindingRow>(
-        "SELECT * FROM mcp_client_bindings WHERE key_hash = ? AND client_id = ?",
-        keyHash,
-        clientId,
-      );
+      const row = bindingRow(keyHash, clientId);
 
       return row === undefined
         ? null
@@ -822,11 +838,7 @@ export const openMcpSignIns = (
     },
     putBinding: (binding, named) =>
       transactionSync(() => {
-        const existing = one<BindingRow>(
-          "SELECT * FROM mcp_client_bindings WHERE key_hash = ? AND client_id = ?",
-          binding.keyHash,
-          binding.clientId,
-        );
+        const existing = bindingRow(binding.keyHash, binding.clientId);
 
         if (existing === undefined && count("mcp_client_bindings") >= MAX_MCP_BINDINGS) {
           const unnamed = Arr.findFirst(
@@ -876,6 +888,10 @@ export const openMcpSignIns = (
       }),
 
     putPending: (pending) => {
+      if (overBound(pending.metadata, pending.client)) {
+        return tooLarge("authorization server's metadata or client");
+      }
+
       transactionSync(() => {
         sql.exec("DELETE FROM mcp_pending_sign_ins WHERE expires_at <= ?", pending.createdAt);
         sql.exec(
@@ -909,6 +925,8 @@ export const openMcpSignIns = (
           MAX_MCP_PENDING,
         );
       });
+
+      return { status: "put" as const };
     },
     takePending: (hash, now) =>
       transactionSync((): PendingTaken => {
@@ -928,17 +946,17 @@ export const openMcpSignIns = (
 
         return pending === null ? { status: "none" } : { status: "found", pending };
       }),
-    getPending: (keyHash) => {
-      const row = one<PendingRow>("SELECT * FROM mcp_pending_sign_ins WHERE key_hash = ?", keyHash);
+    getPending: (keyHash, now) => {
+      const row = one<PendingRow>(
+        "SELECT * FROM mcp_pending_sign_ins WHERE key_hash = ? AND expires_at > ?",
+        keyHash,
+        now,
+      );
 
       return row === undefined ? null : toPending(row);
     },
     deletePending: (keyHash) => {
-      const existed =
-        one<{ n: number }>(
-          "SELECT COUNT(*) AS n FROM mcp_pending_sign_ins WHERE key_hash = ?",
-          keyHash,
-        )?.n === 1;
+      const existed = exists("mcp_pending_sign_ins", "key_hash = ?", keyHash);
 
       sql.exec("DELETE FROM mcp_pending_sign_ins WHERE key_hash = ?", keyHash);
 
@@ -949,13 +967,16 @@ export const openMcpSignIns = (
       transactionSync((): WaiterAdded => {
         sql.exec("DELETE FROM mcp_sign_in_waiters WHERE expires_at <= ?", now);
 
-        const joined = one<{ key_hash: string }>(
-          "SELECT key_hash FROM mcp_sign_in_waiters WHERE session = ? AND request = ?",
-          waiter.session,
-          waiter.request,
-        );
-
-        if (joined !== undefined) return { status: "joined" };
+        if (
+          exists(
+            "mcp_sign_in_waiters",
+            "session = ? AND request = ?",
+            waiter.session,
+            waiter.request,
+          )
+        ) {
+          return { status: "joined" };
+        }
 
         if (count("mcp_sign_in_waiters") >= MAX_MCP_WAITERS) {
           return {
@@ -964,11 +985,7 @@ export const openMcpSignIns = (
           };
         }
 
-        const first =
-          one<{ n: number }>(
-            "SELECT COUNT(*) AS n FROM mcp_sign_in_waiters WHERE key_hash = ?",
-            waiter.keyHash,
-          )?.n === 0;
+        const first = !exists("mcp_sign_in_waiters", "key_hash = ?", waiter.keyHash);
 
         sql.exec(
           "INSERT INTO mcp_sign_in_waiters (key_hash, session, request, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
@@ -981,37 +998,22 @@ export const openMcpSignIns = (
 
         return { status: "added", first };
       }),
-    waiters: (keyHash, now) =>
-      Arr.map(
-        rows<WaiterRow>(
-          "SELECT * FROM mcp_sign_in_waiters WHERE key_hash = ? AND expires_at > ? ORDER BY id ASC",
-          keyHash,
-          now,
-        ),
-        toWaiter,
-      ),
+    waiters: openWaiters,
     resolveWaiters: (keyHash, now) =>
       transactionSync(() => {
-        const open = Arr.map(
-          rows<WaiterRow>(
-            "SELECT * FROM mcp_sign_in_waiters WHERE key_hash = ? AND expires_at > ? ORDER BY id ASC",
-            keyHash,
-            now,
-          ),
-          toWaiter,
-        );
+        const open = openWaiters(keyHash, now);
 
         sql.exec("DELETE FROM mcp_sign_in_waiters WHERE key_hash = ?", keyHash);
 
         return open;
       }),
     removeWaiter: (session, request) => {
-      const existed =
-        one<{ n: number }>(
-          "SELECT COUNT(*) AS n FROM mcp_sign_in_waiters WHERE session = ? AND request = ?",
-          session,
-          request,
-        )?.n === 1;
+      const existed = exists(
+        "mcp_sign_in_waiters",
+        "session = ? AND request = ?",
+        session,
+        request,
+      );
 
       sql.exec(
         "DELETE FROM mcp_sign_in_waiters WHERE session = ? AND request = ?",

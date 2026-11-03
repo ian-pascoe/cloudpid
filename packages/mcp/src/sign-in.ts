@@ -65,7 +65,11 @@ export type McpAccessTokenAnswer = typeof McpAccessTokenAnswer.Type;
 /** What a host reports on a transition (`reportMcpAuth`'s `event`). */
 export const MCP_AUTH_EVENTS = ["needs_sign_in", "step_up", "rejected", "working"] as const;
 
-export const McpAuthEvent = Schema.Literals(MCP_AUTH_EVENTS);
+/**
+ * A newer host's event is a string this build does not know, read as unknown (the last member): the Registry ignores it
+ * with why, rather than failing the report at decode (`docs/architecture/mcp.md` → Deploys).
+ */
+export const McpAuthEvent = Schema.Union([Schema.Literals(MCP_AUTH_EVENTS), Schema.String]);
 
 export type McpAuthEvent = typeof McpAuthEvent.Type;
 

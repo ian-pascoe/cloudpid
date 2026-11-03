@@ -32,14 +32,16 @@ import {
   signInTarget,
 } from "./mcp-sign-in-registry.ts";
 import {
-  openMcpOauthVault,
+  MCP_OAUTH_PURPOSE,
   openTokens,
-  type McpTokens,
+  openValue,
+  PENDING_TABLE,
+  REGISTRATIONS_TABLE,
   SIGN_INS_TABLE,
-  sealRegistrationSecret,
-  sealTokens,
-  sealVerifier,
   sealedBinding,
+  sealTokens,
+  sealValue,
+  type McpTokens,
 } from "./mcp-sign-in-seal.ts";
 import {
   MAX_MCP_BINDINGS,
@@ -49,7 +51,6 @@ import {
   MAX_MCP_WAITERS,
   type McpPendingSignIn,
   type McpRegistration,
-  type McpSignInKeyParts,
   type McpSignInPut,
   type McpSignIns,
   openMcpSignIns,
@@ -62,6 +63,10 @@ import {
 import { writeSettings } from "./settings.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
+
+/** The vault of MCP sign-ins under `masterKey`; fails while the key is malformed. */
+const mcpVault = (masterKey: string): Effect.Effect<KeptVault, SecretVaultError> =>
+  openKeptVault(masterKey, MCP_OAUTH_PURPOSE);
 
 const MASTER = "test-master-key-0123456789abcdef0123456789";
 const NOW = 1_000_000;
@@ -82,14 +87,14 @@ const OPAQUE: SealedValue = { version: 1, iv: "AAAAAAAAAAAAAAAA", ciphertext: "A
 const servers = (value: Schema.Json): Schema.Json => ({ mcp: { servers: value } });
 
 /** The sign-in of a server that is not in any set: for the bounds, which do not look at the set. */
-const fakeKey = (index: number): McpSignInKeyParts => ({
+const fakeKey = (index: number): McpSignInKey => ({
   hash: sha256Hex(`key-${String(index)}`),
   source: "owner",
   name: `server_${String(index)}`,
   url: `https://s${String(index)}.example/mcp`,
 });
 
-const write = (key: McpSignInKeyParts, over: Partial<SignInWrite> = {}): SignInWrite => ({
+const write = (key: McpSignInKey, over: Partial<SignInWrite> = {}): SignInWrite => ({
   key,
   status: "ok",
   issuer: "https://auth.example.com",
@@ -185,8 +190,8 @@ const fresh = <A>(body: (registry: Fixture) => Promise<A>) =>
     env.REGISTRIES.get(env.REGISTRIES.newUniqueId()),
     async (_: TestRegistry, state) => {
       const store = openRegistryStore(state.storage);
-      const signIns = openMcpSignIns(state.storage);
-      const vault = await Effect.runPromise(openMcpOauthVault(MASTER));
+      const signIns = openMcpSignIns(state.storage, store);
+      const vault = await Effect.runPromise(mcpVault(MASTER));
 
       const keyOf = (name: string): McpSignInKey => {
         const target = signInTarget(store, DEFAULT_ENVIRONMENT, name);
@@ -324,10 +329,18 @@ describe("sealing", () => {
       expect(await fails(openTokens(vault, linear.hash, sealed))).toBe(true);
 
       const asRegistrationSecret = await Effect.runPromise(
-        sealRegistrationSecret(vault, sentry.hash, ACCESS),
+        sealValue(vault, REGISTRATIONS_TABLE, sentry.hash, ACCESS),
       );
 
       expect(await fails(openTokens(vault, sentry.hash, asRegistrationSecret))).toBe(true);
+      expect(
+        await Effect.runPromise(
+          openValue(vault, REGISTRATIONS_TABLE, sentry.hash, asRegistrationSecret),
+        ),
+      ).toBe(ACCESS);
+      expect(await fails(openValue(vault, PENDING_TABLE, sentry.hash, asRegistrationSecret))).toBe(
+        true,
+      );
 
       const registry = await Effect.runPromise(openKeptVault(MASTER, "registry"));
 
@@ -339,13 +352,15 @@ describe("sealing", () => {
       signIns.putRegistration(
         registration(1, {
           sealedSecret: await Effect.runPromise(
-            sealRegistrationSecret(vault, registration(1).key, CLIENT_SECRET),
+            sealValue(vault, REGISTRATIONS_TABLE, registration(1).key, CLIENT_SECRET),
           ),
         }),
       );
       signIns.putPending(
         pending(1, {
-          sealedVerifier: await Effect.runPromise(sealVerifier(vault, fakeKey(1).hash, VERIFIER)),
+          sealedVerifier: await Effect.runPromise(
+            sealValue(vault, PENDING_TABLE, fakeKey(1).hash, VERIFIER),
+          ),
           stateHash: stateHash(STATE),
         }),
       );
@@ -369,7 +384,7 @@ describe("sealing", () => {
     }));
 
   it("holds each token to 16 KiB", async () => {
-    const vault = await Effect.runPromise(openMcpOauthVault(MASTER));
+    const vault = await Effect.runPromise(mcpVault(MASTER));
     const sealed = (tokens: McpTokens) => Effect.runPromise(sealTokens(vault, "k", tokens));
 
     expect((await sealed({ access_token: "a".repeat(16 * 1024) })).status).toBe("sealed");
@@ -412,7 +427,7 @@ describe("a malformed SECRETS_ENCRYPTION_KEY", () => {
       setGlobal({ sentry: SENTRY });
       await signInWith("sentry");
 
-      const answer = await ask({ server: "sentry" }, { vault: openMcpOauthVault("too-short") });
+      const answer = await ask({ server: "sentry" }, { vault: mcpVault("too-short") });
 
       expect(answer).toMatchObject({ status: "unavailable" });
       expect(asJson(answer)).toContain("at least 32 characters");
@@ -536,6 +551,38 @@ describe("mcpAccessToken", () => {
       expect(asJson([unrefreshed, dead])).not.toContain("other-token-1b2c");
     }));
 
+  it("says required on the row too once a token with no refresh token is past its time, and drops its tokens", () =>
+    fresh(async ({ setGlobal, signInWith, signIns, keyOf, ask }) => {
+      setGlobal({ sentry: SENTRY });
+      await signInWith("sentry", { expiresAt: NOW + 100_000 }, { access_token: ACCESS });
+
+      const { hash } = keyOf("sentry");
+      const before = signIns.revision();
+
+      // In its last minute it is withheld but kept: whether to serve it then is the refresh slice's (#454).
+      expect(await ask({ server: "sentry" }, { now: NOW + 50_000 })).toMatchObject({
+        status: "required",
+      });
+      expect(signIns.get(hash)).toMatchObject({ status: "ok", hasTokens: true });
+      expect(signIns.revision()).toBe(before);
+
+      // Past its time it is gone, so Settings does not show it as signed in, and the hosts learn of it.
+      const answer = await ask({ server: "sentry" }, { now: NOW + 100_000 });
+
+      expect(answer).toMatchObject({ status: "required" });
+      expect(signIns.get(hash)).toMatchObject({
+        status: "required",
+        hasTokens: false,
+        expiresAt: null,
+        lastError: "The sign-in expired and has no refresh token: sign in again",
+      });
+      expect(signIns.revision()).toBe(before + 1);
+      expect(await ask({ server: "sentry" }, { now: NOW + 100_001 })).toMatchObject({
+        status: "required",
+        reason: "The sign-in expired and has no refresh token: sign in again",
+      });
+    }));
+
   it("keeps serving a token its server refused, since calls still try it, and a token while a step-up waits", () =>
     fresh(async ({ setGlobal, signInWith, ask, report }) => {
       setGlobal({ sentry: { ...SENTRY, oauth: { scope: "admin" } } });
@@ -569,7 +616,7 @@ describe("mcpAccessToken", () => {
 
       const answers = [
         await ask({ server: "sentry" }, { now: NOW + 5000 }),
-        await ask({ server: "sentry" }, { vault: openMcpOauthVault("short") }),
+        await ask({ server: "sentry" }, { vault: mcpVault("short") }),
         await ask({ server: "local" }),
         await ask({ server: "missing" }),
         report("rejected", "sentry", { error: "invalid_token" }),
@@ -615,12 +662,22 @@ describe("reportMcpAuth", () => {
       expect(signIns.revision()).toBe(0);
     }));
 
-  it("counts a step-up challenged again for the scope set already stepped up, and ends it at three", () =>
+  it("counts a completed step-up challenged again for the same scope set, up to three", () =>
     fresh(async ({ setGlobal, keyOf, signInWith, signIns, report }) => {
       setGlobal({ sentry: { ...SENTRY, oauth: { scope: "admin" } } });
       await signInWith("sentry");
 
       const row = () => signIns.get(keyOf("sentry").hash);
+
+      // What the sign-in slice (#450) writes when the owner completes a step-up: the tokens and scope are new, and the
+      // wanted scope and the count are as they were.
+      const complete = async () =>
+        signInWith("sentry", {
+          scope: row()?.wantedScope ?? null,
+          wantedScope: row()?.wantedScope ?? null,
+          stepUpCount: row()?.stepUpCount ?? 0,
+        });
+
       const counts: Array<number | undefined> = [];
 
       for (let round = 0; round < 4; round += 1) {
@@ -629,16 +686,58 @@ describe("reportMcpAuth", () => {
 
         expect(row()).toMatchObject({ status: "step_up", wantedScope: "read write admin" });
 
-        // The owner completed the step-up (the sign-in slice): the server works again.
-        report("working", "sentry");
+        await complete();
+        expect(row()).toMatchObject({ status: "ok", scope: "read write admin" });
       }
 
+      // The first challenge counts nothing; each one after a completed step-up for the same set counts one.
       expect(counts).toEqual([0, 1, 2, 3]);
 
       // Another scope set starts again.
       report("step_up", "sentry", { scope: "delete" });
 
-      expect(row()).toMatchObject({ stepUpCount: 0, wantedScope: "read delete admin" });
+      expect(row()).toMatchObject({ stepUpCount: 0, wantedScope: "read write admin delete" });
+    }));
+
+  it("counts nothing for a server that refuses one tool for a wider scope while its other tools work", () =>
+    fresh(async ({ setGlobal, keyOf, signInWith, signIns, report }) => {
+      setGlobal({ sentry: SENTRY });
+      await signInWith("sentry");
+
+      const row = () => signIns.get(keyOf("sentry").hash);
+
+      for (let round = 0; round < 5; round += 1) {
+        report("step_up", "sentry", { scope: "write" });
+        report("working", "sentry");
+      }
+
+      expect(row()).toMatchObject({ status: "step_up", stepUpCount: 0, wantedScope: "read write" });
+    }));
+
+  it("leaves a pending step-up as it is on working and on rejected, and its requests open", () =>
+    fresh(async ({ setGlobal, keyOf, signInWith, signIns, report }) => {
+      setGlobal({ sentry: SENTRY });
+      await signInWith("sentry");
+      report("step_up", "sentry", { scope: "write" });
+
+      const { hash } = keyOf("sentry");
+
+      signIns.addWaiter({ keyHash: hash, session: "s1", request: "r1" }, NOW);
+
+      // Working is no answer to the step-up: nothing is cleared and nobody is told the sign-in is done.
+      expect(report("working", "sentry")).toEqual({ status: "recorded", resolved: [] });
+      expect(signIns.get(hash)).toMatchObject({ status: "step_up", wantedScope: "read write" });
+      expect(signIns.waiters(hash, NOW)).toHaveLength(1);
+
+      report("rejected", "sentry", { error: "invalid_token", errorDescription: "refused" });
+      expect(signIns.get(hash)).toMatchObject({ status: "step_up", lastError: "refused" });
+
+      // The owner's sign-in completes it, and the server then works.
+      await signInWith("sentry", { scope: "read write", wantedScope: "read write" });
+      expect(report("working", "sentry")).toEqual({
+        status: "recorded",
+        resolved: [{ session: "s1", request: "r1" }],
+      });
     }));
 
   it("keeps the tokens of a server that refused them, with the error", () =>
@@ -688,8 +787,11 @@ describe("reportMcpAuth", () => {
       expect(report("rejected", "sentry")).toMatchObject({ status: "ignored" });
       expect(report("needs_sign_in", "local")).toMatchObject({ status: "ignored" });
       expect(report("needs_sign_in", "missing")).toMatchObject({ status: "ignored" });
-      // SAFETY: a newer host may send an event this build does not list; the Registry reads it as none.
-      expect(report("hello" as McpAuthEvent, "sentry")).toMatchObject({ status: "ignored" });
+      // A newer host's event decodes as a string (`McpAuthEvent`'s fallback), which the Registry ignores with why.
+      expect(report("hello", "sentry")).toEqual({
+        status: "ignored",
+        reason: "The event is not one this build knows",
+      });
     }));
 });
 
@@ -830,10 +932,10 @@ describe("the bounds", () => {
       for (let index = 0; index < MAX_MCP_PENDING + 5; index += 1)
         signIns.putPending(pending(index));
 
-      expect(signIns.getPending(fakeKey(0).hash)).toBeNull();
-      expect(signIns.getPending(fakeKey(4).hash)).toBeNull();
-      expect(signIns.getPending(fakeKey(5).hash)).not.toBeNull();
-      expect(signIns.getPending(fakeKey(24).hash)).not.toBeNull();
+      expect(signIns.getPending(fakeKey(0).hash, NOW)).toBeNull();
+      expect(signIns.getPending(fakeKey(4).hash, NOW)).toBeNull();
+      expect(signIns.getPending(fakeKey(5).hash, NOW)).not.toBeNull();
+      expect(signIns.getPending(fakeKey(24).hash, NOW)).not.toBeNull();
 
       // A newer start of one key replaces the older, whose state no longer finds it.
       signIns.putPending(pending(24, { stateHash: stateHash("newer"), createdAt: NOW + 100 }));
@@ -858,8 +960,61 @@ describe("the bounds", () => {
       expect(signIns.takePending(stateHash("state-2"), NOW + 2 + PENDING_SIGN_IN_TTL_MS)).toEqual({
         status: "expired",
       });
-      expect(signIns.getPending(fakeKey(2).hash)).toBeNull();
+      expect(signIns.getPending(fakeKey(2).hash, NOW)).toBeNull();
       expect(signIns.takePending(stateHash("unknown"), NOW)).toEqual({ status: "none" });
+    }));
+
+  it("treats a pending row older than 10 minutes as absent, and sweeps the expired ones when another is put", () =>
+    fresh(async ({ signIns, sql }) => {
+      signIns.putPending(pending(1));
+      signIns.putPending(pending(2, { createdAt: NOW + 5 * 60_000, expiresAt: NOW + 15 * 60_000 }));
+
+      const rowCount = () =>
+        sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_pending_sign_ins").one().n;
+
+      // Row 1 expires 10 minutes after its start (NOW + 1); row 2 five minutes later.
+      expect(signIns.getPending(fakeKey(1).hash, NOW + PENDING_SIGN_IN_TTL_MS)).not.toBeNull();
+      expect(signIns.getPending(fakeKey(1).hash, NOW + 1 + PENDING_SIGN_IN_TTL_MS)).toBeNull();
+      expect(signIns.getPending(fakeKey(2).hash, NOW + 1 + PENDING_SIGN_IN_TTL_MS)).not.toBeNull();
+
+      // It is only treated as absent: the row stays until a put sweeps it.
+      expect(rowCount()).toBe(2);
+
+      signIns.putPending(
+        pending(3, { createdAt: NOW + 1 + PENDING_SIGN_IN_TTL_MS, expiresAt: NOW + 20 * 60_000 }),
+      );
+      expect(rowCount()).toBe(2);
+      expect(signIns.takePending(stateHash("state-1"), NOW)).toEqual({ status: "none" });
+    }));
+
+  it("refuses a pending row whose metadata or client is over 64 KiB, keeping the one it would have replaced", () =>
+    fresh(async ({ signIns }) => {
+      expect(signIns.putPending(pending(1, { metadata: "x".repeat(64 * 1024) }))).toEqual({
+        status: "put",
+      });
+      expect(signIns.putPending(pending(1, { metadata: "x".repeat(64 * 1024 + 1) }))).toMatchObject(
+        {
+          status: "refused",
+          reason: "too_large",
+        },
+      );
+      expect(signIns.putPending(pending(2, { client: "x".repeat(64 * 1024 + 1) }))).toMatchObject({
+        status: "refused",
+        reason: "too_large",
+      });
+      expect(signIns.getPending(fakeKey(1).hash, NOW)?.metadata).toHaveLength(64 * 1024);
+      expect(signIns.getPending(fakeKey(2).hash, NOW)).toBeNull();
+    }));
+
+  it("refuses a registration whose response is over 64 KiB", () =>
+    fresh(async ({ signIns }) => {
+      expect(
+        signIns.putRegistration(registration(1, { clientInfo: "x".repeat(64 * 1024) })),
+      ).toEqual({ status: "put" });
+      expect(
+        signIns.putRegistration(registration(2, { clientInfo: "x".repeat(64 * 1024 + 1) })),
+      ).toMatchObject({ status: "refused", reason: "too_large" });
+      expect(signIns.getRegistration(registration(2).key)).toBeNull();
     }));
 
   it("holds 100 waiters, then refuses, and each expires after 30 days", () =>
@@ -987,7 +1142,7 @@ describe("the revision", () => {
 
       expect(signIns.delete(key.hash, NOW)).toBe(true);
       expect(signIns.get(key.hash)).toBeNull();
-      expect(signIns.getPending(key.hash)).toBeNull();
+      expect(signIns.getPending(key.hash, NOW)).toBeNull();
       expect(signIns.getRegistration(reg.key)).not.toBeNull();
       expect(signIns.getBinding(key.hash, "c")).not.toBeNull();
     }));

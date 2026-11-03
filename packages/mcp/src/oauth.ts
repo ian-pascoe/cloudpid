@@ -64,9 +64,6 @@ export const OAUTH_FETCH_TIMEOUT_MS = 15_000;
 /** An access or refresh token is held to this many bytes (→ Bounds). */
 export const MAX_TOKEN_BYTES = 16 * 1024;
 
-/** A token response, read at most to this many bytes. */
-export const MAX_TOKEN_RESPONSE_BYTES = 64 * 1024;
-
 /** The authorization server metadata and discovery a sign-in records, each at most this many bytes. */
 export const MAX_METADATA_BYTES = 64 * 1024;
 
@@ -77,7 +74,8 @@ export const byteLength = (text: string): number => encoder.encode(text).byteLen
 
 /**
  * `response`'s body as text, read until `limit` bytes and no further; undefined when it is longer (the rest is not
- * read).
+ * read). The 64 KiB bound on a token response (→ Bounds) is the limit its readers pass, in the slices that take token
+ * responses in (#450 completing a sign-in, #454 refreshing).
  */
 export const boundedText = async (
   response: Response,

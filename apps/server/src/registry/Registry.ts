@@ -185,7 +185,7 @@ import type {
   McpAuthReportAnswer,
 } from "@cloudpid/mcp/types";
 import { mcpAccessToken, reportMcpAuth } from "./mcp-sign-in-registry.ts";
-import { openMcpOauthVault } from "./mcp-sign-in-seal.ts";
+import { MCP_OAUTH_PURPOSE } from "./mcp-sign-in-seal.ts";
 import { openMcpSignIns } from "./mcp-sign-ins.ts";
 
 /** The Registry is a singleton: every caller addresses the object with this name. */
@@ -929,7 +929,7 @@ export const RegistryLive = Registry.make(
         const store = openRegistryStore(state.raw.storage);
         const changes = openAgentChanges(state.raw.storage);
         const skills = openSkills(state.raw.storage);
-        const mcpSignIns = openMcpSignIns(state.raw.storage);
+        const mcpSignIns = openMcpSignIns(state.raw.storage, store);
         const notify = pushNotifier({ store, vapid: push.vapid });
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
         const skillReader = githubSkillReader(github);
@@ -1004,11 +1004,13 @@ export const RegistryLive = Registry.make(
             return merged.hash === held ? undefined : skillSetOf(merged, skills);
           });
 
-        // The kept Secrets' key, derived once, on first use: a malformed master key fails the calls that need it, not
-        // the object. An Environment no Secret reaches never needs it.
-        const vault = yield* Effect.cached(
-          openKeptVault(Redacted.value(secrets.encryptionKey), "registry"),
-        );
+        // A vault for `purpose`, its key derived once, on first use: a malformed master key fails the calls that need it, not
+        // the object.
+        const cachedVault = (purpose: string) =>
+          Effect.cached(openKeptVault(Redacted.value(secrets.encryptionKey), purpose));
+
+        // The kept Secrets', which an Environment no Secret reaches never needs.
+        const vault = yield* cachedVault("registry");
 
         let handedWarned = false;
 
@@ -1023,11 +1025,8 @@ export const RegistryLive = Registry.make(
           );
         });
 
-        // The MCP sign-ins' key, for the purpose `mcp-oauth`, on first use too: a malformed key makes token requests answer
-        // `unavailable` and leaves the rows unopened.
-        const mcpVault = yield* Effect.cached(
-          secrets.encryptionKey.pipe(Redacted.value, openMcpOauthVault),
-        );
+        // The MCP sign-ins': a malformed key makes token requests answer `unavailable` and leaves the rows unopened.
+        const mcpVault = yield* cachedVault(MCP_OAUTH_PURPOSE);
 
         /** The Secrets `environment` uses, opened, for the Session DOs and the Builds: a vault that fails says why. */
         const opened = (environment: string) =>

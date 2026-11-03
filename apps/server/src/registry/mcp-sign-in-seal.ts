@@ -8,30 +8,46 @@ import { byteLength, MAX_TOKEN_BYTES } from "@cloudpid/mcp/oauth";
 import {
   type KeptBinding,
   type KeptVault,
-  openKeptVault,
   type SealedValue,
   SecretVaultError,
 } from "@cloudpid/extensions/secrets/core";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-/** The purpose the vault is opened for. */
+/** The purpose the vault is opened for (`openKeptVault(masterKey, MCP_OAUTH_PURPOSE)`; it fails while the key is malformed). */
 export const MCP_OAUTH_PURPOSE = "mcp-oauth";
-
-/** The vault of MCP sign-ins under `masterKey`; fails while the key is malformed. */
-export const openMcpOauthVault = (masterKey: string): Effect.Effect<KeptVault, SecretVaultError> =>
-  openKeptVault(masterKey, MCP_OAUTH_PURPOSE);
 
 /** The tables whose values are sealed: part of every binding. */
 export const SIGN_INS_TABLE = "mcp_sign_ins";
 export const REGISTRATIONS_TABLE = "mcp_client_registrations";
 export const PENDING_TABLE = "mcp_pending_sign_ins";
 
+export type SealedTable = typeof SIGN_INS_TABLE | typeof REGISTRATIONS_TABLE | typeof PENDING_TABLE;
+
 /** What a ciphertext is bound to: the table and the row's key. */
-export const sealedBinding = (table: string, key: string): KeptBinding => ({
+export const sealedBinding = (table: SealedTable, key: string): KeptBinding => ({
   owner: table,
   name: key,
 });
+
+/**
+ * `text` sealed for the row `key` of `table`: a registration's client secret (#450 registers a client) or a pending
+ * row's PKCE verifier (#450 starts a sign-in). Tokens are `sealTokens`, which bounds them first.
+ */
+export const sealValue = (
+  vault: KeptVault,
+  table: SealedTable,
+  key: string,
+  text: string,
+): Effect.Effect<SealedValue, SecretVaultError> => vault.seal(sealedBinding(table, key), text);
+
+/** The text sealed under the row `key` of `table`; fails when it was sealed under another table, row, purpose or key. */
+export const openValue = (
+  vault: KeptVault,
+  table: SealedTable,
+  key: string,
+  sealed: SealedValue,
+): Effect.Effect<string, SecretVaultError> => vault.open(sealedBinding(table, key), sealed);
 
 /** The tokens a sign-in holds. */
 const Tokens = Schema.Struct({
@@ -62,13 +78,13 @@ export const sealTokens = (
     return Effect.succeed({ status: "too_large", token: "refresh_token" });
   }
 
-  return vault
-    .seal(
-      sealedBinding(SIGN_INS_TABLE, key),
-      // An absent refresh token is left out of the text, as JSON leaves out what is undefined.
-      JSON.stringify({ access_token: tokens.access_token, refresh_token: tokens.refresh_token }),
-    )
-    .pipe(Effect.map((sealed): TokensSealed => ({ status: "sealed", sealed })));
+  return sealValue(
+    vault,
+    SIGN_INS_TABLE,
+    key,
+    // An absent refresh token is left out of the text, as JSON leaves out what is undefined.
+    JSON.stringify({ access_token: tokens.access_token, refresh_token: tokens.refresh_token }),
+  ).pipe(Effect.map((sealed): TokensSealed => ({ status: "sealed", sealed })));
 };
 
 /**
@@ -80,45 +96,12 @@ export const openTokens = (
   key: string,
   sealed: SealedValue,
 ): Effect.Effect<McpTokens, SecretVaultError> =>
-  vault
-    .open(sealedBinding(SIGN_INS_TABLE, key), sealed)
-    .pipe(
-      Effect.flatMap((text) =>
-        Effect.fromOption(decodeTokens(text)).pipe(
-          Effect.mapError(() =>
-            SecretVaultError.make({ message: `The sign-in ${key} holds no tokens` }),
-          ),
+  openValue(vault, SIGN_INS_TABLE, key, sealed).pipe(
+    Effect.flatMap((text) =>
+      Effect.fromOption(decodeTokens(text)).pipe(
+        Effect.mapError(() =>
+          SecretVaultError.make({ message: `The sign-in ${key} holds no tokens` }),
         ),
       ),
-    );
-
-/** A registration's client secret, sealed for the registration `key`. */
-export const sealRegistrationSecret = (
-  vault: KeptVault,
-  key: string,
-  secret: string,
-): Effect.Effect<SealedValue, SecretVaultError> =>
-  vault.seal(sealedBinding(REGISTRATIONS_TABLE, key), secret);
-
-/** The client secret sealed under the registration `key`. */
-export const openRegistrationSecret = (
-  vault: KeptVault,
-  key: string,
-  sealed: SealedValue,
-): Effect.Effect<string, SecretVaultError> =>
-  vault.open(sealedBinding(REGISTRATIONS_TABLE, key), sealed);
-
-/** A pending sign-in's PKCE verifier, sealed for the sign-in `key`. */
-export const sealVerifier = (
-  vault: KeptVault,
-  key: string,
-  verifier: string,
-): Effect.Effect<SealedValue, SecretVaultError> =>
-  vault.seal(sealedBinding(PENDING_TABLE, key), verifier);
-
-/** The verifier sealed under the pending sign-in `key`. */
-export const openVerifier = (
-  vault: KeptVault,
-  key: string,
-  sealed: SealedValue,
-): Effect.Effect<string, SecretVaultError> => vault.open(sealedBinding(PENDING_TABLE, key), sealed);
+    ),
+  );

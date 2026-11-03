@@ -25,21 +25,28 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 - **Client bindings** (`mcp_client_bindings`): (sign-in key, configured `clientId`) → issuer (SEP-2352). They survive Sign out and are dropped once no MCP server set names that pair.
 - **Storage:** five Registry tables in one migration: `mcp_sign_ins`, `mcp_client_registrations`, `mcp_client_bindings`, `mcp_pending_sign_ins` and `mcp_sign_in_waiters`.
   - Sealing is AES-GCM under a key HKDF derives from `SECRETS_ENCRYPTION_KEY` for the purpose `mcp-oauth`, with each row bound to its table and key.
-  - A pending row stores only the SHA-256 of `state`.
+  - A pending row stores only the SHA-256 of `state`, and is absent once it is 10 min old (the next put sweeps the expired).
 - **Bounds:**
   - Sign-ins: 200. At the limit the least recently used row without tokens is evicted; if there is none, the new one is refused with a message naming Global's MCP servers page.
   - Registrations: 100. Bindings: 200. Unreferenced rows are evicted, otherwise the new one is refused.
   - Pending rows: 20, dropping the oldest.
   - Waiters: 100, then refused; each expires after 30 days.
-  - Each token ≤16 KiB, a token response ≤64 KiB, recorded metadata ≤64 KiB.
+  - Each token ≤16 KiB, a token response ≤64 KiB, recorded metadata ≤64 KiB (each of a sign-in's metadata and discovery, a pending row's metadata and client, and a registration's response).
 - **A malformed `SECRETS_ENCRYPTION_KEY`:** rows are kept unopened, token requests answer `unavailable`, and starts are refused with the reason in Settings. A row that does not open under a well-formed key counts as `required`.
 - **Lifetime:** deleting an Environment leaves its sign-ins in the Registry, listed as unused, and so does removing an entry. A Repo's sign-in is listed under that Repo.
 
 ## Tokens reach the host object
 
 - **Only the Registry holds tokens at rest, and only it refreshes them.** `McpHost` calls `mcpAccessToken({ environment, server, stale? })` before it connects to an OAuth-capable HTTP server. The Registry works out the key from that Environment's own set. The answer is either:
-  - `{ status: "ok", token, expiresAt, resource }`, or
-  - `{ status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable", reason, scope? }`.
+  - `{ status: "ok", token, expiresAt?, resource, signIn, note? }` while the sign-in holds a token that stands, or
+  - `{ status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable", reason, scope? }` when there is none to hand over.
+
+  Which is which:
+
+  - **`ok`:** the row holds tokens and the access token stands: it is more than a minute from `expires_at` (or has none), and is not the one the host just found refused. `expiresAt` is absent when the server gave no lifetime. `resource` is the recorded one, else the entry's URL. `signIn` is the sign-in id (below).
+  - **`stale?`:** the access token the host's request just carried and the server refused with a 401 that is not `insufficient_scope`. The Registry takes the token as refused only when it is that very token, so a host asking with an older one is handed the current one. A refused token is refreshed once; a `rejected` sign-in's is not (calls still try it).
+  - **`ok` with a `note`:** `note: { status, reason?, scope? }` is added while the row's status is `step_up` (`scope` is the wanted scope), `rejected` (`reason` is the last error) or `refresh_failing` (before the token expires), yet its token still stands. The host uses the token and may show the note; `note.status` is a string, so a status this build does not know still reads.
+  - **A `status` answer:** `required` when there is no token to serve: no row, or one without tokens (`reason` is its last error, else "Not signed in"), tokens that do not open under a well-formed key, or a token that is expired (or in its last minute, or refused) with no refresh token to ask with. A token that is past its time with none also leaves the row `required` with its tokens dropped, so Settings does not show it as signed in, and the revision rises; one in its last minute is withheld but kept (serving it is left to the refresh, [#454](https://github.com/ian-pascoe/cloudpid/issues/454)). `unavailable` is a server that is not in the Environment's set or does not sign in, a malformed `SECRETS_ENCRYPTION_KEY`, or a refresh that is not built yet. `refresh_failing` is a refresh that failed once the token no longer stands. `step_up` and `rejected` stand as a status only when their token does not; while it does they are a `note`.
 
   On `required` or `unavailable`, the server's MCP inventory entry becomes `sign_in` or `unavailable` with no tools, and no network call is made. The engine's `auth(stale)` hook asks the host, which asks the Registry, and the transport gets only an `AuthProvider` over that answer. The SDK's own OAuth is never used ([The MCP core](https://github.com/ian-pascoe/cloudpid/issues/394) D6).
 
@@ -50,12 +57,14 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
   - Tokens never enter a Session, a Workspace DO or a Container.
 - **Reports and pushes:**
   - On transitions only, the host calls `reportMcpAuth({ environment, server, event: "needs_sign_in" | "step_up" | "rejected" | "working", challenge?: { resourceMetadataUrl?, scope?, error?, errorDescription? } })`.
+  - What each event does: `needs_sign_in` remembers the challenge on a row with no tokens, so a start discovers from it; `step_up` sets the status `step_up` and the wanted scope; `rejected` sets `rejected` with the challenge's error and description, the tokens kept; `working` clears the status and resolves the open Sign-in requests of the key. A pending step-up is left as it is by `working` and `rejected`: calls that work with the old scope do not answer it.
+  - The answer is `{ status: "recorded", resolved: [{ session, request }] }`, where `resolved` lists the Sign-in requests a `working` report resolved (none for any other event), or `{ status: "ignored", reason }` for a server that is not in the set or does not sign in, a `step_up` or `rejected` with no sign-in holding tokens, a `needs_sign_in` the store has no room for, or an event this build does not know. `McpAuthEvent` has a fallback member (a string), so a newer host's event is ignored rather than failing at decode.
   - The Registry never calls out. When a callback completes, or after a sign-out or a rebind, the main Worker takes the change from the Registry's answer and passes it to each host using the sign-in as `apply({ kind: "sign_ins", … })` ([The Environment's MCP host object](https://github.com/ian-pascoe/cloudpid/issues/382) D6.3, which replaces the Registry's `mcpSignInsChanged` push of [Signing in](https://github.com/ian-pascoe/cloudpid/issues/390) D4.4). It carries that push's `{ servers, change: "signed_in" | "signed_out" | "replaced" | "rebound" }`; left to implementation: the exact field layout inside `apply`.
-  - A lost push heals at the next `windowOpened`, whose `mcpServerSet` answer carries `signInsRevision`.
+  - A lost push heals at the next `windowOpened`, whose `mcpServerSet` answer carries `signInsRevision`; the Registry's `signInsRevision() → number` answers the same counter alone. It rises with a sign-in, a sign-out, a rebind and a drop of tokens, and with nothing else: a report, a refresh, a first binding and a registration leave it.
   - `signed_in`, `replaced` and `rebound` make the host rediscover its `sign_in` and `rejected` HTTP servers at once, never waking a Container. The host's 401/403 handling is in [_Requests and Legacy sessions_](mcp-connections.md#requests-and-legacy-sessions), its discovery states and backoff in [_Discovery and the MCP inventory_](mcp-connections.md#discovery-and-the-mcp-inventory).
-- **The sign-in id:** `McpHost`'s `tasks/*` results carry the MCP sign-in id, so an MCP task's follower can tell "not reachable under the current sign-in" from "expired" ([MCP tasks as durable long-running requests](https://github.com/ian-pascoe/cloudpid/issues/389) D4.3). Left to implementation: the id's form and how it reaches the host (an additive field on `mcpAccessToken`'s `ok` answer is the natural place).
+- **The sign-in id:** `McpHost`'s `tasks/*` results carry the MCP sign-in id, so an MCP task's follower can tell "not reachable under the current sign-in" from "expired" ([MCP tasks as durable long-running requests](https://github.com/ian-pascoe/cloudpid/issues/389) D4.3). The id is `signIn` on `mcpAccessToken`'s `ok` answer: the row's grant id, a UUID that is new with each completed sign-in or step-up and the same through refreshes.
 - **Version skew:** host → Registry has no gate. New statuses and fields are additive, with a fallback member read as a generic failure ([Deploys under deferred Durable Object code updates](https://github.com/ian-pascoe/cloudpid/issues/423) D1).
-- **Code:** the Registry's and the main Worker's sign-in code imports only `@cloudpid/mcp/oauth` (and `@cloudpid/mcp/types`), neither of which loads the SDK (see [_Packages and objects_](mcp.md#packages-and-objects)). `./oauth` exposes `@earendil-works/pi-mcp/oauth`'s discovery, flow functions, `stepUpScope`, `parseWwwAuthenticate` and errors. It never uses `McpOAuthProvider`, `OAuthCallbackServer` (`node:http`) or `authorizeMcp`, which drops the client and the tokens on `invalid_client`.
+- **Code:** the Registry's and the main Worker's sign-in code imports only `@cloudpid/mcp/oauth` (and `@cloudpid/mcp/types`), neither of which loads the SDK (see [_Packages and objects_](mcp.md#packages-and-objects)). `./oauth` names `@earendil-works/pi-mcp/oauth`'s exports one by one (discovery, flow functions, `stepUpScope`, `parseWwwAuthenticate`, errors and types) and holds the size bounds (a token 16 KiB, recorded metadata 64 KiB, which a reader of a token response applies as its 64 KiB limit); a bundle test keeps the SDK, pi-mcp's callback server and provider, and `node:http` out of it. It never uses `McpOAuthProvider`, `OAuthCallbackServer` (`node:http`) or `authorizeMcp`, which drops the client and the tokens on `invalid_client`.
   - cloudpid implements pi-mcp's `OAuthClientProvider` over the Registry.
   - cloudpid's own additions live in `./oauth` too: RFC 7009 revocation, the `client_credentials` grant, `private_key_jwt`, `client_secret_expires_at` and the issuer-pin check. They go to pi as an issue first ([The MCP core](https://github.com/ian-pascoe/cloudpid/issues/394) D6).
   - Every OAuth fetch goes through `guardedFetch` with a 15 s timeout.
@@ -232,6 +241,7 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
   - The wanted scope becomes granted ∪ challenged ∪ configured, the status `step_up`, and the old tokens keep serving.
   - The step-up is a start with `skipRefresh`, offered on the card and on the Settings row.
   - After 3 completed step-ups re-challenged for the same scope set, `mcp_sign_in_ask` answers `step_up_failed`. A sign-in from Settings resets the count.
+  - The count rises only when the owner completed a step-up and the server then challenges for the very scope set it wanted; a `step_up` report while one is pending counts nothing. A completed step-up keeps the wanted scope and the count, which the next challenge is compared to.
 
 ## Sign-out
 

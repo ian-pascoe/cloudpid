@@ -55,21 +55,29 @@ export const environmentMcpSet = (
   return overrides === null ? null : mcpServerSetOf(mcpLayersOf(store, overrides));
 };
 
-/** The servers of `environment`'s set as `resolveMcpServerSet` resolves them, for the values of one. */
-const resolvedServer = (
-  store: McpSetStore,
+/** The store as one Environment's servers are resolved from it: Global's document and the Environment's Overrides. */
+export type ResolvedServersStore = DocumentStore & Pick<RegistryStore, "getSettingsOverrides">;
+
+/** The servers of `environment`'s set as `resolveMcpServerSet` resolves them, or null when it is not registered. */
+export const environmentResolvedServers = (
+  store: ResolvedServersStore,
   environment: string,
-  name: string,
-): McpResolvedServer | undefined => {
+): ReadonlyArray<McpResolvedServer> | null => {
   const overrides = store.getSettingsOverrides(environment);
 
-  if (overrides === null) return undefined;
+  return overrides === null ? null : resolvedMcpServers(mcpLayersOf(store, overrides));
+};
 
-  return Arr.findFirst(
-    resolvedMcpServers(mcpLayersOf(store, overrides)),
+/** The server `name` of `environment`'s set as it resolves, for its values and its sign-in. */
+export const resolvedServer = (
+  store: ResolvedServersStore,
+  environment: string,
+  name: string,
+): McpResolvedServer | undefined =>
+  Arr.findFirst(
+    environmentResolvedServers(store, environment) ?? [],
     (resolved) => resolved.name === name,
   ).pipe(Option.getOrUndefined);
-};
 
 /** What the Registry knows of the hosts' sets: what each was last handed, the revisions given out, the wipes to send. */
 const Handed = Schema.Struct({

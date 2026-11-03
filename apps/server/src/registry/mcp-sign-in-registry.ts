@@ -2,13 +2,13 @@
 // object; ADR-0034): `mcpAccessToken`, which hands a short-lived access token over Durable Object RPC (the host keeps it in
 // memory only), `reportMcpAuth`, which records the transitions a host sees, and `signInsRevision`. Only the Registry holds
 // tokens at rest. The sign-in is found from the Environment's own MCP server set (its source, normalized name and URL),
-// never from what the host says. The Registry never calls out: a refresh is a seam (`Refresh`, #454), and what a report
-// resolves goes back in the answer.
+// never from what the host says. The Registry never calls out: a refresh is a seam (`Refresh`, #454, which fills it with
+// refreshing and single-flight), and what a report resolves goes back in the answer.
 //
 // No answer but `ok` holds a token, and no log line, status or error does: a failure says which row by its hash, and a
 // reason is the owner-facing last error (≤300 chars) or what the Registry found.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-import { mcpSignInKey, type McpSignInKey, resolveMcpServerSet } from "@cloudpid/config";
+import { mcpSignInKey, type McpSignInKey } from "@cloudpid/config";
 import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import { stepUpScope } from "@cloudpid/mcp/oauth";
 import type {
@@ -24,10 +24,9 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import type * as Types from "effect/Types";
+import { environmentResolvedServers, type ResolvedServersStore } from "./mcp-registry.ts";
 import { type McpSignInRow, type McpSignIns } from "./mcp-sign-ins.ts";
 import { openTokens, type McpTokens } from "./mcp-sign-in-seal.ts";
-import { type DocumentStore, savedGlobalSettings } from "./settings.ts";
-import type { RegistryStore } from "./store.ts";
 
 /** A token is asked for again this long before it expires (→ Refresh and step-up). */
 export const REFRESH_MARGIN_MS = 60_000;
@@ -36,7 +35,7 @@ export const REFRESH_MARGIN_MS = 60_000;
 export const MAX_SIGN_IN_ERROR_LENGTH = 300;
 
 /** The store as the sign-in is found from the Environment's set: Global's document and the Environment's Overrides. */
-export type SignInTargetStore = DocumentStore & Pick<RegistryStore, "getSettingsOverrides">;
+export type SignInTargetStore = ResolvedServersStore;
 
 /** The sign-in a server of an Environment's set uses, or why it has none. */
 export type SignInTarget =
@@ -58,14 +57,11 @@ export const signInTarget = (
   environment: string,
   server: string,
 ): SignInTarget => {
-  const overrides = store.getSettingsOverrides(environment);
+  const servers = environmentResolvedServers(store, environment);
 
-  if (overrides === null) return { status: "unknown", reason: "The Environment is not registered" };
+  if (servers === null) return { status: "unknown", reason: "The Environment is not registered" };
 
-  const found = Arr.findFirst(
-    resolveMcpServerSet(savedGlobalSettings(store), overrides, []).servers,
-    (resolved) => resolved.name === server,
-  );
+  const found = Arr.findFirst(servers, (resolved) => resolved.name === server);
 
   if (Option.isNone(found)) {
     return { status: "unknown", reason: "The server is not in the Environment's MCP set" };
@@ -106,18 +102,20 @@ export const clip = (text: string, limit: number): string => {
   return points.length <= limit ? text : points.slice(0, limit).join("");
 };
 
+/** The scopes of a space-separated list. */
+const scopesOf = (list: string | undefined): ReadonlyArray<string> =>
+  (list ?? "").split(/\s+/).filter((scope) => scope !== "");
+
 /** The scopes of space-separated `lists`, once each, in the order they first appear. */
 const mergeScopes = (...lists: ReadonlyArray<string | undefined>): string | null => {
-  const scopes = new Set(
-    Arr.flatMap(lists, (list) => (list ?? "").split(/\s+/).filter((s) => s !== "")),
-  );
+  const scopes = new Set(Arr.flatMap(lists, scopesOf));
 
   return scopes.size === 0 ? null : [...scopes].join(" ");
 };
 
 const sameScopeSet = (left: string, right: string): boolean => {
-  const a = new Set(left.split(/\s+/).filter((s) => s !== ""));
-  const b = new Set(right.split(/\s+/).filter((s) => s !== ""));
+  const a = new Set(scopesOf(left));
+  const b = new Set(scopesOf(right));
 
   return a.size === b.size && [...a].every((scope) => b.has(scope));
 };
@@ -200,6 +198,8 @@ const answerFor = (
         // A `rejected` token drives no further refresh on a 401: calls still try it (→ Refresh and step-up).
         const refused = input.stale !== undefined && input.stale === held.access_token;
         const mustRefresh = refused && row.status !== "rejected";
+        // The token is asked for again from a minute before it expires (`REFRESH_MARGIN_MS`); the last minute's token is
+        // never served, not even without a refresh token (#454 settles that with the refresh).
         const expiring = row.expiresAt !== null && row.expiresAt - REFRESH_MARGIN_MS <= now;
 
         if (!mustRefresh && !expiring) {
@@ -209,10 +209,16 @@ const answerFor = (
         }
 
         if (held.refresh_token === undefined) {
-          return Effect.succeed<McpAccessTokenAnswer>({
-            status: "required",
-            reason: "The sign-in expired and has no refresh token: sign in again",
-          });
+          const reason = "The sign-in expired and has no refresh token: sign in again";
+
+          // A token past its time with nothing to refresh it is gone: the row says `required` too, so Settings does not
+          // show it as signed in. A token in its last minute, or one the server refused, is withheld but kept: whether
+          // to serve the last minute is #454's, with refresh (→ Refresh and step-up).
+          if (row.expiresAt !== null && row.expiresAt <= now) {
+            deps.signIns.dropTokens(key.hash, reason, now);
+          }
+
+          return Effect.succeed<McpAccessTokenAnswer>({ status: "required", reason });
         }
 
         return (deps.refresh ?? NO_REFRESH)(row, held, expiring ? "expiry" : "401");
@@ -273,12 +279,16 @@ const keptChallenge = (challenge: McpAuthChallenge | undefined): McpAuthChalleng
  * object, Reports and pushes):
  *
  * - `needs_sign_in`: the challenge is remembered on a row with no tokens, so a start discovers from it;
- * - `step_up`: the status becomes `step_up` and the wanted scope granted ∪ challenged ∪ configured; a step-up challenged
- *   again for the scope set that was already stepped up counts (3 end `mcp_sign_in_ask` with `step_up_failed`);
- * - `rejected`: the status becomes `rejected`, the challenge's error and description kept; the tokens are kept;
- * - `working`: the status clears, and the open Sign-in requests of the key are resolved and returned.
+ * - `step_up`: the status becomes `step_up` and the wanted scope granted ∪ challenged ∪ configured. The count rises when
+ *   the owner completed a step-up and the server then challenges for the very scope set that step-up wanted (3 end
+ *   `mcp_sign_in_ask` with `step_up_failed`); a challenge while a step-up is still pending counts nothing;
+ * - `rejected`: the status becomes `rejected`, the challenge's error and description kept; the tokens are kept. A
+ *   pending step-up stays `step_up` (the error is kept);
+ * - `working`: the status clears, and the open Sign-in requests of the key are resolved and returned. A pending step-up
+ *   is not cleared, and its requests stay open: calls that work are no sign-in with the wider scope.
  *
- * A server that is not in the set, or does not sign in, or an event this build does not know, is ignored with why.
+ * The answer is `recorded` (with the Sign-in requests a `working` report resolved) or `ignored` with why: a server that
+ * is not in the set or does not sign in, no sign-in to change, a full store, or an event this build does not know.
  */
 export const reportMcpAuth = (
   deps: Pick<SignInDeps, "store" | "signIns">,
@@ -312,8 +322,13 @@ export const reportMcpAuth = (
         target.configuredScope,
       );
 
+      // While a step-up is pending the owner has completed none since the last report, so nothing counts. Otherwise one
+      // was completed (a completed step-up leaves `wantedScope` as it was wanted), and this challenge counts when it asks
+      // for the same scope set again.
+      const pending = row.status === "step_up";
+
       const again =
-        row.status !== "step_up" &&
+        !pending &&
         row.wantedScope !== null &&
         wanted !== null &&
         sameScopeSet(row.wantedScope, wanted);
@@ -324,7 +339,7 @@ export const reportMcpAuth = (
           status: "step_up",
           challenge,
           wantedScope: wanted,
-          stepUpCount: again ? row.stepUpCount + 1 : row.status === "step_up" ? row.stepUpCount : 0,
+          stepUpCount: pending ? row.stepUpCount : again ? row.stepUpCount + 1 : 0,
         },
         now,
       );
@@ -338,7 +353,7 @@ export const reportMcpAuth = (
       signIns.update(
         hash,
         {
-          status: "rejected",
+          status: row.status === "step_up" ? "step_up" : "rejected",
           challenge,
           lastError: clip(
             challenge.errorDescription ?? challenge.error ?? "The server refused the access token",
@@ -352,6 +367,9 @@ export const reportMcpAuth = (
     }
 
     case "working": {
+      // Calls that work with the old scope are no answer to a step-up: it stays, with its requests, until the owner signs in.
+      if (row?.status === "step_up") return { status: "recorded", resolved: [] };
+
       if (row !== null && row.hasTokens && (row.status !== "ok" || row.lastError !== null)) {
         signIns.update(hash, { status: "ok", challenge: null, lastError: null }, now);
       }
