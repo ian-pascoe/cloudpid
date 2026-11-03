@@ -1,3 +1,4 @@
+// @effect-diagnostics missingPipeableSignature:off -- readers of plain values, not combinators.
 // How a call of an MCP tool ends without a result, as the model reads it and `details` records it
 // (`docs/architecture/mcp-in-a-session.md` → Calls and results): the one map, for the engine's answers (`describeError`,
 // used by `./result.ts`) and for a result stream the Session could not read (`streamEnd`, from `./stream.ts`'s outcomes),
@@ -9,6 +10,7 @@ import type { McpDetails } from "./details.ts";
 /** An end: what the model reads, and the `details` keys that say how the call ended. */
 export type Ended = {
   readonly message: string;
+  readonly signIn?: McpDetails["sign_in"];
   readonly cut?: McpDetails["cut"];
   readonly error?: McpDetails["error"];
 };
@@ -77,3 +79,66 @@ export const describeError = (error: McpErrorWire): Ended =>
         : other.message,
     })),
   );
+
+/** What follows the reason when a server needs the owner signed in: the root asks, a subagent reports to its parent. */
+const signInAdvice = (subagent: boolean): string =>
+  subagent
+    ? "Report it to your parent, or go on without it."
+    : "Ask with `mcp_sign_in_ask`, or go on without it.";
+
+/** The part of a message after its `needs you signed in: ` lead, which the host writes before the Registry's reason. */
+const reasonOf = (message: string): string | undefined => {
+  const lead = "needs you signed in: ";
+  const at = message.indexOf(lead);
+
+  return at === -1 ? undefined : message.slice(at + lead.length);
+};
+
+/**
+ * A call that failed fast because the server needs the owner signed in (`docs/architecture/mcp-sign-in.md` → Sign-in
+ * requests): a 401 (`required`, or `rejected` when the server refused a token), a 403 for more scope (`step_up`), or a
+ * sign-in that cannot be used for now (`unavailable`, which says to try again shortly). `details.sign_in` says which. None
+ * for any other failure. A subagent is told to report it to its parent, since only the root asks.
+ */
+export const signInEnd = (
+  error: McpErrorWire,
+  server: string,
+  subagent: boolean,
+): Ended | undefined => {
+  const advice = signInAdvice(subagent);
+
+  return Match.value(error).pipe(
+    Match.tag("SignInRequired", (needed): Ended => {
+      const status = needed.rejected ? "rejected" : "required";
+
+      const why =
+        reasonOf(needed.message) ??
+        (needed.rejected ? "the server refused the sign-in" : "not signed in");
+
+      return {
+        message: `${server} needs the owner to sign in (${why}). ${advice}`,
+        signIn: { status },
+      };
+    }),
+    Match.tag("StepUpRequired", (needed): Ended => {
+      const scope = needed.scope === undefined ? "" : `: ${needed.scope}`;
+
+      return {
+        message: `${server} needs the owner to sign in again for more access (the sign-in lacks scope${scope}). ${advice}`,
+        signIn:
+          needed.scope === undefined
+            ? { status: "step_up" }
+            : { status: "step_up", scope: needed.scope },
+      };
+    }),
+    Match.tag("Unreachable", (down): Ended | undefined =>
+      down.signIn === true
+        ? {
+            message: `${server}'s sign-in cannot be used right now (${down.message}). Try again shortly, or go on without it.`,
+            signIn: { status: "unavailable" },
+          }
+        : undefined,
+    ),
+    Match.orElse(() => undefined),
+  );
+};

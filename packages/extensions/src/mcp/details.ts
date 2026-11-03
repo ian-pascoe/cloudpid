@@ -57,6 +57,13 @@ export type McpDetails = {
   readonly cut?: "host_lost" | "engine_lost";
   /** The questions the server asked during the call, answered; absent when it asked none. */
   readonly elicitation?: Array<McpElicitationDetail>;
+  /**
+   * A call that failed fast because the server needs the owner signed in (`docs/architecture/mcp-sign-in.md` → Sign-in
+   * requests): `status` is `required`, `step_up`, `rejected` or `unavailable`, and `scope` is what a step-up wants.
+   */
+  readonly sign_in?: { readonly status: string; readonly scope?: string };
+  /** How an `mcp_sign_in_ask` call ended: `signed_in`, `declined`, `withdrawn`, `not_applicable`, `step_up_failed`, `unavailable`. */
+  readonly sign_in_request?: string;
 };
 
 /** How much `meta` the card keeps of a tool's `_meta` (stored); keys past it are left out. */

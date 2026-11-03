@@ -38,6 +38,14 @@ export type PushEvent =
       readonly mcp?:
         | { readonly server: string; readonly kind: "elicitation" | "sampling" }
         | undefined;
+      /**
+       * Or, with `signIn`, the agent's request that the owner sign in to an MCP server (`docs/architecture/mcp-sign-in.md` →
+       * Sign-in requests): the server, the agent's reason, and the sign-in's key hash, which tags the push so one open
+       * request of a key shows one notification.
+       */
+      readonly signIn?:
+        | { readonly server: string; readonly reason: string; readonly key: string }
+        | undefined;
     };
 
 /** The longest `PushNotice.url` that is sent: with the rest of a push it must fit one 4096-octet message. */

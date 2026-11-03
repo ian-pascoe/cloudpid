@@ -50,7 +50,7 @@ import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
 import { baseDetails } from "./details.ts";
-import { conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
+import { agentOf, conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
 import { elicitingHooks, withElicitation } from "./elicit.ts";
 import { exposureKeys, flagsOf, reachesModel } from "./exposure.ts";
 import {
@@ -63,6 +63,8 @@ import {
   streamFailure,
 } from "./result.ts";
 import type { McpQuestionsService } from "./questions.ts";
+import type { McpSignInsService } from "./sign-in.ts";
+import { signInTool } from "./sign-in-tool.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
@@ -107,6 +109,8 @@ export const McpBuildServer = Schema.Struct({
   tools: Schema.Record(Schema.String, Schema.Json).pipe(Schema.Array, Schema.optionalKey),
   instructions: Schema.optionalKey(Schema.String),
   resources: Schema.optionalKey(Schema.Boolean),
+  /** Whether the entry can need an owner's sign-in (`signsIn`): `mcp_sign_in_ask` is registered when one can. */
+  signIn: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpBuildServer = typeof McpBuildServer.Type;
@@ -191,6 +195,14 @@ export type McpToolOptions = {
    * without them, every question a server asks is cancelled.
    */
   readonly questions?: McpQuestionsService;
+  /**
+   * The Session's Sign-in requests, and the Environment they are for: with both, the build registers `mcp_sign_in_ask` when
+   * its set has a server that can need a sign-in (`docs/architecture/mcp-sign-in.md` → Sign-in requests).
+   */
+  readonly signIns?: McpSignInsService | undefined;
+  readonly environment?: string | undefined;
+  /** How long a signed-in server is waited for to connect, `MCP_SIGN_IN_CONNECT_WAIT_MS` unless a test shortens it. */
+  readonly connectWaitMs?: number | undefined;
   /** The extension's system prompt sections: the `mcp_servers` section (`./servers.ts`). */
   readonly sections?: ReadonlyArray<PromptSection>;
 };
@@ -254,6 +266,21 @@ const workspaceOfCall = async (
     );
   } catch {
     return fallback;
+  }
+};
+
+/** Whether the calling conversation is a subagent's: it reports a needed sign-in to its parent, since only the root asks. */
+const isSubagentCall = async (
+  api: Parameters<ToolRegistration["execute"]>[1],
+  context: Parameters<ToolRegistration["execute"]>[2],
+): Promise<boolean> => {
+  try {
+    const state = await api.snapshot(SubagentsDoc, context);
+    const agent = state === undefined ? undefined : agentOf(state, api.conversationId);
+
+    return agent !== undefined && agent !== "root";
+  } catch {
+    return false;
   }
 };
 
@@ -365,7 +392,9 @@ const toolFor = (
           return hostLostResult(base);
         }
 
-        if (!Predicate.isTagged(result, "Completed")) return failureResult(result, base);
+        if (!Predicate.isTagged(result, "Completed")) {
+          return failureResult(result, base, { subagent: await isSubagentCall(api, context) });
+        }
 
         // A script's call gets its value whole and no spill.
         const call: McpResultContext = (await isNested(api, context))
@@ -456,9 +485,11 @@ export const mcpExtension = (
     });
   });
 
+  const asking = signInTool(build.servers, client, options);
+
   return defineExtension({
     name: extensionName,
-    tools,
+    tools: asking === undefined ? tools : [...tools, asking],
     sections: options.sections ?? [],
   });
 };

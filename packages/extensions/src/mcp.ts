@@ -55,11 +55,25 @@ import {
   mcpListing,
   mcpServersSectionOf,
 } from "./mcp/servers.ts";
+import { signsIn } from "./mcp/sign-in-tool.ts";
 import { McpBuildServer, mcpExtension, mcpNamespaces, type McpToolOptions } from "./mcp/tools.ts";
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 
 export { mayBeDirect } from "./mcp/exposure.ts";
+
+export {
+  createMcpSignIns,
+  MCP_SIGN_IN_TOOL,
+  McpSignIns,
+  McpSignInsError,
+  type McpSignInAsk,
+  type McpSignInOutcome,
+  type McpSignInsOptions,
+  type McpSignInsRegistry,
+  type McpSignInsService,
+  type McpSignInStorage,
+} from "./mcp/sign-in.ts";
 
 export {
   createMcpQuestions,
@@ -482,7 +496,11 @@ export const makeMcpTools = (
     const next = projected({
       version: inventory.version,
       features,
-      servers: inventory.servers,
+      // Whether each entry can need a sign-in is read here, from the entry, which the kept build never holds.
+      servers: Arr.map(inventory.servers, (server) => ({
+        ...server,
+        signIn: signsIn(server.server),
+      })),
       origin,
     });
 
@@ -509,13 +527,18 @@ export const makeMcpTools = (
       yield* readInventory(input);
 
       // A question a server waits on for a call is withdrawn when the server is switched off, hidden or removed.
-      const { questions } = options;
-
-      if (questions === undefined) return;
+      const { questions, signIns } = options;
 
       for (const name of unreachable(before, latest)) {
-        yield* questions.withdrawServer(name, `${name} was switched off, hidden or removed`);
+        const why = `${name} was switched off, hidden or removed`;
+
+        if (questions !== undefined) yield* questions.withdrawServer(name, why);
+
+        if (signIns !== undefined) yield* signIns.withdrawServer(name, why);
       }
+
+      // A completion that was never carried here (an older deploy, a host's `working` report) is caught up now.
+      if (signIns !== undefined) yield* signIns.recheck;
     },
   );
 

@@ -23,6 +23,7 @@ import type { McpDetails } from "./details.ts";
 import {
   describeError,
   type Ended,
+  signInEnd,
   type StreamFailure,
   streamEnd,
   unreadableMessage,
@@ -219,6 +220,8 @@ const endedWith = (ended: Ended, details: McpDetails): ToolExecutionResult<JsonV
 
   if (ended.error !== undefined) kept.error = ended.error;
 
+  if (ended.signIn !== undefined) kept.sign_in = ended.signIn;
+
   return failedWith(ended.message, kept);
 };
 
@@ -226,9 +229,14 @@ const endedWith = (ended: Ended, details: McpDetails): ToolExecutionResult<JsonV
 export const failureResult = (
   result: Exclude<McpHostRequestResult, McpHostCompleted>,
   details: McpDetails,
+  options: { readonly subagent?: boolean } = {},
 ): ToolExecutionResult<JsonValue> =>
   Predicate.isTagged(result, "CallFailed")
-    ? endedWith(describeError(result.error), details)
+    ? endedWith(
+        signInEnd(result.error, details.server, options.subagent === true) ??
+          describeError(result.error),
+        details,
+      )
     : isTaskAnswer(result)
       ? // The host answers with a task only to a call that asked for one (`ctx.allowTask`), which a tool call does not
         // yet; the Session-side tools that follow tasks come with their own ticket.
