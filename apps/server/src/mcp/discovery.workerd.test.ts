@@ -206,6 +206,64 @@ describe("discovery at the first request", () => {
   });
 });
 
+describe("servers with demand: false", () => {
+  it("answers what the host holds and starts no discovery, where a plain read starts the due one", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("linear")));
+    await host.scriptEngine(urlOf("linear"), [found(["search"])]);
+
+    const held = await host.servers({ parts: ["tools"], demand: false, waitMs: 5000 });
+
+    await pause();
+
+    expect(held.servers.map(({ name, state }) => [name, state])).toEqual([
+      ["linear", "not_discovered"],
+    ]);
+    expect(await calls(host)).toBe(0);
+
+    // The same read as a demand discovers it.
+    await host.servers({ parts: [] });
+    await vi.waitFor(async () => expect(await calls(host)).toBe(1));
+    await settled(host);
+
+    expect((await host.servers({ parts: [], demand: false })).servers[0]?.state).toBe("connected");
+  });
+
+  it("returns a stale `connecting` status to the state before it, and still starts no discovery", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("lost")));
+    await host.scriptEngine(urlOf("lost"), [found(["search"])]);
+
+    // What an instance that died mid-discovery left, with no backoff to hold a discovery back.
+    await runInDurableObject(host, (_: TestMcpHost, state) => {
+      openMcpHostStore(state.storage).putStatus({
+        conn: "conn-lost",
+        state: "connecting",
+        since: Date.now(),
+        failures: 0,
+        previousState: "connected",
+      });
+    });
+
+    const states = async () =>
+      (await host.servers({ parts: [], demand: false })).servers.map(({ state }) => state);
+
+    // Within 120 s, another instance may still be discovering it.
+    expect(await states()).toEqual(["connecting"]);
+
+    await host.advance(121_000);
+
+    // Back to `connected`, where a demand would now discover (nothing holds it back): this read does not.
+    expect(await states()).toEqual(["connected"]);
+
+    await pause();
+
+    expect(await calls(host)).toBe(0);
+  });
+});
+
 describe("single-flight and slots", () => {
   it("discovers a `conn` once, however many reads ask while it runs", async () => {
     const host = freshHost();

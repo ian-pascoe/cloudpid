@@ -26,9 +26,11 @@ import {
 import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
 import {
   HostFailed,
+  type McpApplyResult,
   type McpHostRequestResult,
   type McpRequestStartResult,
   type McpServersResult,
+  readMcpApplyResult,
   readMcpHostRequestResult,
   readMcpRequestStartResult,
   readMcpServersResult,
@@ -47,6 +49,7 @@ import type { SessionSettingsValues } from "./settings.ts";
 export type McpHostAnswers = {
   readonly requestStart: typeof McpRequestStartResult.Encoded;
   readonly servers: typeof McpServersResult.Encoded;
+  readonly apply: typeof McpApplyResult.Encoded;
   readonly request: typeof McpHostRequestResult.Encoded;
 };
 
@@ -79,6 +82,11 @@ export const mcpHostClient = <E>(host: () => McpHostStub<E>): McpHostClientServi
     Effect.suspend(() => host().servers(input)).pipe(
       Effect.map(readMcpServersResult),
       Effect.catchCause(failed("servers")),
+    ),
+  apply: (input) =>
+    Effect.suspend(() => host().apply(input)).pipe(
+      Effect.map(readMcpApplyResult),
+      Effect.catchCause(failed("apply")),
     ),
   request: (input, hooks) =>
     Effect.suspend(() => host().request(input, hooks)).pipe(

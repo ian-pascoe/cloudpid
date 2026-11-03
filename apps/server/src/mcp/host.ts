@@ -617,14 +617,15 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
 /**
  * `servers`: the inventory per server, with the parts asked for. HTTP servers due a discovery start it, and it waits up
  * to `waitMs` (at most 10 s, none by default) for those being discovered. It never starts a Container: only a live
- * caller's `requestStart` and `request` do.
+ * caller's `requestStart` and `request` do. With `demand: false` it starts no discovery at all and answers what the host
+ * holds (a `connecting` status that died with its instance is still put back).
  */
 export const servers = (
   environment: string | undefined,
   request: McpServersRequest,
 ): Effect.Effect<McpServersResult, never, McpHostServices> =>
   Effect.gen(function* () {
-    yield* onDemand(environment, "demand");
+    yield* request.demand === false ? reviveStale : onDemand(environment, "demand");
 
     const named = (view: ServerView) =>
       request.names === undefined || request.names.includes(view.server.name);

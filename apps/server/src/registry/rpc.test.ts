@@ -1380,6 +1380,8 @@ const fakeRegistries = () => {
           ? [{ repo: "app", path: ".pi/mcp.json", state: "read", blob: "b1" }]
           : null;
       }),
+    mcpSettingsView: () => Effect.die("The endpoint answers no settings_mcp tool"),
+    mcpSettingsReload: () => Effect.die("The endpoint answers no settings_mcp tool"),
     mcpPending: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpPushed: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpDestroyed: () => Effect.die("The endpoint pushes through `mcp`"),

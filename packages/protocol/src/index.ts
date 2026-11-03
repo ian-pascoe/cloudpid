@@ -41,6 +41,8 @@ export * from "./review.ts";
 
 export * from "./session.ts";
 
+export * from "./settings-mcp.ts";
+
 export * from "./skills.ts";
 
 export * from "./transcript.ts";

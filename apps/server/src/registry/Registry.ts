@@ -27,6 +27,8 @@ import type {
   PushSubscription,
   SessionOrigin,
   SessionsQuery,
+  SettingsMcpReload,
+  SettingsMcpView,
   SkillChangeFiles,
   SkillFile,
 } from "@cloudpid/protocol";
@@ -67,6 +69,7 @@ import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { buildMovedRepos, MCP_FIRST_LOOK_WAIT, mcpRepoFileViews } from "./mcp-repo-files.ts";
 import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
+import { mcpReloadReport, mcpReloadSnapshot, mcpSettingsView } from "./mcp-settings-view.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
   previewSkillUpdates,
@@ -896,6 +899,25 @@ export type RegistryMethods = {
   readonly mcpServerNames: (input: {
     readonly environment: string;
   }) => Effect.Effect<ReadonlyArray<string> | null>;
+  /**
+   * The MCP servers of a Scope for the agent's `settings_mcp_list` and `settings_mcp_get`
+   * (`docs/architecture/mcp-configuration.md` → Lists): `environment`'s whole set, or Global's own entries when `environment`
+   * is absent; with `name`, only that server and its layers as written. Null when no Environment has the id. Read-only: it asks
+   * GitHub and the host for nothing, and holds no value, hash or file text. For the Session DO only.
+   */
+  readonly mcpSettingsView: (input: {
+    readonly environment?: string | undefined;
+    readonly name?: string | undefined;
+  }) => Effect.Effect<SettingsMcpView | null>;
+  /**
+   * The agent's `settings_mcp_reload`: look at each of `environment`'s Repos' `.pi/mcp.json` again, under the throttle the
+   * scheduled looks share (`agent`: a Repo looked at in the last 30 s is `recent`), keeping the last good copy of a Repo that
+   * cannot be read, and report what each Repo came to and what the set gained, lost and changed. Null when no Environment has
+   * the id. The Registry never calls out, so the caller pushes the set after (`mcpPending`). For the Session DO only.
+   */
+  readonly mcpSettingsReload: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<SettingsMcpReload | null>;
   /**
    * What the main Worker is to do: the MCP server sets to push (`environment`'s, every Environment's when undefined)
    * when its hash differs from what its host was last handed, an empty set only after a non-empty one, each with a new
@@ -1893,6 +1915,23 @@ export const RegistryLive = Registry.make(
             }),
           mcpServerNames: ({ environment }) =>
             Effect.sync(() => mcpServerNamesOf(store, environment)),
+          mcpSettingsView: ({ environment, name }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => mcpSettingsView(store, mcpSignIns, { environment, name }, now)),
+            ),
+          mcpSettingsReload: ({ environment }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              const before = mcpReloadSnapshot(store, environment, now);
+
+              if (before === null) return null;
+
+              yield* Effect.promise(() => mcpLooks.look({ environment, reason: "agent", now }));
+
+              const after = mcpReloadSnapshot(store, environment, now);
+
+              return after === null ? null : mcpReloadReport(environment, before, after);
+            }),
           mcpPending: ({ environment }) =>
             checkHanded.pipe(
               Effect.andThen(Clock.currentTimeMillis),

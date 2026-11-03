@@ -130,7 +130,13 @@ export type McpRepoLookReason =
   /** `addRepo`: a Repo just added, looked at at once (there is no look of it to be recent). */
   | "added"
   /** The owner's Reload: at once, and a Repo that cannot be read loses its last good copy. */
-  | "reload";
+  | "reload"
+  /**
+   * The agent's `settings_mcp_reload`: held to the same 30 s throttle as a Build's look (the spec shares one throttle
+   * between the scheduled looks and the agent's reload, `mcp-configuration.md` → A Repo's `.pi/mcp.json`), and a Repo that
+   * cannot be read keeps its last good copy: only the owner's Reload drops it.
+   */
+  | "agent";
 
 /** The looks at an Environment's Repos' files. */
 export type McpRepoLooks = {

@@ -70,6 +70,8 @@ type FakeStart = {
   readonly environments?: Readonly<Record<string, FakeEnvironment>>;
   /** The Session's own Environment. */
   readonly own?: string | null;
+  /** How many MCP servers each Scope has, by scope ("*" for Global); not said for one that is left out. */
+  readonly mcpServers?: Readonly<Record<string, number>>;
 };
 
 /**
@@ -85,6 +87,7 @@ const fakeSettings = (
       "env-a": { name: "A", overrides: {} },
     },
     own = "default",
+    mcpServers,
   }: FakeStart = {},
 ) => {
   let overrides = initial;
@@ -168,6 +171,7 @@ const fakeSettings = (
             overrides: overridesFrom(resolved()),
             overriddenIn,
             problem,
+            mcpServers: mcpServers?.[GLOBAL_SETTINGS_SCOPE],
           });
         }
 
@@ -185,6 +189,7 @@ const fakeSettings = (
           global: lenient.global,
           problem: environment.problem,
           instructions: environment.instructions ?? "",
+          mcpServers: mcpServers?.[scope],
         });
       }),
     own: Effect.succeed(own),
@@ -406,6 +411,28 @@ describe("settings_get", () => {
     expect(shown).toContain("settings_reset");
     // The Session's own Environment, whose Settings it runs with.
     expect(shown).toContain('its own Environment (id default): settings_get with scope "default"');
+  });
+
+  it("says how many MCP servers the Scope has, and where settings_mcp_list shows them (docs/architecture/mcp-configuration.md → The agent's changes)", async () => {
+    const tool = await toolsOver(fakeSettings({}, { mcpServers: { "*": 2, "env-a": 5 } }).service);
+
+    const global = await run(tool("settings_get"), { scope: "*" });
+    const environment = await run(tool("settings_get"), { scope: "env-a" });
+
+    expect(text(global)).toContain("MCP servers: 2 at this Scope; settings_mcp_list shows them");
+    expect(text(environment)).toContain(
+      "MCP servers: 5 at this Scope; settings_mcp_list shows them",
+    );
+    expect(global.structuredOutput).toMatchObject({ mcp_servers: 2 });
+    expect(environment.structuredOutput).toMatchObject({ mcp_servers: 5 });
+  });
+
+  it("says when the Registry did not give the count", async () => {
+    const tool = await toolsOver(fakeSettings().service);
+    const result = await run(tool("settings_get"), { scope: "*" });
+
+    expect(text(result)).toContain("MCP servers: the count is unavailable now");
+    expect(result.structuredOutput).toMatchObject({ mcp_servers: null });
   });
 
   it("names at Global the Environments that override each field", async () => {
@@ -1007,6 +1034,28 @@ describe("settings_branch_summary_set", () => {
 });
 
 describe("settings_extension_set", () => {
+  it("refuses the mcp extension at either Scope and points at the settings_mcp tools", async () => {
+    const settings = fakeSettings();
+    const tool = await toolsOver(settings.service);
+
+    for (const scope of ["*", "env-a"]) {
+      const message = await failure(
+        run(tool("settings_extension_set"), {
+          scope,
+          extension: "mcp",
+          key: "anything",
+          value: true,
+          reason: "r",
+        }),
+      );
+
+      expect(message).toContain("settings_mcp");
+    }
+
+    expect(settings.calls).toEqual([]);
+    expect(settings.overrides()).toEqual({});
+  });
+
   it("sets one option of one extension, and takes it away with null", async () => {
     const settings = fakeSettings();
     const tool = await toolsOver(settings.service);

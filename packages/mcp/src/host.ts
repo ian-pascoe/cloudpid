@@ -419,13 +419,16 @@ export const readMcpRequestStartResult: (
 /**
  * `servers`' arguments (`docs/architecture/mcp-connections.md` → RPC): the servers by name (every one when absent),
  * the parts to add (a part this build does not know is left out), how long to wait for one being discovered, and the
- * caller's Workspace. It never starts a Container.
+ * caller's Workspace. It never starts a Container. `demand: false` is a read of what the host holds: no discovery
+ * starts (the `settings_mcp_*` reads, which connect to nothing). A host from before the field ignores it and treats the
+ * read as a demand.
  */
 export const McpServersRequest = Schema.Struct({
   names: Schema.String.pipe(Schema.Array, Schema.optionalKey),
   parts: Schema.Array(Schema.String),
   waitMs: Schema.optionalKey(Schema.Finite),
   workspace: Schema.optionalKey(Schema.String),
+  demand: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpServersRequest = typeof McpServersRequest.Type;
