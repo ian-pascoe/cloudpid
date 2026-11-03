@@ -1,7 +1,7 @@
 // The draft composer's state: what is typed and chosen, the last Environment chosen on this device, sending the draft,
 // and the first message waiting for its Session to take it.
 
-import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE, type Refusal } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
@@ -23,7 +23,7 @@ import { changing, RegistryClient } from "./registry.ts";
 import { isDraftPath, pathAtom, sessionPath } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { sessionClientAtom } from "./session/atoms.ts";
-import type { Refusal, SessionCommandError } from "./session/client.ts";
+import type { SessionCommandError } from "./session/client.ts";
 import type { OutgoingMessage } from "./session/state.ts";
 import { draftPromptAtoms, type PromptChip, withPrompt } from "./chat/mcp-prompt-state.ts";
 

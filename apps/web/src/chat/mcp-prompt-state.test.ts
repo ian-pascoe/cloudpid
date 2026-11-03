@@ -16,6 +16,7 @@ import {
   refusalOfCause,
   refusalOutcome,
   restoredChip,
+  sendGate,
   startingValues,
   withPrompt,
 } from "./mcp-prompt-state.ts";
@@ -189,6 +190,68 @@ describe("what holds a message back while an MCP prompt is in the composer", () 
     expect(
       promptWaitingFor({ form: null, chip: null, standing: null, reviewing: true }),
     ).toBeNull();
+  });
+});
+
+describe("what a send does about an MCP prompt in the composer", () => {
+  const ready = { kind: "ready", prompt: REVIEW } as const;
+
+  it("goes ahead for no chip, or one that can be sent", () => {
+    expect(sendGate({ form: null, chip: null, standing: null, reviewing: false })).toEqual({
+      send: true,
+    });
+    expect(
+      sendGate({ form: null, chip: chip({ pr: "1" }), standing: ready, reviewing: false }),
+    ).toEqual({ send: true });
+  });
+
+  it("is held back, with the reason, while the form is open or the prompt cannot go with a Review", () => {
+    expect(
+      sendGate({
+        form: { prompt: REVIEW, values: {} },
+        chip: null,
+        standing: null,
+        reviewing: false,
+      }),
+    ).toMatchObject({ send: false, note: expect.stringMatching(/Fill in/) });
+    expect(
+      sendGate({ form: null, chip: chip({ pr: "1" }), standing: ready, reviewing: true }),
+    ).toEqual({ send: false, note: expect.stringMatching(/Review/) });
+  });
+
+  it("is held back for a prompt the catalog dropped, with no form to open", () => {
+    expect(
+      sendGate({
+        form: null,
+        chip: chip({ pr: "1" }),
+        standing: { kind: "gone", message: "docs no longer offers Review PR" },
+        reviewing: false,
+      }),
+    ).toEqual({ send: false, note: "docs no longer offers Review PR" });
+  });
+
+  it("opens the form, with what is missing above it, for arguments the catalog now needs", () => {
+    const prompt = {
+      ...REVIEW,
+      arguments: [...REVIEW.arguments, { name: "branch", required: true }],
+    };
+
+    expect(
+      sendGate({
+        form: null,
+        chip: chip({ pr: "1" }),
+        standing: { kind: "arguments", message: "The argument branch is required", prompt },
+        reviewing: false,
+      }),
+    ).toEqual({
+      send: false,
+      note: "The argument branch is required",
+      form: {
+        prompt,
+        values: { pr: "1", focus: "", branch: "" },
+        problem: "The argument branch is required",
+      },
+    });
   });
 });
 

@@ -27,6 +27,7 @@ import {
   OwnerTabLinks,
   OwnerTabListing,
   type McpPromptRef,
+  Refusal,
   type PageRef,
   reduceEvents,
   withEarlier,
@@ -92,19 +93,14 @@ const PROBE_AFTER_ATTEMPTS = 2;
 /** Why a request cannot be answered while the socket is down. */
 const NOT_CONNECTED = "The session is not connected; try again once it is.";
 
-/** The code a Session's refusal of an MCP prompt send carries (`error.code`), and the server it names (`error.server`). */
-export const Refusal = Schema.Struct({
-  code: Schema.optionalKey(Schema.String),
-  server: Schema.optionalKey(Schema.String),
-});
-
-export type Refusal = typeof Refusal.Type;
-
-/** The `code` and `server` of `source`, if it has either: a refusal's, whatever else it carries. */
-const refusalOf = (source: {
+/** What an `error` message from the Session carries of a refusal: its `code` and `server`, whatever else it has. */
+export interface RefusalSource {
   readonly code?: string | undefined;
   readonly server?: string | undefined;
-}): Refusal | undefined => {
+}
+
+/** The `code` and `server` of `source`, if it has either: a refusal's, whatever else it carries. */
+const refusalOf = (source: RefusalSource): Refusal | undefined => {
   const refusal: Types.Mutable<Refusal> = {};
 
   if (source.code !== undefined) refusal.code = source.code;
@@ -777,11 +773,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     update({}, conversationId);
   };
 
-  const settle = (
-    submit: PendingSubmit,
-    failure: string | null,
-    source?: { readonly code?: string | undefined; readonly server?: string | undefined },
-  ): void => {
+  const settle = (submit: PendingSubmit, failure: string | null, source?: RefusalSource): void => {
     if (submit.outcome === undefined) return;
 
     if (failure === null) {
@@ -809,7 +801,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     commandId: string,
     submissionId: string | undefined,
     failure: string | null = null,
-    source?: { readonly code?: string | undefined; readonly server?: string | undefined },
+    source?: RefusalSource,
   ): void => {
     const index = pending.findIndex((submit) => submit.commandId === commandId);
     const submit = pending[index];

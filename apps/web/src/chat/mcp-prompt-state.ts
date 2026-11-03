@@ -15,13 +15,13 @@ import {
   type McpPromptRef,
   promptArguments,
   promptArgumentsProblem,
+  Refusal,
 } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Atom from "effect/reactivity/Atom";
 import type * as Types from "effect/Types";
-import { Refusal } from "../session/client.ts";
 import type { OutgoingMessage } from "../session/state.ts";
 import type { ConversationKey } from "./conversation.ts";
 
@@ -222,6 +222,49 @@ export const promptWaitingFor = (held: {
   if (held.reviewing) return "An MCP prompt cannot go with a Review: remove one of them.";
 
   return held.standing === null || held.standing.kind === "ready" ? null : held.standing.message;
+};
+
+/** What a send does about an MCP prompt in the composer: it goes ahead, or it is held back and says why. */
+export type SendGate =
+  | { readonly send: true }
+  | {
+      readonly send: false;
+      /** What the note says (`promptWaitingFor`). */
+      readonly note: string;
+      /** The form to open, when the chip's arguments are incomplete for what the catalog now declares: the send fixes them. */
+      readonly form?: PromptForm;
+    };
+
+/**
+ * What every way of sending does first (Send, Enter, Queue, the steer shortcut, Retry): `held` says whether the prompt
+ * holds the message back and, if it does, what to tell the owner. A chip whose arguments the catalog now wants more of
+ * opens its form, with what is missing above the fields, instead of only saying so.
+ */
+export const sendGate = (held: {
+  readonly form: PromptForm | null;
+  readonly chip: PromptChip | null;
+  readonly standing: ChipStanding | null;
+  readonly reviewing: boolean;
+}): SendGate => {
+  const note = promptWaitingFor(held);
+
+  if (note === null) return { send: true };
+
+  const { chip, standing } = held;
+
+  if (held.form === null && chip !== null && standing?.kind === "arguments" && !held.reviewing) {
+    return {
+      send: false,
+      note,
+      form: {
+        prompt: standing.prompt,
+        values: startingValues(standing.prompt, chip.values),
+        problem: standing.message,
+      },
+    };
+  }
+
+  return { send: false, note };
 };
 
 /** What a refused send does to the composer. */

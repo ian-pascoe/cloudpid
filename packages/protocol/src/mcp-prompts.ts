@@ -166,6 +166,17 @@ const isErrorCode = Schema.is(Schema.Literals(MCP_PROMPT_ERROR_CODES));
 export const mcpPromptErrorCode = (code: string | undefined): McpPromptErrorCode | undefined =>
   code !== undefined && isErrorCode(code) ? code : undefined;
 
+/**
+ * What a refusal of a send that names an MCP prompt carries besides its message: the `code` (`mcpPromptErrorCode` reads
+ * it) and the `server` it names, which a client keeps whole so a code a newer Session adds still reaches it.
+ */
+export const Refusal = Schema.Struct({
+  code: Schema.optionalKey(Schema.String),
+  server: Schema.optionalKey(Schema.String),
+});
+
+export type Refusal = typeof Refusal.Type;
+
 /** The refusal of a typed `/mcp__…` that was not picked from the menu. */
 export const MCP_PROMPT_NOT_PICKED_MESSAGE =
   "An MCP prompt is picked from the / menu; it cannot be typed";

@@ -76,6 +76,7 @@ import {
   promptTitle,
   refusalOfCause,
   refusalOutcome,
+  sendGate,
   startingValues,
 } from "./mcp-prompt-state.ts";
 import { ComposerNote } from "./composer-note.tsx";
@@ -400,9 +401,13 @@ const ComposerBox = ({
    * it is): then it says why and nothing is sent, whichever way the owner tried to send.
    */
   const refusedForPrompt = (): boolean => {
-    if (promptWaiting === null) return false;
+    const gate = sendGate({ form, chip, standing, reviewing });
 
-    setNote({ tone: "info", text: promptWaiting });
+    if (gate.send) return false;
+
+    setNote({ tone: "info", text: gate.note });
+
+    if (gate.form !== undefined) setForm(gate.form);
 
     return true;
   };

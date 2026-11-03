@@ -501,6 +501,42 @@ describe("one composer's state", () => {
   );
 
   it.effect(
+    "opens the form again, and asks the catalog again, for a refused first message whose arguments the Session refused",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest } = chatRegistry();
+        const composer = composerOf();
+        const { state } = composer;
+        const prompt = { ...REVIEW_PROMPT, arguments: [{ name: "pr", required: true }] };
+
+        registry.mount(sessionStatusAtom("s1"));
+        registry.mount(state.chip);
+        registry.mount(state.form);
+        registry.mount(state.note);
+        registry.mount(state.effects);
+        yield* settle;
+        yield* live(latest());
+        registry.set(refusedFirstMessagesAtom, {
+          s1: {
+            text: "focus on tests",
+            reason: "The argument pr is required",
+            chip: { prompt, values: { pr: "7" } },
+            refusal: { code: "MCP_PROMPT_ARGUMENTS", server: "docs" },
+          },
+        });
+        yield* settle;
+
+        expect(registry.get(state.chip)).toEqual({ prompt, values: { pr: "7" } });
+        expect(registry.get(state.form)).toEqual({
+          prompt,
+          values: { pr: "7" },
+          problem: "The argument pr is required",
+        });
+        expect(sent(latest(), "catalog")).toHaveLength(1);
+      }),
+  );
+
+  it.effect(
     "holds the chip of the MCP prompt a Branch or a Fork gave back, and asks the catalog whether it is still offered",
     () =>
       Effect.gen(function* () {

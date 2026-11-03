@@ -13,6 +13,7 @@ import {
   type PageRef,
   type StoredAttachment,
   type WhenBusy,
+  Refusal,
 } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -34,7 +35,7 @@ import { replying } from "../calls.ts";
 import { reviewLaneText } from "../review/drafts.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
-import { Refusal, type SessionCommandError } from "../session/client.ts";
+import type { SessionCommandError } from "../session/client.ts";
 import {
   formatSize,
   isPictureType,

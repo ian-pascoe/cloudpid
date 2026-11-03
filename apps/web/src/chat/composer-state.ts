@@ -24,6 +24,7 @@ import {
   type RefusalOutcome,
   refusalOutcome,
   restoredChip,
+  startingValues,
 } from "./mcp-prompt-state.ts";
 import { composerPrefillAtom, promptPrefillAtom } from "./tree-state.ts";
 
@@ -303,6 +304,7 @@ export const composerState = (source: ComposerSource): ComposerState => {
 
     get.mount(search);
     get.mount(askCatalog);
+    get.mount(source.lookups.refreshCatalog);
     get.mount(fileQuery);
     get.mount(listsCatalog);
     get.subscribe(fileQuery, (query) => {
@@ -337,8 +339,22 @@ export const composerState = (source: ComposerSource): ComposerState => {
           // The prompt the message was sent with comes back as its chip, to be sent again, and its refusal says what to do.
           if (message.chip === undefined) get.set(note, { tone: "error", text: message.reason });
           else {
-            get.set(source.prompt.chip, message.chip);
-            get.set(note, refusalNote(refusalOutcome(message.reason, message.refusal)));
+            const outcome = refusalOutcome(message.reason, message.refusal);
+            const { chip } = message;
+
+            get.set(source.prompt.chip, chip);
+            get.set(note, refusalNote(outcome));
+
+            // As for a refused send from here: the form opens again for arguments, and the catalog is asked for again.
+            if (outcome.reopenForm) {
+              get.set(source.prompt.form, {
+                prompt: chip.prompt,
+                values: startingValues(chip.prompt, chip.values),
+                problem: outcome.message,
+              });
+            }
+
+            if (outcome.refreshCatalog) get.set(source.lookups.refreshCatalog, undefined);
           }
 
           if (message.files !== undefined && message.files.length > 0) {
