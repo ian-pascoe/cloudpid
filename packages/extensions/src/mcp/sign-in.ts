@@ -59,8 +59,7 @@ export type McpSignInAsk = {
 
 /** How a request ended. `signed_in` is a sign-in that completed; the rest end with nothing signed in. */
 export type McpSignInOutcome =
-  /** `stepUp`: the request was for more access, which the server may still want. */
-  | { readonly kind: "signed_in"; readonly stepUp: boolean }
+  | { readonly kind: "signed_in" }
   | { readonly kind: "declined"; readonly reason?: string }
   | { readonly kind: "withdrawn"; readonly reason: string }
   | { readonly kind: "not_applicable"; readonly reason: string }
@@ -113,6 +112,11 @@ export type McpSignInsService = {
   ) => Effect.Effect<void, McpSignInsError>;
   /** A sign-in was completed (the main Worker carries it here): end each of these requests that is open as `signed_in`. */
   readonly resolve: (requests: ReadonlyArray<string>) => Effect.Effect<number>;
+  /**
+   * A completed sign-in attempt failed (the main Worker carries it here): show `problem`, the Registry's own words for what
+   * went wrong, on each of these requests that is open, which stay open. Returns how many it changed.
+   */
+  readonly failed: (requests: ReadonlyArray<string>, problem: string) => Effect.Effect<number>;
   /** Server `server` was removed, switched off or hidden: end every request for it as `withdrawn`. */
   readonly withdrawServer: (server: string, reason: string) => Effect.Effect<void>;
   /**
@@ -140,7 +144,7 @@ type Held = {
 const immediate = (answer: McpSignInKnownAskAnswer): McpSignInOutcome | undefined => {
   switch (answer.status) {
     case "signed_in":
-      return { kind: "signed_in", stepUp: false };
+      return { kind: "signed_in" };
     case "not_applicable":
       return { kind: "not_applicable", reason: answer.reason };
     case "step_up_failed":
@@ -182,10 +186,7 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
 
       if (target === undefined) return false;
 
-      const outcome: McpSignInOutcome =
-        ended.kind === "signed_in"
-          ? { kind: "signed_in", stepUp: target.request.why === "step_up" }
-          : ended;
+      const outcome = ended;
 
       // A request with no call left has nobody to tell: it ends here.
       keep(
@@ -203,6 +204,33 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
       return true;
     });
 
+  /** Show `problem` (none clears it) on each of the open requests `ids`, telling the clients when one changed. */
+  const showProblem = (ids: ReadonlyArray<string>, problem: string | undefined) =>
+    Effect.gen(function* () {
+      const shown =
+        problem === undefined ? undefined : (yield* options.redact({ problem })).problem;
+
+      let changed = 0;
+
+      keep(
+        Arr.map(held(), (each) => {
+          if (!Arr.contains(ids, each.request.id) || each.outcome !== undefined) return each;
+
+          if (each.request.problem === shown) return each;
+
+          changed += 1;
+
+          const { problem: _before, ...rest } = each.request;
+
+          return { ...each, request: shown === undefined ? rest : { ...rest, problem: shown } };
+        }),
+      );
+
+      if (changed > 0) yield* tell;
+
+      return changed;
+    });
+
   /** Ask the Registry about request `id` again, ending it when the sign-in stands or does not apply now. */
   const recheckOne = (each: Held) =>
     registry
@@ -215,10 +243,25 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
         Effect.flatMap((answer) => {
           const ended = immediate(answer);
 
-          return ended === undefined ? Effect.void : Effect.asVoid(finish(each.request.id, ended));
+          if (ended !== undefined) return Effect.asVoid(finish(each.request.id, ended));
+
+          // Still open: the Registry's word on the sign-in now (its last failure, when it has one) is what the card shows.
+          return answer.status === "open" && answer.problem !== undefined
+            ? Effect.asVoid(showProblem([each.request.id], answer.problem))
+            : Effect.void;
         }),
         Effect.catch((error) =>
           Effect.logWarning(`A Sign-in request could not be checked again: ${error.message}`),
+        ),
+      );
+
+  /** Drop request `id`'s waiter at the Registry, logging a failure: the request is over either way. */
+  const dropWaiter = (id: string) =>
+    registry
+      .withdraw(id)
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(`A Sign-in request's waiter could not be dropped: ${error.message}`),
         ),
       );
 
@@ -245,13 +288,7 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
 
       // Stop, or an abandoned call: the request goes, and the Registry's waiter with it.
       yield* tell;
-      yield* registry
-        .withdraw(id)
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(`A Sign-in request's waiter could not be dropped: ${error.message}`),
-          ),
-        );
+      yield* dropWaiter(id);
     });
 
   const nextId = () => {
@@ -393,33 +430,26 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
 
         if (!taken) return yield* McpSignInsError.make({ message: "This request ended" });
 
-        yield* registry
-          .withdraw(id)
-          .pipe(
-            Effect.catch((error) =>
-              Effect.logWarning(
-                `A Sign-in request's waiter could not be dropped: ${error.message}`,
-              ),
-            ),
-          );
+        yield* dropWaiter(id);
       }),
     resolve: (requests) =>
       Effect.gen(function* () {
         let ended = 0;
 
         for (const id of requests) {
-          if (yield* finish(id, { kind: "signed_in", stepUp: false })) ended += 1;
+          if (yield* finish(id, { kind: "signed_in" })) ended += 1;
         }
 
         return ended;
       }),
+    failed: (requests, problem) => showProblem(requests, problem),
     withdrawServer: (server, reason) =>
       Effect.gen(function* () {
         for (const each of open()) {
           if (each.request.server !== server) continue;
 
           if (yield* finish(each.request.id, { kind: "withdrawn", reason })) {
-            yield* registry.withdraw(each.request.id).pipe(Effect.ignore);
+            yield* dropWaiter(each.request.id);
           }
         }
       }),
@@ -431,7 +461,7 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
         keep(Arr.filter(held(), (other) => other.request.id !== each.request.id));
 
         if (each.outcome === undefined) {
-          yield* registry.withdraw(each.request.id).pipe(Effect.ignore);
+          yield* dropWaiter(each.request.id);
         }
       }
 

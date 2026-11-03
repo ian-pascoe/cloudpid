@@ -126,7 +126,7 @@ describe("Sign-in requests", () => {
       expect(told).toEqual([{ server: "sentry", reason: "I need the issue list", key: "key-1" }]);
 
       expect(yield* signIns.resolve(["signin-1"])).toBe(1);
-      expect(yield* Fiber.join(waiting)).toEqual({ kind: "signed_in", stepUp: false });
+      expect(yield* Fiber.join(waiting)).toEqual({ kind: "signed_in" });
       expect(announced.at(-1)).toEqual([]);
       expect(yield* signIns.pending).toEqual([]);
     }));
@@ -162,8 +162,8 @@ describe("Sign-in requests", () => {
 
       yield* signIns.resolve(["signin-1"]);
 
-      expect(yield* Fiber.join(first)).toEqual({ kind: "signed_in", stepUp: false });
-      expect(yield* Fiber.join(second)).toEqual({ kind: "signed_in", stepUp: false });
+      expect(yield* Fiber.join(first)).toEqual({ kind: "signed_in" });
+      expect(yield* Fiber.join(second)).toEqual({ kind: "signed_in" });
     }));
 
   test("are one request per server: another server gets its own", () =>
@@ -204,7 +204,7 @@ describe("Sign-in requests", () => {
       expect(after.script.asked.map((ask) => ask.request)).toEqual(["signin-1"]);
 
       yield* after.signIns.resolve(["signin-1"]);
-      expect(yield* Fiber.join(rerun)).toEqual({ kind: "signed_in", stepUp: false });
+      expect(yield* Fiber.join(rerun)).toEqual({ kind: "signed_in" });
     }));
 
   test("survive an eviction with the sign-in completed meanwhile: the rerun call learns it at once", () =>
@@ -220,7 +220,7 @@ describe("Sign-in requests", () => {
       // The main Worker's call arrives while no call waits: the outcome is kept for the call that reruns.
       expect(yield* after.signIns.resolve(["signin-1"])).toBe(1);
       expect(yield* after.signIns.pending).toEqual([]);
-      expect(yield* after.signIns.ask(ASK)).toEqual({ kind: "signed_in", stepUp: false });
+      expect(yield* after.signIns.ask(ASK)).toEqual({ kind: "signed_in" });
 
       // Taken: nothing is left in storage.
       expect(yield* after.signIns.pending).toEqual([]);
@@ -240,7 +240,7 @@ describe("Sign-in requests", () => {
         registryOf(() => ({ status: "signed_in" })),
       );
 
-      expect(yield* after.signIns.ask(ASK)).toEqual({ kind: "signed_in", stepUp: false });
+      expect(yield* after.signIns.ask(ASK)).toEqual({ kind: "signed_in" });
       expect(yield* after.signIns.pending).toEqual([]);
     }));
 
@@ -261,8 +261,60 @@ describe("Sign-in requests", () => {
       script.state.answer = () => ({ status: "signed_in" });
       yield* signIns.recheck;
 
-      expect(yield* Fiber.join(waiting)).toEqual({ kind: "signed_in", stepUp: false });
+      expect(yield* Fiber.join(waiting)).toEqual({ kind: "signed_in" });
       expect(yield* signIns.pending).toEqual([]);
+    }));
+
+  test("show a failed callback on every open request of the key, and keep them open", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const { signIns, announced } = open(storage);
+      const waiting = yield* Effect.forkChild(signIns.ask(ASK));
+
+      const other = yield* Effect.forkChild(
+        signIns.ask({ ...ASK, callId: "call-2", server: "linear" }),
+      );
+
+      yield* settle;
+
+      expect(yield* signIns.failed(["signin-1"], "The authorization server refused the code")).toBe(
+        1,
+      );
+      expect((yield* signIns.pending).map((request) => request.problem)).toEqual([
+        "The authorization server refused the code",
+        undefined,
+      ]);
+      expect(announced.at(-1)?.[0]?.problem).toBe("The authorization server refused the code");
+
+      // The same words again change nothing, and tell no one.
+      const told = announced.length;
+
+      expect(yield* signIns.failed(["signin-1"], "The authorization server refused the code")).toBe(
+        0,
+      );
+      expect(announced).toHaveLength(told);
+
+      // Still waiting: a failed callback ends nothing, and a later sign-in still ends it.
+      yield* signIns.resolve(["signin-1"]);
+      expect(yield* Fiber.join(waiting)).toEqual({ kind: "signed_in" });
+      yield* Fiber.interrupt(other);
+    }));
+
+  test("take the Registry's last failure at a re-check, and keep what they show when it has none", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const { signIns, script } = open(storage);
+
+      yield* Effect.forkChild(signIns.ask(ASK));
+      yield* settle;
+
+      script.state.answer = () => ({ ...OPEN, problem: "The exchange failed (invalid_grant)" });
+      yield* signIns.recheck;
+      expect((yield* signIns.pending)[0]?.problem).toBe("The exchange failed (invalid_grant)");
+
+      script.state.answer = () => OPEN;
+      yield* signIns.recheck;
+      expect((yield* signIns.pending)[0]?.problem).toBe("The exchange failed (invalid_grant)");
     }));
 
   test("end only their own with a decline, which carries the owner's reason and drops the waiter", () =>
@@ -356,7 +408,7 @@ describe("Sign-in requests", () => {
     }));
 
   it.each([
-    ["a sign-in that stands", { status: "signed_in" }, { kind: "signed_in", stepUp: false }],
+    ["a sign-in that stands", { status: "signed_in" }, { kind: "signed_in" }],
     [
       "a server with no sign-in to give",
       { status: "not_applicable", reason: "It sends its own Authorization header" },

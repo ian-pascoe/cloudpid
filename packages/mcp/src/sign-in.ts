@@ -308,7 +308,7 @@ export const MCP_SIGN_IN_FAILURES = [
  * The answer to `completeMcpSignIn`. `signed_in` names the Environments that use the sign-in and the Sign-in requests it
  * resolved, which whoever carries the answer on tells the Sessions (the Registry never calls out); the hosts of those
  * Environments take the change at their next pull, which the raised revision announces. Any other outcome saved nothing and
- * left the old tokens as they were. `code` is the authorization server's error code, `message` its description or what
+ * left the old tokens as they were; it lists the key's open Sign-in requests (`waiting`), which stay open and show the failure. `code` is the authorization server's error code, `message` its description or what
  * failed, cut to 300 characters. A `status` this build does not know is the last member.
  */
 const KnownCompleteAnswer = Schema.Union([
@@ -324,6 +324,8 @@ const KnownCompleteAnswer = Schema.Union([
     status: Schema.Literals(MCP_SIGN_IN_FAILURES),
     code: Schema.optional(Schema.String),
     message: Schema.optional(Schema.String),
+    /** The Sign-in requests still open for the key, which stay open and show the failure (the Session is told, not the Registry). */
+    waiting: McpResolvedWaiter.pipe(Schema.Array, Schema.optional),
     ...McpSignInRetry.fields,
   }),
 ]);

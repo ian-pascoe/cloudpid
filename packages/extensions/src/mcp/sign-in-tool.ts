@@ -7,6 +7,7 @@
 // owner signs in from the card (`./sign-in.ts` keeps the request, durably).
 import { mcpServerNamespace, signsInOnItsOwn } from "@cloudpid/config";
 import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
+import { MAX_SIGN_IN_REASON } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import type {
@@ -27,9 +28,6 @@ import type { McpBuildServer } from "./tools.ts";
 
 /** How long a sign-in's server is waited for to connect before the answer says it is still connecting, in ms. */
 export const MCP_SIGN_IN_CONNECT_WAIT_MS = 10_000;
-
-/** The longest reason the agent gives, in characters. */
-const MAX_REASON = 300;
 
 /**
  * Whether an entry as the host stores it can need an owner's sign-in: an HTTP server without its own `Authorization`
@@ -58,7 +56,7 @@ const PARAMETERS = {
     },
     reason: {
       type: "string",
-      maxLength: MAX_REASON,
+      maxLength: MAX_SIGN_IN_REASON,
       description: "Why you need it, in a sentence: the owner reads this on the sign-in card.",
     },
   },
@@ -76,7 +74,10 @@ const DESCRIPTION = Arr.join(
   " ",
 );
 
-/** The server `name` names among `servers` that can need a sign-in: its name, or its `mcp__` namespace. */
+/**
+ * The enabled server `name` names among `servers`: its name, or its `mcp__` namespace. One that cannot need a sign-in is
+ * found too: the Registry answers it `not_applicable`, which is a result and not an error.
+ */
 const serverNamed = (servers: ReadonlyArray<McpBuildServer>, name: string) => {
   const wanted = name.trim();
 
@@ -84,7 +85,6 @@ const serverNamed = (servers: ReadonlyArray<McpBuildServer>, name: string) => {
     servers,
     (server) =>
       server.state !== "disabled" &&
-      server.signIn === true &&
       (server.name === wanted || mcpServerNamespace(server.name) === wanted),
   );
 };
@@ -146,10 +146,11 @@ const answerOf = (
         `${server} still wants more access than the owner's sign-ins gave it (${outcome.reason}). The owner may change what it asks for in Settings; go on without it.`,
         kept,
       );
-    case "unavailable":
+    default:
+      // `unavailable`, and an outcome a newer build stored that this one does not know: nothing was signed in.
       return failedWith(
-        `The sign-in to ${server} could not be asked for: ${outcome.reason}.`,
-        kept,
+        `The sign-in to ${server} could not be asked for${"reason" in outcome ? `: ${outcome.reason}` : ""}.`,
+        { ...details, sign_in_request: "unavailable" },
       );
   }
 };
@@ -196,7 +197,7 @@ export const signInTool = (
         );
 
         return failedWith(
-          `No MCP server of that name can need a sign-in. Servers that can: ${Arr.join(known, ", ")}.`,
+          `No enabled MCP server has that name. Servers that can need a sign-in: ${Arr.join(known, ", ")}.`,
           { server: wanted, tool: MCP_SIGN_IN_TOOL },
         );
       }
@@ -210,7 +211,7 @@ export const signInTool = (
           conversationId: api.conversationId,
           environment,
           server: name,
-          reason: (input.reason ?? "").slice(0, MAX_REASON),
+          reason: (input.reason ?? "").slice(0, MAX_SIGN_IN_REASON),
         }),
         { signal: context.abortSignal },
       );
@@ -232,17 +233,6 @@ export const signInTool = (
           : undefined;
 
       const kept: McpDetails = { ...details, sign_in_request: "signed_in" };
-
-      if (outcome.stepUp && (server?.state === "sign_in" || server?.state === "rejected")) {
-        return answerOf(
-          name,
-          {
-            kind: "step_up_failed",
-            reason: "it was asked for more access and still wants it after the owner signed in",
-          },
-          details,
-        );
-      }
 
       const text =
         server?.state === "connected"

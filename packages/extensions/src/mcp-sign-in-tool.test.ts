@@ -282,19 +282,104 @@ describe("mcp_sign_in_ask", () => {
     expect(text).not.toContain("http");
   });
 
-  it("is refused for a server that cannot need a sign-in, naming those that can", async () => {
-    const stdio: FakeMcpServer = { ...DOCS, name: "local", entry: { type: "stdio" } };
-    const setup = await builtWith([SERVER, stdio]);
-
-    const { session, submitted } = await asking(setup, { server: "local", reason: "x" });
+  it("is refused for a name no enabled server has, naming the servers that can need a sign-in", async () => {
+    const setup = await builtWith([SERVER]);
+    const { session, submitted } = await asking(setup, { server: "nowhere", reason: "x" });
 
     await submitted.wait(context);
 
     const [isError, content] = (await results(session)).at(-1) ?? [];
 
     expect(isError).toBe(true);
-    expect(JSON.stringify(content)).toContain("Servers that can: Docs-Site");
+    expect(JSON.stringify(content)).toContain("Servers that can need a sign-in: Docs-Site");
     expect(await Effect.runPromise(setup.signIns.pending)).toEqual([]);
+  });
+
+  it.each([
+    ["a stdio server", { type: "stdio" }],
+    ["a server with its own Authorization header", { headers: { authorization: "Bearer ${T}" } }],
+    [
+      "a server that signs in on its own",
+      { oauth: { grantType: "client_credentials", clientId: "a" } },
+    ],
+  ] as const)("answers not_applicable, a result and not an error, for %s", async (_name, entry) => {
+    const other: FakeMcpServer = { ...DOCS, name: "other", state: "sign_in", tools: [], entry };
+
+    const setup = await builtWith(
+      [SERVER, other],
+      requestsOf(() => ({ status: "not_applicable", reason: "it has no sign-in of the owner's" })),
+    );
+
+    const { session, submitted } = await asking(setup, { server: "other", reason: "x" });
+
+    await submitted.wait(context);
+
+    const [isError, content] = (await results(session)).at(-1) ?? [];
+
+    expect(isError).toBe(false);
+    expect(JSON.stringify(content)).toContain("it has no sign-in of the owner's");
+    expect((await detailsOf(session)).at(-1)).toMatchObject({
+      server: "other",
+      sign_in_request: "not_applicable",
+    });
+    expect(await Effect.runPromise(setup.signIns.pending)).toEqual([]);
+  });
+
+  it("tells the agent a request ended when its server was removed, switched off or hidden", async () => {
+    const setup = await builtWith([SERVER]);
+    const { session, submitted } = await asking(setup);
+
+    await until(async () => (await Effect.runPromise(setup.signIns.pending)).length > 0);
+    await Effect.runPromise(setup.signIns.withdrawServer("Docs-Site", "Docs-Site was removed"));
+    await submitted.wait(context);
+
+    const [isError, content] = (await results(session)).at(-1) ?? [];
+
+    expect(isError).toBe(false);
+    expect(JSON.stringify(content)).toContain("Docs-Site was removed. Nothing was signed in");
+    expect((await detailsOf(session)).at(-1)).toMatchObject({ sign_in_request: "withdrawn" });
+  });
+
+  it("is an error, step_up_failed, when the Registry says the server still wants more access after the step-ups", async () => {
+    const setup = await builtWith(
+      [SERVER],
+      requestsOf(() => ({
+        status: "step_up_failed",
+        reason: "asked three times",
+        scopes: ["issues:write"],
+      })),
+    );
+
+    const { session, submitted } = await asking(setup);
+
+    await submitted.wait(context);
+
+    const [isError, content] = (await results(session)).at(-1) ?? [];
+
+    expect(isError).toBe(true);
+    expect(JSON.stringify(content)).toContain("still wants more access");
+    expect((await detailsOf(session)).at(-1)).toMatchObject({ sign_in_request: "step_up_failed" });
+  });
+
+  it("is never step_up_failed because the server is slow to connect after a step-up: it says it is still connecting", async () => {
+    const setup = await builtWith(
+      [SERVER],
+      requestsOf(() => ({ ...OPEN, why: "step_up", scopes: ["issues:write"] })),
+    );
+
+    const { session, submitted } = await asking(setup);
+
+    await until(async () => (await Effect.runPromise(setup.signIns.pending)).length > 0);
+    // The owner completed the step-up; the host still reads `sign_in` when the wait is over.
+    await Effect.runPromise(setup.signIns.resolve(["signin-1"]));
+    await submitted.wait(context);
+
+    const [isError, content] = (await results(session)).at(-1) ?? [];
+
+    expect(isError).toBe(false);
+    expect(JSON.stringify(content)).toContain("still connecting");
+    expect(JSON.stringify(content)).not.toContain("more access");
+    expect((await detailsOf(session)).at(-1)).toMatchObject({ sign_in_request: "signed_in" });
   });
 
   it("is a call Stop ends: the request goes and its waiter is withdrawn", async () => {
