@@ -680,7 +680,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
     // A connection that declares `elicitation` is asked (Legacy: connection-wide, at `initialize`), so it answers: a
     // question that belongs to no call that can take it is cancelled, never left unanswered or refused as unknown.
-    if (declaredCapabilities(deps.capabilities, deps.extensions).elicitation !== undefined) {
+    if (
+      declaredCapabilities(deps.capabilities, deps.extensions, deps.roots).elicitation !== undefined
+    ) {
       client.setRequestHandler("elicitation/create", (request, ctx) =>
         Effect.runPromiseWith(context)(
           askQuestion(request.params, ctx.mcpReq.id, ctx.mcpReq.signal),
@@ -837,7 +839,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
                 transport.sessionId,
                 protocolVersion,
                 now,
-                declaredCapabilities(deps.capabilities, deps.extensions),
+                declaredCapabilities(deps.capabilities, deps.extensions, deps.roots),
               ),
             );
 
@@ -867,7 +869,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const declaredToday = (row: SessionRow) =>
     row.declared !== undefined &&
     JSON.stringify(row.declared) ===
-      JSON.stringify(jsonObjectOf(declaredCapabilities(deps.capabilities, deps.extensions)));
+      JSON.stringify(
+        jsonObjectOf(declaredCapabilities(deps.capabilities, deps.extensions, deps.roots)),
+      );
 
   /** Opens from the stored rows, falling back to a probe when a row no longer holds. */
   const openFromRows = Effect.gen(function* () {

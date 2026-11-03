@@ -16,6 +16,7 @@ import {
   makeMcpTools,
   type McpHostClientService,
   type McpQuestionsService,
+  type McpToolOptions,
   type McpToolsService,
   type McpToolsStore,
 } from "@cloudpid/extensions/mcp";
@@ -35,6 +36,7 @@ import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import type { Mutable } from "effect/Types";
 import type { SessionHostMcp } from "./host.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
@@ -187,13 +189,16 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
   const toolsOf = (environment: string) => {
     if (held?.environment === environment) return held.tools;
 
+    const toolOptions: Mutable<McpToolOptions> = {
+      ready: (workspace) => Effect.runPromise(readied(workspace)),
+    };
+
+    if (options.questions !== undefined) toolOptions.questions = options.questions;
+
     const tools = makeMcpTools(
       options.host(environment),
       kvMcpToolsStore(options.kv, environment),
-      {
-        ready: (workspace) => Effect.runPromise(readied(workspace)),
-        ...(options.questions === undefined ? {} : { questions: options.questions }),
-      },
+      toolOptions,
     );
 
     held = { environment, tools };
