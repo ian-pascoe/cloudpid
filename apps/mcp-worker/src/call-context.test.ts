@@ -18,7 +18,7 @@ const largeCall = <A, E>(then: Effect.Effect<A, E>) =>
     hooks,
     env,
     (call) => Effect.promise(() => call.lease.charge(10 * MiB)).pipe(Effect.andThen(then)),
-    { secrets: [], discovering: false },
+    [],
   );
 
 /** Whether the large slot is free: a new lease takes it at once. */
@@ -61,7 +61,7 @@ describe("withCall", () => {
           Effect.promise(() => call.lease.charge(10 * MiB)).pipe(
             Effect.andThen(Effect.sync(() => call.handOff())),
           ),
-        { secrets: [], discovering: false },
+        [],
       ).pipe(Effect.provideService(ByteBudget, budget)),
     );
 
@@ -80,10 +80,9 @@ describe("withCall", () => {
     const budget = makeBudget();
 
     const held = await Effect.runPromise(
-      withCall({}, hooks, env, (call) => Effect.succeed([...call.tokens]), {
-        secrets: ["sk-held-secret"],
-        discovering: false,
-      }).pipe(Effect.provideService(ByteBudget, budget)),
+      withCall({}, hooks, env, (call) => Effect.succeed([...call.tokens]), ["sk-held-secret"]).pipe(
+        Effect.provideService(ByteBudget, budget),
+      ),
     );
 
     expect(held).toEqual(["sk-held-secret"]);

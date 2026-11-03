@@ -99,17 +99,11 @@ export interface McpDeps {
   readonly clientInfo: Implementation;
   /**
    * Hears each `notifications/message` the server sends. With it, the core asks a server that declares `logging` for
-   * `warning` and above, in both eras (Legacy: `logging/setLevel` after an `initialize` that opens a kept session, or
-   * on any `initialize` of a `discovering` connection; Modern: `_meta` `logLevel` on every request); without it, it
-   * asks for none.
+   * `warning` and above, in both eras (Legacy: `logging/setLevel` after an `initialize` that opens a session the host
+   * keeps, since a server that keeps none forgets the level at once; Modern: `_meta` `logLevel` on every request);
+   * without it, it asks for none.
    */
   readonly onLog?: (log: McpLog) => void;
-  /**
-   * This connection is a discovery. A Legacy server that keeps no session is initialized afresh by every connection, so
-   * only a discovery, which lists and keeps nothing else of it, pays the `logging/setLevel` round trip for it; a
-   * `tools/call` on such a server never does.
-   */
-  readonly discovering?: boolean;
 }
 
 /** A `notifications/message` as the server sent it: the level, the logger's name and the data, any JSON. */
@@ -517,15 +511,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           : deps.sessions.set(sessionRowOf(client, transport.sessionId, protocolVersion, now));
 
         // The level belongs to the session the server just opened, so only an `initialize` sets it, and only one whose
-        // session is kept pays for it: a server with no session is initialized by every connection, and a call must not
-        // wait on a round trip for a level its server forgets at once. A discovery asks anyway. A server that refuses
-        // the level is still a server: its logs just come at its own level.
-        const kept = transport.sessionId !== undefined;
-
-        if (
-          (kept || deps.discovering === true) &&
-          wantsLogs(client.getServerCapabilities() ?? {})
-        ) {
+        // session is kept pays for it: a server with no session is initialized by every connection and forgets the level
+        // at once, so asking is a round trip for nothing, in a discovery as in a call. A server that refuses the level is
+        // still a server: its logs just come at its own level.
+        if (transport.sessionId !== undefined && wantsLogs(client.getServerCapabilities() ?? {})) {
           yield* Effect.tryPromise(() =>
             client.setLoggingLevel(MCP_LOG_LEVEL, { timeout: CONNECT_TIMEOUT_MS }),
           ).pipe(Effect.ignore);

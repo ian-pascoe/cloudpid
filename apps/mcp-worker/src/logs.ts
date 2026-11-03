@@ -17,7 +17,7 @@ import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import { scrubRaw } from "./results.ts";
+import { scrubRaw } from "./scrub.ts";
 
 /** What is kept of a log's text before the scrub: far past what survives it, and bounding what a server can make us hold. */
 const RAW_LIMIT = 64 * 1024;
@@ -63,8 +63,13 @@ const pairValues = (value: string): Array<string> =>
         );
   });
 
-/** The headers that carry credentials by name, besides `authorization`, `proxy-authorization` and `cookie`. */
-const CREDENTIAL_HEADER = /key|token|secret|auth|session|password|credential|signature/i;
+/**
+ * The headers that carry credentials by name, besides `authorization`, `proxy-authorization` and `cookie`. A looser
+ * match than the names an entry may not hold as a literal (`docs/architecture/mcp-configuration.md` → Approval: `TOKEN`,
+ * `SECRET`, `PASSWORD`, `PASSWD`, `API_KEY`, `APIKEY`, `ACCESS_KEY`, `PRIVATE_KEY`), which every `key` here covers: a
+ * header that is wrongly taken for one only has its value scrubbed from the text it is echoed in.
+ */
+const CREDENTIAL_HEADER = /key|token|secret|auth|session|passw(?:or)?d|credential|signature/i;
 
 /**
  * What the header `name` holds that a server may echo, when it is one that carries a credential; nothing for any other

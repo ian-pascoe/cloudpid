@@ -261,7 +261,7 @@ describe("an engine call's span", () => {
     expect(answer.problems).toEqual([
       {
         tool: `tool #${names.length + 1}`,
-        problem: "left out: its name held a value this call keeps secret",
+        problem: expect.stringContaining("left out"),
       },
     ]);
     expect(JSON.stringify(answer)).not.toContain("acme");

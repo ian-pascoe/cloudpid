@@ -87,18 +87,12 @@ const authFrom =
       Effect.orElseSucceed(() => undefined),
     );
 
-/** What a call is, besides its rows: the Secret values its target carries, and whether it is a discovery. */
-export interface CallAbout {
-  readonly secrets: ReadonlyArray<string>;
-  readonly discovering: boolean;
-}
-
 /** Opens one call's context: its rows, its lease on the byte budget and its deps. */
 export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   prior: McpEnginePrior,
   hooks: McpEngineHooks,
   env: CallEnvironment,
-  about: CallAbout,
+  secrets: ReadonlyArray<string>,
 ) {
   const budget = yield* ByteBudget;
   const context = yield* Effect.context<never>();
@@ -106,7 +100,7 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   const eras = rowCell(prior.era);
   const sessions = rowCell(prior.session);
   // The Secrets the host put into the target are scrubbed as the access tokens are: from logs, errors and results.
-  const tokens = new Set<string>(about.secrets);
+  const tokens = new Set<string>(secrets);
   let bytes = 0;
 
   const logs = callLogs({
@@ -129,7 +123,6 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     capabilities: () => ({}),
     clientInfo: { name: "cloudpid", version: env.version },
     onLog: logs.hear,
-    discovering: about.discovering,
   } satisfies McpDeps;
 
   const deps: McpDeps =
@@ -173,10 +166,10 @@ export const withCall = Effect.fnUntraced(function* <A, E, R>(
   hooks: McpEngineHooks,
   env: CallEnvironment,
   use: (call: CallContext) => Effect.Effect<A, E, R>,
-  about: CallAbout,
+  secrets: ReadonlyArray<string>,
 ) {
   // Opened uninterruptibly with its release attached, so no interruption can leave the lease held.
-  return yield* Effect.acquireUseRelease(openCall(prior, hooks, env, about), use, (call, exit) =>
+  return yield* Effect.acquireUseRelease(openCall(prior, hooks, env, secrets), use, (call, exit) =>
     Effect.sync(() => {
       if (Exit.isFailure(exit) || !call.handedOff()) {
         call.lease.release();

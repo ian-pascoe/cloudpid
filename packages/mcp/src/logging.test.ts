@@ -115,29 +115,21 @@ describe.each(servers)(
 );
 
 describe("a Legacy server's level", () => {
-  const discover = (server: FakeServer, discovering: boolean) =>
+  const discover = (server: FakeServer) =>
     run(
       Effect.gen(function* () {
-        const deps = testDeps(fetchTo(server), { onLog: () => undefined, discovering });
+        const deps = testDeps(fetchTo(server), { onLog: () => undefined });
         const connection = yield* connect(TARGET, deps);
 
         yield* connection.list("tools", AGENT);
       }),
     );
 
-  it("is asked by a discovery of a server that keeps no session", async () => {
+  it("is not asked of a server that keeps no session, in a discovery or a call, since it forgets it at once", async () => {
     const server = legacyStatelessServer({ logs: LOGS });
 
-    await discover(server, true);
-
-    expect(levelsAsked(server)).toEqual(["setLevel:warning"]);
-  });
-
-  it("is not asked by a call on a server that keeps no session, however many it makes", async () => {
-    const server = legacyStatelessServer({ logs: LOGS });
-
-    await discover(server, false);
-    await discover(server, false);
+    await discover(server);
+    await discover(server);
 
     expect(levelsAsked(server)).toEqual([]);
   });

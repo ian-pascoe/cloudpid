@@ -15,7 +15,13 @@
  *   runs at most once. The fresh tools and their schema problems, compiled as discovery compiles them, go back to the
  *   host for its catalog, whether the second send completed or failed; so do a `tools/list` request's problems.
  */
-import { connect, type ListKind, type McpConnection, type McpConnectionStats } from "@cloudpid/mcp";
+import {
+  connect,
+  type ListItems,
+  type ListKind,
+  type McpConnection,
+  type McpConnectionStats,
+} from "@cloudpid/mcp";
 import {
   Cut,
   type McpCallContext,
@@ -44,14 +50,14 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
 import { type CallContext, type CallEnvironment, withCall } from "./call-context.ts";
 import { secretsOf } from "./logs.ts";
-import { type Answer, malformed, scrubEncoded, scrubError, toEngineValue } from "./results.ts";
+import { type Answer, malformed, scrubError, toEngineValue } from "./results.ts";
+import { promptsLeftOut, scrubRaw, scrubValues, toolsLeftOut, vetListed } from "./scrub.ts";
 import { Validators, type ValidatorsApi } from "./validators.ts";
 
 /** Discovery, and the tools listed again after a `-32020`, are the host's own work (The MCP core #394 D7). */
@@ -73,8 +79,6 @@ interface CallInput {
   readonly env: CallEnvironment;
   /** Whether the server may have run the request once it was sent: only a `tools/call`. */
   readonly mayHaveRun: boolean;
-  /** Whether this is a discovery (the core then asks a Legacy server for its log level even with no session to keep). */
-  readonly discovering: boolean;
 }
 
 const cutOnceAborted = (untilAborted: () => Promise<void>, mayHaveRun: boolean) =>
@@ -165,7 +169,7 @@ const runCall = Effect.fnUntraced(function* <A, R>(
         yield* annotateWire(input.target, wire?.(), call.bytes(), logs.length);
 
         if (Result.isSuccess(outcome)) {
-          return { outcome, state: call.state(), logs, tokens: call.tokens };
+          return { outcome, state: call.state(), logs };
         }
 
         // A stream made before the call failed is never returned, so its lease goes back now.
@@ -175,11 +179,10 @@ const runCall = Effect.fnUntraced(function* <A, R>(
           outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
           state: call.state(),
           logs,
-          tokens: call.tokens,
         };
       }),
     // A server may echo a header it was sent (a Secret's value) into a log, an error or a result; all are scrubbed of them.
-    { secrets: secretsOf(input.target), discovering: input.discovering },
+    secretsOf(input.target),
   );
 });
 
@@ -243,59 +246,40 @@ const failed = (error: McpErrorWire, state: McpEngineState): McpEngineFailed => 
   state,
 });
 
-/**
- * `result` encoded for RPC, with every token in `tokens` (when given) replaced in the text of all of it; one that cannot
- * be encoded, or scrubbed whole, (a server's odd value) fails as not MCP.
- */
+/** `result` encoded for RPC; one that cannot be encoded (a server's odd value) fails as not MCP. */
 const encodeResult = <A extends { readonly state: McpEngineState }, I>(
   schema: Schema.Codec<A | McpEngineFailed, I>,
   result: A | McpEngineFailed,
-  tokens?: ReadonlySet<string>,
-) => {
-  const encoded = Schema.encodeEffect(schema)(result);
-
-  return (
-    tokens === undefined
-      ? encoded
-      : encoded.pipe(
-          Effect.flatMap((value) => scrubEncoded(Schema.toEncoded(schema), value, tokens)),
-        )
-  ).pipe(
+) =>
+  Schema.encodeEffect(schema)(result).pipe(
     Effect.catch(() => Schema.encodeEffect(schema)(failed(malformed("its answer"), result.state))),
     Effect.orDie,
   );
-};
 
-/** Whether `name` holds any of `tokens`, which a name must never be rewritten for. */
-const heldIn = (name: string, tokens: ReadonlySet<string>) =>
-  Arr.some([...tokens], (token) => token.length > 0 && name.includes(token));
-
-/** A prompt's name, empty for one that has none. */
-const nameOf = (prompt: Readonly<Record<string, Schema.Json>>) => {
-  const name = prompt["name"];
-
-  return Predicate.isString(name) ? name : "";
-};
+/** The items of a list, as the SDK listed them. */
+type Listed = ReadonlyArray<ListItems[ListKind]>;
 
 /**
- * The problem of each tool or prompt (`kind`) of `names` that is left out for a name holding a secret: said by its place
- * in the list, so the problem never quotes the value.
+ * A tools list as the engine hands it back (`scrub.ts`): the items a call may keep, scrubbed in their string values, and
+ * their definitions and schema problems; with the problem of each item left out for a secret in its name or a key.
  */
-const leftOut = (
-  kind: "tool" | "prompt",
-  names: ReadonlyArray<string>,
+const vettedTools = Effect.fnUntraced(function* (
+  listed: Listed,
+  validators: ValidatorsApi,
   tokens: ReadonlySet<string>,
-) =>
-  Arr.filterMap(
-    Arr.map(names, (name, index) => ({ name, place: index + 1 })),
-    ({ name, place }) =>
-      heldIn(name, tokens)
-        ? Result.succeed<McpToolProblem>({
-            tool: `${kind} #${place}`,
-            problem: "left out: its name held a value this call keeps secret",
-          })
-        : Result.failVoid,
-  );
+) {
+  const vetted = vetListed("tool", listed, tokens);
+  const tools = yield* definitionsOf(vetted.kept);
+
+  return {
+    kept: vetted.kept,
+    tools,
+    problems: scrubValues(
+      [...toolsLeftOut(vetted.left), ...(yield* validators.compileAll(tools))],
+      tokens,
+    ),
+  };
+});
 
 /** Discovers the server: its era, what it is, every page of its tools and prompts, and its tools' schema problems. */
 export const discover = Effect.fn("mcp.engine.discover")(function* (
@@ -306,54 +290,47 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
 ) {
   const validators = yield* Validators;
 
-  const { outcome, state, logs, tokens } = yield* runCall(
-    { target, prior, hooks, env, mayHaveRun: false, discovering: true },
+  const { outcome, state, logs } = yield* runCall(
+    { target, prior, hooks, env, mayHaveRun: false },
     (connection, call) =>
       Effect.gen(function* () {
         const tools = yield* connection.list("tools", HOST_WORK);
         const prompts = yield* connection.list("prompts", HOST_WORK);
-        const listed = yield* definitionsOf(tools.value);
 
         const promptsListed = yield* decodePrompts(prompts.value).pipe(
           Effect.mapError(() => malformed("a prompt")),
         );
 
-        // A name is never rewritten, since a call is made by it: one that holds a secret is left out instead.
-        const definitions = Arr.filter(listed, (tool) => !heldIn(tool.name, call.tokens));
+        // What a server tells of itself is scrubbed in its string values only; a tool or prompt that holds a secret in a name
+        // or a key is left out, since neither is ever rewritten (`scrub.ts`).
+        const listedTools = yield* vettedTools(tools.value, validators, call.tokens);
+        const vettedPrompts = vetListed("prompt", promptsListed, call.tokens);
 
-        const promptValues = Arr.filter(
-          promptsListed,
-          (prompt) => !heldIn(nameOf(prompt), call.tokens),
+        const about = scrubValues(
+          yield* decodeAbout({
+            serverInfo: connection.serverInfo,
+            capabilities: connection.capabilities,
+          }).pipe(Effect.mapError(() => malformed("its description"))),
+          call.tokens,
         );
-
-        const problems = [
-          ...leftOut(
-            "tool",
-            Arr.map(listed, ({ name }) => name),
-            call.tokens,
-          ),
-          ...leftOut("prompt", Arr.map(promptsListed, nameOf), call.tokens),
-          ...(yield* validators.compileAll(definitions)),
-        ];
-
-        const about = yield* decodeAbout({
-          serverInfo: connection.serverInfo,
-          capabilities: connection.capabilities,
-        }).pipe(Effect.mapError(() => malformed("its description")));
 
         const discovered: Mutable<Omit<McpEngineDiscovered, "state">> = {
           kind: "discovered",
           era: connection.era,
           protocolVersion: connection.protocolVersion,
           ...about,
-          tools: definitions,
-          prompts: promptValues,
-          problems,
+          tools: listedTools.tools,
+          prompts: vettedPrompts.kept,
+          problems: listedTools.problems,
           fetchedAt: tools.fetchedAt,
         };
 
+        if (vettedPrompts.left.length > 0) {
+          discovered.promptProblems = promptsLeftOut(vettedPrompts.left);
+        }
+
         if (connection.instructions !== undefined) {
-          discovered.instructions = connection.instructions;
+          discovered.instructions = scrubRaw(connection.instructions, call.tokens);
         }
 
         if (tools.ttlMs !== undefined) {
@@ -364,17 +341,11 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
       }),
   );
 
-  // Everything a discovery stores (tools, prompts, problems, instructions, the error) is scrubbed of what the call sent,
-  // as an error or a result is: a server may echo a header into any of them.
-  return yield* encodeResult(
-    McpEngineDiscoverResult,
-    {
-      ...(Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state)),
-      ...logsField(logs),
-      state,
-    },
-    tokens,
-  );
+  return yield* encodeResult(McpEngineDiscoverResult, {
+    ...(Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state)),
+    ...logsField(logs),
+    state,
+  });
 });
 
 const isServerError = Schema.is(ServerError);
@@ -402,6 +373,7 @@ const callWithRefresh = Effect.fnUntraced(function* (
   connection: McpConnection,
   req: ToolCall,
   validators: ValidatorsApi,
+  tokens: ReadonlySet<string>,
 ) {
   const send = (tool: McpToolDefinition) =>
     connection
@@ -422,12 +394,8 @@ const callWithRefresh = Effect.fnUntraced(function* (
   }
 
   const listed = yield* connection.list("tools", HOST_WORK);
-  const tools = yield* definitionsOf(listed.value);
-
-  const refreshed = Option.some<Refreshed>({
-    tools,
-    problems: yield* validators.compileAll(tools),
-  });
+  const { tools, problems } = yield* vettedTools(listed.value, validators, tokens);
+  const refreshed = Option.some<Refreshed>({ tools, problems });
 
   const fresh = toolNamed(tools, req.tool.name);
 
@@ -451,7 +419,13 @@ const runToolCall = Effect.fnUntraced(function* (
   env: CallEnvironment,
   validators: ValidatorsApi,
 ) {
-  const { sent, tool, refreshed } = yield* callWithRefresh(connection, req, validators);
+  const { sent, tool, refreshed } = yield* callWithRefresh(
+    connection,
+    req,
+    validators,
+    call.tokens,
+  );
+
   const extras = Option.getOrElse(refreshed, () => ({}));
 
   if (Result.isFailure(sent)) {
@@ -495,16 +469,36 @@ const runList = Effect.fnUntraced(function* (
 ) {
   const { value, kind: _kind, ...meta } = yield* connection.list(LIST_KINDS[req.op], req.ctx);
 
-  const problems =
+  // A tool or a prompt that holds a secret in a name or a key is left out of what goes back, as a discovery leaves it out.
+  const tools =
     req.op === "tools/list"
-      ? Option.some(yield* validators.compileAll(yield* definitionsOf(value)))
-      : Option.none<ReadonlyArray<McpToolProblem>>();
+      ? Option.some(yield* vettedTools(value, validators, call.tokens))
+      : Option.none();
+
+  const prompts =
+    req.op === "prompts/list"
+      ? Option.some(vetListed("prompt", value, call.tokens))
+      : Option.none();
+
+  const problems = Option.map(tools, (listed) => listed.problems);
 
   const completed: Mutable<Completed> = {
     kind: "complete",
     ...meta,
-    result: yield* toEngineValue(value, call, env),
+    result: yield* toEngineValue(
+      Option.match(tools, {
+        onNone: () =>
+          Option.match(prompts, { onNone: () => value, onSome: (vetted) => vetted.kept }),
+        onSome: (listed) => listed.kept,
+      }),
+      call,
+      env,
+    ),
   };
+
+  Option.map(prompts, (vetted) => {
+    if (vetted.left.length > 0) completed.promptProblems = promptsLeftOut(vetted.left);
+  });
 
   Option.map(problems, (listed) => {
     completed.problems = listed;
@@ -534,7 +528,7 @@ export const request = Effect.fn("mcp.engine.request")(function* (
   const req = decoded.value;
 
   const { outcome, state, logs } = yield* runCall(
-    { target, prior, hooks, env, mayHaveRun: req.op === "tools/call", discovering: false },
+    { target, prior, hooks, env, mayHaveRun: req.op === "tools/call" },
     (connection, context): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
       req.op === "tools/call"
         ? runToolCall(connection, context, req, env, validators)

@@ -196,7 +196,14 @@ const offeredOf = (objects: McpStatusObjects, environment: string) =>
   objects
     .registry()
     .getSettingsOverrides({ environment })
-    .pipe(Effect.map((state) => (state === null ? [] : state.settings.tools.offered)));
+    .pipe(
+      Effect.map((state) => (state === null ? [] : state.settings.tools.offered)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning(`Environment ${environment}'s Settings could not be read`, cause).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    );
 
 /**
  * Runs `read` over the names of `environment`'s servers, once the Registry has said it has some; the Registry's
@@ -231,27 +238,29 @@ export const mcpStatus = (objects: McpStatusObjects): McpStatus => ({
     readSet(objects, environment, "servers were not read", (names) =>
       names.length === 0
         ? Effect.succeed(McpServersList.make({ version: "", servers: [] }))
-        : Effect.all([
-            offeredOf(objects, environment),
-            objects
+        : Effect.gen(function* () {
+            const offered = yield* offeredOf(objects, environment);
+
+            // Settings that cannot be read leave the tools' Exposure unknown, so the servers are not listed at all.
+            if (offered === undefined) return unavailable(NOT_LISTED);
+
+            const answer = yield* objects
               .host(mcpHostName(environment))
-              .servers({ parts: ["tools", "prompts", "status"] }),
-          ]).pipe(
-            Effect.map(([offered, answer]): McpServersView => {
-              const decoded = decodeServers(answer);
+              .servers({ parts: ["tools", "prompts", "status"] });
 
-              if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
+            const decoded = decodeServers(answer);
 
-              if (Predicate.isTagged(decoded.value, "HostFailed")) {
-                return unavailable(COULD_NOT_ANSWER);
-              }
+            if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
 
-              return McpServersList.make({
-                version: decoded.value.version,
-                servers: Arr.map(decoded.value.servers, (each) => serverView(each, offered)),
-              });
-            }),
-          ),
+            if (Predicate.isTagged(decoded.value, "HostFailed")) {
+              return unavailable(COULD_NOT_ANSWER);
+            }
+
+            return McpServersList.make({
+              version: decoded.value.version,
+              servers: Arr.map(decoded.value.servers, (each) => serverView(each, offered)),
+            });
+          }),
     ),
 
   serverLog: ({ environment, server, workspace }) =>

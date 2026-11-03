@@ -546,6 +546,8 @@ const fakeRegistries = () => {
   const mcpHostCalls: Array<string> = [];
   /** The `tools.offered` entries of the Settings in force, besides the defaults. */
   const mcpOffered: Array<string> = [];
+  /** Whether reading the Settings fails, as a Registry whose storage is gone does. */
+  const mcpSettings = { fails: false };
 
   /** What the fake MCP hosts answer; each is the answer as it crosses the edge, so a test may script an unknown one. */
   const mcpHostAnswers: McpHostAnswers = {
@@ -1282,6 +1284,8 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         calls.push(`getSettingsOverrides:${environment}`);
 
+        if (mcpSettings.fails) throw new Error("no storage with a secret in it");
+
         return environment === DEFAULT_ENVIRONMENT
           ? {
               environment,
@@ -1509,6 +1513,7 @@ const fakeRegistries = () => {
     mcpSyncs,
     mcpNames,
     mcpOffered,
+    mcpSettings,
     mcpHostCalls,
     mcpHostAnswers,
     /** The status reads over the fake Registry and the fake hosts, which record what they were asked. */
@@ -5934,6 +5939,20 @@ describe("the MCP status reads", () => {
       ["listIssues", "codemode"],
       ["getIssue", "codemode"],
     ]);
+  });
+
+  it("answers that the servers could not be listed when the Settings cannot be read, without asking the host", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+    fake.mcpSettings.fails = true;
+
+    const answer = await call(fake, (registry) =>
+      registry.mcpServers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(answer).toEqual({ _tag: "Unavailable", message: "The MCP servers could not be listed" });
+    expect(fake.mcpHostCalls).toEqual([]);
   });
 
   it("answers an Environment's servers with each tool's Exposure and no entry, URL or hash", async () => {

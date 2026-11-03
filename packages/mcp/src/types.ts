@@ -284,9 +284,10 @@ export const McpEngineTarget = Schema.Struct({
   url: Schema.String,
   headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   /**
-   * The Secret values the host substituted for `${NAME}` into `headers` (and the URL): exactly what the engine scrubs, as
-   * far as four characters, from the logs, errors and results it hands back (`docs/architecture/mcp-connections.md` →
-   * Telemetry). Absent for an entry that references none, and from a host older than this field.
+   * The Secret values the host substituted for `${NAME}` into `headers` (`${…}` is refused in the URL): what the engine
+   * scrubs, as far as four characters, from the logs, errors, results and inventory it hands back
+   * (`docs/architecture/mcp-connections.md` → Telemetry). Empty for an entry that references no Secret, and absent from a
+   * host older than this field.
    */
   redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
@@ -351,6 +352,21 @@ const RefreshedTools = {
   problems: McpToolProblem.pipe(Schema.Array, Schema.optionalKey),
 };
 
+/**
+ * What was found wrong with a prompt: one left out for a name or a key that holds a value the call keeps secret, said by
+ * its place in the list (`prompt #3`) and never the value. A prompt's problems are kept apart from a tool's, so a
+ * prompts-only change never changes the tools' version (`docs/architecture/mcp-connections.md` → Versions).
+ */
+export const McpPromptProblem = Schema.Struct({
+  prompt: Schema.String,
+  problem: Schema.String,
+});
+
+export type McpPromptProblem = typeof McpPromptProblem.Type;
+
+/** The problems of the prompts a call listed. Gain-only: absent when there are none. */
+const PromptProblems = { promptProblems: McpPromptProblem.pipe(Schema.Array, Schema.optionalKey) };
+
 /** What a call failed with, and the rows it changed before it did. */
 export const McpEngineFailed = Schema.Struct({
   kind: Schema.Literal("failed"),
@@ -390,6 +406,7 @@ export const McpEngineDiscovered = Schema.Struct({
   tools: Schema.Array(McpToolDefinition),
   prompts: Schema.Array(JsonObject),
   problems: Schema.Array(McpToolProblem),
+  ...PromptProblems,
   /** The tools list's cache hint (SEP-2549), for the host's TTL. */
   ttlMs: Schema.optionalKey(Schema.Finite),
   fetchedAt: Schema.Finite,
@@ -469,6 +486,8 @@ export const McpEngineCompleted = Schema.Struct({
    * `problems` alone, the listed tools' schema problems.
    */
   ...RefreshedTools,
+  /** For a `prompts/list` request, the prompts left out. */
+  ...PromptProblems,
   ...EngineLogs,
   state: McpEngineState,
 });
