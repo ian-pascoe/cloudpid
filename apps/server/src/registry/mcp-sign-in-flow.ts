@@ -151,7 +151,7 @@ const vaultFailure = (error: SecretVaultError): FlowProblem =>
   FlowProblem.make({ message: error.message, code: "vault" });
 
 /** The servers `environment`'s set resolves to (Global's own layers for `all`), or null when it is not registered. */
-const serversOf = (
+export const serversOf = (
   store: FlowStore,
   environment: string,
 ): ReadonlyArray<McpResolvedServer> | null =>
@@ -165,7 +165,7 @@ const serversOf = (
  * given. An entry of the other kind than the row's does not use it: it replaces the row (revoking an owner's tokens)
  * only when no set still uses the row as its own kind, and is otherwise told of the clash (`signInClash`).
  */
-const usesSignIn = (
+export const usesSignIn = (
   resolved: McpResolvedServer,
   hash: string,
   kind: "owner" | "client_grant",
@@ -271,7 +271,7 @@ const PendingContext = Schema.Struct({
 
 type PendingContext = typeof PendingContext.Type;
 
-const decodeContext = Schema.decodeUnknownOption(Schema.fromJsonString(PendingContext));
+export const decodeContext = Schema.decodeUnknownOption(Schema.fromJsonString(PendingContext));
 
 /** The fields of the authorization server metadata a callback reads, in the metadata the start recorded. */
 const RecordedMetadata = Schema.StructWithRest(

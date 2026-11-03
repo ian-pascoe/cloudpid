@@ -24,7 +24,8 @@
 //   - `mcp-sign-in-registry.ts`: `get`, `touch`, `noteChallenge`, `update`, `dropTokens` and `resolveWaiters`.
 // What has no caller yet, for the slices that follow (the tables and their bounds are #442's):
 //   - #454 (refresh and step-up): `replaceTokens`, through `Refresh`;
-//   - #469 (Settings, sign-out): `list`, `delete`, and `dropUnnamedBindings` once no server set names a binding;
+//   - #469 (Settings, sign-out): `list`, `listPending` and `delete` (`mcp-sign-in-manage.ts`), and `dropUnnamedBindings` once no
+//     server set names a binding;
 //   - #470 (Sign-in requests): the waiters (`addWaiter`, `waiters`, `removeWaiter`);
 //   - no caller: `getPending` and `deletePending` (the callback takes the row with `takePending`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off cryptoRandomUUID:off
@@ -34,6 +35,7 @@ import { SealedValue } from "@cloudpid/extensions/secrets/core";
 import { McpAuthChallenge, McpSignInSecretRef } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { DocumentStore } from "./settings.ts";
 import type { RegistryStorage } from "./store.ts";
@@ -516,6 +518,12 @@ export type McpSignIns = {
   /** The key's pending row, unless it has expired at `now` (10 min after its start). */
   readonly getPending: (keyHash: string, now: number) => McpPendingSignIn | null;
   readonly deletePending: (keyHash: string) => boolean;
+  /**
+   * Every pending row, expired ones that were not swept yet included, the newest first: Settings reads a start that
+   * expired without a callback (a refused document client shows nowhere else). No sealed value leaves it but the verifier,
+   * which `McpPendingSignIn` keeps sealed.
+   */
+  readonly listPending: () => ReadonlyArray<McpPendingSignIn>;
 
   readonly addWaiter: (
     waiter: Pick<McpSignInWaiter, "keyHash" | "session" | "request">,
@@ -992,6 +1000,15 @@ export const openMcpSignIns = (
 
       return row === undefined ? null : toPending(row);
     },
+    listPending: () =>
+      Arr.filterMap(
+        rows<PendingRow>("SELECT * FROM mcp_pending_sign_ins ORDER BY created_at DESC, rowid DESC"),
+        (row) =>
+          Option.match(Option.fromNullishOr(toPending(row)), {
+            onNone: () => Result.failVoid,
+            onSome: Result.succeed,
+          }),
+      ),
     deletePending: (keyHash) => {
       const existed = exists("mcp_pending_sign_ins", "key_hash = ?", keyHash);
 

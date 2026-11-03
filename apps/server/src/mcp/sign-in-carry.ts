@@ -33,8 +33,10 @@ export type McpSignInChangeCarried = {
 };
 
 /**
- * Who sends which change: the callback sends `signed_in` today (`serveCallback`); `signed_out` is for sign-out (#459)
- * and `rebound` for a rebind (#469), which call `carry` from the answer of their own Registry method.
+ * Who sends which change: the callback sends `signed_in` (`serveCallback`), and a sign-out sends `signed_out`
+ * (`mcp/sign-in-manage.ts`, from the answer of the Registry's `signOutMcpSignIn`). A rebind only happens as a sign-in
+ * completes (the new issuer's tokens replace the old issuer's in that very write), so it is carried as `signed_in`, which
+ * makes the host do what `rebound` would; nothing sends `rebound` yet.
  */
 export type McpSignInCarry = {
   /** Pass `change` to the host of each Environment that uses the sign-in. Never fails. */
