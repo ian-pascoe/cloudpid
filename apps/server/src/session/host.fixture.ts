@@ -121,7 +121,9 @@ import { isWithdrawn } from "./errors.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
+import type { McpSignInAskAnswer } from "@cloudpid/mcp/types";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
+import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
 import {
   instructionsSettings,
   reloadSessionExtensions,
@@ -462,7 +464,7 @@ const CALL = /^call:(\w+):(.*)$/;
 
 /**
  * Scripted model responses, kept in storage so a new instance continues the script: `hang` waits for an abort,
- * `call:<tool>:<json arguments>` calls a tool, and `gate:<response>` gives `response` once the test opens the gate.
+ * `call:<tool>:<json arguments>` calls a tool (`parallel:<json>` several at once), and `gate:<response>` gives `response` once the test opens the gate.
  */
 type Script = { readonly responses: readonly string[]; readonly next: number };
 
@@ -476,6 +478,19 @@ const respond = (text: string) => {
       stopReason: "error",
       errorMessage: text.slice("error:".length),
     });
+  }
+
+  // `parallel:<json array of [tool, arguments]>` calls several tools in one response.
+  if (text.startsWith("parallel:")) {
+    // SAFETY: a test writes the calls as a JSON array of `[tool, arguments]` pairs.
+    const calls = JSON.parse(text.slice("parallel:".length)) as ReadonlyArray<
+      readonly [string, Record<string, string>]
+    >;
+
+    return fauxAssistantMessage(
+      calls.map(([name, args]) => fauxToolCall(name, args)),
+      { stopReason: "toolUse" },
+    );
   }
 
   return call === null
@@ -664,6 +679,40 @@ export class TestSession extends DurableObject {
     return this.#questions;
   }
 
+  /**
+   * The Session's Sign-in requests, made once, over a Registry that answers what `scriptSignIn` says and records what it is
+   * asked (`signInAsks`): the tools ask through its service, the runtime provides its layer.
+   */
+  #signIns: ReturnType<typeof sessionMcpSignIns> | undefined;
+
+  #mcpSignIns(): ReturnType<typeof sessionMcpSignIns> {
+    const { kv } = this.ctx.storage;
+
+    this.#signIns ??= sessionMcpSignIns({
+      storage: kv,
+      sockets: this.ctx,
+      session: this.ctx.id.name,
+      notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
+      registry: () => ({
+        mcpSignInAsk: (input) =>
+          Effect.sync(() => {
+            kv.put("signin-asks", [...(kv.get<unknown[]>("signin-asks") ?? []), input]);
+
+            // SAFETY: the answer `scriptSignIn` was given, which a test writes as a registry answer.
+            return (kv.get("signin-answer") ?? { status: "signed_in" }) as McpSignInAskAnswer;
+          }),
+        mcpSignInWithdraw: (input) =>
+          Effect.sync(() => {
+            kv.put("signin-withdrawn", [...(kv.get<unknown[]>("signin-withdrawn") ?? []), input]);
+
+            return { removed: true };
+          }),
+      }),
+    });
+
+    return this.#signIns;
+  }
+
   /** Whether this Session has MCP tools (the tests that look at them name it so). */
   #hasMcpTools(): boolean {
     return this.ctx.id.name?.startsWith("mcp-") === true;
@@ -683,6 +732,7 @@ export class TestSession extends DurableObject {
 
     const mcp = sessionMcp({
       questions: this.#mcpQuestions().service,
+      signIns: this.#mcpSignIns().service,
       session: this.ctx.id.name,
       host: (environment) =>
         mcpHostClient(() => promisedMcpHost(hosts.getByName(mcpHostName(environment)))),
@@ -904,7 +954,8 @@ export class TestSession extends DurableObject {
                   Effect.service(BrowserHandoffs),
                   Effect.service(Approvals),
                 ]),
-                ([held, handoffs, approvals]) => onIdle(held, browser, handoffs, approvals),
+                ([held, handoffs, approvals]) =>
+                  onIdle(held, browser, handoffs, approvals, this.#mcpSignIns().service),
               ),
             }).pipe(
               Layer.provide(
@@ -1052,6 +1103,7 @@ export class TestSession extends DurableObject {
             }),
           ),
           Layer.provideMerge(this.#mcpQuestions().layer),
+          Layer.provideMerge(this.#mcpSignIns().layer),
           Layer.provideMerge(
             sessionSecretsLayer({
               encryptionKey: SECRETS_KEY,
@@ -1910,6 +1962,31 @@ export class TestSession extends DurableObject {
 
   mcpOrderClear(): void {
     this.ctx.storage.kv.delete("mcp-order");
+  }
+
+  /** What the Registry answers this Session's next Sign-in asks (`McpSignInAskAnswer`). */
+  scriptSignIn(answer: McpSignInAskAnswer): void {
+    this.ctx.storage.kv.put("signin-answer", answer);
+  }
+
+  /** The Sign-in asks the Registry was made and the waiters withdrawn since. */
+  signInAsks() {
+    const { kv } = this.ctx.storage;
+
+    return {
+      asked: kv.get<unknown[]>("signin-asks") ?? [],
+      withdrawn: kv.get<unknown[]>("signin-withdrawn") ?? [],
+    };
+  }
+
+  /** A failed sign-in attempt carried to this Session (`SessionMethods.mcpSignInsFailed`): how many open requests changed. */
+  failSignIns(requests: ReadonlyArray<string>, problem: string): Promise<number> {
+    return Effect.runPromise(this.#mcpSignIns().service.failed(requests, problem));
+  }
+
+  /** A completed sign-in carried to this Session (`SessionMethods.mcpSignInsResolved`): how many open requests it ended. */
+  resolveSignIns(requests: ReadonlyArray<string>): Promise<number> {
+    return Effect.runPromise(this.#mcpSignIns().service.resolve(requests));
   }
 
   /** Make looking up the Session's Workspace fail, or succeed again. */

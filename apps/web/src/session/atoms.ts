@@ -91,6 +91,9 @@ export const secretLifetimeMinutesAtom = slice((state) => state.secretLifetimeMi
 export const approvalRequestsAtom = slice((state) => state.approvalRequests);
 export const mcpElicitationRequestsAtom = slice((state) => state.mcpElicitationRequests);
 
+/** The Sign-in requests waiting for the owner. */
+export const mcpSignInRequestsAtom = slice((state) => state.mcpSignInRequests);
+
 /** The Session's draft Annotations, oldest first. */
 export const annotationsAtom = slice((state) => state.annotations);
 
@@ -387,6 +390,17 @@ export const answerMcpElicitationAtom = Atom.family((sessionId: string) =>
       get
         .result(sessionClientAtom(sessionId))
         .pipe(Effect.flatMap((client) => client.answerMcpElicitation(request, action, content))),
+    { concurrent: true },
+  ),
+);
+
+/** Decline one of Session `sessionId`'s Sign-in requests, with the owner's reason for the agent when there is one. */
+export const declineMcpSignInAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    ({ request, reason }: { readonly request: string; readonly reason?: string }, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.declineMcpSignIn(request, reason))),
     { concurrent: true },
   ),
 );

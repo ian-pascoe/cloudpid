@@ -3,9 +3,9 @@
 // @effect-diagnostics asyncFunction:off globalDate:off strictEffectProvide:off missedPipeableOpportunity:off -- plain fixtures.
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
-import { McpQuestions } from "@cloudpid/extensions/mcp";
+import { McpQuestions, McpSignIns } from "@cloudpid/extensions/mcp";
 import { Secrets } from "@cloudpid/extensions/secrets";
-import type { McpElicitationRequest, SessionVia } from "@cloudpid/protocol";
+import type { McpElicitationRequest, McpSignInRequest, SessionVia } from "@cloudpid/protocol";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -34,7 +34,11 @@ const fake = <S>(parts: Partial<S>): S =>
   parts as S;
 
 /** A Session whose host answers `state`, and counts the notices and aborts it is told. */
-const open = (first: FollowState, asked: ReadonlyArray<McpElicitationRequest> = []) => {
+const open = (
+  first: FollowState,
+  asked: ReadonlyArray<McpElicitationRequest> = [],
+  signing: ReadonlyArray<McpSignInRequest> = [],
+) => {
   let state = first;
   const notes = new Array<string>();
   const aborts = new Array<boolean>();
@@ -66,6 +70,10 @@ const open = (first: FollowState, asked: ReadonlyArray<McpElicitationRequest> = 
         Layer.succeed(SessionHost, host),
         Layer.succeed(Secrets, secrets),
         Layer.succeed(McpQuestions, questions),
+        Layer.succeed(
+          McpSignIns,
+          fake<McpSignIns["Service"]>({ pending: Effect.succeed(signing) }),
+        ),
         Layer.succeed(Approvals, fake<Approvals["Service"]>({ pending: Effect.succeed([]) })),
         Layer.succeed(
           BrowserHandoffs,
@@ -169,6 +177,39 @@ describe("waiting requests", () => {
             agent_id: "reviewer",
             summary: "Docs-Site needs your input",
             url: "/sessions/s1?request=call-9:1",
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(status)).not.toContain("hunter2");
+  });
+
+  it("lists a Sign-in request by its server's name only, never the agent's reason", async () => {
+    const signing: McpSignInRequest = {
+      id: "signin-4",
+      // SAFETY: a fixture's conversation number.
+      conversationId: 1 as ConversationId,
+      server: "Docs-Site",
+      environment: "main",
+      urlHost: "docs.example.com",
+      reason: "I need the hunter2 wiki",
+      why: "required",
+      scopes: [],
+      askedAt: 1,
+    };
+
+    const { mcp } = open(follow({}), [], [signing]);
+    const status = await mcp((service) => service.status());
+
+    expect(status).toMatchObject({
+      ok: true,
+      value: {
+        waiting: [
+          {
+            kind: "sign_in",
+            request_id: "signin-4",
+            summary: "Sign-in needed: Docs-Site",
+            url: "/sessions/s1?request=signin-4",
           },
         ],
       },

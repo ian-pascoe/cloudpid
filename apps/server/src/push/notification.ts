@@ -37,6 +37,10 @@ const body = (event: PushEvent): string => {
         ? "Run failed"
         : `Run failed: ${event.reason}`;
     case "input": {
+      if (event.signIn !== undefined) {
+        return `Sign-in needed: ${event.signIn.server} — ${event.signIn.reason}`;
+      }
+
       if (event.mcp !== undefined) {
         return event.mcp.kind === "sampling"
           ? `${event.mcp.server} asks to use a model`
@@ -80,6 +84,8 @@ const target = (event: PushEvent, sessionId: string): string => {
  */
 const tagKind = (event: PushEvent): string => {
   if (event.kind !== "input") return event.kind;
+
+  if (event.signIn !== undefined) return `mcp-sign-in:${event.signIn.key}`;
 
   if (event.mcp !== undefined) return `mcp-input:${event.mcp.server}`;
 

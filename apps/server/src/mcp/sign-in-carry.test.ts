@@ -18,6 +18,53 @@ const change = {
 } as const;
 
 describe("mcpSignInCarry", () => {
+  it("passes a failed attempt's open requests and its problem on to the Sessions, and to no host", async () => {
+    const told: Array<unknown> = [];
+    const host = vi.fn();
+
+    await Effect.runPromise(
+      mcpSignInCarry({
+        host,
+        sessions: {
+          carry: () => Effect.void,
+          failed: (waiting, problem) =>
+            Effect.sync(() => {
+              told.push([waiting, problem]);
+            }),
+        },
+      }).failed([{ session: "s1", request: "signin-1" }], "The code was refused"),
+    );
+
+    expect(told).toEqual([[[{ session: "s1", request: "signin-1" }], "The code was refused"]]);
+    expect(host).not.toHaveBeenCalled();
+  });
+
+  it("passes the Sign-in requests a change resolved on to the Sessions, after the hosts", async () => {
+    const order: Array<string | ReadonlyArray<unknown>> = [];
+    const resolved = [{ session: "s1", request: "signin-1" }];
+
+    await Effect.runPromise(
+      mcpSignInCarry({
+        host: () => ({
+          apply: () => {
+            order.push("host");
+
+            return Effect.succeed(McpSignInsTaken.make({ servers: ["sentry"] }));
+          },
+        }),
+        sessions: {
+          carry: (told) =>
+            Effect.sync(() => {
+              order.push(told);
+            }),
+          failed: () => Effect.void,
+        },
+      }).carry({ ...change, resolved }),
+    );
+
+    expect(order).toEqual(["host", "host", resolved]);
+  });
+
   it("applies the change to the host of each Environment that uses the sign-in", async () => {
     const applied: Array<[string, unknown]> = [];
 

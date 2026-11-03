@@ -19,6 +19,7 @@ import {
   type McpHostClientService,
   type McpNotices,
   type McpQuestionsService,
+  type McpSignInsService,
   type McpToolOptions,
   type McpToolsService,
   type McpToolsStore,
@@ -175,6 +176,8 @@ export type SessionMcpOptions = {
   readonly codemode: (namespaces: ReadonlyArray<CodemodeNamespace>) => Extension;
   /** The Session's MCP questions: with them, a Legacy server's elicitation form is shown to the owner. */
   readonly questions?: McpQuestionsService;
+  /** The Session's Sign-in requests: with them, the build registers `mcp_sign_in_ask` when the set has a server that can need one. */
+  readonly signIns?: McpSignInsService;
 };
 
 /** The Session host's MCP tools (`SessionHostOptions.mcp`), with one `McpTools` for the Session's Environment. */
@@ -209,9 +212,12 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
 
     const toolOptions: Mutable<McpToolOptions> = {
       ready: (workspace) => Effect.runPromise(readied(workspace)),
+      environment,
     };
 
     if (options.questions !== undefined) toolOptions.questions = options.questions;
+
+    if (options.signIns !== undefined) toolOptions.signIns = options.signIns;
 
     const tools = makeMcpTools(
       options.host(environment),

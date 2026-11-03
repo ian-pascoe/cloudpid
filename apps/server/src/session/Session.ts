@@ -54,6 +54,7 @@ import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
+import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
@@ -230,6 +231,23 @@ export type SessionMethods = {
   ) => Effect.Effect<ApiResult<StagedFinish>>;
   /** Discard the bytes and the instruction of an import not yet finished; the caller deletes the Session. */
   readonly stageImportCancel: () => Effect.Effect<ApiResult<StagedCancel>>;
+  /**
+   * A sign-in completed (the main Worker carries the Registry's answer here, `mcp/sign-in-sessions.ts`): end each of these
+   * Sign-in requests that is open as signed in, so the calls that wait on them go on. Answers how many were open. A request
+   * this Session no longer holds is ignored; a Session that was not reached catches up when it asks the Registry again
+   * (`docs/architecture/mcp-sign-in.md` → Sign-in requests).
+   */
+  readonly mcpSignInsResolved: (input: {
+    readonly requests: ReadonlyArray<string>;
+  }) => Effect.Effect<number>;
+  /**
+   * A sign-in attempt failed (carried as `mcpSignInsResolved` is): show `problem` on each of these Sign-in requests that is
+   * open, which stay open. Answers how many changed.
+   */
+  readonly mcpSignInsFailed: (input: {
+    readonly requests: ReadonlyArray<string>;
+    readonly problem: string;
+  }) => Effect.Effect<number>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -559,9 +577,20 @@ export const SessionLive = Session.make(
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
         });
 
+        // The agent's asks that the owner sign in to an MCP server: durable, shown on the sockets, pushed once for each
+        // sign-in's key (`./mcp-sign-ins.ts`).
+        const mcpSignIns = sessionMcpSignIns({
+          storage: kv,
+          sockets: state.raw,
+          session: name,
+          registry: () => registries.getByName(REGISTRY_NAME),
+          notify: notifyOwner,
+        });
+
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
         const mcpTools = sessionMcp({
           questions: mcpQuestions.service,
+          signIns: mcpSignIns.service,
           session: name,
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
           kv,
@@ -934,12 +963,14 @@ export const SessionLive = Session.make(
                     Effect.service(Approvals),
                   ]),
                   ([held, browser, handoffs, approvals]) =>
-                    onIdle(held, browser, handoffs, approvals),
+                    onIdle(held, browser, handoffs, approvals, mcpSignIns.service),
                 ),
               }),
             ),
             // The MCP servers' questions, checked against the Secrets, which are built below.
             Layer.provideMerge(mcpQuestions.layer),
+            // The Sign-in requests, which redact the agent's words of the same Secrets.
+            Layer.provideMerge(mcpSignIns.layer),
             Layer.provideMerge(sessionSecrets),
             Layer.provideMerge(sessionChanges),
             Layer.provideMerge(sessionComparisons),
@@ -1046,6 +1077,10 @@ export const SessionLive = Session.make(
               // Open pages are told the pick, as for the socket's `configure`.
               mcp.configure(request).pipe(Effect.tap(() => sockets.announcePicks)),
             ),
+          mcpSignInsResolved: ({ requests }) =>
+            invoked("session.mcp.sign_in_resolved", mcpSignIns.service.resolve(requests)),
+          mcpSignInsFailed: ({ requests, problem }) =>
+            invoked("session.mcp.sign_in_failed", mcpSignIns.service.failed(requests, problem)),
           stageImportBegin: (request) => invoked("session.import.begin", imports.begin(request)),
           stageImportAppend: (request) => invoked("session.import.append", imports.append(request)),
           stageImportFinish: (request) => invoked("session.import.finish", imports.finish(request)),

@@ -375,3 +375,33 @@ describe("the redirect URI and client name", () => {
     });
   });
 });
+
+describe("the start link of a Sign-in request's card", () => {
+  it("names the Session and the request, and comes back to the Session", () => {
+    expect(
+      mcpSignInStartHref({
+        scope: "work",
+        global: "*",
+        server: "sentry",
+        stepUp: false,
+        returnPath: "/sessions/s1",
+        requester: { session: "s1", request: "signin-2" },
+      }),
+    ).toBe(
+      "/oauth/mcp/start?environment=work&server=sentry&session=s1&request=signin-2&return=%2Fsessions%2Fs1",
+    );
+  });
+
+  it("asks for a step-up", () => {
+    expect(
+      mcpSignInStartHref({
+        scope: "work",
+        global: "*",
+        server: "sentry",
+        stepUp: true,
+        returnPath: "/sessions/s1",
+        requester: { session: "s1", request: "signin-2" },
+      }),
+    ).toContain("&step_up=1&return=");
+  });
+});

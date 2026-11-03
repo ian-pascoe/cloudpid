@@ -8,7 +8,6 @@ import {
   introFeaturesOf,
   listingHashOfSection,
   MCP_RESOURCE_TOOLS,
-  MCP_SIGN_IN_TOOL,
   MAX_SECTION_LENGTH,
   MAX_SUMMARY_LENGTH,
   mcpListing,
@@ -16,6 +15,7 @@ import {
   mcpServersNotice,
   mcpServersSection,
 } from "./mcp/servers.ts";
+import { MCP_SIGN_IN_TOOL } from "./mcp/sign-in.ts";
 import type { McpBuildServer } from "./mcp/tools.ts";
 
 /** A discovered server with `tools`, whose entry has `entry` besides. */

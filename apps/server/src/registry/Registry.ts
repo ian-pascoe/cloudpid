@@ -194,6 +194,9 @@ import {
   type McpAccessTokenInput,
   type McpAuthReport,
   type McpAuthReportAnswer,
+  type McpSignInAskAnswer,
+  type McpSignInAskInput,
+  type McpSignInWithdrawInput,
   type McpSignInCompleteAnswer,
   type McpSignInCompleteInput,
   type McpSignInConfirmAnswer,
@@ -202,8 +205,9 @@ import {
   type McpSignInStartInput,
 } from "@cloudpid/mcp/types";
 import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
-import { mcpAccessToken, reportMcpAuth } from "./mcp-sign-in-registry.ts";
+import { mcpAccessToken, reportMcpAuth, type SignInDeps } from "./mcp-sign-in-registry.ts";
 import { mcpClientGrant } from "./mcp-sign-in-client-grant.ts";
+import { askMcpSignIn, withdrawMcpSignIn } from "./mcp-sign-in-ask.ts";
 import { listMcpSignIns, signOutMcpSignIn } from "./mcp-sign-in-manage.ts";
 import { mcpTokenRefresh } from "./mcp-sign-in-refresh.ts";
 import {
@@ -995,6 +999,17 @@ export type RegistryMethods = {
    */
   readonly signInsRevision: () => Effect.Effect<number>;
   /**
+   * A Session's Sign-in request for a server of its Environment's set (`docs/architecture/mcp-sign-in.md` → Sign-in
+   * requests): `signed_in` or `not_applicable` at once, else a waiter row kept for the key (`open`, with whether it is the
+   * first, which sends the one Notification, and what the card shows). Asking again with the same Session and request
+   * joins the waiter and re-checks the sign-in. For the Session DOs only.
+   */
+  readonly mcpSignInAsk: (input: McpSignInAskInput) => Effect.Effect<McpSignInAskAnswer>;
+  /** A Session's Sign-in request ended (declined or withdrawn): its waiter row goes. For the Session DOs only. */
+  readonly mcpSignInWithdraw: (
+    input: McpSignInWithdrawInput,
+  ) => Effect.Effect<{ readonly removed: boolean }>;
+  /**
    * The owner's start of an MCP sign-in (`docs/architecture/mcp-sign-in.md` → Starting and completing a sign-in): discovers the
    * authorization server, picks the client by the ladder, and keeps the one pending row of the sign-in. The answer is where
    * to send the owner's browser, the issuer interstitial to show, or why there is no sign-in to start. For the main Worker's
@@ -1180,6 +1195,16 @@ export const RegistryLive = Registry.make(
         const mcpRefresh = mcpTokenRefresh(signInFlow);
         // A server that signs in on its own is asked for a token the same way: one at a time per sign-in.
         const mcpGrant = mcpClientGrant(signInFlow);
+
+        /** What a token request and a Session's Sign-in ask read. */
+        const tokenDeps: SignInDeps = {
+          store,
+          signIns: mcpSignIns,
+          vault: mcpVault,
+          refresh: mcpRefresh,
+          clientGrant: mcpGrant,
+          environmentsUsing: (hash, kind) => environmentsUsing(store, hash, kind),
+        };
 
         /** The Secrets `environment` uses, opened, for the Session DOs and the Builds: a vault that fails says why. */
         const opened = (environment: string) =>
@@ -1986,21 +2011,14 @@ export const RegistryLive = Registry.make(
           notify: ({ sessionId, event }) => notify(sessionId, event),
           mcpAccessToken: (input) =>
             Clock.currentTimeMillis.pipe(
-              Effect.flatMap((now) =>
-                mcpAccessToken(
-                  {
-                    store,
-                    signIns: mcpSignIns,
-                    vault: mcpVault,
-                    refresh: mcpRefresh,
-                    clientGrant: mcpGrant,
-                    environmentsUsing: (hash, kind) => environmentsUsing(store, hash, kind),
-                  },
-                  input,
-                  now,
-                ),
-              ),
+              Effect.flatMap((now) => mcpAccessToken(tokenDeps, input, now)),
             ),
+          mcpSignInAsk: (input) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) => askMcpSignIn(tokenDeps, input, now)),
+            ),
+          mcpSignInWithdraw: (input) =>
+            Effect.sync(() => withdrawMcpSignIn({ signIns: mcpSignIns }, input)),
           reportMcpAuth: (report) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => reportMcpAuth({ store, signIns: mcpSignIns }, report, now)),

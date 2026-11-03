@@ -200,14 +200,15 @@ describe("the callback", () => {
         { id: "env_1", name: "Work" },
         { id: "env_2", name: "Home" },
       ],
-      resolved: [],
+      resolved: [{ session: "s1", request: "signin-1" }],
       revision: 4,
     };
 
     const carrying = () => {
       const carry = vi.fn(() => Effect.void);
+      const failed = vi.fn((_waiting: ReadonlyArray<unknown>, _problem: string) => Effect.void);
 
-      return { carry, use: (): McpSignInCarry => ({ carry }) };
+      return { carry, failed, use: (): McpSignInCarry => ({ carry, failed }) };
     };
 
     it("is told the server, the Environments that use it and the revision, before the page answers", async () => {
@@ -228,7 +229,60 @@ describe("the callback", () => {
           server: "sentry",
           environments: signedIn.environments,
           revision: 4,
+          resolved: [{ session: "s1", request: "signin-1" }],
         },
+      ]);
+    });
+
+    it("tells the Sessions whose Sign-in requests wait on the key what a failed attempt said, and carries nothing else", async () => {
+      const carrier = carrying();
+
+      await get(
+        registry({
+          complete: {
+            status: "exchange_failed",
+            message: "The authorization server refused the code",
+            waiting: [{ session: "s1", request: "signin-1" }],
+          },
+        }).use(),
+        `?state=${STATE}&code=abc`,
+        "GET",
+        carrier.use(),
+      );
+
+      expect(carrier.failed).toHaveBeenCalledWith(
+        [{ session: "s1", request: "signin-1" }],
+        "The authorization server refused the code",
+      );
+      expect(carrier.carry).not.toHaveBeenCalled();
+    });
+
+    it("words a failure that has no message by its code or its status, and tells no one when no request waits", async () => {
+      const carrier = carrying();
+      const waiting = [{ session: "s1", request: "signin-1" }];
+
+      await get(
+        registry({ complete: { status: "provider_error", code: "access_denied", waiting } }).use(),
+        `?state=${STATE}&code=abc`,
+        "GET",
+        carrier.use(),
+      );
+      await get(
+        registry({ complete: { status: "declined", waiting } }).use(),
+        `?state=${STATE}&code=abc`,
+        "GET",
+        carrier.use(),
+      );
+      await get(
+        registry({ complete: { status: "expired", waiting: [] } }).use(),
+        `?state=${STATE}&code=abc`,
+        "GET",
+        carrier.use(),
+      );
+
+      expect(carrier.failed.mock.calls).toEqual([
+        [waiting, "access_denied"],
+        [waiting, "The sign-in did not complete (declined)"],
       ]);
     });
 

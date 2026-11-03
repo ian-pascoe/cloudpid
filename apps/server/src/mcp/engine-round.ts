@@ -29,6 +29,7 @@ import {
   NotAllowed,
   ServerChanged,
   SignInRequired,
+  StepUpRequired,
   Unreachable,
   UnknownServer,
 } from "@cloudpid/mcp/types";
@@ -184,6 +185,38 @@ export type Reached = {
   readonly access: Extract<RequestAccess, { readonly kind: "open" }>;
 };
 
+/**
+ * The error of a call that is not sent for want of a token. Only a sign-in the owner could give is worded as one: a
+ * `step_up` (with the scope the Registry names), a sign-in at `sign_in` or `rejected`, and one that cannot be used for now
+ * (`signIn`). A server that signs in on its own sets none of them, so its error carries no `sign_in` hint.
+ */
+const blockedError = (
+  server: string,
+  access: Extract<RequestAccess, { readonly kind: "blocked" }>,
+): McpHostCallFailed["error"] => {
+  if (access.stepUp !== undefined) {
+    const stepUp: Mutable<ConstructorParameters<typeof StepUpRequired>[0]> = {
+      message: `MCP server ${server} needs you signed in: ${access.message}`,
+    };
+
+    if (access.stepUp.scope !== undefined) stepUp.scope = access.stepUp.scope;
+
+    return StepUpRequired.make(stepUp);
+  }
+
+  if (access.state === "sign_in" || access.state === "rejected") {
+    return SignInRequired.make({
+      message: `MCP server ${server} needs you signed in: ${access.message}`,
+      rejected: access.state === "rejected",
+    });
+  }
+
+  // A sign-in that cannot be used for now: a Session says "try again shortly", not "ask the owner".
+  return access.userSignIn === true
+    ? Unreachable.make({ message: access.message, signIn: true })
+    : Unreachable.make({ message: access.message });
+};
+
 /** `resolved`'s server's target and access, or why a request is not sent to it. */
 export const reachServer = (
   resolved: Resolved,
@@ -205,16 +238,7 @@ export const reachServer = (
 
     // No token to call with: not sent, as a discovery would not connect.
     if (access.kind === "blocked") {
-      return Result.fail(
-        callFailed(
-          access.state === "sign_in" || access.state === "rejected"
-            ? SignInRequired.make({
-                message: `MCP server ${server.name} needs you signed in: ${access.message}`,
-                rejected: access.state === "rejected",
-              })
-            : Unreachable.make({ message: access.message }),
-        ),
-      );
+      return Result.fail(callFailed(blockedError(server.name, access)));
     }
 
     return Result.succeed({ target: target.success, access });

@@ -27,6 +27,7 @@ import * as Result from "effect/Result";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import { exposureKeys, reachesModel } from "./exposure.ts";
+import { MCP_SIGN_IN_TOOL } from "./sign-in.ts";
 import { extensionName, listedTools, type McpBuildServer } from "./tools.ts";
 
 /** The section's key, and the tag that wraps its text. */
@@ -63,9 +64,6 @@ export const MCP_RESOURCE_TOOLS: ReadonlyArray<string> = [
   "list_mcp_resource_templates",
   "read_mcp_resource",
 ];
-
-/** The sign-in tool: the intro names it only when the `mcp` extension registers it. */
-export const MCP_SIGN_IN_TOOL = "mcp_sign_in_ask";
 
 /** Which tools the intro may name: those the build registers. Each sentence about one is added in `mcpServersIntro`. */
 export type McpIntroFeatures = { readonly resourceTools: boolean; readonly signIn: boolean };

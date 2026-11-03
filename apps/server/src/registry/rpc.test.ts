@@ -1406,6 +1406,8 @@ const fakeRegistries = () => {
     mcpAccessToken: () => Effect.die("The endpoint hands out no token"),
     reportMcpAuth: () => Effect.die("The endpoint reports no sign-in"),
     signInsRevision: () => Effect.die("The endpoint reads no sign-in revision"),
+    mcpSignInAsk: () => Effect.die("The endpoint asks for no sign-in"),
+    mcpSignInWithdraw: () => Effect.die("The endpoint withdraws no sign-in request"),
     // The owner's start and the public callback are the main Worker's own routes, never the endpoint's.
     startMcpSignIn: () => Effect.die("The endpoint starts no sign-in"),
     confirmMcpSignIn: () => Effect.die("The endpoint confirms no sign-in"),

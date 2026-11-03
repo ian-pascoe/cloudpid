@@ -58,9 +58,23 @@ import { engineAuth, McpTokens, type NoToken, type TokenAccess, type TokenFor } 
 /** An engine's answer to a discovery or a request: what the reports read of it. */
 type EngineAnswer = McpEngineDiscoverResult | McpEngineRequestResult;
 
+/**
+ * Why a server is left without a token, as the state and message it is left in. `stepUp` (with the `scope` the Registry
+ * names) says the sign-in lacks the scope the server wants, and `userSignIn` that the sign-in in the way is the owner's own
+ * and cannot be used for now (a refresh that fails): a Session words those two for the agent (`docs/architecture/
+ * mcp-sign-in.md` → Sign-in requests). A server that signs in on its own never sets either: no sign-in of the owner's is in
+ * the way, and the agent is never pointed at `mcp_sign_in_ask`.
+ */
+type Blocked = {
+  readonly state: McpServerState;
+  readonly message: string;
+  readonly stepUp?: { readonly scope?: string };
+  readonly userSignIn?: boolean;
+};
+
 /** What a discovery's access comes to: no call made, or the engine's answer. */
 export type DiscoveryAccess =
-  | { readonly kind: "blocked"; readonly state: McpServerState; readonly message: string }
+  | ({ readonly kind: "blocked" } & Blocked)
   | { readonly kind: "answered"; readonly result: McpEngineDiscoverResult };
 
 /** `target` with `token` as its `Authorization: Bearer`. */
@@ -106,12 +120,9 @@ const asRejected = (result: McpEngineDiscoverResult): McpEngineDiscoverResult =>
 
 /**
  * Why there is no token to connect with, as the state and message the server is left in; undefined to connect without
- * one.
+ * one. A Registry that cannot be asked at all is `unavailable` and no `userSignIn`: it is no problem of the sign-in's.
  */
-const blockedBy = (
-  access: NoToken,
-  previous: McpServerState | undefined,
-): { readonly state: McpServerState; readonly message: string } | undefined => {
+const blockedBy = (access: NoToken, previous: McpServerState | undefined): Blocked | undefined => {
   if (access.kind === "unreachable") return { state: "unavailable", message: access.message };
 
   switch (access.status) {
@@ -122,13 +133,26 @@ const blockedBy = (
         ? { state: previous, message: access.reason }
         : undefined;
     case "step_up":
-      return { state: "sign_in", message: access.reason };
+      return {
+        state: "sign_in",
+        message: access.reason,
+        stepUp: access.scope === undefined ? {} : { scope: access.scope },
+      };
     case "rejected":
       return { state: "rejected", message: access.reason };
     case "refresh_failing":
-      return { state: "unavailable", message: `Can't refresh the sign-in: ${access.reason}` };
+      return {
+        state: "unavailable",
+        message: `Can't refresh the sign-in: ${access.reason}`,
+        userSignIn: true,
+      };
     default:
-      return { state: "unavailable", message: access.reason };
+      // `failed` is a client grant's: no sign-in of the owner's is in the way, even where its entry changed mid-call.
+      return {
+        state: "unavailable",
+        message: access.reason,
+        userSignIn: access.status === "unavailable",
+      };
   }
 };
 
@@ -374,7 +398,7 @@ const afterAnswer = (
  * entry sets its own `Authorization`), and what to report once the engine answered.
  */
 export type RequestAccess =
-  | { readonly kind: "blocked"; readonly state: McpServerState; readonly message: string }
+  | ({ readonly kind: "blocked" } & Blocked)
   | {
       readonly kind: "open";
       readonly auth?: (stale: boolean) => Effect.Effect<string | undefined>;

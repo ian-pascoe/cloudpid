@@ -856,6 +856,11 @@ const recordFailure = (
     status: refusal.status,
     code: refusal.code,
     message: reason,
+    // The key's open Sign-in requests stay open and show this failure: the carrier tells their Sessions.
+    waiting: Arr.map(deps.signIns.waiters(context.key.hash, now), ({ session, request }) => ({
+      session,
+      request,
+    })),
     retry: { environment: pending.environment, server: context.server },
     returnPath: pending.returnPath ?? undefined,
   };

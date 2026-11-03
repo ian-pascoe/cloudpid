@@ -23,6 +23,8 @@ export * from "./mcp-elicitation.ts";
 
 export * from "./mcp-repo-files.ts";
 
+export * from "./mcp-sign-in-requests.ts";
+
 export * from "./mcp-status.ts";
 
 export * from "./mcp-sign-ins.ts";

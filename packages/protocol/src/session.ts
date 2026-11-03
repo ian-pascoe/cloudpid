@@ -14,6 +14,7 @@ import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
+import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import { ElicitationAction, ElicitationContent, McpElicitationRequest } from "./mcp-elicitation.ts";
 
 /**
@@ -180,6 +181,20 @@ export const McpElicitationAnswer = Schema.Struct({
   request: Schema.String,
   action: ElicitationAction,
   content: Schema.optionalKey(ElicitationContent),
+});
+
+/**
+ * The owner's decline of Sign-in request `request` (`mcp_sign_in_requests`), with an optional reason the agent is told.
+ * Signing in is not a message: the card links to the sign-in page, and the completed sign-in resolves the request. Answered
+ * with `null`; fails when no such request waits (answered, resolved or withdrawn).
+ * (`docs/architecture/mcp-sign-in.md` → Sign-in requests).
+ */
+export const McpSignInAnswer = Schema.Struct({
+  type: Schema.Literal("mcp_sign_in_answer"),
+  id: CommandId,
+  request: Schema.String,
+  action: Schema.Literal("decline"),
+  reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_SIGN_IN_REASON))),
 });
 
 /**
@@ -595,6 +610,7 @@ export const ClientMessage = Schema.Union([
   SecretAnswer,
   ApprovalAnswer,
   McpElicitationAnswer,
+  McpSignInAnswer,
   AnnotationSave,
   AnnotationDelete,
   ViewedSet,
@@ -771,6 +787,16 @@ export const ApprovalRequests = Schema.Struct({
 export const McpElicitationRequests = Schema.Struct({
   type: Schema.Literal("mcp_elicitation_requests"),
   requests: Schema.Array(McpElicitationRequest),
+});
+
+/**
+ * The Sign-in requests waiting on the owner (`docs/architecture/mcp-sign-in.md` → Sign-in requests), oldest first. A
+ * client shows a card for each outside the chat. They have no deadline and survive an eviction, so they are sent after
+ * `hello` on every connect (an empty list too) and in full to every client whenever they change.
+ */
+export const McpSignInRequests = Schema.Struct({
+  type: Schema.Literal("mcp_sign_in_requests"),
+  requests: Schema.Array(McpSignInRequest),
 });
 
 /**
@@ -1317,6 +1343,7 @@ export const ServerMessage = Schema.Union([
   SecretRequests,
   ApprovalRequests,
   McpElicitationRequests,
+  McpSignInRequests,
   AnnotationsMessage,
   ViewedMessage,
   BrowserHandoffRequests,

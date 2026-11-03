@@ -205,6 +205,13 @@ const callbackInput = (path: string, query: URLSearchParams) => {
   };
 };
 
+/** What a failed attempt says for a card: the authorization server's own words when it gave any, else what ended it. */
+const failureText = (answer: {
+  readonly status: string;
+  readonly message?: string | undefined;
+  readonly code?: string | undefined;
+}): string => answer.message ?? answer.code ?? `The sign-in did not complete (${answer.status})`;
+
 /**
  * `GET /oauth/mcp/callback[/<hash>]`: the authorization server's answer, public and never reading identity. A `state`
  * that is not one cloudpid makes gets a static page and the Registry is never called; otherwise `completeMcpSignIn`
@@ -246,7 +253,13 @@ export const serveCallback = (
         server: answer.server,
         environments: answer.environments,
         revision: answer.revision,
+        resolved: answer.resolved,
       });
+    }
+
+    // A failed attempt leaves the Sign-in requests of its key open: their Sessions show the failure on the cards.
+    if (answer.status !== "signed_in" && "waiting" in answer && (answer.waiting?.length ?? 0) > 0) {
+      yield* carry.failed(answer.waiting ?? [], failureText(answer));
     }
 
     return respond(callbackPage(answer));
