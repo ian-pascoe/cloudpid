@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off preferSchemaOverJson:off -- in-memory fakes of the Registry over native arrays, provided to each test, and fixtures written as JSON text.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off preferSchemaOverJson:off globalDate:off globalDateInEffect:off -- in-memory fakes of the Registry over native arrays, provided to each test, and fixtures written as JSON text.
 
 // The MCP servers section of the Settings page at a Scope, rendered with `react-dom/server` over the fake Registry: the
 // queries a page reads are settled first, so the markup shows what they answered. The changes the owner's actions make
@@ -15,6 +15,8 @@ import {
   type EnvironmentRecord,
   type EnvironmentSecretRecord,
   McpNoEnvironment,
+  type McpRepoFileView,
+  McpRepoFiles,
   McpServersList,
   type McpServerView,
   McpUnavailable,
@@ -42,16 +44,23 @@ import {
 } from "../registry.testing.ts";
 import { settingsAtom, settingsOverridesAtom } from "../settings.ts";
 import { McpSection } from "./mcp.tsx";
-import { emptyMcpFields, newMcpForm } from "./mcp-form.ts";
+import { emptyMcpFields, mcpCopyForm, newMcpForm, toolsDraftOf } from "./mcp-form.ts";
 import { mcpScopeView } from "./mcp-model.ts";
 import {
   changeMcpAtom,
   type McpPanel,
   mcpPanelAtom,
+  mcpRepoFilesQueryAtom,
   mcpServersAtom,
+  reloadMcpRepoAtom,
   writeMcpChange,
 } from "./mcp-state.ts";
-import { mcpRowChanges } from "./mcp-write.ts";
+import {
+  mcpRepoRowChanges,
+  mcpRepoToolExposure,
+  mcpRepoToolsChange,
+  mcpRowChanges,
+} from "./mcp-write.ts";
 
 const WORK: EnvironmentRecord = { id: "work", name: "Work", repos: [], createdAt: 1 };
 const HOME: EnvironmentRecord = { id: "home", name: "Home", repos: [], createdAt: 2 };
@@ -121,6 +130,10 @@ interface Held {
     readonly mcp: ReadonlyArray<McpSettingsProblem>;
   };
   readonly servers?: ReadonlyArray<McpServerView>;
+  /** The Repos' files the Registry holds; the Environment then has a Repo `app`. */
+  readonly repoFiles?: ReadonlyArray<McpRepoFileView>;
+  /** The Environment's own Variables. */
+  readonly variables?: Readonly<Record<string, string>>;
 }
 
 /** The Registry's handlers: Global's servers and Work's Overrides, with the fixtures above. */
@@ -129,7 +142,14 @@ const handlersFor = (held: Held = {}): Partial<RegistryHandlers> => {
 
   return {
     listSessions: () => Effect.succeed([]),
-    listEnvironments: () => Effect.succeed([WORK, HOME]),
+    listEnvironments: () =>
+      Effect.succeed([
+        held.repoFiles === undefined
+          ? WORK
+          : { ...WORK, repos: [{ name: "app", url: "https://github.com/acme/app" }] },
+        HOME,
+      ]),
+    mcpRepoFiles: () => Effect.succeed(McpRepoFiles.make({ files: held.repoFiles ?? [] })),
     listEnvironmentSecrets: () => Effect.succeed(held.secrets ?? SECRETS),
     getSettings: () => {
       const state = {
@@ -168,7 +188,7 @@ const handlersFor = (held: Held = {}): Partial<RegistryHandlers> => {
     },
     getEnvironmentSettings: () =>
       Effect.succeed({
-        settings: DEFAULT_CONTAINER_SETTINGS,
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: held.variables ?? {} },
         global: DEFAULT_CONTAINER_SETTINGS,
         overrides: {},
       }),
@@ -231,7 +251,12 @@ const render = (
         environmentSecretsAtom,
         ...(scope === "*"
           ? [globalSettingsAtom]
-          : [settingsOverridesAtom(scope), environmentSettingsAtom(scope), mcpServersAtom(scope)]),
+          : [
+              settingsOverridesAtom(scope),
+              environmentSettingsAtom(scope),
+              mcpServersAtom(scope),
+              mcpRepoFilesQueryAtom(scope),
+            ]),
       ].filter((atom) => !pending.includes(atom)),
     );
 
@@ -252,10 +277,10 @@ const rowOf = (markup: string, name: string): string => {
 
   expect(start, `a row for ${name}`).toBeGreaterThan(-1);
 
-  const next = markup.indexOf('id="mcp-server-', start + 1);
-  const group = markup.indexOf("</ul>", start);
+  const next = markup.indexOf('<li id="mcp-server-', start + 1);
+  const group = markup.indexOf("</section>", start);
 
-  return markup.slice(start, next === -1 ? group : Math.min(next, group + 5));
+  return markup.slice(start, next === -1 ? group : Math.min(next, group));
 };
 
 /** The text of `markup`, tags gone, whitespace single. */
@@ -268,6 +293,13 @@ const textOf = (markup: string): string =>
     .replaceAll(/\s+/g, " ")
     .replaceAll(" ,", ",")
     .trim();
+
+/** The text under the Problems heading, which is empty where there is none. */
+const underProblems = (markup: string): string => {
+  const at = markup.indexOf(">Problems<");
+
+  return at === -1 ? "" : textOf(markup.slice(at));
+};
 
 /** The names of the rows, in order. */
 const rowNames = (markup: string): ReadonlyArray<string> =>
@@ -549,6 +581,705 @@ describe("the MCP servers section at an Environment", () => {
   );
 });
 
+const MINUTE = 60_000;
+
+/** A Repo's file with two servers: `docs` reads a Variable-or-Secret `NOTES_KEY` (a Secret of Work's), `build` runs a command. */
+const REPO_TEXT = JSON.stringify({
+  mcpServers: {
+    docs: {
+      url: "https://docs.example.com/mcp",
+      headers: { Authorization: "Bearer ${NOTES_KEY}" },
+      description: "The Repo's docs",
+    },
+    build: { command: "node", args: ["build-mcp.js"], cwd: "tools" },
+  },
+});
+
+/** What a test changes of the Registry's view of a Repo's file; `undefined` takes the key away. */
+type RepoFileChange = { readonly [K in keyof McpRepoFileView]?: McpRepoFileView[K] | undefined };
+
+/** The Registry's view of Repo `app`'s file: read five minutes ago, with the copy held. */
+const repoFile = (more: RepoFileChange = {}): McpRepoFileView => {
+  const merged = {
+    repo: "app",
+    slug: "acme/app",
+    path: ".pi/mcp.json",
+    state: "read",
+    blob: "abcdef0123456",
+    text: REPO_TEXT,
+    readAt: Date.now() - 5 * MINUTE,
+    lookedAt: Date.now() - MINUTE,
+    ...more,
+  };
+
+  // SAFETY: the keys left `undefined` are taken out, which is what an absent key is.
+  return Object.fromEntries(
+    Object.entries(merged).filter(([, value]) => value !== undefined),
+  ) as McpRepoFileView;
+};
+
+/** What most of these tests hold: the Repo's file, and the Variable its server reads. */
+const WITH_REPO = { repoFiles: [repoFile()], variables: { NOTES_KEY: "plain" } };
+
+describe("a Repo's .pi/mcp.json at an Environment", () => {
+  it.effect("lists the Repo's servers among the rest, read-only, from the Repo", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", { held: WITH_REPO });
+
+      expect(rowNames(markup)).toEqual(["build", "docs", "files", "linear", "notes", "search"]);
+
+      const docs = rowOf(markup, "docs");
+      const text = textOf(docs);
+
+      expect(text).toContain("docs HTTP From Repo app");
+      expect(text).toContain("https://docs.example.com/mcp");
+      expect(text).toContain("The Repo's docs");
+      expect(text).toContain("Read-only: from Repo app's .pi/mcp.json on its default branch");
+      // No Edit or Remove: the file is the Repo's. The switch and select write this environment's adjustment.
+      expect(docs).not.toContain(">Edit</button>");
+      expect(docs).not.toContain('aria-label="Remove docs"');
+      expect(docs).toContain('aria-label="docs enabled"');
+      expect(docs).toContain('aria-label="docs exposure"');
+      expect(text).toContain("Enabled Inherited Exposure Inherited Tool exposure (0) Inherited");
+      expect(docs).toContain(">Tool exposure…</button>");
+      // Neither Global's copy nor its link.
+      expect(docs).not.toContain("Use its own copy");
+      expect(docs).not.toContain("Edit at Global");
+    }),
+  );
+
+  it.effect(
+    "shows the entry as JSON exactly as the file has it: ${NAME} kept, cwd as written",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", { held: WITH_REPO });
+
+        expect(rowOf(markup, "docs")).toContain("View as JSON");
+        expect(textOf(rowOf(markup, "docs"))).toContain('"Authorization": "Bearer ${NOTES_KEY}"');
+        expect(textOf(rowOf(markup, "build"))).toContain('"cwd": "tools"');
+        expect(textOf(rowOf(markup, "build"))).not.toContain("/workspace/app/tools");
+      }),
+  );
+
+  it.effect(
+    'shows and copies a `sampling: "allow"` as the file has it, not as the set reads it',
+    () =>
+      Effect.gen(function* () {
+        const text = JSON.stringify({
+          mcpServers: { chat: { command: "chat", sampling: "allow", cwd: "tools" } },
+        });
+
+        const row = repoRowOf("chat", repoFile({ text }));
+        const markup = yield* render("work", { held: { repoFiles: [repoFile({ text })] } });
+
+        // The set reads it as `ask`, with a problem saying to copy it to allow it.
+        expect(row.server.sampling).toBe("ask");
+        expect(textOf(markup)).toContain("copy it into the Settings to allow it");
+        expect(textOf(rowOf(markup, "chat"))).toContain('"sampling": "allow"');
+        // The copy keeps `allow`, with the one change a copy needs: the directory made absolute.
+        expect(row.written).toEqual({
+          command: "chat",
+          sampling: "allow",
+          cwd: "/workspace/app/tools",
+        });
+        expect(mcpCopyForm(row)).toMatchObject({ fields: { sampling: "allow" } });
+      }),
+  );
+
+  it.effect("only switches a Repo's server off, and Reset brings back what its file says", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", { held: WITH_REPO });
+      const docs = rowOf(markup, "docs");
+
+      // Exposure: what the file has, or hidden; never direct or deferred.
+      expect(docs).toMatch(/aria-label="docs exposure"[\s\S]*?<\/select>/);
+
+      const select =
+        /<select[^>]*aria-label="docs exposure"[\s\S]*?<\/select>/.exec(docs)?.[0] ?? "";
+
+      expect(select).toContain('value="codemode"');
+      expect(select).toContain('value="hidden"');
+      expect(select).not.toContain('value="direct"');
+      expect(select).not.toContain('value="deferred"');
+
+      const changes = mcpRepoRowChanges(repoRowOf("docs"));
+
+      // Off writes the adjustment; what the file says is a Reset of it.
+      expect(changes.enabled(false)).toMatchObject({ kind: "enabled", enabled: false });
+      expect(changes.enabled(true)).toEqual({
+        kind: "reset",
+        fields: ["mcp.servers.docs.enabled"],
+      });
+      expect(changes.exposure("hidden")).toMatchObject({ kind: "exposure", exposure: "hidden" });
+      expect(changes.exposure("codemode")).toEqual({
+        kind: "reset",
+        fields: ["mcp.servers.docs.exposure"],
+      });
+    }),
+  );
+
+  it.effect("does not switch on a server its file switched off", () =>
+    Effect.gen(function* () {
+      const text = JSON.stringify({
+        mcpServers: { idle: { command: "idle", enabled: false, exposure: "hidden" } },
+      });
+
+      const markup = yield* render("work", { held: { repoFiles: [repoFile({ text })] } });
+      const idle = rowOf(markup, "idle");
+
+      expect(idle).toMatch(/aria-label="idle enabled"[^>]*disabled/);
+      expect(idle).toMatch(/<select[^>]*aria-label="idle exposure"[^>]*disabled/);
+    }),
+  );
+
+  it.effect("offers Copy to this environment and Copy to Global on each of its servers", () =>
+    Effect.gen(function* () {
+      const docs = rowOf(yield* render("work", { held: WITH_REPO }), "docs");
+
+      expect(docs).toContain('aria-label="Copy docs to this environment"');
+      expect(docs).toContain(">Copy to this environment…</button>");
+      expect(docs).toContain('aria-label="Copy docs to Global"');
+      expect(docs).toContain(">Copy to Global…</button>");
+    }),
+  );
+
+  it.effect(
+    "marks an adjustment of a Repo's server as overridden, with a Reset to the Repo's",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          held: { repoFiles: [repoFile()] },
+          handlers: {
+            getSettingsOverrides: ({ environment }) =>
+              Effect.succeed({
+                environment,
+                settings: DEFAULT_SETTINGS,
+                global: DEFAULT_SETTINGS,
+                overrides: { mcp: { servers: { docs: { enabled: false } } } },
+                instructions: "",
+              }),
+          },
+        });
+
+        const docs = rowOf(markup, "docs");
+
+        expect(textOf(docs)).toContain("Enabled Overridden Reset to Repo app");
+        expect(docs).toContain('aria-label="Reset docs enabled to Repo app"');
+        expect(docs).toMatch(/aria-label="docs enabled"(?![^>]*checked)/);
+      }),
+  );
+
+  it.effect("lists each file above the servers: its path, blob, when it was read, and Reload", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", { held: WITH_REPO });
+      const text = textOf(markup);
+
+      expect(text).toContain("Repo files");
+      expect(text).toContain("app .pi/mcp.json acme/app blob abcdef0");
+      expect(text).toContain("Read 5 minutes ago.");
+      expect(markup).toContain('aria-label="Reload app&#x27;s .pi/mcp.json"');
+      expect(markup.indexOf("Repo files")).toBeLessThan(markup.indexOf("mcp-server-build"));
+    }),
+  );
+
+  it.effect("has no file list at Global, and none for an Environment with no Repos", () =>
+    Effect.gen(function* () {
+      expect(textOf(yield* render("*"))).not.toContain("Repo files");
+      expect(textOf(yield* render("work"))).not.toContain("Repo files");
+    }),
+  );
+
+  it.effect("reads ${NAME} from Variables only: a Secret of that name says it gets none", () =>
+    Effect.gen(function* () {
+      const asSecret = rowOf(yield* render("work", { held: { repoFiles: [repoFile()] } }), "docs");
+
+      expect(textOf(asSecret)).toContain(
+        "Repo app (.pi/mcp.json): headers.Authorization reads ${NOTES_KEY}, a Secret: a Repo's server gets no Secrets, so it is skipped. Copy it to this environment's Settings",
+      );
+
+      const asVariable = rowOf(
+        yield* render("work", {
+          held: { repoFiles: [repoFile()], variables: { NOTES_KEY: "plain" } },
+        }),
+        "docs",
+      );
+
+      expect(textOf(asVariable)).not.toContain("a Secret");
+      expect(textOf(asVariable)).toContain("The Repo's docs");
+
+      const nothing = rowOf(
+        yield* render("work", {
+          held: {
+            repoFiles: [repoFile()],
+            secrets: [],
+          },
+        }),
+        "docs",
+      );
+
+      expect(textOf(nothing)).toContain(
+        "which this environment has no Variable for, so it is skipped",
+      );
+    }),
+  );
+
+  it.effect("keeps an unreadable Repo's last copy, marked with the error and since when", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          repoFiles: [
+            repoFile({
+              state: "unreadable",
+              error: "GitHub answered 502",
+              errorSince: Date.now() - 3 * 3_600_000,
+            }),
+          ],
+        },
+      });
+
+      const text = textOf(markup);
+
+      expect(rowNames(markup)).toContain("docs");
+      expect(text).toContain("Could not be read since 3 hours ago: GitHub answered 502");
+      expect(text).toContain("Its servers are those of the copy read 5 minutes ago.");
+      expect(markup).not.toContain('role="alert"');
+    }),
+  );
+
+  it.effect("says the problem on the file's row once the Registry makes it one", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          repoFiles: [
+            repoFile({
+              state: "unreadable",
+              error: "GitHub answered 502",
+              errorSince: Date.now() - 30 * 3_600_000,
+              problem: "could not be read for over a day, so its servers are those of the copy",
+            }),
+          ],
+        },
+      });
+
+      const file = textOf(markup.slice(markup.indexOf('id="mcp-repo-app"')));
+
+      expect(file).toContain(
+        "Repo app (.pi/mcp.json): could not be read for over a day, so its servers are those of the copy",
+      );
+      expect(rowNames(markup)).toContain("docs");
+    }),
+  );
+
+  it.effect("shows an unreadable Repo with no copy as a problem and no servers", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          repoFiles: [
+            repoFile({
+              state: "unreadable",
+              error: "GitHub has no repo acme/app (install the GitHub App)",
+              errorSince: Date.now(),
+              problem: "could not be read: GitHub has no repo acme/app (install the GitHub App)",
+              text: undefined,
+              readAt: undefined,
+              blob: undefined,
+            }),
+          ],
+        },
+      });
+
+      expect(rowNames(markup)).toEqual(["files", "linear", "notes", "search"]);
+      expect(textOf(markup)).toContain("There is no copy of it, so it adds no servers.");
+      expect(textOf(markup)).toContain(
+        "Repo app (.pi/mcp.json): could not be read: GitHub has no repo acme/app (install the GitHub App)",
+      );
+    }),
+  );
+
+  it.effect("says a Repo without the file has none, with no problem", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          repoFiles: [
+            repoFile({ state: "absent", text: undefined, blob: undefined, readAt: undefined }),
+          ],
+        },
+      });
+
+      expect(textOf(markup)).toContain("no .pi/mcp.json on its default branch");
+      expect(rowNames(markup)).toEqual(["files", "linear", "notes", "search"]);
+      expect(markup).not.toContain('role="alert"');
+      expect(underProblems(markup)).not.toContain("Repo app");
+    }),
+  );
+
+  it.effect(
+    "shows a file that is not valid, or has no servers object, as a problem on its row",
+    () =>
+      Effect.gen(function* () {
+        const broken = yield* render("work", {
+          held: { repoFiles: [repoFile({ text: '{ "mcpServers": ' })] },
+        });
+
+        expect(textOf(broken)).toContain("Repo app (.pi/mcp.json): is not valid JSON");
+        expect(rowNames(broken)).toEqual(["files", "linear", "notes", "search"]);
+        // On the file's row, not under Problems.
+        expect(underProblems(broken)).not.toContain("Repo app");
+
+        const none = yield* render("work", {
+          held: { repoFiles: [repoFile({ text: JSON.stringify({ servers: {} }) })] },
+        });
+
+        expect(textOf(none)).toContain("Repo app (.pi/mcp.json): has no mcpServers object");
+      }),
+  );
+
+  it.effect("shows a file over 64 KiB as not read, with the Registry's problem", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          repoFiles: [
+            repoFile({
+              state: "oversize",
+              text: undefined,
+              readAt: undefined,
+              problem: "is 70 KiB, over 64 KiB, so it is not read",
+            }),
+          ],
+        },
+      });
+
+      expect(textOf(markup)).toContain("Not read");
+      expect(textOf(markup)).toContain(
+        "Repo app (.pi/mcp.json): is 70 KiB, over 64 KiB, so it is not read",
+      );
+      expect(rowNames(markup)).not.toContain("docs");
+    }),
+  );
+
+  it.effect("says a Repo that is not on GitHub is not read, with no Reload", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          repoFiles: [
+            {
+              repo: "app",
+              path: ".pi/mcp.json",
+              state: "not_github",
+              lookedAt: Date.now(),
+            },
+          ],
+        },
+      });
+
+      expect(textOf(markup)).toContain("Not on GitHub, so its .pi/mcp.json is not read");
+      expect(markup).not.toContain("Reload");
+    }),
+  );
+
+  it.effect("says a Repo not looked at yet is not read yet", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: { repoFiles: [{ repo: "app", path: ".pi/mcp.json", state: "never" }] },
+      });
+
+      expect(textOf(markup)).toContain("Not read yet.");
+      expect(markup).toContain('aria-label="Reload app&#x27;s .pi/mcp.json"');
+    }),
+  );
+
+  it.effect("reads a state it does not know as one, never as a good file", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: { repoFiles: [repoFile({ state: "quarantined", text: undefined })] },
+      });
+
+      expect(textOf(markup)).toContain("In a state this page does not know (quarantined).");
+      expect(rowNames(markup)).not.toContain("docs");
+    }),
+  );
+
+  it.effect("shows an owner's server that hides the Repo's of its name, never as a problem", () =>
+    Effect.gen(function* () {
+      const text = JSON.stringify({
+        mcpServers: {
+          linear: { url: "https://repo.example.com/mcp" },
+          notes: { command: "notes-mcp", description: "The team's notes" },
+        },
+      });
+
+      const markup = yield* render("work", { held: { repoFiles: [repoFile({ text })] } });
+
+      expect(textOf(rowOf(markup, "linear"))).toContain(
+        "Repo app (.pi/mcp.json) has linear, which this server hides (it differs)",
+      );
+      expect(textOf(rowOf(markup, "notes"))).toContain(
+        "Repo app (.pi/mcp.json) has notes, which this server hides",
+      );
+      expect(markup).not.toContain('role="alert"');
+    }),
+  );
+
+  it.effect(
+    "says it cannot show the Repos' servers when the Registry cannot say, and shows the rest",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          held: { repoFiles: [repoFile()] },
+          handlers: { mcpRepoFiles: () => Effect.die("the Registry has no such call") },
+        });
+
+        expect(textOf(markup)).toContain("The Repos' .pi/mcp.json are unavailable");
+        expect(rowNames(markup)).toEqual(["files", "linear", "notes", "search"]);
+      }),
+  );
+
+  it.effect("says nothing of the files while they are still being asked", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: WITH_REPO,
+        handlers: { mcpRepoFiles: () => Effect.never },
+        pending: [mcpRepoFilesQueryAtom("work")],
+      });
+
+      expect(rowNames(markup)).toEqual(["files", "linear", "notes", "search"]);
+      expect(textOf(markup)).not.toContain("unavailable");
+    }),
+  );
+});
+
+/** The row of Repo server `name` (of Repo `app`'s `file`) as the section shows it at Work. */
+const repoRowOf = (name: string, file: McpRepoFileView = repoFile()) => {
+  const view = mcpScopeView({
+    scope: "work",
+    global: GLOBAL_DOCUMENT,
+    globalProblem: undefined,
+    overrides: WORK_OVERRIDES,
+    overridesProblem: undefined,
+    offered: DEFAULT_SETTINGS.tools.offered,
+    overriddenIn: {},
+    repoFiles: [file],
+  });
+
+  const found = view.rows.find((row) => row.name === name);
+
+  if (found === undefined) throw new Error(`no row ${name}`);
+
+  return found;
+};
+
+describe("Copy of a Repo's server", () => {
+  const repoRow = (name: string) => repoRowOf(name);
+
+  it("makes a form of the entry as the file gives it, named for the Repo it comes from", () => {
+    const draft = mcpCopyForm(repoRow("build"));
+
+    expect(draft).toMatchObject({
+      kind: "form",
+      mode: "copy",
+      copiedFrom: "app",
+      fields: {
+        name: "build",
+        kind: "stdio",
+        command: "node",
+        args: ["build-mcp.js"],
+        cwd: "/workspace/app/tools",
+      },
+    });
+  });
+
+  it.effect("opens at this environment as a copy that hides the Repo's and keeps what it was", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: { repoFiles: [repoFile()] },
+        panel: mcpCopyForm(repoRow("docs")),
+      });
+
+      const form = textOf(markup.slice(markup.indexOf("<form")));
+
+      expect(markup).toContain('aria-label="Copy docs from Repo app to this environment"');
+      expect(form).toContain(
+        "hides the Repo's here, stops following its commits and needs its own MCP sign-in",
+      );
+      // The name stays the Repo's; the entry keeps ${NAME} as written, and a Secret of the Environment is a name it may read.
+      expect(markup).toMatch(/id="mcp-name-work"[^>]*disabled/);
+      expect(markup).toContain("Bearer ${NOTES_KEY}");
+      // A Secret of the Environment is fine in the owner's copy: no problem about it.
+      expect(markup).not.toContain("neither as a Secret nor as a Variable");
+    }),
+  );
+
+  it.effect("opens at Global as a copy kept Global, saying its directory is the Repo's here", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("*", { panel: mcpCopyForm(repoRow("build")) });
+
+      expect(markup).toContain('aria-label="Copy build from Repo app to Global"');
+      expect(textOf(markup)).toContain("kept Global and as copied");
+      expect(textOf(markup)).toContain("check it fits every environment");
+    }),
+  );
+
+  it.effect("saves at the Environment as its own entry, which hides the Repo's", () =>
+    Effect.gen(function* () {
+      const saved: Array<unknown> = [];
+
+      const layer = fakeRegistryLayer({
+        ...handlersFor({ repoFiles: [repoFile()] }),
+        updateSettingsOverrides: (payload) =>
+          Effect.sync(() => {
+            saved.push(payload);
+
+            return {
+              environment: payload.environment,
+              settings: DEFAULT_SETTINGS,
+              global: DEFAULT_SETTINGS,
+              overrides: {},
+              instructions: "",
+            };
+          }),
+      });
+
+      yield* writeMcpChange("work", {
+        kind: "put",
+        name: "docs",
+        entry: repoRow("docs").written,
+      }).pipe(Effect.provide(layer));
+
+      expect(saved).toEqual([
+        {
+          environment: "work",
+          set: { mcp: { servers: { docs: JSON.parse(REPO_TEXT).mcpServers.docs } } },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("saves at Global as Global's entry", () =>
+    Effect.gen(function* () {
+      const saved: Array<unknown> = [];
+
+      const layer = fakeRegistryLayer({
+        ...handlersFor({ repoFiles: [repoFile()] }),
+        updateSettings: (payload) =>
+          Effect.sync(() => {
+            saved.push(payload);
+
+            return { settings: DEFAULT_SETTINGS, overrides: payload.overrides, overriddenIn: {} };
+          }),
+      });
+
+      yield* writeMcpChange("*", {
+        kind: "put",
+        name: "build",
+        entry: repoRow("build").written,
+      }).pipe(Effect.provide(layer));
+
+      expect(saved).toHaveLength(1);
+      expect(JSON.stringify(saved[0])).toContain(
+        '"build":{"command":"node","args":["build-mcp.js"],"cwd":"/workspace/app/tools"}',
+      );
+    }),
+  );
+});
+
+describe("what the owner's switch writes on a Repo's server", () => {
+  const saved = () => {
+    const writes: Array<unknown> = [];
+
+    const handlers = (held: Parameters<typeof handlersFor>[0]): Partial<RegistryHandlers> => ({
+      ...handlersFor(held),
+      updateSettingsOverrides: (payload) =>
+        Effect.sync(() => {
+          writes.push(payload);
+
+          return {
+            environment: payload.environment,
+            settings: DEFAULT_SETTINGS,
+            global: DEFAULT_SETTINGS,
+            overrides: {},
+            instructions: "",
+          };
+        }),
+    });
+
+    return { writes, handlers };
+  };
+
+  const docsRow = () => repoRowOf("docs");
+
+  it.effect("is an adjustment of this Environment, over the Repo's server", () =>
+    Effect.gen(function* () {
+      const { writes, handlers } = saved();
+
+      yield* writeMcpChange("work", mcpRowChanges(docsRow()).enabled(false)).pipe(
+        Effect.provide(fakeRegistryLayer(handlers({ repoFiles: [repoFile()] }))),
+      );
+
+      expect(writes).toEqual([
+        { environment: "work", set: { mcp: { servers: { docs: { enabled: false } } } } },
+      ]);
+    }),
+  );
+
+  it.effect("writes nothing when the Repo no longer has the server since the row was shown", () =>
+    Effect.gen(function* () {
+      const { writes, handlers } = saved();
+
+      const outcome = yield* writeMcpChange("work", mcpRowChanges(docsRow()).enabled(false)).pipe(
+        Effect.provide(
+          fakeRegistryLayer(
+            handlers({ repoFiles: [repoFile({ text: JSON.stringify({ mcpServers: {} }) })] }),
+          ),
+        ),
+        Effect.flip,
+      );
+
+      expect(outcome.message).toContain("docs is not one of this Scope's servers any more");
+      expect(writes).toEqual([]);
+    }),
+  );
+});
+
+describe("Reload", () => {
+  it.effect("asks the Registry to look at the Repo now, and then asks for the files again", () =>
+    Effect.gen(function* () {
+      const asked: Array<unknown> = [];
+
+      const registry = registryWith({
+        ...handlersFor({ repoFiles: [repoFile()] }),
+        mcpReloadRepoFiles: (payload) =>
+          Effect.sync(() => {
+            asked.push(payload);
+
+            return McpRepoFiles.make({ files: [repoFile()] });
+          }),
+      });
+
+      yield* settle(registry, [mcpRepoFilesQueryAtom("work")]);
+      registry.set(reloadMcpRepoAtom("work"), "app");
+      yield* settled(registry, reloadMcpRepoAtom("work"));
+
+      expect(asked).toEqual([{ environment: "work", repo: "app" }]);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("fails with why when the Environment is not there", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        ...handlersFor(),
+        mcpReloadRepoFiles: () => Effect.succeed(McpNoEnvironment.make({})),
+      });
+
+      registry.set(reloadMcpRepoAtom("work"), undefined);
+      const result = yield* settled(registry, reloadMcpRepoAtom("work"));
+
+      expect(JSON.stringify(result)).toContain("This environment is not there any more.");
+      registry.dispose();
+    }),
+  );
+});
+
 describe("the form of an Add", () => {
   const add = newMcpForm("add", "", null);
 
@@ -783,7 +1514,7 @@ describe("the tool exposure editor of a Global server at an Environment", () => 
   it.effect("saves a server Global still has", () =>
     Effect.gen(function* () {
       const markup = yield* render("work", {
-        panel: { kind: "tools", name: "files", rows: [] },
+        panel: { kind: "tools", name: "files", rows: [], fixed: [] },
       });
 
       expect(textOf(markup)).toContain("Tool exposure of files");
@@ -797,7 +1528,7 @@ describe("the tool exposure editor of a Global server at an Environment", () => 
     () =>
       Effect.gen(function* () {
         const markup = yield* render("work", {
-          panel: { kind: "tools", name: "vanished", rows: [] },
+          panel: { kind: "tools", name: "vanished", rows: [], fixed: [] },
         });
 
         expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Save tool exposure/);
@@ -1239,5 +1970,95 @@ describe("what the owner's actions write", () => {
       ]);
       registry.dispose();
     }),
+  );
+});
+
+describe("the tool exposure editor of a Repo's server", () => {
+  const TOOLS_FILE = repoFile({
+    text: JSON.stringify({
+      mcpServers: {
+        shell: {
+          command: "shell",
+          toolExposure: { "read_*": "direct", delete_all: "hidden" },
+        },
+      },
+    }),
+  });
+
+  it("keeps the file's rows apart, read-only, and starts the owner's rows empty", () => {
+    expect(toolsDraftOf(repoRowOf("shell", TOOLS_FILE))).toEqual({
+      kind: "tools",
+      name: "shell",
+      rows: [],
+      fixed: [
+        { pattern: "read_*", exposure: "direct" },
+        { pattern: "delete_all", exposure: "hidden" },
+      ],
+    });
+  });
+
+  it("shows only what is added beyond the file's rows as the owner's, once saved", () => {
+    const base = { "read_*": "direct", delete_all: "hidden" } as const;
+    const saved = mcpRepoToolExposure(base, [{ pattern: "drop_*", exposure: "hidden" }]);
+
+    const row = repoRowOf("shell", TOOLS_FILE);
+    const adjusted = { ...row, server: { ...row.server, toolExposure: saved } };
+
+    expect(toolsDraftOf(adjusted).rows).toEqual([{ pattern: "drop_*", exposure: "hidden" }]);
+    expect(toolsDraftOf(adjusted).fixed).toHaveLength(2);
+  });
+
+  it("can only hide more: what is added is hidden, ahead of the file's rows, which are all kept", () => {
+    const base = { "read_*": "direct", delete_all: "hidden", "list_*": "deferred" } as const;
+
+    // Whatever Exposure a row was typed with, it is hidden; the file's rows keep theirs, and cannot be left out.
+    const saved = mcpRepoToolExposure(base, [
+      { pattern: "drop_*", exposure: "direct" },
+      { pattern: "", exposure: "hidden" },
+      { pattern: "list_*", exposure: "codemode" },
+    ]);
+
+    expect(Object.entries(saved)).toEqual([
+      ["drop_*", "hidden"],
+      ["list_*", "hidden"],
+      ["read_*", "direct"],
+      ["delete_all", "hidden"],
+    ]);
+    expect(Object.keys(mcpRepoToolExposure(base, []))).toEqual(Object.keys(base));
+    expect(mcpRepoToolExposure(base, [])).toEqual(base);
+  });
+
+  it("saves the added rows as the adjustment, or resets it when none is left", () => {
+    const row = repoRowOf("shell", TOOLS_FILE);
+
+    expect(mcpRepoToolsChange(row, [{ pattern: "drop_*", exposure: "hidden" }])).toEqual({
+      kind: "toolExposure",
+      name: "shell",
+      target: "adjustment",
+      toolExposure: { "drop_*": "hidden", "read_*": "direct", delete_all: "hidden" },
+    });
+
+    expect(mcpRepoToolsChange(row, [])).toEqual({
+      kind: "reset",
+      fields: ["mcp.servers.shell.toolExposure"],
+    });
+  });
+
+  it.effect(
+    "lists the file's rows without a way to change them, and offers only hidden for the rest",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          held: { repoFiles: [TOOLS_FILE] },
+          panel: toolsDraftOf(repoRowOf("shell", TOOLS_FILE)),
+        });
+
+        const text = textOf(markup);
+
+        expect(text).toContain("read_* Direct (from the Repo's file; not changed here)");
+        expect(text).toContain("A Repo's server can only have tools hidden here");
+        // The file's rows have no inputs: the only inputs are the owner's rows, of which there are none yet.
+        expect(markup).not.toContain('aria-label="Tool exposure 1 pattern"');
+      }),
   );
 });

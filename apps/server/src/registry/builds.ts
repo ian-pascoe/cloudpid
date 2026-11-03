@@ -27,6 +27,7 @@ import {
 } from "../workspace/build-record.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import { writeEnvironmentSettings } from "./environment-settings.ts";
+import type { McpPushes } from "../mcp/push.ts";
 import { noEnvironment, reason } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import type { Spares } from "./rpc.ts";
@@ -183,12 +184,19 @@ export const buildUpkeep = (
   {
     workspaces,
     spares,
+    mcp,
   }: {
     readonly workspaces: Pick<
       WorkspaceObjects,
       "buildState" | "startBuild" | "cancelBuild" | "destroy"
     >;
     readonly spares: Pick<Spares, "of">;
+    /**
+     * Hands an Environment's MCP server set to its host. A Build that found a default branch moved had the Registry look at
+     * that Repo's `.pi/mcp.json` (`recordBuild`), and what that changed is pushed here; without it the host takes the
+     * set at its next pull.
+     */
+    readonly mcp?: Pick<McpPushes, "sync"> | undefined;
   },
 ): Builds => {
   /** Keep one Environment's Build current: what was asked of its Build object, and whether a Build was asked for or is under way. */
@@ -248,11 +256,17 @@ export const buildUpkeep = (
       const answered: BuildState = wanted ? state : { ...state, last: null, progress: null };
 
       if (!recordedAs(work.recorded, answered)) {
-        yield* registry.recordBuild({
+        // A Registry from before this answered the Repos a Build moved answers nothing: the edge only gains
+        // (`docs/architecture/mcp.md` → Deploys), so the rest of the upkeep runs either way.
+        const moved: ReadonlyArray<string> | undefined = yield* registry.recordBuild({
           environment: work.environment,
           build: answered.last,
           status: answered.progress,
         });
+
+        if (mcp !== undefined && moved !== undefined && moved.length > 0) {
+          yield* mcp.sync(work.environment);
+        }
 
         // The spare is made from the last good Build: one made from another is stale now.
         if (answered.last?.snapshot.id !== work.recorded.build?.snapshot.id) {

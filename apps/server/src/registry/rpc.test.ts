@@ -80,6 +80,7 @@ import type { SkillSearcher } from "./skill-search.ts";
 import type { McpPushes } from "../mcp/push.ts";
 import { mcpStatus } from "../mcp/status.ts";
 import type { McpHostMethods } from "../mcp/host.ts";
+import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -540,7 +541,11 @@ const fakeRegistries = () => {
     );
 
   let sparesMade = 0;
+  /** A Registry from before `recordBuild` answered the Repos a Build moved: it answers nothing, as `void` did. */
+  const oldRegistry = { recordBuild: false };
   const mcpSyncs: Array<string | undefined> = [];
+  /** The looks at the Repos' `.pi/mcp.json` the endpoint asked of the Registry, in order with the pushes. */
+  const mcpLooks: Array<string> = [];
   /** The MCP server names of each Environment (none for one not listed here), and what the hosts were asked. */
   const mcpNames = new Map<string, ReadonlyArray<string>>();
   const mcpHostCalls: Array<string> = [];
@@ -1144,8 +1149,13 @@ const fakeRegistries = () => {
       }),
     recordBuild: ({ environment, build, status }) =>
       Effect.sync(() => {
+        const moved = buildMovedRepos(buildRecords.get(environment)?.build ?? null, build);
+
         calls.push(`recordBuild:${environment}`);
         buildRecords.set(environment, { build, status });
+
+        // SAFETY: an old Registry's answer, which the type does not have: the edge only gains.
+        return oldRegistry.recordBuild ? (undefined as never) : moved;
       }),
     listBuilds: () =>
       Effect.sync(() =>
@@ -1355,6 +1365,20 @@ const fakeRegistries = () => {
           ? (mcpNames.get(environment) ?? [])
           : null,
       ),
+    mcpRepoFiles: ({ environment }) =>
+      Effect.succeed(
+        environments.some((each) => each.id === environment)
+          ? [{ repo: "app", path: ".pi/mcp.json", state: "never" }]
+          : null,
+      ),
+    mcpLookRepoFiles: ({ environment, repo, reason }) =>
+      Effect.sync(() => {
+        mcpLooks.push(`${reason} ${environment} ${repo ?? "*"}`);
+
+        return environments.some((each) => each.id === environment)
+          ? [{ repo: "app", path: ".pi/mcp.json", state: "read", blob: "b1" }]
+          : null;
+      }),
     mcpPending: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpPushed: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpDestroyed: () => Effect.die("The endpoint pushes through `mcp`"),
@@ -1512,6 +1536,8 @@ const fakeRegistries = () => {
     }),
     /** The Environments the endpoint asked `mcp` to push the MCP server set to (undefined: every one). */
     mcpSyncs,
+    oldRegistry,
+    mcpLooks,
     mcpNames,
     mcpOffered,
     mcpSettings,
@@ -1548,6 +1574,7 @@ const fakeRegistries = () => {
     mcp: {
       sync: (environment) =>
         Effect.sync(() => {
+          mcpLooks.push(`sync ${environment ?? "*"}`);
           mcpSyncs.push(environment);
         }),
     } satisfies McpPushes,
@@ -1727,7 +1754,17 @@ const fakeRegistries = () => {
     /** The upkeep of the spares, built once per fake as the main Worker builds it once per isolate. */
     spareUpkeep: upkeepOfSpares,
     /** The upkeep of the Builds, built once per fake too. */
-    buildUpkeep: buildUpkeep(registries, { workspaces: workspaceObjects, spares: upkeepOfSpares }),
+    buildUpkeep: buildUpkeep(registries, {
+      workspaces: workspaceObjects,
+      spares: upkeepOfSpares,
+      mcp: {
+        sync: (environment) =>
+          Effect.sync(() => {
+            mcpLooks.push(`sync ${environment}`);
+            mcpSyncs.push(environment);
+          }),
+      },
+    }),
     spareBuilds,
     /** What each Workspace DO's clones read as (`workState`), by object name; nothing to push when unset. */
     workStates,
@@ -5015,6 +5052,54 @@ it("asks for a Build again when the settings a Build uses change, and not for a 
   expect(fake.buildRecords.get(environment)?.build).toEqual(good);
 });
 
+it.each([true, false])(
+  "pushes the MCP set once after a Build that moved a Repo, or carries on without when the Registry is from before it answered which (old: %s)",
+  async (old) => {
+    const fake = fakeRegistries();
+    const environment = await makeEnvironment(fake, "Cloudpid");
+
+    const build = (id: string, commit: string) => ({
+      key: "",
+      snapshot: { id, size: 1 },
+      image: "img-1",
+      ignore: null,
+      commits: { app: commit },
+      finishedAt: 10,
+    });
+
+    const before = build("snap-1", "c1");
+    const after = build("snap-2", "c2");
+
+    await fake.runBackground();
+    fake.overridesOf.set(environment, { setupScript: "docker pull postgres" });
+    before.key = await keyOf(fake, environment);
+    after.key = before.key;
+    fake.buildRecords.set(environment, { build: before, status: null });
+    // The Build object has moved on to a newer one, which the upkeep records.
+    fake.buildObjects.set(`build:${environment}`, {
+      image: "img-1",
+      last: after,
+      progress: null,
+      attemptedAt: Date.now(),
+    });
+    fake.oldRegistry.recordBuild = old;
+    fake.calls.length = 0;
+    fake.mcpSyncs.length = 0;
+
+    await call(fake, (registry) =>
+      registry.updateGlobalContainerSettings({ set: { variables: { SHARED: "all" } } }),
+    );
+    await fake.runBackground();
+
+    // The Build was recorded, and what follows it still ran: the spare was made from the newer one, and no push was made.
+    const recorded = fake.calls.indexOf(`recordBuild:${environment}`);
+
+    expect(recorded).toBeGreaterThanOrEqual(0);
+    expect(fake.calls.slice(recorded)).toContain(`upkeepSpares:${environment}`);
+    expect(fake.mcpSyncs.includes(environment)).toBe(!old);
+  },
+);
+
 it("makes a Build with the variables kept Global under the Environment's own, and keeps the request and key of one that overrides every name", async () => {
   const fake = fakeRegistries();
   const shadowing = await makeEnvironment(fake, "Shadowing");
@@ -5816,6 +5901,67 @@ describe("handing the MCP server set to the hosts", () => {
     await fake.runBackground();
 
     expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT, DEFAULT_ENVIRONMENT]);
+  });
+
+  it("looks at a Repo's .pi/mcp.json when it is added, before the set is pushed", async () => {
+    const fake = fakeRegistries();
+
+    await call(fake, (registry) =>
+      registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/app" }),
+    );
+    await fake.runBackground();
+
+    expect(fake.mcpLooks).toEqual([
+      `added ${DEFAULT_ENVIRONMENT} app`,
+      `sync ${DEFAULT_ENVIRONMENT}`,
+    ]);
+  });
+
+  it("answers the Repos' files, and Reload looks at once and then pushes", async () => {
+    const fake = fakeRegistries();
+
+    const files = await call(fake, (registry) =>
+      registry.mcpRepoFiles({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(files).toEqual({
+      _tag: "RepoFiles",
+      files: [{ repo: "app", path: ".pi/mcp.json", state: "never" }],
+    });
+    expect(fake.mcpLooks).toEqual([]);
+
+    const reloaded = await call(fake, (registry) =>
+      registry.mcpReloadRepoFiles({ environment: DEFAULT_ENVIRONMENT, repo: "app" }),
+    );
+
+    expect(reloaded).toEqual({
+      _tag: "RepoFiles",
+      files: [{ repo: "app", path: ".pi/mcp.json", state: "read", blob: "b1" }],
+    });
+    expect(fake.mcpLooks).toEqual([`reload ${DEFAULT_ENVIRONMENT} app`]);
+
+    await fake.runBackground();
+
+    expect(fake.mcpLooks).toEqual([
+      `reload ${DEFAULT_ENVIRONMENT} app`,
+      `sync ${DEFAULT_ENVIRONMENT}`,
+    ]);
+  });
+
+  it("says an Environment it does not list has no Repo files, and pushes nothing for it", async () => {
+    const fake = fakeRegistries();
+
+    const read = await call(fake, (registry) => registry.mcpRepoFiles({ environment: "0badc0de" }));
+
+    const reloaded = await call(fake, (registry) =>
+      registry.mcpReloadRepoFiles({ environment: "0badc0de" }),
+    );
+
+    await fake.runBackground();
+
+    expect(read).toEqual({ _tag: "NoEnvironment" });
+    expect(reloaded).toEqual({ _tag: "NoEnvironment" });
+    expect(fake.mcpSyncs).toEqual([]);
   });
 
   it("wipes the hosts after an Environment was deleted, once the answer is sent, and not after a refusal", async () => {

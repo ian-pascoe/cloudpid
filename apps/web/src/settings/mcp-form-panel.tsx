@@ -42,8 +42,10 @@ import {
   type McpReferenceNames,
   type McpRow,
   type McpScopeView,
+  repoDirectoryOf,
 } from "./mcp-model.ts";
 import { MessageList, OptionSelect, ReferencesNotice } from "./mcp-parts.tsx";
+import { mcpRepoToolsChange } from "./mcp-write.ts";
 import { type McpReferencesState, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
 import { CODE_AREA, Field, noteId } from "./parts.tsx";
 
@@ -57,11 +59,12 @@ const SAMPLING_HINTS: Readonly<Record<(typeof MCP_SAMPLING)[number], string>> = 
   off: "The server's requests for a model's reply are refused.",
 };
 
-/** A select of the four Exposures. */
+/** A select of the four Exposures, or of `options` (a Repo's server is only ever hidden here). */
 export const ExposureSelect = ({
   id,
   label,
   value,
+  options = MCP_EXPOSURE_OPTIONS,
   disabled,
   describedBy,
   onChange,
@@ -69,6 +72,7 @@ export const ExposureSelect = ({
   id?: string | undefined;
   label?: string | undefined;
   value: McpExposure;
+  options?: ReadonlyArray<McpExposure> | undefined;
   disabled?: boolean | undefined;
   describedBy?: string | undefined;
   onChange: (exposure: McpExposure) => void;
@@ -76,7 +80,7 @@ export const ExposureSelect = ({
   <OptionSelect
     id={id}
     label={label}
-    options={MCP_EXPOSURE_OPTIONS}
+    options={options}
     labels={MCP_EXPOSURE_LABELS}
     value={value}
     disabled={disabled}
@@ -228,12 +232,15 @@ export const ToolRows = ({
   rows,
   listId,
   disabled,
+  hideOnly = false,
   onChange,
 }: {
   rows: ReadonlyArray<McpToolRow>;
   /** The id of the datalist of tool names. */
   listId: string;
   disabled?: boolean | undefined;
+  /** A Repo's server's: a tool may only be hidden (a row the Repo gave another Exposure shows it as it is). */
+  hideOnly?: boolean | undefined;
   onChange: (rows: ReadonlyArray<McpToolRow>) => void;
 }) => (
   <Rows
@@ -262,6 +269,7 @@ export const ToolRows = ({
         <ExposureSelect
           label={`Tool exposure ${index + 1} exposure`}
           value={row.exposure}
+          options={hideOnly ? Arr.dedupe<Array<McpExposure>>(["hidden", row.exposure]) : undefined}
           disabled={disabled}
           onChange={(exposure) => {
             onChange(replaced(rows, index, { ...row, exposure }));
@@ -328,6 +336,10 @@ const titleOf = (draft: McpFormDraft, atGlobal: boolean): string => {
       return `Edit ${draft.fields.name}`;
     case "replace":
       return `Use ${draft.fields.name} in this environment on its own`;
+    case "copy":
+      return atGlobal
+        ? `Copy ${draft.fields.name} from Repo ${draft.copiedFrom ?? ""} to Global`
+        : `Copy ${draft.fields.name} from Repo ${draft.copiedFrom ?? ""} to this environment`;
   }
 };
 
@@ -370,7 +382,7 @@ export const McpFormPanel = ({
         rules: {
           names: view.names,
           atGlobal,
-          editing: draft.mode === "add" ? null : fields.name,
+          editing: draft.mode === "add" || draft.mode === "copy" ? null : fields.name,
         },
         references: known,
       })
@@ -434,6 +446,13 @@ export const McpFormPanel = ({
         <p className="text-xs text-muted-foreground">
           A copy of Global's entry, kept as this environment's own: it replaces Global's here and
           stops following its changes. Its adjustments, if it has any, are dropped.
+        </p>
+      )}
+      {draft.mode === "copy" && (
+        <p className="text-xs text-muted-foreground">
+          {atGlobal
+            ? "A copy of the Repo's entry, kept Global and as copied: it stops following the Repo's commits and needs its own MCP sign-in. Every environment that follows Global gets it, and its ${NAME} values read each environment's Secrets as well as its Variables. Its working directory is the Repo's in this environment; check it fits every environment."
+            : "A copy of the Repo's entry, kept as this environment's own and as copied: it hides the Repo's here, stops following its commits and needs its own MCP sign-in. Its ${NAME} values read this environment's Secrets as well as its Variables."}
         </p>
       )}
       {draft.mode === "add" && !atGlobal && Arr.contains(view.names.global, fields.name) && (
@@ -745,17 +764,25 @@ export const McpToolsPanel = ({
   const gone = row === null || !isFollowedRow(row);
   const busy = saved.waiting;
   const listId = `mcp-tools-${scope}`;
+  const directory = row === null ? null : repoDirectoryOf(row);
+  const base = directory === null ? "Global's" : `Repo ${directory}'s`;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (!busy && !gone)
-      save({
-        kind: "toolExposure",
-        name: draft.name,
-        target: "adjustment",
-        toolExposure: toolExposureOfRows(draft.rows),
-      });
+    if (busy || gone || row === null) return;
+
+    // A Repo's server: what the owner adds to its file's rows, which are kept as they are.
+    save(
+      directory === null
+        ? {
+            kind: "toolExposure",
+            name: draft.name,
+            target: "adjustment",
+            toolExposure: toolExposureOfRows(draft.rows),
+          }
+        : mcpRepoToolsChange(row, draft.rows),
+    );
   };
 
   return (
@@ -766,22 +793,39 @@ export const McpToolsPanel = ({
     >
       <h3 className="text-sm font-semibold">Tool exposure of {draft.name}</h3>
       <p className="text-xs text-muted-foreground">
-        Saved as this environment's own tool exposure for {draft.name}, over Global's
+        Saved as this environment's own tool exposure for {draft.name}, over {base}
         {row?.adjusted.includes("toolExposure") === true ? "" : ", which it follows until you save"}
         . The first pattern that matches wins; an exact name goes before any pattern.
+        {directory !== null && " A Repo's server can only have tools hidden here."}
       </p>
       <Suggestions id={listId} options={tools} />
+      {draft.fixed.length > 0 && (
+        <ul
+          aria-label={`${draft.name}: tool exposure from the Repo`}
+          className="flex flex-col gap-1 text-xs"
+        >
+          {draft.fixed.map((fixed) => (
+            <li key={fixed.pattern} className="flex items-center gap-2 text-muted-foreground">
+              <code className="font-mono">{fixed.pattern}</code>
+              <span>{MCP_EXPOSURE_LABELS[fixed.exposure]}</span>
+              <span>(from the Repo's file; not changed here)</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <ToolRows
         rows={draft.rows}
         listId={listId}
+        hideOnly={directory !== null}
         onChange={(rows) => {
           setPanel({ ...draft, rows });
         }}
       />
       {gone && (
         <p role="alert" className="text-sm text-destructive">
-          {draft.name} is not one of Global's servers in this environment any more, so there is
-          nothing to adjust: close this and look at the list again.
+          {draft.name} is not one of {directory === null ? "Global's" : "a Repo's"} servers in this
+          environment any more, so there is nothing to adjust: close this and look at the list
+          again.
         </p>
       )}
       <DialogProblem problem={settledFailureOf(saved)} />

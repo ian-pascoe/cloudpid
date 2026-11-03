@@ -145,7 +145,7 @@ export const McpNoEnvironment = Schema.TaggedStruct("NoEnvironment", {});
 export type McpNoEnvironment = typeof McpNoEnvironment.Type;
 
 /** An answer of a tag this build does not know, as it crosses the edge: it reads as `Unavailable`. */
-const OtherAnswerFromWire = Schema.Struct({
+export const OtherAnswerFromWire = Schema.Struct({
   _tag: Schema.String,
   message: Schema.optionalKey(Schema.String),
 }).pipe(

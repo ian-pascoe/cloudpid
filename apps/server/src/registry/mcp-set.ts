@@ -23,7 +23,7 @@ import * as Schema from "effect/Schema";
 export type McpSetLayers = {
   readonly global: Schema.Json;
   readonly overrides: Schema.Json;
-  /** Each Repo's `.pi/mcp.json` as the Registry last read it, in the Environment's Repo order (none until #468). */
+  /** Each Repo's `.pi/mcp.json` as the Registry last read it, in the Environment's Repo order. */
   readonly repos: ReadonlyArray<McpRepoLayer>;
 };
 

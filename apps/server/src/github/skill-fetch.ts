@@ -74,7 +74,16 @@ export type RepoReader = {
   readonly headTree: (repo: SkillRepo, ref: string | null) => Promise<RepoTree>;
   /** The content of the blob `sha`. */
   readonly blob: (repo: SkillRepo, sha: string) => Promise<Uint8Array>;
+  /**
+   * The file at `path` in `ref`'s head (the default branch's when null), as its blob SHA and size, or null when the repo
+   * is readable and has no file there: a repo that cannot be read (or has no such ref) throws, so the two are told apart.
+   * What a Repo's `.pi/mcp.json` is read with (`docs/architecture/mcp-configuration.md` → A Repo's `.pi/mcp.json`).
+   */
+  readonly file: (repo: SkillRepo, ref: string | null, path: string) => Promise<RepoFile | null>;
 };
+
+/** A file of a repo as `RepoReader.file` finds it: its blob and size, the content read apart by `blob`. */
+export type RepoFile = { readonly sha: string; readonly size: number };
 
 /** A Skill the repo holds, as a listing shows it. */
 export type ListedSkill = {

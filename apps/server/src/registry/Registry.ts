@@ -21,6 +21,7 @@ import type {
   EnvironmentSecretRecord,
   EnvironmentSkill,
   MarkedOrigin,
+  McpRepoFileView,
   OverridingEnvironment,
   PushState,
   PushSubscription,
@@ -64,6 +65,8 @@ import {
 } from "./skills.ts";
 import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
+import { buildMovedRepos, MCP_FIRST_LOOK_WAIT, mcpRepoFileViews } from "./mcp-repo-files.ts";
+import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
   previewSkillUpdates,
@@ -750,12 +753,16 @@ export type RegistryMethods = {
   readonly buildWork: (input: {
     readonly environments?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<ReadonlyArray<BuildWork>>;
-  /** Record what an Environment's Build object answered: its last good Build, and the one in progress or the last failure. */
+  /**
+   * Record what an Environment's Build object answered: its last good Build, and the one in progress or the last failure.
+   * It looks at the `.pi/mcp.json` of each Repo whose default branch the Build found moved, and answers those Repos (so
+   * that the caller pushes what that changed).
+   */
   readonly recordBuild: (input: {
     readonly environment: string;
     readonly build: EnvironmentBuild | null;
     readonly status: BuildProgress | null;
-  }) => Effect.Effect<void>;
+  }) => Effect.Effect<ReadonlyArray<string>>;
   /** Where each Environment's Build stands, for the owner. */
   readonly listBuilds: () => Effect.Effect<ReadonlyArray<EnvironmentBuildState>>;
   /** Every kept Secret: names, scopes, build flags and times, never a value. */
@@ -861,6 +868,24 @@ export type RegistryMethods = {
    * kept by the Registry. For the `McpHost` DO only.
    */
   readonly mcpServerValues: (input: McpValuesInput) => Effect.Effect<McpServerValuesAnswer>;
+  /**
+   * Each of `environment`'s Repos' `.pi/mcp.json` as last looked at, in the Environment's Repo order, or null when it is not
+   * registered (`docs/architecture/mcp-configuration.md` → A Repo's `.pi/mcp.json`). Read-only: it asks GitHub for nothing.
+   */
+  readonly mcpRepoFiles: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<ReadonlyArray<McpRepoFileView> | null>;
+  /**
+   * Look at `environment`'s Repos' `.pi/mcp.json` on GitHub (only `repo`'s when given) and answer them as `mcpRepoFiles` does.
+   * `added` (a Repo was just added) looks at once; `reload` (the owner's) looks at once, and a Repo that cannot be read loses
+   * its last good copy, even when another look was running. The Registry never calls out, so the caller pushes the set
+   * after. Never fails.
+   */
+  readonly mcpLookRepoFiles: (input: {
+    readonly environment: string;
+    readonly repo?: string | undefined;
+    readonly reason: Extract<McpRepoLookReason, "added" | "reload">;
+  }) => Effect.Effect<ReadonlyArray<McpRepoFileView> | null>;
   /**
    * The names of `environment`'s MCP servers, in the set's order, or null when it is not registered. Read-only: it
    * notes nothing as handed. For the main Worker's MCP status reads, which wake a host only for an Environment with servers.
@@ -991,6 +1016,8 @@ export const RegistryLive = Registry.make(
         const notify = pushNotifier({ store, vapid: push.vapid });
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
         const skillReader = githubSkillReader(github);
+        // The Repos' `.pi/mcp.json` are read through the same reader (one token), and kept in the Registry.
+        const mcpLooks = openMcpRepoLooks(store, skillReader);
 
         /** Install `source`'s Skills into `environment`: as Agent changes by `author`, or as the owner's save with none. */
         const installFromGithub = (input: {
@@ -1707,8 +1734,21 @@ export const RegistryLive = Registry.make(
               return Arr.filter(work, (item) => item !== undefined);
             }),
           recordBuild: ({ environment, build, status }) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
+              const moved = buildMovedRepos(store.getBuild(environment)?.build ?? null, build);
+
               store.putBuild(environment, { build, status });
+
+              // A Build that found a default branch moved: that Repo's `.pi/mcp.json` may have changed with it.
+              if (moved.length > 0) {
+                const now = yield* Clock.currentTimeMillis;
+
+                yield* Effect.promise(() =>
+                  mcpLooks.look({ environment, repos: moved, reason: "moved", now }),
+                );
+              }
+
+              return moved;
             }),
           listBuilds: () =>
             Effect.sync(() =>
@@ -1783,12 +1823,46 @@ export const RegistryLive = Registry.make(
               settingsOverridesUpdate(putEnvironmentInstructions(store, environment, instructions)),
             ),
           sessionSettings: ({ session }) =>
-            Effect.sync(() => sessionSettingsSource(store, session)),
+            Effect.gen(function* () {
+              // A Repo added before its file was read is looked at once, for a bounded wait (`firstMcpLook`).
+              const environment = store.getSession(session)?.environment;
+
+              if (environment !== undefined) {
+                yield* firstMcpLook(mcpLooks, store, environment, MCP_FIRST_LOOK_WAIT);
+              }
+
+              return sessionSettingsSource(store, session);
+            }),
           mcpServerSet: (input) =>
             checkHanded.pipe(
               Effect.andThen(Clock.currentTimeMillis),
+              // A Repo not looked at in 10 minutes is looked at first, so a Context Window opens on its current file.
+              Effect.tap((now) =>
+                Effect.promise(() =>
+                  mcpLooks.look({ environment: input.environment, reason: "due", now }),
+                ),
+              ),
               Effect.map((now) => mcpServerSetAnswer(store, input, now)),
             ),
+          mcpRepoFiles: ({ environment }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => mcpRepoFileViews(store, environment, now)),
+            ),
+          mcpLookRepoFiles: ({ environment, repo, reason }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+
+              yield* Effect.promise(() =>
+                mcpLooks.look({
+                  environment,
+                  repos: repo === undefined ? undefined : [repo],
+                  reason,
+                  now,
+                }),
+              );
+
+              return mcpRepoFileViews(store, environment, now);
+            }),
           mcpServerValues: (input) =>
             Effect.gen(function* () {
               // Only an entry that may read Secrets opens the vault.

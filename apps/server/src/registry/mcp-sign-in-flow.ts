@@ -156,7 +156,7 @@ const serversOf = (
   environment: string,
 ): ReadonlyArray<McpResolvedServer> | null =>
   environment === MCP_SIGN_IN_GLOBAL
-    ? resolvedMcpServers(mcpLayersOf(store, {}))
+    ? resolvedMcpServers(mcpLayersOf(store, {}, []))
     : environmentResolvedServers(store, environment);
 
 /**

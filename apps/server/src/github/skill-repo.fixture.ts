@@ -96,6 +96,16 @@ export const fakeGithub = () => {
 
       throw GithubReadError.of("not_found", `no blob ${sha}`);
     },
+    file: async (repo, ref, path) => {
+      requests.push(`file ${key(repo)}@${ref ?? "HEAD"}:${path}`);
+      failing(repo);
+
+      const text = commits.get(resolve(repo, ref))?.files[path];
+
+      return text === undefined
+        ? null
+        : { sha: shaOf(text), size: new TextEncoder().encode(text).length };
+    },
   };
 
   return {

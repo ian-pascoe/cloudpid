@@ -5,6 +5,7 @@
 
 import {
   McpNoEnvironment,
+  type McpRepoFileView,
   type McpServerView,
   McpServersList,
   McpUnavailable,
@@ -28,6 +29,7 @@ import {
   mcpProblemText,
   mcpMissingReferences,
   mcpReferencesOf,
+  mcpRepoLayersOf,
   mcpScopeView,
   mcpStatusChip,
   mcpStatuses,
@@ -877,5 +879,37 @@ describe("what a change writes", () => {
     expect(mcpOverridesPatch({}, { kind: "remove", name: "notes" }, GLOBAL_SERVERS)).toEqual(
       Result.succeed({ reset: ["mcp.servers.notes"] }),
     );
+  });
+});
+
+describe("a Repo's file", () => {
+  const TEXT = '{"mcpServers":{"db":{"command":"db"}}}';
+  const bare = { repo: "api", slug: "acme/api", path: ".pi/mcp.json" };
+
+  const held = (state: string, repo = "api"): McpRepoFileView => ({
+    ...bare,
+    repo,
+    state,
+    text: TEXT,
+  });
+
+  it("is a Repo layer when its copy is held, whether read or kept after a failed look", () => {
+    expect(mcpRepoLayersOf([held("read"), held("unreadable", "web")])).toEqual([
+      { directory: "api", slug: "acme/api", path: ".pi/mcp.json", text: TEXT },
+      { directory: "web", slug: "acme/api", path: ".pi/mcp.json", text: TEXT },
+    ]);
+  });
+
+  it("is no layer when it has no copy, is absent, oversize or not on GitHub, or a state this build does not know", () => {
+    expect(
+      mcpRepoLayersOf([
+        { ...bare, state: "absent" },
+        { ...bare, state: "oversize" },
+        { repo: "api", path: ".pi/mcp.json", state: "not_github" },
+        { ...bare, state: "unreadable" },
+        { ...bare, state: "never" },
+        held("somethingnew"),
+      ]),
+    ).toEqual([]);
   });
 });

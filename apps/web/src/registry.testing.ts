@@ -66,6 +66,8 @@ const UNEXPECTED: Handlers = {
   removeWorkspace: unexpected("removeWorkspace"),
   workspaceWork: unexpected("workspaceWork"),
   restartContainer: unexpected("restartContainer"),
+  mcpRepoFiles: unexpected("mcpRepoFiles"),
+  mcpReloadRepoFiles: unexpected("mcpReloadRepoFiles"),
   mcpServers: unexpected("mcpServers"),
   mcpServerLog: unexpected("mcpServerLog"),
   mcpReconnect: unexpected("mcpReconnect"),

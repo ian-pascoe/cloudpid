@@ -124,6 +124,108 @@ describe("githubContents", () => {
     expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe("Bearer token-owner-1");
   });
 
+  describe("file", () => {
+    const notFound = () => json({ message: "Not Found" }, { status: 404 });
+
+    it("finds a file's blob and size on the default branch, escaping each segment of its path", async () => {
+      const { reader, calls } = harness([
+        json({ type: "file", sha: "b1", size: 42, name: "mcp.json", content: "e30=" }),
+      ]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toEqual({ sha: "b1", size: 42 });
+
+      expect(calls[0]?.url).toBe("https://api.github.com/repos/acme/skills/contents/.pi/mcp.json");
+    });
+
+    it("asks at a ref when given one", async () => {
+      const { reader, calls } = harness([json({ type: "file", sha: "b1", size: 1 })]);
+
+      await reader.file(repo, "feature/a", ".pi/mcp.json");
+
+      expect(calls[0]?.url).toBe(
+        "https://api.github.com/repos/acme/skills/contents/.pi/mcp.json?ref=feature%2Fa",
+      );
+    });
+
+    it("has no file where the repo is readable and the path is not there", async () => {
+      const { reader, calls } = harness([notFound(), new Response(SHA)]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toBeNull();
+
+      // The repo told apart from the path by its head commit.
+      expect(calls[1]?.url).toBe("https://api.github.com/repos/acme/skills/commits/HEAD");
+    });
+
+    it("has no file in an empty repo, which has no commit (409) and is readable", async () => {
+      const { reader } = harness([
+        notFound(),
+        json({ message: "Git Repository is empty." }, { status: 409 }),
+      ]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toBeNull();
+    });
+
+    it("still fails an empty repo's 409 for a commit asked on its own", async () => {
+      const { reader } = harness([json({ message: "Git Repository is empty." }, { status: 409 })]);
+
+      expect((await failure(reader.commit(repo, null))).message).toContain("409");
+    });
+
+    it("words a body that is not JSON as that, not as an unreachable GitHub", async () => {
+      const { reader } = harness([new Response("{not json")]);
+
+      expect((await failure(reader.file(repo, null, ".pi/mcp.json"))).message).toBe(
+        "GitHub's answer to the file was not valid JSON",
+      );
+    });
+
+    it("fails where the repo itself is not there, and names why", async () => {
+      const { reader } = harness([notFound(), notFound()]);
+
+      const error = await failure(reader.file(repo, null, ".pi/mcp.json"));
+
+      expect(error.kind).toBe("not_found");
+      expect(error.message).toContain("acme/skills");
+    });
+
+    it("has no file where the path is a directory", async () => {
+      const { reader } = harness([json([{ type: "file", sha: "b1", size: 1 }])]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toBeNull();
+    });
+
+    it("has no file where the path is a link or a submodule", async () => {
+      for (const type of ["symlink", "submodule"]) {
+        const { reader } = harness([json({ type, sha: "b1", size: 0 })]);
+
+        expect(await reader.file(repo, null, ".pi/mcp.json"), type).toBeNull();
+      }
+    });
+
+    it("fails, not finds no file, where the body does not arrive or is not a file's", async () => {
+      const broken = new Response(
+        new ReadableStream({
+          pull: (controller) => {
+            controller.error(new Error("connection reset"));
+          },
+        }),
+        { status: 200 },
+      );
+
+      for (const answer of [broken, new Response("{not json"), json({ sha: "b1" })]) {
+        const { reader } = harness([answer]);
+
+        expect((await failure(reader.file(repo, null, ".pi/mcp.json"))).kind).toBe("failed");
+      }
+    });
+
+    it("fails as every read does for a refused token", async () => {
+      const { reader } = harness([json({ message: "Bad credentials" }, { status: 403 })]);
+
+      expect((await failure(reader.file(repo, null, ".pi/mcp.json"))).kind).toBe("refused");
+    });
+  });
+
   it("lists the tree recursively at the commit", async () => {
     const { reader, calls } = harness([
       json({

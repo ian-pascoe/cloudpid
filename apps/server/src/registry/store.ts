@@ -20,6 +20,7 @@ import {
   SPARE_BRANCH,
   TitleSource,
   workspaceDirectory,
+  readMcpRepoFileState,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -28,6 +29,7 @@ import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { SessionStatus } from "../session/status.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
+import type { McpRepoFileRecord } from "./mcp-repo-files.ts";
 import { dropUnreferencedSkillFiles } from "./skills.ts";
 
 // The Registry's tables over the Registry DO's SQLite storage (`docs/architecture/overview.md` → Durable Objects). Synchronous, as
@@ -298,6 +300,13 @@ export type RegistryStore = {
   readonly addRepo: (environment: string, repo: EnvironmentRepo) => RepoChange;
   /** Take a Repo out of an Environment; `absent` when it has none of that name. */
   readonly removeRepo: (environment: string, name: string) => RepoChange;
+  /**
+   * `environment`'s Repos' `.pi/mcp.json` as last looked at, one record per Repo looked at (`[]` for none, or for an
+   * Environment that is not registered).
+   */
+  readonly getMcpRepoFiles: (environment: string) => McpRepoFileRecord[];
+  /** Keep a look at a Repo's `.pi/mcp.json`, replacing the Repo's last. */
+  readonly putMcpRepoFile: (record: McpRepoFileRecord) => void;
   /** The Container settings overrides saved for an Environment, or null when it is not registered. */
   readonly getEnvironmentSettings: (environment: string) => Schema.Json | null;
   /** Save an Environment's Container settings overrides; says whether it is registered. */
@@ -623,6 +632,36 @@ const toSession = (row: SessionRow): SessionRecord => {
 
   return full;
 };
+
+/** A row of `mcp_repo_files`. */
+type McpRepoFileRow = {
+  environment: string;
+  repo: string;
+  slug: string | null;
+  state: string;
+  blob: string | null;
+  text: string | null;
+  size: number | null;
+  read_at: number | null;
+  looked_at: number;
+  error: string | null;
+  failing_since: number | null;
+};
+
+const toMcpRepoFile = (row: McpRepoFileRow): McpRepoFileRecord => ({
+  environment: row.environment,
+  repo: row.repo,
+  slug: row.slug,
+  // A state this build does not know (a row a later build wrote) reads as `unknown`, which holds no copy.
+  state: readMcpRepoFileState(row.state),
+  blob: row.blob,
+  text: row.text,
+  size: row.size,
+  readAt: row.read_at,
+  lookedAt: row.looked_at,
+  error: row.error,
+  failingSince: row.failing_since,
+});
 
 const toEnvironment = (row: EnvironmentRow): EnvironmentRecord => ({
   id: row.id,
@@ -1071,6 +1110,27 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   (sql) => {
     sql.exec("ALTER TABLE sessions ADD COLUMN importing INTEGER NOT NULL DEFAULT 0");
   },
+  // 32: each Environment's Repos' `.pi/mcp.json`, as last looked at on the default branch (ADR-0029,
+  // `docs/architecture/mcp-configuration.md` → A Repo's `.pi/mcp.json`), one row per (Environment, Repo directory). `state`
+  // is what the look found (`read`, `absent`, `oversize`, `unreadable`, `not_github`); `text` is the last good copy, which
+  // `unreadable` keeps; `failing_since` is when the run of failed looks began. A row goes with its Repo and its Environment.
+  // None before: a Repo not looked at yet adds no server.
+  (sql) => {
+    sql.exec(`CREATE TABLE mcp_repo_files (
+      environment TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      slug TEXT,
+      state TEXT NOT NULL,
+      blob TEXT,
+      text TEXT,
+      size INTEGER,
+      read_at INTEGER,
+      looked_at INTEGER NOT NULL,
+      error TEXT,
+      failing_since INTEGER,
+      PRIMARY KEY (environment, repo)
+    ) STRICT`);
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
@@ -1492,6 +1552,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       sql.exec("DELETE FROM environment_secrets WHERE scope = ?", id);
       sql.exec("DELETE FROM agent_changes WHERE scope = ?", id);
       sql.exec("DELETE FROM skills WHERE scope = ?", id);
+      sql.exec("DELETE FROM mcp_repo_files WHERE environment = ?", id);
       dropUnreferencedSkillFiles(sql);
 
       return "deleted";
@@ -1522,9 +1583,42 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           environment,
           Arr.filter(known.repos, (held) => held.name !== name),
         );
+        // What was read of its `.pi/mcp.json` goes with it: its servers are no longer in the set.
+        sql.exec(
+          "DELETE FROM mcp_repo_files WHERE environment = ? AND repo = ?",
+          environment,
+          name,
+        );
 
         return "changed";
       }),
+
+    getMcpRepoFiles: (environment) =>
+      Arr.map(
+        sql
+          .exec<McpRepoFileRow>("SELECT * FROM mcp_repo_files WHERE environment = ?", environment)
+          .toArray(),
+        toMcpRepoFile,
+      ),
+
+    putMcpRepoFile: (record) => {
+      sql.exec(
+        `INSERT OR REPLACE INTO mcp_repo_files
+           (environment, repo, slug, state, blob, text, size, read_at, looked_at, error, failing_since)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        record.environment,
+        record.repo,
+        record.slug,
+        record.state,
+        record.blob,
+        record.text,
+        record.size,
+        record.readAt,
+        record.lookedAt,
+        record.error,
+        record.failingSince,
+      );
+    },
 
     getEnvironmentSettings: (environment) => {
       const [row] = sql
