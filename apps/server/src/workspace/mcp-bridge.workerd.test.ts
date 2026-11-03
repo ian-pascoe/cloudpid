@@ -468,6 +468,19 @@ describe("a Workspace a Session readied that has no Repos and no Skills", () => 
   });
 });
 
+describe("a spare Workspace that is prepared and not yet used", () => {
+  it("has a record of itself, so its first request gets through, and the request is no use of it until it is one", async () => {
+    const { stub } = await namedWorkspace({ recorded: false });
+
+    expect((await stub.mcpBridge(call(), NO_USE)).status).toBe(404);
+
+    await stub.prepareSpare({ repos: [], branch: "cloudpid/spare", base: null, settings: {} });
+
+    expect((await stub.mcpBridge(call(), NO_USE)).status).toBe(200);
+    expect(await stub.spareUsed()).toBe(false);
+  });
+});
+
 describe("the Workspaces Worker's MCP bridge entrypoint", () => {
   // SAFETY: the test Worker's entry (`workerd.fixture.ts`) exports `WorkspaceMcpBridge`, an RPC entrypoint.
   const entrypoint = (exports as { readonly WorkspaceMcpBridge: WorkspaceMcpBridge })

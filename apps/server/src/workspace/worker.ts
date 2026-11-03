@@ -8,10 +8,10 @@
 // @effect-diagnostics globalConsole:off asyncFunction:off
 import { isContainerPreviewWorkspace } from "@cloudpid/extensions/browser/contract";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { WORKSPACE_BINDING } from "./binding.ts";
+import { isWorkspaceObjectName, WORKSPACE_BINDING } from "./binding.ts";
 import { type ExitReportProps, exitReport } from "./exit-report.ts";
 import type { McpBridgeOptions } from "@cloudpid/sandbox-image/mcp-bridge";
-import { mcpBridgeRefusal } from "./mcp-bridge.ts";
+import { refuse } from "./mcp-bridge.ts";
 import type { Workspace, WorkspaceEnv } from "./Workspace.ts";
 
 export { WorkspaceProxy, WorkspaceServiceProxy } from "@cloudflare/computer";
@@ -82,12 +82,7 @@ export class WorkspaceMcpBridge extends WorkerEntrypoint<{
     request: Request,
     options: McpBridgeOptions,
   ): Promise<Response> {
-    if (!isContainerPreviewWorkspace(workspace)) {
-      // Nothing will read the request's body.
-      await request.body?.cancel();
-
-      return mcpBridgeRefusal("no_workspace");
-    }
+    if (!isWorkspaceObjectName(workspace)) return refuse(request, "no_workspace");
 
     return this.env[WORKSPACE_BINDING].getByName(workspace).mcpBridge(request, options);
   }

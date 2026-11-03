@@ -82,6 +82,9 @@ export class SparePreparation {
    * start): the spare is taken, so the preparation leaves its Container running when it ends, and none begins after.
    */
   noteUse(): void {
+    // Known gap: a Session's heartbeat (`noteSessionActivity`) after its Subagent Workspace was deleted calls this again
+    // on an instance that is not reset yet, which writes the mark back (`markUsed`), so the deleted Workspace may
+    // answer the MCP bridge as one that exists, until its object resets.
     if (this.#used) return;
 
     this.#used = true;

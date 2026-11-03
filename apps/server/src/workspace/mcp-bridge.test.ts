@@ -8,7 +8,8 @@ import {
   mcpBridgeRefusalCode,
 } from "@cloudpid/sandbox-image/mcp-bridge";
 import { describe, expect, it, vi } from "vitest";
-import { McpBridge, type McpBridgeDeps, mcpBridgeRefusal } from "./mcp-bridge.ts";
+import { isWorkspaceObjectName } from "./binding.ts";
+import { McpBridge, type McpBridgeDeps, mcpBridgeRefusal, refuse } from "./mcp-bridge.ts";
 
 type Fake = {
   recorded: () => boolean;
@@ -24,6 +25,11 @@ type Fake = {
   body: (() => ReadableStream<Uint8Array>) | undefined;
   /** The holds begun and ended on the Container. */
   holds: { begun: number; ended: number };
+  /** When the launch that runs was recorded, by the fake clock's reading (`now`); undefined for no record. */
+  launchedAt: number | undefined;
+  now: number;
+  /** Makes the idle stop's touch reject. */
+  failTouch: boolean;
 };
 
 const open = (overrides: Partial<Fake> = {}) => {
@@ -38,6 +44,9 @@ const open = (overrides: Partial<Fake> = {}) => {
     warnings: [],
     body: undefined,
     holds: { begun: 0, ended: 0 },
+    launchedAt: undefined,
+    now: 1_000_000,
+    failTouch: false,
     ...overrides,
   };
 
@@ -70,8 +79,12 @@ const open = (overrides: Partial<Fake> = {}) => {
         throw new Error("no sockets");
       },
     }),
+    launchedAt: async () => fake.launchedAt,
+    now: () => fake.now,
     activity: () => ({
-      touch: async () => undefined,
+      touch: async () => {
+        if (fake.failTouch) throw new Error("storage refused");
+      },
       hold: () => {
         fake.holds.begun++;
 
@@ -124,6 +137,35 @@ describe("the refusals", () => {
   });
 });
 
+describe("a refusal of a request", () => {
+  it("cancels the request's body, which nothing will read", async () => {
+    const request = call();
+
+    const response = await refuse(request, "no_workspace");
+
+    expect(response.status).toBe(404);
+    // A cancelled body is locked or disturbed, and no reader can take it up again.
+    expect(request.bodyUsed).toBe(true);
+  });
+});
+
+describe("a Workspace's object name", () => {
+  it("is `ws:<id>`, and no Build's or other name", () => {
+    expect(isWorkspaceObjectName("ws:5a5a5a5a")).toBe(true);
+    expect(isWorkspaceObjectName("ws:mcp-bridge-1")).toBe(true);
+
+    for (const name of [
+      "build:environment",
+      "test-build:environment",
+      "ws:../x",
+      "ws:",
+      "session",
+    ]) {
+      expect(isWorkspaceObjectName(name), name).toBe(false);
+    }
+  });
+});
+
 describe("the health poll", () => {
   it("is for a Container this request started: one found running is forwarded to at once, however deaf its bridge", async () => {
     const { fake, bridge } = open({ running: true, deaf: 3 });
@@ -133,6 +175,28 @@ describe("the health poll", () => {
     expect(response.status).toBe(200);
     expect(fake.health).toBe(0);
     expect(fake.starts).toBe(0);
+  });
+
+  it("is for a Container found running whose launch is younger than the poll's time too: another command, or `container_restart`, has only just started it", async () => {
+    const { fake, bridge } = open({ running: true, deaf: 2, launchedAt: 1_000_000 - 2 });
+
+    const response = await bridge.serve(call(), { start: false, use: false });
+
+    expect(response.status).toBe(200);
+    expect(fake.health).toBe(3);
+    expect(fake.starts).toBe(0);
+
+    // The bridge has answered for that launch: it is not asked again.
+    await bridge.serve(call(), { start: false, use: false });
+
+    expect(fake.health).toBe(3);
+  });
+
+  it("is not run for a Container found running whose launch is older than the poll's time", async () => {
+    const { fake, bridge } = open({ running: true, deaf: 2, launchedAt: 1_000_000 - 6 });
+
+    expect((await bridge.serve(call(), { start: false, use: false })).status).toBe(200);
+    expect(fake.health).toBe(0);
   });
 
   it("runs until the bridge answers, reading the token again at each attempt", async () => {
@@ -236,6 +300,15 @@ describe("a use of the bridge", () => {
 
     await expect(response.text()).rejects.toThrow("the child went away");
     await vi.waitFor(() => expect(fake.holds).toEqual({ begun: 1, ended: 1 }));
+  });
+
+  it("goes on when the idle stop cannot record the touch or the hold: that only shortens the idle time", async () => {
+    const { fake, bridge } = open({ running: true, failTouch: true });
+
+    const response = await bridge.serve(call(), { start: false, use: true });
+
+    expect(response.status).toBe(200);
+    expect(fake.warnings.join("\n")).toContain("storage refused");
   });
 
   it("holds nothing for a request that is no use", async () => {

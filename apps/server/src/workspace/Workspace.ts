@@ -798,6 +798,8 @@ export class Workspace extends ContainerHost {
         }
       },
       token: () => launch.bridgeToken(),
+      launchedAt: () => launch.launchedAt(),
+      now: () => Date.now(),
       port: (port) => this.containerPort(port),
       activity: () => this.mcpBridgeActivity(),
       used: () => this.#spare.noteUse(),
@@ -821,9 +823,11 @@ export class Workspace extends ContainerHost {
 
   /**
    * Whether the Workspace has a record of itself, which a destroyed one (its storage is wiped) has not. Any of:
-   * - a Session has used it (`SPARE_USED_KEY`): every call it makes to the Workspace, the readying's settings read
-   *   first, is a use, and none needs a file operation, so an Environment with no Repos and no Skills (which a Session
-   *   hands nothing to write) is a Workspace too;
+   * - a Session has used it (`SPARE_USED_KEY`): every call it makes to the Workspace is a use (its readying starts
+   *   with `skillSetHash`, then the Secrets and Skills writes), and none needs a file operation, so an Environment
+   *   with no Repos and no Skills is a Workspace too. A Session's readying is lazy, so the Session must make a call
+   *   (`noteSessionActivity`) before `requestStart`, or any host call that may reach the bridge, for `no_workspace` to
+   *   mean "destroyed" and not "never used" (docs/architecture/mcp-in-a-session.md → Request start);
    * - it was prepared as a spare (`SPARE_PREPARED_KEY`), before any Session used it;
    * - computer has indexed its mounts (`_vfs_mounts` has a row), which a Workspace that was used has, one that predates
    *   the two marks included.

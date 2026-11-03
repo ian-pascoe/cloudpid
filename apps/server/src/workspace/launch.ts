@@ -253,6 +253,11 @@ export class ContainerLaunch {
     return (await this.#current())?.bridgeToken;
   }
 
+  /** When the launch that runs (or last ran) was recorded, epoch milliseconds; undefined with no record. */
+  async launchedAt(): Promise<number | undefined> {
+    return (await this.#current())?.launchedAt;
+  }
+
   /** How long the running Container may go unused: what it was launched with, not what the settings say now. */
   async idleMs(): Promise<number> {
     const record = await this.#current();

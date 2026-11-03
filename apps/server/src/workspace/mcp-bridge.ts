@@ -19,7 +19,7 @@
 //   messages are not uses, so a stdio server never keeps the Container awake between requests.
 // - A bridge that does not answer (it exited, and nothing restarts it; the Container has none; or it refuses the launch's
 //   token) answers 502 `bridge_unreachable`, which says that `container_restart` starts a new one.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferSchemaOverJson:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferSchemaOverJson:off preferEffectRecord:off missingPipeableSignature:off
 import {
   MCP_BRIDGE_CONTAINER_HEADER,
   MCP_BRIDGE_HEALTH_PATH,
@@ -57,6 +57,9 @@ export type McpBridgeDeps = {
   /** The Container's port `port`, as `ctx.container.getTcpPort` gives it. */
   readonly port: (port: number) => Fetcher;
   readonly activity: () => ContainerActivity;
+  /** When the launch that runs was recorded (epoch milliseconds); undefined where there is no record. */
+  readonly launchedAt: () => Promise<number | undefined>;
+  readonly now: () => number;
   /** A request that is a use is a use of the Workspace (a spare's is no longer a spare). */
   readonly used: () => void;
   /** How the health is polled; the one seam for a test's timing. */
@@ -90,6 +93,13 @@ export const mcpBridgeRefusal = (error: McpBridgeRefusal): Response => {
   return Response.json({ error, message: MESSAGE[error] }, { status: STATUS[error], headers });
 };
 
+/** A refusal of `request`, whose body nothing will read: cancelled, so the caller's stream is not left open. */
+export const refuse = async (request: Request, code: McpBridgeRefusal): Promise<Response> => {
+  await request.body?.cancel().catch(() => undefined);
+
+  return mcpBridgeRefusal(code);
+};
+
 /** Headers not passed on: the host is the bridge's own, and the bearer is ours, whatever the caller put in its place. */
 const DROPPED_HEADERS = ["host", "authorization"];
 
@@ -99,6 +109,8 @@ export class McpBridge {
   #starting: Promise<void> | undefined;
   /** The health poll in progress, so requests that arrive while it runs share it. */
   #polling: Promise<boolean> | undefined;
+  /** The token of the launch whose health answered, which is asked once. */
+  #verified: string | undefined;
   /** The token of the launch whose health poll failed: its bridge never answered, and answers at once until another launch. */
   #failed: string | undefined;
 
@@ -113,33 +125,37 @@ export class McpBridge {
     } catch (cause) {
       this.#deps.warn(`MCP bridge: the request failed: ${String(cause)}`);
 
-      return mcpBridgeRefusal("bridge_failed");
+      return refuse(request, "bridge_failed");
     }
   }
 
   async #serve(request: Request, options: McpBridgeOptions): Promise<Response> {
-    if (!this.#deps.recorded()) return this.#refuse(request, "no_workspace");
+    if (!this.#deps.recorded()) return refuse(request, "no_workspace");
 
     let started = false;
 
     if (!this.#deps.running()) {
-      if (!options.start) return this.#refuse(request, "stopped");
+      if (!options.start) return refuse(request, "stopped");
 
       try {
         await this.#started();
       } catch (cause) {
         this.#deps.warn(`MCP bridge: the Container did not start: ${String(cause)}`);
 
-        return this.#refuse(request, "start_failed");
+        return refuse(request, "start_failed");
       }
 
       started = true;
     }
 
     // A Container this call started has its bridge a little after computerd: wait for it (and for the poll another call's
-    // start began, which this call may have arrived in the middle of). One found running is not waited for.
-    if ((started || this.#polling !== undefined) && !(await this.#healthy())) {
-      return this.#refuse(request, "bridge_unreachable");
+    // start began, which this call may have arrived in the middle of). So has one a command or `container_restart` has
+    // only just started, whose launch is younger than the poll's time. Any other found running is not waited for.
+    if (
+      (started || this.#polling !== undefined || (await this.#launchedRecently())) &&
+      !(await this.#healthy())
+    ) {
+      return refuse(request, "bridge_unreachable");
     }
 
     const token = await this.#deps.token();
@@ -147,17 +163,21 @@ export class McpBridge {
     // A Container launched before tokens were kept runs no bridge, and gets one from its next launch; one whose bridge
     // never answered stays unreachable until it does.
     if (token === undefined || token === this.#failed) {
-      return this.#refuse(request, "bridge_unreachable");
+      return refuse(request, "bridge_unreachable");
     }
 
     return options.use ? this.#used(request, token) : this.#forward(request, token);
   }
 
-  /** A refusal, which nothing will read the request's body for. */
-  async #refuse(request: Request, code: McpBridgeRefusal): Promise<Response> {
-    await request.body?.cancel().catch(() => undefined);
+  /** Whether the launch that runs is younger than the poll's time, and not one whose bridge has answered or failed already. */
+  async #launchedRecently(): Promise<boolean> {
+    const [token, launchedAt] = await Promise.all([this.#deps.token(), this.#deps.launchedAt()]);
 
-    return mcpBridgeRefusal(code);
+    if (token === undefined || launchedAt === undefined) return false;
+
+    if (token === this.#verified || token === this.#failed) return false;
+
+    return this.#deps.now() - launchedAt < this.#deps.healthPoll().timeoutMs;
   }
 
   /** The Container started, by this request or one that arrived before it finished. */
@@ -197,13 +217,19 @@ export class McpBridge {
 
       if (token !== undefined) {
         try {
-          const response = await this.#deps
-            .port(MCP_BRIDGE_PORT)
-            .fetch(url, { headers: { authorization: `Bearer ${token}` } });
+          const response = await this.#deps.port(MCP_BRIDGE_PORT).fetch(url, {
+            headers: { authorization: `Bearer ${token}` },
+            // An attempt takes no longer than the interval, so the attempts bound the poll's time.
+            signal: AbortSignal.timeout(intervalMs),
+          });
 
           await response.body?.cancel();
 
-          if (response.ok) return true;
+          if (response.ok) {
+            this.#verified = token;
+
+            return true;
+          }
         } catch {
           // Nothing listens yet.
         }
@@ -222,7 +248,11 @@ export class McpBridge {
     const activity = this.#deps.activity();
 
     this.#deps.used();
-    await activity.touch();
+
+    // A hold that fails to be recorded only shortens the idle time (`ContainerHold`): the request goes on.
+    await activity.touch().catch((cause: unknown) => {
+      this.#deps.warn(`MCP bridge: touching the Container failed: ${String(cause)}`);
+    });
 
     const hold = activity.hold({ writes: true });
     let ended = false;
@@ -237,7 +267,9 @@ export class McpBridge {
     };
 
     try {
-      await hold.begun;
+      await hold.begun.catch((cause: unknown) => {
+        this.#deps.warn(`MCP bridge: beginning a hold failed: ${String(cause)}`);
+      });
 
       const response = await this.#forward(request, token);
 

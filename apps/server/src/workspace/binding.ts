@@ -28,6 +28,9 @@ export const WORKSPACE_CONTAINER = "WorkspaceContainer";
  */
 export const workspaceObjectName = (id: string): string => `ws:${id}`;
 
+/** Whether `value` is the name of a Workspace's object (`workspaceObjectName`), as no Build's is. */
+export const isWorkspaceObjectName = (value: string): boolean => /^ws:[\w-]+$/.test(value);
+
 /**
  * The name of the Durable Object that makes Environment `id`'s Builds (docs/architecture/container.md → Builds): a Workspace DO of its
  * own, whose name no Workspace's can be (`ws:` and the eight hex digits of a `WorkspaceId`).
