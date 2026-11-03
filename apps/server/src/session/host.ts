@@ -19,6 +19,7 @@ import {
 } from "@cloudpid/extensions/subagents";
 import { clearTodoList, TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
 import { MAX_ROLLOVER_FOCUS, ownerRollover } from "@cloudpid/extensions/context";
+import { type McpNotices, mcpNotices } from "@cloudpid/extensions/mcp";
 import {
   discoverPrompts,
   isPromptSource,
@@ -271,6 +272,14 @@ export type SessionStorage = DurableObjectSqliteStorage & {
   deleteAlarm(): Promise<void>;
 };
 
+/** What the MCP tools are built from now: what to install, and the notices to write first. */
+export type SessionHostMcpBuild<R> = {
+  /** The extensions to install over those of the same name; none when that is what is installed. */
+  readonly extensions: readonly Extension[];
+  /** Tells the conversations of the listing the build has: run before the extensions are installed. */
+  readonly announce: Effect.Effect<void, never, R>;
+};
+
 /** The Session's MCP tools, as the Session host runs them (`SessionHostOptions.mcp`). */
 export type SessionHostMcp<R> = {
   /**
@@ -285,13 +294,28 @@ export type SessionHostMcp<R> = {
   ) => Effect.Effect<void, never, R>;
   /**
    * The extensions to install over those of the same name for what the MCP tools are built from now (`mcp`, `codemode`
-   * and `tool-search`), none when that is what is installed. Run under the install lock: at the object's start before
-   * anything resumes, after each request start, and after each settings read that installs again.
+   * and `tool-search`), none when that is what is installed, and the effect that tells the conversations of the listing
+   * the build has. Run under the install lock: at the object's start before anything resumes, after each request start,
+   * and after each settings read that installs again. The host runs `announce` before it installs, so a notice is queued
+   * before any model call can see the declarations it explains; at the start it runs it once the work is resumed.
    */
   readonly reinstall: (
     installed: readonly Extension[],
     values: SessionSettingsValues,
-  ) => readonly Extension[];
+  ) => SessionHostMcpBuild<R>;
+  /**
+   * Where the `mcp_servers` notices are written (`docs/architecture/mcp-in-a-session.md` → The prompt cache and the
+   * `mcp_servers` section): the Session's open Harness. Called once, before anything resumes.
+   */
+  readonly bind: (notices: McpNotices) => void;
+  /**
+   * Tell conversation `conversationId` that the `mcp_servers` listing changed, if its section was shown another one: run
+   * after a request start's install, before its message is placed. Never fails.
+   */
+  readonly notify: (
+    conversationId: ConversationId,
+    values: SessionSettingsValues,
+  ) => Effect.Effect<void, never, R>;
 };
 
 export type SessionHostOptions<R = never> = {
@@ -816,16 +840,41 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    */
   const installing = Semaphore.withPermit(yield* Semaphore.make(1));
 
+  /**
+   * What the MCP tools are built from now: the effect that tells the conversations of its listing, and the one that
+   * installs it. Told first (their notices queued: placed at the next boundary of a busy Run, at once in an idle one),
+   * installed second, so a model call that renders the new declarations has its notice queued. Known limits (see
+   * `docs/architecture/mcp-in-a-session.md` → The prompt cache and the `mcp_servers` section): pi-durable places a Run's
+   * inbox at a boundary and fixes its tools later, in `prepare`, so a request in that gap has the new tools and its notice
+   * one boundary later; and the broadcast reads each conversation's context, so a Stop or message waits for it.
+   */
+  const mcpBuild = () => {
+    if (options.mcp === undefined) return { announce: Effect.void, install: Effect.void };
+
+    const built = options.mcp.reinstall(installed, settings.current());
+
+    return {
+      announce: Effect.provideContext(built.announce, services),
+      install: installOver(built.extensions),
+    };
+  };
+
   /** Install again what the MCP tools are built from now, if it is not what is installed. */
-  const reinstallMcp = Effect.suspend(() =>
-    options.mcp === undefined
-      ? Effect.void
-      : installOver(options.mcp.reinstall(installed, settings.current())),
-  );
+  const reinstallMcp = Effect.suspend(() => {
+    const { announce, install } = mcpBuild();
+
+    return announce.pipe(Effect.andThen(install));
+  });
+
+  // The `mcp_servers` notices go to this Harness, before anything resumes or renders a section.
+  options.mcp?.bind(mcpNotices(harness.harness));
 
   // What the MCP tools were last built from, before anything resumes: a resumed Run or call finds the tools, and the
-  // declarations, that its Context Window was shown.
-  yield* reinstallMcp;
+  // declarations, that its Context Window was shown. The conversations are told once the work is resumed (and only if
+  // the kept listing is not the one last told), which finds the tools and the sections as they were shown.
+  const started = mcpBuild();
+
+  yield* started.install;
 
   /** The settings the extensions were last built for. */
   let built = settings.current();
@@ -896,6 +945,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                 ),
               ),
               Effect.andThen(reinstallMcp.pipe(installing, Effect.uninterruptible)),
+              // The conversation is told of a change to the listing its section was shown before its message is placed.
+              Effect.andThen(
+                Effect.provideContext(mcp.notify(conversationId, settings.current()), services),
+              ),
             ),
       ),
     );
@@ -2663,6 +2716,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   );
 
   yield* wakeAndResume;
+
+  // A broadcast a restart cut off finishes in the background: it is not held up by the start (it ends by itself, and
+  // nothing but a listing that was not told yet makes it read a conversation).
+  yield* started.announce.pipe(Effect.forkIn(scope));
 
   // A `/compact` that was waiting for a Run when the last instance went away waits again.
   for (const key of Record.keys(pendingCompactions())) {

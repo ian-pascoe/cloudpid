@@ -22,6 +22,7 @@ import {
   startOf,
 } from "./mcp.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
+import { mcpServersIntro } from "./mcp/servers.ts";
 import {
   answer,
   call,
@@ -293,6 +294,58 @@ describe("a request start", () => {
     const built = Option.getOrThrow(tools.reinstall([]));
 
     expect(built.mcp.tools?.map((tool) => tool.name)).not.toContain("mcp__docs_site__index");
+  });
+});
+
+describe("a server as a codemode namespace", () => {
+  it("is named mcp__<server> with the entry's description and the server's instructions, and answers to its - and _ spellings but not the bare name", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const tools = makeMcpTools(host.client);
+
+    const session = await open((request) =>
+      request.text === "describe"
+        ? call([
+            "codemode",
+            {
+              code: `console.log(JSON.stringify([
+                await describeNamespace("mcp__docs_site"),
+                await describeNamespace("mcp__docs-site"),
+                (await describeNamespace("docs_site")) ?? null,
+              ]))`,
+            },
+          ])
+        : answer("ok"),
+    );
+
+    // `codemode` is deferred unless offered, as in a Session.
+    await session.start(tools, startOf(1, { offered: ["codemode"] }));
+    await session.prompt("describe");
+
+    const [result] = await session.texts("toolResult");
+    // SAFETY: what the script above printed, JSON.
+    const found = JSON.parse(/\[.*\]/s.exec(result ?? "")?.[0] ?? "[]") as ReadonlyArray<unknown>;
+
+    expect(found[0]).toMatchObject({
+      name: "mcp__docs_site",
+      description: "The product docs",
+      instructions: "Search before fetching.",
+    });
+    expect(found[1]).toEqual(found[0]);
+    expect(found[2]).toBeNull();
+    // The call the section's intro teaches, `tools.mcp__<server>__<tool>(args)`, is what the namespace declares.
+    expect(JSON.stringify(found[0])).toContain("mcp__docs_site__search");
+    expect(
+      mcpServersIntro({ resourceTools: false, signIn: false, codemodeDeferred: false }),
+    ).toContain("tools.mcp__<server>__<tool>(args)");
+  });
+
+  it("has none for a server that is not discovered yet", async () => {
+    const host = fakeMcpHost([{ ...DOCS, state: "connecting" }]);
+    const tools = makeMcpTools(host.client);
+
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+
+    expect(Option.getOrThrow(tools.reinstall([])).namespaces).toEqual([]);
   });
 });
 

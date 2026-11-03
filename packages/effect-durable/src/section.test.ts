@@ -91,6 +91,31 @@ describe("frozenSection", () => {
     expect(sections).toEqual([undefined, "later", "later"]);
   });
 
+  it("runs whenShown with the text in each request after the first, and never changes it", async () => {
+    const heard: string[] = [];
+    let read = 0;
+
+    const frozen = Effect.runSync(
+      frozenSection("frozen", () => Effect.sync(() => `read ${++read}`), {
+        whenShown: (_input, shown) => Effect.sync(() => void heard.push(shown)),
+      }),
+    );
+
+    const { requests, prompt } = await openFauxHarness(
+      [noop, defineExtension({ name: "frozen", sections: [frozen] })],
+      [callTool("noop", {}), callTool("noop", {}), answer("Done")],
+    );
+
+    await prompt("hi");
+
+    expect(Arr.map(requests, (request) => request.sections["frozen"])).toEqual([
+      "read 1",
+      "read 1",
+      "read 1",
+    ]);
+    expect(heard).toEqual(["read 1", "read 1"]);
+  });
+
   it("freezes nothing when the read fails, and reads again", async () => {
     const { sections } = await threeRequests([new Error("cannot read"), "later"]);
 

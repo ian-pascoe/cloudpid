@@ -679,7 +679,7 @@ export class TestSession extends DurableObject {
     const { kv } = this.ctx.storage;
     const hosts = this.env.MCP_HOSTS;
 
-    return sessionMcp({
+    const mcp = sessionMcp({
       questions: this.#mcpQuestions().service,
       session: this.ctx.id.name,
       host: (environment) =>
@@ -702,6 +702,39 @@ export class TestSession extends DurableObject {
         return defineExtension({ name: "codemode", tools: [] });
       },
     });
+
+    // Where each reinstall's announcement and its install fall (`mcpOrder`): an extension whose tools are read as it is
+    // installed, beside what the build installs.
+    const note = (what: string) =>
+      kv.put("mcp-order", [...(kv.get<string[]>("mcp-order") ?? []), what]);
+
+    return {
+      ...mcp,
+      reinstall: (installed, values) => {
+        const built = mcp.reinstall(installed, values);
+
+        return {
+          extensions:
+            built.extensions.length === 0
+              ? []
+              : [
+                  ...built.extensions,
+                  {
+                    name: "mcp-order-probe",
+                    get tools() {
+                      note("install");
+
+                      return [];
+                    },
+                  },
+                ],
+          announce: Effect.andThen(
+            Effect.sync(() => note("announce")),
+            built.announce,
+          ),
+        };
+      },
+    };
   }
 
   /** What builds a conversation's execution environment, if this Session has one. */
@@ -1847,6 +1880,15 @@ export class TestSession extends DurableObject {
     return Effect.runPromise(this.#host.sync);
   }
 
+  /** What the MCP reinstalls did since `mcpOrderClear`, in order: `announce` (the notices are written) and `install`. */
+  mcpOrder(): ReadonlyArray<string> {
+    return this.ctx.storage.kv.get<string[]>("mcp-order") ?? [];
+  }
+
+  mcpOrderClear(): void {
+    this.ctx.storage.kv.delete("mcp-order");
+  }
+
   /** Make looking up the Session's Workspace fail, or succeed again. */
   mcpWorkspaceUnknown(unknown: boolean): void {
     this.ctx.storage.kv.put("mcp-workspace-unknown", unknown);
@@ -1871,6 +1913,25 @@ export class TestSession extends DurableObject {
           (message) => message.role === "system",
         ).length,
     );
+  }
+
+  /** The text each request's transcript left in effect for system prompt section `key`, oldest first. */
+  requestSection(key: string): ReadonlyArray<string | undefined> {
+    return (this.ctx.storage.kv.get<string[]>("request-messages") ?? []).map((messages) => {
+      let shown: string | undefined;
+
+      // SAFETY: the messages as the fixture's model stored them, JSON of pi-ai messages.
+      for (const message of JSON.parse(messages) as ReadonlyArray<{
+        readonly role: string;
+        readonly sections?: Readonly<Record<string, string | null>>;
+      }>) {
+        const text = message.role === "system" ? message.sections?.[key] : undefined;
+
+        if (text !== undefined) shown = text === null ? undefined : text;
+      }
+
+      return shown;
+    });
   }
 
   /** How many times the Session marked its Workspace used before an MCP host call. */

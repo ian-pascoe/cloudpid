@@ -10,11 +10,14 @@
 //   Window, so `windowOpened` is sent once per window across evictions.
 // - **`sessionMcp`** is the Session host's `mcp` option (`SessionHostMcp`): `McpTools` for the Session's Environment, its
 //   request start (the Workspace looked up and marked used first; either failing keeps the tools built), and its
-//   reinstall of `mcp`, `codemode` with the servers as its namespaces, and `tool-search`, together.
+//   reinstall of `mcp`, `codemode` with the servers as its namespaces, and `tool-search`, together; and the notices that
+//   the `mcp_servers` listing changed (`@cloudpid/extensions/mcp`: `bind` gives `McpTools` the Session's Harness to write
+//   them to, `notify` is a conversation's check at its request start).
 import {
   HostLost,
   makeMcpTools,
   type McpHostClientService,
+  type McpNotices,
   type McpQuestionsService,
   type McpToolOptions,
   type McpToolsService,
@@ -37,7 +40,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type { Mutable } from "effect/Types";
-import type { SessionHostMcp } from "./host.ts";
+import type { SessionHostMcp, SessionHostMcpBuild } from "./host.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
 /** What each of `McpHostClient`'s methods is answered on the wire, before the shared readers. */
@@ -102,15 +105,19 @@ const PART_LENGTH = 256 * 1024;
  * A store in `kv` for Environment `environment`'s MCP tools: the text in parts of at most `PART_LENGTH` characters
  * under `mcp-tools:<environment>:<n>`, with their count under `mcp-tools:<environment>`, written last, so a text is
  * read whole or not at all; and each conversation's last opened Context Window under
- * `mcp-window:<environment>:<conversation>`.
+ * `mcp-window:<environment>:<conversation>`; and the hash of the listing the last completed broadcast of notices told
+ * every conversation of, under `mcp-broadcast:<environment>`.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a store over two values, not a combinator.
 export const kvMcpToolsStore = (kv: McpToolsKv, environment: string): McpToolsStore => {
   const countKey = `mcp-tools:${environment}`;
   const partKey = (index: number) => `${countKey}:${index}`;
   const windowKey = (conversation: string) => `mcp-window:${environment}:${conversation}`;
+  const broadcastKey = `mcp-broadcast:${environment}`;
 
   return {
+    broadcast: () => kv.get<string>(broadcastKey),
+    broadcasted: (hash) => kv.put(broadcastKey, hash),
     window: (conversation) => kv.get<string>(windowKey(conversation)),
     openWindow: (conversation, window) => kv.put(windowKey(conversation), window),
     load: () => {
@@ -166,6 +173,9 @@ export type SessionMcpOptions = {
 export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> => {
   let held: { readonly environment: string; readonly tools: McpToolsService } | undefined;
 
+  /** Where the notices are written, once the host's Harness is open. */
+  let notices: McpNotices | undefined;
+
   /**
    * The Workspace marked used before any host call, tried twice: false when it never answered, and the request start
    * then calls nothing (`docs/architecture/mcp-in-a-session.md` → Request start), nor a call to a stdio server.
@@ -200,6 +210,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
       kvMcpToolsStore(options.kv, environment),
       toolOptions,
     );
+
+    if (notices !== undefined) tools.bindNotices(notices);
 
     held = { environment, tools };
 
@@ -256,14 +268,14 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
   const reinstall = (
     installed: readonly Extension[],
     values: SessionSettingsValues,
-  ): readonly Extension[] => {
+  ): SessionHostMcpBuild<never> => {
     const { environment } = values.mcp;
 
-    if (environment === null) return [];
+    if (environment === null) return { extensions: [], announce: Effect.void };
 
     const built = toolsOf(environment).reinstall(values.toolSearch.offered);
 
-    if (Option.isNone(built)) return [];
+    if (Option.isNone(built)) return { extensions: [], announce: Effect.void };
 
     const { mcp, namespaces } = built.value;
     const codemode = options.codemode(namespaces);
@@ -272,8 +284,22 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
       each.name === mcp.name ? mcp : each.name === codemode.name ? codemode : each,
     );
 
-    return [mcp, codemode, reloadToolSearch(others, values.toolSearch)];
+    return {
+      extensions: [mcp, codemode, reloadToolSearch(others, values.toolSearch)],
+      announce: built.value.announce,
+    };
   };
 
-  return { start, reinstall };
+  const bind = (next: McpNotices) => {
+    notices = next;
+    held?.tools.bindNotices(next);
+  };
+
+  const notify = (conversationId: ConversationId, values: SessionSettingsValues) => {
+    const { environment } = values.mcp;
+
+    return environment === null ? Effect.void : toolsOf(environment).notify(conversationId);
+  };
+
+  return { start, reinstall, bind, notify };
 };

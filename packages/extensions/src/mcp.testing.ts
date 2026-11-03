@@ -43,6 +43,8 @@ export type FakeMcpServer = {
   readonly description?: string;
   /** The entry's `timeout`, in seconds. */
   readonly timeout?: number;
+  /** Whether the server offers resources (the inventory's `resources`). */
+  readonly resources?: boolean;
   /** What the server says of itself at `initialize`. */
   readonly instructions?: string;
   /** More keys of the entry, as a definition spells them (`headers`, `oauth`, ...). */
@@ -108,7 +110,7 @@ const inventoryOf = (
       toolsHash: JSON.stringify(tools),
       promptsHash: "",
       counts: { tools: tools.length, prompts: 0 },
-      resources: false,
+      resources: server.resources === true,
       problems: [],
     };
 
