@@ -487,11 +487,11 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
 - **A stale list** (older than `ttlMs`; 10 min for Legacy) is served to a catalog read and refreshed in the background, for HTTP servers and running stdio processes only.
 - **Nothing reaches the conversation** when prompts change.
 
-### As built (#463, first half)
+### As built (#463)
 
-[#463](https://github.com/ian-pascoe/cloudpid/issues/463) lands in two changes. The first is everything up to the server and the extension; the second is the web composer.
+[#463](https://github.com/ian-pascoe/cloudpid/issues/463) landed in two changes. The first is everything up to the server and the extension; the second is the web composer, the transcript and the last of the Session's side.
 
-**Built here** (Session, host, core and engine; no migration):
+#### The Session, host, core and engine (first change; no migration)
 
 - **The get:** the core's `getPrompt`, the engine's `prompts/get` op and `McpHost.request({ op: "prompts/get" })` ([_As built — `prompts/get`_](mcp-connections.md)). `sessionMcp` gains `prompts: { session, catalog, get }` (`apps/server/src/session/mcp-host.ts`): `get` sends the owner's request in the conversation's Workspace (its Subagent Workspace for a stdio server, else the Session's), waits at most 40 s (the host's 30 s and slack), reads a streamed result under the decode slot (`readStreamed`), and maps a failure to a code, every refusal naming the server: `SignInRequired` → `MCP_SIGN_IN_REQUIRED`; `TooLarge` → `MCP_PROMPT_TOO_LARGE`; a `-32602` (`ServerError` or `NotFound`) → `MCP_PROMPT_ARGUMENTS` (the server's message, at most 300 characters, redacted); anything else (a server off, unreachable, a timeout, a task-shaped or unreadable answer, a host that does not know the op) → `MCP_PROMPT_FAILED`.
 - **The catalog:** `catalog` adds `prompts` and `mcpServers` when there are any (`mcp-prompt-catalog.ts`), from `McpHost.servers({ parts: ["prompts"] })`, so nothing reads a server and no Container starts. `completions` is `false` until completion lands; the field is the seam.
@@ -501,14 +501,31 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
 - **The transcript projection** (`projectEntry`) shows the typed text without the block or the inline prompt images, and carries `mcpPrompt` (with the block as `text`) on the message for the client's disclosure.
 - **Freshness:** `promptsVersion` moves with the prompts alone and `version` does not, so a prompts-only change does not install `mcp` again (`packages/extensions/src/mcp.test.ts`).
 
-**Left for the web change (the second half, which closes #463):**
+#### The web composer, the transcript and the rest of the Session (second change; no migration)
 
-- The `/` menu rows, `ArgumentForm`, the chip, `Navigated.mcpPrompt` (Branch restoring the chip), the transcript's chip line and disclosure, `/export`, and the draft composer's catalog (through the Registry's `draftCatalog`). The composer treats an `error` on a prompt send, with a code or without (a newer client against an older Session), as a refusal and gives the chip back.
-- Completion (`mcp_complete`, `mcp_completion`).
-- Freshness: refreshing the list on `list_changed`, on `ttlMs` and after a get fails with an unknown name (_Freshness_). Until then the catalog is the host's inventory as discovery left it.
-- The lane row "Getting <title> from <server>…".
+- **The `/` menu** (`chat/menu.ts`): `MenuCatalog` carries `prompts` and `mcpServers`, and `mcpSections` makes one section per server, "MCP · <server>" (plus "· from <repo>"), after the Skills. A row shows the `/mcp__<server>__<prompt>` label with `mcp__<server>__` muted, the argument hint, then the title and the first line of the description. A server with no prompts to offer is a muted row (connecting, unavailable, sign in); it cannot be picked. Picking a prompt with arguments opens the form, one with none makes its chip at once, and the typed `/…` is taken out of the text.
+- **`ArgumentForm`** (`chat/argument-form.tsx`, with its pure part in `argument-form.ts`) is built for prompts, with no `complete` prop yet: the fields come from the prompt's arguments in declared order, Tab and Enter move on, Done is disabled while a required field is empty or a value is over the bounds (`promptArgumentsProblem`, the Session's own check), and Escape or Cancel gives up the pick. Resource templates and completion are not built (_Left for later_).
+- **The chip** (`prompt-chip.tsx`, `mcp-prompt-state.ts`) sits above the input; clicking it opens the form again and ✕ removes it. It is held per conversation beside the composer's other state (`conversationPromptAtoms`, `draftPromptAtoms` for the draft), and is lost on reload. The draft composer counts it in `draftHeldAtom`, so a draft with only a chip is not discarded. A chip whose prompt the catalog no longer offers (a Branch gave it back, or the server dropped it) is muted and says so: it cannot be sent, only removed (`chipStanding`).
+- **Sending** a message with a chip sends `submit.mcpPrompt { server, name, arguments? }` (`refOf`, `withPrompt`); the message in the lane reads "Getting <title> from <server>…" until the Session has placed it (`OutgoingMessage.getting`). A queued follow-up carries the same ref. The draft composer carries the chip with the first message (`sendDraft`).
+- **A refusal gives the chip back.** `SessionCommandError` carries the `error`'s `code` and `server`, and `refusalOutcome` reads them:
+  - `MCP_PROMPT_ARGUMENTS` reopens the form with the server's message;
+  - `MCP_SIGN_IN_REQUIRED` shows the Sign in link (the server's start link, in the Session's Environment) beside the restored chip, with Retry for after signing in;
+  - `MCP_PROMPT_TOO_LARGE` shows the reason, with no Retry (it would be refused again);
+  - `MCP_PROMPT_FAILED` shows the reason with Retry;
+  - **an `error` with no code on a prompt send is a refusal too** (an older Session), so the chip is never lost. The composer is empty again with the chip and typed text restored; for a draft's first message, `RefusedFirstMessage` keeps the chip.
+- **Branch and Fork give the chip back.** `Navigated.mcpPrompt` and `ForkedSession.mcpPrompt` (from the owner message's `cloudpid.user` data, `ownerMessagePrompt`) set `promptPrefillAtom`; the composer reads the catalog and makes the chip (`restoredChip`), unsendable when the prompt is no longer offered. Redacted argument values come back redacted. The typed text is the message's own words (`ownerMessageText`).
+- **The transcript** (`chat/prompt-message.tsx`, `prompt-disclosure.ts`) shows `TranscriptMessage.mcpPrompt` under the typed text: the chip line "MCP prompt · github · Review PR", the arguments one per line (cut at 80 characters), the result's `description`, and a closed disclosure "What the model got" with the block read back into its messages (`promptSegments`), assistant ones quoted under "Assistant (from the prompt)", then the resources by URI. Text is rendered as text, never as markup. Its open state is kept per message (`kind: "mcp-prompt"`).
+- **`/export`** writes the display, `MCP prompt: github/review_pr (pr_number=123)`, the block as a blockquote and the resources it linked (`promptMarkdown`, `commands.ts`).
+- **The draft composer's catalog** (`draftCatalog`) adds `prompts` and `mcpServers` through the main Worker (`McpStatus.prompts`, from the same inventory), so the draft's `/` menu offers prompts before a Session exists.
+- **Freshness:**
+  - **Built:** the inventory's `ttlMs`, which refreshes in the background when a catalog read finds the list stale; and an unknown name. A `prompts/get` the server answers with `NotFound` or `-32602`, or one for a prompt the inventory does not list, expires that server's inventory (`expireInventory`, `request.ts`), so the next catalog read lists again. The send itself is refused (`MCP_PROMPT_FAILED`, or `MCP_PROMPT_ARGUMENTS` for `-32602`); a refusal that is `MCP_PROMPT_ARGUMENTS`, `MCP_PROMPT_FAILED` or has no code asks the Session for the catalog again at once (`refreshCatalogAtom`), so the chip's standing is right when the owner looks again.
+  - **Not built: `list_changed`.** The host holds no listen stream yet (the engine's `listen` op is [#448](https://github.com/ian-pascoe/cloudpid/issues/448)), so there is nothing to carry `notifications/prompts/list_changed`; `promptsListChanged` waits for it. Until then a server's changes show at discovery, at `ttlMs` and after an unknown name.
 
-**Left for later:** a server's Sampling or Elicitation request during a get. The request carries no `ctx.answers`, so a question a server asks during the get, which a Legacy server may, since its elicitation capability is declared for the whole connection, is cancelled ([#492](https://github.com/ian-pascoe/cloudpid/issues/492)); `mcpPrompt.sampling` and `mcpPrompt.elicitation` wait for it.
+**Left for later:**
+
+- **Completion** (`mcp_complete`, `mcp_completion`, `ArgumentForm`'s `complete`, and the form for resource templates); `completions` stays `false` in the catalog.
+- **`list_changed`** on a listen stream ([#448](https://github.com/ian-pascoe/cloudpid/issues/448)).
+- A server's Sampling or Elicitation request during a get. The request carries no `ctx.answers`, so a question a server asks during the get, which a Legacy server may, since its elicitation capability is declared for the whole connection, is cancelled ([#492](https://github.com/ian-pascoe/cloudpid/issues/492)); `mcpPrompt.sampling` and `mcpPrompt.elicitation` wait for it.
 
 ## Roots
 
