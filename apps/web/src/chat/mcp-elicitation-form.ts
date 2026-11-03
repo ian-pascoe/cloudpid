@@ -3,8 +3,10 @@
 // requests, The form → Filling): each field's value as its widget holds it, and how those values become what the Session
 // checks and the server gets. Typed values live in the card's state in the tab, and nowhere else.
 import { type Entered } from "@cloudpid/mcp/types";
-import type { ElicitationField, ElicitationForm } from "@cloudpid/protocol";
+import type { ElicitationField, ElicitationForm, McpElicitationSource } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 
@@ -104,4 +106,48 @@ export const countdown = (deadline: number, now: number): string => {
   const seconds = Math.max(0, Math.ceil((deadline - now) / 1000));
 
   return `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`;
+};
+
+/** `record[name]` when `name` is the record's own key (a field may be named `constructor` or `__proto__`). */
+export const ownValue = <A>(record: { readonly [name: string]: A }, name: string): A | undefined =>
+  Object.hasOwn(record, name) ? record[name] : undefined;
+
+/**
+ * How a refusal of an answer reads on the card: the Session says `<field>: <why>` for a value that does not fit, or that
+ * matches a Secret, and a bare message for anything else (the request ended). `field` is the field it names, if one.
+ */
+export const refusalOf = (
+  form: ElicitationForm,
+  message: string,
+): { readonly field?: string; readonly text: string } => {
+  // The longest name first: `a: b` is a field named `a: b` before it is `a` with a reason.
+  const named = Arr.sort(
+    Arr.map(form.fields, (field) => field.name),
+    Order.flip(Order.mapInput(Order.Number, (name: string) => name.length)),
+  );
+
+  const field = Arr.findFirst(named, (name) => message.startsWith(`${name}: `));
+
+  return Option.isSome(field)
+    ? { field: field.value, text: message.slice(field.value.length + 2) }
+    : { text: message };
+};
+
+/** Where the owner's time zone is, as the browser names it (`Europe/Berlin`): a date and time is read in it. */
+export const timeZoneName = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/** Where a server's definition is, for the card's badge; nothing for a kind this build does not know. */
+export const sourceLabel = (source: McpElicitationSource | undefined): string | undefined => {
+  if (source === undefined) return undefined;
+
+  switch (source.kind) {
+    case "global":
+      return "Global";
+    case "environment":
+      return "This environment";
+    case "repo":
+      return source.slug === undefined ? undefined : `from ${source.slug}`;
+    default:
+      return undefined;
+  }
 };

@@ -19,10 +19,13 @@ import { MessageCircleQuestion } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { exitFailure } from "../registry.ts";
+import { agentLabel } from "../session/agents.ts";
 import {
   answerMcpElicitationAtom,
   mcpElicitationRequestsAtom,
   sessionStatusAtom,
+  taskGraphAtom,
 } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
 import {
@@ -31,6 +34,10 @@ import {
   type FieldValue,
   type FormValues,
   initialValues,
+  ownValue,
+  refusalOf,
+  sourceLabel,
+  timeZoneName,
 } from "./mcp-elicitation-form.ts";
 import { requestCardId } from "./request-anchor.ts";
 
@@ -43,12 +50,16 @@ const TEXTAREA_ABOVE = 200;
 /** How often the countdown looks at the clock, in milliseconds. */
 const TICK_MS = 1000;
 
-/** What a card takes: its request, whether answering is off, the clock (a test gives its own), and the owner's answer. */
+/**
+ * What a card takes: its request, whether answering is off, the clock (a test gives its own), the subagent that asked
+ * (none for the root agent), and the owner's answer, which ends with the Session's refusal of it, or null.
+ */
 type CardProps = {
   request: McpElicitationRequest;
   disabled: boolean;
   now?: number;
-  onAnswer: (action: ElicitationAction, content?: ElicitationContent) => void;
+  agent?: string | undefined;
+  onAnswer: (action: ElicitationAction, content?: ElicitationContent) => Promise<string | null>;
 };
 
 const fieldClass =
@@ -70,20 +81,35 @@ const textOf = (value: FieldValue): string => (Predicate.isString(value) ? value
 const listOf = (value: FieldValue): ReadonlyArray<string> =>
   Predicate.isString(value) || Predicate.isBoolean(value) ? [] : value;
 
+/** What a widget says of itself to assistive technology: required, invalid, and the notes that describe it. */
+type Described = {
+  required: boolean;
+  invalid: boolean;
+  describedBy: string | undefined;
+};
+
 /** One field's widget. */
 const FieldInput = ({
   field,
   id,
   value,
   disabled,
+  described,
   onChange,
 }: {
   field: ElicitationField;
   id: string;
   value: FieldValue;
   disabled: boolean;
+  described: Described;
   onChange: (next: FieldValue) => void;
 }) => {
+  const aria = {
+    "aria-required": described.required || undefined,
+    "aria-invalid": described.invalid || undefined,
+    "aria-describedby": described.describedBy,
+  } as const;
+
   switch (field.kind) {
     case "boolean":
       return (
@@ -96,6 +122,7 @@ const FieldInput = ({
             onChange(event.currentTarget.checked);
           }}
           className="size-4"
+          {...aria}
         />
       );
     case "number":
@@ -112,11 +139,17 @@ const FieldInput = ({
           onChange={(event) => {
             onChange(event.currentTarget.value);
           }}
+          {...aria}
         />
       );
     case "choice":
       return field.options.length <= RADIO_LIMIT ? (
-        <div role="radiogroup" aria-labelledby={`${id}-label`} className="flex flex-col gap-1">
+        <div
+          role="radiogroup"
+          aria-labelledby={`${id}-label`}
+          className="flex flex-col gap-1"
+          {...aria}
+        >
           {Arr.map(field.options, (option) => (
             <label key={option.value} className="flex items-center gap-2 text-sm">
               <input
@@ -142,6 +175,7 @@ const FieldInput = ({
             onChange(event.currentTarget.value);
           }}
           className={fieldClass}
+          {...aria}
         >
           <option value="" />
           {Arr.map(field.options, (option) => (
@@ -155,7 +189,13 @@ const FieldInput = ({
       const checked = listOf(value);
 
       return (
-        <div role="group" aria-labelledby={`${id}-label`} className="flex flex-col gap-1">
+        <div
+          role="group"
+          aria-labelledby={`${id}-label`}
+          className="flex flex-col gap-1"
+          aria-invalid={aria["aria-invalid"]}
+          aria-describedby={aria["aria-describedby"]}
+        >
           {Arr.map(field.options, (option) => (
             <label key={option.value} className="flex items-center gap-2 text-sm">
               <input
@@ -190,6 +230,7 @@ const FieldInput = ({
             onChange(event.currentTarget.value);
           }}
           className={fieldClass}
+          {...aria}
         />
       ) : (
         <Input
@@ -202,10 +243,15 @@ const FieldInput = ({
           onChange={(event) => {
             onChange(event.currentTarget.value);
           }}
+          {...aria}
         />
       );
   }
 };
+
+/** Whether a field's widget is a group of inputs, which a `fieldset`'s `legend` names rather than a `label`. */
+const isGroup = (field: ElicitationField): boolean =>
+  field.kind === "multi_choice" || (field.kind === "choice" && field.options.length <= RADIO_LIMIT);
 
 /** The time now, ticked each second; `fixed` (a test's) stops the clock. */
 const useNow = (fixed: number | undefined) => {
@@ -232,17 +278,33 @@ const useNow = (fixed: number | undefined) => {
  * <server> may ask again". Everything the server wrote is shown as plain text. While the Session is not live the inputs
  * and buttons are off and the card reads "Reconnecting…"; typed values stay in the tab.
  */
-export const McpElicitationCard = ({ request, disabled, now: fixedNow, onAnswer }: CardProps) => {
+export const McpElicitationCard = ({
+  request,
+  disabled,
+  now: fixedNow,
+  agent,
+  onAnswer,
+}: CardProps) => {
   const [values, setValues] = useState<FormValues>(() => initialValues(request.form));
   const [sent, setSent] = useState(false);
+  const [refusal, setRefusal] = useState<ReturnType<typeof refusalOf> | null>(null);
   const now = useNow(fixedNow);
   const off = disabled || sent;
   const checked = validateElicitation(request.form, enteredOf(request.form, values));
   const gate = request.form.fields.length === 0;
 
+  const origin = sourceLabel(request.source);
+
+  /** The answer, which stays on the card (every input and button back on, the reason shown) if the Session refuses it. */
   const answer = (action: ElicitationAction, content?: ElicitationContent) => {
     setSent(true);
-    onAnswer(action, content);
+    setRefusal(null);
+    void onAnswer(action, content).then((refused) => {
+      if (refused === null) return;
+
+      setSent(false);
+      setRefusal(refusalOf(request.form, refused));
+    });
   };
 
   return (
@@ -257,7 +319,11 @@ export const McpElicitationCard = ({ request, disabled, now: fixedNow, onAnswer 
           {request.server} asks for your input
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          during <span className="font-mono">{request.tool}</span> · the agent
+          during <span className="font-mono">{request.tool}</span> ·{" "}
+          {agent === undefined ? "the agent" : `subagent ${agent}`}
+          {origin === undefined ? null : (
+            <span className="ml-2 rounded border px-1 py-0.5 text-[0.7rem]">{origin}</span>
+          )}
         </p>
       </div>
       <form
@@ -281,43 +347,89 @@ export const McpElicitationCard = ({ request, disabled, now: fixedNow, onAnswer 
             </p>
           ))}
           <div className="mt-3 flex flex-col gap-3">
-            {Arr.map(request.form.fields, (field) => {
-              const id = `${requestCardId(request.id)}-${field.name}`;
-              const problem = Result.isFailure(checked) ? checked.failure[field.name] : undefined;
-              const touched = values[field.name] !== initialValues(request.form)[field.name];
+            {Arr.map(request.form.fields, (field, index) => {
+              const id = `${requestCardId(request.id)}-f${index}`;
+
+              const checkedProblem = Result.isFailure(checked)
+                ? ownValue(checked.failure, field.name)
+                : undefined;
+
+              const touched =
+                values[field.name] !== ownValue(initialValues(request.form), field.name);
+
+              const refused = refusal?.field === field.name ? refusal.text : undefined;
+              const problem = refused ?? (touched ? checkedProblem : undefined);
+              const notes: string[] = [];
+
+              if (field.description !== undefined) notes.push(`${id}-description`);
+
+              if (field.kind === "date_time") notes.push(`${id}-zone`);
+
+              if (problem !== undefined) notes.push(`${id}-problem`);
+
+              const title = (
+                <>
+                  {field.title ?? field.name}
+                  {field.required ? (
+                    <span aria-hidden className="ml-1 text-destructive">
+                      *
+                    </span>
+                  ) : null}
+                </>
+              );
 
               return (
                 <div key={field.name} className="flex flex-col gap-1">
-                  <label id={`${id}-label`} htmlFor={id} className="text-sm font-medium">
-                    {field.title ?? field.name}
-                    {field.required ? (
-                      <span aria-hidden className="ml-1 text-destructive">
-                        *
-                      </span>
-                    ) : null}
-                  </label>
-                  {field.description === undefined ? null : (
-                    <p className="text-xs text-muted-foreground">{field.description}</p>
+                  {isGroup(field) ? (
+                    <span id={`${id}-label`} className="text-sm font-medium">
+                      {title}
+                    </span>
+                  ) : (
+                    <label id={`${id}-label`} htmlFor={id} className="text-sm font-medium">
+                      {title}
+                    </label>
                   )}
+                  {field.description === undefined ? null : (
+                    <p id={`${id}-description`} className="text-xs text-muted-foreground">
+                      {field.description}
+                    </p>
+                  )}
+                  {field.kind === "date_time" ? (
+                    <p id={`${id}-zone`} className="text-xs text-muted-foreground">
+                      In your time zone, {timeZoneName()}
+                    </p>
+                  ) : null}
                   <FieldInput
                     field={field}
                     id={id}
                     value={values[field.name] ?? ""}
                     disabled={off}
+                    described={{
+                      required: field.required,
+                      invalid: problem !== undefined,
+                      describedBy: notes.length === 0 ? undefined : notes.join(" "),
+                    }}
                     onChange={(next) => {
                       setValues((previous) => ({ ...previous, [field.name]: next }));
+
+                      if (refusal?.field === field.name) setRefusal(null);
                     }}
                   />
-                  {problem !== undefined && touched ? (
-                    <p role="alert" className="text-xs text-destructive">
+                  {problem === undefined ? null : (
+                    <p id={`${id}-problem`} role="alert" className="text-xs text-destructive">
                       {problem}
                     </p>
-                  ) : null}
+                  )}
                 </div>
               );
             })}
           </div>
         </div>
+        {refusal !== null && refusal.field === undefined ? (
+          <p role="alert" className="shrink-0 text-xs text-destructive">
+            {refusal.text}
+          </p>
+        ) : null}
         <p className="shrink-0 text-xs text-muted-foreground">
           Only {request.server} gets what you enter, and its reply to the agent may repeat it. Never
           enter a password or key here.
@@ -366,22 +478,24 @@ export const McpElicitationCard = ({ request, disabled, now: fixedNow, onAnswer 
 export const McpElicitationRequests = () => {
   const sessionId = useShownSessionId();
   const requests = useAtomValue(mcpElicitationRequestsAtom(sessionId));
-  // Answered only over a live socket.
+  const graph = useAtomValue(taskGraphAtom(sessionId));
+  // Answered only over a live socket; the cards stay, off, while it is not.
   const disabled = useAtomValue(sessionStatusAtom(sessionId), (status) => status !== "live");
-  const answer = useAtomSet(answerMcpElicitationAtom(sessionId));
+  const answer = useAtomSet(answerMcpElicitationAtom(sessionId), { mode: "promiseExit" });
 
   return Arr.map(requests, (request) => (
     <McpElicitationCard
       key={request.id}
       request={request}
       disabled={disabled}
-      onAnswer={(action, content) => {
+      agent={agentLabel(graph, request.conversationId)}
+      onAnswer={(action, content) =>
         answer(
           content === undefined
             ? { request: request.id, action }
             : { request: request.id, action, content },
-        );
-      }}
+        ).then(exitFailure)
+      }
     />
   ));
 };

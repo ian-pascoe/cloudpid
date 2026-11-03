@@ -291,14 +291,14 @@ export interface SessionClient {
   /**
    * Answer MCP elicitation request `request` (`docs/architecture/mcp-server-requests.md` → Elicitation requests):
    * `accept` sends `content`, the form's values, which go to the server and are kept nowhere; `decline` and `cancel` send
-   * none. The Session's next `mcp_elicitation_requests` closes the card; a refusal (a value that does not fit, the request
-   * ended) shows as `failure`.
+   * none. The Session's next `mcp_elicitation_requests` closes the card; a refusal (a value that does not fit, a Secret's
+   * match, the request ended) fails with its message, and the card stays.
    */
   readonly answerMcpElicitation: (
     request: string,
     action: ElicitationAction,
     content?: ElicitationContent,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, SessionCommandError>;
   /**
    * Abort the root conversation's work and withdraw its queued input, or a subagent's when `conversationId` names
    * it. With `subagents`, the agents below it stop too; otherwise they keep working.
@@ -858,12 +858,12 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     }
 
     // The next socket says again which Secret requests, Approval requests and Browser Handoffs wait, and which calls drive
-    // Owner tabs.
+    // Owner tabs. An MCP question's card stays (off, "Reconnecting…", the typed values kept) until that socket says which
+    // still wait: a question outlives a dropped connection, and the owner's typing must not.
     current = {
       ...current,
       secretRequests: [],
       approvalRequests: [],
-      mcpElicitationRequests: [],
       browserHandoffRequests: null,
       ownerTabDrivers: [],
     };
@@ -1637,19 +1637,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         send(answer);
       }),
-    answerMcpElicitation: (request, action, content) =>
-      step(() => {
-        const answer: Types.Mutable<Extract<ClientMessage, { type: "mcp_elicitation_answer" }>> = {
-          type: "mcp_elicitation_answer",
-          id: nextCommandId(),
-          request,
-          action,
-        };
+    answerMcpElicitation: (asked, action, content) =>
+      request(
+        (id) => {
+          const answer: Types.Mutable<Extract<ClientMessage, { type: "mcp_elicitation_answer" }>> =
+            { type: "mcp_elicitation_answer", id, request: asked, action };
 
-        if (action === "accept" && content !== undefined) answer.content = content;
+          if (action === "accept" && content !== undefined) answer.content = content;
 
-        send(answer);
-      }),
+          return answer;
+        },
+        () => Option.some(undefined),
+        true,
+      ),
     abort: (target = {}) =>
       step(() => {
         if (connection === null) return;

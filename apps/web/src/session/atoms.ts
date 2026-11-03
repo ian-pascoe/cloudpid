@@ -380,7 +380,7 @@ export interface McpElicitationAnswerInput {
   readonly content?: ElicitationContent;
 }
 
-/** Answer one of Session `sessionId`'s MCP elicitation requests; the result is a refusal's message, if there is one. */
+/** Answer one of Session `sessionId`'s MCP elicitation requests; a refusal fails with its message. */
 export const answerMcpElicitationAtom = Atom.family((sessionId: string) =>
   appRuntime.fn(
     ({ request, action, content }: McpElicitationAnswerInput, get) =>
