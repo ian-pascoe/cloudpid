@@ -15,6 +15,7 @@ import {
   type EnvironmentRecord,
   type EnvironmentsResult,
   MCP_API_LIMITS,
+  SESSION_ID,
   type McpAuth,
   type McpSessionOrigin,
   type McpSessionSummary,
@@ -40,9 +41,6 @@ export const MCP_API_OPERATIONS_SERVED = [
   "session",
   "transcript",
 ] as const;
-
-/** What a Session's id looks like (the Registry makes UUIDs); anything else is never looked up, so no object is made for it. */
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The period of `MCP_CALLS`, in seconds: what a caller over the rate is told to wait at most. */
 export const MCP_CALLS_PERIOD_S = 60;
@@ -74,6 +72,8 @@ export interface McpApiContext {
   /** `https://<host>`, from the request's own URL: the base of every `url` the Local agent is given. */
   readonly origin: string;
   readonly caller: Caller;
+  /** `Server`'s deploy id, which `describe()` reports for `McpServer`'s `serverInfo.version`; none where the runtime has no version metadata. */
+  readonly version?: string | undefined;
   /** Counts one call against the caller's rate: whether it is within it. */
   readonly withinRate: (key: string) => Effect.Effect<boolean>;
 }
@@ -97,27 +97,24 @@ export interface McpApiService {
   readonly auth: McpAuth;
 }
 
-/** How the caller got in, as the audit mark says it. The owner comes through managed OAuth. */
-export const authOf = (caller: Caller): McpAuth => {
-  switch (caller.kind) {
-    case "owner":
-      return "oauth";
-    case "service_token":
-      return "service_token";
-    case "local":
-      return "local";
-  }
-};
+/** Who is calling, as the span and the rate limit read it. */
+export interface Identity {
+  readonly auth: McpAuth;
+  readonly rateKey: string;
+}
 
-/** The rate limit's key: `owner` or `token:<client id>`, never the email. */
-export const rateKeyOf = (caller: Caller): string => {
+/**
+ * How the caller got in, as the audit mark says it (the owner comes through managed OAuth), and the key its calls are
+ * counted under: `owner`, `token:<client id>` or `local`, never the email.
+ */
+export const identityOf = (caller: Caller): Identity => {
   switch (caller.kind) {
     case "owner":
-      return "owner";
+      return { auth: "oauth", rateKey: "owner" };
     case "service_token":
-      return `token:${caller.clientId}`;
+      return { auth: "service_token", rateKey: `token:${caller.clientId}` };
     case "local":
-      return "local";
+      return { auth: "local", rateKey: "local" };
   }
 };
 
@@ -151,7 +148,7 @@ const summaryOf = (
   environments: ReadonlyMap<string, string>,
   origin: string,
 ): McpSessionSummary => {
-  const origin_ = originOf(record);
+  const sessionOrigin = originOf(record);
 
   const summary: McpSessionSummary = {
     session_id: record.id,
@@ -166,7 +163,7 @@ const summaryOf = (
     url: `${origin}/sessions/${record.id}`,
   };
 
-  return origin_ === undefined ? summary : { ...summary, origin: origin_ };
+  return sessionOrigin === undefined ? summary : { ...summary, origin: sessionOrigin };
 };
 
 /** `request`'s Environment as an id: an exact id, else an exact name in any case. */
@@ -204,154 +201,166 @@ const namesOf = (environments: ReadonlyArray<EnvironmentRecord>) =>
   new Map(Arr.map(environments, (environment) => [environment.id, environment.name] as const));
 
 /** The service's operations over `backend` for one request. */
-export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpApiService => ({
-  describe: () => ({ operations: [...MCP_API_OPERATIONS_SERVED], limits: MCP_API_LIMITS }),
+export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpApiService => {
+  const identity = identityOf(context.caller);
 
-  environments: guarded(
-    Effect.gen(function* () {
-      const [environments, sessions, model] = yield* Effect.all([
-        backend.environments,
-        backend.allSessions,
-        // A Registry that cannot say the default model still lists the Environments.
-        backend.defaultModel.pipe(
-          Effect.asSome,
-          Effect.catchCause(() => Effect.succeed(Option.none<string>())),
-        ),
-      ]);
+  return {
+    describe: () => {
+      const description = { operations: [...MCP_API_OPERATIONS_SERVED], limits: MCP_API_LIMITS };
 
-      const running = new Map<string, number>();
+      return context.version === undefined
+        ? description
+        : { ...description, version: context.version };
+    },
 
-      for (const session of sessions) {
-        if (session.status === "running") {
-          running.set(session.environment, (running.get(session.environment) ?? 0) + 1);
-        }
-      }
-
-      // The default Environment first, as the web lists them; the rest as the Registry does (newest first).
-      const ordered = Arr.sort(
-        environments,
-        Order.mapInput(Order.Number, (environment: EnvironmentRecord) =>
-          environment.id === DEFAULT_ENVIRONMENT ? 0 : 1,
-        ),
-      );
-
-      return apiOk({
-        environments: Arr.map(ordered, (environment) => ({
-          id: environment.id,
-          name: environment.name,
-          default: environment.id === DEFAULT_ENVIRONMENT,
-          repos: Arr.map(environment.repos, ({ name, url }) => ({ name, url })),
-          running_sessions: running.get(environment.id) ?? 0,
-        })),
-        models: Option.isSome(model)
-          ? { available: [...SUPPORTED_MODELS], default: model.value }
-          : { available: [...SUPPORTED_MODELS] },
-      } satisfies EnvironmentsResult);
-    }),
-  ),
-
-  sessions: (query) =>
-    guarded(
+    environments: guarded(
       Effect.gen(function* () {
-        const environments = yield* backend.environments;
-        let environment: string | undefined;
-
-        if (query.environment !== undefined) {
-          const resolved = resolveEnvironment(query.environment, environments);
-
-          if (!resolved.ok) return resolved;
-
-          environment = resolved.value;
-        }
-
-        const { environment: _asked, ...rest } = query;
-
-        const page = yield* backend.sessions(
-          environment === undefined ? rest : { ...rest, environment },
-        );
-
-        if ("refused" in page) {
-          return apiFailure(
-            "invalid_cursor",
-            "That cursor is not one sessions_list gave: list again without it.",
-          );
-        }
-
-        const names = namesOf(environments);
-
-        const sessions = Arr.map(page.sessions, (record) =>
-          summaryOf(record, names, context.origin),
-        );
-
-        return apiOk(
-          page.nextCursor === undefined ? { sessions } : { sessions, next_cursor: page.nextCursor },
-        );
-      }),
-    ),
-
-  session: (id) =>
-    guarded(
-      Effect.gen(function* () {
-        if (!SESSION_ID.test(id)) return invalidId;
-
-        const record = yield* backend.session(id);
-
-        if (record === null) return notFound(id);
-
-        const [environments, workspace, report] = yield* Effect.all([
+        const [environments, sessions, model] = yield* Effect.all([
           backend.environments,
-          backend.workspace(record.workspace),
-          backend.status(id),
+          backend.allSessions,
+          // A Registry that cannot say the default model still lists the Environments.
+          backend.defaultModel.pipe(
+            Effect.asSome,
+            Effect.catchCause(() => Effect.succeed(Option.none<string>())),
+          ),
         ]);
 
-        if (!report.ok) return report;
+        const running = new Map<string, number>();
 
-        const summary = summaryOf(record, namesOf(environments), context.origin);
+        for (const session of sessions) {
+          if (session.status === "running") {
+            running.set(session.environment, (running.get(session.environment) ?? 0) + 1);
+          }
+        }
+
+        // The default Environment first, as the web lists them; the rest as the Registry does (newest first).
+        const ordered = Arr.sort(
+          environments,
+          Order.mapInput(Order.Number, (environment: EnvironmentRecord) =>
+            environment.id === DEFAULT_ENVIRONMENT ? 0 : 1,
+          ),
+        );
 
         return apiOk({
-          ...summary,
-          ...report.value,
-          // The Session's own account of what each waits for, as a page the owner can open.
-          waiting: Arr.map(report.value.waiting, (request) => ({
-            ...request,
-            url: request.url.startsWith("/") ? `${context.origin}${request.url}` : request.url,
+          environments: Arr.map(ordered, (environment) => ({
+            id: environment.id,
+            name: environment.name,
+            default: environment.id === DEFAULT_ENVIRONMENT,
+            repos: Arr.map(environment.repos, ({ name, url }) => ({ name, url })),
+            running_sessions: running.get(environment.id) ?? 0,
           })),
-          agents: Arr.map(record.agents ?? [], (agent) => ({
-            agent_id: agent.id,
-            parent: agent.parent,
-            role: agent.role,
-            status: agent.status,
-          })),
-          workspace: {
-            branch: workspace?.branch ?? null,
-            base: workspace?.base ?? null,
-            repos: workspace?.repos ?? [],
-          },
-        } satisfies SessionDetail);
+          models: Option.isSome(model)
+            ? { available: [...SUPPORTED_MODELS], default: model.value }
+            : { available: [...SUPPORTED_MODELS] },
+        } satisfies EnvironmentsResult);
       }),
     ),
 
-  transcript: ({ session_id: id, ...request }) =>
-    guarded(
-      Effect.gen(function* () {
-        if (!SESSION_ID.test(id)) return invalidId;
+    sessions: (query) =>
+      guarded(
+        Effect.gen(function* () {
+          const environments = yield* backend.environments;
+          let environment: string | undefined;
 
-        // The Registry first: a made-up id never reaches a Session object (and so never makes one).
-        const record = yield* backend.session(id);
+          if (query.environment !== undefined) {
+            const resolved = resolveEnvironment(query.environment, environments);
 
-        if (record === null) return notFound(id);
+            if (!resolved.ok) return resolved;
 
-        const page = yield* backend.transcript(id, request);
+            environment = resolved.value;
+          }
 
-        return page.ok ? apiOk({ ...page.value, session_id: id }) : page;
-      }),
+          const { environment: _asked, ...rest } = query;
+
+          const page = yield* backend.sessions(
+            environment === undefined ? rest : { ...rest, environment },
+          );
+
+          if ("refused" in page) {
+            return apiFailure(
+              "invalid_cursor",
+              "That cursor is not one sessions_list gave: list again without it.",
+            );
+          }
+
+          const names = namesOf(environments);
+
+          const sessions = Arr.map(page.sessions, (record) =>
+            summaryOf(record, names, context.origin),
+          );
+
+          return apiOk(
+            page.nextCursor === undefined
+              ? { sessions }
+              : { sessions, next_cursor: page.nextCursor },
+          );
+        }),
+      ),
+
+    session: (id) =>
+      guarded(
+        Effect.gen(function* () {
+          if (!SESSION_ID.test(id)) return invalidId;
+
+          const record = yield* backend.session(id);
+
+          if (record === null) return notFound(id);
+
+          const [environments, workspace, report] = yield* Effect.all([
+            backend.environments,
+            backend.workspace(record.workspace),
+            backend.status(id),
+          ]);
+
+          if (!report.ok) return report;
+
+          const summary = summaryOf(record, namesOf(environments), context.origin);
+
+          return apiOk({
+            ...summary,
+            ...report.value,
+            // The Session's own account of what each waits for, as a page the owner can open.
+            waiting: Arr.map(report.value.waiting, (request) => ({
+              ...request,
+              url: request.url.startsWith("/") ? `${context.origin}${request.url}` : request.url,
+            })),
+            agents: Arr.map(record.agents ?? [], (agent) => ({
+              agent_id: agent.id,
+              parent: agent.parent,
+              role: agent.role,
+              status: agent.status,
+            })),
+            workspace: {
+              branch: workspace?.branch ?? null,
+              base: workspace?.base ?? null,
+              repos: workspace?.repos ?? [],
+            },
+          } satisfies SessionDetail);
+        }),
+      ),
+
+    transcript: ({ session_id: id, ...request }) =>
+      guarded(
+        Effect.gen(function* () {
+          if (!SESSION_ID.test(id)) return invalidId;
+
+          // The Registry first: a made-up id never reaches a Session object (and so never makes one).
+          const record = yield* backend.session(id);
+
+          if (record === null) return notFound(id);
+
+          const page = yield* backend.transcript(id, request);
+
+          return page.ok ? apiOk({ ...page.value, session_id: id }) : page;
+        }),
+      ),
+
+    limited: context.withinRate(identity.rateKey).pipe(
+      // A limiter that cannot answer counts as within the rate: the endpoint fails open, the owner's own calls first.
+      Effect.catchCause(() => Effect.succeed(true)),
+      Effect.map((within) => (within ? undefined : { retryAfterS: MCP_CALLS_PERIOD_S })),
     ),
 
-  limited: context.withinRate(rateKeyOf(context.caller)).pipe(
-    // A limiter that cannot answer counts as within the rate: the endpoint fails open, the owner's own calls first.
-    Effect.catchCause(() => Effect.succeed(true)),
-    Effect.map((within) => (within ? undefined : { retryAfterS: MCP_CALLS_PERIOD_S })),
-  ),
-
-  auth: authOf(context.caller),
-});
+    auth: identity.auth,
+  };
+};

@@ -10,9 +10,8 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import {
   MCP_CALLS_PERIOD_S,
-  authOf,
+  identityOf,
   mcpApiService,
-  rateKeyOf,
   type McpApiContext,
   type McpBackend,
 } from "./api.ts";
@@ -93,6 +92,11 @@ const service = (overrides: Partial<McpBackend> = {}, context: Partial<McpApiCon
 const run = <A>(effect: Effect.Effect<A>) => Effect.runPromise(effect);
 
 describe("describe", () => {
+  it("reports Server's deploy id when it has one, and none otherwise", () => {
+    expect(service({}, { version: "v-123" }).describe().version).toBe("v-123");
+    expect(service().describe().version).toBeUndefined();
+  });
+
   it("lists the four read operations, and only them", () => {
     expect(service().describe().operations).toEqual([
       "environments",
@@ -318,12 +322,12 @@ describe("transcript", () => {
 
 describe("the caller", () => {
   it("is marked as it got in, and rate-limited by an identity that is never the email", () => {
-    expect(authOf({ kind: "owner" })).toBe("oauth");
-    expect(authOf({ kind: "service_token", clientId: "id.access" })).toBe("service_token");
-    expect(authOf({ kind: "local" })).toBe("local");
-    expect(rateKeyOf({ kind: "owner" })).toBe("owner");
-    expect(rateKeyOf({ kind: "service_token", clientId: "id.access" })).toBe("token:id.access");
-    expect(rateKeyOf({ kind: "local" })).toBe("local");
+    expect(identityOf({ kind: "owner" })).toEqual({ auth: "oauth", rateKey: "owner" });
+    expect(identityOf({ kind: "service_token", clientId: "id.access" })).toEqual({
+      auth: "service_token",
+      rateKey: "token:id.access",
+    });
+    expect(identityOf({ kind: "local" })).toEqual({ auth: "local", rateKey: "local" });
   });
 
   it("counts a call against its key, and says to wait a period when over", async () => {

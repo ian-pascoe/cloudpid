@@ -152,6 +152,11 @@ export type AssertionExpectations = {
    * refused.
    */
   readonly serviceToken?: string | undefined;
+  /**
+   * The audience of the application this route is not behind (the main one on `/mcp`, the endpoint's elsewhere): a token
+   * that lists it too is refused, so a credential minted for one application opens only that application's routes.
+   */
+  readonly otherAudience?: string | undefined;
 };
 
 const OauthClaim = Schema.Struct({ client_id: Schema.NonEmptyString });
@@ -223,6 +228,10 @@ export const classifyAssertion = async (
   const audiences = aud === undefined ? [] : Arr.ensure(aud);
 
   if (!audiences.includes(expected.audience)) return refuse("wrong_audience");
+
+  if (expected.otherAudience !== undefined && audiences.includes(expected.otherAudience)) {
+    return refuse("wrong_audience");
+  }
 
   // Before the email: a service token has neither an email nor the owner's identity, and is told apart from a stranger.
   if (common_name !== undefined) {
@@ -397,6 +406,7 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
   if (audience === undefined || audience === "") return refuse("not_configured");
 
   const serviceToken = request.mcp === true ? guard.mcp?.serviceToken : undefined;
+  const other = request.mcp === true ? guard.audience : guard.mcp?.audience;
 
   try {
     return await classifyAssertion(request.assertion, {
@@ -404,6 +414,7 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
       keys: guard.keys,
       now: request.now,
       serviceToken: serviceToken === "" ? undefined : serviceToken,
+      otherAudience: other === "" ? undefined : other,
     });
   } catch {
     // A lookup or a verification that throws (a signature of the wrong length, say) is a refusal, not a 500.

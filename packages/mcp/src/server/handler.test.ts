@@ -1,16 +1,18 @@
 // docs/architecture/mcp-endpoint.md → The handler, Tools, Limits and errors, Telemetry and testing: `serveMcp` on a fake `api`.
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, anti-slop/no-known-value-widening, anti-slop/no-conditional-empty-object-spread, anti-slop/no-runtime-typeof -- JSON-RPC messages are read as the client reads them, and the fake `api` is cut down to what a test exercises. */
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off preferEffectRecord:off
 import { apiFailure, apiOk, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
+import type * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import { clientOf } from "./caller.ts";
 import {
   DESCRIBE_TTL_MS,
   instructionsFor,
+  type Attributes,
   type McpObserver,
   type McpServerApi,
   serveMcp,
   toolGate,
+  unobserved,
 } from "./handler.ts";
 import { renderEnvironments, renderSessions, renderTranscript } from "./render.ts";
 import { TOOLS } from "./tools.ts";
@@ -30,8 +32,17 @@ const summary = {
 
 const OPERATIONS = ["environments", "sessions", "session", "transcript"];
 
+/** `describe()` listing `operations`, and the deploy id when `Server` sends one. */
+const describing =
+  (operations: ReadonlyArray<string>, version?: string): McpServerApi["describe"] =>
+  () => {
+    const description = { operations, limits: MCP_API_LIMITS };
+
+    return version === undefined ? description : { ...description, version };
+  };
+
 const fakeApi = (overrides: Partial<McpServerApi> = {}): McpServerApi => ({
-  describe: () => ({ operations: OPERATIONS, limits: MCP_API_LIMITS }) as never,
+  describe: describing(OPERATIONS),
   environments: () =>
     Promise.resolve(
       apiOk({
@@ -61,7 +72,7 @@ const fakeApi = (overrides: Partial<McpServerApi> = {}): McpServerApi => ({
   ...overrides,
 });
 
-const post = (body: unknown, headers: Record<string, string> = {}) =>
+const post = (body: Schema.Json, headers: Readonly<Record<string, string>> = {}) =>
   new Request(URL_, {
     method: "POST",
     headers: {
@@ -73,15 +84,49 @@ const post = (body: unknown, headers: Record<string, string> = {}) =>
     body: JSON.stringify(body),
   });
 
-const rpc = (method: string, params: unknown = {}, id = 1) => ({
+const rpc = (method: string, params: Schema.Json = {}, id = 1) => ({
   jsonrpc: "2.0",
   id,
   method,
   params,
 });
 
+/** A tool as `tools/list` shows it. */
+interface ListedTool {
+  readonly name: string;
+  readonly annotations: { readonly readOnlyHint?: boolean; readonly openWorldHint?: boolean };
+  readonly inputSchema: { readonly type: string };
+  readonly outputSchema: { readonly type: string };
+}
+
+/** What `structuredContent` holds of the results these tests read. */
+interface Structured {
+  readonly error?: { readonly code: string; readonly retryable: boolean };
+  readonly next?: string;
+  readonly sessions?: ReadonlyArray<{ readonly session_id: string }>;
+  readonly environments?: ReadonlyArray<{ readonly id: string }>;
+}
+
+/** The result of `tools/call`. */
+interface CallResult {
+  readonly isError?: boolean;
+  readonly content: ReadonlyArray<{ readonly type: string; readonly text: string }>;
+  readonly structuredContent: Structured;
+}
+
+/** The JSON-RPC message of a response, as far as these tests read it. */
+interface Message {
+  readonly result?: Partial<CallResult> & {
+    readonly tools?: ReadonlyArray<ListedTool>;
+    readonly serverInfo?: { readonly name: string; readonly version: string };
+    readonly capabilities?: { readonly tools?: { readonly listChanged: boolean } };
+    readonly instructions?: string;
+  };
+  readonly error?: { readonly code: number; readonly message: string };
+}
+
 /** The one JSON-RPC message of a response, whether it came as JSON or as one SSE event. */
-const messageOf = async (response: Response) => {
+const messageOf = async (response: Response): Promise<Message> => {
   const text = await response.text();
 
   const data = text.startsWith("{")
@@ -91,30 +136,25 @@ const messageOf = async (response: Response) => {
         .find((line) => line.startsWith("data:"))
         ?.slice(5) ?? "{}");
 
-  return JSON.parse(data) as {
-    result?: Record<string, any>;
-    error?: { code: number; message: string };
-  };
+  // SAFETY: the endpoint's own JSON-RPC answer, read as far as `Message` says.
+  return JSON.parse(data) as Message;
 };
 
 const gate = () => toolGate();
 
-const serve = (request: Request, api = fakeApi(), observe?: McpObserver) =>
-  serveMcp(request, {
-    api,
-    version: "v1",
-    gate: gate(),
-    ...(observe === undefined ? {} : { observe }),
-  });
+const serve = (request: Request, api = fakeApi(), observe: McpObserver = unobserved) =>
+  serveMcp(request, { api, version: "v1", gate: gate(), observe });
 
-const call = async (name: string, args: unknown, api = fakeApi(), observe?: McpObserver) => {
+const call = async (
+  name: string,
+  args: Schema.Json,
+  api = fakeApi(),
+  observe?: McpObserver,
+): Promise<CallResult> => {
   const response = await serve(post(rpc("tools/call", { name, arguments: args })), api, observe);
 
-  return (await messageOf(response)).result as {
-    isError?: boolean;
-    content: Array<{ type: string; text: string }>;
-    structuredContent: Record<string, any>;
-  };
+  // SAFETY: a `tools/call` that reached the tool answers a result; the tests that expect an error read `messageOf`.
+  return (await messageOf(response)).result as CallResult;
 };
 
 describe("the HTTP surface", () => {
@@ -154,7 +194,7 @@ describe("tools/list", () => {
   it("lists the four read tools, read-only, with input and output schemas", async () => {
     const response = await serve(post(rpc("tools/list")));
     const { result } = await messageOf(response);
-    const tools = result?.["tools"] as Array<Record<string, any>>;
+    const tools = result?.tools ?? [];
 
     expect(tools.map((tool) => tool["name"])).toEqual([
       "environments_list",
@@ -172,22 +212,21 @@ describe("tools/list", () => {
 
   it("leaves a tool out when the deployed Server does not list its operation", async () => {
     const api = fakeApi({
-      describe: () =>
-        ({ operations: ["environments", "sessions", "session"], limits: MCP_API_LIMITS }) as never,
+      describe: describing(["environments", "sessions", "session"]),
     });
 
     const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
 
-    const names = (result?.["tools"] ?? []).map((tool: { name: string }) => tool.name);
+    const names = (result?.tools ?? []).map((tool: { name: string }) => tool.name);
 
     expect(names).not.toContain("session_transcript");
   });
 
   it("serves no tools when describe() fails", async () => {
-    const api = fakeApi({ describe: () => Promise.reject(new Error("rpc down")) as never });
+    const api = fakeApi({ describe: () => Promise.reject(new Error("rpc down")) });
     const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
 
-    expect(result?.["tools"]).toEqual([]);
+    expect(result?.tools).toEqual([]);
   });
 });
 
@@ -205,14 +244,44 @@ describe("initialize", () => {
       ),
     );
 
-    expect(result?.["serverInfo"]).toMatchObject({ name: "cloudpid", version: "v1" });
-    expect(Object.keys(result?.["capabilities"])).toEqual(["tools"]);
-    expect(result?.["capabilities"]["tools"]).toEqual({ listChanged: false });
+    expect(result?.serverInfo).toMatchObject({ name: "cloudpid", version: "v1" });
+    expect(Object.keys(result?.capabilities ?? {})).toEqual(["tools"]);
+    expect(result?.capabilities?.tools).toEqual({ listChanged: false });
 
-    const instructions = result?.["instructions"] as string;
+    const instructions = result?.instructions ?? "";
 
     expect(instructions.length).toBeLessThanOrEqual(1500);
     expect(instructions.split("\n")[0]).toMatch(/^cloudpid: /);
+  });
+});
+
+describe("serverInfo.version", () => {
+  const initialize = (api: McpServerApi) =>
+    serve(
+      post(
+        rpc("initialize", {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        }),
+      ),
+      api,
+    ).then(messageOf);
+
+  it("is Server's deploy id when its describe() sends one", async () => {
+    const { result } = await initialize(
+      fakeApi({
+        describe: describing(OPERATIONS, "server-9"),
+      }),
+    );
+
+    expect(result?.serverInfo?.version).toBe("server-9");
+  });
+
+  it("is McpWorker's own version id when an older Server sends none", async () => {
+    const { result } = await initialize(fakeApi());
+
+    expect(result?.serverInfo?.version).toBe("v1");
   });
 });
 
@@ -236,11 +305,11 @@ describe("the instructions", () => {
 describe("the tool gate", () => {
   it("keeps describe() for its TTL, then asks again", async () => {
     let now = 0;
-    const describe_ = vi.fn(() => ({ operations: OPERATIONS, limits: MCP_API_LIMITS }) as never);
+    const describe_ = vi.fn(describing(OPERATIONS));
     const api = fakeApi({ describe: describe_ });
     const keep = toolGate({ now: () => now });
 
-    expect((await keep(api)).size).toBe(4);
+    expect((await keep(api)).enabled.size).toBe(4);
     now += DESCRIBE_TTL_MS - 1;
     await keep(api);
     expect(describe_).toHaveBeenCalledTimes(1);
@@ -257,8 +326,8 @@ describe("the tool gate", () => {
 
     const keep = toolGate();
 
-    expect((await keep(fakeApi({ describe: describe_ }))).size).toBe(0);
-    expect((await keep(fakeApi({ describe: describe_ }))).size).toBe(4);
+    expect((await keep(fakeApi({ describe: describe_ }))).enabled.size).toBe(0);
+    expect((await keep(fakeApi({ describe: describe_ }))).enabled.size).toBe(4);
   });
 });
 
@@ -269,15 +338,14 @@ describe("tools/call", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0]?.text).toContain("Fix the thing");
     expect(result.content[0]?.text).toContain(`Call sessions_list again with cursor "cur"`);
-    expect(result.structuredContent["next"]).toContain(`cursor "cur"`);
-    expect(result.content[0]?.text.endsWith(result.structuredContent["next"])).toBe(true);
-    expect(result.structuredContent["sessions"][0]["session_id"]).toBe(ID);
+    expect(result.structuredContent.next).toContain(`cursor "cur"`);
+    expect(result.content[0]?.text.endsWith(result.structuredContent.next ?? "")).toBe(true);
+    expect(result.structuredContent.sessions?.[0]?.session_id).toBe(ID);
   });
 
   it("names only the tools that are served in the next sentence", async () => {
     const api = fakeApi({
-      describe: () =>
-        ({ operations: ["environments", "sessions"], limits: MCP_API_LIMITS }) as never,
+      describe: describing(["environments", "sessions"]),
     });
 
     const result = await call("sessions_list", {}, api);
@@ -291,7 +359,7 @@ describe("tools/call", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toBe("No Session.");
-    expect(result.structuredContent["error"]).toMatchObject({
+    expect(result.structuredContent.error).toMatchObject({
       code: "not_found",
       retryable: false,
     });
@@ -332,6 +400,58 @@ describe("tools/call", () => {
     expect(transcript.content[0]?.text).not.toContain("[... cut ...]");
   });
 
+  it.each([
+    ["CJK text", "漢"],
+    ["control characters", "\u0001"],
+  ])(
+    "answers a transcript page of %s whose JSON passes 64 KiB with a non-retryable invalid_argument",
+    async (_name, character) => {
+      const result = await call(
+        "session_transcript",
+        { session_id: ID, max_chars: 40_000 },
+        fakeApi({
+          transcript: (request) =>
+            Promise.resolve(
+              apiOk({
+                session_id: request.session_id,
+                entries: [
+                  { entry_id: 1, role: "user" as const, at: "", text: character.repeat(40_000) },
+                ],
+                newer: "n1",
+              }),
+            ),
+        }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent.error).toMatchObject({
+        code: "invalid_argument",
+        retryable: false,
+      });
+      expect(result.content[0]?.text).toContain("lower max_chars");
+    },
+  );
+
+  it("serves a transcript page that fits, at the largest max_chars, as it is", async () => {
+    const result = await call(
+      "session_transcript",
+      { session_id: ID, max_chars: 40_000 },
+      fakeApi({
+        transcript: (request) =>
+          Promise.resolve(
+            apiOk({
+              session_id: request.session_id,
+              entries: [{ entry_id: 1, role: "user" as const, at: "", text: "x".repeat(40_000) }],
+              newer: "n1",
+            }),
+          ),
+      }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text.length).toBeGreaterThan(40_000);
+  });
+
   it("answers rate_limited with retry_after_s, without calling the operation", async () => {
     const environments = vi.fn();
 
@@ -342,7 +462,7 @@ describe("tools/call", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(result.structuredContent["error"]).toMatchObject({
+    expect(result.structuredContent.error).toMatchObject({
       code: "rate_limited",
       retryable: true,
       details: { retry_after_s: 60 },
@@ -377,17 +497,18 @@ describe("tools/call", () => {
       fakeApi({ sessions: () => Promise.resolve(apiFailure("unsupported", "Not yet.")) }),
     );
 
-    expect(result.structuredContent["error"]).toMatchObject({ code: "unsupported" });
+    expect(result.structuredContent.error).toMatchObject({ code: "unsupported" });
   });
 
   it("answers an answer it cannot read as unavailable", async () => {
     const result = await call(
       "sessions_list",
       {},
+      // SAFETY: the point is an answer that is not an `ApiResult` of sessions, as an `api` of another version could send.
       fakeApi({ sessions: () => Promise.resolve({ ok: true, value: 7 } as never) }),
     );
 
-    expect(result.structuredContent["error"]).toMatchObject({ code: "unavailable" });
+    expect(result.structuredContent.error).toMatchObject({ code: "unavailable" });
   });
 
   it("refuses arguments that do not match the schema", async () => {
@@ -400,13 +521,13 @@ describe("tools/call", () => {
 
 describe("the telemetry", () => {
   it("is a span per tools/call and a count for every other request, with no argument text", async () => {
-    const calls: Array<Record<string, unknown>> = [];
-    const requests: Array<Record<string, unknown>> = [];
+    const calls: Array<Attributes> = [];
+    const requests: Array<Attributes> = [];
 
     const observe: McpObserver = {
       request: (attributes) => void requests.push(attributes),
       call: async (attributes, run) => {
-        const record: Record<string, unknown> = { ...attributes };
+        const record = { ...attributes };
 
         calls.push(record);
 
@@ -425,7 +546,7 @@ describe("the telemetry", () => {
       auth: "service_token",
       outcome: "not_found",
     });
-    expect(typeof calls[0]?.["bytes_sent"]).toBe("number");
+    expect(calls[0]?.["bytes_sent"]).toEqual(expect.any(Number));
     expect(requests).toEqual([{ method: "tools/list", era: "legacy" }]);
   });
 });
@@ -446,9 +567,9 @@ describe("the Modern lane", () => {
       ),
     );
 
-    expect(list.result?.["tools"]).toHaveLength(4);
+    expect(list.result?.tools).toHaveLength(4);
 
-    const observed: Array<Record<string, unknown>> = [];
+    const observed: Array<Attributes> = [];
 
     const observe: McpObserver = {
       request: () => undefined,
@@ -471,7 +592,7 @@ describe("the Modern lane", () => {
 
     const message = await messageOf(response);
 
-    expect(message.result?.["structuredContent"]["environments"][0]["id"]).toBe("default");
+    expect(message.result?.structuredContent?.environments?.[0]?.id).toBe("default");
     expect(observed[0]).toMatchObject({ era: "modern", "client.name": "modern-client" });
   });
 });

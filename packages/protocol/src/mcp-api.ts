@@ -223,6 +223,12 @@ export const apiFailure = (
 /** A successful result. */
 export const apiOk = <T>(value: T): ApiResult<T> => ({ ok: true, value });
 
+/**
+ * A Session's id as the Registry makes it: a lowercase UUID (`sessionSocketPath`'s too). The endpoint takes no other
+ * form (an upper-case one would name no object), so `McpServer` and the main Worker agree on what a Session id is.
+ */
+export const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** What `describe()` says the deployed `Server` supports; `McpServer` gates its tools on it. */
 export const ApiDescription = Schema.Struct({
   operations: Schema.Array(Schema.String),
@@ -232,6 +238,11 @@ export const ApiDescription = Schema.Struct({
     maxImportBytes: Schema.Finite,
     maxWaitMs: Schema.Finite,
   }),
+  /**
+   * `Server`'s deploy id, which `McpServer` serves as `serverInfo.version`; an older `Server` sends none, and `McpServer`
+   * uses its own version id then (`docs/architecture/mcp-endpoint.md` → The handler).
+   */
+  version: Schema.optionalKey(Schema.String),
 });
 
 export type ApiDescription = typeof ApiDescription.Type;

@@ -4,6 +4,7 @@
 // `api` target built here.
 // @effect-diagnostics asyncFunction:off tryCatchInEffectGen:off preferEffectArray:off missingPipeableSignature:off globalFetch:off -- the Request/Response seam of Workers.
 import type { McpServerBinding } from "@cloudpid/mcp-worker";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
@@ -11,18 +12,22 @@ import { AccessCaller } from "../access.ts";
 import { REGISTRY_NAME, type Registry } from "../registry/Registry.ts";
 import type { Session } from "../session/Session.ts";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
-import { mcpApiService, type McpBackend, MCP_CALLS_PERIOD_S } from "./api.ts";
+import { mcpApiService, type McpBackend } from "./api.ts";
 import { apiTarget, type RpcTargetBase } from "./api-target.ts";
 
-/** The headers that name or prove who is calling: none reaches `McpServer`. */
-const IDENTITY_HEADERS = [
-  "cf-access-jwt-assertion",
-  "cf-access-client-id",
-  "cf-access-client-secret",
-  "cf-access-authenticated-user-email",
-  "cookie",
-  "authorization",
-];
+/**
+ * The headers that name or prove who is calling: every `Cf-Access-*` header (the assertion, a service token's id and
+ * secret, the authenticated user's email, and whatever Access adds), the cookie and `Authorization`. None reaches
+ * `McpServer` (`docs/architecture/mcp-endpoint.md` → Access and identity).
+ */
+const isIdentityHeader = (name: string): boolean => {
+  const lower = name.toLowerCase();
+
+  return lower.startsWith("cf-access-") || lower === "cookie" || lower === "authorization";
+};
+
+/** What a caller is told to wait when `McpServer` cannot be reached (`Retry-After`, seconds): a deploy usually takes seconds. */
+const UNAVAILABLE_RETRY_AFTER_S = 5;
 
 /** The runtime's rate limit binding (`MCP_CALLS`): counts a key, and says whether it is within the rate. */
 export interface RateLimiter {
@@ -37,6 +42,8 @@ export interface McpEndpoint {
   readonly server: McpServerBinding;
   /** `MCP_CALLS`; absent where the runtime has none (`alchemy dev`), which is no limit. */
   readonly calls: RateLimiter | undefined;
+  /** `Server`'s deploy id (`CF_VERSION_METADATA`), which `describe()` reports for `serverInfo.version`; absent under `alchemy dev`. */
+  readonly version?: string | undefined;
   /** Where the `api` target gets `RpcTarget` from: the Worker's default; a test under Node gives a plain class. */
   readonly loadRpcTarget?: () => Promise<RpcTargetBase>;
 }
@@ -45,7 +52,9 @@ export interface McpEndpoint {
 const forwardedRequest = (source: Request): Request => {
   const headers = new Headers(source.headers);
 
-  for (const name of IDENTITY_HEADERS) headers.delete(name);
+  for (const name of Arr.filter(Arr.fromIterable(headers.keys()), isIdentityHeader)) {
+    headers.delete(name);
+  }
 
   // A Request over the source keeps its method and body (a stream needs no `duplex`); `signal: null` leaves RPC no signal.
   return new Request(source, { headers, signal: null });
@@ -91,6 +100,7 @@ export const serveMcpRoute = (endpoint: McpEndpoint) =>
     const service = mcpApiService(backendOf(endpoint), {
       origin: new URL(source.url).origin,
       caller,
+      version: endpoint.version,
       withinRate: (key) => {
         const limiter = endpoint.calls;
 
@@ -121,7 +131,7 @@ export const serveMcpRoute = (endpoint: McpEndpoint) =>
               },
               id: null,
             },
-            { status: 503, headers: { "retry-after": String(MCP_CALLS_PERIOD_S / 12) } },
+            { status: 503, headers: { "retry-after": String(UNAVAILABLE_RETRY_AFTER_S) } },
           ),
         ),
       ),

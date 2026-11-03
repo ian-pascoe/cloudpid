@@ -50,6 +50,7 @@ const mcpRequest = () =>
       "cf-access-client-id": "id",
       "cf-access-client-secret": "secret",
       "cf-access-authenticated-user-email": "me@example.com",
+      "Cf-Access-Foo": "added-by-access-later",
       cookie: "CF_Authorization=x",
       authorization: "Bearer y",
       "mcp-protocol-version": "2025-11-25",
@@ -84,6 +85,7 @@ describe("the request McpServer gets", () => {
       "cf-access-client-id",
       "cf-access-client-secret",
       "cf-access-authenticated-user-email",
+      "cf-access-foo",
       "cookie",
       "authorization",
     ]) {

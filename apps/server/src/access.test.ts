@@ -418,6 +418,25 @@ describe("the MCP endpoint's classification", () => {
     });
   });
 
+  it("refuses a token that lists both audiences, on a main route and on /mcp alike", async () => {
+    const both = { aud: [MAIN_AUDIENCE, MCP_AUDIENCE] };
+
+    const main = await admit(
+      { assertion: await sign(team, { ...ownerClaims(), ...both }), hosts: [HOST], now: NOW },
+      guard({ mcp: { audience: MCP_AUDIENCE, serviceToken: TOKEN_CLIENT_ID } }),
+    );
+
+    expect(main).toEqual({ admitted: false, reason: "wrong_audience" });
+    expect(await classifyMcp(await sign(team, { ...mcpClaims(), ...both }))).toEqual({
+      admitted: false,
+      reason: "wrong_audience",
+    });
+    expect(await classifyMcp(await sign(team, { ...tokenClaims(), ...both }))).toEqual({
+      admitted: false,
+      reason: "wrong_audience",
+    });
+  });
+
   it("refuses a service token on any route but the MCP endpoint's", async () => {
     expect(await classify(await sign(team, { ...tokenClaims(), aud: [MAIN_AUDIENCE] }))).toEqual({
       admitted: false,

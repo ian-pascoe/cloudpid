@@ -254,6 +254,8 @@ const props = Effect.gen(function* () {
         namespaceId: mcpCallsNamespace(stage),
         simple: { limit: MCP_CALLS_LIMIT, period: MCP_CALLS_PERIOD_S },
       }),
+      // The deployed version, which `describe()` reports as the MCP endpoint's `serverInfo.version`.
+      CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
       ...mcpAccess.vars,
     },
   };
@@ -359,6 +361,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
       sessions,
       server: worker[MCP_SERVER_BINDING] as McpServerBinding,
       calls: worker[MCP_CALLS_BINDING] as RateLimiter | undefined,
+      // SAFETY: the deploy binds the version metadata as `CF_VERSION_METADATA` (an `{ id }`); `alchemy dev` may lack it.
+      version: (worker["CF_VERSION_METADATA"] as { readonly id?: string } | undefined)?.id,
     });
 
     return {

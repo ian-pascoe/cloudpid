@@ -48,7 +48,7 @@ export const KEEP_ALIVE_MS = 15_000;
 /** How long `describe()` is kept per isolate. */
 export const DESCRIBE_TTL_MS = 60_000;
 
-type Attributes = Readonly<Record<string, string | number | boolean>>;
+export type Attributes = Readonly<Record<string, string | number | boolean>>;
 
 /**
  * Where the telemetry goes (`docs/architecture/mcp-endpoint.md` → Telemetry and testing): a span per `tools/call`, and a
@@ -64,14 +64,65 @@ export interface McpObserver {
   ) => Promise<T>;
 }
 
+/** The parts of Workers tracing (`tracing` from `cloudflare:workers`) the spans use. */
+export interface Tracing {
+  startActiveSpan<T>(
+    name: string,
+    callback: (span: {
+      readonly isTraced: boolean;
+      setAttribute(key: string, value: string | number | boolean): void;
+      end(): void;
+    }) => T,
+  ): T;
+}
+
+/**
+ * An observer over Workers tracing: a `mcp.server.call` span per `tools/call`, and a `mcp.server.request` span for every
+ * other request (the runtime has no metrics API, so the counter is a span). The attributes are all short names, numbers
+ * and ids (`McpObserver`): never text of a call.
+ */
+export const tracingObserver = (tracing: Tracing): McpObserver => ({
+  request: (attributes) => {
+    tracing.startActiveSpan("mcp.server.request", (span) => {
+      for (const [key, value] of Record.toEntries(attributes)) span.setAttribute(key, value);
+
+      span.end();
+    });
+  },
+  call: (attributes, run) =>
+    tracing.startActiveSpan("mcp.server.call", async (span) => {
+      const record = (more: Attributes) => {
+        for (const [key, value] of Record.toEntries(more)) span.setAttribute(key, value);
+      };
+
+      record(attributes);
+
+      try {
+        return await run(record);
+      } finally {
+        span.end();
+      }
+    }),
+});
+
 /** Observes nothing. */
 export const unobserved: McpObserver = {
   request: () => undefined,
   call: (_attributes, run) => run(() => undefined),
 };
 
-/** The tools the deployed `Server` supports, found out from its `describe()`. */
-export type ToolGate = (api: McpServerApi) => Promise<Enabled>;
+/** What the deployed `Server` says of itself in `describe()`: the tools it supports, and its deploy id when it sends one. */
+export interface Gate {
+  readonly enabled: Enabled;
+  /** `serverInfo.version`: `Server`'s deploy id. Absent from an older `Server`, whereupon `McpServeDeps.version` is used. */
+  readonly version: string | undefined;
+}
+
+/** What the deployed `Server` supports, found out from its `describe()`. */
+export type ToolGate = (api: McpServerApi) => Promise<Gate>;
+
+/** A `Server` that cannot say serves no tools. */
+const NONE: Gate = { enabled: new Set(), version: undefined };
 
 const decodeDescription = Schema.decodeUnknownExit(ApiDescription);
 
@@ -85,17 +136,17 @@ export const toolGate = (
 ): ToolGate => {
   const ttl = options.ttlMs ?? DESCRIBE_TTL_MS;
   const now = options.now ?? Date.now;
-  let kept: { readonly at: number; readonly enabled: Enabled } | undefined;
+  let kept: { readonly at: number; readonly gate: Gate } | undefined;
 
   return async (api) => {
-    if (kept !== undefined && now() - kept.at < ttl) return kept.enabled;
+    if (kept !== undefined && now() - kept.at < ttl) return kept.gate;
 
     try {
       const described = decodeDescription(await api.describe());
 
-      if (Exit.isFailure(described)) return new Set();
+      if (Exit.isFailure(described)) return NONE;
 
-      const { operations } = described.value;
+      const { operations, version } = described.value;
 
       const enabled = new Set(
         TOOLS.map((tool) => tool.name).filter((name) =>
@@ -103,11 +154,13 @@ export const toolGate = (
         ),
       );
 
-      kept = { at: now(), enabled };
+      const gate: Gate = { enabled, version };
 
-      return enabled;
+      kept = { at: now(), gate };
+
+      return gate;
     } catch {
-      return new Set();
+      return NONE;
     }
   };
 };
@@ -202,9 +255,18 @@ const failure = (error: ApiError): CallToolResult => ({
   structuredContent: { error },
 });
 
+/**
+ * Whether an RPC failed because the deployed `Server` has no such method (it is a deploy behind). The runtime gives no typed
+ * marker for it: workerd throws a plain `TypeError` whose only distinguishing mark is its text (`The RPC receiver does not
+ * implement the method "x"`, or `... is not a function` on a plain object, as in the conformance run). So the text is
+ * matched here, in this one place, and a failure it does not recognise reads as one that may heal.
+ */
+const isMissingMethod = (message: string): boolean =>
+  /does not implement|is not a function/i.test(message);
+
 /** An RPC that failed: a method the deployed `Server` does not have is `unsupported`, anything else may heal. */
 const rpcFailure = (message: string): ApiError =>
-  /does not implement|is not a function/i.test(message)
+  isMissingMethod(message)
     ? errorOf("unsupported", "The server does not support this yet: try again shortly.")
     : errorOf("unavailable", "The Session service could not be reached: try again shortly.");
 
@@ -226,7 +288,19 @@ const success = (
   const { text, structured } = spec.present(value, enabled);
 
   if (byteLength(JSON.stringify(structured)) > MAX_STRUCTURED_BYTES) {
-    return { error: errorOf("unavailable", "The result is too large to return: ask for less.") };
+    // The page is cut by characters where it is read (the Session), and a character can take up to six bytes of JSON (a
+    // control character) or three (CJK): the same request would fail again, so it is not retryable, and says what to change.
+    return {
+      error:
+        spec.name === "session_transcript"
+          ? errorOf(
+              "invalid_argument",
+              "This page is too large to return (over 64 KiB as JSON): ask again with a lower max_chars.",
+            )
+          : errorOf("unavailable", "The result is too large to return: ask for less.", {
+              retryable: false,
+            }),
+    };
   }
 
   return {
@@ -370,7 +444,7 @@ const makeServer = (version: string, context: CallContext): McpServer => {
 export interface McpServeDeps {
   /** The Registry's and Sessions' side: an RPC stub in the Worker, a plain object in the conformance run. */
   readonly api: McpServerApi;
-  /** `serverInfo.version`: the deployed version. */
+  /** `serverInfo.version` when `Server`'s `describe()` has no `version` (an older `Server`): `McpWorker`'s own version id. */
   readonly version: string;
   /** Which tools the deployed `Server` supports (`toolGate`, one per isolate). */
   readonly gate: ToolGate;
@@ -449,9 +523,9 @@ export const serveMcp = async (request: Request, deps: McpServeDeps): Promise<Re
 
   const handler = createMcpHandler(
     async () => {
-      const enabled = await deps.gate(deps.api);
+      const { enabled, version } = await deps.gate(deps.api);
 
-      return makeServer(deps.version, { api: deps.api, caller, enabled, observe });
+      return makeServer(version ?? deps.version, { api: deps.api, caller, enabled, observe });
     },
     deps.onError === undefined ? handlerOptions : { ...handlerOptions, onerror: deps.onError },
   );

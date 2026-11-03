@@ -4,7 +4,7 @@
  * main Worker closes it over the `api` target.
  */
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over headers and parsed JSON.
-import type { McpClient, McpEra } from "@cloudpid/protocol/mcp-api";
+import { type McpClient, type McpEra, SESSION_ID } from "@cloudpid/protocol/mcp-api";
 import type { Wire } from "./tools.ts";
 import { CLIENT_INFO_META_KEY } from "@modelcontextprotocol/server";
 import * as Option from "effect/Option";
@@ -153,9 +153,7 @@ export const clientOf = (
 };
 
 const SessionArgument = Schema.Struct({
-  session_id: Schema.String.check(
-    Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
-  ),
+  session_id: Schema.String.check(Schema.isPattern(SESSION_ID)),
 });
 
 const decodeSessionArgument = Schema.decodeUnknownOption(SessionArgument);
