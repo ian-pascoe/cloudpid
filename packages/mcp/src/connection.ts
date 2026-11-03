@@ -51,6 +51,8 @@ import {
   Cut,
   type EraRow,
   EraRowV1,
+  MCP_CONNECT_TIMEOUT_MS,
+  MCP_LIST_WALK_TIMEOUT_MS,
   type McpCallContext,
   type McpError,
   ProtocolViolation,
@@ -143,11 +145,11 @@ export interface McpConnection {
   ) => Effect.Effect<Outcome<CallToolResult>, McpError>;
 }
 
-const CONNECT_TIMEOUT_MS = 15_000;
+const CONNECT_TIMEOUT_MS = MCP_CONNECT_TIMEOUT_MS;
 
 const PAGE_TIMEOUT_MS = 30_000;
 
-const WALK_TIMEOUT = Duration.seconds(120);
+const WALK_TIMEOUT = Duration.millis(MCP_LIST_WALK_TIMEOUT_MS);
 
 const CALL_TIMEOUT_MS = 60_000;
 

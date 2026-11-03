@@ -22,13 +22,7 @@ import { SettingsAccess } from "@cloudpid/extensions/settings";
 import { SubagentSettings, SubagentWorkspaces } from "@cloudpid/extensions/subagents";
 import { ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
-import {
-  telemetryLayer,
-  tracingModels,
-  tracingTools,
-  workersTelemetry,
-  type WorkersTracing,
-} from "@cloudpid/telemetry";
+import { telemetryLayer, tracingModels, tracingTools, workersTelemetry } from "@cloudpid/telemetry";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
 import * as Config from "effect/Config";
@@ -44,6 +38,7 @@ import * as Tracer from "effect/Tracer";
 import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
+import { workersTracing } from "../tracing.ts";
 import { buildUpkeep } from "../registry/builds.ts";
 import { spareUpkeep } from "../registry/rpc.ts";
 import { removals } from "../registry/removal.ts";
@@ -116,16 +111,6 @@ import type {
   WaitOutcome,
   WaitRequest,
 } from "@cloudpid/protocol";
-
-/**
- * Workers' tracing API (`cloudflare:workers`), where the runtime has one. It is read when an object is built, not when
- * the module loads: the stack imports this module under Node, which has no such module.
- */
-const workersTracing = (): Promise<WorkersTracing | undefined> =>
-  import("./workers-tracing.ts").then(
-    (workers) => workers.tracing,
-    () => undefined,
-  );
 
 /** The key the Session's name is kept under, for instances that are not told it. */
 const NAME_KEY = "session-name";

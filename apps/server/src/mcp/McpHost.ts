@@ -3,17 +3,30 @@
 // never the SDK (`docs/architecture/mcp.md` → Packages and objects), and is never woken for an Environment without
 // MCP servers (the main Worker pushes nothing to one, and a Session skips `requestStart`).
 //
-// Here: the set's storage with its revision, `apply({ kind: "set" })` and `apply({ kind: "destroy" })`, and the pull at
-// `windowOpened`. `servers`, `request`, discovery and the rest of `apply` come with their slices; an `apply` kind this
-// build does not know fails as `HostUnsupported`.
+// Here: the set's storage with its revision, `apply` (`set`, `reload`, `destroy`), the pull at `windowOpened`, and the
+// MCP inventory (`requestStart`, `servers`) with its discoveries through `McpEngine`, over one `ManagedRuntime` kept
+// for the object's life. `request` and the rest of `apply` come with their slices; an `apply` kind this build does not
+// know fails as `HostUnsupported`.
 import * as Cloudflare from "@alchemy.run/cloudflare";
-import { McpServerSetAnswer } from "@cloudpid/mcp/types";
+import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
+import {
+  type McpEngineMethods,
+  McpServerSetAnswer,
+  McpServerValuesAnswer,
+} from "@cloudpid/mcp/types";
+import { workersTelemetry } from "@cloudpid/telemetry";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
+import * as Tracer from "effect/Tracer";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
+import { workersTracing } from "../tracing.ts";
+import { mcpEngineClient } from "./engine.ts";
 import {
   type McpHostMethods,
+  mcpHostLayer,
   mcpHostMethods,
   type McpRegistryPortService,
   McpRegistryUnavailable,
@@ -26,18 +39,30 @@ export class McpHost extends Cloudflare.DurableObject<McpHost, McpHostMethods>()
 
 const decodeAnswer = Schema.decodeUnknownEffect(McpServerSetAnswer);
 
+const decodeValues = Schema.decodeUnknownEffect(McpServerValuesAnswer);
+
+/** A failed Registry call for `what`, as the host reads it: the Registry unavailable, never with a value in it. */
+const registryUnavailable = (what: string) => (cause: Cause.Cause<unknown>) =>
+  Effect.fail(
+    McpRegistryUnavailable.make({
+      message: `The Registry did not answer for ${what}: ${Cause.pretty(cause)}`,
+    }),
+  );
+
 export const McpHostLive = McpHost.make(
   Effect.all({
     registries: Registry,
     state: Cloudflare.DurableObjectState,
+    worker: Cloudflare.WorkerEnvironment,
   }).pipe(
-    Effect.map(({ registries, state }) =>
-      Effect.sync(() => {
+    Effect.map(({ registries, state, worker }) =>
+      Effect.gen(function* () {
         const environment = environmentOfMcpHost(state.raw.id.name);
-
         const store = openMcpHostStore(state.raw.storage);
+        const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
 
-        // The Registry, in this script: a failed call is a defect of the call, which the pull logs and goes on from.
+        // The Registry, in this script: a failed call is a failure of the call, which the host reads as the Registry
+        // being unavailable for now.
         const registry: McpRegistryPortService = {
           serverSet: (input) =>
             registries
@@ -45,17 +70,30 @@ export const McpHostLive = McpHost.make(
               .mcpServerSet(input)
               .pipe(
                 Effect.flatMap(decodeAnswer),
-                Effect.catchCause((cause) =>
-                  Effect.fail(
-                    McpRegistryUnavailable.make({
-                      message: `The Registry did not answer for the MCP server set: ${Cause.pretty(cause)}`,
-                    }),
-                  ),
-                ),
+                Effect.catchCause(registryUnavailable("the MCP server set")),
+              ),
+          serverValues: (input) =>
+            registries
+              .getByName(REGISTRY_NAME)
+              .mcpServerValues(input)
+              .pipe(
+                Effect.flatMap(decodeValues),
+                Effect.catchCause(registryUnavailable("an MCP server's values")),
               ),
         };
 
-        return mcpHostMethods(environment, store, registry) satisfies McpHostMethods;
+        const runtime = ManagedRuntime.make(
+          mcpHostLayer({
+            store,
+            registry,
+            // SAFETY: the Server Worker binds `McpWorker`'s `McpEngine` entrypoint as `MCP_ENGINE` (`worker.ts`), whose
+            // stub answers `McpEngineMethods`.
+            engine: mcpEngineClient(worker[MCP_ENGINE_BINDING] as McpEngineMethods),
+            references: Layer.succeed(Tracer.Tracer, telemetry.tracer),
+          }),
+        );
+
+        return mcpHostMethods(environment, runtime) satisfies McpHostMethods;
       }),
     ),
   ),

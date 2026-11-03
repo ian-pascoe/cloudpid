@@ -104,6 +104,14 @@ describe("discover", () => {
       state: { era: { v: 1, era: "modern", version: "2026-07-28" } },
     });
   });
+
+  it("discovers with no `untilAborted`, as the host's background discovery calls it", async () => {
+    const discovered = Schema.decodeSync(McpEngineDiscoverResult)(
+      await env.MCP_ENGINE.discover(target("modern", "discover-no-hooks"), {}, {}),
+    );
+
+    expect(discovered).toMatchObject({ kind: "discovered", era: "modern" });
+  });
 });
 
 describe("discover, Legacy", () => {

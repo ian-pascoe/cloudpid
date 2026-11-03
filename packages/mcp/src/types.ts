@@ -12,8 +12,13 @@
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import { JsonObject } from "./json.ts";
 
 export * from "./host.ts";
+
+export { isJsonObject, JsonObject } from "./json.ts";
+
+export { xMcpHeaderProblems } from "./tool-headers.ts";
 
 /** Where a call comes from (The MCP core #394 D7, `McpCallContext`). */
 export const McpCallOrigin = Schema.Literals(["agent", "owner", "app", "host"]);
@@ -264,9 +269,6 @@ export const mayHaveRun = (error: McpErrorWire, method: string): boolean => {
 // an older engine fails as `Unsupported`, and a new success shape is returned only when the request asked for it.
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** A JSON object, as rows, server answers and definitions cross the edge. */
-const JsonObject = Schema.Record(Schema.String, Schema.Json);
-
 /**
  * The server a call goes to: its connection key `conn`, its name and its `timeout`, and for an HTTP server its URL and
  * headers, `${NAME}` values resolved. `kind` keeps room for stdio targets (`workspace`, `start`, `env`), which an
@@ -347,6 +349,19 @@ export const McpEngineFailed = Schema.Struct({
 
 export type McpEngineFailed = typeof McpEngineFailed.Type;
 
+/** A server's protocol era as the engine reports it (`docs/architecture/mcp.md` → Protocol eras). */
+export const MCP_ENGINE_ERAS = ["modern", "legacy"] as const;
+
+export const McpEngineEra = Schema.Literals(MCP_ENGINE_ERAS);
+
+export type McpEngineEra = typeof McpEngineEra.Type;
+
+/** The core's bound on a probe or an `initialize` (#394 D15). */
+export const MCP_CONNECT_TIMEOUT_MS = 15_000;
+
+/** The core's bound on walking every page of a list (#394 D15). */
+export const MCP_LIST_WALK_TIMEOUT_MS = 120_000;
+
 /**
  * A discovery (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): what the server is, every
  * page of its tools and prompts, and the tools whose output schema could not be compiled. The inventory's bounds,
@@ -354,7 +369,7 @@ export type McpEngineFailed = typeof McpEngineFailed.Type;
  */
 export const McpEngineDiscovered = Schema.Struct({
   kind: Schema.Literal("discovered"),
-  era: Schema.Literals(["modern", "legacy"]),
+  era: McpEngineEra,
   protocolVersion: Schema.String,
   serverInfo: Schema.optionalKey(JsonObject),
   capabilities: JsonObject,
@@ -461,9 +476,11 @@ export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
 export interface McpEngineHooks {
   /**
    * Pending until the caller aborts the call (it resolves) or dies (it rejects); either way the engine aborts the server
-   * request, since RPC carries no `AbortSignal`.
+   * request, since RPC carries no `AbortSignal`. Absent for a call that no caller's invocation holds (the host's
+   * background discovery, which a function stub would not outlive, #409 answer 2): the engine then runs it to its own
+   * bounds.
    */
-  readonly untilAborted: () => Promise<void>;
+  readonly untilAborted?: () => Promise<void>;
   /** An access token for the server, asked again with `stale` after the server refused one; none without OAuth. */
   readonly auth?: (stale: boolean) => Promise<string | undefined>;
   /** Called when a request's response headers arrive, so the host can keep its outbound queue across engine calls. */

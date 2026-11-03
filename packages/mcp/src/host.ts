@@ -89,8 +89,20 @@ export const McpApplyDestroy = Schema.Struct({
 
 export type McpApplyDestroy = typeof McpApplyDestroy.Type;
 
-/** What `apply` takes. The other kinds (`sign_ins`, `reload`, `end_watches`) are added by their slices. */
-export const McpApply = Schema.Union([McpApplySet, McpApplyDestroy]);
+/**
+ * `apply({ kind: "reload" })`: `settings_mcp_reload` or `mcpReconnect`. The host drops the eras and Legacy sessions of
+ * `servers` (every server when absent), and rediscovers its HTTP servers at once, a `failed` one included
+ * (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory).
+ */
+export const McpApplyReload = Schema.Struct({
+  kind: Schema.Literal("reload"),
+  servers: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+});
+
+export type McpApplyReload = typeof McpApplyReload.Type;
+
+/** What `apply` takes. The other kinds (`sign_ins`, `end_watches`) are added by their slices. */
+export const McpApply = Schema.Union([McpApplySet, McpApplyDestroy, McpApplyReload]);
 
 export type McpApply = typeof McpApply.Type;
 
@@ -115,6 +127,13 @@ export const McpDestroyed = Schema.TaggedStruct("Destroyed", {});
 
 export type McpDestroyed = typeof McpDestroyed.Type;
 
+/** The servers were reloaded (`apply({ kind: "reload" })`): the names of the set that it reached. */
+export const McpReloaded = Schema.TaggedStruct("Reloaded", {
+  servers: Schema.Array(Schema.String),
+});
+
+export type McpReloaded = typeof McpReloaded.Type;
+
 /** An operation this build of the host does not know (`op`: the `kind` or method asked for). */
 export const HostUnsupported = Schema.TaggedStruct("HostUnsupported", {
   message: Schema.String,
@@ -138,11 +157,12 @@ export const McpHostFailure = Schema.Union([HostUnsupported, HostFailed]);
 
 export type McpHostFailure = typeof McpHostFailure.Type;
 
-/** What `apply` answers: the set was taken or refused as stale, the storage wiped, or why not. */
+/** What `apply` answers: the set was taken or refused as stale, the storage wiped, the servers reloaded, or why not. */
 export const McpApplyResult = Schema.Union([
   McpApplied,
   McpStale,
   McpDestroyed,
+  McpReloaded,
   ...McpHostFailure.members,
 ]);
 
@@ -191,8 +211,12 @@ export const readMcpApplyResult = (answer: Schema.Json): McpApplyResult =>
     HostFailed.make({ message: "The MCP host answered with something that is no result" }),
   );
 
-/** The features the host lists at `requestStart`: a Session uses one only once it is listed (`mcp.md` → Deploys). */
-export const MCP_HOST_FEATURES: ReadonlyArray<string> = [];
+/**
+ * The features the host lists at `requestStart`: a Session uses one only once it is listed (`mcp.md` → Deploys).
+ * `inventory`: `requestStart` answers the MCP inventory's versions and servers and takes `known`, `waitFor` and
+ * `waitMs`, and the host answers `servers` and `apply({ kind: "reload" })`.
+ */
+export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory"];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
 export const McpCaller = Schema.Struct({
@@ -203,19 +227,70 @@ export const McpCaller = Schema.Struct({
 
 export type McpCaller = typeof McpCaller.Type;
 
-/**
- * `requestStart`'s arguments (`docs/architecture/mcp-connections.md` → RPC). `known`, `waitFor` and `waitMs` come with
- * the inventory (#449).
- */
+/** The longest `requestStart` and `servers` wait for a discovery: 10 s (`docs/architecture/mcp-connections.md` → Discovery). */
+export const MCP_MAX_WAIT_MS = 10_000;
+
+/** `requestStart`'s arguments (`docs/architecture/mcp-connections.md` → RPC). */
 export const McpRequestStart = Schema.Struct({
   caller: McpCaller,
   /** Set on a Context Window's first request: the host asks the Registry for the set, so a lost push heals. */
   windowOpened: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The inventory's `version` the caller built its tools from; absent before its first build. Only a caller with none
+   * waits (`waitFor`): a Session's first request.
+   */
+  known: Schema.optionalKey(Schema.String),
+  /**
+   * The servers, by name, worth waiting for: the caller's own pick, those whose Exposure can yield `direct` tools. The
+   * host waits only for those with no inventory yet, and stops waiting for one once it settles (any state but
+   * `connecting`).
+   */
+  waitFor: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+  /** How long to wait for them, at most `MCP_MAX_WAIT_MS` (10 s, also the default). */
+  waitMs: Schema.optionalKey(Schema.Finite),
 });
 
 export type McpRequestStart = typeof McpRequestStart.Type;
 
-/** One server as `requestStart` reports it. `state` reads as a failure where this build does not know it. */
+/**
+ * A server's state in the MCP inventory (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory):
+ *
+ * - `not_discovered`: in the set, never asked yet (an HTTP server waits for its first demand once the host is idle);
+ * - `connecting`: being discovered;
+ * - `connected`: discovered; its inventory is current or being refreshed;
+ * - `sign_in`: the server wants an MCP sign-in; `rejected`: it refused the token it was given, twice;
+ * - `unavailable`: unreachable for now, retried on demand after a backoff;
+ * - `failed`: broken until a set change, a reload or a call retries it;
+ * - `skipped`: not connected, as its definition cannot be used yet (a `${NAME}` that resolves to nothing, a stdio
+ *   server before the bridge);
+ * - `disabled`: switched off, or `hidden` by its own `exposure`; its inventory is kept.
+ *
+ * `unknown` is the fallback: a state a newer build stored or sent reads as it, which reads as `failed`.
+ */
+export const MCP_SERVER_STATES = [
+  "not_discovered",
+  "connecting",
+  "connected",
+  "sign_in",
+  "rejected",
+  "unavailable",
+  "failed",
+  "skipped",
+  "disabled",
+  "unknown",
+] as const;
+
+export const McpServerState = Schema.Literals(MCP_SERVER_STATES);
+
+export type McpServerState = typeof McpServerState.Type;
+
+const isServerState = Schema.is(McpServerState);
+
+/** `raw`, a state as stored or sent, as one this build knows: `unknown` for any other. */
+export const readMcpServerState = (raw: string): McpServerState =>
+  isServerState(raw) ? raw : "unknown";
+
+/** One server as `requestStart` reports it. `state` reads as `unknown` where this build does not know it. */
 export const McpServerReport = Schema.Struct({
   toolsHash: Schema.String,
   promptsHash: Schema.String,
@@ -237,6 +312,94 @@ export const McpRequestStartAnswer = Schema.Struct({
 });
 
 export type McpRequestStartAnswer = typeof McpRequestStartAnswer.Type;
+
+/**
+ * What `requestStart` answers: its answer, or `HostFailed` when the host could not read what it holds (a replaced
+ * instance whose storage is refused), never an empty inventory that would read as no servers.
+ */
+export const McpRequestStartResult = Schema.Union([McpRequestStartAnswer, HostFailed]);
+
+export type McpRequestStartResult = typeof McpRequestStartResult.Type;
+
+/**
+ * `servers`' arguments (`docs/architecture/mcp-connections.md` → RPC): the servers by name (every one when absent),
+ * the parts to add (a part this build does not know is left out), how long to wait for one being discovered, and the
+ * caller's Workspace. It never starts a Container.
+ */
+export const McpServersRequest = Schema.Struct({
+  names: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+  parts: Schema.Array(Schema.String),
+  waitMs: Schema.optionalKey(Schema.Finite),
+  workspace: Schema.optionalKey(Schema.String),
+});
+
+export type McpServersRequest = typeof McpServersRequest.Type;
+
+/**
+ * A problem found at discovery: a tool's (`tool`), a prompt's (`prompt`), or the server's own (neither), such as the
+ * tools past its bound.
+ */
+export const McpInventoryProblem = Schema.Struct({
+  tool: Schema.optionalKey(Schema.String),
+  prompt: Schema.optionalKey(Schema.String),
+  problem: Schema.String,
+});
+
+export type McpInventoryProblem = typeof McpInventoryProblem.Type;
+
+/** A server's status beyond its state: since when, the failures in a row, and when it may be retried. */
+export const McpServerStatus = Schema.Struct({
+  since: Schema.Finite,
+  failures: Schema.Int,
+  nextRetryAt: Schema.optionalKey(Schema.Finite),
+  lastOkAt: Schema.optionalKey(Schema.Finite),
+});
+
+export type McpServerStatus = typeof McpServerStatus.Type;
+
+const JsonRecord = Schema.Record(Schema.String, Schema.Json);
+
+/** One server as `servers` answers it: always its config, state and counts, and the parts asked for. */
+export const McpServerInventory = Schema.Struct({
+  name: Schema.String,
+  source: McpSetSource,
+  /** The entry in force, `${NAME}` unresolved. */
+  server: JsonRecord,
+  conn: Schema.String,
+  state: Schema.String,
+  error: Schema.optionalKey(Schema.String),
+  protocolVersion: Schema.optionalKey(Schema.String),
+  discoveredAt: Schema.optionalKey(Schema.Finite),
+  /** Where it was discovered: absent for an HTTP server, the Workspace for a stdio one. */
+  discoveredIn: Schema.optionalKey(Schema.String),
+  toolsHash: Schema.String,
+  promptsHash: Schema.String,
+  counts: Schema.Struct({ tools: Schema.Int, prompts: Schema.Int }),
+  /** Whether the server offers resources. */
+  resources: Schema.Boolean,
+  problems: Schema.Array(McpInventoryProblem),
+  /** The `tools` part: the tools a Session registers, bounds applied. */
+  tools: JsonRecord.pipe(Schema.Array, Schema.optionalKey),
+  prompts: JsonRecord.pipe(Schema.Array, Schema.optionalKey),
+  instructions: Schema.optionalKey(Schema.String),
+  status: Schema.optionalKey(McpServerStatus),
+});
+
+export type McpServerInventory = typeof McpServerInventory.Type;
+
+/** `servers`' answer: the inventory's versions, and the servers asked for, in the set's order. */
+export const McpServersAnswer = Schema.Struct({
+  version: Schema.String,
+  promptsVersion: Schema.String,
+  servers: Schema.Array(McpServerInventory),
+});
+
+export type McpServersAnswer = typeof McpServersAnswer.Type;
+
+/** What `servers` answers: its answer, or `HostFailed` when the host could not read what it holds. */
+export const McpServersResult = Schema.Union([McpServersAnswer, HostFailed]);
+
+export type McpServersResult = typeof McpServersResult.Type;
 
 /**
  * The Registry's answer to the host's `mcpServerSet({ environment, heldHash })` (`docs/architecture/mcp-configuration.md`

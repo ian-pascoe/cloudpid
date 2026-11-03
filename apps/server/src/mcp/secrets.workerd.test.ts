@@ -1,5 +1,5 @@
 // workerd's Durable Object APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off strictEffectProvide:off
 // No resolved Secret reaches the host (`docs/architecture/mcp-configuration.md` → From the Registry to the host): a set
 // built from a server whose header is `${TOKEN}`, while the Secret `TOKEN` is kept, holds the name only. Through the
 // Registry's own storage and the main Worker's push, the set and its hash are the same with the Secret and without it,
@@ -26,9 +26,9 @@ import { writeSettings } from "../registry/settings.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { openRegistryStore } from "../registry/store.ts";
 import { apply } from "./host.ts";
-import type { TestMcpHost } from "./host.fixture.ts";
+import { hostServicesOver, type TestMcpHost } from "./host.fixture.ts";
 import { mcpPushes } from "./push.ts";
-import { McpHostStore, type McpHostStoreService, openMcpHostStore } from "./store.ts";
+import { type McpHostStoreService, openMcpHostStore } from "./store.ts";
 
 declare global {
   namespace Cloudflare {
@@ -140,7 +140,7 @@ describe("a Secret an MCP server names", () => {
 
       if (name === "mcp:secrets-refusing") {
         return await failing(refusing, (store) =>
-          Effect.runPromise(apply(input).pipe(Effect.provideService(McpHostStore, store))),
+          Effect.runPromise(apply(input).pipe(Effect.provide(hostServicesOver(store)))),
         );
       }
 
