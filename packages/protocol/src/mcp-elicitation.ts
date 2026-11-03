@@ -133,7 +133,8 @@ export const McpElicitationRequest = Schema.Struct({
   form: ElicitationForm,
   /** What the Session ignored or changed in the server's schema, one line each. */
   notes: Schema.Array(Schema.String),
-  deadline: Schema.Finite,
+  /** Absent for a Modern server's question, which waits with no deadline (it is answered in the call's resume). */
+  deadline: Schema.optionalKey(Schema.Finite),
 });
 
 export type McpElicitationRequest = typeof McpElicitationRequest.Type;

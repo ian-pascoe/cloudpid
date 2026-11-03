@@ -699,6 +699,8 @@ export class TestSession extends DurableObject {
       credentials: [],
       // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
       waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
+      encryptionKey: SECRETS_KEY,
+      session: this.ctx.id.toString(),
     });
 
     return this.#questions;
@@ -1002,7 +1004,14 @@ export class TestSession extends DurableObject {
                   Effect.service(Approvals),
                 ]),
                 ([held, handoffs, approvals]) =>
-                  onIdle(held, browser, handoffs, approvals, this.#mcpSignIns().service),
+                  onIdle(
+                    held,
+                    browser,
+                    handoffs,
+                    approvals,
+                    this.#mcpSignIns().service,
+                    this.#mcpQuestions().service,
+                  ),
               ),
             }).pipe(
               Layer.provide(

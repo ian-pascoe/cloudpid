@@ -19,6 +19,8 @@ import {
   type McpHostRequestContext,
   type McpHostRequestHooks,
   type McpHostResourceRequest,
+  type McpTaskInputResponses,
+  type PausableDeadline,
   pausableDeadline,
 } from "@cloudpid/mcp/types";
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -31,13 +33,14 @@ import type {
 } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { agentOf, conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
 import type { McpAppRecorder } from "./apps.ts";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails, McpElicitationDetail } from "./details.ts";
-import { elicitingHooks, withElicitation } from "./elicit.ts";
+import { elicitingHooks, mutableContent, withElicitation } from "./elicit.ts";
 import type { Subject } from "./ended.ts";
 import {
   failedWith,
@@ -46,7 +49,7 @@ import {
   interruptedResult,
   streamFailure,
 } from "./result.ts";
-import type { McpQuestionsService } from "./questions.ts";
+import type { McpDeferredRound, McpQuestionsService } from "./questions.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
 import type { McpBuildServer } from "./tools.ts";
@@ -115,8 +118,20 @@ const ELICITATION_ANSWERS: McpAnswers = {
   inputWaitMs: MCP_ELICITATION_WAIT_MS + 15_000,
 };
 
+/**
+ * What a call says it can answer when its server's Modern questions are kept for later too: its round ends as
+ * `input_required`, and the call waits for the owner after it.
+ */
+const DEFERRING_ANSWERS: McpAnswers = { ...ELICITATION_ANSWERS, defer: true };
+
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
+
+/** The marker written once round `round`'s questions are stored: a rerun that finds it waits for them again. */
+const waitMarker = (round: number) => `mcp.wait.${round}`;
+
+/** The marker written before round `round`'s resume leaves: a rerun that finds it never sends the resume again. */
+const resumedMarker = (round: number) => `mcp.resumed.${round}`;
 
 /** How long the Session waits for a request to `server` since its start or its last progress, in ms. */
 const waitOf = (server: McpBuildServer, slackMs: number): number => {
@@ -223,6 +238,11 @@ export type Exchange = {
   readonly details: McpDetails;
   /** A tool's call, which may have run when it was cut, or a resource's request, which never has. */
   readonly subject: Subject;
+  /**
+   * Whether the host resumes a Modern call (its `resume` feature): a tool's call then keeps its server's questions for
+   * later, when the Session's questions can (`McpQuestionsService.defers`).
+   */
+  readonly defers?: boolean | undefined;
 };
 
 /**
@@ -233,6 +253,25 @@ const remembers = (subject: Subject): boolean => subject === "tool";
 
 /** Who a call is for: a model's may spill, a script's gets its value whole (`codemode`). */
 export type Caller = "model" | "script";
+
+/**
+ * The round a rerun of the call finds waiting: stored, its questions marked stored (`mcp.wait.<r>`) and its resume not
+ * yet on its way (`mcp.resumed.<r>`). Anything else is a call that may have run.
+ */
+const waitingRound = async (
+  api: ToolExecutionApi,
+  context: Context,
+  questions: McpQuestionsService,
+): Promise<McpDeferredRound | undefined> => {
+  const round = await Effect.runPromise(questions.deferredRound(api.callId));
+
+  if (round === undefined) return undefined;
+
+  const waited = await api.memo<boolean>(waitMarker(round.round), context);
+  const resumed = await api.memo<boolean>(resumedMarker(round.round), context);
+
+  return waited !== undefined && resumed === undefined ? round : undefined;
+};
 
 /** What a successful request makes of its value, for the `caller` it is for. */
 export type OnValue<A> = (
@@ -267,10 +306,27 @@ export const send = async <A>(
   const base = exchange.details;
   const noun = subject === "tool" ? "call" : "request";
   const failed = (result: ToolExecutionResult<JsonValue>): Sent<A> => ({ ok: false, result });
+  const { questions } = options;
 
-  // A rerun after a restart: the request was sent once, so the call may have run, and is never sent again.
+  // A Modern server's questions are kept for later on a tool's call, when the host resumes and the Session can keep them.
+  const deferring =
+    remember && exchange.defers === true && questions !== undefined && questions.defers;
+
+  let waiting: McpDeferredRound | undefined;
+
   if (remember && (await api.memo<boolean>(SENT, context)) !== undefined) {
-    return failed(interruptedResult(tool, base));
+    // A rerun after a restart: a round of questions stored and not yet resumed waits again. Anything else was sent
+    // once, so the call may have run, and is never sent again.
+    waiting =
+      deferring && questions !== undefined
+        ? await waitingRound(api, context, questions)
+        : undefined;
+
+    if (waiting === undefined) {
+      if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
+
+      return failed(interruptedResult(tool, base));
+    }
   }
 
   // An HTTP server is called from the Session's Workspace, as it always was. A stdio server runs in the Container of the
@@ -294,16 +350,13 @@ export const send = async <A>(
   }
 
   const wait = waitOf(server, options.slackMs ?? MCP_CALL_SLACK_MS);
-
-  const lost = await Effect.runPromise(
-    pausableDeadline(wait, () => new Error("The Session gave up on the host")),
-  );
-
   const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
 
-  const { questions } = options;
+  // The clock of the request that is out: the Session gives up on the host when it passes.
+  let clock: PausableDeadline | undefined;
 
-  // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it.
+  // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it. A Modern one is
+  // kept for later instead when the call defers, and waited for between its rounds, with no clock running.
   const asking =
     questions === undefined
       ? undefined
@@ -315,74 +368,197 @@ export const send = async <A>(
           conversationId: api.conversationId,
           signal: context.abortSignal,
           source: server.source,
-          pause: lost.pause,
-          resume: lost.resume,
+          defers: deferring,
+          pause: Effect.suspend(() => clock?.pause ?? Effect.void),
+          resume: Effect.suspend(() => clock?.resume ?? Effect.void),
         });
 
-  const hooks: Mutable<McpHostRequestHooks> = {
-    // Stop, or the Session giving up on the host: either way the host cancels the request.
-    untilAborted: () => abortedBy([...stopped, lost.signal]),
-    // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
-    // output text, and gone from the settled call's `details`.
-    onProgress: (progress) =>
-      Effect.runPromise(lost.reset).then(() =>
-        api.details({ ...base, progress }, context).catch(() => undefined),
-      ),
-  };
+  // A rerun's call tells of the questions its earlier rounds were asked, as the instance that asked them would have.
+  if (waiting !== undefined) asking?.asked.push(...waiting.asked);
 
-  if (asking !== undefined) {
-    hooks.onInput = asking.onInput;
-    hooks.onInputEnded = asking.onInputEnded;
-  }
-
-  const request = build(workspace, questions === undefined ? undefined : ELICITATION_ANSWERS);
+  const request = build(
+    workspace,
+    questions === undefined ? undefined : deferring ? DEFERRING_ANSWERS : ELICITATION_ANSWERS,
+  );
 
   // Durable before the request leaves, so a restart finds the call sent.
-  if (remember) await api.memo(SENT, true, context);
+  if (remember && waiting === undefined) await api.memo(SENT, true, context);
 
-  const finished = async (): Promise<Sent<A>> => {
+  /** One request out to the host under its own clock: the host's answer, or `undefined` when it was lost. */
+  const once = async (input: McpHostRequest | McpHostResourceRequest) => {
+    const lost = await Effect.runPromise(
+      pausableDeadline(wait, () => new Error("The Session gave up on the host")),
+    );
+
+    clock = lost;
+
+    const hooks: Mutable<McpHostRequestHooks> = {
+      // Stop, or the Session giving up on the host: either way the host cancels the request.
+      untilAborted: () => abortedBy([...stopped, lost.signal]),
+      // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
+      // output text, and gone from the settled call's `details`.
+      onProgress: (progress) =>
+        Effect.runPromise(lost.reset).then(() =>
+          api.details({ ...base, progress }, context).catch(() => undefined),
+        ),
+    };
+
+    if (asking !== undefined) {
+      hooks.onInput = asking.onInput;
+      hooks.onInputEnded = asking.onInputEnded;
+    }
+
     const result = await Promise.race([
-      Effect.runPromise(client.request(request, hooks)),
+      Effect.runPromise(client.request(input, hooks)),
       abortedBy([lost.signal]).then(() => undefined),
     ]).finally(() => Effect.runPromise(lost.clear));
 
-    if (result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")) {
-      return failed(hostLostResult(base, subject));
-    }
+    return result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")
+      ? undefined
+      : result;
+  };
 
-    if (!Predicate.isTagged(result, "Completed")) {
+  /**
+   * The resume of `round` once the owner has answered every question in it: the request to send, or the result that
+   * says why not (Stop, or the round withdrawn). The answers are noted in `details`, never a value.
+   */
+  const resumeOf = async (
+    round: McpDeferredRound,
+  ): Promise<{ readonly next: McpHostRequest } | Sent<A>> => {
+    if (questions === undefined) return failed(interruptedResult(tool, base));
+
+    const answered = await Effect.runPromise(
+      questions.awaitRound(api.callId),
+      context.abortSignal === undefined ? undefined : { signal: context.abortSignal },
+    ).catch(() => "stopped" as const);
+
+    if (answered === "stopped") return failed(failedWith(`The ${noun} was stopped`, base));
+
+    if (answered === undefined) {
       return failed(
-        failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),
+        failedWith(
+          `${server.name}'s questions ended before they were answered; the ${noun} was not sent again`,
+          base,
+        ),
       );
     }
 
-    // A script's call gets its value whole and no spill.
-    const caller: Caller = (await isNested(api, context)) ? "script" : "model";
+    const answers: Mutable<McpTaskInputResponses> = {};
 
-    const done = async (value: Schema.Json): Promise<Sent<A>> => ({
-      ok: true,
-      value: await onValue(value, result, caller),
-      asked: [],
-    });
+    for (const { key, outcome, fields } of answered) {
+      const detail: Mutable<McpElicitationDetail> = {
+        server: server.name,
+        mode: "form",
+        action: outcome.action,
+        by: outcome.by,
+        fields: [...fields],
+      };
 
-    if (result.result.kind !== "stream") return done(result.result.value);
+      if (outcome.action !== "accept" && outcome.reason !== undefined) {
+        detail.reason = outcome.reason;
+      }
 
-    const limits: Mutable<StreamLimits> = {
-      signal: context.abortSignal,
-      idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+      asking?.asked.push(detail);
+      answers[key] =
+        outcome.action === "accept"
+          ? { action: "accept", content: mutableContent(outcome.content) }
+          : { action: outcome.action };
+    }
+
+    // Durable before the resume leaves, so a restart never sends it again; the sealed answers go once it is.
+    await api.memo(resumedMarker(round.round), true, context);
+    await Effect.runPromise(questions.endRound(api.callId));
+
+    return {
+      next: {
+        op: "resume",
+        server: server.name,
+        params: { tool: round.tool, conn: round.conn, resume: round.resume, answers },
+        ctx: request.ctx,
+      },
     };
+  };
 
-    if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+  const finished = async (): Promise<Sent<A>> => {
+    let round = waiting;
 
-    // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
-    // model or the script gets before the decode slot is given up.
-    return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
-      if (streamed.kind === "aborted") return failed(failedWith(`The ${noun} was stopped`, base));
+    let next: McpHostRequest | McpHostResourceRequest | undefined =
+      round === undefined ? request : undefined;
 
-      return streamed.kind === "value"
-        ? done(streamed.value)
-        : failed(streamFailure(streamed.kind, base, subject));
-    });
+    while (true) {
+      if (next === undefined) {
+        if (round === undefined) return failed(interruptedResult(tool, base));
+
+        const resumed = await resumeOf(round);
+
+        if (!("next" in resumed)) return resumed;
+
+        next = resumed.next;
+      }
+
+      const result = await once(next);
+
+      if (result === undefined) return failed(hostLostResult(base, subject));
+
+      // The server asked questions the call keeps: the round is stored whole, then marked, and the call waits.
+      if (Predicate.isTagged(result, "InputRequired") && deferring && questions !== undefined) {
+        const number = (round?.round ?? 0) + 1;
+
+        round = {
+          callId: api.callId,
+          round: number,
+          conn: result.conn,
+          tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
+          resume: result.resume,
+          asked: [...(asking?.asked ?? [])],
+        };
+
+        const stored = await Effect.runPromise(questions.commitRound(round).pipe(Effect.result));
+
+        // Nothing can record the round (a replaced Session): the call is dropped, and the instance after this one
+        // settles it as one that may have run.
+        if (Result.isFailure(stored)) return failed(interruptedResult(tool, base));
+
+        await api.memo(waitMarker(number), true, context);
+        next = undefined;
+
+        continue;
+      }
+
+      if (!Predicate.isTagged(result, "Completed")) {
+        return failed(
+          failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),
+        );
+      }
+
+      // A script's call gets its value whole and no spill.
+      const caller: Caller = (await isNested(api, context)) ? "script" : "model";
+
+      const done = async (value: Schema.Json): Promise<Sent<A>> => ({
+        ok: true,
+        value: await onValue(value, result, caller),
+        asked: [],
+      });
+
+      if (result.result.kind !== "stream") return done(result.result.value);
+
+      const limits: Mutable<StreamLimits> = {
+        signal: context.abortSignal,
+        idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+      };
+
+      if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+
+      // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
+      // model or the script gets before the decode slot is given up.
+      return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
+        if (streamed.kind === "aborted") return failed(failedWith(`The ${noun} was stopped`, base));
+
+        return streamed.kind === "value"
+          ? done(streamed.value)
+          : failed(streamFailure(streamed.kind, base, subject));
+      });
+    }
   };
 
   try {

@@ -571,6 +571,9 @@ export const SessionLive = Session.make(
           sockets: state.raw,
           notify: notifyOwner,
           credentials: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
+          // A Modern server's answers are sealed until the call's resume, bound to this object's ID.
+          encryptionKey: secrets.encryptionKey,
+          session: state.raw.id.toString(),
         });
 
         // The `settings_mcp_*` tools' read of the Registry, and their pushes of a changed set.
@@ -976,7 +979,14 @@ export const SessionLive = Session.make(
                     Effect.service(Approvals),
                   ]),
                   ([held, browser, handoffs, approvals]) =>
-                    onIdle(held, browser, handoffs, approvals, mcpSignIns.service),
+                    onIdle(
+                      held,
+                      browser,
+                      handoffs,
+                      approvals,
+                      mcpSignIns.service,
+                      mcpQuestions.service,
+                    ),
                 ),
               }),
             ),

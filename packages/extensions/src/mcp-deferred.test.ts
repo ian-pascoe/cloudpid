@@ -1,0 +1,428 @@
+// A call of an MCP tool whose Modern server asks the owner for input (`docs/architecture/mcp-server-requests.md` →
+// Questions, The waiting-question record, Elicitation requests): the form is kept for later, the call's round ends as
+// `input_required`, the round is stored whole with its `ResumeState`, and once the owner answers, one resume is sent with
+// the answer, which was sealed while it waited and never kept in the clear. Stop, a replaced Session's storage, and a
+// round an earlier instance left behind. A scripted model on a Harness, and an in-memory host.
+// pi-durable's Harness is Promise-based, so this file is too.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+import {
+  type JsonObject,
+  McpHostCompleted,
+  McpHostInputRequired,
+  type McpHostRequest,
+  type McpHostResourceRequest,
+  type McpInputAnswer,
+} from "@cloudpid/mcp/types";
+import * as Effect from "effect/Effect";
+import { describe, expect, it } from "vitest";
+import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
+import { DOCS, detailsOf } from "./mcp.fixture.ts";
+import { open } from "./mcp.fixture.ts";
+import { fakeMcpHost } from "./mcp.testing.ts";
+import {
+  createMcpQuestions,
+  type McpQuestionStorage,
+  type McpQuestionVault,
+} from "./mcp/questions.ts";
+import { openKeptVault } from "./secrets/vault.ts";
+import { answer, call, context } from "./subagents/harness.fixture.ts";
+
+type Answer = typeof McpInputAnswer.Encoded;
+
+const SENTINEL = "sentinel-answer-41c9a";
+
+const NAME_FORM: JsonObject = {
+  type: "object",
+  properties: { name: { type: "string", title: "Your name" } },
+  required: ["name"],
+};
+
+const STATE = { v: 1, method: "tools/call", name: "search", arguments: {}, round: 1 };
+
+const ask = (key = "7") => ({
+  key,
+  kind: "elicitation" as const,
+  params: { message: "Who are you?", requestedSchema: NAME_FORM },
+  mode: "deferrable" as const,
+});
+
+const DONE = McpHostCompleted.make({
+  result: { kind: "inline", value: { content: [{ type: "text", text: "done" }] } },
+});
+
+/** A storage over a map, which throws on every write once `refuse` is set, as a replaced Session's does. */
+const memoryStorage = () => {
+  const map = new Map<string, unknown>();
+  const puts: string[] = [];
+  let refusing = false;
+
+  const storage: McpQuestionStorage = {
+    // SAFETY: the questions read back only what they wrote under each key.
+    get: <T>(key: string) => map.get(key) as T | undefined,
+    put: (key, value) => {
+      if (refusing) throw new Error("This storage refuses every operation");
+
+      map.set(key, structuredClone(value));
+      puts.push(JSON.stringify(value));
+    },
+    delete: (key) => {
+      if (refusing) throw new Error("This storage refuses every operation");
+
+      return map.delete(key);
+    },
+  };
+
+  return {
+    storage,
+    keys: () => [...map.keys()],
+    dump: () => JSON.stringify([...map]),
+    /** Every value written, as JSON, in order. */
+    puts,
+    refuse: () => {
+      refusing = true;
+    },
+  };
+};
+
+/** The vault the Session seals deferred answers in, under a test key. */
+const testVault = async (): Promise<McpQuestionVault> => {
+  const kept = await Effect.runPromise(
+    openKeptVault("test-master-key-0123456789abcdef0123456789", "mcp-elicitation"),
+  );
+
+  return {
+    seal: (id, text) => kept.seal({ owner: "s1", name: id }, text),
+    open: (id, sealed) => kept.open({ owner: "s1", name: id }, sealed),
+  };
+};
+
+/** Until `check` holds, for up to five seconds. */
+const until = async (check: () => Promise<boolean>) => {
+  const end = Date.now() + 5000;
+
+  while (!(await check())) {
+    if (Date.now() > end) throw new Error("timed out waiting");
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
+
+const setup = async (memory = memoryStorage()) => {
+  const host = fakeMcpHost([DOCS]);
+  const told: string[] = [];
+  const vault = await testVault();
+
+  const make = () =>
+    createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      notify: ({ server }) =>
+        Effect.sync(() => {
+          told.push(server);
+        }),
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: (text) => Effect.succeed(text === "my-secret"),
+      vault,
+    });
+
+  const questions = make();
+  const tools = makeMcpTools(host.client, memoryMcpToolsStore(), { slackMs: 0, questions });
+
+  const session = await open((request) =>
+    request.text === "go" ? call(["mcp__docs_site__search", {}]) : answer("ok"),
+  );
+
+  const sent = () => host.calls.flatMap((each) => (each.method === "request" ? [each.input] : []));
+
+  return { host, memory, questions, make, tools, told, session, sent };
+};
+
+/** A host whose call asks `ask()` and ends its round when deferred, then completes the resume, keeping what it was sent. */
+const deferring =
+  (seen: Answer[], resumes: Array<McpHostRequest | McpHostResourceRequest>) =>
+  async (
+    input: McpHostRequest | McpHostResourceRequest,
+    hooks: Parameters<Parameters<ReturnType<typeof fakeMcpHost>["answer"]>[0]>[1],
+  ) => {
+    if (input.op === "resume") {
+      resumes.push(input);
+
+      return DONE;
+    }
+
+    const reply = await hooks.onInput?.(ask());
+
+    if (reply !== undefined) seen.push(reply);
+
+    return reply?.kind === "defer"
+      ? McpHostInputRequired.make({ requests: [ask()], resume: STATE, conn: "conn-docs" })
+      : DONE;
+  };
+
+describe("a Modern server's form", () => {
+  it("is kept for later: the round is stored, the owner answers, and one resume carries the answer", async () => {
+    const { host, memory, questions, tools, told, session, sent } = await setup();
+    const seen: Answer[] = [];
+    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+
+    host.answer(deferring(seen, resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+    // The call said it keeps questions, and the server was told the form waits.
+    expect(sent()[0]?.ctx.answers).toMatchObject({ elicitation: true, defer: true });
+    expect(seen).toEqual([{ kind: "defer" }]);
+
+    // The card has no deadline: it waits as long as the call does.
+    const [request] = await Effect.runPromise(questions.pending);
+
+    expect(request).toMatchObject({ server: "Docs-Site", message: "Who are you?" });
+    expect(request).not.toHaveProperty("deadline");
+    expect(told).toEqual(["Docs-Site"]);
+    // The round is stored with its `ResumeState`, and no resume left yet.
+    expect(memory.keys()).toEqual(
+      expect.arrayContaining(["mcp-question:deferred", expect.stringMatching(/^mcp-question:d:/)]),
+    );
+    expect(resumes).toEqual([]);
+
+    // A bad answer is bounced to the card; the round goes on waiting.
+    await expect(
+      Effect.runPromise(questions.answer(request?.id ?? "", { action: "accept", content: {} })),
+    ).rejects.toThrow("name: is required");
+    await expect(
+      Effect.runPromise(
+        questions.answer(request?.id ?? "", {
+          action: "accept",
+          content: { name: "my-secret" },
+        }),
+      ),
+    ).rejects.toThrow("matches one of your Secrets");
+
+    await Effect.runPromise(
+      questions.answer(request?.id ?? "", { action: "accept", content: { name: SENTINEL } }),
+    );
+    await submitted.wait(context);
+
+    // One resume, with the server's state as it came, its `conn`, and the answer.
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        op: "resume",
+        server: "Docs-Site",
+        params: {
+          tool: "search",
+          conn: "conn-docs",
+          resume: STATE,
+          answers: { "7": { action: "accept", content: { name: SENTINEL } } },
+        },
+      }),
+    ]);
+    expect(sent().filter((each) => each.op === "tools/call")).toHaveLength(1);
+    expect(await session.texts("toolResult")).toEqual(["done"]);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        elicitation: [
+          { server: "Docs-Site", mode: "form", action: "accept", by: "owner", fields: ["name"] },
+        ],
+      }),
+    ]);
+
+    // Never a value in the clear, and nothing left of the round once it was resumed.
+    expect(memory.dump()).not.toContain(SENTINEL);
+    expect(memory.keys().filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ action: "accept", by: "owner", fields: ["name"] }),
+    ]);
+    // A late answer is refused.
+    await expect(
+      Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" })),
+    ).rejects.toThrow("This request ended");
+  });
+
+  it("seals an answer given while the call waits, and the resume opens it", async () => {
+    const { host, memory, questions, tools, session } = await setup();
+    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+    let sealed = "";
+
+    host.answer(async (input, hooks) => {
+      if (input.op === "resume") {
+        resumes.push(input);
+        sealed = memory.dump();
+
+        return DONE;
+      }
+
+      return deferring([], resumes)(input, hooks);
+    });
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(
+      questions.answer(request?.id ?? "", { action: "accept", content: { name: SENTINEL } }),
+    );
+    await submitted.wait(context);
+
+    // The answer was kept sealed while it waited, never in the clear, and gone by the time the resume left.
+    expect(memory.puts.some((put) => put.includes("ciphertext"))).toBe(true);
+    expect(memory.puts.join("\n")).not.toContain(SENTINEL);
+    expect(resumes).toHaveLength(1);
+    expect(sealed).not.toContain(SENTINEL);
+    expect(sealed).not.toContain("ciphertext");
+  });
+
+  it("sends a decline in the resume, and the agent is told", async () => {
+    const { host, questions, tools, session } = await setup();
+    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+
+    host.answer(deferring([], resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" }));
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({ answers: { "7": { action: "decline" } } }),
+      }),
+    ]);
+    expect((await session.texts("toolResult")).join("\n")).toContain(
+      "The user declined Docs-Site's request for input.",
+    );
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        elicitation: [
+          { server: "Docs-Site", mode: "form", action: "decline", by: "owner", fields: [] },
+        ],
+      }),
+    ]);
+  });
+
+  it("is withdrawn when Stop aborts the waiting call, and no resume is sent", async () => {
+    const { host, memory, questions, tools, session } = await setup();
+    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+
+    host.answer(deferring([], resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+    await session.root.abort(context);
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(memory.keys().filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid", reason: "Run stopped" }),
+    ]);
+  });
+
+  it("is cancelled in the round's retry when the Session's storage cannot keep it (a replaced Session)", async () => {
+    const memory = memoryStorage();
+    const { host, tools, session } = await setup(memory);
+    const seen: Answer[] = [];
+    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+
+    host.answer(async (input, hooks) => {
+      memory.refuse();
+
+      return deferring(seen, resumes)(input, hooks);
+    });
+    await session.start(tools);
+    await session.prompt("go");
+
+    // The server is told `cancel`, never left with a question nobody can answer, and its call goes on.
+    expect(seen).toEqual([{ kind: "answered", result: { action: "cancel" } }]);
+    expect(resumes).toEqual([]);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        elicitation: [
+          {
+            server: "Docs-Site",
+            mode: "form",
+            action: "cancel",
+            by: "cloudpid",
+            reason: "cloudpid could not record the question",
+            fields: [],
+          },
+        ],
+      }),
+    ]);
+  });
+
+  it("is answered live, as a Legacy one, when the host does not resume", async () => {
+    const { host, questions, tools, session, sent } = await setup();
+    const seen: Answer[] = [];
+
+    host.features(["inventory", "call"]);
+    host.answer(deferring(seen, []));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    expect(request?.deadline).toBeGreaterThan(0);
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" }));
+    await submitted.wait(context);
+
+    expect(sent()[0]?.ctx.answers).not.toHaveProperty("defer");
+    expect(seen).toEqual([{ kind: "answered", result: { action: "decline" } }]);
+  });
+
+  it("keeps a round an earlier instance stored on its cards, and drops it once the Session is idle with no call for it", async () => {
+    const { host, memory, questions, make, tools, session } = await setup();
+
+    host.answer(deferring([], []));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+    // A new instance over the same storage: the card is still there, and an answer is kept for the call's rerun.
+    const later = make();
+    const [request] = await Effect.runPromise(later.pending);
+
+    expect(request).toMatchObject({ server: "Docs-Site" });
+    // What a rerun of the call would find (an instance of its own, since finding it marks the call as this instance's).
+    expect(await Effect.runPromise(make().deferredRound(request?.callId ?? ""))).toMatchObject({
+      round: 1,
+      conn: "conn-docs",
+      tool: "search",
+      resume: STATE,
+    });
+
+    // No call of the new instance waits for it: the Session going idle withdraws it.
+    await Effect.runPromise(later.dropAbandoned);
+
+    expect(await Effect.runPromise(later.pending)).toEqual([]);
+    expect(memory.keys().filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(await Effect.runPromise(later.records)).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "the server's call ended",
+      }),
+    ]);
+
+    await session.root.abort(context);
+    await submitted.wait(context);
+  });
+});

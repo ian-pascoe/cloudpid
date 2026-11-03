@@ -1,7 +1,9 @@
 // The Session's MCP questions (`docs/architecture/mcp-server-requests.md` → Questions, Elicitation requests): the forms
 // MCP servers ask the owner during a call, shown on every client's card over the Session socket and pushed to the owner
-// once as a call starts waiting. They live in memory, as long as their call waits; the storage holds only the records
-// (never an answered value). The tools that ask are built outside the Session's runtime (`./mcp-host.ts`), so the
+// once as a call starts waiting. A Legacy server's live in memory, as long as their call waits; a Modern server's are
+// kept in the storage between the call's rounds, an accepted form's content sealed (AES-GCM, under a key derived from
+// `SECRETS_ENCRYPTION_KEY` for the purpose `mcp-elicitation`, bound to the Session and the question) until its resume is
+// built. The storage never holds an answered value in the clear. The tools that ask are built outside the Session's runtime (`./mcp-host.ts`), so the
 // service is made synchronously, and the Secrets it checks answers against are bound when the runtime builds its layer.
 import { credentialCheck, DeployCredentials } from "@cloudpid/extensions/environment";
 import {
@@ -11,8 +13,10 @@ import {
   type McpQuestionStorage,
 } from "@cloudpid/extensions/mcp";
 import { Secrets, type SecretsService } from "@cloudpid/extensions/secrets";
+import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import type { PushEvent } from "../push/notification.ts";
 import { mcpElicitationRequests, send, type SocketState } from "./sockets.ts";
 
@@ -27,7 +31,16 @@ export type SessionMcpQuestionsOptions = {
   readonly credentials: ReadonlyArray<string>;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
+  /**
+   * The master key, `SECRETS_ENCRYPTION_KEY`, and what names the Session in each sealed answer's binding: with both, a
+   * Modern server's form is kept for later; without, it is answered live, as a Legacy one.
+   */
+  readonly encryptionKey?: Redacted.Redacted<string> | undefined;
+  readonly session?: string | undefined;
 };
+
+/** The purpose deferred answers are sealed for (`openKeptVault`). */
+export const MCP_ELICITATION_PURPOSE = "mcp-elicitation";
 
 /** The service the Session's MCP tools ask through, and the layer that provides it once the Secrets are built. */
 export type SessionMcpQuestions = {
@@ -48,6 +61,16 @@ export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): Sessio
   const credentials = credentialCheck.pipe(
     Effect.provideService(DeployCredentials, { values: options.credentials }),
   );
+
+  const { encryptionKey, session } = options;
+
+  // Opened once, at the first answer it seals or opens; a malformed key fails that answer, never the Session.
+  const kept =
+    encryptionKey === undefined || session === undefined
+      ? undefined
+      : Effect.runSync(
+          openKeptVault(Redacted.value(encryptionKey), MCP_ELICITATION_PURPOSE).pipe(Effect.cached),
+        );
 
   const service = createMcpQuestions({
     storage: options.storage,
@@ -74,6 +97,15 @@ export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): Sessio
         return held.redact(text) !== text || holdsCredential(text);
       }),
     waitMs: options.waitMs,
+    vault:
+      kept === undefined || session === undefined
+        ? undefined
+        : {
+            seal: (id, text) =>
+              Effect.flatMap(kept, (vault) => vault.seal({ owner: session, name: id }, text)),
+            open: (id, sealed) =>
+              Effect.flatMap(kept, (vault) => vault.open({ owner: session, name: id }, sealed)),
+          },
   });
 
   return {

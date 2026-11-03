@@ -64,6 +64,13 @@ export type { McpCallOrigin, McpToolOptions } from "./exchange.ts";
 export const extensionName = "mcp";
 
 /**
+ * The host feature a call keeps its Modern server's questions for later with: a host that lists it answers a call that
+ * defers `InputRequired`, and resumes it (`docs/architecture/mcp-server-requests.md` → Questions). Without it, a Modern
+ * server's form is answered live.
+ */
+export const MCP_RESUME_FEATURE = "resume";
+
+/**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
  * build reads (`timeout`, `description` and the Exposure keys), so what a Session keeps of a build never holds the
  * entry's URL, headers, `env` or OAuth, where a literal credential may be. Decoding an inventory's server drops the rest.
@@ -144,6 +151,7 @@ const toolFor = (
   options: McpToolOptions,
   readServer: string | undefined,
   appHtml: boolean,
+  defers: boolean,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
   const app = options.apps !== undefined && appUriOfMeta(tool._meta) !== undefined;
@@ -156,6 +164,7 @@ const toolFor = (
     tool: name,
     details: base,
     subject: "tool",
+    defers,
   };
 
   return {
@@ -263,6 +272,9 @@ export const mcpExtension = (
       ? normalizeMcpName(server.name)
       : undefined;
 
+  // A Modern server's questions wait for the owner past their round only on a host that resumes the call.
+  const defers = build.features?.includes(MCP_RESUME_FEATURE) === true;
+
   const tools = Arr.flatMap(build.servers, (server) => {
     const listed = listedTools(server);
 
@@ -298,6 +310,7 @@ export const mcpExtension = (
               options,
               readServerOf(server),
               appHtml,
+              defers,
             ),
           );
     });

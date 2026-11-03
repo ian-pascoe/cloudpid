@@ -60,6 +60,11 @@ export type ElicitingCall = {
   readonly source?: McpElicitationSource | undefined;
   /** Aborts when Stop does: a question waiting then is withdrawn. */
   readonly signal: AbortSignal | undefined;
+  /**
+   * Whether a Modern server's form is kept for later (`ctx.answers.defer`): the call's round ends as `input_required`,
+   * and the call waits for the owner after it. Otherwise it is answered live, as a Legacy one.
+   */
+  readonly defers?: boolean | undefined;
   /** Stop the call's own clock while a question waits, and start it again. */
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
@@ -84,6 +89,9 @@ const unsupported = (reason: string): typeof McpInputAnswer.Encoded => ({
   code: -32602,
 });
 
+/** Why a question the Session's storage could not take (a replaced Session) is cancelled. */
+const UNRECORDED = "cloudpid could not record the question";
+
 /** What the server is told of a request past the call's cap. */
 const CANCELLED: typeof McpInputAnswer.Encoded = { kind: "answered", result: { action: "cancel" } };
 
@@ -92,7 +100,7 @@ const cutNotes = (message: string): ReadonlyArray<string> =>
   messageIsCut(message) ? ["the message was cut at 4,000 characters"] : [];
 
 /** `content` for the wire, whose lists are mutable. */
-const mutableContent = (content: ElicitationContent) =>
+export const mutableContent = (content: ElicitationContent) =>
   Record.map(content, (value) =>
     Predicate.isString(value) || Predicate.isNumber(value) || Predicate.isBoolean(value)
       ? value
@@ -196,8 +204,6 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
     }
 
-    await Effect.runPromise(call.pause);
-
     const question: Mutable<McpQuestionAsk> = {
       key: request.key,
       callId: call.callId,
@@ -210,6 +216,19 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     };
 
     if (call.source !== undefined) question.source = call.source;
+
+    // A Modern server's question is kept for later: the round ends, and the call waits for the owner after it.
+    if (request.mode === "deferrable" && call.defers === true) {
+      const kept = await Effect.runPromise(call.questions.defer(question));
+
+      if (kept === "deferred") return { kind: "defer" };
+
+      note("cancel", "cloudpid", [], kept === "capped" ? MCP_ELICITATION_CAP_REASON : UNRECORDED);
+
+      return CANCELLED;
+    }
+
+    await Effect.runPromise(call.pause);
 
     const outcome: McpQuestionOutcome = await Effect.runPromise(
       call.questions.ask(question),
