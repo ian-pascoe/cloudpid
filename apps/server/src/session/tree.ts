@@ -13,6 +13,7 @@ import {
   type TreeNodeRole,
   type TreePoint,
   pathFromRoot,
+  mcpPromptLabel,
   projectEntry,
   USER_ENTRY_KIND,
   userEntryData,
@@ -143,7 +144,13 @@ export const nodeOf = (
     case "user": {
       const role: TreeNodeRole = isOwnerMessage(entry) ? "user" : "input";
 
-      return { role, text: oneLine(texts.join(" ")), final: false, timestamp: message.timestamp };
+      const typed = oneLine(texts.join(" "));
+
+      // A prompt sent with no words of the owner's is named by its chip label.
+      const text =
+        typed === "" && message.mcpPrompt !== undefined ? mcpPromptLabel(message.mcpPrompt) : typed;
+
+      return { role, text, final: false, timestamp: message.timestamp };
     }
 
     case "assistant": {

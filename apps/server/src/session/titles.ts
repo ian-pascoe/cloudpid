@@ -12,7 +12,7 @@ import type {
   ToolCall,
   Usage,
 } from "@earendil-works/pi-ai";
-import { userEntryData } from "@cloudpid/protocol";
+import { ownerDisplay, userEntryData } from "@cloudpid/protocol";
 import type { EntryRecord, ModelRef } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -89,7 +89,8 @@ export const firstExchange = (entries: ReadonlyArray<EntryRecord>): Exchange | u
       Arr.flatMap(entry.model ?? [], (message) => {
         if (message.role !== "user") return [];
 
-        const text = userEntryData(entry)?.display ?? textOf(message.content);
+        const data = userEntryData(entry);
+        const text = data === undefined ? textOf(message.content) : ownerDisplay(data);
 
         return text.trim() === "" ? [] : [text];
       }),

@@ -133,6 +133,13 @@ export const McpPromptData = Schema.Struct({
 
 export type McpPromptData = typeof McpPromptData.Type;
 
+/**
+ * The label an MCP prompt goes by where the owner typed nothing to name the message (the title, the tree, a lane):
+ * `<server> · <title, else name>`. The chip adds the arguments.
+ */
+export const mcpPromptLabel = (prompt: Pick<McpPromptData, "server" | "name" | "title">): string =>
+  `${prompt.server} · ${prompt.title ?? prompt.name}`;
+
 /** What every refusal of a send that names an MCP prompt carries as `error.code`. */
 export const MCP_PROMPT_ERROR_CODES = [
   "MCP_PROMPT_ARGUMENTS",

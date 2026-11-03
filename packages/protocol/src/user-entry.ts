@@ -8,7 +8,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AttachedPage } from "./attached-pages.ts";
 import { SessionVia } from "./mcp-api.ts";
-import { McpPromptData } from "./mcp-prompts.ts";
+import { McpPromptData, mcpPromptLabel } from "./mcp-prompts.ts";
 import { ReviewData } from "./review.ts";
 
 /** The kind of an owner's message the Session expanded. */
@@ -49,6 +49,15 @@ export const userEntryData = (entry: {
   readonly data?: unknown;
 }): UserEntryData | undefined =>
   entry.kind === USER_ENTRY_KIND ? Option.getOrUndefined(decodeData(entry.data)) : undefined;
+
+/**
+ * What names an owner's message where the transcript is not drawn: what they typed, else the chip label of the MCP
+ * prompt they sent, else nothing (`docs/architecture/mcp-in-a-session.md` → Into the conversation).
+ */
+export const ownerDisplay = (data: UserEntryData): string =>
+  data.display === "" && data.mcpPrompt !== undefined
+    ? mcpPromptLabel(data.mcpPrompt)
+    : data.display;
 
 /** A Skill as the model reads it, in local pi's block: `body` is its `SKILL.md` without the frontmatter. */
 export const skillBlock = (skill: {

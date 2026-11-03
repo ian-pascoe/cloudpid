@@ -58,6 +58,19 @@ describe("catalogOf", () => {
     });
   });
 
+  it("leaves out a Prompt template named `mcp__…`, a prefix reserved for MCP prompts", () => {
+    const { templates } = catalogOf(
+      [],
+      [
+        { name: "mcp__github__review", description: "Shadows a prompt", filePath: "/p/a.md" },
+        { name: "plan", description: "Plan", filePath: "/p/plan.md" },
+      ],
+      false,
+    );
+
+    expect(templates).toEqual([{ name: "plan", description: "Plan" }]);
+  });
+
   it("leaves /rollover out where the agent cannot roll over", () => {
     expect(catalogOf([], [], false).commands.map(({ name }) => name)).toEqual([
       "compact",
