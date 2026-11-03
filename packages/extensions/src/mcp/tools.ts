@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off asyncFunction:off newPromise:off globalTimers:off -- builders over
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off newPromise:off globalTimers:off globalDate:off -- builders over
 // plain values, and pi-durable's Promise-based tool seam.
 // The `mcp` extension's tools (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension, Exposure, Calls and
 // results; ADR-0030), built purely from the host's inventory and the offered tools, so a build over unchanged tools gives
@@ -24,15 +24,18 @@ import {
   isJsonObject,
   type JsonObject,
   MCP_CONNECT_TIMEOUT_MS,
+  MCP_ELICITATION_WAIT_MS,
   type McpHostRequest,
+  type McpAnswers,
   type McpHostRequestHooks,
 } from "@cloudpid/mcp/types";
-import type { Context } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   type Extension,
   type ToolExecutionApi,
+  type ToolExecutionResult,
   type ToolRegistration,
   type ToolTaskInput,
 } from "@earendil-works/pi-durable";
@@ -46,6 +49,7 @@ import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
 import { baseDetails } from "./details.ts";
 import { conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
+import { elicitingHooks, withElicitation } from "./elicit.ts";
 import { exposureKeys, flagsOf, reachesModel } from "./exposure.ts";
 import {
   failedWith,
@@ -56,6 +60,7 @@ import {
   resultFor,
   streamFailure,
 } from "./result.ts";
+import type { McpQuestionsService } from "./questions.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
@@ -132,6 +137,15 @@ const isNested = async (api: ToolExecutionApi, context: Context): Promise<boolea
   return input?.kind === "nested";
 };
 
+/**
+ * What a call says it can answer when the Session has questions to show: a Legacy server's elicitation form, for as long
+ * as the owner has to answer it and a little more, so the Session's own end of the wait comes first.
+ */
+const ELICITATION_ANSWERS: McpAnswers = {
+  elicitation: true,
+  inputWaitMs: MCP_ELICITATION_WAIT_MS + 15_000,
+};
+
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
 
@@ -157,6 +171,12 @@ export type McpToolOptions = {
    * Absent: nothing is awaited.
    */
   readonly ready?: ((workspace: string) => Promise<boolean>) | undefined;
+  /**
+   * The Session's MCP questions. With them, a call says it can answer a Legacy server's elicitation form
+   * (`ctx.answers`), which waits for the owner (`docs/architecture/mcp-server-requests.md` → Elicitation requests);
+   * without them, every question a server asks is cancelled.
+   */
+  readonly questions?: McpQuestionsService;
 };
 
 /** A promise that resolves when any of `signals` aborts, and never without one. */
@@ -169,16 +189,37 @@ const abortedBy = (signals: ReadonlyArray<AbortSignal>) =>
     }
   });
 
-/** A deadline `ms` away, which `reset` moves `ms` from now; `signal` aborts when it passes. */
+/**
+ * A deadline `ms` away, which `reset` moves `ms` from now and `pause` stops until `resume` (the time left then runs
+ * again); `signal` aborts when it passes. Pauses nest: it runs again when every one has resumed.
+ */
 const deadline = (ms: number) => {
   const controller = new AbortController();
   let timer = setTimeout(() => controller.abort(), ms);
+  let startedAt = Date.now();
+  let left = ms;
+  let paused = 0;
 
   return {
     signal: controller.signal,
     reset: () => {
       clearTimeout(timer);
-      timer = setTimeout(() => controller.abort(), ms);
+      left = ms;
+      startedAt = Date.now();
+
+      if (paused === 0) timer = setTimeout(() => controller.abort(), ms);
+    },
+    pause: () => {
+      if (paused++ > 0) return;
+
+      clearTimeout(timer);
+      left = Math.max(0, left - (Date.now() - startedAt));
+    },
+    resume: () => {
+      if (--paused > 0) return;
+
+      startedAt = Date.now();
+      timer = setTimeout(() => controller.abort(), left);
     },
     clear: () => clearTimeout(timer),
   };
@@ -197,6 +238,7 @@ const requestOf = (
   tool: string,
   args: JsonObject,
   call: { readonly callId: string; readonly conversation: string },
+  answers?: McpAnswers,
 ): McpHostRequest => {
   const ctx: Mutable<McpHostRequest["ctx"]> = {
     origin: "agent",
@@ -207,6 +249,8 @@ const requestOf = (
   if (origin.session !== undefined) ctx.session = origin.session;
 
   if (origin.workspace !== undefined) ctx.workspace = origin.workspace;
+
+  if (answers !== undefined) ctx.answers = answers;
 
   return { op: "tools/call", server, params: { name: tool, arguments: args }, ctx };
 };
@@ -281,7 +325,24 @@ const toolFor = (
       const lost = deadline(wait);
       const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
 
-      const hooks: McpHostRequestHooks = {
+      const { questions } = options;
+
+      // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it.
+      const asking =
+        questions === undefined
+          ? undefined
+          : elicitingHooks({
+              questions,
+              server: server.name,
+              tool: name,
+              callId: api.callId,
+              conversationId: api.conversationId,
+              signal: context.abortSignal,
+              pause: lost.pause,
+              resume: lost.resume,
+            });
+
+      const hooks: Mutable<McpHostRequestHooks> = {
         // Stop, or the Session giving up on the host: either way the host cancels the call.
         untilAborted: () => abortedBy([...stopped, lost.signal]),
         // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
@@ -293,6 +354,11 @@ const toolFor = (
         },
       };
 
+      if (asking !== undefined) {
+        hooks.onInput = asking.onInput;
+        hooks.onInputEnded = asking.onInputEnded;
+      }
+
       const request = requestOf(
         { ...origin, workspace },
         server.name,
@@ -300,47 +366,57 @@ const toolFor = (
         // SAFETY: the arguments pi-durable validated against the tool's `inputSchema`, an object.
         args as JsonObject,
         { callId: api.callId, conversation: String(api.conversationId) },
+        questions === undefined ? undefined : ELICITATION_ANSWERS,
       );
 
       // Durable before the request leaves, so a restart finds the call sent.
       await api.memo(SENT, true, context);
 
-      const result = await Promise.race([
-        Effect.runPromise(client.request(request, hooks)),
-        abortedBy([lost.signal]).then(() => undefined),
-      ]).finally(lost.clear);
+      const finished = async (): Promise<ToolExecutionResult<JsonValue>> => {
+        const result = await Promise.race([
+          Effect.runPromise(client.request(request, hooks)),
+          abortedBy([lost.signal]).then(() => undefined),
+        ]).finally(lost.clear);
 
-      if (result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")) {
-        return hostLostResult(base);
-      }
+        if (result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")) {
+          return hostLostResult(base);
+        }
 
-      if (!Predicate.isTagged(result, "Completed")) return failureResult(result, base);
+        if (!Predicate.isTagged(result, "Completed")) return failureResult(result, base);
 
-      // A script's call gets its value whole and no spill.
-      const call: McpResultContext = (await isNested(api, context))
-        ? { kind: "script", details: base }
-        : { kind: "model", details: base, spill: spillTo(api.env, context) };
+        // A script's call gets its value whole and no spill.
+        const call: McpResultContext = (await isNested(api, context))
+          ? { kind: "script", details: base }
+          : { kind: "model", details: base, spill: spillTo(api.env, context) };
 
-      const finish = (value: Schema.Json) => resultFor(value, result.structuredOutput, call);
+        const finish = (value: Schema.Json) => resultFor(value, result.structuredOutput, call);
 
-      if (result.result.kind !== "stream") return finish(result.result.value);
+        if (result.result.kind !== "stream") return finish(result.result.value);
 
-      const limits: Mutable<StreamLimits> = {
-        signal: context.abortSignal,
-        idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+        const limits: Mutable<StreamLimits> = {
+          signal: context.abortSignal,
+          idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+        };
+
+        if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+
+        // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
+        // model or the script gets before the decode slot is given up.
+        return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
+          if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
+
+          return streamed.kind === "value"
+            ? finish(streamed.value)
+            : streamFailure(streamed.kind, base);
+        });
       };
 
-      if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
-
-      // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
-      // model or the script gets before the decode slot is given up.
-      return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
-        if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
-
-        return streamed.kind === "value"
-          ? finish(streamed.value)
-          : streamFailure(streamed.kind, base);
-      });
+      try {
+        return withElicitation(await finished(), asking?.asked ?? []);
+      } finally {
+        // The call is over, however it ended: a question it still waits on is withdrawn.
+        if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
+      }
     },
   };
 };

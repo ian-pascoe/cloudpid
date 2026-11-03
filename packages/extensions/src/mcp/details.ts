@@ -27,6 +27,21 @@ export const HINTS = [
 export type McpHints = { readonly [Hint in (typeof HINTS)[number]]?: boolean };
 
 /**
+ * One question the server asked during a call that the owner or cloudpid answered (`docs/architecture/
+ * mcp-server-requests.md` → Elicitation requests, Answers): never a value, only the names of the fields answered.
+ */
+export type McpElicitationDetail = {
+  readonly server: string;
+  readonly mode: "form";
+  readonly action: "accept" | "decline" | "cancel";
+  readonly by: "owner" | "cloudpid";
+  /** Why cloudpid answered, when it did. */
+  readonly reason?: string;
+  /** The names of the fields the owner answered. */
+  readonly fields: Array<string>;
+};
+
+/**
  * What an MCP tool's call keeps in `details`. `error` and `cut` say how a call that has no result ended: `cut` that the
  * Session's end (`host_lost`) or the host's end (`engine_lost`) of the call was lost, so it may have run.
  */
@@ -40,6 +55,8 @@ export type McpDetails = {
   readonly progress?: McpProgress;
   readonly error?: "too_large" | "invalid_structured_output";
   readonly cut?: "host_lost" | "engine_lost";
+  /** The questions the server asked during the call, answered; absent when it asked none. */
+  readonly elicitation?: Array<McpElicitationDetail>;
 };
 
 /** How much `meta` the card keeps of a tool's `_meta` (stored); keys past it are left out. */
