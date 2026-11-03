@@ -1,11 +1,13 @@
 // The main Worker's carry of an MCP sign-in change to the hosts (`docs/architecture/mcp-sign-in.md` → Tokens reach the host
 // object): each Environment's host gets `apply({ kind: "sign_ins" })`, and a host that cannot be reached never fails the
 // page or sign-out that caused it.
-// @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off
+// @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off strictEffectProvide:off
 import { HostFailed, McpSignInsTaken } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it, vi } from "vitest";
-import { mcpSignInCarry } from "./sign-in-carry.ts";
+import { CARRY_TIMEOUT, mcpSignInCarry } from "./sign-in-carry.ts";
 import { mcpHostName } from "./name.ts";
 
 const change = {
@@ -54,6 +56,33 @@ describe("mcpSignInCarry", () => {
           },
         }),
       }).carry(change),
+    );
+
+    expect(reached).toHaveBeenCalledWith(mcpHostName("env_2"));
+  });
+
+  it("gives up on a host that does not answer, so the page is not held, and the others still get it", async () => {
+    const reached = vi.fn();
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const carried = yield* mcpSignInCarry({
+          host: (name) => ({
+            apply: () => {
+              if (name === mcpHostName("env_1")) return Effect.never;
+
+              reached(name);
+
+              return Effect.succeed(McpSignInsTaken.make({ servers: ["sentry"] }));
+            },
+          }),
+        })
+          .carry(change)
+          .pipe(Effect.forkChild);
+
+        yield* TestClock.adjust(CARRY_TIMEOUT);
+        yield* Fiber.join(carried);
+      }).pipe(Effect.provide(TestClock.layer())),
     );
 
     expect(reached).toHaveBeenCalledWith(mcpHostName("env_2"));

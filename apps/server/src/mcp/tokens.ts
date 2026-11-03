@@ -1,8 +1,8 @@
 // The host's access tokens (`docs/architecture/mcp-sign-in.md` → Tokens reach the host object; `docs/architecture/
-// mcp-connections.md` → The host object, The engine): what `McpHost` asks the Registry's `mcpAccessToken` for, keeps in memory,
-// and hands to the engine. Only the Registry holds tokens at rest and refreshes them; the host's cache is in memory only, and
-// holds a token until `exp − 60 s`, or for 15 min when the server gave it no lifetime. It drops one on a 401, on eviction (the
-// memory goes with the instance) and on `apply({ kind: "sign_ins" })`.
+// mcp-connections.md` → The host object, The engine): what `McpHost` asks the Registry's `mcpAccessToken` for, keeps in
+// memory, and hands to the engine. Only the Registry holds tokens at rest and refreshes them; the host's cache is in
+// memory only, and holds a token until `exp − 60 s`, or for 15 min when the server gave it no lifetime. It drops one on
+// a 401, on eviction (the memory goes with the instance) and on `apply({ kind: "sign_ins" })`.
 //
 // A token is bound to its sign-in's protected resource: it is handed out only for a server whose URL is the resource's
 // origin and within its path, so a token never goes to another site even if an entry's URL were repointed.
@@ -60,8 +60,8 @@ export type McpTokensService = {
   /** The token for `server`: the cache's while it stands, else the Registry's. */
   readonly access: (input: TokenFor) => Effect.Effect<TokenAccess>;
   /**
-   * `token`, which `server` just refused with a 401 that is not `insufficient_scope`, is dropped, and the Registry asked
-   * again with it as `stale`: it refreshes it, or hands over the current token when another host already did.
+   * `token`, which `server` just refused with a 401 that is not `insufficient_scope`, is dropped, and the Registry
+   * asked again with it as `stale`: it refreshes it, or hands over the current token when another host already did.
    */
   readonly refused: (input: TokenFor & { readonly token: string }) => Effect.Effect<TokenAccess>;
   /** Drop the cached tokens of `servers` (every server's when none is named). */
@@ -78,8 +78,8 @@ type Held = {
 };
 
 /**
- * Whether `url` is the origin of `resource` and within its path: `https://mcp.example.com/mcp` and `.../mcp/sse` are within
- * `https://mcp.example.com/mcp`, and `/mcp-other` is not.
+ * Whether `url` is the origin of `resource` and within its path: `https://mcp.example.com/mcp` and `.../mcp/sse` are
+ * within `https://mcp.example.com/mcp`, and `/mcp-other` is not.
  */
 export const withinResource = (url: string, resource: string): boolean => {
   if (!URL.canParse(url) || !URL.canParse(resource)) return false;
@@ -227,10 +227,10 @@ const tokensOver = (registry: McpRegistryPortService): McpTokensService => {
 };
 
 /**
- * The engine's `auth(stale)` hook for one server (`McpEngineHooks.auth`): the token the host holds for it, asked again with
- * `stale` after the server refused the one given. Remembers the token it gave, so the Registry is told which one was
- * refused. A request's engine call passes it as `auth` (a background call has none: a function stub does not outlive its
- * invocation, #409, so discovery passes the token in the target's headers instead).
+ * The engine's `auth(stale)` hook for one server (`McpEngineHooks.auth`): the token the host holds for it, asked again
+ * with `stale` after the server refused the one given. Remembers the token it gave, so the Registry is told which one
+ * was refused. A request's engine call passes it as `auth` (a background call has none: a function stub does not
+ * outlive its invocation, #409, so discovery passes the token in the target's headers instead).
  */
 export const engineAuth = (
   tokens: McpTokensService,

@@ -301,7 +301,8 @@ const discoverOne = (environment: string, view: ServerView, cause: string | unde
         return;
       }
 
-      // Each engine call takes its place in the caps; the token is asked for, and a refused one asked for again, in between.
+      // Each engine call takes its place in the caps; the token is asked for, and a refused one asked for again, in
+      // between.
       const call = (target: McpEngineTarget) =>
         caps.inFlight(
           conn,

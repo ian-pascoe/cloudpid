@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { JsonObject } from "./json.ts";
 import { McpLogEntry } from "./log.ts";
+import { McpAuthChallenge } from "./sign-in.ts";
 
 export * from "./host.ts";
 
@@ -81,22 +82,30 @@ export const SessionRowV1 = Schema.Struct({
 
 export type SessionRow = typeof SessionRowV1.Type;
 
-/** The server wants the owner signed in: a 401. `rejected` when it refused a token the core sent, twice. */
+/**
+ * The server wants the owner signed in: a 401. `rejected` when it refused a token the core sent, twice. `challenge` is
+ * the parameters of the 401's `WWW-Authenticate` header, when it had any (the host reports them to the Registry).
+ */
 export class SignInRequired extends Schema.TaggedError<
   SignInRequired,
   { readonly brand: unique symbol }
 >()("SignInRequired", {
   message: Schema.String,
   rejected: Schema.Boolean,
+  challenge: Schema.optionalKey(McpAuthChallenge),
 }) {}
 
-/** The server wants a token with more scope: a 403 with `insufficient_scope`. */
+/**
+ * The server wants a token with more scope: a 403 with `insufficient_scope`; `challenge` is the parameters of its
+ * `WWW-Authenticate` header.
+ */
 export class StepUpRequired extends Schema.TaggedError<
   StepUpRequired,
   { readonly brand: unique symbol }
 >()("StepUpRequired", {
   message: Schema.String,
   scope: Schema.optionalKey(Schema.String),
+  challenge: Schema.optionalKey(McpAuthChallenge),
 }) {}
 
 /** The server could not be reached or is not answering for now: a network error, a 5xx, a 408 or a 429. */

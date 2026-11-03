@@ -23,8 +23,8 @@ import { describe, expect, it } from "vitest";
 import { completeMcpSignIn, type FlowDeps, startMcpSignIn } from "./mcp-sign-in-flow.ts";
 import { mcpTokenRefresh, MAX_REFRESH_BACKOFF_MS } from "./mcp-sign-in-refresh.ts";
 import { mcpAccessToken, reportMcpAuth, signInTarget } from "./mcp-sign-in-registry.ts";
-import { MCP_OAUTH_PURPOSE, openTokens } from "./mcp-sign-in-seal.ts";
-import { type McpSignIns, openMcpSignIns } from "./mcp-sign-ins.ts";
+import { MCP_OAUTH_PURPOSE, openTokens, type McpTokens } from "./mcp-sign-in-seal.ts";
+import { type McpSignInRow, type McpSignIns, openMcpSignIns } from "./mcp-sign-ins.ts";
 import { writeSettings } from "./settings.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
@@ -150,6 +150,12 @@ type Harness = {
   readonly logged: Array<string>;
   readonly setGlobal: (value: Schema.Json) => void;
   readonly keyHash: (name: string) => string;
+  /** A refresh as a caller that read the row `before` (a `mcpAccessToken` that is still opening its tokens) asks it. */
+  readonly lateRefresh: (
+    before: McpSignInRow,
+    tokens: McpTokens,
+    now: number,
+  ) => Promise<McpAccessTokenAnswer>;
   /** Sign in as the entry's client: the real start, then the real callback. */
   readonly signIn: (stepUp?: boolean) => Promise<McpSignInCompleteAnswer>;
   readonly ask: (input?: { stale?: string }, now?: number) => Promise<McpAccessTokenAnswer>;
@@ -219,6 +225,14 @@ const run = <A>(
         return target.key.hash;
       };
 
+      const signInKey = (name: string) => {
+        const target = signInTarget(store, DEFAULT_ENVIRONMENT, name);
+
+        if (target.status !== "target") throw new Error(`No sign-in for ${name}`);
+
+        return target.key;
+      };
+
       const signIn: Harness["signIn"] = async (stepUp = false) => {
         const started = await observed(
           startMcpSignIn(
@@ -261,6 +275,20 @@ const run = <A>(
           writeSettings(store, { mcp: { servers: value } }, 5);
         },
         keyHash,
+        lateRefresh: (before, tokens, now) =>
+          observed(
+            refresh(
+              {
+                environment: DEFAULT_ENVIRONMENT,
+                server: "sentry",
+                key: signInKey("sentry"),
+                row: before,
+                tokens,
+                trigger: "expiry",
+              },
+              now,
+            ),
+          ),
         signIn,
         ask: (input = {}, now = SIGNED_IN_AT) =>
           observed(
@@ -444,6 +472,35 @@ describe("a refresh", () => {
           token: NEW_ACCESS,
         });
         expect(net.refreshes()).toHaveLength(1);
+        expect(signIns.get(keyHash("sentry"))?.status).toBe("ok");
+      },
+    ));
+
+  it("answers from the row, with no request, when a refresh replaced the tokens between a caller's read and its own flight", () =>
+    run(
+      () => tokenAnswer({ refresh_token: NEW_REFRESH }),
+      async ({ setGlobal, signIn, ask, net, signIns, keyHash, tokensOf, lateRefresh }) => {
+        setGlobal(DOCUMENT);
+        signedIn(await signIn());
+
+        // What a late caller read before the first refresh stored its rotated tokens and cleared its flight.
+        const before = signIns.get(keyHash("sentry"));
+        const old = await tokensOf("sentry");
+
+        if (before === null) throw new Error("No row");
+
+        expect(await ask({}, EXPIRING)).toMatchObject({ status: "ok", token: NEW_ACCESS });
+        expect(net.refreshes()).toHaveLength(1);
+
+        // The old refresh token is spent: a request made with it would be `invalid_grant`, which would drop the new tokens.
+        const late = await lateRefresh(before, old, EXPIRING + 1);
+
+        expect(late).toMatchObject({ status: "ok", token: NEW_ACCESS });
+        expect(net.refreshes()).toHaveLength(1);
+        expect(await tokensOf("sentry")).toEqual({
+          access_token: NEW_ACCESS,
+          refresh_token: NEW_REFRESH,
+        });
         expect(signIns.get(keyHash("sentry"))?.status).toBe("ok");
       },
     ));

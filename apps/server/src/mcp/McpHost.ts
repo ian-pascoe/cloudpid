@@ -47,13 +47,21 @@ const decodeToken = Schema.decodeUnknownEffect(McpAccessTokenAnswer);
 
 const decodeReport = Schema.decodeUnknownEffect(McpAuthReportAnswer);
 
-/** A failed Registry call for `what`, as the host reads it: the Registry unavailable, never with a value in it. */
-const registryUnavailable = (what: string) => (cause: Cause.Cause<unknown>) =>
-  Effect.fail(
-    McpRegistryUnavailable.make({
-      message: `The Registry did not answer for ${what}: ${Cause.pretty(cause)}`,
-    }),
-  );
+/**
+ * A failed Registry call for `what`, as the host reads it: the Registry unavailable, never with a value in it. `cause`
+ * is `false` for a call whose answer holds a secret (a token): a decode failure's text can quote the value, so the
+ * message says only which call failed.
+ */
+const registryUnavailable =
+  (what: string, { cause: detailed = true }: { readonly cause?: boolean } = {}) =>
+  (cause: Cause.Cause<unknown>) =>
+    Effect.fail(
+      McpRegistryUnavailable.make({
+        message: detailed
+          ? `The Registry did not answer for ${what}: ${Cause.pretty(cause)}`
+          : `The Registry did not answer for ${what}`,
+      }),
+    );
 
 export const McpHostLive = McpHost.make(
   Effect.all({
@@ -93,12 +101,8 @@ export const McpHostLive = McpHost.make(
               .mcpAccessToken(input)
               .pipe(
                 Effect.flatMap(decodeToken),
-                Effect.catchCause(() =>
-                  Effect.fail(
-                    McpRegistryUnavailable.make({
-                      message: "The Registry did not answer for an MCP server's access token",
-                    }),
-                  ),
+                Effect.catchCause(
+                  registryUnavailable("an MCP server's access token", { cause: false }),
                 ),
               ),
           reportAuth: (report) =>

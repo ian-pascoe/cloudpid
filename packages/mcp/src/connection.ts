@@ -19,6 +19,7 @@ import {
   type ConnectOptions,
   type ClientCapabilities,
   type DiscoverResult,
+  extractWWWAuthenticateParams,
   type FetchLike,
   type Implementation,
   type JSONObject,
@@ -46,7 +47,7 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { classify, type Failure } from "./failures.ts";
+import { authChallenge, classify, type Failure, signInRequired } from "./failures.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
 import { MCP_LOG_LEVEL } from "./log.ts";
 import { type TapObserver, tapFetch, Verdicts } from "./tap.ts";
@@ -57,6 +58,7 @@ import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_LIST_WALK_TIMEOUT_MS,
   type McpCallContext,
+  type McpAuthChallenge,
   type McpError,
   ProtocolViolation,
   type SessionRow,
@@ -327,7 +329,21 @@ type Plan =
 export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, deps: McpDeps) {
   const context = yield* Effect.context<never>();
   const verdicts = new Verdicts();
-  const auth = authState(deps, context);
+  let challenge: McpAuthChallenge | undefined;
+
+  /**
+   * `deps.fetch`, remembering the `WWW-Authenticate` challenge of the last 401, for the failure the SDK throws after
+   * it.
+   */
+  const watched: FetchLike = (input, init) =>
+    deps.fetch(input, init).then((response) => {
+      challenge =
+        response.status === 401 ? authChallenge(extractWWWAuthenticateParams(response)) : undefined;
+
+      return response;
+    });
+
+  const auth = authState(deps, context, () => challenge);
 
   const counts = { responses: 0, retries: 0, eraDrops: 0, reinitializes: 0 };
   let lastStatus: number | undefined;
@@ -343,7 +359,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   };
 
   const fetch = tapFetch(
-    deps.fetch,
+    watched,
     {
       now: () => Effect.runSyncWith(context)(Clock.currentTimeMillis),
       sleep: (ms) => Effect.sleep(Duration.millis(ms)).pipe(Effect.runPromiseWith(context)),
@@ -353,7 +369,12 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   );
 
   const failure = (cause: unknown, mayHaveRun = false) =>
-    classify(cause, { mayHaveRun, tokenSent: auth.tokenSent(), verdicts });
+    classify(cause, {
+      mayHaveRun,
+      tokenSent: auth.tokenSent(),
+      challenge,
+      verdicts,
+    });
 
   /** Notifications still being sent, which a close would abort: a Legacy `notifications/cancelled` above all. */
   const notifying = new Set<Promise<void>>();
@@ -838,7 +859,11 @@ const sessionRowOf = (
  * The SDK's `AuthProvider` over `deps.auth` (installed only when there is one), remembering whether the last request
  * carried a token.
  */
-const authState = (deps: McpDeps, context: Context.Context<never>) => {
+const authState = (
+  deps: McpDeps,
+  context: Context.Context<never>,
+  challenge: () => McpAuthChallenge | undefined,
+) => {
   let stale = false;
   let sent: string | undefined;
 
@@ -861,7 +886,7 @@ const authState = (deps: McpDeps, context: Context.Context<never>) => {
         if (sent === undefined) {
           // No token was sent, so asking again changes nothing: the server wants a sign-in (#390).
           return Promise.reject(
-            SignInRequired.make({ message: "The server requires signing in", rejected: false }),
+            signInRequired("The server requires signing in", false, challenge()),
           );
         }
 

@@ -304,6 +304,115 @@ describe("a 403 for more scope", () => {
   });
 });
 
+describe("the challenge of a 401 or 403", () => {
+  const challenge = {
+    resourceMetadataUrl: "https://sentry.example/.well-known/oauth-protected-resource",
+    error: "invalid_token",
+    errorDescription: "expired",
+  };
+
+  it("is carried to the Registry with needs_sign_in", async () => {
+    const host = await discovered(
+      [noToken("required", "Not signed in")],
+      [failedWith({ _tag: "SignInRequired", message: "401", rejected: false, challenge })],
+    );
+
+    expect(await host.reports()).toEqual([
+      { environment: expect.any(String), server: "sentry", event: "needs_sign_in", challenge },
+    ]);
+  });
+
+  it("is carried with rejected, which sets the error and its description", async () => {
+    const host = await discovered(
+      [ok(TOKEN)],
+      [failedWith({ _tag: "SignInRequired", message: "401", rejected: true, challenge })],
+    );
+
+    expect(await host.reports()).toEqual([
+      { environment: expect.any(String), server: "sentry", event: "rejected", challenge },
+    ]);
+  });
+
+  it("is carried with step_up: the scope, the metadata URL, the error and its description", async () => {
+    const wanted = {
+      resourceMetadataUrl: "https://sentry.example/.well-known/oauth-protected-resource",
+      scope: "write",
+      error: "insufficient_scope",
+      errorDescription: "Needs write",
+    };
+
+    const host = await discovered(
+      [ok(TOKEN)],
+      [failedWith({ _tag: "StepUpRequired", message: "403", scope: "write", challenge: wanted })],
+    );
+
+    expect(await stateOf(host, "sentry")).toBe("sign_in");
+    expect(await host.reports()).toEqual([
+      { environment: expect.any(String), server: "sentry", event: "step_up", challenge: wanted },
+    ]);
+  });
+});
+
+describe("reports on transitions only", () => {
+  it("does not report a server that is `rejected` already again at its next discovery", async () => {
+    const host = await discovered([ok(TOKEN)], [unauthorized(), unauthorized(), unauthorized()]);
+
+    expect(await stateOf(host, "sentry")).toBe("rejected");
+    expect(await host.reports()).toMatchObject([{ event: "rejected" }]);
+
+    await host.apply({ kind: "reload" });
+    await settled(host);
+    await host.apply({ kind: "reload" });
+    await settled(host);
+
+    expect(await host.engineCalls()).toHaveLength(3);
+    expect(await stateOf(host, "sentry")).toBe("rejected");
+    expect(await host.reports()).toHaveLength(1);
+  });
+
+  it("does not report a rejected sign-in the Registry's note already names", async () => {
+    const host = await discovered(
+      [ok(TOKEN, { note: { status: "rejected", reason: "invalid_token" } })],
+      [unauthorized()],
+    );
+
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("does not report a step-up the Registry's note already names for the same scope, and reports another", async () => {
+    const stepUp = failedWith({ _tag: "StepUpRequired", message: "403", scope: "write" });
+
+    const same = await discovered(
+      [ok(TOKEN, { note: { status: "step_up", scope: "read write" } })],
+      [stepUp],
+    );
+
+    expect(await stateOf(same, "sentry")).toBe("sign_in");
+    expect(await same.reports()).toEqual([]);
+
+    const other = await discovered(
+      [ok(TOKEN, { note: { status: "step_up", scope: "read write" } })],
+      [failedWith({ _tag: "StepUpRequired", message: "403", scope: "admin" })],
+    );
+
+    expect(await other.reports()).toMatchObject([
+      { event: "step_up", challenge: { scope: "admin" } },
+    ]);
+  });
+
+  it("does not report needs_sign_in again for a server that is at `sign_in` and asked with no token", async () => {
+    const host = await discovered(
+      [noToken("required", "Not signed in")],
+      [unauthorized(), unauthorized()],
+    );
+
+    await host.apply({ kind: "reload" });
+    await settled(host);
+
+    expect(await host.reports()).toMatchObject([{ event: "needs_sign_in" }]);
+  });
+});
+
 describe("no token to connect with", () => {
   it("connects with none when the server was never signed in to: it may need no sign-in", async () => {
     const host = await discovered([noToken("required", "Not signed in")], [found(["public"])]);
@@ -506,10 +615,13 @@ describe("apply({ kind: 'sign_ins' })", () => {
     });
   });
 
-  it("keeps the revision it carries, so the next pull does not act on the change a second time", async () => {
+  it("keeps the revision it carries when it is the very next one, so the next pull does not act on it a second time", async () => {
     const host = await withTwo();
 
-    await host.script({ hash: "", signInsRevision: 3 });
+    // The host holds revision 2 (a pull); the sign-in's change is revision 3.
+    await host.script({ hash: "", signInsRevision: 2 });
+    await start(host, { windowOpened: true, known: "built" });
+    await settled(host);
     await host.apply({ kind: "sign_ins", change: "signed_in", servers: ["sentry"], revision: 3 });
     await settled(host);
 
@@ -517,10 +629,33 @@ describe("apply({ kind: 'sign_ins' })", () => {
 
     await host.scriptToken("Sentry", [ok(TOKEN, { resource: urlOf("Sentry") })]);
     await host.scriptEngine(urlOf("Sentry"), [found(["issues"])]);
+    await host.script({ hash: "", signInsRevision: 3 });
     await start(host, { windowOpened: true, known: "built" });
     await settled(host);
 
     expect((await host.engineCalls()).length).toBe(before);
+  });
+
+  it("does not keep a revision that skips one, so a push that was lost is healed by the next pull", async () => {
+    const host = await withTwo();
+
+    await host.script({ hash: "", signInsRevision: 2 });
+    await start(host, { windowOpened: true, known: "built" });
+    await settled(host);
+
+    // Revision 3 (a change of linear's, whose push was lost) is not seen: the push that arrives is revision 4, for sentry.
+    await host.apply({ kind: "sign_ins", change: "signed_in", servers: ["sentry"], revision: 4 });
+    await settled(host);
+
+    const before = (await host.engineCalls()).length;
+
+    await host.scriptToken("linear", [ok(TOKEN, { resource: urlOf("linear") })]);
+    await host.scriptEngine(urlOf("linear"), [found(["issues"])]);
+    await host.script({ hash: "", signInsRevision: 4 });
+    await start(host, { windowOpened: true, known: "built" });
+    await vi.waitFor(async () => expect(await stateOf(host, "linear")).toBe("connected"));
+
+    expect((await host.engineCalls()).length).toBeGreaterThan(before);
   });
 });
 
@@ -560,5 +695,46 @@ describe("a pull that finds the sign-ins revision moved", () => {
 
     expect(await host.engineCalls()).toHaveLength(1);
     expect(await stateOf(host, "sentry")).toBe("sign_in");
+  });
+});
+
+describe("the heal at windowOpened", () => {
+  it("asks only the servers that wait for a sign-in, not one that is unavailable for another reason", async () => {
+    const host = freshHost();
+
+    await host.script({ hash: "", signInsRevision: 1 });
+    await host.apply(setOf(entry("sentry"), entry("linear")));
+    await host.scriptToken("sentry", [noToken("required", "Not signed in")]);
+    await host.scriptToken("linear", [noToken("unavailable", "Not an OAuth server")]);
+    await host.scriptEngine(urlOf("sentry"), [unauthorized(), found(["issues"])]);
+    await host.scriptEngine(urlOf("linear"), [found(["never"])]);
+    await start(host, { windowOpened: true, waitFor: ["sentry", "linear"], waitMs: 5000 });
+    await settled(host);
+
+    expect(await stateOf(host, "sentry")).toBe("sign_in");
+    expect(await stateOf(host, "linear")).toBe("unavailable");
+
+    // The sign-ins moved (some change that no push carried): sentry's token is there now, linear's answer is the same.
+    await host.scriptToken("sentry", [ok(TOKEN)]);
+    await host.script({ hash: "", signInsRevision: 2 });
+    await start(host, { windowOpened: true, known: "built" });
+    await vi.waitFor(async () => expect(await stateOf(host, "sentry")).toBe("connected"));
+    await settled(host);
+
+    expect(await stateOf(host, "linear")).toBe("unavailable");
+    expect((await host.tokenAsks()).filter((ask) => ask.server === "linear")).toHaveLength(1);
+  });
+
+  it("is made for a server the push names even when it is unavailable, skipping the backoff", async () => {
+    const host = await discovered([noToken("refresh_failing", "HTTP 503")], [found(["never"])]);
+
+    expect(await stateOf(host, "sentry")).toBe("unavailable");
+
+    await host.scriptToken("sentry", [ok(TOKEN)]);
+    await host.scriptEngine(urlOf("sentry"), [found(["issues"])]);
+    await host.apply({ kind: "sign_ins", change: "signed_in", servers: ["sentry"], revision: 2 });
+    await settled(host);
+
+    expect(await stateOf(host, "sentry")).toBe("connected");
   });
 });

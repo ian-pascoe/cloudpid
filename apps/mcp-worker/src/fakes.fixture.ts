@@ -83,12 +83,33 @@ const loggingServer = (options: FakeOptions) =>
     ],
   });
 
+/** A server that answers every request with `status` and a `WWW-Authenticate` challenge, as an OAuth wall does. */
+const wallServer = (status: 401 | 403, challenge: string) => (options: FakeOptions) =>
+  hostileServer(
+    modernServer(options),
+    () => new Response("denied", { status, headers: { "www-authenticate": challenge } }),
+  );
+
 const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map([
   ["modern.test", modernServer],
   ["legacy.test", legacyStatelessServer],
   ["stateful.test", legacyStatefulServer],
   ["headers.test", headersServer],
   ["logging.test", loggingServer],
+  [
+    "unauthorized.test",
+    wallServer(
+      401,
+      'Bearer error="invalid_token", error_description="expired", resource_metadata="https://unauthorized.test/.well-known/oauth-protected-resource"',
+    ),
+  ],
+  [
+    "forbidden.test",
+    wallServer(
+      403,
+      'Bearer error="insufficient_scope", scope="write", error_description="Needs write", resource_metadata="https://forbidden.test/.well-known/oauth-protected-resource"',
+    ),
+  ],
 ]);
 
 interface Fake {

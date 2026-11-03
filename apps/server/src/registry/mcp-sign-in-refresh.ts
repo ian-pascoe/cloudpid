@@ -1,25 +1,31 @@
-// Refreshing an MCP sign-in's tokens, in the Registry (`docs/architecture/mcp-sign-in.md` → Refresh and step-up, Telemetry
-// and redaction; ADR-0034): the `Refresh` seam `mcpAccessToken` calls when the access token is at `exp − 60 s`, or the host's
-// request was refused with it by a 401.
+// Refreshing an MCP sign-in's tokens, in the Registry (`docs/architecture/mcp-sign-in.md` → Refresh and step-up,
+// Telemetry and redaction; ADR-0034): the `Refresh` seam `mcpAccessToken` calls when the access token is at `exp − 60
+// s`, or the host's request was refused with it by a 401.
 //
-// - **Single-flight per sign-in.** A Durable Object's input gate opens on `fetch`, so a second refresh racing with the same
-//   rotating refresh token would get `invalid_grant`: callers that arrive while one is in flight wait for it and share its
-//   answer. A refresh once sent is never cancelled (its region is uninterruptible), and one an eviction cuts short may have
+// - **Single-flight per sign-in.** A Durable Object's input gate opens on `fetch`, so a second refresh racing with the
+// same
+//   rotating refresh token would get `invalid_grant`: callers that arrive while one is in flight wait for it and share
+// its
+//   answer. A refresh once sent is never cancelled (its region is uninterruptible), and one an eviction cuts short may
+// have
 //   lost a rotated refresh token, which the owner mends by signing in again.
 // - **What the authorization server's answer means.** `invalid_grant` and `invalid_scope` drop the tokens (`required`);
-//   `invalid_client` and `unauthorized_client` do for a registered client (with its registration) and a configured one (the
+//   `invalid_client` and `unauthorized_client` do for a registered client (with its registration) and a configured one
+// (the
 //   reason names the problem) but are transient for a document client, whose id is a URL the server may fail to fetch.
-//   Network errors, the 15 s timeout, 408, 429, 5xx, `server_error`, `temporarily_unavailable` and any code this build does not
+//   Network errors, the 15 s timeout, 408, 429, 5xx, `server_error`, `temporarily_unavailable` and any code this build
+// does not
 //   know are transient too, since dropping a grant on an answer nobody described would lose more than it saves.
 // - **Transient failures** retry once after a second, then leave the status `refresh_failing` with the reason; the next
-//   attempt waits a backoff of 10 s that doubles up to 5 min and resets on success (held in memory: an evicted Registry tries
+//   attempt waits a backoff of 10 s that doubles up to 5 min and resets on success (held in memory: an evicted Registry
+// tries
 //   again at the next ask). The tokens are kept, and the access token is served while it still stands.
 // - **What a response keeps.** A new refresh token replaces the old one, else the old one stays, and so does the scope;
 //   `expires_in` is trusted from each response.
 //
-// No token, code or secret is logged or put on a span: the span `mcp.oauth.refresh` says the server, the source kind, the issuer
-// host, the client kind, the trigger, the outcome, the OAuth error code, the HTTP status, whether the refresh token rotated and the
-// scope. A reason kept on the row is the owner-facing text, cut to 300 characters.
+// No token, code or secret is logged or put on a span: the span `mcp.oauth.refresh` says the server, the source kind,
+// the issuer host, the client kind, the trigger, the outcome, the OAuth error code, the HTTP status, whether the
+// refresh token rotated and the scope. A reason kept on the row is the owner-facing text, cut to 300 characters.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off
 import {
   type AuthorizationServerMetadata,
@@ -34,16 +40,19 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { clientInformation, type FlowDeps, hostOf, metadataOf, told } from "./mcp-sign-in-flow.ts";
 import {
   clip,
   MAX_SIGN_IN_ERROR_LENGTH,
   okAnswer,
+  REFRESH_MARGIN_MS,
   type Refresh,
   type RefreshRequest,
 } from "./mcp-sign-in-registry.ts";
-import { type McpTokens, sealTokens } from "./mcp-sign-in-seal.ts";
+import { type KeptVault, SealedValue } from "@cloudpid/extensions/secrets/core";
+import { type McpTokens, openTokens, sealTokens } from "./mcp-sign-in-seal.ts";
 import type { ClientKind } from "./mcp-sign-ins.ts";
 
 /** The pause before the one retry of a transient failure. */
@@ -100,11 +109,18 @@ const reasonOf = (outcome: Extract<Outcome, { kind: "refused" | "failed" }>): st
     : told(`${outcome.code} (${outcome.message})`);
 };
 
+const sameSealed = Schema.toEquivalence(Schema.NullOr(SealedValue));
+
+const outcomeOf = (outcome: string) => Effect.annotateCurrentSpan({ "mcp.outcome": outcome });
+
 /** The delay of the backoff after the `failures`th failed refresh (1-based). */
 const backoffMs = (failures: number): number =>
   Math.min(REFRESH_BACKOFF_MS * 2 ** (failures - 1), MAX_REFRESH_BACKOFF_MS);
 
-/** Whether the token of the request still stands at `now`: only for a refresh the expiry asked for, never a refused token. */
+/**
+ * Whether the token of the request still stands at `now`: only for a refresh the expiry asked for, never a refused
+ * token.
+ */
 const stands = (asked: RefreshRequest, now: number): boolean =>
   asked.trigger === "expiry" && asked.row.expiresAt !== null && asked.row.expiresAt > now;
 
@@ -176,8 +192,15 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
     return okAnswer(deps.signIns.get(asked.key.hash) ?? asked.row, asked.tokens, asked.key);
   };
 
-  /** A refresh that failed in a way that may pass: the status `refresh_failing` (a pending step-up keeps its own) and the backoff. */
-  const failed = (asked: RefreshRequest, reason: string, now: number): McpAccessTokenAnswer => {
+  /**
+   * A refresh that failed in a way that may pass: the status `refresh_failing` (a pending step-up keeps its own) and
+   * the backoff.
+   */
+  const answerFailing = (
+    asked: RefreshRequest,
+    reason: string,
+    now: number,
+  ): McpAccessTokenAnswer => {
     const { hash } = asked.key;
     const failures = (backoffs.get(hash)?.failures ?? 0) + 1;
 
@@ -192,7 +215,11 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
   };
 
   /** The tokens are no use any more: dropped, `required`, with the reason. */
-  const dropped = (asked: RefreshRequest, reason: string, now: number): McpAccessTokenAnswer => {
+  const answerDropped = (
+    asked: RefreshRequest,
+    reason: string,
+    now: number,
+  ): McpAccessTokenAnswer => {
     const kept = clip(reason, MAX_SIGN_IN_ERROR_LENGTH);
 
     deps.signIns.dropTokens(asked.key.hash, kept, now);
@@ -212,32 +239,149 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
       return yield* Effect.promise(() => send(deps, input));
     });
 
-  const run = (asked: RefreshRequest, startedAt: number): Effect.Effect<McpAccessTokenAnswer> =>
+  /**
+   * The tokens are no use any more: the span says why (`outcome`), the row drops them, and the answer is `required`.
+   */
+  const dropAs = (
+    asked: RefreshRequest,
+    reason: string,
+    now: number,
+    outcome = "dropped",
+  ): Effect.Effect<McpAccessTokenAnswer> =>
+    Effect.as(outcomeOf(outcome), answerDropped(asked, reason, now));
+
+  /**
+   * What a response with tokens comes to: they are sealed and kept, and the new access token is the answer. A token
+   * that is not a Bearer one, or does not seal, leaves the old tokens as they were.
+   */
+  const issuedAnswer = (
+    asked: RefreshRequest,
+    vault: KeptVault,
+    issued: OAuthTokens,
+    now: number,
+  ): Effect.Effect<McpAccessTokenAnswer> =>
     Effect.gen(function* () {
-      const { key, row, tokens, environment, server } = asked;
+      const { key, row, tokens } = asked;
       const { hash } = key;
 
+      if (issued.token_type.toLowerCase() !== "bearer") {
+        yield* outcomeOf("failing");
+
+        return answerFailing(
+          asked,
+          `The server issued a ${clip(issued.token_type, 32)} token, not a Bearer one`,
+          now,
+        );
+      }
+
+      const refreshToken = issued.refresh_token ?? tokens.refresh_token;
+
+      const next: McpTokens =
+        refreshToken === undefined
+          ? { access_token: issued.access_token }
+          : { access_token: issued.access_token, refresh_token: refreshToken };
+
+      const sealed = yield* sealTokens(vault, hash, next).pipe(Effect.result);
+
+      if (Result.isFailure(sealed)) {
+        yield* outcomeOf("unavailable");
+
+        return { status: "unavailable", reason: told(sealed.failure.message) };
+      }
+
+      if (sealed.success.status === "too_large") {
+        return yield* dropAs(
+          asked,
+          `The server's ${sealed.success.token === "access_token" ? "access" : "refresh"} token is longer than 16 KiB`,
+          now,
+        );
+      }
+
+      const expiresIn = issued.expires_in;
+      const scope = issued.scope ?? row.scope;
+
+      deps.signIns.replaceTokens(
+        hash,
+        {
+          sealed: sealed.success.sealed,
+          expiresAt:
+            expiresIn !== undefined && Number.isFinite(expiresIn) && expiresIn > 0
+              ? now + expiresIn * 1000
+              : null,
+          scope,
+        },
+        now,
+      );
+      backoffs.delete(hash);
+      deps.signIns.touch(hash, now);
+
       yield* Effect.annotateCurrentSpan({
-        "mcp.server": key.name,
-        "mcp.source_kind": key.source.startsWith("repo:") ? "repo" : "owner",
-        "mcp.issuer_host": row.issuer === null ? "" : hostOf(row.issuer),
-        "mcp.client_kind": row.client?.kind ?? "none",
-        "mcp.trigger": asked.trigger,
-        "mcp.step_up": row.status === "step_up",
+        "mcp.outcome": "refreshed",
+        "mcp.rotated": next.refresh_token !== tokens.refresh_token,
+        "mcp.scope": clip(scope ?? "", 256),
       });
 
-      const outcomeOf = (outcome: string) => Effect.annotateCurrentSpan({ "mcp.outcome": outcome });
+      return okAnswer(deps.signIns.get(hash) ?? row, next, key);
+    });
+
+  /**
+   * `asked` as the row holds it now: when another refresh replaced the tokens after `asked` was made, a late caller's
+   * refresh token would be refused and its `invalid_grant` would drop the fresh tokens, so the request is made again
+   * from the row. Fails with the answer when the row no longer has tokens that open.
+   */
+  const current = (
+    asked: RefreshRequest,
+    vault: KeptVault,
+  ): Effect.Effect<RefreshRequest, McpAccessTokenAnswer> =>
+    Effect.gen(function* () {
+      const row = deps.signIns.get(asked.key.hash);
+
+      if (row === null || row.sealed === null) {
+        yield* outcomeOf("gone");
+
+        return yield* Effect.fail<McpAccessTokenAnswer>({
+          status: "required",
+          reason: row?.lastError ?? "Not signed in",
+        });
+      }
+
+      if (sameSealed(row.sealed, asked.row.sealed)) return asked;
+
+      const opened = yield* openTokens(vault, asked.key.hash, row.sealed).pipe(Effect.result);
+
+      if (Result.isFailure(opened)) {
+        yield* outcomeOf("gone");
+
+        return yield* Effect.fail<McpAccessTokenAnswer>({
+          status: "required",
+          reason: "The kept sign-in cannot be opened: sign in again",
+        });
+      }
+
+      return { ...asked, row, tokens: opened.success };
+    });
+
+  const run = (first: RefreshRequest, startedAt: number): Effect.Effect<McpAccessTokenAnswer> =>
+    Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan({
+        "mcp.server": first.key.name,
+        "mcp.source_kind": first.key.source.startsWith("repo:") ? "repo" : "owner",
+        "mcp.issuer_host": first.row.issuer === null ? "" : hostOf(first.row.issuer),
+        "mcp.client_kind": first.row.client?.kind ?? "none",
+        "mcp.trigger": first.trigger,
+        "mcp.step_up": first.row.status === "step_up",
+      });
 
       // Time as the caller counts it (`startedAt`) plus what this refresh has taken since.
       const began = yield* Clock.currentTimeMillis;
       const elapsed = Effect.map(Clock.currentTimeMillis, (at) => startedAt + (at - began));
 
-      const held = backoffs.get(hash);
+      const held = backoffs.get(first.key.hash);
 
       if (held !== undefined && startedAt < held.retryAt) {
         yield* outcomeOf("backoff");
 
-        return withoutNewToken(asked, row.lastError ?? "The last refresh failed", startedAt);
+        return withoutNewToken(first, first.row.lastError ?? "The last refresh failed", startedAt);
       }
 
       const vault = yield* deps.vault.pipe(Effect.result);
@@ -248,12 +392,35 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
         return { status: "unavailable", reason: vault.failure.message };
       }
 
+      // The caller read the row before the flight it joined was clear: another refresh may have replaced its tokens
+      // since.
+      const reread = yield* current(first, vault.success).pipe(Effect.result);
+
+      if (Result.isFailure(reread)) return reread.failure;
+
+      const asked = reread.success;
+
+      // Tokens another refresh made are fresh: served as they are, with no request to the authorization server.
+      if (
+        asked !== first &&
+        (asked.row.expiresAt === null || asked.row.expiresAt - REFRESH_MARGIN_MS > startedAt)
+      ) {
+        yield* outcomeOf("replaced");
+        deps.signIns.touch(asked.key.hash, startedAt);
+
+        return okAnswer(asked.row, asked.tokens, asked.key);
+      }
+
+      const { row, tokens, environment, server } = asked;
+
       const metadata = row.metadata === null ? Option.none() : metadataOf(row.metadata);
 
       if (row.client === null || row.issuer === null || Option.isNone(metadata)) {
-        yield* outcomeOf("dropped");
-
-        return dropped(asked, "The recorded sign-in cannot be read: sign in again", startedAt);
+        return yield* dropAs(
+          asked,
+          "The recorded sign-in cannot be read: sign in again",
+          startedAt,
+        );
       }
 
       const { client } = row;
@@ -266,12 +433,14 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
       if (Result.isFailure(info)) {
         const problem = info.failure;
 
-        yield* outcomeOf(problem.code ?? "gone");
-
         // The keys that do not open, or a secret that resolves to nothing for now, leave the tokens as they are.
-        return problem.code === "vault" || problem.code === "secret_missing"
-          ? { status: "unavailable", reason: told(problem.message) }
-          : dropped(asked, problem.message, startedAt);
+        if (problem.code === "vault" || problem.code === "secret_missing") {
+          yield* outcomeOf(problem.code);
+
+          return { status: "unavailable", reason: told(problem.message) };
+        }
+
+        return yield* dropAs(asked, problem.message, startedAt, problem.code ?? "gone");
       }
 
       const outcome = yield* sendWithRetry(
@@ -290,78 +459,14 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
 
       const now = yield* elapsed;
 
-      if (outcome.kind === "issued") {
-        const issued = outcome.tokens;
-
-        if (issued.token_type.toLowerCase() !== "bearer") {
-          yield* outcomeOf("failing");
-
-          return failed(
-            asked,
-            `The server issued a ${clip(issued.token_type, 32)} token, not a Bearer one`,
-            now,
-          );
-        }
-
-        const refreshToken = issued.refresh_token ?? tokens.refresh_token;
-
-        const next: McpTokens =
-          refreshToken === undefined
-            ? { access_token: issued.access_token }
-            : { access_token: issued.access_token, refresh_token: refreshToken };
-
-        const sealed = yield* sealTokens(vault.success, hash, next).pipe(Effect.result);
-
-        if (Result.isFailure(sealed)) {
-          yield* outcomeOf("unavailable");
-
-          return { status: "unavailable", reason: told(sealed.failure.message) };
-        }
-
-        if (sealed.success.status === "too_large") {
-          yield* outcomeOf("dropped");
-
-          return dropped(
-            asked,
-            `The server's ${sealed.success.token === "access_token" ? "access" : "refresh"} token is longer than 16 KiB`,
-            now,
-          );
-        }
-
-        const expiresIn = issued.expires_in;
-        const scope = issued.scope ?? row.scope;
-
-        deps.signIns.replaceTokens(
-          hash,
-          {
-            sealed: sealed.success.sealed,
-            expiresAt:
-              expiresIn !== undefined && Number.isFinite(expiresIn) && expiresIn > 0
-                ? now + expiresIn * 1000
-                : null,
-            scope,
-          },
-          now,
-        );
-        backoffs.delete(hash);
-        deps.signIns.touch(hash, now);
-
-        yield* Effect.annotateCurrentSpan({
-          "mcp.outcome": "refreshed",
-          "mcp.rotated": next.refresh_token !== tokens.refresh_token,
-          "mcp.scope": clip(scope ?? "", 256),
-        });
-
-        return okAnswer(deps.signIns.get(hash) ?? row, next, key);
-      }
+      if (outcome.kind === "issued")
+        return yield* issuedAnswer(asked, vault.success, outcome.tokens, now);
 
       if (outcome.kind === "refused") {
         yield* Effect.annotateCurrentSpan({ "mcp.oauth_error": outcome.code });
 
         if (outcome.code === "invalid_grant" || outcome.code === "invalid_scope") {
-          yield* outcomeOf("dropped");
-
-          return dropped(
+          return yield* dropAs(
             asked,
             `The authorization server no longer accepts the sign-in (${outcome.code}): sign in again`,
             now,
@@ -371,9 +476,7 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
         if (isClientRefused(outcome.code) && client.kind === "registered") {
           if (client.registration !== null) deps.signIns.deleteRegistration(client.registration);
 
-          yield* outcomeOf("dropped");
-
-          return dropped(
+          return yield* dropAs(
             asked,
             `The authorization server no longer knows the client registered for cloudpid (${outcome.code}): sign in again`,
             now,
@@ -381,9 +484,7 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
         }
 
         if (isClientRefused(outcome.code) && client.kind === "configured") {
-          yield* outcomeOf("dropped");
-
-          return dropped(
+          return yield* dropAs(
             asked,
             `The authorization server does not accept the entry's client id or secret (${outcome.code}): check its oauth settings, then sign in again`,
             now,
@@ -394,7 +495,7 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
       // Everything else is transient, a document client's `invalid_client` and a code nobody described included.
       yield* outcomeOf("failing");
 
-      return failed(asked, reasonOf(outcome), now);
+      return answerFailing(asked, reasonOf(outcome), now);
     }).pipe(Effect.withSpan("mcp.oauth.refresh"));
 
   return (asked, now) =>

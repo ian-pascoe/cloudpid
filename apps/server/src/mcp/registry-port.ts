@@ -1,7 +1,7 @@
-// The Registry as `McpHost` sees it (`docs/architecture/mcp-connections.md` → RPC, host → Registry): the set's pull, the
-// `${NAME}` values of a server, and an MCP sign-in's access token and the transitions the host reports
-// (`docs/architecture/mcp-sign-in.md` → Tokens reach the host object), over the Registry DO in this script, or a fake. A
-// value or a token is never logged or stored.
+// The Registry as `McpHost` sees it (`docs/architecture/mcp-connections.md` → RPC, host → Registry): the set's pull,
+// the `${NAME}` values of a server, and an MCP sign-in's access token and the transitions the host reports
+// (`docs/architecture/mcp-sign-in.md` → Tokens reach the host object), over the Registry DO in this script, or a fake.
+// A value or a token is never logged or stored.
 import type {
   McpAccessTokenAnswer,
   McpAccessTokenInput,
@@ -39,8 +39,8 @@ export type McpRegistryPortService = {
     readonly conn: string;
   }) => Effect.Effect<McpServerValuesAnswer, McpRegistryUnavailable>;
   /**
-   * The access token `server`'s sign-in holds for `environment`, or why there is none; `stale` is the token a server just
-   * refused. The answer is for the host's memory only.
+   * The access token `server`'s sign-in holds for `environment`, or why there is none; `stale` is the token a server
+   * just refused. The answer is for the host's memory only.
    */
   readonly accessToken: (
     input: McpAccessTokenInput,

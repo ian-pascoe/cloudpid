@@ -106,6 +106,15 @@ export type McpApplyReload = typeof McpApplyReload.Type;
 export const MCP_SIGN_IN_CHANGES = ["signed_in", "signed_out", "replaced", "rebound"] as const;
 
 /**
+ * The changes after which the host rediscovers the servers that waited for the sign-in; the rest only drop its tokens.
+ */
+export const REDISCOVERING_CHANGES: ReadonlyArray<(typeof MCP_SIGN_IN_CHANGES)[number]> = [
+  "signed_in",
+  "replaced",
+  "rebound",
+];
+
+/**
  * A change this build does not know is a string, read as an unknown one: the host drops its tokens for the servers and
  * rediscovers nothing, which is what a newer sender's change that this build cannot act on would need at least
  * (`docs/architecture/mcp.md` → Deploys).
@@ -115,12 +124,14 @@ export const McpSignInChange = Schema.Union([Schema.Literals(MCP_SIGN_IN_CHANGES
 export type McpSignInChange = typeof McpSignInChange.Type;
 
 /**
- * `apply({ kind: "sign_ins" })` (`docs/architecture/mcp-sign-in.md` → Tokens reach the host object → Reports and pushes):
- * an MCP sign-in changed, which the main Worker carries from the Registry's answer to each host whose Environment uses
- * it. `servers` are the names the sign-in's servers go by in that Environment's set (compared as the sign-in key does,
- * normalized), and `revision` the sign-ins revision the change raised it to, which the host keeps so its next pull does not
- * act on it twice. `signed_in`, `replaced` and `rebound` make the host drop the servers' cached tokens and rediscover its
- * `sign_in` and `rejected` HTTP servers among them at once; `signed_out` drops the tokens and rediscovers nothing.
+ * `apply({ kind: "sign_ins" })` (`docs/architecture/mcp-sign-in.md` → Tokens reach the host object → Reports and
+ * pushes): an MCP sign-in changed, which the main Worker carries from the Registry's answer to each host whose
+ * Environment uses it. `servers` are the names the sign-in's servers go by in that Environment's set (compared as the
+ * sign-in key does, normalized), and `revision` the sign-ins revision the change raised it to, which the host keeps
+ * only when it is the very next one after the revision the host holds, so a lost push is never hidden by a later one:
+ * the host's next pull finds the gap and heals it. `signed_in`, `replaced` and `rebound` (`REDISCOVERING_CHANGES`) make
+ * the host drop the servers' cached tokens and rediscover those of them that are not working at once; `signed_out`
+ * drops the tokens and the servers' sessions and rediscovers nothing.
  */
 export const McpApplySignIns = Schema.Struct({
   kind: Schema.Literal("sign_ins"),
@@ -200,8 +211,8 @@ export const McpHostFailure = Schema.Union([HostUnsupported, HostFailed]);
 export type McpHostFailure = typeof McpHostFailure.Type;
 
 /**
- * What `apply` answers: the set was taken or refused as stale, the storage wiped, the servers reloaded, a sign-in change
- * taken, or why not.
+ * What `apply` answers: the set was taken or refused as stale, the storage wiped, the servers reloaded, a sign-in
+ * change taken, or why not.
  */
 export const McpApplyResult = Schema.Union([
   McpApplied,

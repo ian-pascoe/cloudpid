@@ -33,6 +33,7 @@ import {
   type McpServersResult,
   McpSignInsTaken,
   McpStale,
+  REDISCOVERING_CHANGES,
 } from "@cloudpid/mcp/types";
 import { normalizeMcpName } from "@cloudpid/config";
 import * as Arr from "effect/Array";
@@ -244,15 +245,15 @@ const reload = (environment: string | undefined, input: McpApply) =>
     ),
   );
 
-/** The sign-in changes after which the servers that wait for one are asked at once; any other leaves them as they are. */
-const REDISCOVERING_CHANGES: ReadonlyArray<string> = ["signed_in", "replaced", "rebound"];
-
 /**
- * The servers of the held set that use an MCP sign-in change (`servers`, the names it goes by in this Environment's set, as
- * the sign-in key compares them): `rediscover` them, the `sign_in`, `rejected`, `unavailable` and `failed` HTTP ones among
- * them at once, never waking a Container. Every cached token of theirs goes, so the next ask reaches the Registry: for a
- * `signed_out` it finds none, and the Legacy HTTP session of the server is closed (its row dropped) with the next request. A
- * server that is not in the set is left out of the answer.
+ * The servers of the held set that use an MCP sign-in change (`servers`, the names it goes by in this Environment's
+ * set, as the sign-in key compares them). Every cached token of theirs goes, so the next ask reaches the Registry.
+ * After a change in `REDISCOVERING_CHANGES` the HTTP ones among them that are not working (`sign_in`, `rejected`,
+ * `unavailable`, and `failed` or `unknown` a minute after their last try: `isDue`'s `sign_in` trigger) are asked at
+ * once, never waking a Container; after a `signed_out` their Legacy sessions are dropped and nothing is asked. A server
+ * that is not in the set is left out of the answer. The revision is kept only when it follows the held one directly: a
+ * gap means a change no push carried, which the next pull heals (`pull`). Who sends which change: `signed_in` (and so
+ * `replaced`) by the callback today; `signed_out` by #459 and `rebound` by #469, through the same carry.
  */
 const takeSignIns = (
   environment: string | undefined,
@@ -276,18 +277,22 @@ const takeSignIns = (
 
     yield* tokens.drop(Arr.map(views, (view) => view.server.name));
 
-    // The revision the change raised the sign-ins to: the next pull finds it held and does not act on it twice.
+    // The revision the change raised the sign-ins to, kept only when it is the very next one: the next pull then finds
+    // it held and does not act on it twice, and a gap (a change that no push carried) is left for the pull to heal.
     yield* writeOrHalt(() => {
       const held = store.meta().signInsRevision;
 
-      if (held === undefined || revision > held) store.setMeta({ signInsRevision: revision });
+      if (held !== undefined && revision === held + 1) store.setMeta({ signInsRevision: revision });
     });
 
     const conns = Arr.map(views, (view) => view.server.conn);
 
     if (change === "signed_out") {
       yield* writeOrHalt(() => store.dropSessions(conns));
-    } else if (environment !== undefined && REDISCOVERING_CHANGES.includes(change)) {
+    } else if (
+      environment !== undefined &&
+      Arr.some(REDISCOVERING_CHANGES, (known) => known === change)
+    ) {
       yield* startDue(environment, views, "sign_in");
     }
 
@@ -299,10 +304,10 @@ const takeSignIns = (
   );
 
 /**
- * `apply`: the pushes and teardown. `set` keeps the Environment's set, `reload` rediscovers its servers, `sign_ins` takes
- * a change of an MCP sign-in and `destroy` wipes the storage; any other `kind` fails as `HostUnsupported`, never as a decode error, so a newer caller's
- * operation is refused loudly, and a `set` that is malformed as `HostFailed`. `environment` names the Registry to ask
- * for `${NAME}` values; without one, nothing is discovered.
+ * `apply`: the pushes and teardown. `set` keeps the Environment's set, `reload` rediscovers its servers, `sign_ins`
+ * takes a change of an MCP sign-in and `destroy` wipes the storage; any other `kind` fails as `HostUnsupported`, never
+ * as a decode error, so a newer caller's operation is refused loudly, and a `set` that is malformed as `HostFailed`.
+ * `environment` names the Registry to ask for `${NAME}` values; without one, nothing is discovered.
  */
 export const apply = (
   input: McpApply,
@@ -384,13 +389,22 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostServices> 
 
     yield* Effect.sync(() => store.setMeta({ signInsRevision: answer.signInsRevision }));
 
-    // A change of the sign-ins that no push carried (a lost one, or one made while the host was away) is healed here: the
-    // cached tokens go, and the servers that wait for a sign-in are asked at once.
+    // A change of the sign-ins that no push carried (a lost one, or one made while the host was away) is healed here:
+    // the cached tokens go, and the servers that wait for a sign-in (`sign_in`, `rejected`) are asked at once. One that
+    // is `unavailable` or `failed` is not: the change is not known to concern it, and its own retry comes in its time.
     if (known !== answer.signInsRevision) {
       const tokens = yield* McpTokens;
+      const views = yield* viewServers;
 
       yield* tokens.drop();
-      yield* startDue(environment, yield* viewServers, "sign_in");
+      yield* startDue(
+        environment,
+        Arr.filter(
+          views,
+          (view) => view.status?.state === "sign_in" || view.status?.state === "rejected",
+        ),
+        "sign_in",
+      );
     }
   }).pipe(
     Effect.catchCause((cause) =>
