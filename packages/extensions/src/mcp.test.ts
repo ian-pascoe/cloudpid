@@ -22,6 +22,7 @@ import {
   startOf,
 } from "./mcp.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
+import { mcpServersIntro } from "./mcp/servers.ts";
 import {
   answer,
   call,
@@ -331,6 +332,11 @@ describe("a server as a codemode namespace", () => {
     });
     expect(found[1]).toEqual(found[0]);
     expect(found[2]).toBeNull();
+    // The call the section's intro teaches, `tools.mcp__<server>__<tool>(args)`, is what the namespace declares.
+    expect(JSON.stringify(found[0])).toContain("mcp__docs_site__search");
+    expect(
+      mcpServersIntro({ resourceTools: false, signIn: false, codemodeDeferred: false }),
+    ).toContain("tools.mcp__<server>__<tool>(args)");
   });
 
   it("has none for a server that is not discovered yet", async () => {

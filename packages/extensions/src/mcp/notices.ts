@@ -1,75 +1,84 @@
 // The notice that the `mcp_servers` listing changed (`docs/architecture/mcp-in-a-session.md` → The prompt cache and the
-// `mcp_servers` section). Each conversation keeps, in a document of its own, the Context Window and the hash of the
-// listing it was last shown; when the newest listing differs, one pi-durable `write` submission tells it and the document
-// is updated, so a conversation has one notice for each change however many requests, starts or restarts see it: the
-// submission's request ID is the conversation's Context Window and how many notices it has had, so a check that ran
-// again after a crash between the two writes finds the first submission instead of writing a second, and the checks of
-// one conversation run one at a time. (pi-durable 1.4 cannot admit a submission inside a commit; one that can would make
-// the two one commit.) The write is a user message and a titled notice: placed at the next boundary while the
-// conversation is busy, at once when it is idle, and it never starts a Run.
+// `mcp_servers` section). A conversation is told once for each change, by one pi-durable `write` submission: a user
+// message and a titled notice, placed at the next boundary while the conversation is busy, at once when it is idle, and
+// never starting a Run.
 //
-// The listing last shown is the document's while its Context Window is the conversation's current one; otherwise (no
-// notice yet in this window, a fork, a Handoff, a navigation) it is that of the section the conversation's context
-// holds, so a conversation is never told what its section already says, and a conversation whose context holds no
-// section (its first request of the window is yet to show it) is told nothing.
+// What a conversation was last shown is read from what it holds, never from a record written beside it: the newest of the
+// section its context shows and the notices placed after it (each carries the hash of its listing), then any notice
+// still queued for it (its request ID ends in the hash). A record written at submit time would be wrong for a busy
+// conversation until the notice is placed (a fork in between would never be told) and after a crash that lost it. So a
+// notice is one write: the submission, whose request ID is the entry the baseline is, how many notices are queued behind
+// it and the listing's hash. A check that runs again finds that submission instead of writing a second, and no id of an
+// earlier notice is reused, a flip back included. The checks of one conversation run one at a time.
 // @effect-diagnostics asyncFunction:off globalDate:off -- plain Promise code over pi-durable's commits.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Message } from "@earendil-works/pi-ai";
-import { type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
+import type { ConversationId, ContextView, EntryId, Harness } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
+import * as Predicate from "effect/Predicate";
 import {
+  EMPTY_LISTING,
   listingHashOfSection,
   MCP_SERVERS_KIND,
   MCP_SERVERS_NOTICE,
   MCP_SERVERS_SECTION,
+  type McpIntroFeatures,
   type McpListing,
-  EMPTY_LISTING,
   mcpServersNotice,
 } from "./servers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/**
- * What a conversation was last shown of the listing: the hash, the Context Window (its head marker's entry, or `start`)
- * it was shown in, and how many notices that window has had. Rewindable, so a fork starts with what its fork point had.
- */
-export const McpServersDoc = defineDoc<{ window: string; hash: string; notices: number }>({
-  kind: MCP_SERVERS_KIND,
-  version: 1,
-  scope: "conversation",
-  history: "rewindable",
-  fork: "asOf",
-  initial: () => ({ window: "", hash: "", notices: 0 }),
-  checkpointWhen: () => true,
-});
-
-/** Where a conversation's notices are written: the Session's Harness. */
+/** Where a conversation's notices are written, and which conversations there are: the Session's Harness. */
 export type McpNotices = {
   /**
-   * Tell `conversation` of `listing` if it was shown another one: `shown`, when the caller holds it (a request's
-   * section), is the section it was shown, else it is read from the conversation's context. True when the conversation's
-   * section is shown and it now knows `listing`; false when its context holds no section yet.
+   * Tell `conversation` of `listing` if what it was last shown is another: its section and the notices after it, or
+   * the notices still queued for it. `features` is what the intro may name when the notice must bring it. True when the
+   * conversation's context shows the section and it now has (or is queued) `listing`; false when it shows none yet.
    */
   readonly check: (input: {
     readonly conversation: ConversationId;
     readonly listing: McpListing;
-    readonly shown?: string | undefined;
+    readonly features: McpIntroFeatures;
   }) => Promise<boolean>;
+  /** Every conversation of the Session. */
+  readonly conversations: () => Promise<ReadonlyArray<ConversationId>>;
 };
 
-/** The section the transcript's system messages leave in effect, replayed in order (`null` deletes). */
-const shownSection = (messages: ReadonlyArray<Message>): string | undefined => {
-  let shown: string | undefined;
+/** The listing a conversation's context last showed it, and the entry that did. */
+type Shown = { readonly entry: EntryId; readonly hash: string };
 
-  for (const message of messages) {
-    if (message.role !== "system" || message.sections === undefined) continue;
+/** The newest of the section the context shows and the notices placed after it; none when it shows no section. */
+const shownIn = (view: ContextView): Shown | undefined => {
+  let shown: Shown | undefined;
 
-    const text = message.sections[MCP_SERVERS_SECTION];
+  for (const [index, entry] of view.entries.entries()) {
+    const contributed = view.contributions[index] ?? [];
 
-    if (text !== undefined) shown = text === null ? undefined : text;
+    if (entry.kind === MCP_SERVERS_KIND && contributed.length > 0) {
+      const hash = Predicate.hasProperty(entry.data, "hash") ? entry.data.hash : undefined;
+
+      // A notice shows the listing it carried; one this build cannot read shows nothing.
+      if (Predicate.isString(hash) && shown !== undefined) shown = { entry: entry.id, hash };
+
+      continue;
+    }
+
+    for (const message of contributed) {
+      if (message.role !== "system") continue;
+
+      const text = message.sections?.[MCP_SERVERS_SECTION];
+
+      if (text === undefined) continue;
+
+      shown = text === null ? undefined : { entry: entry.id, hash: listingHashOfSection(text) };
+    }
   }
 
   return shown;
 };
+
+/** The hash a queued notice carries: the end of its request ID. */
+const queuedHash = (requestId: string): string => requestId.slice(requestId.lastIndexOf(":") + 1);
 
 /** The notices over `harness`. */
 export const mcpNotices = (harness: Harness): McpNotices => {
@@ -79,37 +88,53 @@ export const mcpNotices = (harness: Harness): McpNotices => {
   const check = async (
     id: ConversationId,
     listing: McpListing,
-    given: string | undefined,
+    features: McpIntroFeatures,
   ): Promise<boolean> => {
     const conversation = await harness.conversation(id, context);
 
     if (conversation === undefined) return false;
 
-    const section = given ?? shownSection((await conversation.context(context)).messages);
+    // Queued first: a notice placed between the two reads is then seen as placed, or as both, never as neither.
+    const inspection = await harness.inspect(context);
 
-    if (section === undefined) return false;
+    const queued = Arr.filter(
+      inspection.submissions,
+      (each) =>
+        each.conversationId === id &&
+        each.type === "write" &&
+        each.status === "queued" &&
+        each.requestId?.startsWith(`${MCP_SERVERS_KIND}:`) === true,
+    );
 
-    const marker = await harness.commit((tx) => tx.latestHeadMarker(id), context);
-    const window = String(marker?.id ?? "start");
-    const doc = await harness.snapshot(McpServersDoc, id, context);
-    const mine = doc?.window === window;
-    const before = mine ? doc.hash : listingHashOfSection(section);
-    const had = mine ? doc.notices : 0;
+    const shown = shownIn(await conversation.context(context));
 
-    if (before === listing.hash) return true;
+    if (shown === undefined) return false;
+
+    const last = queued.at(-1)?.requestId;
+    const told = last === undefined ? shown.hash : queuedHash(last);
+
+    if (told === listing.hash) return true;
+
+    // The section listed nothing: the notice brings the intro it never had.
+    const intro =
+      told === EMPTY_LISTING.hash
+        ? {
+            ...features,
+            codemodeDeferred: Arr.some(
+              (await conversation.agent(context)).deferred,
+              (tool) => tool.name === "codemode",
+            ),
+          }
+        : undefined;
 
     await conversation.submit(
       {
         type: "write",
-        requestId: `${MCP_SERVERS_KIND}:${window}:${had + 1}`,
+        requestId: `${MCP_SERVERS_KIND}:${shown.entry}:${queued.length}:${listing.hash}`,
         entry: {
           kind: MCP_SERVERS_KIND,
           model: [
-            {
-              role: "user",
-              content: mcpServersNotice(listing, before === EMPTY_LISTING.hash),
-              timestamp: Date.now(),
-            },
+            { role: "user", content: mcpServersNotice(listing, intro), timestamp: Date.now() },
           ],
           data: { notice: MCP_SERVERS_NOTICE, hash: listing.hash },
         },
@@ -117,21 +142,13 @@ export const mcpNotices = (harness: Harness): McpNotices => {
       context,
     );
 
-    await harness.commit(async (tx) => {
-      const draft = await tx.doc(McpServersDoc, id);
-
-      draft.window = window;
-      draft.hash = listing.hash;
-      draft.notices = had + 1;
-    }, context);
-
     return true;
   };
 
   return {
-    check: ({ conversation, listing, shown }) => {
+    check: ({ conversation, listing, features }) => {
       const run = (lines.get(conversation) ?? Promise.resolve()).then(() =>
-        check(conversation, listing, shown),
+        check(conversation, listing, features),
       );
 
       // The line goes on after a check that failed; its caller sees the failure.
@@ -144,5 +161,18 @@ export const mcpNotices = (harness: Harness): McpNotices => {
 
       return run;
     },
+    conversations: () =>
+      harness.commit(async (tx) => {
+        const found: ConversationId[] = [];
+        let page = await tx.scanConversations({}, 200);
+
+        for (;;) {
+          for (const each of page.items) found.push(each.id);
+
+          if (page.next === undefined) return found;
+
+          page = await tx.scanConversations({}, 200, page.next);
+        }
+      }, context),
   };
 };

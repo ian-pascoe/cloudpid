@@ -38,13 +38,13 @@ export const MAX_SUMMARY_LENGTH = 250;
 /** The longest whole section, in characters. */
 export const MAX_SECTION_LENGTH = 4096;
 
-/** The entry kind of a notice that the listing changed, and of the document that keeps the listing last shown. */
+/** The entry kind of a notice that the listing changed. */
 export const MCP_SERVERS_KIND = "cloudpid.mcp-servers";
 
 /** The title of the notice, which the transcript shows. */
 export const MCP_SERVERS_NOTICE = "MCP servers changed";
 
-/** What the listing of no server hashes to. */
+/** What a section lists: the listing, and the hash that stands for it. */
 export type McpListing = {
   /** The lines, one for each server, then a line counting the servers left out; empty when there is none. */
   readonly text: string;
@@ -54,15 +54,39 @@ export type McpListing = {
 
 const hashOf = (text: string): string => sha256Hex(text).slice(0, 32);
 
+/** The listing of no server. */
 export const EMPTY_LISTING: McpListing = { text: "", hash: hashOf("") };
 
-/** Whether the conversation's `codemode` tool is deferred, which the intro says to load with `tool_search` first. */
-export type McpIntroOptions = { readonly codemodeDeferred: boolean };
+/** The three resource tools: the intro names them only when the `mcp` extension registers them. */
+export const MCP_RESOURCE_TOOLS: ReadonlyArray<string> = [
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+];
+
+/** The sign-in tool: the intro names it only when the `mcp` extension registers it. */
+export const MCP_SIGN_IN_TOOL = "mcp_sign_in_ask";
+
+/** Which tools the intro may name: those the build registers. Each sentence about one is added in `mcpServersIntro`. */
+export type McpIntroFeatures = { readonly resourceTools: boolean; readonly signIn: boolean };
+
+/** The intro's features for an `mcp` extension that registers tools `names`. */
+export const introFeaturesOf = (names: ReadonlyArray<string>): McpIntroFeatures => ({
+  resourceTools: Arr.every(MCP_RESOURCE_TOOLS, (tool) => names.includes(tool)),
+  signIn: names.includes(MCP_SIGN_IN_TOOL),
+});
+
+/** What the intro depends on: its features, and whether the conversation's `codemode` is deferred. */
+export type McpIntroOptions = McpIntroFeatures & {
+  /** Whether the conversation's `codemode` tool is deferred, which the intro says to load with `tool_search` first. */
+  readonly codemodeDeferred: boolean;
+};
 
 /**
- * What the section says before the listing: the servers' lines and states, the three resource tools, `codemode` loaded
- * with `tool_search` when it is deferred, and `mcp_sign_in_ask`, in one sentence. No blank line (the listing starts after
- * the first one), and nothing of MCP prompts, which are the owner's.
+ * What the section says before the listing: how each kind of line is reached and what its state means, `codemode` loaded
+ * with `tool_search` when it is deferred, and one sentence for each of the resource tools and `mcp_sign_in_ask` that the
+ * build registers (a tool that does not exist is never named). No blank line (the listing starts after the first one),
+ * and nothing of MCP prompts, which are the owner's.
  */
 export const mcpServersIntro = (options: McpIntroOptions): string =>
   Arr.join(
@@ -71,11 +95,17 @@ export const mcpServersIntro = (options: McpIntroOptions): string =>
       ...(options.codemodeDeferred
         ? ["Load codemode with tool_search first: it is not loaded yet."]
         : []),
-      "A server marked (codemode) is called from a codemode script as tools.mcp__<server>.<tool>(args); describeNamespace shows its tools.",
+      "A server marked (codemode) is called from a codemode script as tools.mcp__<server>__<tool>(args); describeNamespace shows its tools.",
       "A server marked (tool_search) has tools you load with tool_search and then call.",
       "(connecting) means the server is not discovered yet: its tools are not known.",
-      "A server marked · resources has resources: list_mcp_resources, list_mcp_resource_templates and read_mcp_resource take its name.",
-      "(needs sign-in) means the owner must sign in first: load mcp_sign_in_ask with tool_search and ask them.",
+      ...(options.resourceTools
+        ? [
+            "A server marked · resources has resources: list_mcp_resources, list_mcp_resource_templates and read_mcp_resource take its name.",
+          ]
+        : []),
+      options.signIn
+        ? "(needs sign-in) means the owner must sign in first: load mcp_sign_in_ask with tool_search and ask them."
+        : "(needs sign-in) means the owner must sign in first.",
     ],
     "\n",
   );
@@ -86,17 +116,20 @@ const CLOSE = `\n</${MCP_SERVERS_SECTION}>`;
 /** What the listing may take so that the section stays within its bound, whichever intro it has. */
 const LISTING_BUDGET =
   MAX_SECTION_LENGTH -
-  (OPEN.length + mcpServersIntro({ codemodeDeferred: true }).length + 2 + CLOSE.length);
+  (OPEN.length +
+    mcpServersIntro({ codemodeDeferred: true, resourceTools: true, signIn: true }).length +
+    2 +
+    CLOSE.length);
 
 /** The line that counts the `left` servers a full listing leaves out. */
 const overflowLine = (left: number): string => `- … and ${left} more not listed`;
 
+/** `text` without its control characters. */
+const stripControls = (text: string): string => text.replace(/\p{Cc}/gu, "");
+
 /** `text` as one line with its control characters stripped, cut to `MAX_SUMMARY_LENGTH` characters. */
 const summaryText = (text: string): string => {
-  const clean = text
-    .replace(/\p{Cc}/gu, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const clean = stripControls(text).replace(/\s+/g, " ").trim();
 
   const characters = Array.from(clean);
 
@@ -117,7 +150,7 @@ const summaryOf = (server: McpBuildServer): string => {
 
   const line = Arr.findFirst(
     (server.instructions ?? "").split(/\r\n|\r|\n/),
-    (each) => each.replace(/\p{Cc}/gu, "").trim() !== "",
+    (each) => stripControls(each).trim() !== "",
   );
 
   return Option.match(line, { onNone: () => "", onSome: summaryText });
@@ -147,9 +180,9 @@ const serverLine = (server: McpBuildServer, offered: ReadonlyArray<string>): str
 
   const keys = exposureKeys(server);
 
-  if (keys.exposure === "hidden") return undefined;
-
-  const resources = server.resources === true;
+  // A server hidden by its own Exposure may still have tools its `toolExposure` lifts (`mcpExtension` registers them); only
+  // its resources are not reachable.
+  const resources = server.resources === true && keys.exposure !== "hidden";
 
   if (server.discoveredAt === undefined) {
     // Nothing is known of its tools: it is listed when its entry can make one `codemode` or `deferred`.
@@ -247,9 +280,12 @@ export const listingHashOfSection = (section: string): string => {
 
 /**
  * What a notice tells the model: the whole new listing, which replaces the one it was shown. When the section it was shown
- * listed nothing (`introduce`), it says what the section would have, since the section never did.
+ * listed nothing, `intro` is the intro the section would have had, since the section never gave it.
  */
-export const mcpServersNotice = (listing: McpListing, introduce: boolean): string => {
+export const mcpServersNotice = (
+  listing: McpListing,
+  intro: McpIntroOptions | undefined,
+): string => {
   const body =
     listing.text === ""
       ? "No MCP server is listed now."
@@ -259,7 +295,7 @@ export const mcpServersNotice = (listing: McpListing, introduce: boolean): strin
     [
       "<mcp_servers_changed>",
       "The owner's MCP servers changed. This is a notice, not a message from the user.",
-      ...(introduce && listing.text !== "" ? [mcpServersIntro({ codemodeDeferred: false })] : []),
+      ...(intro !== undefined && listing.text !== "" ? [mcpServersIntro(intro)] : []),
       "",
       body,
       "</mcp_servers_changed>",
@@ -271,10 +307,12 @@ export const mcpServersNotice = (listing: McpListing, introduce: boolean): strin
 /** What the section's source gives: the newest listing, and what is told of each request after its first. */
 export type McpServersSource = {
   readonly listing: () => McpListing;
+  /** The tools of the build that the intro may name. */
+  readonly features: () => McpIntroFeatures;
   /** Forget what `conversation` is known to have been shown: the section is shown again (a new Context Window). */
   readonly shownAnew: (conversation: ConversationId) => void;
-  /** A request of `conversation` found the section shown as `shown`. */
-  readonly stillShown: (conversation: ConversationId, shown: string) => Effect.Effect<void>;
+  /** A request of `conversation` found the section already shown. */
+  readonly stillShown: (conversation: ConversationId) => Effect.Effect<void>;
 };
 
 /**
@@ -290,10 +328,11 @@ export const mcpServersSectionOf = (source: McpServersSource): PromptSection =>
           source.shownAnew(input.conversationId);
 
           return mcpServersSection(source.listing(), {
+            ...source.features(),
             codemodeDeferred: Arr.some(input.agent.deferred, (tool) => tool.name === "codemode"),
           });
         }),
-      { whenShown: (input, shown) => source.stillShown(input.conversationId, shown) },
+      { whenShown: (input) => source.stillShown(input.conversationId) },
     ),
   );
 

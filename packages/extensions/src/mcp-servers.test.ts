@@ -4,7 +4,11 @@
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_LISTING,
+  type McpIntroFeatures,
+  introFeaturesOf,
   listingHashOfSection,
+  MCP_RESOURCE_TOOLS,
+  MCP_SIGN_IN_TOOL,
   MAX_SECTION_LENGTH,
   MAX_SUMMARY_LENGTH,
   mcpListing,
@@ -28,6 +32,12 @@ const server = (
   tools: tools.map((tool) => ({ name: tool, inputSchema: { type: "object" } })),
   ...more,
 });
+
+/** The intro of a build that registers every tool the intro may name. */
+const ALL: McpIntroFeatures = { resourceTools: true, signIn: true };
+
+/** The intro of a build that registers none of them. */
+const NONE: McpIntroFeatures = { resourceTools: false, signIn: false };
 
 const listing = (servers: ReadonlyArray<McpBuildServer>, offered: ReadonlyArray<string> = []) =>
   mcpListing(servers, offered).text;
@@ -61,6 +71,20 @@ describe("the mcp_servers listing", () => {
         server("app", [], {}, { exposure: "codemode" }),
       ]),
     ).toBe("");
+  });
+
+  it("lists an enabled server hidden by its Exposure when its toolExposure lifts a tool, without its resources", () => {
+    expect(
+      listing([
+        server(
+          "lifted",
+          ["a", "b"],
+          { resources: true },
+          { exposure: "hidden", toolExposure: { a: "codemode" } },
+        ),
+        server("sealed", ["a"], { resources: true }, { exposure: "hidden" }),
+      ]),
+    ).toBe("- mcp__lifted (codemode)");
   });
 
   it("follows tools.offered: a server whose every tool is lifted to direct has no line", () => {
@@ -147,7 +171,7 @@ describe("the mcp_servers listing", () => {
     const shown = mcpListing(servers, []);
 
     for (const codemodeDeferred of [false, true]) {
-      expect(mcpServersSection(shown, { codemodeDeferred }).length).toBeLessThanOrEqual(
+      expect(mcpServersSection(shown, { ...ALL, codemodeDeferred }).length).toBeLessThanOrEqual(
         MAX_SECTION_LENGTH,
       );
     }
@@ -175,18 +199,19 @@ describe("the mcp_servers section and its notice", () => {
   const docs = mcpListing([server("docs", ["search"])], []);
 
   it("is empty with nothing to list, so it adds nothing to the prompt", () => {
-    expect(mcpServersSection(EMPTY_LISTING, { codemodeDeferred: false })).toBe("");
+    expect(mcpServersSection(EMPTY_LISTING, { ...ALL, codemodeDeferred: false })).toBe("");
   });
 
   it("names the resource tools, mcp_sign_in_ask, and codemode's loading when it is deferred, and never prompts", () => {
-    const plain = mcpServersIntro({ codemodeDeferred: false });
-    const deferred = mcpServersIntro({ codemodeDeferred: true });
+    const plain = mcpServersIntro({ ...ALL, codemodeDeferred: false });
+    const deferred = mcpServersIntro({ ...ALL, codemodeDeferred: true });
 
     for (const intro of [plain, deferred]) {
       expect(intro).toContain("list_mcp_resources");
       expect(intro).toContain("list_mcp_resource_templates");
       expect(intro).toContain("read_mcp_resource");
       expect(intro).toContain("mcp_sign_in_ask");
+      expect(intro).toContain("tools.mcp__<server>__<tool>(args)");
       expect(intro).not.toMatch(/prompt/i);
       expect(intro).not.toContain("\n\n");
     }
@@ -195,9 +220,40 @@ describe("the mcp_servers section and its notice", () => {
     expect(deferred).toContain("Load codemode with tool_search first");
   });
 
+  it("has a sentence for a tool only when the build registers it", () => {
+    const bare = mcpServersIntro({ ...NONE, codemodeDeferred: false });
+
+    const resourcesOnly = mcpServersIntro({
+      ...NONE,
+      resourceTools: true,
+      codemodeDeferred: false,
+    });
+
+    const signInOnly = mcpServersIntro({ ...NONE, signIn: true, codemodeDeferred: false });
+
+    expect(bare).not.toContain("list_mcp_resources");
+    expect(bare).not.toContain("resources");
+    expect(bare).not.toContain("mcp_sign_in_ask");
+    expect(bare).toContain("(needs sign-in) means the owner must sign in first.");
+    expect(bare).not.toContain("\n\n");
+    expect(resourcesOnly).toContain("list_mcp_resources");
+    expect(resourcesOnly).not.toContain("mcp_sign_in_ask");
+    expect(signInOnly).toContain("mcp_sign_in_ask");
+    expect(signInOnly).not.toContain("list_mcp_resources");
+  });
+
+  it("reads the features off the tools the build registers", () => {
+    expect(introFeaturesOf([])).toEqual(NONE);
+    expect(introFeaturesOf(["mcp_sign_in_ask", "read_mcp_resource"])).toEqual({
+      resourceTools: false,
+      signIn: true,
+    });
+    expect(introFeaturesOf([...MCP_RESOURCE_TOOLS, MCP_SIGN_IN_TOOL])).toEqual(ALL);
+  });
+
   it("is wrapped in its tag, and the hash of its listing is the listing's, whichever intro it has", () => {
-    const plain = mcpServersSection(docs, { codemodeDeferred: false });
-    const deferred = mcpServersSection(docs, { codemodeDeferred: true });
+    const plain = mcpServersSection(docs, { ...ALL, codemodeDeferred: false });
+    const deferred = mcpServersSection(docs, { ...ALL, codemodeDeferred: true });
 
     expect(plain.startsWith("<mcp_servers>\n")).toBe(true);
     expect(plain.endsWith("\n</mcp_servers>")).toBe(true);
@@ -208,11 +264,16 @@ describe("the mcp_servers section and its notice", () => {
   });
 
   it("tells a notice's model the whole new listing, and the intro when the section it was shown listed nothing", () => {
-    const notice = mcpServersNotice(docs, false);
+    const notice = mcpServersNotice(docs, undefined);
 
     expect(notice).toContain(docs.text);
     expect(notice).not.toContain("list_mcp_resources");
-    expect(mcpServersNotice(docs, true)).toContain("list_mcp_resources");
-    expect(mcpServersNotice(EMPTY_LISTING, false)).toContain("No MCP server is listed now.");
+    expect(mcpServersNotice(docs, { ...ALL, codemodeDeferred: false })).toContain(
+      "list_mcp_resources",
+    );
+    expect(mcpServersNotice(docs, { ...NONE, codemodeDeferred: true })).toContain(
+      "Load codemode with tool_search first",
+    );
+    expect(mcpServersNotice(EMPTY_LISTING, undefined)).toContain("No MCP server is listed now.");
   });
 });

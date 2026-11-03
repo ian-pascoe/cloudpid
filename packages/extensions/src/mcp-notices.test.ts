@@ -274,10 +274,9 @@ describe("a set change under a conversation", () => {
 
     expect(Option.isSome(kept)).toBe(true);
     Option.map(kept, ({ mcp }) => session.registry.install(mcp));
-    expect(after.listing()).toEqual(before.listing());
-    expect(after.listing().text).toContain("- mcp__files (codemode): Files · resources");
 
     await session.prompt("two");
+    expect(session.requests[1]?.system).toContain("- mcp__files (codemode): Files · resources");
     await Effect.runPromise(after.notify(ROOT_CONVERSATION_ID));
     expect(await session.notices()).toEqual([]);
     expect(session.requests[1]?.system).toBe(session.requests[0]?.system);
@@ -429,5 +428,168 @@ describe("a set change under a subagent", () => {
     ).toBe(true);
     // The root was told by the start that read the new set, once.
     expect(await session.notices()).toHaveLength(1);
+  });
+});
+
+describe("the section's intro", () => {
+  it("names only tools the build registers: this build has no resource tools and no mcp_sign_in_ask", async () => {
+    const host = fakeMcpHost([DOCS, { ...DOCS, name: "files", resources: true }]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+
+    await session.start(mcp);
+    await session.prompt("one");
+
+    const [first] = session.requests;
+
+    expect(first?.system).toContain("- mcp__files (codemode): The product docs · resources");
+    expect(first?.system).toContain("tools.mcp__<server>__<tool>(args)");
+    expect(first?.system).not.toContain("list_mcp_resources");
+    expect(first?.system).not.toContain("read_mcp_resource");
+    expect(first?.system).not.toContain("mcp_sign_in_ask");
+  });
+});
+
+describe("what a conversation was last shown", () => {
+  /** Holds the root's request that carries `text` until the gate opens. */
+  const heldOn = (text: string, held: ReturnType<typeof gate>) =>
+    open(async (request) => {
+      if (request.text === text) await held.promise;
+
+      return answer("ok");
+    });
+
+  it("is told at once when it is idle, though the owner's start is the only one", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+
+    const other = await session.harness.createConversation(
+      {
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: "faux", modelId: "faux-1" } },
+      },
+      context,
+    );
+
+    await session.start(mcp);
+    await session.prompt("one");
+    await (await other.submit({ type: "input", content: "hello" }, context)).wait(context);
+
+    host.set([DOCS, LINEAR]);
+    // Only the owner's conversation starts a request: the idle one is told by the same start, and starts no Run.
+    await session.start(mcp);
+
+    expect(await session.notices(other.id)).toHaveLength(1);
+    expect(noticeText((await session.notices(other.id))[0])).toContain("mcp__linear");
+    expect(await session.notices()).toHaveLength(1);
+    expect((await session.harness.inspect(context)).tasks).toEqual([]);
+    expect(session.requests).toHaveLength(2);
+  });
+
+  it("counts a notice still queued behind a busy Run, so a flip back before it is placed is told too", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const held = gate();
+    const session = await heldOn("slow", held);
+    const mcp = session.tools(host);
+
+    await session.start(mcp);
+    await session.prompt("one");
+
+    const slow = await session.root.submit({ type: "input", content: "slow" }, context);
+
+    await session.until(async () => session.requests.length === 2, "the held request");
+    host.set([DOCS, LINEAR]);
+    await session.start(mcp);
+    // The first notice is queued behind the Run. The listing flips back to what the section showed: the model, which
+    // will read the first notice at the Run's next boundary, is told this one too.
+    host.set([DOCS]);
+    await session.start(mcp);
+    // The same listing again, and a new runtime that remembers nothing: nothing more is queued.
+    await session.start(session.tools(host));
+
+    held.resolve();
+    await slow.wait(context);
+    await session.settle();
+
+    const notices = await session.notices();
+
+    expect(notices).toHaveLength(2);
+    expect(noticeText(notices[0])).toContain("mcp__linear");
+    expect(noticeText(notices[1])).not.toContain("mcp__linear");
+    expect(noticeText(notices[1])).toContain("mcp__docs");
+  });
+
+  it("tells a change once when a new runtime asks while the notice is still queued, and tells the next change", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const held = gate();
+    const session = await heldOn("slow", held);
+
+    await session.start(session.tools(host));
+    await session.prompt("one");
+
+    const slow = await session.root.submit({ type: "input", content: "slow" }, context);
+
+    await session.until(async () => session.requests.length === 2, "the held request");
+    host.set([DOCS, LINEAR]);
+    await session.start(session.tools(host));
+    // The object was evicted before the notice was placed: its memory is gone, the queued notice is not.
+    await session.start(session.tools(host));
+    host.set([LINEAR]);
+    await session.start(session.tools(host));
+
+    held.resolve();
+    await slow.wait(context);
+    await session.settle();
+
+    const notices = await session.notices();
+
+    expect(notices).toHaveLength(2);
+    expect(noticeText(notices[0])).toContain("mcp__docs");
+    expect(noticeText(notices[1])).not.toContain("mcp__docs");
+    expect(noticeText(notices[1])).toContain("mcp__linear");
+  });
+
+  it("is what a fork inherits: a fork from before a notice is told of the change, one from after it is told what is new", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+
+    await session.start(mcp);
+    await session.prompt("one");
+
+    const before = (await session.entries()).at(-1)!;
+
+    host.set([DOCS, LINEAR]);
+    await session.start(mcp);
+    await session.prompt("two");
+
+    const after = (await session.entries()).at(-1)!;
+    const early = await session.root.fork(before.id, { ownership: { kind: "ownerless" } }, context);
+    const late = await session.root.fork(after.id, { ownership: { kind: "ownerless" } }, context);
+
+    // The listing goes back to the one the section showed: the root and the late fork (shown the other) are told, the
+    // early fork never was shown the change.
+    host.set([DOCS]);
+    await session.start(mcp);
+
+    expect(await session.notices(early.id)).toEqual([]);
+    expect(await session.notices(late.id)).toHaveLength(2);
+    expect(noticeText((await session.notices(late.id))[1])).not.toContain("mcp__linear");
+    expect(await session.notices()).toHaveLength(2);
+  });
+
+  it("is not told before the listing is known: a runtime that has not read the host yet says nothing", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const session = await open(() => answer("ok"));
+
+    await session.start(session.tools(host));
+    await session.prompt("one");
+    host.set([DOCS, LINEAR]);
+
+    // Another runtime over the same Session, before its first reinstall (an object restarted without a kept build).
+    await Effect.runPromise(session.tools(host).notify(ROOT_CONVERSATION_ID));
+
+    expect(await session.notices()).toEqual([]);
   });
 });

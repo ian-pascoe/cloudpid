@@ -18,11 +18,14 @@
 //   byte-identical declarations.
 //
 // **The `mcp_servers` section and its notices** (`./mcp/servers.ts`, `./mcp/notices.ts`): every build carries the section,
-// which reads the newest listing once per Context Window (frozen, so the prompt never changes within it), and each later
-// request of any conversation, a subagent's included, asks whether the conversation was shown the listing as it is now; if
-// not, one notice tells it (once per change per conversation). `notify` asks the same for a conversation whose request
-// start just ran, so its notice comes before its message. A conversation asked about is remembered as up to date until the
-// listing changes or its section is shown again, so an unchanged listing costs a request nothing.
+// which reads the newest listing once per Context Window (frozen, so the prompt never changes within it). A conversation
+// is told once of each change to the listing it was shown, in two ways. `notify`, after a request start's install, tells
+// the starting conversation before its message is placed, and, when the listing changed since the last time, every other
+// conversation too: an idle one (a subagent's, another branch's) gets its notice at once, so no model call of it sees
+// the changed declarations without it; a busy one gets it at its next boundary. And each later request of any
+// conversation asks again, which tells a busy one the broadcast could not reach in time, or after a restart. Nothing is
+// told before a listing is known (a Session that has built none), so a Session without MCP servers pays nothing. A
+// conversation asked about is remembered as up to date until the listing changes or its section is shown again.
 //
 // What an install was built from is kept (`McpToolsStore`), only what the build reads (`McpBuildServer`), so an object
 // that starts again installs the very same tools before anything resumes, without asking the host: a resumed Run, a
@@ -43,7 +46,14 @@ import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
 import { type McpNotices } from "./mcp/notices.ts";
-import { EMPTY_LISTING, type McpListing, mcpListing, mcpServersSectionOf } from "./mcp/servers.ts";
+import {
+  EMPTY_LISTING,
+  introFeaturesOf,
+  type McpIntroFeatures,
+  type McpListing,
+  mcpListing,
+  mcpServersSectionOf,
+} from "./mcp/servers.ts";
 import { McpBuildServer, mcpExtension, mcpNamespaces, type McpToolOptions } from "./mcp/tools.ts";
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
@@ -73,7 +83,7 @@ export {
   mcpServersSection,
 } from "./mcp/servers.ts";
 
-export { type McpNotices, McpServersDoc, mcpNotices } from "./mcp/notices.ts";
+export { type McpNotices, mcpNotices } from "./mcp/notices.ts";
 
 export {
   extensionName,
@@ -189,13 +199,12 @@ export type McpToolsService = {
    * otherwise. Run under the Session's install lock, with the settings in force.
    */
   readonly reinstall: (offered: ReadonlyArray<string>) => Option.Option<McpReinstall>;
-  /** The newest listing of the `mcp_servers` section, as of the last reinstall. */
-  readonly listing: () => McpListing;
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
-   * Tell `conversation` of the listing as it is if its section was shown another (a request start's check, outside any
-   * lock: it never fails, and a failure is logged and tried again by the conversation's next request).
+   * Tell `conversation` of the listing as it is if its section was shown another, and, when the listing changed since
+   * the last time, every other conversation of the Session too (a request start's check, outside any lock: it never
+   * fails, and a failure is logged and tried again by the conversation's next request).
    */
   readonly notify: (conversation: ConversationId) => Effect.Effect<void>;
 };
@@ -243,22 +252,33 @@ export const makeMcpTools = (
   /** The newest listing: what the section shows when it is read, and what a notice tells. */
   let current: McpListing = EMPTY_LISTING;
 
+  /** The tools of the newest build the intro may name. */
+  let features: McpIntroFeatures = introFeaturesOf([]);
+
+  /** Whether a build has given a listing: before, `current` is no listing, and no conversation is told of it. */
+  let listed = false;
+
+  /** Whether the listing changed since the conversations were last all asked. */
+  let changed = false;
+
   let notices: McpNotices | undefined;
 
-  /** The hash of the listing each conversation is known to have been shown, until it changes or the section shows anew. */
-  const known = new Map<ConversationId, string>();
+  /** The hash of the listing each conversation is known to have been told, until it changes or the section shows anew. */
+  const told = new Map<ConversationId, string>();
 
-  /** Ask whether `conversation` was shown `current`, writing its notice if not; `shown` is its request's section, if any. */
-  const check = (conversation: ConversationId, shown: string | undefined) => {
+  /** Ask whether `conversation` was shown `current`, writing its notice if not. */
+  const check = (conversation: ConversationId) => {
     const listing = current;
 
-    if (notices === undefined || known.get(conversation) === listing.hash) return Effect.void;
+    if (notices === undefined || !listed || told.get(conversation) === listing.hash) {
+      return Effect.void;
+    }
 
-    const { check: ask } = notices;
+    const sink = notices;
 
-    return Effect.tryPromise(() => ask({ conversation, listing, shown })).pipe(
+    return Effect.tryPromise(() => sink.check({ conversation, listing, features })).pipe(
       Effect.map((seen) => {
-        if (seen) known.set(conversation, listing.hash);
+        if (seen) told.set(conversation, listing.hash);
       }),
       Effect.catchCause((cause) =>
         Effect.logWarning("The MCP servers notice could not be written", cause),
@@ -266,13 +286,45 @@ export const makeMcpTools = (
     );
   };
 
+  /** Ask every conversation but `conversation`, once for each change of the listing. */
+  const checkOthers = (conversation: ConversationId) => {
+    const sink = notices;
+
+    if (sink === undefined || !listed || !changed) return Effect.void;
+
+    changed = false;
+
+    return Effect.tryPromise(() => sink.conversations()).pipe(
+      Effect.flatMap((all) =>
+        Effect.forEach(
+          Arr.filter(all, (each) => each !== conversation),
+          check,
+          { discard: true },
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "The conversations of the Session could not be told of the MCP servers",
+          cause,
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              changed = true;
+            }),
+          ),
+        ),
+      ),
+    );
+  };
+
   /** The section, shared by every build: it reads the newest listing, and hears of each request that finds it shown. */
   const section = mcpServersSectionOf({
     listing: () => current,
+    features: () => features,
     shownAnew: (conversation) => {
-      known.delete(conversation);
+      told.delete(conversation);
     },
-    stillShown: (conversation, shown) => check(conversation, shown),
+    stillShown: (conversation) => check(conversation),
   });
 
   const sectionOptions: McpToolOptions = { ...options, sections: [section] };
@@ -416,10 +468,8 @@ export const makeMcpTools = (
       saved = text;
     }
 
-    current = mcpListing(latest?.servers ?? [], offered);
-
     // The extension keeps its section when the servers go: a conversation shown a listing is told none is left.
-    return Option.some(
+    const built: McpReinstall =
       latest === undefined
         ? {
             mcp: mcpExtension({ servers: [], offered }, client, {}, sectionOptions),
@@ -433,18 +483,26 @@ export const makeMcpTools = (
               sectionOptions,
             ),
             namespaces: mcpNamespaces(latest.servers),
-          },
-    );
+          };
+
+    const listing = mcpListing(latest?.servers ?? [], offered);
+
+    if (!listed || listing.hash !== current.hash) changed = true;
+
+    listed = true;
+    current = listing;
+    features = introFeaturesOf(Arr.map(built.mcp.tools ?? [], (tool) => tool.name));
+
+    return Option.some(built);
   };
 
   return {
     requestStart,
     reinstall,
-    listing: () => current,
     bindNotices: (next) => {
       notices = next;
     },
-    notify: (conversation) => check(conversation, undefined),
+    notify: (conversation) => Effect.andThen(check(conversation), checkOthers(conversation)),
   };
 };
 
