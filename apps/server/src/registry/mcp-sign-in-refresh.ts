@@ -3,23 +3,24 @@
 // s`, or the host's request was refused with it by a 401.
 //
 // - **Single-flight per sign-in.** A Durable Object's input gate opens on `fetch`, so a second refresh racing with the
-// same
-//   rotating refresh token would get `invalid_grant`: callers that arrive while one is in flight wait for it and share
-// its
-//   answer. A refresh once sent is never cancelled (its region is uninterruptible), and one an eviction cuts short may
-// have
-//   lost a rotated refresh token, which the owner mends by signing in again.
+//   same rotating refresh token would get `invalid_grant`: callers that arrive while one is in flight wait for it and
+//   share its answer. A refresh once sent is never cancelled (its region is uninterruptible), and one an eviction cuts
+//   short may have lost a rotated refresh token, which the owner mends by signing in again.
+// - **The row is read again, and checked before each write.** A caller reads the row and opens its tokens before it
+//   joins a flight, and a refresh takes a while: another refresh may have stored rotated tokens, or the owner may have
+//   completed a sign-in or a step-up, in between. The flight reads the row again when it starts, and again before it
+//   writes anything (the new tokens, the failing status, a drop): when the sealed tokens are no longer the ones the flight
+//   asked about, nothing is written and the answer is the row's current token. So an old grant's tokens and scope never
+//   overwrite a new grant's, and an old refresh token's `invalid_grant` never drops them.
 // - **What the authorization server's answer means.** `invalid_grant` and `invalid_scope` drop the tokens (`required`);
 //   `invalid_client` and `unauthorized_client` do for a registered client (with its registration) and a configured one
-// (the
-//   reason names the problem) but are transient for a document client, whose id is a URL the server may fail to fetch.
-//   Network errors, the 15 s timeout, 408, 429, 5xx, `server_error`, `temporarily_unavailable` and any code this build
-// does not
-//   know are transient too, since dropping a grant on an answer nobody described would lose more than it saves.
+//   (the reason names the problem) but are transient for a document client, whose id is a URL the server may fail to
+//   fetch. Network errors, the 15 s timeout, 408, 429, 5xx, `server_error`, `temporarily_unavailable` and any code this
+//   build does not know are transient too, since dropping a grant on an answer nobody described would lose more than it
+//   saves.
 // - **Transient failures** retry once after a second, then leave the status `refresh_failing` with the reason; the next
 //   attempt waits a backoff of 10 s that doubles up to 5 min and resets on success (held in memory: an evicted Registry
-// tries
-//   again at the next ask). The tokens are kept, and the access token is served while it still stands.
+//   tries again at the next ask). The tokens are kept, and the access token is served while it still stands.
 // - **What a response keeps.** A new refresh token replaces the old one, else the old one stays, and so does the scope;
 //   `expires_in` is trusted from each response.
 //
@@ -42,7 +43,14 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { clientInformation, type FlowDeps, hostOf, metadataOf, told } from "./mcp-sign-in-flow.ts";
+import {
+  clientInformation,
+  errorCodeOf,
+  type FlowDeps,
+  hostOf,
+  metadataOf,
+  told,
+} from "./mcp-sign-in-flow.ts";
 import {
   clip,
   MAX_SIGN_IN_ERROR_LENGTH,
@@ -80,9 +88,6 @@ type Outcome =
       readonly status: number | undefined;
     }
   | { readonly kind: "failed"; readonly message: string; readonly status: number | undefined };
-
-/** The code of an authorization server error as a span and a reason may say it: a plain token of ≤64 characters. */
-const plainCode = (code: string): string => (/^[\w.:-]{1,64}$/.test(code) ? code : "error");
 
 /** `invalid_client` and `unauthorized_client`: the server does not accept the client. */
 const isClientRefused = (code: string): boolean =>
@@ -160,7 +165,7 @@ const send = async (deps: Pick<RefreshDeps, "fetch">, input: Send): Promise<Outc
     if (error instanceof OAuthError) {
       return {
         kind: "refused",
-        code: plainCode(error.code),
+        code: errorCodeOf(error.code),
         message: error.message,
         status: seen.get("status"),
       };
@@ -297,6 +302,11 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
         );
       }
 
+      // Sealing took a moment: the sign-in may have been replaced meanwhile, and then these tokens are the old grant's.
+      const replaced = yield* changedSince(asked, vault, now);
+
+      if (replaced !== undefined) return replaced;
+
       const expiresIn = issued.expires_in;
       const scope = issued.scope ?? row.scope;
 
@@ -359,6 +369,30 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
       }
 
       return { ...asked, row, tokens: opened.success };
+    });
+
+  /**
+   * Whether the sign-in still holds the tokens `asked` is about, checked just before a write: when it does not (a refresh
+   * or the owner's own sign-in replaced them while this flight was out) there is nothing to write, and the answer is the
+   * row's current token, or `required` when it has none any more. Undefined when the write may go on. Nothing is awaited
+   * between a check that finds the row unchanged and the write that follows it, so the check is not out of date.
+   */
+  const changedSince = (
+    asked: RefreshRequest,
+    vault: KeptVault,
+    at: number,
+  ): Effect.Effect<McpAccessTokenAnswer | undefined> =>
+    Effect.gen(function* () {
+      const reread = yield* current(asked, vault).pipe(Effect.result);
+
+      if (Result.isFailure(reread)) return reread.failure;
+
+      if (reread.success === asked) return undefined;
+
+      yield* outcomeOf("replaced");
+      deps.signIns.touch(asked.key.hash, at);
+
+      return okAnswer(reread.success.row, reread.success.tokens, reread.success.key);
     });
 
   const run = (first: RefreshRequest, startedAt: number): Effect.Effect<McpAccessTokenAnswer> =>
@@ -440,7 +474,11 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
           return { status: "unavailable", reason: told(problem.message) };
         }
 
-        return yield* dropAs(asked, problem.message, startedAt, problem.code ?? "gone");
+        const replaced = yield* changedSince(asked, vault.success, startedAt);
+
+        return (
+          replaced ?? (yield* dropAs(asked, problem.message, startedAt, problem.code ?? "gone"))
+        );
       }
 
       const outcome = yield* sendWithRetry(
@@ -458,6 +496,12 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
       yield* Effect.annotateCurrentSpan({ "http.status_code": outcome.status });
 
       const now = yield* elapsed;
+
+      // The request was out for a while: whatever it came to, it is about the tokens it was sent with, and is written
+      // only if the row still holds them.
+      const replaced = yield* changedSince(asked, vault.success, now);
+
+      if (replaced !== undefined) return replaced;
 
       if (outcome.kind === "issued")
         return yield* issuedAnswer(asked, vault.success, outcome.tokens, now);

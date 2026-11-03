@@ -3,9 +3,10 @@
 // never the SDK (`docs/architecture/mcp.md` → Packages and objects), and is never woken for an Environment without
 // MCP servers (the main Worker pushes nothing to one, and a Session skips `requestStart`).
 //
-// Here: the set's storage with its revision, `apply` (`set`, `reload`, `destroy`), the pull at `windowOpened`, and the
-// MCP inventory (`requestStart`, `servers`) with its discoveries through `McpEngine`, over one `ManagedRuntime` kept
-// for the object's life. `request` and the rest of `apply` come with their slices; an `apply` kind this build does not
+// Here: the set's storage with its revision, `apply` (`set`, `reload`, `sign_ins`, `destroy`), the pull at
+// `windowOpened`, the MCP inventory (`requestStart`, `servers`) with its discoveries through `McpEngine`, and the host's
+// access tokens (`ask` of the Registry, kept in memory, and the reports of what a server answered: `McpRegistryPort`'s
+// `accessToken` and `reportAuth` below), over one `ManagedRuntime` kept for the object's life. `request` and the rest of `apply` come with their slices; an `apply` kind this build does not
 // know fails as `HostUnsupported`.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";

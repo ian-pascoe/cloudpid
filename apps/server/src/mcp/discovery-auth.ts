@@ -5,24 +5,25 @@
 // #409), so a token the server refuses gets one more engine call, with a token asked for with `stale`.
 //
 // - `required` with the server at `sign_in` or `rejected`: no network call, and the state stays. Any other `required`
-// (a
-//   server never signed in to, or one that may need no sign-in) connects without a token, and a 401 makes it `sign_in`.
+//   (a server never signed in to, or one that may need no sign-in) connects without a token, and a 401 makes it
+//   `sign_in`.
 // - `step_up` and `rejected` with no token that stands, and `refresh_failing` and `unavailable`: no network call, and
-// the
-//   server is `sign_in`, `rejected` or `unavailable` with the reason.
+//   the server is `sign_in`, `rejected` or `unavailable` with the reason.
 // - A 401 with no token is reported `needs_sign_in`; with a token, asked again with `stale`, and a second 401 is
-// reported
-//   `rejected` (the sign-in keeps its tokens). A 403 for more scope is reported `step_up` with the wanted scope. A
-// server
-//   that works after being `sign_in` or `rejected`, or with a token whose sign-in carries a note, is reported
-// `working`.
+//   reported `rejected` (the sign-in keeps its tokens). A 403 for more scope is reported `step_up` with the wanted
+//   scope. A server that works after being `sign_in` or `rejected`, or on a token whose note says `rejected`, is
+//   reported `working`.
 //
-// Reports are on transitions only, and best effort: the Registry that cannot be asked leaves them to the next
-// discovery. What the server's state was before this discovery, and the Registry's note on the token it handed over
-// (its own status of the sign-in), say whether this is one: a server already `rejected` is not reported `rejected`
-// again, nor one whose pending step-up the note already names reported `step_up` for the same scope. A report carries
-// the challenge of the 401 or 403 (`resource_metadata`, `scope`, `error`, `error_description`) so the Registry can keep
-// it. No token is logged, put on a span, or kept anywhere but the cache of `McpTokens` and the one call's target.
+// Reports are on transitions of the Registry's own status of the sign-in, and best effort: the Registry that cannot be
+// asked leaves them to the next discovery. The Registry's note on the token it handed over says what it already
+// knows: a `rejected` is not sent when the note says `rejected`, and a `step_up` not when the note names the step-up
+// for every scope the challenge asks for. The host's own state is not the test of a `rejected` or a `step_up`, since a
+// report that was lost, or a new sign-in refused again, leaves the Registry behind the host; the next discovery
+// sends it again. A `working` is sent when the server was waiting for a sign-in (`sign_in` or `rejected`) or the
+// token's note says `rejected`; a note of `refresh_failing` is left, since the server works on a token that stands
+// while the refresh still fails, and the refresh's own success is what clears it. A report carries the challenge of
+// the 401 or 403 (`resource_metadata`, `scope`, `error`, `error_description`) so the Registry can keep it. No token is
+// logged, put on a span, or kept anywhere but the cache of `McpTokens` and the one call's target.
 // @effect-diagnostics missingPipeableSignature:off -- the discovery's operations, not combinators.
 import {
   type McpAuthChallenge,
@@ -31,6 +32,7 @@ import {
   type McpEngineTarget,
   type McpServerState,
   type McpSignInNote,
+  scopesOf,
   SignInRequired,
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
@@ -171,7 +173,8 @@ export const authorizedDiscovery = (
 
       const result = yield* call(target);
 
-      if (isSignInRequired(result) && previous !== "sign_in") {
+      // Not at `sign_in` or `rejected` here: those are blocked above, so this 401 is a change.
+      if (isSignInRequired(result)) {
         yield* reportAuth(asked, "needs_sign_in", signInChallengeOf(result));
       }
 
@@ -209,9 +212,9 @@ export const authorizedDiscovery = (
       again.token === access.token ? first : yield* call(withBearer(target, again.token));
 
     if (isSignInRequired(second)) {
-      // Only a change is reported: a sign-in that is `rejected` already, by the server's state or the Registry's note,
-      // is not.
-      if (previous !== "rejected" && again.note?.status !== "rejected") {
+      // Only a change is reported: a sign-in the Registry has as `rejected` already is not. The host's own state is not the
+      // test (a lost report, or a new sign-in refused again, leaves the Registry at `ok`).
+      if (again.note?.status !== "rejected") {
         yield* reportAuth(asked, "rejected", signInChallengeOf(second));
       }
 
@@ -222,10 +225,6 @@ export const authorizedDiscovery = (
 
     return answered(second);
   });
-
-/** The scopes of a space-separated list. */
-const scopesOf = (list: string | undefined): ReadonlyArray<string> =>
-  Arr.filter((list ?? "").split(/\s+/), (scope) => scope !== "");
 
 /**
  * Whether the scope the Registry wants for a pending step-up (`held`: what was granted, challenged and configured) has
@@ -261,10 +260,7 @@ const afterAnswer = (
 
     const working =
       result.kind === "discovered" &&
-      (previous === "sign_in" ||
-        previous === "rejected" ||
-        note?.status === "rejected" ||
-        note?.status === "refresh_failing");
+      (previous === "sign_in" || previous === "rejected" || note?.status === "rejected");
 
     if (working) yield* reportAuth(subject, "working");
   });

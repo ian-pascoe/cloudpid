@@ -110,7 +110,8 @@ export type FlowDeps = {
 };
 
 /** The code of an authorization server error, as a page may show it: a plain token of at most 64 characters. */
-const errorCodeOf = (text: string): string => (/^[\w.:-]{1,64}$/.test(text) ? text : "error");
+export const errorCodeOf = (text: string): string =>
+  /^[\w.:-]{1,64}$/.test(text) ? text : "error";
 
 /** Why a start or a callback went no further: the owner is told `message`, which never holds a secret. */
 export class FlowProblem extends Schema.TaggedError<

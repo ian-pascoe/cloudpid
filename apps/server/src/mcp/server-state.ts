@@ -129,7 +129,7 @@ export const isDue = (
   const { status } = view;
 
   // A sign-in changed: a server that is not working is asked at once, a backoff or a host failure's hold
-  // notwithstanding (the change may be what it waited for): `sign_in`, `rejected` and `unavailable`, and `failed` or
+  // notwithstanding (the change may be what it waited for): `sign_in`, `rejected`, `unavailable` and `not_discovered`, and `failed` or
   // `unknown` once a minute has passed since they were last tried. Which servers the trigger is started for is the
   // caller's (the host's `takeSignIns` names the sign-in's servers; its pull names only those at `sign_in` or
   // `rejected`).
@@ -137,7 +137,7 @@ export const isDue = (
     return (
       status !== undefined &&
       Match.value(status.state).pipe(
-        Match.whenOr("sign_in", "rejected", "unavailable", () => true),
+        Match.whenOr("sign_in", "rejected", "unavailable", "not_discovered", () => true),
         Match.whenOr("failed", "unknown", () => now - status.since >= RETRY_FLOOR_MS),
         Match.orElse(() => false),
       )

@@ -455,6 +455,26 @@ export const startDue = (environment: string, views: ReadonlyArray<ServerView>, 
     }
   });
 
+/**
+ * Interrupt the discoveries in flight of `conns` and put the `connecting` status each left back to the state before it, so
+ * the server reads as it did and may be started again at once (`startDue`, which leaves a running one alone). For a change
+ * the running discovery did not know of (an MCP sign-in): what it would find was asked for with the token of before.
+ */
+export const restartable = (conns: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const store = yield* McpHostStore;
+
+    yield* interrupt(conns);
+
+    for (const conn of conns) {
+      const status = store.statuses().get(conn);
+
+      if (status?.state === "connecting") {
+        yield* writeOrHalt(() => store.putStatus(statusBeforeConnecting(status)));
+      }
+    }
+  });
+
 /** Interrupt the discoveries of `conns` (their server changed or left, or a reload), or of every `conn`. */
 export const interrupt = (conns?: ReadonlyArray<string>) =>
   Effect.gen(function* () {

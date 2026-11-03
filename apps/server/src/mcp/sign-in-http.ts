@@ -36,7 +36,7 @@ import {
   WELL_FORMED_STATE,
 } from "./sign-in-client.ts";
 import { signInOrigin } from "./sign-in-origin.ts";
-import { type McpSignInCarry, noSignInCarry } from "./sign-in-carry.ts";
+import { type McpSignInCarry } from "./sign-in-carry.ts";
 import {
   callbackPage,
   cancelledPage,
@@ -219,7 +219,7 @@ const callbackInput = (path: string, query: URLSearchParams) => {
 export const serveCallback = (
   registry: () => SignInRegistry,
   path: string,
-  carry: McpSignInCarry = noSignInCarry,
+  carry: McpSignInCarry,
 ) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;

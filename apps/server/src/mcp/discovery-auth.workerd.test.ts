@@ -354,20 +354,28 @@ describe("the challenge of a 401 or 403", () => {
 });
 
 describe("reports on transitions only", () => {
-  it("does not report a server that is `rejected` already again at its next discovery", async () => {
+  it("reports `rejected` again at the next discovery while the Registry's note does not say it, and stops when it does", async () => {
     const host = await discovered([ok(TOKEN)], [unauthorized(), unauthorized(), unauthorized()]);
 
     expect(await stateOf(host, "sentry")).toBe("rejected");
     expect(await host.reports()).toMatchObject([{ event: "rejected" }]);
 
+    // The report was lost, or a new sign-in was refused again: the Registry still has the sign-in at `ok`, so it is told.
     await host.apply({ kind: "reload" });
     await settled(host);
+
+    expect(await stateOf(host, "sentry")).toBe("rejected");
+    expect(await host.reports()).toMatchObject([{ event: "rejected" }, { event: "rejected" }]);
+
+    // Now the Registry has it: its note says `rejected`, and the next discovery says nothing.
+    await host.scriptToken("sentry", [
+      ok(TOKEN, { note: { status: "rejected", reason: "invalid_token" } }),
+    ]);
     await host.apply({ kind: "reload" });
     await settled(host);
 
     expect(await host.engineCalls()).toHaveLength(3);
-    expect(await stateOf(host, "sentry")).toBe("rejected");
-    expect(await host.reports()).toHaveLength(1);
+    expect(await host.reports()).toHaveLength(2);
   });
 
   it("does not report a rejected sign-in the Registry's note already names", async () => {
@@ -485,13 +493,23 @@ describe("working again", () => {
     expect(await host.reports()).toMatchObject([{ event: "needs_sign_in" }, { event: "working" }]);
   });
 
-  it("is reported when a server connects on a token whose sign-in carries a note that it was refused or cannot refresh", async () => {
+  it("is reported when a server connects on a token whose sign-in carries a note that it was refused", async () => {
+    const host = await discovered(
+      [ok(TOKEN, { note: { status: "rejected", reason: "invalid_token" } })],
+      [found(["issues"])],
+    );
+
+    expect(await host.reports()).toMatchObject([{ event: "working" }]);
+  });
+
+  it("is not reported for a token whose sign-in cannot refresh: the server works while the refresh still fails", async () => {
     const host = await discovered(
       [ok(TOKEN, { note: { status: "refresh_failing", reason: "HTTP 503" } })],
       [found(["issues"])],
     );
 
-    expect(await host.reports()).toMatchObject([{ event: "working" }]);
+    expect(await stateOf(host, "sentry")).toBe("connected");
+    expect(await host.reports()).toEqual([]);
   });
 });
 
@@ -541,6 +559,42 @@ describe("apply({ kind: 'sign_ins' })", () => {
     await settled(host);
 
     expect(await stateOf(host, "linear")).toBe("connected");
+  });
+
+  it("takes effect while a discovery of the server is running: it is interrupted and asked again with the new token", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("sentry")));
+    await host.scriptToken("sentry", [noToken("required", "Not signed in")]);
+    // The first discovery waits for the engine, which will answer 401 for the token it had none of.
+    await host.scriptEngine(urlOf("sentry"), [
+      { ...unauthorized(), hold: true },
+      found(["issues"]),
+    ]);
+    await start(host);
+    await vi.waitFor(async () => expect(await host.engineCalls()).toHaveLength(1));
+
+    await host.scriptToken("sentry", [ok(TOKEN)]);
+    await host.apply({ kind: "sign_ins", change: "signed_in", servers: ["sentry"], revision: 2 });
+    await vi.waitFor(async () => expect(await stateOf(host, "sentry")).toBe("connected"));
+
+    // The old discovery's answer, when it comes, settles nothing.
+    await host.release(urlOf("sentry"));
+    await settled(host);
+
+    expect(await stateOf(host, "sentry")).toBe("connected");
+    expect(await sent(host)).toEqual([undefined, `Bearer ${TOKEN}`]);
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("leaves a server that works alone: no call, and no rediscovery", async () => {
+    const host = await discovered([ok(TOKEN)], [found(["issues"])]);
+
+    await host.apply({ kind: "sign_ins", change: "signed_in", servers: ["sentry"], revision: 2 });
+    await settled(host);
+
+    expect(await stateOf(host, "sentry")).toBe("connected");
+    expect(await host.engineCalls()).toHaveLength(1);
   });
 
   it("drops the cached token, so the next ask reaches the Registry", async () => {

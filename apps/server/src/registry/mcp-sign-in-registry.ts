@@ -2,8 +2,9 @@
 // object; ADR-0034): `mcpAccessToken`, which hands a short-lived access token over Durable Object RPC (the host keeps it in
 // memory only), `reportMcpAuth`, which records the transitions a host sees, and `signInsRevision`. Only the Registry holds
 // tokens at rest. The sign-in is found from the Environment's own MCP server set (its source, normalized name and URL),
-// never from what the host says. The Registry never calls out: a refresh is a seam (`Refresh`, filled by
-// `mcp-sign-in-refresh.ts` with single-flight, backoff and the authorization server's answers), and what a report resolves goes back in the answer.
+// never from what the host says. The Registry never calls out to a host: a refresh is a seam (`Refresh`, filled by
+// `mcp-sign-in-refresh.ts` with single-flight, backoff and the authorization server's answers), and what a report
+// resolves goes back in the answer.
 //
 // No answer but `ok` holds a token, and no log line, status or error does: a failure says which row by its hash, and a
 // reason is the owner-facing last error (≤300 chars) or what the Registry found.
@@ -11,6 +12,7 @@
 import { mcpSignInKey, type McpResolvedServer, type McpSignInKey } from "@cloudpid/config";
 import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import { stepUpScope } from "@cloudpid/mcp/oauth";
+import { scopesOf } from "@cloudpid/mcp/types";
 import type {
   McpAccessTokenAnswer,
   McpAccessTokenInput,
@@ -99,10 +101,6 @@ export const clip = (text: string, limit: number): string => {
 
   return points.length <= limit ? text : points.slice(0, limit).join("");
 };
-
-/** The scopes of a space-separated list. */
-const scopesOf = (list: string | undefined): ReadonlyArray<string> =>
-  (list ?? "").split(/\s+/).filter((scope) => scope !== "");
 
 /** The scopes of space-separated `lists`, once each, in the order they first appear. */
 export const mergeScopes = (...lists: ReadonlyArray<string | undefined>): string | null => {

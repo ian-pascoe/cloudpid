@@ -49,6 +49,7 @@ import type { Mutable } from "effect/Types";
 import {
   awaitDiscoveries,
   interrupt,
+  restartable,
   McpDiscovery,
   type McpDiscoveryServices,
   refreshVersions,
@@ -270,10 +271,20 @@ const takeSignIns = (
     const tokens = yield* McpTokens;
     const names = Arr.map(named, normalizeMcpName);
 
-    const views = Arr.filter(
-      yield* viewServers,
-      (view) => view.reach === "http" && names.includes(normalizeMcpName(view.server.name)),
-    );
+    const namedViews = (all: ReadonlyArray<ServerView>) =>
+      Arr.filter(
+        all,
+        (view) => view.reach === "http" && names.includes(normalizeMcpName(view.server.name)),
+      );
+
+    const conns = Arr.map(namedViews(yield* viewServers), (view) => view.server.conn);
+    const rediscovering = Arr.some(REDISCOVERING_CHANGES, (known) => known === change);
+
+    // A discovery of these servers that is running was asked for with the token of before, and would settle what the
+    // change just changed: it goes first, as at a reload, and the server reads as it did before it started.
+    if (change === "signed_out" || rediscovering) yield* restartable(conns);
+
+    const views = namedViews(yield* viewServers);
 
     yield* tokens.drop(Arr.map(views, (view) => view.server.name));
 
@@ -285,14 +296,9 @@ const takeSignIns = (
       if (held !== undefined && revision === held + 1) store.setMeta({ signInsRevision: revision });
     });
 
-    const conns = Arr.map(views, (view) => view.server.conn);
-
     if (change === "signed_out") {
       yield* writeOrHalt(() => store.dropSessions(conns));
-    } else if (
-      environment !== undefined &&
-      Arr.some(REDISCOVERING_CHANGES, (known) => known === change)
-    ) {
+    } else if (environment !== undefined && rediscovering) {
       yield* startDue(environment, views, "sign_in");
     }
 

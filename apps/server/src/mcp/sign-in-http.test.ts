@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { describe, expect, it, vi } from "vitest";
-import { type McpSignInCarry } from "./sign-in-carry.ts";
+import { type McpSignInCarry, noSignInCarry } from "./sign-in-carry.ts";
 import {
   serveCallback,
   serveClientDocument,
@@ -131,7 +131,12 @@ describe("the client document", () => {
 });
 
 describe("the callback", () => {
-  const get = (registryOf: SignInRegistry, query: string, method = "GET", carry?: McpSignInCarry) =>
+  const get = (
+    registryOf: SignInRegistry,
+    query: string,
+    method = "GET",
+    carry: McpSignInCarry = noSignInCarry,
+  ) =>
     serve(
       new Request(`${ORIGIN}${CALLBACK}${query}`, { method }),
       serveCallback(() => registryOf, CALLBACK, carry),

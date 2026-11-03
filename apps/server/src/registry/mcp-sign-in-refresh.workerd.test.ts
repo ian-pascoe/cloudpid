@@ -38,6 +38,8 @@ const SERVER_URL = "https://mcp.sentry.dev/mcp";
 const ORIGIN = "https://cloudpid-server-pr-9.ian-g-pascoe.workers.dev";
 const ACCESS = "access-token-77ab";
 const REFRESH = "refresh-token-9f2c";
+const SECOND_ACCESS = "access-token-second-5b19";
+const SECOND_REFRESH = "refresh-token-second-c7a3";
 const NEW_ACCESS = "access-token-new-31de";
 const NEW_REFRESH = "refresh-token-new-8a40";
 const SECRET = "client-secret-d41e";
@@ -87,6 +89,7 @@ const tokenAnswer = (over: Record<string, Schema.Json> = {}) => ({
 /** A fake authorization server: discovery, registration, the code exchange, and `tokens`, which answers each refresh. */
 const network = (tokens: Handler, asMetadata: Record<string, Schema.Json> = {}) => {
   const calls: Array<Call> = [];
+  let exchanges = 0;
 
   const fetch: OAuthFetch = async (input, init) => {
     const url = new URL(String(input));
@@ -118,10 +121,13 @@ const network = (tokens: Handler, asMetadata: Record<string, Schema.Json> = {}) 
     if (route === `POST ${AS}/token`) {
       // The first request is the callback's code exchange; the rest are the refreshes under test.
       if (call.form.get("grant_type") === "authorization_code") {
+        // The first sign-in is the grant a test starts from, the second one the owner's later one.
+        const first = exchanges++ === 0;
+
         return Response.json({
-          access_token: ACCESS,
+          access_token: first ? ACCESS : SECOND_ACCESS,
           token_type: "Bearer",
-          refresh_token: REFRESH,
+          refresh_token: first ? REFRESH : SECOND_REFRESH,
           expires_in: 3600,
           scope: "read",
         });
@@ -504,6 +510,71 @@ describe("a refresh", () => {
         expect(signIns.get(keyHash("sentry"))?.status).toBe("ok");
       },
     ));
+
+  describe("when the owner signs in again while a refresh is out", () => {
+    /** A refresh whose answer is `answer`, that the owner's new sign-in completes in the middle of. */
+    const midFlight = (answer: Response | Schema.Json, scenario: (h: Harness) => Promise<void>) => {
+      let during: (() => Promise<void>) | undefined;
+
+      return run(
+        async () => {
+          await during?.();
+
+          return answer;
+        },
+        async (harness) => {
+          harness.setGlobal(DOCUMENT);
+          signedIn(await harness.signIn());
+          during = async () => {
+            during = undefined;
+            signedIn(await harness.signIn());
+          };
+
+          await scenario(harness);
+        },
+      );
+    };
+
+    it("does not overwrite the new grant's tokens and scope with a refresh that succeeds", () =>
+      midFlight(
+        tokenAnswer({ refresh_token: NEW_REFRESH, scope: "read write" }),
+        async ({ ask, signIns, keyHash, tokensOf }) => {
+          const before = signIns.get(keyHash("sentry"));
+
+          expect(await ask({}, EXPIRING)).toMatchObject({ status: "ok", token: SECOND_ACCESS });
+
+          const row = signIns.get(keyHash("sentry"));
+
+          expect(await tokensOf("sentry")).toEqual({
+            access_token: SECOND_ACCESS,
+            refresh_token: SECOND_REFRESH,
+          });
+          // The second sign-in's grant, scope and lifetime, not the old grant's refresh.
+          expect(row?.grantId).not.toBe(before?.grantId);
+          expect(row?.scope).toBe("read");
+          expect(row?.expiresAt).toBe(SIGNED_IN_AT + 3_600_000);
+          expect(row?.status).toBe("ok");
+        },
+      ));
+
+    it("does not drop the new sign-in on the old refresh token's invalid_grant", () =>
+      midFlight(oauthError("invalid_grant"), async ({ ask, signIns, keyHash, tokensOf }) => {
+        expect(await ask({}, EXPIRING)).toMatchObject({ status: "ok", token: SECOND_ACCESS });
+
+        expect(await tokensOf("sentry")).toEqual({
+          access_token: SECOND_ACCESS,
+          refresh_token: SECOND_REFRESH,
+        });
+        expect(signIns.get(keyHash("sentry"))?.status).toBe("ok");
+        expect(signIns.get(keyHash("sentry"))?.lastError).toBeNull();
+      }));
+
+    it("does not mark the new sign-in as failing for the old one's transient failure", () =>
+      midFlight(oauthError("server_error", 503), async ({ ask, signIns, keyHash }) => {
+        expect(await ask({}, EXPIRING)).toMatchObject({ status: "ok", token: SECOND_ACCESS });
+        expect(signIns.get(keyHash("sentry"))?.status).toBe("ok");
+      }));
+  });
 
   it("is asked for again when a request was refused with the current token, and not for the one that was replaced", () =>
     run(
