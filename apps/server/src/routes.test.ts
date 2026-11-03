@@ -1,6 +1,12 @@
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { expect, it } from "vitest";
-import { attachmentRoute, isAssetPath, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import {
+  attachmentRoute,
+  isAssetPath,
+  isMcpRoute,
+  isRegistryRpc,
+  sessionSocketId,
+} from "./routes.ts";
 
 const request = (method: string, path: string) =>
   HttpServerRequest.fromWeb(new Request(`http://worker.test${path}`, { method }));
@@ -58,4 +64,16 @@ it("routes an upload or a removal of a Session's Attachment, its name decoded", 
     sessionId: session,
     name: undefined,
   });
+});
+
+it("knows the MCP endpoint by exactly /mcp, whatever the method", () => {
+  for (const method of ["GET", "POST", "DELETE"]) {
+    expect(isMcpRoute(request(method, "/mcp"))).toBe(true);
+  }
+
+  expect(isMcpRoute(request("POST", "/mcp?x=1"))).toBe(true);
+  expect(isMcpRoute(request("POST", "/mcp/"))).toBe(false);
+  expect(isMcpRoute(request("POST", "/MCP"))).toBe(false);
+  expect(isMcpRoute(request("POST", "/mcp/sub"))).toBe(false);
+  expect(isMcpRoute(request("POST", "/rpc"))).toBe(false);
 });

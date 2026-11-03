@@ -19,6 +19,8 @@ export * from "./live-view.ts";
 
 export * from "./mcp-api.ts";
 
+export * from "./mcp-tools.ts";
+
 export * from "./mcp-transcript.ts";
 
 export * from "./ranking.ts";

@@ -1,86 +1,227 @@
 {
-  "2026-07-28": [
-    {
-      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
-      "entries": [
-        "auth/metadata-default",
-        "auth/metadata-var1",
-        "auth/metadata-var2",
-        "auth/metadata-var3",
-        "auth/basic-cimd",
-        "auth/scope-from-www-authenticate",
-        "auth/scope-from-scopes-supported",
-        "auth/scope-omitted-when-undefined",
-        "auth/scope-step-up",
-        "auth/scope-retry-limit",
-        "auth/token-endpoint-auth-basic",
-        "auth/token-endpoint-auth-post",
-        "auth/token-endpoint-auth-none",
-        "auth/pre-registration",
-        "auth/resource-mismatch",
-        "auth/offline-access-scope",
-        "auth/offline-access-not-supported",
-        "auth/authorization-server-migration",
-        "auth/iss-supported",
-        "auth/iss-not-advertised",
-        "auth/iss-supported-missing",
-        "auth/iss-wrong-issuer",
-        "auth/iss-unexpected",
-        "auth/iss-normalized",
-        "auth/metadata-issuer-mismatch"
-      ]
-    },
-    {
-      "reason": "The core has no `input_required` or `resume` yet (the questions slice)",
-      "entries": ["sep-2322-client-request-state"]
-    }
-  ],
-  "2025-11-25": [
-    {
-      "reason": "The core cannot answer a Legacy server's question yet: no `onInput` (the questions slice)",
-      "entries": ["elicitation-sep1034-client-defaults"]
-    },
-    {
-      "reason": "Remote Legacy SSE resume with `Last-Event-ID` is kept (#394 D15; `mcp-connections.md` → Requests and Legacy sessions) but not built yet (#542)",
-      "entries": ["sse-retry:client-sse-retry-timing", "sse-retry:client-sse-last-event-id"]
-    },
-    {
-      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
-      "entries": [
-        "auth/metadata-default",
-        "auth/metadata-var1",
-        "auth/metadata-var2",
-        "auth/metadata-var3",
-        "auth/basic-cimd",
-        "auth/scope-from-www-authenticate",
-        "auth/scope-from-scopes-supported",
-        "auth/scope-omitted-when-undefined",
-        "auth/scope-step-up",
-        "auth/scope-retry-limit",
-        "auth/token-endpoint-auth-basic",
-        "auth/token-endpoint-auth-post",
-        "auth/token-endpoint-auth-none",
-        "auth/pre-registration"
-      ]
-    }
-  ],
-  "2025-06-18": [
-    {
-      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
-      "entries": [
-        "auth/token-endpoint-auth-basic",
-        "auth/token-endpoint-auth-post",
-        "auth/token-endpoint-auth-none"
-      ]
-    }
-  ],
-  "2025-03-26": [
-    {
-      "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
-      "entries": [
-        "auth/2025-03-26-oauth-metadata-backcompat",
-        "auth/2025-03-26-oauth-endpoint-fallback"
-      ]
-    }
-  ]
+  "2026-07-28": {
+    "client": [
+      {
+        "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+        "entries": [
+          "auth/metadata-default",
+          "auth/metadata-var1",
+          "auth/metadata-var2",
+          "auth/metadata-var3",
+          "auth/basic-cimd",
+          "auth/scope-from-www-authenticate",
+          "auth/scope-from-scopes-supported",
+          "auth/scope-omitted-when-undefined",
+          "auth/scope-step-up",
+          "auth/scope-retry-limit",
+          "auth/token-endpoint-auth-basic",
+          "auth/token-endpoint-auth-post",
+          "auth/token-endpoint-auth-none",
+          "auth/pre-registration",
+          "auth/resource-mismatch",
+          "auth/offline-access-scope",
+          "auth/offline-access-not-supported",
+          "auth/authorization-server-migration",
+          "auth/iss-supported",
+          "auth/iss-not-advertised",
+          "auth/iss-supported-missing",
+          "auth/iss-wrong-issuer",
+          "auth/iss-unexpected",
+          "auth/iss-normalized",
+          "auth/metadata-issuer-mismatch"
+        ]
+      },
+      {
+        "reason": "The core has no `input_required` or `resume` yet (the questions slice)",
+        "entries": ["sep-2322-client-request-state"]
+      }
+    ],
+    "server": [
+      {
+        "reason": "The endpoint serves four read tools, not the suite's fixture tools (`test_simple_text`, `test_error_handling`, `test_elicitation`, and the diagnostic ones): a scenario that calls one finds it missing, so these can only pass against the suite's own everything-server (`mcp-endpoint.md` → Telemetry and testing)",
+        "entries": [
+          "tools-call-simple-text",
+          "tools-call-image",
+          "tools-call-audio",
+          "tools-call-embedded-resource",
+          "tools-call-mixed-content",
+          "tools-call-error",
+          "tools-call-with-progress",
+          "json-schema-2020-12",
+          "input-required-result-basic-elicitation",
+          "input-required-result-basic-sampling",
+          "input-required-result-basic-list-roots",
+          "input-required-result-request-state",
+          "input-required-result-multiple-input-requests",
+          "input-required-result-multi-round",
+          "input-required-result-non-tool-request",
+          "input-required-result-result-type",
+          "input-required-result-tampered-state",
+          "input-required-result-capability-check",
+          "server-stateless:sep-2575-server-rejects-undeclared-capability",
+          "server-stateless:sep-2575-missing-capability-http-400",
+          "server-stateless:sep-2575-http-server-no-independent-requests-on-stream",
+          "server-stateless:sep-2575-server-no-log-without-loglevel",
+          "http-custom-header-server-validation:sep-2243-server-no-xmcp-tool",
+          "http-custom-header-server-validation:sep-2243-server-decode-base64",
+          "http-custom-header-server-validation:sep-2243-server-validate-param-match",
+          "http-custom-header-server-validation:sep-2243-server-reject-invalid-param-chars",
+          "http-custom-header-server-validation:sep-2243-server-reject-param-mismatch",
+          "input-required-result-missing-input-response",
+          "input-required-result-ignore-extra-params"
+        ]
+      },
+      {
+        "reason": "The endpoint advertises `tools` only (`mcp-endpoint.md` → The handler): no resources, prompts, completions or logging, so a scenario for one gets `Method not found`",
+        "entries": [
+          "completion-complete",
+          "resources-list",
+          "resources-read-text",
+          "resources-read-binary",
+          "resources-templates-read",
+          "prompts-list",
+          "prompts-get-simple",
+          "prompts-get-with-args",
+          "prompts-get-embedded-resource",
+          "prompts-get-with-image",
+          "caching:sep-2549-prompts-list-caching-hints",
+          "caching:sep-2549-resources-list-caching-hints",
+          "caching:sep-2549-resources-templates-list-caching-hints",
+          "sep-2164-resource-not-found"
+        ]
+      }
+    ]
+  },
+  "2025-11-25": {
+    "client": [
+      {
+        "reason": "The core cannot answer a Legacy server's question yet: no `onInput` (the questions slice)",
+        "entries": ["elicitation-sep1034-client-defaults"]
+      },
+      {
+        "reason": "Remote Legacy SSE resume with `Last-Event-ID` is kept (#394 D15; `mcp-connections.md` → Requests and Legacy sessions) but not built yet (#542)",
+        "entries": ["sse-retry:client-sse-retry-timing", "sse-retry:client-sse-last-event-id"]
+      },
+      {
+        "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+        "entries": [
+          "auth/metadata-default",
+          "auth/metadata-var1",
+          "auth/metadata-var2",
+          "auth/metadata-var3",
+          "auth/basic-cimd",
+          "auth/scope-from-www-authenticate",
+          "auth/scope-from-scopes-supported",
+          "auth/scope-omitted-when-undefined",
+          "auth/scope-step-up",
+          "auth/scope-retry-limit",
+          "auth/token-endpoint-auth-basic",
+          "auth/token-endpoint-auth-post",
+          "auth/token-endpoint-auth-none",
+          "auth/pre-registration"
+        ]
+      }
+    ],
+    "server": [
+      {
+        "reason": "The endpoint serves four read tools, not the suite's fixture tools (`test_simple_text`, `test_error_handling`, `test_elicitation`, and the diagnostic ones): a scenario that calls one finds it missing, so these can only pass against the suite's own everything-server (`mcp-endpoint.md` → Telemetry and testing)",
+        "entries": [
+          "tools-call-simple-text",
+          "tools-call-image",
+          "tools-call-audio",
+          "tools-call-embedded-resource",
+          "tools-call-mixed-content",
+          "tools-call-error",
+          "tools-call-with-progress",
+          "json-schema-2020-12",
+          "tools-call-with-logging",
+          "tools-call-sampling",
+          "tools-call-elicitation",
+          "elicitation-sep1034-defaults",
+          "elicitation-sep1330-enums"
+        ]
+      },
+      {
+        "reason": "The endpoint advertises `tools` only (`mcp-endpoint.md` → The handler): no resources, prompts, completions or logging, so a scenario for one gets `Method not found`",
+        "entries": [
+          "completion-complete",
+          "logging-set-level",
+          "resources-list",
+          "resources-read-text",
+          "resources-read-binary",
+          "resources-templates-read",
+          "resources-subscribe",
+          "resources-unsubscribe",
+          "prompts-list",
+          "prompts-get-simple",
+          "prompts-get-with-args",
+          "prompts-get-embedded-resource",
+          "prompts-get-with-image"
+        ]
+      },
+      {
+        "reason": "Both eras are stateless (`mcp-endpoint.md` → The handler): `GET` is 405, so there is no session, no priming event, no `retry` field and no stream to resume or to open a second of",
+        "entries": ["server-sse-polling", "server-sse-multiple-streams"]
+      }
+    ]
+  },
+  "2025-06-18": {
+    "client": [
+      {
+        "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+        "entries": [
+          "auth/token-endpoint-auth-basic",
+          "auth/token-endpoint-auth-post",
+          "auth/token-endpoint-auth-none"
+        ]
+      }
+    ],
+    "server": [
+      {
+        "reason": "The endpoint serves four read tools, not the suite's fixture tools (`test_simple_text`, `test_error_handling`, `test_elicitation`, and the diagnostic ones): a scenario that calls one finds it missing, so these can only pass against the suite's own everything-server (`mcp-endpoint.md` → Telemetry and testing)",
+        "entries": [
+          "tools-call-simple-text",
+          "tools-call-image",
+          "tools-call-audio",
+          "tools-call-embedded-resource",
+          "tools-call-mixed-content",
+          "tools-call-error",
+          "tools-call-with-progress",
+          "tools-call-with-logging",
+          "tools-call-sampling",
+          "tools-call-elicitation"
+        ]
+      },
+      {
+        "reason": "The endpoint advertises `tools` only (`mcp-endpoint.md` → The handler): no resources, prompts, completions or logging, so a scenario for one gets `Method not found`",
+        "entries": [
+          "completion-complete",
+          "logging-set-level",
+          "resources-list",
+          "resources-read-text",
+          "resources-read-binary",
+          "resources-templates-read",
+          "resources-subscribe",
+          "resources-unsubscribe",
+          "prompts-list",
+          "prompts-get-simple",
+          "prompts-get-with-args",
+          "prompts-get-embedded-resource",
+          "prompts-get-with-image"
+        ]
+      }
+    ]
+  },
+  "2025-03-26": {
+    "client": [
+      {
+        "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
+        "entries": [
+          "auth/2025-03-26-oauth-metadata-backcompat",
+          "auth/2025-03-26-oauth-endpoint-fallback"
+        ]
+      }
+    ],
+    "server": []
+  }
 }

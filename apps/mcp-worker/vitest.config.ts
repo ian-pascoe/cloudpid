@@ -35,7 +35,7 @@ const bundle = async (entry: string, out: string, flags: ReadonlyArray<string>) 
 
 /**
  * The engine's tests run in workerd: the test Worker (`src/workerd.fixture.ts`, which `@cloudflare/vitest-plugin`
- * needs with `nodejs_compat`) calls `McpWorker`, an auxiliary Worker bundled as it deploys, without `nodejs_compat`,
+ * needs with `nodejs_compat`) calls `McpWorker`'s `McpEngine` and `McpServer`, an auxiliary Worker bundled as it deploys, without `nodejs_compat`,
  * whose every outbound `fetch` goes to the fake MCP servers, another auxiliary Worker (`src/fakes.fixture.ts`). Plain
  * `src/*.test.ts` run in the `node` project on the shared base.
  */
@@ -63,6 +63,7 @@ export default defineConfig(async () => {
                 durableObjects: { CALLERS: { className: "Caller", useSQLite: true } },
                 serviceBindings: {
                   MCP_ENGINE: { name: "mcp-worker", entrypoint: "McpEngine" },
+                  MCP_SERVER: { name: "mcp-worker", entrypoint: "McpServer" },
                   MCP_WORKER: "mcp-worker",
                   FAKES: "fakes",
                 },

@@ -1,10 +1,13 @@
-// docs/architecture/mcp-sign-in.md → The client document and the callback outside Access (The Access guard). The main
-// Worker does not trust that Access ran in front of it: it verifies `Cf-Access-Jwt-Assertion` itself, on every route,
-// and fails closed.
+// docs/architecture/mcp-sign-in.md → The client document and the callback outside Access (The Access guard), and
+// docs/architecture/mcp-endpoint.md → Access and identity (The guard). The main Worker does not trust that Access ran in
+// front of it: it verifies `Cf-Access-Jwt-Assertion` itself, on every route, and fails closed. On `/mcp` it checks the
+// MCP endpoint application's audience and tells the owner from the Local agent's service token; everywhere else a
+// `common_name`, or `/mcp`'s audience, is refused, so neither credential opens the app.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off globalDate:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
 
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
@@ -16,6 +19,8 @@ import {
   LOCAL_MODE_VAR,
   OWNER_EMAIL,
 } from "./deployment.ts";
+import { MCP_AUDIENCE_VAR, MCP_SERVICE_TOKEN_CLIENT_ID_VAR } from "./mcp-access.ts";
+import { isMcpRoute } from "./routes.ts";
 
 /** The header Access adds to every request it admits, and a request that skipped Access lacks. */
 export const ACCESS_ASSERTION_HEADER = "cf-access-jwt-assertion";
@@ -35,18 +40,36 @@ export type Refusal =
   | "wrong_audience"
   | "not_owner"
   | "common_name"
+  /** On `/mcp`: a `common_name` that is not the Local agent's token's, or a token assertion that is not shaped like one. */
+  | "not_service_token"
   | "not_local"
   /** The check itself failed (a lookup or a verification threw): the request is refused, never a 500. */
   | "error";
 
+/**
+ * Who an admitted request is, from the assertion and never `ctx.access.getIdentity()` (which answers `undefined` for a
+ * service token). The email is never kept: `clientId` is the owner's OAuth registration's opaque id (the assertion's
+ * `oauth.client_id`), the audit mark of which client got in.
+ */
+export type Caller =
+  | { readonly kind: "owner"; readonly clientId?: string }
+  | { readonly kind: "service_token"; readonly clientId: string }
+  /** Under `alchemy dev` (no Access), where a loopback host counts as the owner. */
+  | { readonly kind: "local" };
+
+/** The admitted request's {@link Caller}, which a route behind the guard reads. */
+export class AccessCaller extends Context.Service<AccessCaller, Caller>()(
+  "@cloudpid/server/access/AccessCaller",
+) {}
+
 /** The guard's answer for one request. */
 export type Verdict =
-  | { readonly admitted: true }
+  | { readonly admitted: true; readonly caller: Caller }
   | { readonly admitted: false; readonly reason: Refusal };
 
 const refuse = (reason: Refusal): Verdict => ({ admitted: false, reason });
 
-const ADMITTED: Verdict = { admitted: true };
+const admitted = (caller: Caller): Verdict => ({ admitted: true, caller });
 
 /** Finds a team signing key by its `kid`: `undefined` when the team does not have it, or its keys cannot be read. */
 export type TeamKeyLookup = (kid: string) => Promise<CryptoKey | undefined>;
@@ -62,8 +85,12 @@ const Claims = Schema.Struct({
   exp: Schema.optionalKey(Schema.Finite),
   nbf: Schema.optionalKey(Schema.Finite),
   email: Schema.optionalKey(Schema.String),
-  // Present on a service token's assertion and on none of the owner's; only its presence is read.
+  /** A service token's assertion has `""`; the owner's has the user's id. */
+  sub: Schema.optionalKey(Schema.String),
+  // Present on a service token's assertion and on none of the owner's.
   common_name: Schema.optionalKey(Schema.Unknown),
+  // Present on an assertion minted by managed OAuth: the DCR registration's id is read, nothing else.
+  oauth: Schema.optionalKey(Schema.Unknown),
 });
 
 const decodeHeader = Schema.decodeUnknownOption(Schema.fromJsonString(Header));
@@ -115,18 +142,28 @@ const NOT_BEFORE_LEEWAY_SECONDS = 30;
 
 /** What {@link classifyAssertion} reads of the Worker's deployment. */
 export type AssertionExpectations = {
-  /** The audience of the main application, as the deploy put it in the Worker's vars. */
+  /** The audience of the application the route is behind: the main one, or on `/mcp` the MCP endpoint's. */
   readonly audience: string;
   readonly keys: TeamKeyLookup;
   /** Unix seconds. */
   readonly now: number;
+  /**
+   * The Local agent's service token's client id, where one is admitted (on `/mcp`). Without it a `common_name` is always
+   * refused.
+   */
+  readonly serviceToken?: string | undefined;
 };
+
+const OauthClaim = Schema.Struct({ client_id: Schema.NonEmptyString });
+
+const decodeOauthClaim = Schema.decodeUnknownOption(OauthClaim);
 
 /**
  * Classifies `assertion`, a `Cf-Access-Jwt-Assertion` value: the owner (an assertion of the team's, unexpired, for the
- * main application, whose `email` is {@link OWNER_EMAIL} and that has no `common_name`), or why not. Never trusts the
- * claims before the signature has been checked, and reads no identity from anywhere else (`ctx.access.getIdentity()`
- * answers `undefined` for a service token).
+ * application's audience, whose `email` is {@link OWNER_EMAIL} and that has no `common_name`), or, where
+ * `expected.serviceToken` is set, the Local agent's service token (no `email`, `sub` empty, and a `common_name` that is
+ * the token's client id), or why not. Never trusts the claims before the signature has been checked, and reads no
+ * identity from anywhere else (`ctx.access.getIdentity()` answers `undefined` for a service token).
  */
 export const classifyAssertion = async (
   assertion: string | undefined,
@@ -173,7 +210,7 @@ export const classifyAssertion = async (
 
   if (Option.isNone(claims)) return refuse("malformed");
 
-  const { iss, aud, exp, nbf, email, common_name } = claims.value;
+  const { iss, aud, exp, nbf, email, sub, common_name, oauth } = claims.value;
 
   if (iss !== `https://${ACCESS_TEAM_DOMAIN}`) return refuse("wrong_issuer");
 
@@ -188,11 +225,27 @@ export const classifyAssertion = async (
   if (!audiences.includes(expected.audience)) return refuse("wrong_audience");
 
   // Before the email: a service token has neither an email nor the owner's identity, and is told apart from a stranger.
-  if (common_name !== undefined) return refuse("common_name");
+  if (common_name !== undefined) {
+    if (expected.serviceToken === undefined) return refuse("common_name");
+
+    const isToken =
+      common_name === expected.serviceToken &&
+      email === undefined &&
+      (sub === undefined || sub === "");
+
+    return isToken
+      ? admitted({ kind: "service_token", clientId: expected.serviceToken })
+      : refuse("not_service_token");
+  }
 
   if (email !== OWNER_EMAIL) return refuse("not_owner");
 
-  return ADMITTED;
+  // The OAuth registration's id, when the assertion was minted by managed OAuth.
+  const clientId = Option.getOrUndefined(
+    Option.map(decodeOauthClaim(oauth), ({ client_id }) => client_id),
+  );
+
+  return admitted(clientId === undefined ? { kind: "owner" } : { kind: "owner", clientId });
 };
 
 /** How long the team's keys are kept: Access rotates them about every six weeks and publishes the next ahead of time. */
@@ -302,6 +355,8 @@ const isLoopbackHost = (host: string): boolean => LOOPBACK_HOST.test(host);
 /** What the guard reads of a request. */
 export type GuardedRequest = {
   readonly assertion: string | undefined;
+  /** Whether the request is for the MCP endpoint (`isMcpRoute`): its audience, and the service token, apply. */
+  readonly mcp?: boolean;
   /** Every host the request names: its `Host` header and the host of its URL, where it has one. */
   readonly hosts: ReadonlyArray<string>;
   /** Unix seconds. */
@@ -312,29 +367,43 @@ export type GuardedRequest = {
 export type AccessGuard = {
   /** The main application's audience; undefined on `alchemy dev`, and on a deployed Worker that was not given it. */
   readonly audience: string | undefined;
+  /**
+   * The MCP endpoint's application: its audience, and the Local agent's service token's client id. Either missing
+   * refuses what depends on it: no audience refuses `/mcp` altogether, no client id refuses the token only.
+   */
+  readonly mcp?: {
+    readonly audience: string | undefined;
+    readonly serviceToken: string | undefined;
+  };
   /** The Worker was built by `alchemy dev` ({@link LOCAL_MODE_VAR}), where there is no Access. */
   readonly localMode: boolean;
   readonly keys: TeamKeyLookup;
 };
 
 /**
- * Whether `request` is the owner's. Under `alchemy dev` (local mode) a request counts as the owner only when every host
- * it names is loopback; anywhere else the assertion decides, and a Worker without its audience admits nothing.
+ * Whether `request` is the owner's, or on `/mcp` the Local agent's. Under `alchemy dev` (local mode) a request counts as
+ * the owner only when every host it names is loopback; anywhere else the assertion decides, against the audience of the
+ * application the route is behind, and a Worker without that audience admits nothing.
  */
 export const admit = async (request: GuardedRequest, guard: AccessGuard): Promise<Verdict> => {
   if (guard.localMode) {
     const loopback = request.hosts.length > 0 && Arr.every(request.hosts, isLoopbackHost);
 
-    return loopback ? ADMITTED : refuse("not_local");
+    return loopback ? admitted({ kind: "local" }) : refuse("not_local");
   }
 
-  if (guard.audience === undefined || guard.audience === "") return refuse("not_configured");
+  const audience = request.mcp === true ? guard.mcp?.audience : guard.audience;
+
+  if (audience === undefined || audience === "") return refuse("not_configured");
+
+  const serviceToken = request.mcp === true ? guard.mcp?.serviceToken : undefined;
 
   try {
     return await classifyAssertion(request.assertion, {
-      audience: guard.audience,
+      audience,
       keys: guard.keys,
       now: request.now,
+      serviceToken: serviceToken === "" ? undefined : serviceToken,
     });
   } catch {
     // A lookup or a verification that throws (a signature of the wrong length, say) is a refusal, not a 500.
@@ -346,6 +415,8 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
 export type GuardEnv = {
   readonly [ACCESS_AUDIENCE_VAR]?: string;
   readonly [LOCAL_MODE_VAR]?: string;
+  readonly [MCP_AUDIENCE_VAR]?: string;
+  readonly [MCP_SERVICE_TOKEN_CLIENT_ID_VAR]?: string;
 };
 
 /**
@@ -354,9 +425,15 @@ export type GuardEnv = {
  * would bind a same-named value of the deploying shell onto the Worker as a secret, putting a deployed Worker in local
  * mode.
  */
-export const guardFromEnv = (env: GuardEnv): Pick<AccessGuard, "audience" | "localMode"> => ({
+export const guardFromEnv = (
+  env: GuardEnv,
+): Pick<AccessGuard, "audience" | "localMode" | "mcp"> => ({
   audience: env[ACCESS_AUDIENCE_VAR],
   localMode: env[LOCAL_MODE_VAR] === "true",
+  mcp: {
+    audience: env[MCP_AUDIENCE_VAR],
+    serviceToken: env[MCP_SERVICE_TOKEN_CLIENT_ID_VAR],
+  },
 });
 
 const forbidden = HttpServerResponse.text("Forbidden", {
@@ -377,8 +454,9 @@ const hostsOf = (request: HttpServerRequest.HttpServerRequest): ReadonlyArray<st
 };
 
 /**
- * Runs `handler` for the owner's requests only; every other request gets a bare 403 and `handler` never sees it. A
- * `fetch` through a service binding carries no assertion, so it is refused here (internal callers use RPC entrypoints).
+ * Runs `handler` for the owner's requests (and on `/mcp` the Local agent's) only, with who they are as {@link AccessCaller};
+ * every other request gets a bare 403 and `handler` never sees it. A `fetch` through a service binding carries no
+ * assertion, so it is refused here (internal callers use RPC entrypoints).
  */
 export const guardAccess =
   (guard: AccessGuard) =>
@@ -387,7 +465,7 @@ export const guardAccess =
   ): Effect.Effect<
     HttpServerResponse.HttpServerResponse,
     E,
-    R | HttpServerRequest.HttpServerRequest
+    Exclude<R, AccessCaller> | HttpServerRequest.HttpServerRequest
   > =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -395,7 +473,12 @@ export const guardAccess =
 
       const verdict = yield* Effect.promise(() =>
         admit(
-          { assertion: request.headers[ACCESS_ASSERTION_HEADER], hosts: hostsOf(request), now },
+          {
+            assertion: request.headers[ACCESS_ASSERTION_HEADER],
+            hosts: hostsOf(request),
+            mcp: isMcpRoute(request),
+            now,
+          },
           guard,
         ),
       );
@@ -408,5 +491,5 @@ export const guardAccess =
         return forbidden;
       }
 
-      return yield* handler;
+      return yield* Effect.provideService(handler, AccessCaller, verdict.caller);
     });
