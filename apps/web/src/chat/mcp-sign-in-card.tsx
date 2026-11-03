@@ -4,7 +4,7 @@
 // (marked as the agent's own words, never as cloudpid's) and what is in the way. "Sign in" is a link that opens the start
 // page in a new tab, naming this Session and request so the callback tells the Session; Decline tells the agent no, with
 // the owner's reason when they give one. Nothing here holds a token: the page the link opens does the sign-in.
-import type { McpSignInRequest } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, MAX_SIGN_IN_REASON, type McpSignInRequest } from "@cloudpid/protocol";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import { KeyRound } from "lucide-react";
@@ -20,7 +20,7 @@ import {
   sessionStatusAtom,
   taskGraphAtom,
 } from "../session/atoms.ts";
-import { mcpSignInRequestHref } from "../settings/mcp-sign-in-model.ts";
+import { mcpSignInStartHref } from "../settings/mcp-sign-in-model.ts";
 import { useShownSessionId } from "./conversation.ts";
 import { sourceLabel } from "./mcp-elicitation-form.ts";
 import { requestCardId } from "./request-anchor.ts";
@@ -60,13 +60,13 @@ export const McpSignInCard = ({ request, sessionId, disabled, agent, onDecline }
   const origin = sourceLabel(request.source);
   const off = disabled || sent;
 
-  const href = mcpSignInRequestHref({
-    environment: request.environment,
+  const href = mcpSignInStartHref({
+    scope: request.environment,
+    global: GLOBAL_SCOPE,
     server: request.server,
-    session: sessionId,
-    request: request.id,
     stepUp: request.why === "step_up",
     returnPath: sessionPath(sessionId),
+    requester: { session: sessionId, request: request.id },
   });
 
   return (
@@ -130,7 +130,7 @@ export const McpSignInCard = ({ request, sessionId, disabled, agent, onDecline }
             className="h-8 w-48 text-xs"
             value={reason}
             disabled={off}
-            maxLength={300}
+            maxLength={MAX_SIGN_IN_REASON}
             onChange={(event) => {
               setReason(event.target.value);
             }}

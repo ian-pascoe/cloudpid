@@ -264,38 +264,23 @@ export const mcpSignInStartHref = (input: {
   readonly global: string;
   readonly server: string;
   readonly stepUp: boolean;
-  /** Where Back goes: the section's own path. */
+  /** Where Back goes: the section's own path, or the Session's page for a Sign-in request's card. */
   readonly returnPath: string;
+  /**
+   * The Sign-in request the link answers (a card in a Session): the callback resolves the requests of the sign-in's key,
+   * and the Session is named so the page can tell where it came from.
+   */
+  readonly requester?: { readonly session: string; readonly request: string };
 }): string => {
   const query = new URLSearchParams({
     environment: input.scope === input.global ? "all" : input.scope,
     server: input.server,
   });
 
-  if (input.stepUp) query.set("step_up", "1");
-
-  query.set("return", input.returnPath);
-
-  return `/oauth/mcp/start?${query.toString()}`;
-};
-
-/**
- * The link a Sign-in request's card opens, in a new tab (`docs/architecture/mcp-sign-in.md` → Sign-in requests): the start
- * link of the request's server in its Environment, naming the Session and the request, so the callback tells the Session
- * which request the sign-in answered, and Back returns to the Session's page.
- */
-export const mcpSignInRequestHref = (input: {
-  readonly environment: string;
-  readonly server: string;
-  readonly session: string;
-  readonly request: string;
-  readonly stepUp: boolean;
-  readonly returnPath: string;
-}): string => {
-  const query = new URLSearchParams({ environment: input.environment, server: input.server });
-
-  query.set("session", input.session);
-  query.set("request", input.request);
+  if (input.requester !== undefined) {
+    query.set("session", input.requester.session);
+    query.set("request", input.requester.request);
+  }
 
   if (input.stepUp) query.set("step_up", "1");
 
