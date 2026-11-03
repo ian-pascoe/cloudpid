@@ -27,6 +27,7 @@ import { decodeCardDiff, diffTotals } from "../call-diff.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
+import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
 import { NestedCall, OmittedCalls } from "./nested-calls.ts";
 import { keepClosedInView } from "./scroller.ts";
 import { toolSummary } from "./tool-summary.ts";
@@ -397,6 +398,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
 
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
   const changes = changesOf(artifact);
+  const questions = questionsOf(artifact);
 
   // The Call diff of an `edit` or `write` that finished: only a call with a result has one.
   const diff = Option.getOrUndefined(Option.map(decodeCardDiff(artifact), (found) => found.diff));
@@ -419,6 +421,16 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       {Arr.map(changes, (change) => (
         <Change key={change.field} change={change} />
       ))}
+      {questions.length > 0 && (
+        <div className="mt-2 first:mt-0">
+          <div className="text-xs font-medium text-muted-foreground">Questions</div>
+          <ul className="mt-1 text-xs break-words">
+            {Arr.map(questions, (question, index) => (
+              <li key={index}>{elicitationLine(question)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {(calls.length > 0 || omitted !== undefined) && (
         <NestedCalls parentId={toolCallId} calls={calls} omitted={omitted} />
       )}

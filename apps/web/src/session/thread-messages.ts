@@ -17,6 +17,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { type CallDiff, callDiffOf } from "../call-diff.ts";
 import { madeChanges, type ShownChange } from "../chat/agent-change.ts";
+import { askedQuestions, type ShownElicitation } from "../chat/mcp-elicitation-detail.ts";
 import {
   liveCalls,
   type NestedCall,
@@ -140,13 +141,14 @@ const resolveCall = (
     const subagent = result.name === "subagent" ? startedSubagent(result.details) : undefined;
     const images = shownImages(result.content);
     const changes = madeChanges(result.details);
+    const elicitations = askedQuestions(result.details);
     const diff = callDiffOf(result.name, result.details, result.error);
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
 
     // What a tool left besides its text: the calls it made, which its result lists once it has ended (and how many it left
     // out of the list), the subagent a `subagent` call started, the images it returned (a browser's screenshots), the Agent
-    // change it made, and the patch an `edit` or `write` recorded (its Call diff).
+    // change it made, the questions its MCP server asked, and the patch an `edit` or `write` recorded (its Call diff).
     const artifact: CardArtifact = {};
 
     if (nested.length > 0) artifact.nested = nested;
@@ -159,6 +161,8 @@ const resolveCall = (
 
     if (changes.length > 0) artifact.changes = changes;
 
+    if (elicitations.length > 0) artifact.elicitations = elicitations;
+
     if (diff !== undefined) artifact.diff = diff;
 
     turn?.content.splice(
@@ -169,6 +173,7 @@ const resolveCall = (
         subagent === undefined &&
         images.length === 0 &&
         changes.length === 0 &&
+        elicitations.length === 0 &&
         diff === undefined
         ? resolved
         : { ...resolved, artifact },
@@ -183,6 +188,7 @@ type CardArtifact = {
   subagent?: StartedSubagent;
   images?: { readonly mimeType: string; readonly data: string }[];
   changes?: ReadonlyArray<ShownChange>;
+  elicitations?: ReadonlyArray<ShownElicitation>;
   diff?: CallDiff;
 };
 
