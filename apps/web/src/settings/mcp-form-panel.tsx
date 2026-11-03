@@ -42,6 +42,7 @@ import {
   type McpReferenceNames,
   type McpRow,
   type McpScopeView,
+  repoDirectoryOf,
 } from "./mcp-model.ts";
 import { MessageList, OptionSelect, ReferencesNotice } from "./mcp-parts.tsx";
 import { type McpReferencesState, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
@@ -328,6 +329,10 @@ const titleOf = (draft: McpFormDraft, atGlobal: boolean): string => {
       return `Edit ${draft.fields.name}`;
     case "replace":
       return `Use ${draft.fields.name} in this environment on its own`;
+    case "copy":
+      return atGlobal
+        ? `Copy ${draft.fields.name} from Repo ${draft.copiedFrom ?? ""} to Global`
+        : `Copy ${draft.fields.name} from Repo ${draft.copiedFrom ?? ""} to this environment`;
   }
 };
 
@@ -370,7 +375,7 @@ export const McpFormPanel = ({
         rules: {
           names: view.names,
           atGlobal,
-          editing: draft.mode === "add" ? null : fields.name,
+          editing: draft.mode === "add" || draft.mode === "copy" ? null : fields.name,
         },
         references: known,
       })
@@ -434,6 +439,13 @@ export const McpFormPanel = ({
         <p className="text-xs text-muted-foreground">
           A copy of Global's entry, kept as this environment's own: it replaces Global's here and
           stops following its changes. Its adjustments, if it has any, are dropped.
+        </p>
+      )}
+      {draft.mode === "copy" && (
+        <p className="text-xs text-muted-foreground">
+          {atGlobal
+            ? "A copy of the Repo's entry, kept Global and as copied: it stops following the Repo's commits and needs its own MCP sign-in. Every environment that follows Global gets it, and its ${NAME} values read each environment's Secrets as well as its Variables. Its working directory is the Repo's in this environment; check it fits every environment."
+            : "A copy of the Repo's entry, kept as this environment's own and as copied: it hides the Repo's here, stops following its commits and needs its own MCP sign-in. Its ${NAME} values read this environment's Secrets as well as its Variables."}
         </p>
       )}
       {draft.mode === "add" && !atGlobal && Arr.contains(view.names.global, fields.name) && (
@@ -745,6 +757,8 @@ export const McpToolsPanel = ({
   const gone = row === null || !isFollowedRow(row);
   const busy = saved.waiting;
   const listId = `mcp-tools-${scope}`;
+  const directory = row === null ? null : repoDirectoryOf(row);
+  const base = directory === null ? "Global's" : `Repo ${directory}'s`;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -766,7 +780,7 @@ export const McpToolsPanel = ({
     >
       <h3 className="text-sm font-semibold">Tool exposure of {draft.name}</h3>
       <p className="text-xs text-muted-foreground">
-        Saved as this environment's own tool exposure for {draft.name}, over Global's
+        Saved as this environment's own tool exposure for {draft.name}, over {base}
         {row?.adjusted.includes("toolExposure") === true ? "" : ", which it follows until you save"}
         . The first pattern that matches wins; an exact name goes before any pattern.
       </p>
@@ -780,8 +794,9 @@ export const McpToolsPanel = ({
       />
       {gone && (
         <p role="alert" className="text-sm text-destructive">
-          {draft.name} is not one of Global's servers in this environment any more, so there is
-          nothing to adjust: close this and look at the list again.
+          {draft.name} is not one of {directory === null ? "Global's" : "a Repo's"} servers in this
+          environment any more, so there is nothing to adjust: close this and look at the list
+          again.
         </p>
       )}
       <DialogProblem problem={settledFailureOf(saved)} />

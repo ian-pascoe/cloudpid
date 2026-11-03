@@ -7,6 +7,8 @@ import {
   fieldSecret,
   fieldSkill,
   MAX_ENVIRONMENT_SECRETS,
+  McpNoEnvironment,
+  McpRepoFiles,
   NEW_WORKSPACE,
   parseRepoSource,
   RegistryRpcs,
@@ -92,6 +94,10 @@ export type SessionObjects = {
     workspace: string,
   ) => Effect.Effect<ReadonlyArray<string>>;
 };
+
+/** `mcpRepoFiles`' answer for the files the Registry gave, or null for an Environment it does not list. */
+const repoFilesView = (files: Parameters<typeof McpRepoFiles.make>[0]["files"] | null) =>
+  files === null ? McpNoEnvironment.make({}) : McpRepoFiles.make({ files });
 
 /**
  * What the endpoint reaches besides the Registry: the objects behind the Workspaces and the Sessions, and a way to run
@@ -755,7 +761,12 @@ export const serveRegistryRpc = <R = never>(
               // The spare holds the Repos it was made with: one made before is stale now, and so is the Build.
               yield* background(spares.of(environment));
               yield* background(builds.of(environment));
-              yield* background(mcp.sync(environment));
+              // The Repo's `.pi/mcp.json` is looked at first; the set it changes is pushed after.
+              yield* background(
+                registry
+                  .mcpLookRepoFiles({ environment, repo, reason: "moved" })
+                  .pipe(Effect.andThen(mcp.sync(environment))),
+              );
 
               return repo;
             case "taken":
@@ -1156,6 +1167,14 @@ export const serveRegistryRpc = <R = never>(
               ),
             ),
           ),
+        ),
+      mcpRepoFiles: ({ environment }) =>
+        registry.mcpRepoFiles({ environment }).pipe(Effect.map(repoFilesView)),
+      mcpReloadRepoFiles: ({ environment, repo }) =>
+        registry.mcpLookRepoFiles({ environment, repo, reason: "reload" }).pipe(
+          // The set the new copies make is pushed once the answer is sent.
+          Effect.tap((files) => (files === null ? Effect.void : background(mcp.sync(environment)))),
+          Effect.map(repoFilesView),
         ),
       mcpServers: ({ environment }) => mcpStatus.servers(environment),
       mcpServerLog: (input) => mcpStatus.serverLog(input),

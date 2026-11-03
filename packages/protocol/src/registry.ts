@@ -13,6 +13,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { MarkedOrigin } from "./mcp-api.ts";
+import { McpRepoFilesView } from "./mcp-repo-files.ts";
 import { McpReconnectView, McpServerLogView, McpServersView } from "./mcp-status.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
@@ -1120,6 +1121,24 @@ export class RegistryRpcs extends RpcGroup.make(
       servers: Schema.String.pipe(Schema.Array, Schema.optionalKey),
     },
     success: McpReconnectView,
+  }),
+  /**
+   * Each of an Environment's Repos' `.pi/mcp.json` as the Registry last looked at it, in the Environment's Repo order
+   * (`docs/architecture/mcp-configuration.md` → A Repo's `.pi/mcp.json`): its state, copy, read time and error. It reads
+   * what the Registry holds and asks GitHub for nothing.
+   */
+  Rpc.make("mcpRepoFiles", {
+    payload: { environment: EnvironmentId },
+    success: McpRepoFilesView,
+  }),
+  /**
+   * The owner's Reload: look at `repo`'s `.pi/mcp.json` (every Repo's when absent) on GitHub now, whatever the last look
+   * was. A Repo that cannot be read loses its last good copy, as it does by Reload alone. The Environment's MCP servers
+   * follow the new copies. Answers the files as `mcpRepoFiles` does.
+   */
+  Rpc.make("mcpReloadRepoFiles", {
+    payload: { environment: EnvironmentId, repo: Schema.optionalKey(RepoName) },
+    success: McpRepoFilesView,
   }),
   /**
    * Replace Environment `environment`'s own Instructions with `instructions` (empty for none), shown to its Sessions

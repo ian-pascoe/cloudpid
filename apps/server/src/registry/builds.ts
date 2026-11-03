@@ -27,6 +27,8 @@ import {
 } from "../workspace/build-record.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import { writeEnvironmentSettings } from "./environment-settings.ts";
+import type { McpPushes } from "../mcp/push.ts";
+import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { noEnvironment, reason } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import type { Spares } from "./rpc.ts";
@@ -183,12 +185,19 @@ export const buildUpkeep = (
   {
     workspaces,
     spares,
+    mcp,
   }: {
     readonly workspaces: Pick<
       WorkspaceObjects,
       "buildState" | "startBuild" | "cancelBuild" | "destroy"
     >;
     readonly spares: Pick<Spares, "of">;
+    /**
+     * Hands an Environment's MCP server set to its host. A Build that found a default branch moved had the Registry look at
+     * that Repo's `.pi/mcp.json` (`recordBuild`), and what that changed is pushed here; without it the host takes the
+     * set at its next pull.
+     */
+    readonly mcp?: Pick<McpPushes, "sync"> | undefined;
   },
 ): Builds => {
   /** Keep one Environment's Build current: what was asked of its Build object, and whether a Build was asked for or is under way. */
@@ -253,6 +262,10 @@ export const buildUpkeep = (
           build: answered.last,
           status: answered.progress,
         });
+
+        if (mcp !== undefined && buildMovedRepos(work.recorded.build, answered.last).length > 0) {
+          yield* mcp.sync(work.environment);
+        }
 
         // The spare is made from the last good Build: one made from another is stale now.
         if (answered.last?.snapshot.id !== work.recorded.build?.snapshot.id) {

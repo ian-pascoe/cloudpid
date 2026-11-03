@@ -35,6 +35,7 @@ import {
   mcpReferencesOf,
   type McpReferenceNames,
   type McpRow,
+  repoDirectoryOf,
 } from "./mcp-model.ts";
 
 /** A `KEY=value` row of `env` or `headers`. */
@@ -372,8 +373,13 @@ export const MCP_SAMPLING_LABELS: Readonly<Record<McpSampling, string>> = {
 /** The form of an Add or an Edit: its fields, which tab is shown, and the JSON tab's text. */
 export interface McpFormDraft {
   readonly kind: "form";
-  /** `add`; `edit` of the Scope's own server `name`; `replace`, a copy of Global's `name` as this Environment's own. */
-  readonly mode: "add" | "edit" | "replace";
+  /**
+   * `add`; `edit` of the Scope's own server `name`; `replace`, a copy of Global's `name` as this Environment's own; `copy`,
+   * a copy of a Repo's server (`copiedFrom`) kept at the Scope.
+   */
+  readonly mode: "add" | "edit" | "replace" | "copy";
+  /** For a `copy`, the directory of the Repo whose entry it is. */
+  readonly copiedFrom?: string | undefined;
   readonly fields: McpFields;
   readonly tab: "form" | "json";
   readonly json: string;
@@ -393,9 +399,11 @@ export const newMcpForm = (
   mode: McpFormDraft["mode"],
   name: string,
   written: Schema.JsonObject | null,
+  copiedFrom?: string,
 ): McpFormDraft => ({
   kind: "form",
   mode,
+  copiedFrom,
   fields: written === null ? emptyMcpFields() : fieldsOfEntry(name, written),
   tab: "form",
   json: "",
@@ -436,6 +444,13 @@ export const mcpFormShowing = (draft: McpFormDraft, tab: McpFormDraft["tab"]): M
     jsonProblem: null,
   };
 };
+
+/**
+ * The form of a copy of Repo server `row`'s entry, to keep at the Scope whose panel shows it: the entry as its file gives it
+ * (`${NAME}` kept, `cwd` made absolute), the owner's from then on, checked as any entry of the Scope is.
+ */
+export const mcpCopyForm = (row: McpRow): McpFormDraft =>
+  newMcpForm("copy", row.name, row.written, repoDirectoryOf(row) ?? undefined);
 
 /** The editor of Global server `row`'s tool exposure at an Environment: it starts from the exposure in force. */
 export const toolsDraftOf = (row: McpRow): McpToolsDraft => ({

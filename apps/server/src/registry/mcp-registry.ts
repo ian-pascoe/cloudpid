@@ -9,7 +9,7 @@
 // never brings back an older set.
 //
 // The set is computed from the layers each time, never stored: the Settings (Global's and the Environment's) are the
-// source, and the Repo layers (`.pi/mcp.json`, #468) join them when the Registry keeps them.
+// source, and the Repo layers (`.pi/mcp.json`, as the Registry last read each) join them.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 import { mcpConnectionKey, type McpResolvedServer } from "@cloudpid/config";
 import {
@@ -33,6 +33,7 @@ import {
   resolvedMcpServers,
   shouldPushMcpSet,
 } from "./mcp-set.ts";
+import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { signInsRevisionOf } from "./mcp-sign-ins.ts";
 import { resolveMcpServerValues } from "./mcp-values.ts";
 import { type DocumentStore, mcpLayersOf } from "./settings.ts";
@@ -43,6 +44,7 @@ export const MCP_HANDED_DOCUMENT = "mcp-handed";
 
 /** The store as the MCP set reads it: the Settings at both Scopes, and the Environments. */
 export type McpSetStore = DocumentStore &
+  McpRepoFilesStore &
   Pick<RegistryStore, "getSettingsOverrides" | "listEnvironments" | "getEnvironmentSettings">;
 
 /** `environment`'s MCP server set, without its revision, or null when it is not registered. */
@@ -52,11 +54,15 @@ export const environmentMcpSet = (
 ): McpSetContent | null => {
   const overrides = store.getSettingsOverrides(environment);
 
-  return overrides === null ? null : mcpServerSetOf(mcpLayersOf(store, overrides));
+  return overrides === null
+    ? null
+    : mcpServerSetOf(mcpLayersOf(store, overrides, mcpRepoLayers(store, environment)));
 };
 
 /** The store as one Environment's servers are resolved from it: Global's document and the Environment's Overrides. */
-export type ResolvedServersStore = DocumentStore & Pick<RegistryStore, "getSettingsOverrides">;
+export type ResolvedServersStore = DocumentStore &
+  McpRepoFilesStore &
+  Pick<RegistryStore, "getSettingsOverrides">;
 
 /**
  * The names of `environment`'s MCP servers, in the set's order, or null when it is not registered. Read-only, unlike the
@@ -79,7 +85,9 @@ export const environmentResolvedServers = (
 ): ReadonlyArray<McpResolvedServer> | null => {
   const overrides = store.getSettingsOverrides(environment);
 
-  return overrides === null ? null : resolvedMcpServers(mcpLayersOf(store, overrides));
+  return overrides === null
+    ? null
+    : resolvedMcpServers(mcpLayersOf(store, overrides, mcpRepoLayers(store, environment)));
 };
 
 /** The server `name` of `environment`'s set as it resolves, for its values and its sign-in. */

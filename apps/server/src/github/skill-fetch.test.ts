@@ -38,6 +38,7 @@ const readerOf = (files: Repo, options: { truncated?: boolean } = {}) => {
     },
     tree: async () => listing(),
     headTree: async () => listing(),
+    file: async () => null,
     blob: async (_repo, sha) => {
       reads.push(sha);
 
@@ -493,6 +494,7 @@ describe("fetchSkills", () => {
         },
         tree: async () => ({ entries: [], truncated: false }),
         headTree: async () => ({ entries: [], truncated: false }),
+        file: async () => null,
         blob: async () => new Uint8Array(),
       },
       { source: source("o/gone") },
@@ -513,6 +515,7 @@ describe("fetchSkills", () => {
         },
         tree: async () => ({ entries: [], truncated: false }),
         headTree: async () => ({ entries: [], truncated: false }),
+        file: async () => null,
         blob: async () => new Uint8Array(),
       },
       { source: source("o/r") },

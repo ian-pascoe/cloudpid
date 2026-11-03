@@ -33,6 +33,17 @@ const TreeAnswer = Schema.Struct({
 
 const decodeTree = Schema.decodeUnknownOption(TreeAnswer);
 
+/** What GitHub's Contents API says of a path that is a file: the rest of its answer (the content) is read apart, by blob. */
+const FileAnswer = Schema.Struct({
+  type: Schema.Literal("file"),
+  sha: Schema.String,
+  size: Schema.Finite,
+});
+
+const decodeFile = Schema.decodeUnknownOption(FileAnswer);
+
+const isReadError = Schema.is(GithubReadError);
+
 const ErrorAnswer = Schema.Struct({ message: Schema.String });
 
 const decodeError = Schema.decodeUnknownOption(ErrorAnswer);
@@ -155,27 +166,29 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
     return { truncated: decoded.value.truncated, entries: decoded.value.tree };
   };
 
+  const commitOf: RepoReader["commit"] = async (repo, ref) => {
+    const response = await ask(
+      repo,
+      `${repoPath(repo)}/commits/${ref === null ? "HEAD" : refPath(ref)}`,
+      "application/vnd.github.sha",
+      (installed) =>
+        ref === null
+          ? gone(repo)(installed)
+          : `${gone(repo)(installed)} Or it has no ref ${JSON.stringify(ref)} (a branch, a tag or a commit).`,
+    );
+
+    const sha = (await bodyOf(() => response.text())).trim();
+
+    if (!/^[0-9a-f]{40}$/.test(sha)) {
+      throw GithubReadError.of("failed", "GitHub's answer to the commit was not a SHA");
+    }
+
+    return sha;
+  };
+
   return {
-    commit: async (repo, ref) => {
-      const response = await ask(
-        repo,
-        `${repoPath(repo)}/commits/${ref === null ? "HEAD" : refPath(ref)}`,
-        "application/vnd.github.sha",
-        (installed) =>
-          ref === null
-            ? gone(repo)(installed)
-            : `${gone(repo)(installed)} Or it has no ref ${JSON.stringify(ref)} (a branch, a tag or a commit).`,
-      );
-
-      const sha = (await bodyOf(() => response.text())).trim();
-
-      if (!/^[0-9a-f]{40}$/.test(sha)) {
-        throw GithubReadError.of("failed", "GitHub's answer to the commit was not a SHA");
-      }
-
-      return sha;
-    },
-    tree: (repo, commit) => treeAt(repo, commit),
+    commit: commitOf,
+    tree: (repo, at) => treeAt(repo, at),
     // One request, whatever the ref is: GitHub's Trees API takes a branch, a tag or a SHA, and `HEAD` is the default branch.
     headTree: (repo, ref) => treeAt(repo, ref === null ? "HEAD" : refPath(ref)),
     blob: async (repo, sha) => {
@@ -187,6 +200,32 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
       );
 
       return new Uint8Array(await bodyOf(() => response.arrayBuffer()));
+    },
+    file: async (repo, ref, path) => {
+      const query = ref === null ? "" : `?ref=${encodeURIComponent(ref)}`;
+
+      try {
+        const response = await ask(
+          repo,
+          `${repoPath(repo)}/contents/${path.split("/").map(segment).join("/")}${query}`,
+          "application/vnd.github+json",
+          gone(repo),
+        );
+
+        // A directory, a link or a submodule at the path is no file.
+        const found = decodeFile(await response.json().catch(() => null));
+
+        return Option.isNone(found) ? null : { sha: found.value.sha, size: found.value.size };
+      } catch (cause) {
+        // GitHub's 404 is the repo's and the path's alike: the commit asked for says which it was.
+        if (isReadError(cause) && cause.kind === "not_found") {
+          await commitOf(repo, ref);
+
+          return null;
+        }
+
+        throw cause;
+      }
     },
   };
 };

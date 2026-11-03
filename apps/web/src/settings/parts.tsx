@@ -160,7 +160,7 @@ export const ScopeChip = ({ kind }: { kind: ScopeMarkKind }) => (
 /**
  * A field's mark at an Environment: Inherited, with Override (which keeps Global's value as the Environment's own), or
  * Overridden, with Reset to Global (and no Override without an `onOverride`). `name` names the field to assistive
- * technology.
+ * technology; `from` is what a Reset goes back to where that is not Global (a Repo's server).
  */
 export const FieldMark = ({
   kind,
@@ -168,9 +168,12 @@ export const FieldMark = ({
   onOverride,
   onReset,
   busy = false,
+  from = "Global",
 }: {
   kind: ScopeMarkKind;
   name: string;
+  /** What a Reset goes back to: Global, or a Repo's file. */
+  from?: string;
   /** Override's action; left out where a field is overridden by changing it (an MCP server's switch), with no button. */
   onOverride?: (() => void) | undefined;
   onReset: () => void;
@@ -185,10 +188,10 @@ export const FieldMark = ({
         size="sm"
         disabled={busy}
         className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-        aria-label={kind === "inherited" ? `Override ${name}` : `Reset ${name} to Global`}
+        aria-label={kind === "inherited" ? `Override ${name}` : `Reset ${name} to ${from}`}
         onClick={kind === "inherited" ? onOverride : onReset}
       >
-        {kind === "inherited" ? "Override" : "Reset to Global"}
+        {kind === "inherited" ? "Override" : `Reset to ${from}`}
       </Button>
     )}
   </span>

@@ -124,6 +124,60 @@ describe("githubContents", () => {
     expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe("Bearer token-owner-1");
   });
 
+  describe("file", () => {
+    const notFound = () => json({ message: "Not Found" }, { status: 404 });
+
+    it("finds a file's blob and size on the default branch, escaping each segment of its path", async () => {
+      const { reader, calls } = harness([
+        json({ type: "file", sha: "b1", size: 42, name: "mcp.json", content: "e30=" }),
+      ]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toEqual({ sha: "b1", size: 42 });
+
+      expect(calls[0]?.url).toBe("https://api.github.com/repos/acme/skills/contents/.pi/mcp.json");
+    });
+
+    it("asks at a ref when given one", async () => {
+      const { reader, calls } = harness([json({ type: "file", sha: "b1", size: 1 })]);
+
+      await reader.file(repo, "feature/a", ".pi/mcp.json");
+
+      expect(calls[0]?.url).toBe(
+        "https://api.github.com/repos/acme/skills/contents/.pi/mcp.json?ref=feature%2Fa",
+      );
+    });
+
+    it("has no file where the repo is readable and the path is not there", async () => {
+      const { reader, calls } = harness([notFound(), new Response(SHA)]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toBeNull();
+
+      // The repo told apart from the path by its head commit.
+      expect(calls[1]?.url).toBe("https://api.github.com/repos/acme/skills/commits/HEAD");
+    });
+
+    it("fails where the repo itself is not there, and names why", async () => {
+      const { reader } = harness([notFound(), notFound()]);
+
+      const error = await failure(reader.file(repo, null, ".pi/mcp.json"));
+
+      expect(error.kind).toBe("not_found");
+      expect(error.message).toContain("acme/skills");
+    });
+
+    it("has no file where the path is a directory", async () => {
+      const { reader } = harness([json([{ type: "file", sha: "b1", size: 1 }])]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toBeNull();
+    });
+
+    it("fails as every read does for a refused token", async () => {
+      const { reader } = harness([json({ message: "Bad credentials" }, { status: 403 })]);
+
+      expect((await failure(reader.file(repo, null, ".pi/mcp.json"))).kind).toBe("refused");
+    });
+  });
+
   it("lists the tree recursively at the commit", async () => {
     const { reader, calls } = harness([
       json({

@@ -61,6 +61,7 @@ const readerOf = (files: Repo, commit = COMMIT): RepoReader => {
     commit: async () => commit,
     tree: listing,
     headTree: listing,
+    file: async () => null,
     blob: async (_repo, sha) => new TextEncoder().encode(files[sha] ?? ""),
   };
 };

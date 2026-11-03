@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- JSX lists of servers are native arrays.
+// @effect-diagnostics preferEffectArray:off globalDate:off -- JSX lists of servers are native arrays, and a file's read time is said against now as the Skills page does.
 
 // The MCP servers section of the Settings page (docs/architecture/mcp-configuration.md → The Settings page's "MCP servers"
 // section; ADR-0027): one list by name of the servers at the Scope, each with its transport and target, an enabled switch,
@@ -8,39 +8,48 @@
 // Global server's switch and select write an adjustment, and _Add_ writes an entry of its own. The form, the import and
 // the tool exposure editor open above the list.
 //
-// As built, left to their tickets: a Repo's file, its rows and its Reload (#468: `mcpScopeView` takes its layers); the
-// Sign-in (OAuth) disclosure and a row's sign-in state (#469: `SIGN_IN_SEAM` of the form, and the row's meta line); and "Changed
+// At an Environment, above the servers, each Repo's `.pi/mcp.json` as the Registry last looked at it (its path, when it was
+// read, its error and what is wrong with it, with Reload); a Repo's servers are rows of the list, read-only (view as JSON),
+// with the switch and select writing this environment's adjustment, and _Copy to this environment_ / _Copy to Global_.
+//
+// As built, left to their tickets: the Sign-in (OAuth) disclosure and a row's sign-in state (#469: `SIGN_IN_SEAM` of the form, and the row's meta line); and "Changed
 // by the agent · 5 min ago" on a row (the `settings_mcp_*` tools, #484, are what make the records it reads: the row's
 // meta line is where it goes).
 
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, readMcpRepoFileState } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Record from "effect/Record";
-import { Plus, Trash2, Upload } from "lucide-react";
+import { Plus, RefreshCw, Trash2, Upload } from "lucide-react";
 import type { FormEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "../components/ui/dialog.tsx";
 import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
+import { environmentListAtom } from "../environments-state.ts";
+import { relativeTime } from "../format.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
-import { settingsPath } from "../router.ts";
+import { navigate, settingsPath } from "../router.ts";
 import { ExposureSelect, McpFormPanel, McpToolsPanel } from "./mcp-form-panel.tsx";
-import { newMcpForm, toolsDraftOf } from "./mcp-form.ts";
+import { mcpCopyForm, newMcpForm, toolsDraftOf } from "./mcp-form.ts";
 import { McpImportPanel } from "./mcp-import-panel.tsx";
 import {
   isFollowedRow,
   isOwnRow,
+  isRepoRow,
   type McpAdjustmentKey,
+  type McpFileRow,
   type McpProblemLine,
   type McpRow,
   type McpScopeView,
   type McpStatusChip,
   mcpMissingReferenceProblems,
   mcpProblemText,
+  mcpRepoReferenceProblems,
   type McpStatuses,
+  repoDirectoryOf,
 } from "./mcp-model.ts";
 import { MessageList } from "./mcp-parts.tsx";
 import {
@@ -49,8 +58,10 @@ import {
   mcpPanelAtom,
   mcpReferenceNamesAtom,
   mcpRemoveAtom,
+  mcpRepoFilesAtom,
   mcpStatusesAtom,
   mcpViewAtom,
+  reloadMcpRepoAtom,
   removeMcpAtom,
 } from "./mcp-state.ts";
 import { mcpAdjustmentFields, type McpChange, mcpRowChanges } from "./mcp-write.ts";
@@ -64,6 +75,10 @@ const targetOf = (row: McpRow): string =>
 
 /** The source badge: where the server's definition is, as the Scope sees it. */
 const sourceBadgeOf = (row: McpRow, atGlobal: boolean): string => {
+  const directory = repoDirectoryOf(row);
+
+  if (directory !== null) return `From Repo ${directory}`;
+
   switch (row.kind) {
     case "global":
     case "inherited":
@@ -116,29 +131,34 @@ const AdjustmentMarks = ({
   row: McpRow;
   busy: boolean;
   onReset: (key: McpAdjustmentKey) => void;
-}) => (
-  <ul
-    aria-label={`${row.name}: inherited and overridden`}
-    className="flex flex-wrap gap-x-4 gap-y-1"
-  >
-    {MARKED.map(([key, label]) => (
-      <li key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <span>
-          {label}
-          {key === "toolExposure" && ` (${Record.size(row.server.toolExposure)})`}
-        </span>
-        <FieldMark
-          kind={Arr.contains(row.adjusted, key) ? "overridden" : "inherited"}
-          name={`${row.name} ${label.toLowerCase()}`}
-          busy={busy}
-          onReset={() => {
-            onReset(key);
-          }}
-        />
-      </li>
-    ))}
-  </ul>
-);
+}) => {
+  const directory = repoDirectoryOf(row);
+
+  return (
+    <ul
+      aria-label={`${row.name}: inherited and overridden`}
+      className="flex flex-wrap gap-x-4 gap-y-1"
+    >
+      {MARKED.map(([key, label]) => (
+        <li key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span>
+            {label}
+            {key === "toolExposure" && ` (${Record.size(row.server.toolExposure)})`}
+          </span>
+          <FieldMark
+            kind={Arr.contains(row.adjusted, key) ? "overridden" : "inherited"}
+            name={`${row.name} ${label.toLowerCase()}`}
+            from={directory === null ? "Global" : `Repo ${directory}`}
+            busy={busy}
+            onReset={() => {
+              onReset(key);
+            }}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+};
 
 /** One server of the list. */
 const McpRowView = ({
@@ -158,8 +178,10 @@ const McpRowView = ({
 }) => {
   const atGlobal = scope === GLOBAL_SCOPE;
   const setPanel = useAtomSet(mcpPanelAtom(scope));
+  const setGlobalPanel = useAtomSet(mcpPanelAtom(GLOBAL_SCOPE));
   const setRemoving = useAtomSet(mcpRemoveAtom(scope));
   const own = isOwnRow(row);
+  const fromRepo = isRepoRow(row);
   const toolKeys = Record.size(row.server.toolExposure);
   const changes = mcpRowChanges(row);
   const problemsId = noteId(`mcp-row-${row.name}`);
@@ -169,7 +191,9 @@ const McpRowView = ({
     ...row.problems,
     ...(atGlobal || references.status !== "ready"
       ? []
-      : mcpMissingReferenceProblems(row, references.names)),
+      : fromRepo
+        ? mcpRepoReferenceProblems(row, references.names)
+        : mcpMissingReferenceProblems(row, references.names)),
   ];
 
   const describedBy =
@@ -289,6 +313,33 @@ const McpRowView = ({
                 <Trash2 />
               </Button>
             </>
+          ) : fromRepo ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={`Copy ${row.name} to this environment`}
+                onClick={() => {
+                  setPanel(mcpCopyForm(row));
+                }}
+              >
+                Copy to this environment…
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={`Copy ${row.name} to Global`}
+                onClick={() => {
+                  // Global's form opens with the copy, in Global's own section.
+                  setGlobalPanel(mcpCopyForm(row));
+                  navigate(settingsPath(GLOBAL_SCOPE, "mcp"));
+                }}
+              >
+                Copy to Global…
+              </Button>
+            </>
           ) : (
             <>
               <Button
@@ -319,6 +370,22 @@ const McpRowView = ({
             onChange({ kind: "reset", fields: mcpAdjustmentFields(row.name, [key]) });
           }}
         />
+      )}
+      {fromRepo && (
+        <>
+          <p className="text-xs text-muted-foreground">
+            Read-only: from Repo {repoDirectoryOf(row)}'s .pi/mcp.json on its default branch. It
+            runs without Secrets, so its <code>{"${NAME}"}</code> values read this environment's
+            Variables only. Switch it off or hide tools here, or copy it to keep an entry of your
+            own.
+          </p>
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground">View as JSON</summary>
+            <pre className="mt-1 max-w-full overflow-x-auto rounded-md border bg-muted/40 p-2 font-mono">
+              {JSON.stringify({ [row.name]: row.written }, null, 2)}
+            </pre>
+          </details>
+        </>
       )}
       {row.kind === "replaces" && (
         <p className="text-xs text-muted-foreground">
@@ -366,6 +433,143 @@ const ProblemRow = ({
     )}
   </li>
 );
+
+/** What a Repo's file is, in words: where the Registry's last look left it. */
+const fileStateOf = ({ file }: McpFileRow, now: number): ReadonlyArray<string> => {
+  const when = (time: number | undefined): string =>
+    time === undefined ? "" : relativeTime(time, now);
+
+  switch (readMcpRepoFileState(file.state)) {
+    case "never":
+      return ["Not read yet."];
+    case "read":
+      return [`Read ${when(file.readAt)}.`];
+    case "absent":
+      return [
+        `Not in the Repo: no .pi/mcp.json on its default branch (looked ${when(file.lookedAt)}).`,
+      ];
+    case "oversize":
+      return [`Not read (looked ${when(file.lookedAt)}).`];
+    case "unreadable":
+      return [
+        `Could not be read${file.errorSince === undefined ? "" : ` since ${when(file.errorSince)}`}: ${file.error ?? "GitHub gave no answer"}`,
+        file.text === undefined
+          ? "There is no copy of it, so it adds no servers."
+          : `Its servers are those of the copy read ${when(file.readAt)}.`,
+      ];
+    case "not_github":
+      return [
+        "Not on GitHub, so its .pi/mcp.json is not read: put its servers in this environment's Settings.",
+      ];
+    case "unknown":
+      return [`In a state this page does not know (${file.state}).`];
+  }
+};
+
+/** One Repo's file: its path, when it was read, its error and problems, and Reload. */
+const RepoFileRow = ({
+  row,
+  now,
+  busy,
+  onReload,
+}: {
+  row: McpFileRow;
+  now: number;
+  busy: boolean;
+  onReload: (repo: string) => void;
+}) => {
+  const { file } = row;
+  const problemsId = noteId(`mcp-repo-${file.repo}`);
+
+  return (
+    <li id={`mcp-repo-${file.repo}`} className="flex flex-col gap-1 py-3">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-mono text-sm font-medium break-all">{file.repo}</span>
+        <Badge>{file.path}</Badge>
+        {file.slug !== undefined && <Badge>{file.slug}</Badge>}
+        {file.blob !== undefined && readMcpRepoFileState(file.state) === "read" && (
+          <Badge>{`blob ${file.blob.slice(0, 7)}`}</Badge>
+        )}
+        {readMcpRepoFileState(file.state) !== "not_github" && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="sm:ml-auto"
+            disabled={busy}
+            aria-label={`Reload ${file.repo}'s ${file.path}`}
+            onClick={() => {
+              onReload(file.repo);
+            }}
+          >
+            <RefreshCw />
+            Reload
+          </Button>
+        )}
+      </div>
+      <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+        {Arr.map(fileStateOf(row, now), (line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+      <MessageList
+        tone="problem"
+        id={problemsId}
+        messages={Arr.map(row.problems, (line) => `${line.source}: ${line.message}`)}
+        small
+      />
+    </li>
+  );
+};
+
+/** At an Environment, each Repo's `.pi/mcp.json` above the servers, with Reload; or why they are not known. */
+const RepoFiles = ({ scope, view }: { scope: string; view: McpScopeView }) => {
+  const known = useAtomValue(mcpRepoFilesAtom(scope));
+  const environments = useAtomValue(environmentListAtom);
+  const [reloaded, reload] = useAtom(reloadMcpRepoAtom(scope));
+  const busy = reloaded.waiting;
+
+  // An Environment with no Repos has nothing to say of their files, whatever the Registry answers.
+  const hasRepos = Arr.some(
+    environments ?? [],
+    (environment) => environment.id === scope && environment.repos.length > 0,
+  );
+
+  if (known.status === "failed") {
+    if (!hasRepos) return null;
+
+    return (
+      <Group title="Repo files">
+        <p className="text-xs text-muted-foreground">
+          The Repos' .pi/mcp.json are unavailable, so their servers are not shown: {known.problem}
+        </p>
+      </Group>
+    );
+  }
+
+  if (view.files.length === 0) return null;
+
+  return (
+    <Group title="Repo files">
+      <p className="max-w-prose text-sm text-muted-foreground">
+        Each Repo's .pi/mcp.json on its default branch, as last read. A Repo's servers run without
+        Secrets and are read-only here.
+      </p>
+      <ul className="flex flex-col divide-y">
+        {view.files.map((row) => (
+          <RepoFileRow
+            key={row.file.repo}
+            row={row}
+            now={Date.now()}
+            busy={busy}
+            onReload={reload}
+          />
+        ))}
+      </ul>
+      <DialogProblem problem={settledFailureOf(reloaded)} />
+    </Group>
+  );
+};
 
 /** The warnings of the section: `codemode` Exposure while `codemode` is not offered. */
 const Warnings = ({ scope, view }: { scope: string; view: McpScopeView }) => (
@@ -531,6 +735,7 @@ const McpLoaded = ({ scope, view }: { scope: string; view: McpScopeView }) => {
         </div>
         <OpenPanel scope={scope} view={view} references={references} statuses={statuses} />
       </Group>
+      {!atGlobal && <RepoFiles scope={scope} view={view} />}
       <Group title="Servers">
         {view.rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">

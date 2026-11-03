@@ -541,6 +541,8 @@ const fakeRegistries = () => {
 
   let sparesMade = 0;
   const mcpSyncs: Array<string | undefined> = [];
+  /** The looks at the Repos' `.pi/mcp.json` the endpoint asked of the Registry, in order with the pushes. */
+  const mcpLooks: Array<string> = [];
   /** The MCP server names of each Environment (none for one not listed here), and what the hosts were asked. */
   const mcpNames = new Map<string, ReadonlyArray<string>>();
   const mcpHostCalls: Array<string> = [];
@@ -1355,6 +1357,20 @@ const fakeRegistries = () => {
           ? (mcpNames.get(environment) ?? [])
           : null,
       ),
+    mcpRepoFiles: ({ environment }) =>
+      Effect.succeed(
+        environments.some((each) => each.id === environment)
+          ? [{ repo: "app", path: ".pi/mcp.json", state: "never" }]
+          : null,
+      ),
+    mcpLookRepoFiles: ({ environment, repo, reason }) =>
+      Effect.sync(() => {
+        mcpLooks.push(`${reason} ${environment} ${repo ?? "*"}`);
+
+        return environments.some((each) => each.id === environment)
+          ? [{ repo: "app", path: ".pi/mcp.json", state: "read", blob: "b1" }]
+          : null;
+      }),
     mcpPending: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpPushed: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpDestroyed: () => Effect.die("The endpoint pushes through `mcp`"),
@@ -1512,6 +1528,7 @@ const fakeRegistries = () => {
     }),
     /** The Environments the endpoint asked `mcp` to push the MCP server set to (undefined: every one). */
     mcpSyncs,
+    mcpLooks,
     mcpNames,
     mcpOffered,
     mcpSettings,
@@ -1548,6 +1565,7 @@ const fakeRegistries = () => {
     mcp: {
       sync: (environment) =>
         Effect.sync(() => {
+          mcpLooks.push(`sync ${environment ?? "*"}`);
           mcpSyncs.push(environment);
         }),
     } satisfies McpPushes,
@@ -5816,6 +5834,67 @@ describe("handing the MCP server set to the hosts", () => {
     await fake.runBackground();
 
     expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT, DEFAULT_ENVIRONMENT]);
+  });
+
+  it("looks at a Repo's .pi/mcp.json when it is added, before the set is pushed", async () => {
+    const fake = fakeRegistries();
+
+    await call(fake, (registry) =>
+      registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/app" }),
+    );
+    await fake.runBackground();
+
+    expect(fake.mcpLooks).toEqual([
+      `moved ${DEFAULT_ENVIRONMENT} app`,
+      `sync ${DEFAULT_ENVIRONMENT}`,
+    ]);
+  });
+
+  it("answers the Repos' files, and Reload looks at once and then pushes", async () => {
+    const fake = fakeRegistries();
+
+    const files = await call(fake, (registry) =>
+      registry.mcpRepoFiles({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(files).toEqual({
+      _tag: "RepoFiles",
+      files: [{ repo: "app", path: ".pi/mcp.json", state: "never" }],
+    });
+    expect(fake.mcpLooks).toEqual([]);
+
+    const reloaded = await call(fake, (registry) =>
+      registry.mcpReloadRepoFiles({ environment: DEFAULT_ENVIRONMENT, repo: "app" }),
+    );
+
+    expect(reloaded).toEqual({
+      _tag: "RepoFiles",
+      files: [{ repo: "app", path: ".pi/mcp.json", state: "read", blob: "b1" }],
+    });
+    expect(fake.mcpLooks).toEqual([`reload ${DEFAULT_ENVIRONMENT} app`]);
+
+    await fake.runBackground();
+
+    expect(fake.mcpLooks).toEqual([
+      `reload ${DEFAULT_ENVIRONMENT} app`,
+      `sync ${DEFAULT_ENVIRONMENT}`,
+    ]);
+  });
+
+  it("says an Environment it does not list has no Repo files, and pushes nothing for it", async () => {
+    const fake = fakeRegistries();
+
+    const read = await call(fake, (registry) => registry.mcpRepoFiles({ environment: "0badc0de" }));
+
+    const reloaded = await call(fake, (registry) =>
+      registry.mcpReloadRepoFiles({ environment: "0badc0de" }),
+    );
+
+    await fake.runBackground();
+
+    expect(read).toEqual({ _tag: "NoEnvironment" });
+    expect(reloaded).toEqual({ _tag: "NoEnvironment" });
+    expect(fake.mcpSyncs).toEqual([]);
   });
 
   it("wipes the hosts after an Environment was deleted, once the answer is sent, and not after a refusal", async () => {

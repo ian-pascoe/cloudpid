@@ -6,9 +6,15 @@
 // is one Registry call at either Scope). The open form, import and tool exposure editor are kept per Scope while the app is
 // open, as the other sections' drafts are.
 
-import { GLOBAL_SCOPE, type McpServersView, type SettingsOverridesState } from "@cloudpid/protocol";
+import {
+  GLOBAL_SCOPE,
+  type McpRepoFileView,
+  type McpRepoFilesView,
+  type McpServersView,
+  type SettingsOverridesState,
+} from "@cloudpid/protocol";
 import type { SettingsState } from "@cloudpid/protocol";
-import { SettingsError } from "@cloudpid/config";
+import { resolveMcpServerSet, SettingsError } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -16,6 +22,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import * as Predicate from "effect/Predicate";
 import {
   environmentSecretsAtom,
   environmentSettingsAtom,
@@ -32,6 +39,7 @@ import {
 } from "../settings.ts";
 import { visibleTickAtom } from "../sessions.ts";
 import {
+  mcpRepoLayersOf,
   mcpScopeView,
   mcpStatuses,
   type McpReferenceNames,
@@ -49,8 +57,10 @@ const viewOf = (
   scope: string,
   global: SettingsState,
   environment: SettingsOverridesState | null,
+  repoFiles: ReadonlyArray<McpRepoFileView> | undefined,
 ): McpScopeView =>
   mcpScopeView({
+    repoFiles,
     scope,
     global: global.overrides,
     globalProblem: global.problem,
@@ -62,16 +72,75 @@ const viewOf = (
     overriddenIn: global.overriddenIn,
   });
 
-/** The servers the page shows at Scope `scope`, resolved from Global's document and the Environment's Overrides. */
-export const mcpViewAtom = Atom.family((scope: string) =>
-  Atom.readable((get) =>
-    isGlobal(scope)
-      ? AsyncResult.map(get(settingsAtom), (global) => viewOf(scope, global, null))
-      : AsyncResult.map(
-          AsyncResult.all([get(settingsAtom), get(settingsOverridesAtom(scope))]),
-          ([global, environment]) => viewOf(scope, global, environment),
-        ),
+/** Where the Repos' `.pi/mcp.json` files of an Environment stand for the page: being asked, not answered, or known. */
+export type McpRepoFilesState =
+  | { readonly status: "loading" }
+  /** The Registry did not answer (an older one does not know the call); its servers are not shown. */
+  | { readonly status: "failed"; readonly problem: string }
+  | { readonly status: "ready"; readonly files: ReadonlyArray<McpRepoFileView> };
+
+const NO_REPO_FILES: McpRepoFilesState = { status: "ready", files: [] };
+
+/**
+ * Environment `environment`'s Repos' `.pi/mcp.json` as the Registry last looked at them, asked again every few seconds while
+ * the page is visible (a Build's look is the Registry's own) and whenever the settings change. It asks GitHub for nothing.
+ */
+export const mcpRepoFilesQueryAtom = Atom.family((environment: string) =>
+  RegistryClient.query("mcpRepoFiles", { environment }, { reactivityKeys: ["settings"] }).pipe(
+    Atom.makeRefreshOnSignal(visibleTickAtom),
   ),
+);
+
+/** The answer `view` (a `mcpRepoFiles` or `mcpReloadRepoFiles` answer) gives, or why it gives no files. */
+const repoFilesOf = (view: McpRepoFilesView): McpRepoFilesState =>
+  Predicate.isTagged(view, "RepoFiles")
+    ? { status: "ready", files: view.files }
+    : {
+        status: "failed",
+        problem: Predicate.isTagged(view, "NoEnvironment")
+          ? "This environment is not there any more."
+          : "message" in view && view.message !== undefined
+            ? view.message
+            : "The Registry's answer is one this page does not know.",
+      };
+
+/** The Repo files at Scope `scope`: none at Global, which has no Repos. */
+export const mcpRepoFilesAtom = Atom.family((scope: string) =>
+  Atom.readable((get): McpRepoFilesState => {
+    if (isGlobal(scope)) return NO_REPO_FILES;
+
+    const asked = get(mcpRepoFilesQueryAtom(scope));
+
+    return Option.match(AsyncResult.value(asked), {
+      onNone: () => {
+        const problem = failureOf(asked);
+
+        return problem === null ? { status: "loading" } : { status: "failed", problem };
+      },
+      onSome: repoFilesOf,
+    });
+  }),
+);
+
+/**
+ * The servers the page shows at Scope `scope`, resolved from Global's document, the Environment's Overrides and the Repos'
+ * files as the Registry last read them. Until those are known, or where the Registry cannot say, a Repo's servers are not
+ * among them (the files part of the section says why).
+ */
+export const mcpViewAtom = Atom.family((scope: string) =>
+  Atom.readable((get) => {
+    if (isGlobal(scope)) {
+      return AsyncResult.map(get(settingsAtom), (global) => viewOf(scope, global, null, undefined));
+    }
+
+    const repos = get(mcpRepoFilesAtom(scope));
+
+    return AsyncResult.map(
+      AsyncResult.all([get(settingsAtom), get(settingsOverridesAtom(scope))]),
+      ([global, environment]) =>
+        viewOf(scope, global, environment, repos.status === "ready" ? repos.files : undefined),
+    );
+  }),
 );
 
 /** Whether the Secret and Variable names a `${NAME}` may use are known at a Scope: still being asked, failed, or known. */
@@ -158,6 +227,32 @@ export const mcpPanelAtom = Atom.family((_scope: string) => Atom.make<McpPanel |
 /** The server whose Remove dialog is open at Scope `scope`, by name. */
 export const mcpRemoveAtom = Atom.family((_scope: string) => Atom.make<string | null>(null));
 
+/** Whether `change` adjusts a server (rather than an own entry) that is not one of `globalServers`. */
+const adjustsAnotherServer = (change: McpChange, globalServers: ReadonlyArray<string>): boolean =>
+  (change.kind === "enabled" || change.kind === "exposure" || change.kind === "toolExposure") &&
+  change.target === "adjustment" &&
+  !Arr.contains(globalServers, change.name);
+
+/** The names of the Repo servers Environment `environment` has now, as the Registry holds the files. */
+const repoServerNames = (environment: string, overrides: SettingsOverridesState["overrides"]) =>
+  Effect.gen(function* () {
+    const global = yield* readSettings;
+
+    const answered = yield* RegistryClient.use((registry) =>
+      registry("mcpRepoFiles", { environment }),
+    );
+
+    const files = repoFilesOf(answered);
+
+    if (files.status !== "ready") return [];
+
+    return Arr.filterMap(
+      resolveMcpServerSet(global.overrides, overrides, mcpRepoLayersOf(files.files)).servers,
+      (resolved) =>
+        resolved.source.kind === "repo" ? Result.succeed(resolved.name) : Result.failVoid,
+    );
+  });
+
 /**
  * Make `change` to the servers of Scope `scope`, against the document as the Registry has it now: at Global the whole
  * document with the server's entry changed (`updateSettings`), at an Environment a patch of its Overrides
@@ -179,7 +274,14 @@ export const writeMcpChange = (scope: string, change: McpChange) =>
     }
 
     const state = yield* readSettingsOverrides(scope);
-    const patch = mcpOverridesPatch(state.overrides, change, Record.keys(state.global.mcp.servers));
+    const globalServers = Record.keys(state.global.mcp.servers);
+
+    // An adjustment of a server Global does not have may be of a Repo's: its base is looked up as the Registry has it now.
+    const repoServers = yield* adjustsAnotherServer(change, globalServers)
+      ? repoServerNames(scope, state.overrides)
+      : Effect.succeed([]);
+
+    const patch = mcpOverridesPatch(state.overrides, change, [...globalServers, ...repoServers]);
 
     if (Result.isFailure(patch)) {
       return yield* SettingsError.make({ message: patch.failure });
@@ -224,6 +326,33 @@ export const removeMcpAtom = Atom.family((scope: string) =>
             get.set(mcpRemoveAtom(scope), null);
           }),
         ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/**
+ * Reload Repo `repo`'s `.pi/mcp.json` (every Repo's when undefined) of Environment `scope` from GitHub now, as the owner's
+ * Reload does: whatever the last look was, and a Repo that cannot be read loses its last good copy. The files and the
+ * servers' status ask again once it ends. It fails with why when the Environment is not there.
+ */
+export const reloadMcpRepoAtom = Atom.family((scope: string) =>
+  appRuntime.fn(
+    (repo: string | undefined) =>
+      RegistryClient.use((registry) =>
+        registry(
+          "mcpReloadRepoFiles",
+          repo === undefined ? { environment: scope } : { environment: scope, repo },
+        ),
+      ).pipe(
+        Effect.flatMap((view) => {
+          const files = repoFilesOf(view);
+
+          return files.status === "failed"
+            ? Effect.fail(SettingsError.make({ message: files.problem }))
+            : Effect.void;
+        }),
+        changing(["settings"]),
       ),
     { concurrent: true },
   ),

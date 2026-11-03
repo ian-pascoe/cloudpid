@@ -27,6 +27,7 @@ import * as Data from "effect/Data";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { type McpSetLayers, mcpServerCountOf } from "./mcp-set.ts";
 
 /** The name of the settings overrides document. */
@@ -258,11 +259,18 @@ export type SessionSettingsSource = {
   readonly mcp?: { readonly servers: number };
 };
 
-/** The layers an Environment's MCP set is resolved from: Global's document as saved and `overrides`, no Repo yet. */
-export const mcpLayersOf = (documents: DocumentStore, overrides: Schema.Json): McpSetLayers => ({
+/**
+ * The layers an Environment's MCP set is resolved from: Global's document as saved, `overrides`, and the Repos' files as
+ * last read (`mcpRepoLayers`; none for Global's own layers).
+ */
+export const mcpLayersOf = (
+  documents: DocumentStore,
+  overrides: Schema.Json,
+  repos: McpSetLayers["repos"],
+): McpSetLayers => ({
   global: savedGlobalSettings(documents),
   overrides,
-  repos: [],
+  repos,
 });
 
 /**
@@ -271,9 +279,10 @@ export const mcpLayersOf = (documents: DocumentStore, overrides: Schema.Json): M
  * conversations are shown after Global's. A Session the store does not list has no Environment, and Global's.
  */
 export const sessionSettingsSource = (
-  store: SettingsStore & {
-    readonly getSession: (id: string) => { readonly environment: string } | null;
-  },
+  store: SettingsStore &
+    McpRepoFilesStore & {
+      readonly getSession: (id: string) => { readonly environment: string } | null;
+    },
   session: string,
 ): SessionSettingsSource => {
   const global = readSettings(store).overrides;
@@ -282,7 +291,9 @@ export const sessionSettingsSource = (
   const instructions = known === null ? null : store.getEnvironmentInstructions(known.environment);
 
   // The set is resolved from Global's document as saved, as the host is handed it (`mcpServerSetOf`).
-  const servers = mcpServerCountOf(mcpLayersOf(store, overrides ?? {}));
+  const servers = mcpServerCountOf(
+    mcpLayersOf(store, overrides ?? {}, mcpRepoLayers(store, known?.environment ?? null)),
+  );
 
   return known === null || overrides === null
     ? { global, environment: null, overrides: {}, instructions: null, mcp: { servers } }

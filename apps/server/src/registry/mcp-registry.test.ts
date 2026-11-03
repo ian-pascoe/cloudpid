@@ -45,6 +45,8 @@ const store = (ids: ReadonlyArray<string>) => {
     putDocument: (name, body) => void documents.set(name, body),
     getSettingsOverrides: (id) => (live.includes(id) ? (overrides.get(id) ?? null) : null),
     getEnvironmentSettings: (id) => (live.includes(id) ? (container.get(id) ?? null) : null),
+    getEnvironment: (id) => (live.includes(id) ? { id, name: id, repos: [], createdAt: 0 } : null),
+    getMcpRepoFiles: () => [],
     listEnvironments: () => Arr.map(live, (id) => ({ id, name: id, repos: [], createdAt: 0 })),
     remove: (id) => void (live = live.filter((kept) => kept !== id)),
     global: (document) => void documents.set(SETTINGS_DOCUMENT, JSON.stringify(document)),

@@ -311,8 +311,6 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const legacy = legacyCleanup(registries, { sessions: sessionObjects, workspaces });
     // Built once per isolate too: the upkeep of every spare stops once a run finds nothing to do, and so does the Builds'.
     const spares = spareUpkeep(registries, { workspaces });
-    // A new good Build makes its Environment's spare stale, so the Builds' upkeep looks at the spare then.
-    const builds = buildUpkeep(registries, { workspaces, spares });
 
     // The MCP server set goes to an Environment's host after the owner's saves and Repo changes (`mcpPending` names the
     // Environments whose set differs from what their host was told, so one with no servers is never woken).
@@ -320,6 +318,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
       registry: () => registries.getByName(REGISTRY_NAME),
       host: (name) => mcpHosts.getByName(name),
     });
+
+    // A new good Build makes its Environment's spare stale, so the Builds' upkeep looks at the spare then.
+    const builds = buildUpkeep(registries, { workspaces, spares, mcp });
 
     // The MCP status reads of the client: the Registry says which servers an Environment has, and its host answers from
     // its own storage, so no Container is started and an Environment with no servers never wakes a host.
