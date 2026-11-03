@@ -7,24 +7,41 @@
 // its own is an Override of its own (`mcp.servers.<name>`). Each is made from the document as the Registry has it when the
 // owner acts, so what the agent changed meanwhile stands.
 
-import { isMcpFullEntry, type McpExposure } from "@cloudpid/config";
+import { isJsonObject, isMcpFullEntry, type McpExposure } from "@cloudpid/config";
 import * as Arr from "effect/Array";
-import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { mcpServersIn } from "./mcp-model.ts";
+import { isFollowedRow, type McpRow, mcpServersIn } from "./mcp-model.ts";
+
+/**
+ * What a switch, select or tool exposure change is of, as the row it was made on showed it: the Scope's own entry (the
+ * key inside it; at Global, its only kind), or, at an Environment, an adjustment of a Global server (the key beside it).
+ * A change whose target is no longer what the Registry holds writes nothing.
+ */
+export type McpChangeTarget = "own" | "adjustment";
 
 /** One thing the owner does to the servers of a Scope. */
 export type McpChange =
   /** Switch a server on or off. */
-  | { readonly kind: "enabled"; readonly name: string; readonly enabled: boolean }
+  | {
+      readonly kind: "enabled";
+      readonly name: string;
+      readonly target: McpChangeTarget;
+      readonly enabled: boolean;
+    }
   /** Set a server's Exposure. */
-  | { readonly kind: "exposure"; readonly name: string; readonly exposure: McpExposure }
+  | {
+      readonly kind: "exposure";
+      readonly name: string;
+      readonly target: McpChangeTarget;
+      readonly exposure: McpExposure;
+    }
   /** Set a server's `toolExposure`, whole. */
   | {
       readonly kind: "toolExposure";
       readonly name: string;
+      readonly target: McpChangeTarget;
       readonly toolExposure: Readonly<Record<string, McpExposure>>;
     }
   /** At an Environment, reset Override fields (`mcp.servers.<name>.enabled`, an orphan's) so they inherit again. */
@@ -39,15 +56,15 @@ export type McpChange =
       readonly entries: ReadonlyArray<{ readonly name: string; readonly entry: Schema.Json }>;
     };
 
-const isObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
+/** A change of one key of a server: the switch, the Exposure or the tool exposure. */
+type McpKeyChange = Extract<McpChange, { readonly target: McpChangeTarget }>;
 
 /** `object` with `key` as `value`: where it was if it held it, else last. */
 const setKey = (object: Schema.JsonObject, key: string, value: Schema.Json): Schema.JsonObject =>
   Record.fromEntries([...Record.toEntries(object), [key, value] as const]);
 
-/** The adjustable key a change sets, and its value; none for a change that is not one. */
-const keyOf = (change: McpChange): readonly [string, Schema.Json] | undefined => {
+/** The key a change sets, and its value. */
+const keyOf = (change: McpKeyChange): readonly [string, Schema.Json] => {
   switch (change.kind) {
     case "enabled":
       return ["enabled", change.enabled];
@@ -55,14 +72,12 @@ const keyOf = (change: McpChange): readonly [string, Schema.Json] | undefined =>
       return ["exposure", change.exposure];
     case "toolExposure":
       return ["toolExposure", change.toolExposure];
-    default:
-      return undefined;
   }
 };
 
 /** `document` with the servers of its `mcp.servers` as `servers`: an empty `mcp` root is left out. */
 const withServers = (document: Schema.Json, servers: Schema.JsonObject): Schema.JsonObject => {
-  const rest = Record.filter(isObject(document) ? document : {}, (_, key) => key !== "mcp");
+  const rest = Record.filter(isJsonObject(document) ? document : {}, (_, key) => key !== "mcp");
 
   return Arr.isArrayEmpty(Record.toEntries(servers)) ? rest : setKey(rest, "mcp", { servers });
 };
@@ -85,19 +100,21 @@ export const mcpGlobalDocument = (
   change: McpChange,
 ): Result.Result<Schema.JsonObject, string> => {
   const servers = mcpServersIn(document);
-  const key = keyOf(change);
-
-  if (key !== undefined && "name" in change) {
-    const held = servers[change.name];
-
-    return isObject(held) && isMcpFullEntry(held)
-      ? Result.succeed(
-          withServers(document, withEntry(servers, change.name, setKey(held, key[0], key[1]))),
-        )
-      : Result.fail(NOT_THERE(change.name));
-  }
 
   switch (change.kind) {
+    case "enabled":
+    case "exposure":
+    case "toolExposure": {
+      const held = servers[change.name];
+      const [key, value] = keyOf(change);
+
+      return change.target === "own" && isJsonObject(held) && isMcpFullEntry(held)
+        ? Result.succeed(
+            withServers(document, withEntry(servers, change.name, setKey(held, key, value))),
+          )
+        : Result.fail(NOT_THERE(change.name));
+    }
+
     case "put":
       return Result.succeed(withServers(document, withEntry(servers, change.name, change.entry)));
     case "remove":
@@ -116,7 +133,7 @@ export const mcpGlobalDocument = (
           ),
         ),
       );
-    default:
+    case "reset":
       return Result.fail("Global holds no adjustment to reset");
   }
 };
@@ -141,20 +158,27 @@ export const mcpOverridesPatch = (
   change: McpChange,
 ): Result.Result<McpOverridesPatch, string> => {
   const servers = mcpServersIn(overrides);
-  const key = keyOf(change);
-
-  if (key !== undefined && "name" in change) {
-    const own = servers[change.name];
-
-    return Result.succeed({
-      set: serversPatch({
-        [change.name]:
-          isObject(own) && isMcpFullEntry(own) ? setKey(own, key[0], key[1]) : { [key[0]]: key[1] },
-      }),
-    });
-  }
 
   switch (change.kind) {
+    case "enabled":
+    case "exposure":
+    case "toolExposure": {
+      const written = servers[change.name];
+      const [key, value] = keyOf(change);
+      const own = isJsonObject(written) && isMcpFullEntry(written) ? written : undefined;
+
+      // The row showed an own entry and it is gone (or an adjustment and an own entry is there now): writing the key
+      // would adjust Global's server of the same name, or an entry the owner never saw, so it writes nothing.
+      if ((own !== undefined) !== (change.target === "own"))
+        return Result.fail(NOT_THERE(change.name));
+
+      return Result.succeed({
+        set: serversPatch({
+          [change.name]: own === undefined ? { [key]: value } : setKey(own, key, value),
+        }),
+      });
+    }
+
     case "reset":
       return Result.succeed({ reset: change.fields });
     case "put":
@@ -169,8 +193,6 @@ export const mcpOverridesPatch = (
           ),
         ),
       });
-    default:
-      return Result.fail(NOT_THERE(""));
   }
 };
 
@@ -179,3 +201,27 @@ export const mcpAdjustmentFields = (
   name: string,
   keys: ReadonlyArray<string>,
 ): ReadonlyArray<string> => Arr.map(keys, (key) => `mcp.servers.${name}.${key}`);
+
+/**
+ * What a row's switch and Exposure select write: the row's server, aimed at what the row showed (`McpChangeTarget`: a
+ * Global server followed at an Environment is adjusted, any other row's own entry is changed). The rendered controls and
+ * their tests make their changes with this one builder.
+ */
+export const mcpRowChanges = (row: McpRow) => {
+  const target: McpChangeTarget = isFollowedRow(row) ? "adjustment" : "own";
+
+  return {
+    enabled: (enabled: boolean): McpChange => ({
+      kind: "enabled",
+      name: row.name,
+      target,
+      enabled,
+    }),
+    exposure: (exposure: McpExposure): McpChange => ({
+      kind: "exposure",
+      name: row.name,
+      target,
+      exposure,
+    }),
+  };
+};

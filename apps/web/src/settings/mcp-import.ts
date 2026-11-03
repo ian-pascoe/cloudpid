@@ -4,7 +4,12 @@
 // the pasted text read into one line per entry, each with its problems before anything is saved; a name the Scope already
 // has asks Replace or Skip, and a top-level `autoEnableCodemode` is ignored with a hint.
 
-import { MCP_LIMITS, type McpCredentialLiteral, normalizeMcpName } from "@cloudpid/config";
+import {
+  isJsonObject,
+  MCP_LIMITS,
+  type McpCredentialLiteral,
+  normalizeMcpName,
+} from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -16,6 +21,13 @@ import type { McpReferenceNames } from "./mcp-model.ts";
 
 /** What the owner chose for a name the Scope has already. */
 export type McpConflictChoice = "replace" | "skip";
+
+/** The import: the text pasted, and what the owner chose for each name the Scope has. */
+export interface McpImportDraft {
+  readonly kind: "import";
+  readonly text: string;
+  readonly choices: Readonly<Record<string, McpConflictChoice>>;
+}
 
 /** One entry of the pasted JSON. */
 export interface McpImportEntry {
@@ -31,17 +43,20 @@ export interface McpImportEntry {
   readonly hints: ReadonlyArray<string>;
 }
 
+/** Something the import ignores, and the section of the Settings page that says more, if one does. */
+export interface McpImportHint {
+  readonly text: string;
+  readonly link: "tools" | null;
+}
+
 /** What the pasted text holds. */
 export interface McpImportPreview {
   /** Why the text is not pi's `mcpServers` JSON, or null. */
   readonly problem: string | null;
   readonly entries: ReadonlyArray<McpImportEntry>;
   /** What is ignored: `autoEnableCodemode`, and any other top-level key. */
-  readonly hints: ReadonlyArray<string>;
+  readonly hints: ReadonlyArray<McpImportHint>;
 }
-
-const isObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 /** Where pi's `autoEnableCodemode` goes in cloudpid. */
 export const AUTO_ENABLE_CODEMODE_HINT =
@@ -49,6 +64,13 @@ export const AUTO_ENABLE_CODEMODE_HINT =
 
 const NOT_MCP_SERVERS =
   'Paste pi\'s mcpServers JSON: {"mcpServers": {"name": {"url": "https://…"}}}';
+
+/** The entries read so far, the names they took, and how many servers the Scope would then have. */
+type Read = {
+  readonly entries: ReadonlyArray<McpImportEntry>;
+  readonly taken: ReadonlyArray<string>;
+  readonly count: number;
+};
 
 /**
  * The entries of `text`, pi's `mcpServers` JSON, checked for the Scope `rules` describe: each by the rules of its name, the
@@ -71,64 +93,63 @@ export const previewMcpImport = (
   if (Result.isFailure(parsed)) return empty(`Not JSON: ${parsed.failure}`);
 
   const document = parsed.success;
-  const servers = isObject(document) ? document["mcpServers"] : undefined;
+  const servers = isJsonObject(document) ? document["mcpServers"] : undefined;
 
-  if (!isObject(document) || !isObject(servers)) return empty(NOT_MCP_SERVERS);
+  if (!isJsonObject(document) || !isJsonObject(servers)) return empty(NOT_MCP_SERVERS);
 
   const held = rules.atGlobal ? rules.names.global : rules.names.own;
-  const taken: Array<string> = [];
-  let count = held.length;
 
-  const entries = Arr.map(Record.toEntries(servers), ([name, entry]): McpImportEntry => {
-    const conflict = Arr.contains(held, name);
-    const replacesGlobal = !rules.atGlobal && !conflict && Arr.contains(rules.names.global, name);
+  const none: Read = { entries: [], taken: [], count: held.length };
 
-    const checked = isObject(entry)
-      ? checkMcpEntry({
-          name,
-          entry,
-          rules: { ...rules, editing: conflict ? name : null },
-          references,
-        })
-      : {
-          entry: null,
-          problems: ["is not an object"],
-          warnings: [],
-          hints: [],
-        };
+  const read = Arr.reduce(
+    Record.toEntries(servers),
+    none,
+    ({ entries, taken, count }, [name, entry]): Read => {
+      const conflict = Arr.contains(held, name);
+      const replacesGlobal = !rules.atGlobal && !conflict && Arr.contains(rules.names.global, name);
 
-    const twin = Arr.findFirst(
-      taken,
-      (earlier) => normalizeMcpName(earlier) === normalizeMcpName(name),
-    );
+      const checked = isJsonObject(entry)
+        ? checkMcpEntry({
+            name,
+            entry,
+            rules: { ...rules, editing: conflict ? name : null },
+            references,
+          })
+        : { entry: null, problems: ["is not an object"], warnings: [], hints: [] };
 
-    const clash = Option.match(twin, {
-      onNone: () => [],
-      onSome: (earlier) => [`clashes with "${earlier}", also in this JSON`],
-    });
+      const clash = Option.match(
+        Arr.findFirst(taken, (earlier) => normalizeMcpName(earlier) === normalizeMcpName(name)),
+        {
+          onNone: () => [],
+          onSome: (earlier) => [`clashes with "${earlier}", also in this JSON`],
+        },
+      );
 
-    const over =
-      checked.problems.length === 0 &&
-      clash.length === 0 &&
-      !conflict &&
-      count >= MCP_LIMITS.servers
-        ? [`is over the ${MCP_LIMITS.servers} servers a Scope may have`]
-        : [];
+      const fits = checked.problems.length === 0 && clash.length === 0 && !conflict;
+      const over = fits && count >= MCP_LIMITS.servers;
 
-    taken.push(name);
-
-    if (checked.problems.length === 0 && clash.length === 0 && !conflict) count += 1;
-
-    return {
-      name,
-      entry,
-      conflict,
-      replacesGlobal,
-      problems: [...checked.problems, ...clash, ...over],
-      warnings: checked.warnings,
-      hints: checked.hints,
-    };
-  });
+      return {
+        entries: [
+          ...entries,
+          {
+            name,
+            entry,
+            conflict,
+            replacesGlobal,
+            problems: [
+              ...checked.problems,
+              ...clash,
+              ...(over ? [`is over the ${MCP_LIMITS.servers} servers a Scope may have`] : []),
+            ],
+            warnings: checked.warnings,
+            hints: checked.hints,
+          },
+        ],
+        taken: [...taken, name],
+        count: fits ? count + 1 : count,
+      };
+    },
+  );
 
   const others = Arr.filterMap(Record.toEntries(document), ([key]) =>
     key === "mcpServers" || key === "autoEnableCodemode" ? Result.failVoid : Result.succeed(key),
@@ -136,12 +157,14 @@ export const previewMcpImport = (
 
   return {
     problem: null,
-    entries,
+    entries: read.entries,
     hints: [
-      ...(Predicate.hasProperty(document, "autoEnableCodemode") ? [AUTO_ENABLE_CODEMODE_HINT] : []),
+      ...(Predicate.hasProperty(document, "autoEnableCodemode")
+        ? [{ text: AUTO_ENABLE_CODEMODE_HINT, link: "tools" as const }]
+        : []),
       ...(others.length === 0
         ? []
-        : [`Other top-level keys are ignored: ${Arr.join(others, ", ")}.`]),
+        : [{ text: `Other top-level keys are ignored: ${Arr.join(others, ", ")}.`, link: null }]),
     ],
   };
 };

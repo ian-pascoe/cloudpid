@@ -10,6 +10,7 @@ import {
   McpUnavailable,
   type OverridingEnvironment,
 } from "@cloudpid/protocol";
+import { MCP_ADJUSTMENT_OVER, resolveOverridesLeniently } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
@@ -24,6 +25,7 @@ import {
 import { mcpImportWrites, previewMcpImport } from "./mcp-import.ts";
 import {
   droppedMcpProblems,
+  mcpProblemText,
   mcpMissingReferences,
   mcpReferencesOf,
   mcpScopeView,
@@ -181,10 +183,130 @@ describe("the rows at an Environment", () => {
       overriddenIn: {},
     });
 
-    expect(row(stale, "linear").problems).toEqual([
+    expect(row(stale, "linear").problems.map(mcpProblemText)).toEqual([
       "this environment: is not used and is forgotten by the next save: exposure: Expected one of codemode",
     ]);
     expect(stale.problems.map(({ name }) => name)).toEqual(["gone"]);
+  });
+
+  it("read the structured problems of an up-to-date Registry, not the text, where it gives them", () => {
+    const view = mcpScopeView({
+      scope: "work",
+      global: GLOBAL_DOCUMENT,
+      globalProblem: undefined,
+      // The text says a different story: only the structured field is read.
+      overridesProblem: "mcp.servers.linear.exposure: from the text",
+      overridesMcpProblems: [
+        {
+          source: "environment",
+          name: "files",
+          keys: ["toolExposure"],
+          message: MCP_ADJUSTMENT_OVER,
+          reset: ["mcp.servers.files.toolExposure"],
+        },
+      ],
+      overrides: OVERRIDES,
+      offered: OFFERED,
+      overriddenIn: {},
+    });
+
+    expect(row(view, "linear").problems).toEqual([]);
+    expect(row(view, "files").problems).toEqual([
+      {
+        name: "files",
+        source: "this environment",
+        message: `is not used and is forgotten by the next save: toolExposure: ${MCP_ADJUSTMENT_OVER}`,
+        reset: ["mcp.servers.files.toolExposure"],
+      },
+    ]);
+  });
+
+  it("show an adjustment held over the entry bound on its server's row with its Reset, as the Registry reads it", () => {
+    const global: Schema.Json = {
+      mcp: {
+        servers: {
+          a: {
+            command: "x",
+            args: Array.from({ length: 120 }, (_, i) => `${"a".repeat(96)}${i}`),
+          },
+        },
+      },
+    };
+
+    const saved: Schema.Json = {
+      mcp: {
+        servers: {
+          a: {
+            enabled: false,
+            toolExposure: Object.fromEntries(
+              Array.from({ length: 150 }, (_, i) => [`${"p".repeat(20)}_${i}_*`, "hidden"]),
+            ),
+          },
+        },
+      },
+    };
+
+    const lenient = resolveOverridesLeniently(global, saved);
+
+    const view = mcpScopeView({
+      scope: "work",
+      global,
+      globalProblem: undefined,
+      overrides: lenient.overrides,
+      overridesProblem: lenient.dropped.join("\n"),
+      overridesMcpProblems: lenient.mcpProblems,
+      offered: OFFERED,
+      overriddenIn: {},
+    });
+
+    expect(row(view, "a").kind).toBe("adjusted");
+    expect(row(view, "a").problems).toEqual([
+      {
+        name: "a",
+        source: "this environment",
+        message: `is not used and is forgotten by the next save: toolExposure: ${MCP_ADJUSTMENT_OVER}`,
+        reset: ["mcp.servers.a.toolExposure"],
+      },
+    ]);
+  });
+
+  it("do not show a Global server left out for an Environment's twin name as this environment's forgotten Override", () => {
+    const global: Schema.Json = { mcp: { servers: { linear: { url: "https://a.example.com" } } } };
+    const saved: Schema.Json = { mcp: { servers: { Linear: { url: "https://b.example.com" } } } };
+    const lenient = resolveOverridesLeniently(global, saved);
+
+    const view = mcpScopeView({
+      scope: "work",
+      global,
+      globalProblem: undefined,
+      overrides: lenient.overrides,
+      overridesProblem: lenient.dropped.join("\n"),
+      overridesMcpProblems: lenient.mcpProblems,
+      offered: OFFERED,
+      overriddenIn: {},
+    });
+
+    const lines = [...view.problems, ...view.rows.flatMap(({ problems }) => problems)].map(
+      mcpProblemText,
+    );
+
+    expect(lines.filter((line) => line.startsWith("Global: is left out"))).toHaveLength(1);
+    expect(lines.filter((line) => line.startsWith("this environment: is not used"))).toEqual([]);
+
+    // An older Registry, which only gives the text, has it read from there: it cannot tell whose layer a line is in.
+    const older = mcpScopeView({
+      scope: "work",
+      global,
+      globalProblem: undefined,
+      overrides: lenient.overrides,
+      overridesProblem: `These saved Overrides no longer apply:\n${lenient.dropped.join("\n")}`,
+      offered: OFFERED,
+      overriddenIn: {},
+    });
+
+    expect(older.problems.map(mcpProblemText)).toContainEqual(
+      expect.stringMatching(/^this environment: is not used and is forgotten/),
+    );
   });
 });
 
@@ -485,7 +607,10 @@ describe("the import", () => {
   });
 
   it("ignores autoEnableCodemode with a hint", () => {
-    expect(previewMcpImport(text, rules, null).hints[0]).toContain("autoEnableCodemode is ignored");
+    expect(previewMcpImport(text, rules, null).hints[0]).toEqual({
+      text: expect.stringContaining("autoEnableCodemode is ignored"),
+      link: "tools",
+    });
   });
 
   it("asks Replace or Skip for a name the Scope has: it is skipped until Replace is chosen", () => {
@@ -559,7 +684,7 @@ describe("what a change writes", () => {
         mcp: { servers: { a: { command: "x" }, b: { url: "https://b.example.com" } } },
         model: "m",
       },
-      { kind: "enabled", name: "a", enabled: false },
+      { kind: "enabled", name: "a", target: "own", enabled: false },
     );
 
     expect(Result.getOrUndefined(next)).toEqual({
@@ -572,7 +697,9 @@ describe("what a change writes", () => {
 
   it("fails for a server Global no longer has", () => {
     expect(
-      Result.isFailure(mcpGlobalDocument({}, { kind: "exposure", name: "a", exposure: "hidden" })),
+      Result.isFailure(
+        mcpGlobalDocument({}, { kind: "exposure", name: "a", target: "own", exposure: "hidden" }),
+      ),
     ).toBe(true);
   });
 
@@ -602,19 +729,27 @@ describe("what a change writes", () => {
   });
 
   it("writes an Environment's switch on a Global server as an adjustment, never a copy of the entry", () => {
-    expect(mcpOverridesPatch({}, { kind: "enabled", name: "linear", enabled: false })).toEqual(
-      Result.succeed({ set: { mcp: { servers: { linear: { enabled: false } } } } }),
-    );
+    expect(
+      mcpOverridesPatch(
+        {},
+        { kind: "enabled", name: "linear", target: "adjustment", enabled: false },
+      ),
+    ).toEqual(Result.succeed({ set: { mcp: { servers: { linear: { enabled: false } } } } }));
     expect(
       mcpOverridesPatch(
         { mcp: { servers: { linear: { exposure: "hidden" } } } },
-        { kind: "exposure", name: "linear", exposure: "direct" },
+        { kind: "exposure", name: "linear", target: "adjustment", exposure: "direct" },
       ),
     ).toEqual(Result.succeed({ set: { mcp: { servers: { linear: { exposure: "direct" } } } } }));
     expect(
       mcpOverridesPatch(
         {},
-        { kind: "toolExposure", name: "linear", toolExposure: { "delete_*": "hidden" } },
+        {
+          kind: "toolExposure",
+          name: "linear",
+          target: "adjustment",
+          toolExposure: { "delete_*": "hidden" },
+        },
       ),
     ).toEqual(
       Result.succeed({
@@ -627,13 +762,45 @@ describe("what a change writes", () => {
     expect(
       mcpOverridesPatch(
         { mcp: { servers: { notes: { command: "notes-mcp", args: ["a"] } } } },
-        { kind: "enabled", name: "notes", enabled: false },
+        { kind: "enabled", name: "notes", target: "own", enabled: false },
       ),
     ).toEqual(
       Result.succeed({
         set: { mcp: { servers: { notes: { command: "notes-mcp", args: ["a"], enabled: false } } } },
       }),
     );
+  });
+
+  it("writes nothing when the own entry a switch was made on is gone, instead of adjusting Global's of the name", () => {
+    const gone = mcpOverridesPatch(
+      { mcp: { servers: { other: { command: "x" } } } },
+      { kind: "enabled", name: "notes", target: "own", enabled: false },
+    );
+
+    expect(Result.isFailure(gone)).toBe(true);
+    expect(Result.isFailure(gone) && gone.failure).toContain("changed since the page read it");
+  });
+
+  it("writes nothing when an adjustment's row now has an own entry of the name", () => {
+    expect(
+      Result.isFailure(
+        mcpOverridesPatch(
+          { mcp: { servers: { linear: { url: "https://own.example.com" } } } },
+          { kind: "enabled", name: "linear", target: "adjustment", enabled: false },
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("fails an own switch at Global for an entry it no longer holds, and for an adjustment target", () => {
+    expect(
+      Result.isFailure(
+        mcpGlobalDocument(
+          { mcp: { servers: { a: { command: "x" } } } },
+          { kind: "enabled", name: "a", target: "adjustment", enabled: false },
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("resets adjustment keys by their Override field", () => {

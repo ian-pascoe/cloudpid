@@ -264,7 +264,11 @@ describe("resolving stale overrides leniently", () => {
   it("is the strict resolution when every override resolves", () => {
     const overrides = { thinkingLevel: "low", roles: { small: { hint: "Mine" } } } as const;
 
-    expect(resolveLeniently(overrides)).toEqual({ settings: resolved(overrides), dropped: [] });
+    expect(resolveLeniently(overrides)).toEqual({
+      settings: resolved(overrides),
+      dropped: [],
+      mcpProblems: [],
+    });
   });
 
   it("drops only the override that no longer resolves, and keeps its siblings", () => {
@@ -315,6 +319,7 @@ describe("resolving stale overrides leniently", () => {
           tools: { offered: ["read", "container_restart", "bash"] },
         },
         dropped: [],
+        mcpProblems: [],
       },
     );
     expect(

@@ -8,10 +8,9 @@
 // (OAuth)" disclosure's fields and controls are #469's: the form keeps an entry's `oauth` as it was (`McpFields.kept`), and
 // `SIGN_IN_SEAM` marks where the disclosure goes.
 
-import { decodeMcpServerValue, MCP_SAMPLING, type McpExposure } from "@cloudpid/config";
+import { MCP_SAMPLING, type McpExposure } from "@cloudpid/config";
 import { useAtom } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import { Plus, X } from "lucide-react";
@@ -19,30 +18,29 @@ import type { FormEvent, ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { DialogProblem } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
-import { NativeSelect } from "../components/ui/native-select.tsx";
 import { cn } from "../lib/utils.ts";
 import { settledFailureOf } from "../registry.ts";
 import {
   checkMcpEntry,
-  emptyMcpFields,
   entryOfFields,
   entryOfJson,
-  fieldsOfEntry,
-  jsonOfEntry,
   type McpFields,
   type McpFormCheck,
+  type McpFormDraft,
   type McpKeyValue,
   mcpFieldsProblems,
+  mcpFormShowing,
   type McpToolRow,
+  type McpToolsDraft,
   MCP_EXPOSURE_LABELS,
   MCP_EXPOSURE_OPTIONS,
   MCP_SAMPLING_LABELS,
-  rowsOfToolExposure,
   toolExposureOfRows,
 } from "./mcp-form.ts";
 import type { McpReferenceNames, McpRow, McpScopeView } from "./mcp-model.ts";
-import { type McpFormDraft, mcpPanelAtom, type McpToolsDraft, saveMcpAtom } from "./mcp-state.ts";
-import { CODE_AREA, Field } from "./parts.tsx";
+import { MessageList, OptionSelect, ReferencesNotice } from "./mcp-parts.tsx";
+import { type McpReferencesState, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
+import { CODE_AREA, Field, noteId } from "./parts.tsx";
 
 /** Where the "Sign-in (OAuth)" disclosure goes: its state and controls are #469's. */
 export const SIGN_IN_SEAM = "sign-in";
@@ -54,43 +52,32 @@ const SAMPLING_HINTS: Readonly<Record<(typeof MCP_SAMPLING)[number], string>> = 
   off: "The server's requests for a model's reply are refused.",
 };
 
-const asExposure = (value: string): McpExposure | undefined =>
-  Option.getOrUndefined(Arr.findFirst(MCP_EXPOSURE_OPTIONS, (known) => known === value));
-
 /** A select of the four Exposures. */
 export const ExposureSelect = ({
   id,
   label,
   value,
   disabled,
-  className,
+  describedBy,
   onChange,
 }: {
   id?: string | undefined;
   label?: string | undefined;
   value: McpExposure;
   disabled?: boolean | undefined;
-  className?: string | undefined;
+  describedBy?: string | undefined;
   onChange: (exposure: McpExposure) => void;
 }) => (
-  <NativeSelect
+  <OptionSelect
     id={id}
-    aria-label={label}
+    label={label}
+    options={MCP_EXPOSURE_OPTIONS}
+    labels={MCP_EXPOSURE_LABELS}
     value={value}
     disabled={disabled}
-    className={className}
-    onChange={(event) => {
-      const picked = asExposure(event.target.value);
-
-      if (picked !== undefined) onChange(picked);
-    }}
-  >
-    {MCP_EXPOSURE_OPTIONS.map((exposure) => (
-      <option key={exposure} value={exposure}>
-        {MCP_EXPOSURE_LABELS[exposure]}
-      </option>
-    ))}
-  </NativeSelect>
+    describedBy={describedBy}
+    onChange={onChange}
+  />
 );
 
 /** Rows of two inputs (a name and a value, or a pattern and an Exposure), each with a remove button, and an add button. */
@@ -310,29 +297,20 @@ const NamesHint = ({ names }: { names: McpReferenceNames | null }) =>
   );
 
 /** What the form says of the entry it makes: why it cannot be saved, and what to warn of. */
-const Checks = ({ problems, check }: { problems: ReadonlyArray<string>; check: McpFormCheck }) => (
+const Checks = ({
+  id,
+  problems,
+  check,
+}: {
+  /** The id of the problems, which the Save button names in its `aria-describedby`. */
+  id: string;
+  problems: ReadonlyArray<string>;
+  check: McpFormCheck;
+}) => (
   <>
-    {problems.length > 0 && (
-      <ul role="alert" className="flex flex-col gap-1 text-sm text-destructive">
-        {problems.map((problem) => (
-          <li key={problem}>{problem}</li>
-        ))}
-      </ul>
-    )}
-    {check.warnings.length > 0 && (
-      <ul role="status" className="flex flex-col gap-1 text-sm text-amber-600 dark:text-amber-400">
-        {check.warnings.map(({ message }) => (
-          <li key={message}>{message}</li>
-        ))}
-      </ul>
-    )}
-    {check.hints.length > 0 && (
-      <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
-        {check.hints.map((hint) => (
-          <li key={hint}>{hint}</li>
-        ))}
-      </ul>
-    )}
+    <MessageList tone="problem" id={id} messages={problems} />
+    <MessageList tone="warning" messages={Arr.map(check.warnings, ({ message }) => message)} />
+    <MessageList tone="hint" messages={check.hints} small />
   </>
 );
 
@@ -361,7 +339,7 @@ export const McpFormPanel = ({
   atGlobal: boolean;
   draft: McpFormDraft;
   view: McpScopeView;
-  references: McpReferenceNames | null;
+  references: McpReferencesState;
   /** The tool names of the server as its host discovered them, for suggestions. */
   tools: ReadonlyArray<string>;
 }) => {
@@ -372,6 +350,11 @@ export const McpFormPanel = ({
   const namesList = `mcp-names-${scope}`;
   const toolsList = `mcp-tools-${scope}`;
   const busy = saved.waiting;
+  const panelId = `mcp-tabpanel-${scope}`;
+  const problemsId = `mcp-problems-${scope}`;
+  const known = references.status === "ready" ? references.names : null;
+  // At an Environment a `${NAME}` that nothing provides is refused, so Save waits for the names it is checked against.
+  const held = !atGlobal && known === null;
 
   const read = jsonShown ? entryOfJson(draft.json) : Result.succeed(entryOfFields(fields));
 
@@ -384,14 +367,17 @@ export const McpFormPanel = ({
           atGlobal,
           editing: draft.mode === "add" ? null : fields.name,
         },
-        references,
+        references: known,
       })
     : { entry: null, problems: [read.failure], warnings: [], hints: [] };
 
   const problems = [...(jsonShown ? [] : mcpFieldsProblems(fields)), ...check.problems];
   const entry = check.entry;
-  const ready = entry !== null && problems.length === 0 && draft.jsonProblem === null && !busy;
-  const names = references === null ? [] : [...references.secrets, ...references.variables];
+
+  const ready =
+    entry !== null && problems.length === 0 && draft.jsonProblem === null && !busy && !held;
+
+  const names = known === null ? [] : [...known.secrets, ...known.variables];
   const nameFixed = draft.mode !== "add";
   const keptKeys = Arr.map(Record.toEntries(fields.kept), ([key]) => key);
 
@@ -399,43 +385,8 @@ export const McpFormPanel = ({
     setPanel({ ...draft, fields: { ...fields, ...next } });
   };
 
-  const showTab = (tab: "form" | "json") => {
-    if (tab === draft.tab) return;
-
-    if (tab === "json") {
-      setPanel({ ...draft, tab, json: jsonOfEntry(entryOfFields(fields)), jsonProblem: null });
-
-      return;
-    }
-
-    const parsed = entryOfJson(draft.json);
-
-    if (Result.isFailure(parsed)) {
-      setPanel({ ...draft, jsonProblem: parsed.failure });
-
-      return;
-    }
-
-    const decoded = decodeMcpServerValue(parsed.success);
-
-    if (Result.isFailure(decoded)) {
-      setPanel({
-        ...draft,
-        jsonProblem: `The form cannot show it until it is fixed: ${Arr.join(
-          Arr.map(decoded.failure, (problem) => problem.line),
-          "; ",
-        )}`,
-      });
-
-      return;
-    }
-
-    setPanel({
-      ...draft,
-      tab,
-      fields: fieldsOfEntry(fields.name, parsed.success),
-      jsonProblem: null,
-    });
+  const showTab = (tab: McpFormDraft["tab"]) => {
+    setPanel(mcpFormShowing(draft, tab));
   };
 
   const submit = (event: FormEvent) => {
@@ -460,6 +411,8 @@ export const McpFormPanel = ({
               key={tab}
               type="button"
               role="tab"
+              id={`mcp-tab-${scope}-${tab}`}
+              aria-controls={panelId}
               aria-selected={draft.tab === tab}
               variant={draft.tab === tab ? "outline" : "ghost"}
               size="sm"
@@ -490,6 +443,7 @@ export const McpFormPanel = ({
       >
         <Input
           id={`mcp-name-${scope}`}
+          aria-describedby={noteId(`mcp-name-${scope}`)}
           value={fields.name}
           disabled={nameFixed}
           spellCheck={false}
@@ -501,244 +455,258 @@ export const McpFormPanel = ({
           }}
         />
       </Field>
-      {jsonShown ? (
-        <Field
-          label="Server as JSON"
-          htmlFor={`mcp-json-${scope}`}
-          hint="pi's shape: command, args, env, cwd, or url, headers, with enabled, exposure, toolExposure, timeout, description, sampling and oauth."
-          problem={draft.jsonProblem}
-        >
-          <textarea
-            id={`mcp-json-${scope}`}
-            rows={14}
-            value={draft.json}
-            spellCheck={false}
-            autoComplete="off"
-            data-1p-ignore
-            className={cn(CODE_AREA, "resize-y")}
-            onChange={(event) => {
-              setPanel({ ...draft, json: event.target.value, jsonProblem: null });
-            }}
-          />
-        </Field>
-      ) : (
-        <>
-          <Suggestions id={namesList} options={Arr.map(names, (name) => `\${${name}}`)} />
-          <Suggestions id={toolsList} options={tools} />
-          <fieldset className="flex flex-col gap-2">
-            <legend className="text-sm font-medium">Runs as</legend>
-            <div className="flex gap-4 text-sm">
-              {(["http", "stdio"] as const).map((kind) => (
-                <label key={kind} className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name={`mcp-kind-${scope}`}
-                    checked={fields.kind === kind}
-                    onChange={() => {
-                      setFields({ kind });
+      <div
+        role="tabpanel"
+        id={panelId}
+        aria-labelledby={`mcp-tab-${scope}-${draft.tab}`}
+        className="flex flex-col gap-4"
+      >
+        {jsonShown ? (
+          <Field
+            label="Server as JSON"
+            htmlFor={`mcp-json-${scope}`}
+            hint="pi's shape: command, args, env, cwd, or url, headers, with enabled, exposure, toolExposure, timeout, description, sampling and oauth."
+            problem={draft.jsonProblem}
+          >
+            <textarea
+              id={`mcp-json-${scope}`}
+              aria-describedby={noteId(`mcp-json-${scope}`)}
+              rows={14}
+              value={draft.json}
+              spellCheck={false}
+              autoComplete="off"
+              data-1p-ignore
+              className={cn(CODE_AREA, "resize-y")}
+              onChange={(event) => {
+                setPanel({ ...draft, json: event.target.value, jsonProblem: null });
+              }}
+            />
+          </Field>
+        ) : (
+          <>
+            <Suggestions id={namesList} options={Arr.map(names, (name) => `\${${name}}`)} />
+            <Suggestions id={toolsList} options={tools} />
+            <fieldset className="flex flex-col gap-2">
+              <legend className="text-sm font-medium">Runs as</legend>
+              <div className="flex gap-4 text-sm">
+                {(["http", "stdio"] as const).map((kind) => (
+                  <label key={kind} className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name={`mcp-kind-${scope}`}
+                      checked={fields.kind === kind}
+                      onChange={() => {
+                        setFields({ kind });
+                      }}
+                    />
+                    {kind === "http" ? "HTTP (a URL)" : "stdio (a command)"}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            {fields.kind === "stdio" ? (
+              <>
+                <Field
+                  label="Command"
+                  htmlFor={`mcp-command-${scope}`}
+                  hint="Run without a shell, in the workspace's Container."
+                >
+                  <Input
+                    id={`mcp-command-${scope}`}
+                    aria-describedby={noteId(`mcp-command-${scope}`)}
+                    value={fields.command}
+                    placeholder="npx"
+                    spellCheck={false}
+                    autoComplete="off"
+                    data-1p-ignore
+                    className="font-mono"
+                    onChange={(event) => {
+                      setFields({ command: event.target.value });
                     }}
                   />
-                  {kind === "http" ? "HTTP (a URL)" : "stdio (a command)"}
-                </label>
-              ))}
+                </Field>
+                <Field label="Arguments" htmlFor={`mcp-args-${scope}`} group>
+                  <ArgRows
+                    rows={fields.args}
+                    onChange={(args) => {
+                      setFields({ args });
+                    }}
+                  />
+                </Field>
+                <Field
+                  label="Directory"
+                  htmlFor={`mcp-cwd-${scope}`}
+                  hint="An absolute path; empty for the session's default directory."
+                >
+                  <Input
+                    id={`mcp-cwd-${scope}`}
+                    aria-describedby={noteId(`mcp-cwd-${scope}`)}
+                    value={fields.cwd}
+                    placeholder="/workspace/app"
+                    spellCheck={false}
+                    autoComplete="off"
+                    data-1p-ignore
+                    className="font-mono"
+                    onChange={(event) => {
+                      setFields({ cwd: event.target.value });
+                    }}
+                  />
+                </Field>
+                <Field
+                  label="Environment variables"
+                  htmlFor={`mcp-env-${scope}`}
+                  hint={<NamesHint names={known} />}
+                  group
+                >
+                  <KeyValueRows
+                    label="Environment variable"
+                    rows={fields.env}
+                    namesList={namesList}
+                    onChange={(env) => {
+                      setFields({ env });
+                    }}
+                  />
+                </Field>
+              </>
+            ) : (
+              <>
+                <Field
+                  label="URL"
+                  htmlFor={`mcp-url-${scope}`}
+                  hint="cloudpid connects from its own servers, not from the Container."
+                >
+                  <Input
+                    id={`mcp-url-${scope}`}
+                    aria-describedby={noteId(`mcp-url-${scope}`)}
+                    value={fields.url}
+                    placeholder="https://mcp.example.com/mcp"
+                    spellCheck={false}
+                    autoComplete="off"
+                    data-1p-ignore
+                    className="font-mono"
+                    onChange={(event) => {
+                      setFields({ url: event.target.value });
+                    }}
+                  />
+                </Field>
+                <Field
+                  label="Headers"
+                  htmlFor={`mcp-headers-${scope}`}
+                  hint={<NamesHint names={known} />}
+                  group
+                >
+                  <KeyValueRows
+                    label="Header"
+                    rows={fields.headers}
+                    namesList={namesList}
+                    onChange={(headers) => {
+                      setFields({ headers });
+                    }}
+                  />
+                </Field>
+              </>
+            )}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Timeout (seconds)" htmlFor={`mcp-timeout-${scope}`}>
+                <Input
+                  id={`mcp-timeout-${scope}`}
+                  inputMode="decimal"
+                  value={fields.timeout}
+                  placeholder="60"
+                  className="sm:max-w-48"
+                  onChange={(event) => {
+                    setFields({ timeout: event.target.value });
+                  }}
+                />
+              </Field>
+              <Field label="Exposure" htmlFor={`mcp-exposure-${scope}`}>
+                <ExposureSelect
+                  id={`mcp-exposure-${scope}`}
+                  value={fields.exposure}
+                  onChange={(exposure) => {
+                    setFields({ exposure });
+                  }}
+                />
+              </Field>
+              <Field
+                label="Model use"
+                htmlFor={`mcp-sampling-${scope}`}
+                hint={SAMPLING_HINTS[fields.sampling]}
+              >
+                <OptionSelect
+                  id={`mcp-sampling-${scope}`}
+                  options={MCP_SAMPLING}
+                  labels={MCP_SAMPLING_LABELS}
+                  value={fields.sampling}
+                  describedBy={noteId(`mcp-sampling-${scope}`)}
+                  onChange={(sampling) => {
+                    setFields({ sampling });
+                  }}
+                />
+              </Field>
+              <label className="flex items-center gap-2 self-end pb-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={fields.enabled}
+                  onChange={(event) => {
+                    setFields({ enabled: event.target.checked });
+                  }}
+                />
+                Enabled
+              </label>
             </div>
-          </fieldset>
-          {fields.kind === "stdio" ? (
-            <>
-              <Field
-                label="Command"
-                htmlFor={`mcp-command-${scope}`}
-                hint="Run without a shell, in the workspace's Container."
-              >
-                <Input
-                  id={`mcp-command-${scope}`}
-                  value={fields.command}
-                  placeholder="npx"
-                  spellCheck={false}
-                  autoComplete="off"
-                  data-1p-ignore
-                  className="font-mono"
-                  onChange={(event) => {
-                    setFields({ command: event.target.value });
-                  }}
-                />
-              </Field>
-              <Field label="Arguments" htmlFor={`mcp-args-${scope}`}>
-                <ArgRows
-                  rows={fields.args}
-                  onChange={(args) => {
-                    setFields({ args });
-                  }}
-                />
-              </Field>
-              <Field
-                label="Directory"
-                htmlFor={`mcp-cwd-${scope}`}
-                hint="An absolute path; empty for the session's default directory."
-              >
-                <Input
-                  id={`mcp-cwd-${scope}`}
-                  value={fields.cwd}
-                  placeholder="/workspace/app"
-                  spellCheck={false}
-                  autoComplete="off"
-                  data-1p-ignore
-                  className="font-mono"
-                  onChange={(event) => {
-                    setFields({ cwd: event.target.value });
-                  }}
-                />
-              </Field>
-              <Field
-                label="Environment variables"
-                htmlFor={`mcp-env-${scope}`}
-                hint={<NamesHint names={references} />}
-              >
-                <KeyValueRows
-                  label="Environment variable"
-                  rows={fields.env}
-                  namesList={namesList}
-                  onChange={(env) => {
-                    setFields({ env });
-                  }}
-                />
-              </Field>
-            </>
-          ) : (
-            <>
-              <Field
-                label="URL"
-                htmlFor={`mcp-url-${scope}`}
-                hint="cloudpid connects from its own servers, not from the Container."
-              >
-                <Input
-                  id={`mcp-url-${scope}`}
-                  value={fields.url}
-                  placeholder="https://mcp.example.com/mcp"
-                  spellCheck={false}
-                  autoComplete="off"
-                  data-1p-ignore
-                  className="font-mono"
-                  onChange={(event) => {
-                    setFields({ url: event.target.value });
-                  }}
-                />
-              </Field>
-              <Field
-                label="Headers"
-                htmlFor={`mcp-headers-${scope}`}
-                hint={<NamesHint names={references} />}
-              >
-                <KeyValueRows
-                  label="Header"
-                  rows={fields.headers}
-                  namesList={namesList}
-                  onChange={(headers) => {
-                    setFields({ headers });
-                  }}
-                />
-              </Field>
-            </>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Timeout (seconds)" htmlFor={`mcp-timeout-${scope}`}>
-              <Input
-                id={`mcp-timeout-${scope}`}
-                inputMode="decimal"
-                value={fields.timeout}
-                placeholder="60"
-                className="sm:max-w-48"
+            <Field
+              label="Description"
+              htmlFor={`mcp-description-${scope}`}
+              hint="Shown to the model with the server's name."
+            >
+              <textarea
+                id={`mcp-description-${scope}`}
+                aria-describedby={noteId(`mcp-description-${scope}`)}
+                rows={2}
+                value={fields.description}
+                className={cn(CODE_AREA, "font-sans")}
                 onChange={(event) => {
-                  setFields({ timeout: event.target.value });
-                }}
-              />
-            </Field>
-            <Field label="Exposure" htmlFor={`mcp-exposure-${scope}`}>
-              <ExposureSelect
-                id={`mcp-exposure-${scope}`}
-                value={fields.exposure}
-                onChange={(exposure) => {
-                  setFields({ exposure });
+                  setFields({ description: event.target.value });
                 }}
               />
             </Field>
             <Field
-              label="Model use"
-              htmlFor={`mcp-sampling-${scope}`}
-              hint={SAMPLING_HINTS[fields.sampling]}
+              label="Tool exposure"
+              htmlFor={`mcp-tools-field-${scope}`}
+              group
+              hint={
+                tools.length === 0
+                  ? "A tool's name, or a * pattern: the first pattern that matches wins, an exact name before any pattern. Tool names are suggested once the server has been discovered."
+                  : "A tool's name, or a * pattern: the first pattern that matches wins, an exact name before any pattern."
+              }
             >
-              <NativeSelect
-                id={`mcp-sampling-${scope}`}
-                value={fields.sampling}
-                onChange={(event) => {
-                  const picked = Option.getOrUndefined(
-                    Arr.findFirst(MCP_SAMPLING, (known) => known === event.target.value),
-                  );
-
-                  if (picked !== undefined) setFields({ sampling: picked });
-                }}
-              >
-                {MCP_SAMPLING.map((answer) => (
-                  <option key={answer} value={answer}>
-                    {MCP_SAMPLING_LABELS[answer]}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Field>
-            <label className="flex items-center gap-2 self-end pb-2 text-sm">
-              <input
-                type="checkbox"
-                checked={fields.enabled}
-                onChange={(event) => {
-                  setFields({ enabled: event.target.checked });
+              <ToolRows
+                rows={fields.toolExposure}
+                listId={toolsList}
+                onChange={(toolExposure) => {
+                  setFields({ toolExposure });
                 }}
               />
-              Enabled
-            </label>
-          </div>
-          <Field
-            label="Description"
-            htmlFor={`mcp-description-${scope}`}
-            hint="Shown to the model with the server's name."
-          >
-            <textarea
-              id={`mcp-description-${scope}`}
-              rows={2}
-              value={fields.description}
-              className={cn(CODE_AREA, "font-sans")}
-              onChange={(event) => {
-                setFields({ description: event.target.value });
-              }}
-            />
-          </Field>
-          <Field
-            label="Tool exposure"
-            htmlFor={`mcp-tools-field-${scope}`}
-            hint={
-              tools.length === 0
-                ? "A tool's name, or a * pattern: the first pattern that matches wins, an exact name before any pattern. Tool names are suggested once the server has been discovered."
-                : "A tool's name, or a * pattern: the first pattern that matches wins, an exact name before any pattern."
-            }
-          >
-            <ToolRows
-              rows={fields.toolExposure}
-              listId={toolsList}
-              onChange={(toolExposure) => {
-                setFields({ toolExposure });
-              }}
-            />
-          </Field>
-          {keptKeys.length > 0 && (
-            <p id={SIGN_IN_SEAM} className="text-xs text-muted-foreground">
-              Kept as they are, and editable in the JSON tab: {Arr.join(keptKeys, ", ")}.
-            </p>
-          )}
-        </>
-      )}
-      <Checks problems={problems} check={check} />
+            </Field>
+            {keptKeys.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Kept as they are, and editable in the JSON tab: {Arr.join(keptKeys, ", ")}.
+              </p>
+            )}
+            <div id={SIGN_IN_SEAM} />
+          </>
+        )}
+      </div>
+      {!atGlobal && <ReferencesNotice scope={scope} references={references} />}
+      <Checks id={problemsId} problems={problems} check={check} />
       <DialogProblem problem={settledFailureOf(saved)} />
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" disabled={!ready}>
+        <Button
+          type="submit"
+          disabled={!ready}
+          aria-describedby={problems.length > 0 ? problemsId : undefined}
+        >
           {busy ? "Saving…" : "Save server"}
         </Button>
         <Button
@@ -754,20 +722,6 @@ export const McpFormPanel = ({
     </form>
   );
 };
-
-/** What a form of mode `mode` starts from: empty fields for an Add, or the entry `written` of server `name`. */
-export const newMcpForm = (
-  mode: McpFormDraft["mode"],
-  name: string,
-  written: Parameters<typeof fieldsOfEntry>[1] | null,
-): McpFormDraft => ({
-  kind: "form",
-  mode,
-  fields: written === null ? emptyMcpFields() : fieldsOfEntry(name, written),
-  tab: "form",
-  json: "",
-  jsonProblem: null,
-});
 
 /** The editor of Global server `row`'s tool exposure at an Environment: an adjustment, written whole. */
 export const McpToolsPanel = ({
@@ -793,6 +747,7 @@ export const McpToolsPanel = ({
       save({
         kind: "toolExposure",
         name: draft.name,
+        target: "adjustment",
         toolExposure: toolExposureOfRows(draft.rows),
       });
   };
@@ -835,10 +790,3 @@ export const McpToolsPanel = ({
     </form>
   );
 };
-
-/** The rows a tool exposure editor starts from: the exposure in force. */
-export const toolsDraftOf = (row: McpRow): McpToolsDraft => ({
-  kind: "tools",
-  name: row.name,
-  rows: rowsOfToolExposure(row.server.toolExposure),
-});

@@ -66,6 +66,24 @@ describe("reading the settings", () => {
     expect(state.problem).toContain("roles.xlarge.model");
   });
 
+  it("says an MCP entry it left out structured too, for the page's row of the server, and only then", () => {
+    const store = documents({
+      [SETTINGS_DOCUMENT]:
+        '{"mcp":{"servers":{"linear":{"command":"x","auth":"y"},"good":{"command":"z"}}}}',
+    });
+
+    const state = readSettings(store);
+
+    expect(Record.keys(state.settings.mcp.servers)).toEqual(["good"]);
+    expect(state.mcpProblems).toEqual([
+      { source: "global", name: "linear", keys: ["auth"], message: expect.any(String), reset: [] },
+    ]);
+    expect(state.problem).toContain("mcp.servers.linear.auth");
+    expect(
+      readSettings(documents({ [SETTINGS_DOCUMENT]: '{"thinkingLevel":"low"}' })),
+    ).not.toHaveProperty("mcpProblems");
+  });
+
   it("saves the survivors, and nothing of what was dropped, when the form saves them back", () => {
     const store = documents({
       [SETTINGS_DOCUMENT]: '{"model":"anthropic/retired-model","thinkingLevel":"low"}',

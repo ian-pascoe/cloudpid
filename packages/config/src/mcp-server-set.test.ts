@@ -722,6 +722,16 @@ describe("an adjustment over an entry that would grow past 16 KiB", () => {
     expect(read.dropped).toEqual([
       expect.stringMatching(/^mcp\.servers\.a\.toolExposure: makes the entry over 16 KiB/),
     ]);
+    // The same, structured, for the page's row of the server: with the Override field its Reset clears.
+    expect(read.mcpProblems).toEqual([
+      {
+        source: "environment",
+        name: "a",
+        keys: ["toolExposure"],
+        message: expect.stringMatching(/^makes the entry over 16 KiB/),
+        reset: ["mcp.servers.a.toolExposure"],
+      },
+    ]);
   });
 });
 

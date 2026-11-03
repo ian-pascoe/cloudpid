@@ -9,9 +9,11 @@
 // page the Repo layers, and a row's `source` already names a Repo's.
 
 import {
+  isJsonObject,
   isMcpFullEntry,
   MCP_ADJUSTMENT_KEYS,
   type McpProblem,
+  type McpProblemSource,
   type McpRepoLayer,
   type McpServerEntry,
   type McpShadowed,
@@ -24,6 +26,7 @@ import {
   mcpStateIsProblem,
   type McpServersView,
   type McpServerView,
+  type McpSettingsProblem,
   type OverridingEnvironment,
   readMcpServerState,
 } from "@cloudpid/protocol";
@@ -72,8 +75,8 @@ export interface McpRow {
   readonly adjusted: ReadonlyArray<McpAdjustmentKey>;
   /** At Global, the Environments that override it, by its entry or any adjustment key. */
   readonly overriddenIn: ReadonlyArray<OverridingEnvironment>;
-  /** Its problems, each naming the source. */
-  readonly problems: ReadonlyArray<string>;
+  /** Its problems, each naming the source (`mcpProblemText`). */
+  readonly problems: ReadonlyArray<McpProblemLine>;
   readonly hints: ReadonlyArray<string>;
   readonly references: ReadonlyArray<McpReference>;
 }
@@ -87,6 +90,17 @@ export interface McpProblemLine {
   /** For an orphaned adjustment, the Override fields whose Reset removes it. */
   readonly reset: ReadonlyArray<string>;
 }
+
+/** A problem as a row or the Problems list words it: where it is, then what is wrong. */
+export const mcpProblemText = (line: McpProblemLine): string => `${line.source}: ${line.message}`;
+
+/** Whether the row is a server defined at the Scope itself (Global's own at Global, an Environment's own entry). */
+export const isOwnRow = (row: McpRow): boolean =>
+  row.kind === "global" || row.kind === "own" || row.kind === "replaces";
+
+/** Whether the row is Global's server at an Environment, followed as it is or adjusted. */
+export const isFollowedRow = (row: McpRow): boolean =>
+  row.kind === "inherited" || row.kind === "adjusted";
 
 /** A warning of the section. */
 export type McpWarning = {
@@ -121,9 +135,13 @@ export interface McpScopeInput {
   readonly global: Schema.Json;
   /** Why some of Global's saved overrides are ignored, or undefined. */
   readonly globalProblem: string | undefined;
+  /** The part of `globalProblem` that lies in a server's entry, structured; undefined from a Registry that does not say. */
+  readonly globalMcpProblems?: ReadonlyArray<McpSettingsProblem> | undefined;
   /** The Environment's Overrides; null at Global. */
   readonly overrides: Schema.Json | null;
   readonly overridesProblem: string | undefined;
+  /** The part of `overridesProblem` that lies in a server's entry, structured; undefined from a Registry that does not say. */
+  readonly overridesMcpProblems?: ReadonlyArray<McpSettingsProblem> | undefined;
   /** `tools.offered` in force at the Scope. */
   readonly offered: ReadonlyArray<string>;
   /** At Global, the Environments that override each field. */
@@ -197,15 +215,30 @@ export const mcpMissingReferences = (
 ): ReadonlyArray<McpReference> =>
   Arr.filter(references, ({ name }) => mcpReferenceKind(name, names) === "missing");
 
-/** The sentence that says a row reads a `${NAME}` that this environment lacks. */
+/** The sentence that says an entry reads a `${NAME}` that this environment lacks. */
 export const mcpMissingReferenceProblem = (reference: McpReference): string =>
   `${reference.where} reads \${${reference.name}}, which this environment has neither as a Secret nor as a Variable`;
+
+/** The problems of row `row`: each of its references that `names` does not have, naming where the entry is. */
+export const mcpMissingReferenceProblems = (
+  row: McpRow,
+  names: McpReferenceNames,
+): ReadonlyArray<McpProblemLine> =>
+  Arr.map(mcpMissingReferences(row.references, names), (reference) => ({
+    name: row.name,
+    source: mcpSourceName(row.source),
+    message: mcpMissingReferenceProblem(reference),
+    reset: [],
+  }));
+
+const FORGOTTEN = "is not used and is forgotten by the next save: ";
 
 const DROPPED_LINE = /^mcp\.servers\.([^.:\s]+)\.?([^:]*): (.*)$/;
 
 /**
- * The lines about MCP servers in a Registry `problem` ("These saved overrides no longer apply and are ignored:" and a line
- * for each, `mcp.servers.<name>[.<keys>]: <text>`), as problems of `source`.
+ * The lines about MCP servers in a Registry `problem` that comes with no `mcpProblems` (an older Registry): its text
+ * ("These saved overrides no longer apply and are ignored:" and a line for each, `mcp.servers.<name>[.<keys>]: <text>`)
+ * is all it says, so they are read from it, as problems of `source`.
  */
 export const droppedMcpProblems = (
   problem: string | undefined,
@@ -221,19 +254,45 @@ export const droppedMcpProblems = (
     return Result.succeed<McpProblemLine>({
       name,
       source,
-      message: `is not used and is forgotten by the next save: ${keys === "" ? "" : `${keys}: `}${text}`,
+      message: `${FORGOTTEN}${keys === "" ? "" : `${keys}: `}${text}`,
       reset: [],
     });
   });
 
-const isObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
+const LAYER_NAMES: Readonly<Record<McpProblemSource, string>> = {
+  global: "Global",
+  environment: "this environment",
+};
+
+/**
+ * The problems of entries a lenient read left out, as the Registry says them (`McpSettingsProblem`), each in its layer.
+ * A problem in the document that was read is forgotten by that layer's next save; a Global server left out of an
+ * Environment's view (its twin name is the Environment's own) is Global's, and says its own words.
+ */
+const savedProblemLines = (
+  found: ReadonlyArray<McpSettingsProblem>,
+  read: McpProblemSource,
+): ReadonlyArray<McpProblemLine> =>
+  Arr.map(found, (problem) => {
+    const source = problem.source === "environment" ? "environment" : "global";
+    const where = Arr.join(problem.keys, ".");
+
+    return {
+      name: problem.name,
+      source: LAYER_NAMES[source],
+      message:
+        source === read
+          ? `${FORGOTTEN}${where === "" ? "" : `${where}: `}${problem.message}`
+          : problem.message,
+      reset: problem.reset,
+    };
+  });
 
 /** The `mcp.servers` of `document`, as written; none where it has none. */
 export const mcpServersIn = (document: Schema.Json): Schema.JsonObject => {
   const servers = mcpServersOf(document);
 
-  return isObject(servers) ? servers : {};
+  return isJsonObject(servers) ? servers : {};
 };
 
 const serverIn = (document: Schema.Json, name: string): Schema.Json | undefined =>
@@ -242,19 +301,19 @@ const serverIn = (document: Schema.Json, name: string): Schema.Json | undefined 
 const writtenEntry = (document: Schema.Json, name: string): Schema.JsonObject | undefined => {
   const written = serverIn(document, name);
 
-  return isObject(written) ? written : undefined;
+  return isJsonObject(written) ? written : undefined;
 };
 
 /** The names of `document`'s full entries, or, with `adjustments`, of its adjustments. */
 const namesIn = (document: Schema.Json, adjustments: boolean): ReadonlyArray<string> =>
   Arr.filterMap(Record.toEntries(mcpServersIn(document)), ([name, value]) =>
-    isObject(value) && isMcpFullEntry(value) !== adjustments
+    isJsonObject(value) && isMcpFullEntry(value) !== adjustments
       ? Result.succeed(name)
       : Result.failVoid,
   );
 
 const adjustmentKeysOf = (written: Schema.Json | undefined): ReadonlyArray<McpAdjustmentKey> =>
-  isObject(written)
+  isJsonObject(written)
     ? Arr.filter(MCP_ADJUSTMENT_KEYS, (key) => Predicate.hasProperty(written, key))
     : [];
 
@@ -293,11 +352,19 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
   const overrides = input.overrides ?? {};
   const set = resolveMcpServerSet(input.global, overrides, input.repos ?? []);
 
-  const lines: ReadonlyArray<McpProblemLine> = [
-    ...Arr.map(set.problems, problemLine),
-    ...droppedMcpProblems(input.globalProblem, "Global"),
-    ...droppedMcpProblems(input.overridesProblem, "this environment"),
-  ];
+  // The set names some of what the Registry's read left out too (a Global server shadowed by a twin name): once each.
+  const lines: ReadonlyArray<McpProblemLine> = Arr.dedupeWith(
+    [
+      ...Arr.map(set.problems, problemLine),
+      ...(input.globalMcpProblems === undefined
+        ? droppedMcpProblems(input.globalProblem, "Global")
+        : savedProblemLines(input.globalMcpProblems, "global")),
+      ...(input.overridesMcpProblems === undefined
+        ? droppedMcpProblems(input.overridesProblem, "this environment")
+        : savedProblemLines(input.overridesMcpProblems, "environment")),
+    ],
+    (left, right) => left.name === right.name && mcpProblemText(left) === mcpProblemText(right),
+  );
 
   const rows = Arr.map(set.servers, (resolved): McpRow => {
     const { name, source, server } = resolved;
@@ -322,10 +389,7 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
       written: writtenEntry(document, name) ?? {},
       adjusted,
       overriddenIn: atGlobal ? overridingEnvironments(input.overriddenIn, name) : [],
-      problems: Arr.map(
-        Arr.filter(lines, (line) => line.name === name),
-        (line) => `${line.source}: ${line.message}`,
-      ),
+      problems: Arr.filter(lines, (line) => line.name === name),
       hints: Arr.map(
         Arr.filter(set.hints, (hint) => hint.name === name),
         (hint) => hint.message,

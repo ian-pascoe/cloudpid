@@ -673,6 +673,15 @@ describe("an Environment's MCP servers", () => {
       expect(read.settings.mcp.servers).toEqual({ linear: LINEAR, good: LOCAL });
       expect(read.overrides).toEqual({ model: SONNET, mcp: { servers: { good: LOCAL } } });
       expect(read.dropped).toEqual([expect.stringMatching(/^mcp\.servers\.linear\.auth: /)]);
+      expect(read.mcpProblems).toEqual([
+        {
+          source: "environment",
+          name: "linear",
+          keys: ["auth"],
+          message: expect.any(String),
+          reset: [],
+        },
+      ]);
     });
 
     it("drop a key of an adjustment that no longer applies, and keep the others", () => {
@@ -708,6 +717,16 @@ describe("an Environment's MCP servers", () => {
       expect(read.dropped).toEqual([
         expect.stringMatching(/^mcp\.servers\.Linear: is left out: .*"linear"/),
       ]);
+      // Structured, it is Global's entry that is left out, not an Override of the Environment's.
+      expect(read.mcpProblems).toEqual([
+        {
+          source: "global",
+          name: "Linear",
+          keys: [],
+          message: expect.stringMatching(/^is left out: .*"linear"/),
+          reset: [],
+        },
+      ]);
       // The set the McpHost is handed says the same.
       expect(
         Arr.map(
@@ -715,6 +734,24 @@ describe("an Environment's MCP servers", () => {
           ({ name }) => name,
         ),
       ).toEqual(["linear"]);
+    });
+
+    it("say Global's own left-out entries structured too, in Global's layer", () => {
+      const read = resolveLeniently({
+        mcp: { servers: { linear: { command: "x", auth: "y" }, good: LOCAL } },
+      });
+
+      expect(read.settings.mcp.servers).toEqual({ good: LOCAL });
+      expect(read.mcpProblems).toEqual([
+        {
+          source: "global",
+          name: "linear",
+          keys: ["auth"],
+          message: expect.any(String),
+          reset: [],
+        },
+      ]);
+      expect(resolveLeniently({}).mcpProblems).toEqual([]);
     });
 
     it("still refuse the clash on a save", () => {

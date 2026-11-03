@@ -337,6 +337,24 @@ export const OverridingEnvironment = Schema.Struct({ id: Schema.String, name: Sc
 export type OverridingEnvironment = typeof OverridingEnvironment.Type;
 
 /**
+ * An MCP server's entry, or a key of it, that a lenient read left out (`@cloudpid/config` → `McpSettingsProblem`): the
+ * Settings page shows it on that server's row, where the `problem` text only lists it.
+ */
+export const McpSettingsProblem = Schema.Struct({
+  /** The layer whose saved document holds it: `global` or `environment`. */
+  source: Schema.String,
+  /** The server's name. */
+  name: Schema.String,
+  /** The keys below the entry that are at fault: none when the entry as a whole is. */
+  keys: Schema.Array(Schema.String),
+  message: Schema.String,
+  /** The Override fields whose Reset clears it (an adjustment key held over the entry bound): none otherwise. */
+  reset: Schema.Array(Schema.String),
+});
+
+export type McpSettingsProblem = typeof McpSettingsProblem.Type;
+
+/**
  * The Global Settings in force, and the overrides saved over the defaults (`docs/architecture/overview.md` → Settings).
  */
 export const SettingsState = Schema.Struct({
@@ -344,6 +362,8 @@ export const SettingsState = Schema.Struct({
   overrides: Schema.Json,
   /** Why the saved overrides were not used, when they no longer resolve: the settings are then the defaults. */
   problem: Schema.optionalKey(Schema.String),
+  /** The part of `problem` that lies in an MCP server's entry, structured; left out with none, or by an older Registry. */
+  mcpProblems: McpSettingsProblem.pipe(Schema.Array, Schema.optionalKey),
   /**
    * By field (`@cloudpid/config` → `overrideFields`: `model`, `roles.small`, `extensions.<extension>.<key>`), the
    * Environments that override it, newest first, so a change at Global does nothing for them. A field none overrides
@@ -368,6 +388,11 @@ export const SettingsOverridesState = Schema.Struct({
   overrides: Schema.Json,
   /** Why some saved Overrides were left out, when they no longer resolve: those fields inherit Global. */
   problem: Schema.optionalKey(Schema.String),
+  /**
+   * The part of `problem` that lies in an MCP server's entry, structured, from the Environment's Overrides and from the
+   * Global servers its own entries shadow; left out with none, or by an older Registry.
+   */
+  mcpProblems: McpSettingsProblem.pipe(Schema.Array, Schema.optionalKey),
   /**
    * The Environment's own Instructions, empty for none: no Override, since they add up (ADR-0027). Its Sessions are
    * shown Global's (`settings.instructions`), then these.

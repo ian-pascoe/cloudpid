@@ -27,27 +27,25 @@ import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import { settingsPath } from "../router.ts";
-import {
-  ExposureSelect,
-  McpFormPanel,
-  McpToolsPanel,
-  newMcpForm,
-  toolsDraftOf,
-} from "./mcp-form-panel.tsx";
+import { ExposureSelect, McpFormPanel, McpToolsPanel } from "./mcp-form-panel.tsx";
+import { newMcpForm, toolsDraftOf } from "./mcp-form.ts";
 import { McpImportPanel } from "./mcp-import-panel.tsx";
 import {
+  isFollowedRow,
+  isOwnRow,
   type McpAdjustmentKey,
   type McpProblemLine,
-  type McpReferenceNames,
   type McpRow,
   type McpScopeView,
   type McpStatusChip,
-  mcpMissingReferenceProblem,
-  mcpMissingReferences,
+  mcpMissingReferenceProblems,
+  mcpProblemText,
   type McpStatuses,
 } from "./mcp-model.ts";
+import { MessageList } from "./mcp-parts.tsx";
 import {
   changeMcpAtom,
+  type McpReferencesState,
   mcpPanelAtom,
   mcpReferenceNamesAtom,
   mcpRemoveAtom,
@@ -55,8 +53,8 @@ import {
   mcpViewAtom,
   removeMcpAtom,
 } from "./mcp-state.ts";
-import { mcpAdjustmentFields, type McpChange } from "./mcp-write.ts";
-import { Group, OverriddenIn, Pending, ScopeChip, SettingsSection } from "./parts.tsx";
+import { mcpAdjustmentFields, type McpChange, mcpRowChanges } from "./mcp-write.ts";
+import { FieldMark, Group, noteId, OverriddenIn, Pending, SettingsSection } from "./parts.tsx";
 
 /** What a row's target is: the command it runs, or the URL it connects to. */
 const targetOf = (row: McpRow): string =>
@@ -123,34 +121,22 @@ const AdjustmentMarks = ({
     aria-label={`${row.name}: inherited and overridden`}
     className="flex flex-wrap gap-x-4 gap-y-1"
   >
-    {MARKED.map(([key, label]) => {
-      const overridden = Arr.contains(row.adjusted, key);
-
-      return (
-        <li key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span>
-            {label}
-            {key === "toolExposure" && ` (${Record.size(row.server.toolExposure)})`}
-          </span>
-          <ScopeChip kind={overridden ? "overridden" : "inherited"} />
-          {overridden && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              aria-label={`Reset ${row.name} ${label.toLowerCase()} to Global`}
-              onClick={() => {
-                onReset(key);
-              }}
-            >
-              Reset to Global
-            </Button>
-          )}
-        </li>
-      );
-    })}
+    {MARKED.map(([key, label]) => (
+      <li key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span>
+          {label}
+          {key === "toolExposure" && ` (${Record.size(row.server.toolExposure)})`}
+        </span>
+        <FieldMark
+          kind={Arr.contains(row.adjusted, key) ? "overridden" : "inherited"}
+          name={`${row.name} ${label.toLowerCase()}`}
+          busy={busy}
+          onReset={() => {
+            onReset(key);
+          }}
+        />
+      </li>
+    ))}
   </ul>
 );
 
@@ -166,22 +152,31 @@ const McpRowView = ({
   scope: string;
   row: McpRow;
   chip: McpStatusChip | undefined;
-  references: McpReferenceNames | null;
+  references: McpReferencesState;
   busy: boolean;
   onChange: (change: McpChange) => void;
 }) => {
   const atGlobal = scope === GLOBAL_SCOPE;
   const setPanel = useAtomSet(mcpPanelAtom(scope));
   const setRemoving = useAtomSet(mcpRemoveAtom(scope));
-  const own = row.kind === "global" || row.kind === "own" || row.kind === "replaces";
+  const own = isOwnRow(row);
   const toolKeys = Record.size(row.server.toolExposure);
+  const changes = mcpRowChanges(row);
+  const problemsId = noteId(`mcp-row-${row.name}`);
+  const hintsId = `mcp-row-hints-${row.name}`;
 
   const problems = [
     ...row.problems,
-    ...(atGlobal || references === null
+    ...(atGlobal || references.status !== "ready"
       ? []
-      : Arr.map(mcpMissingReferences(row.references, references), mcpMissingReferenceProblem)),
+      : mcpMissingReferenceProblems(row, references.names)),
   ];
+
+  const describedBy =
+    Arr.join(
+      [...(problems.length > 0 ? [problemsId] : []), ...(row.hints.length > 0 ? [hintsId] : [])],
+      " ",
+    ) || undefined;
 
   return (
     <li id={`mcp-server-${row.name}`} className="flex scroll-mt-6 flex-col gap-2 py-3">
@@ -193,48 +188,62 @@ const McpRowView = ({
       </div>
       <p className="font-mono text-xs break-all text-muted-foreground">{targetOf(row)}</p>
       {problems.length > 0 ? (
-        <ul role="alert" className="flex flex-col gap-0.5 text-sm text-destructive">
-          {problems.map((problem) => (
-            <li key={problem}>{problem}</li>
-          ))}
-        </ul>
+        <MessageList
+          tone="problem"
+          id={problemsId}
+          messages={Arr.map(problems, mcpProblemText)}
+          action={(index) => {
+            const reset = problems[index]?.reset ?? [];
+
+            return reset.length === 0 ? null : (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                aria-label={`Reset ${Arr.join(reset, ", ")}`}
+                onClick={() => {
+                  onChange({ kind: "reset", fields: reset });
+                }}
+              >
+                Reset
+              </Button>
+            );
+          }}
+        />
       ) : (
         row.server.description !== undefined && (
           <p className="max-w-prose text-sm text-muted-foreground">{row.server.description}</p>
         )
       )}
-      {row.hints.length > 0 && (
-        <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
-          {row.hints.map((hint) => (
-            <li key={hint}>{hint}</li>
-          ))}
-        </ul>
-      )}
+      <MessageList tone="hint" id={hintsId} messages={row.hints} small />
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
             role="switch"
             aria-label={`${row.name} enabled`}
+            aria-describedby={describedBy}
             checked={row.server.enabled}
             disabled={busy}
             onChange={(event) => {
-              onChange({ kind: "enabled", name: row.name, enabled: event.target.checked });
+              onChange(changes.enabled(event.target.checked));
             }}
           />
-          Enabled
+          <span aria-hidden="true">Enabled</span>
         </label>
-        <label className="flex items-center gap-2 text-sm">
-          Exposure
+        <div className="flex items-center gap-2 text-sm">
+          <span aria-hidden="true">Exposure</span>
           <ExposureSelect
             label={`${row.name} exposure`}
             value={row.server.exposure}
             disabled={busy}
+            describedBy={describedBy}
             onChange={(exposure) => {
-              onChange({ kind: "exposure", name: row.name, exposure });
+              onChange(changes.exposure(exposure));
             }}
           />
-        </label>
+        </div>
         {atGlobal || own ? (
           toolKeys > 0 && (
             <span className="text-xs text-muted-foreground">
@@ -302,7 +311,7 @@ const McpRowView = ({
           )}
         </span>
       </div>
-      {(row.kind === "inherited" || row.kind === "adjusted") && (
+      {isFollowedRow(row) && (
         <AdjustmentMarks
           row={row}
           busy={busy}
@@ -442,7 +451,7 @@ const OpenPanel = ({
 }: {
   scope: string;
   view: McpScopeView;
-  references: McpReferenceNames | null;
+  references: McpReferencesState;
   statuses: McpStatuses;
 }) => {
   const [panel] = useAtom(mcpPanelAtom(scope));

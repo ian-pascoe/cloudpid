@@ -11,6 +11,7 @@ import {
   McpNoEnvironment,
   McpServersList,
   type McpServerView,
+  type McpSettingsProblem,
   McpUnavailable,
   type OverridingEnvironment,
 } from "@cloudpid/protocol";
@@ -36,8 +37,8 @@ import {
 } from "../registry.testing.ts";
 import { settingsAtom, settingsOverridesAtom } from "../settings.ts";
 import { McpSection } from "./mcp.tsx";
-import { newMcpForm } from "./mcp-form-panel.tsx";
-import { emptyMcpFields } from "./mcp-form.ts";
+import { emptyMcpFields, newMcpForm } from "./mcp-form.ts";
+import { mcpScopeView } from "./mcp-model.ts";
 import {
   changeMcpAtom,
   type McpPanel,
@@ -45,6 +46,7 @@ import {
   mcpServersAtom,
   writeMcpChange,
 } from "./mcp-state.ts";
+import { mcpRowChanges } from "./mcp-write.ts";
 
 const WORK: EnvironmentRecord = { id: "work", name: "Work", repos: [], createdAt: 1 };
 const HOME: EnvironmentRecord = { id: "home", name: "Home", repos: [], createdAt: 2 };
@@ -108,6 +110,11 @@ interface Held {
   readonly offered?: ReadonlyArray<string>;
   readonly globalProblem?: string;
   readonly secrets?: ReadonlyArray<EnvironmentSecretRecord>;
+  /** What the Registry says of the Environment's saved Overrides that no longer apply. */
+  readonly overridesProblem?: {
+    readonly text: string;
+    readonly mcp: ReadonlyArray<McpSettingsProblem>;
+  };
   readonly servers?: ReadonlyArray<McpServerView>;
 }
 
@@ -134,14 +141,25 @@ const handlersFor = (held: Held = {}): Partial<RegistryHandlers> => {
         held.globalProblem === undefined ? state : { ...state, problem: held.globalProblem },
       );
     },
-    getSettingsOverrides: ({ environment }) =>
-      Effect.succeed({
+    getSettingsOverrides: ({ environment }) => {
+      const state = {
         environment,
         settings,
         global: settings,
         overrides: WORK_OVERRIDES,
         instructions: "",
-      }),
+      };
+
+      return Effect.succeed(
+        held.overridesProblem === undefined
+          ? state
+          : {
+              ...state,
+              problem: held.overridesProblem.text,
+              mcpProblems: held.overridesProblem.mcp,
+            },
+      );
+    },
     getEnvironmentSettings: () =>
       Effect.succeed({
         settings: DEFAULT_CONTAINER_SETTINGS,
@@ -185,10 +203,13 @@ const render = (
     panel,
     handlers = {},
     held,
+    pending = [],
   }: {
     panel?: McpPanel;
     handlers?: Partial<RegistryHandlers>;
     held?: Held;
+    /** Atoms left unanswered, as they are while the page is still asking. */
+    pending?: ReadonlyArray<Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -196,14 +217,17 @@ const render = (
 
     if (panel !== undefined) registry.set(mcpPanelAtom(scope), panel);
 
-    yield* settle(registry, [
-      environmentsAtom,
-      settingsAtom,
-      environmentSecretsAtom,
-      ...(scope === "*"
-        ? [globalSettingsAtom]
-        : [settingsOverridesAtom(scope), environmentSettingsAtom(scope), mcpServersAtom(scope)]),
-    ]);
+    yield* settle(
+      registry,
+      [
+        environmentsAtom,
+        settingsAtom,
+        environmentSecretsAtom,
+        ...(scope === "*"
+          ? [globalSettingsAtom]
+          : [settingsOverridesAtom(scope), environmentSettingsAtom(scope), mcpServersAtom(scope)]),
+      ].filter((atom) => !pending.includes(atom)),
+    );
 
     const markup = renderToStaticMarkup(
       <RegistryContext.Provider value={registry}>
@@ -446,15 +470,72 @@ describe("the MCP servers section at an Environment", () => {
     }),
   );
 
+  it.effect("shows an adjustment held over the entry bound on its server's row, with Reset", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          overridesProblem: {
+            text: "These saved Overrides no longer apply and are ignored, so their fields inherit Global:\nmcp.servers.files.toolExposure: makes the entry over 64 KiB once applied over the server it adjusts",
+            mcp: [
+              {
+                source: "environment",
+                name: "files",
+                keys: ["toolExposure"],
+                message: "makes the entry over 64 KiB once applied over the server it adjusts",
+                reset: ["mcp.servers.files.toolExposure"],
+              },
+            ],
+          },
+        },
+      });
+
+      const files = rowOf(markup, "files");
+
+      expect(textOf(files)).toContain(
+        "this environment: is not used and is forgotten by the next save: toolExposure: makes the entry over 64 KiB",
+      );
+      expect(files).toContain('aria-label="Reset mcp.servers.files.toolExposure"');
+    }),
+  );
+
   it.effect(
-    "puts on a row a ${NAME} the Environment has neither as a Secret nor as a Variable",
+    "shows a Global server left out for a twin name as Global's, not as a forgotten Override",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          held: {
+            overridesProblem: {
+              text: 'These saved Overrides no longer apply and are ignored, so their fields inherit Global:\nmcp.servers.gone2: is left out: this Environment\'s own "Gone2" is a name that differs only in case',
+              mcp: [
+                {
+                  source: "global",
+                  name: "gone2",
+                  keys: [],
+                  message:
+                    'is left out: this Environment\'s own "Gone2" is a name that differs only in case',
+                  reset: [],
+                },
+              ],
+            },
+          },
+        });
+
+        const problems = textOf(markup.slice(markup.indexOf('<section aria-label="Problems"')));
+
+        expect(problems).toContain("gone2 Global: is left out");
+        expect(problems).not.toContain("this environment: is not used and is forgotten");
+      }),
+  );
+
+  it.effect(
+    "puts on a row a ${NAME} the Environment has neither as a Secret nor as a Variable, naming its source",
     () =>
       Effect.gen(function* () {
         const without = yield* render("work", { held: { secrets: [] } });
         const withSecret = yield* render("work");
 
         expect(textOf(rowOf(without, "linear"))).toContain(
-          "headers.Authorization reads ${LINEAR_TOKEN}, which this environment has neither as a Secret nor as a Variable",
+          "Global: headers.Authorization reads ${LINEAR_TOKEN}, which this environment has neither as a Secret nor as a Variable",
         );
         expect(textOf(rowOf(without, "linear"))).not.toContain("Issues and projects");
         expect(textOf(rowOf(withSecret, "linear"))).toContain("Issues and projects");
@@ -564,6 +645,78 @@ describe("the form of an Add", () => {
       }),
   );
 
+  describe("at an Environment while its Secret and Variable names are not known", () => {
+    const fields = {
+      ...emptyMcpFields("http"),
+      name: "a",
+      url: "https://a.example.com/mcp",
+    };
+
+    const SAVE_HELD = /<button[^>]*disabled=""[^>]*>Save server/;
+
+    it.effect("holds Save and says why while they load", () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          panel: { ...add, fields },
+          handlers: { listEnvironmentSecrets: () => Effect.never },
+          pending: [environmentSecretsAtom],
+        });
+
+        expect(markup).toMatch(SAVE_HELD);
+        expect(textOf(markup)).toContain(
+          "Loading this environment's Secret and Variable names: Save is held until they are known",
+        );
+      }),
+    );
+
+    it.effect("blocks Save with the error and Try again when loading them failed", () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          panel: { ...add, fields },
+          handlers: { listEnvironmentSecrets: () => Effect.die(new Error("secrets are down")) },
+        });
+
+        expect(markup).toMatch(SAVE_HELD);
+        expect(textOf(markup)).toContain(
+          "Could not load this environment's Secret and Variable names, so Save is held",
+        );
+        expect(markup).toContain(">Try again</button>");
+      }),
+    );
+
+    it.effect("lets Save through once they are known, and never holds it at Global", () =>
+      Effect.gen(function* () {
+        const known = yield* render("work", { panel: { ...add, fields } });
+
+        const global = yield* render("*", {
+          panel: { ...add, fields },
+          handlers: { listEnvironmentSecrets: () => Effect.never },
+          pending: [environmentSecretsAtom],
+        });
+
+        expect(known).not.toMatch(SAVE_HELD);
+        expect(textOf(known)).not.toContain("Save is held");
+        expect(global).not.toMatch(SAVE_HELD);
+        expect(textOf(global)).not.toContain("Save is held");
+      }),
+    );
+
+    it.effect("holds the import the same way", () =>
+      Effect.gen(function* () {
+        const text = JSON.stringify({ mcpServers: { fresh: { command: "fresh-mcp" } } });
+
+        const markup = yield* render("work", {
+          panel: { kind: "import", text, choices: {} },
+          handlers: { listEnvironmentSecrets: () => Effect.never },
+          pending: [environmentSecretsAtom],
+        });
+
+        expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Import<\/button>/);
+        expect(textOf(markup)).toContain("Save is held until they are known");
+      }),
+    );
+  });
+
   it.effect("edits a server's toolExposure as rows, suggesting the tools its host discovered", () =>
     Effect.gen(function* () {
       const markup = yield* render("work", {
@@ -660,6 +813,52 @@ describe("the import", () => {
     }),
   );
 
+  it.effect(
+    "at an Environment, Global's name is no conflict, an adjusted name is replaced, and its own name asks Replace or Skip",
+    () =>
+      Effect.gen(function* () {
+        const pasted = JSON.stringify({
+          mcpServers: {
+            files: { command: "files-v2" },
+            linear: { url: "https://mcp.linear.app/v2" },
+            notes: { command: "notes-v2" },
+            fresh: { command: "fresh-mcp" },
+          },
+        });
+
+        const markup = yield* render("work", {
+          panel: { kind: "import", text: pasted, choices: {} },
+        });
+
+        const entries = markup.slice(markup.indexOf('aria-label="Entries to import"'));
+        const text = textOf(entries);
+
+        // `files` is Global's, which the Environment does not touch: no conflict, its own entry replaces Global's here.
+        expect(text).toContain("files New here, replaces Global's");
+        expect(entries).not.toContain('name="mcp-import-work-files"');
+        // `linear` is Global's with an adjustment of this Environment's: it is replaced by the own entry.
+        expect(text).toContain("linear New here, replaces Global's");
+        expect(entries).not.toContain('name="mcp-import-work-linear"');
+        // `notes` is the Environment's own: Replace or Skip, Skip until chosen.
+        expect(text).toContain("notes Already here");
+        expect(entries).toMatch(/name="mcp-import-work-notes" checked=""[^>]*\/>Skip/);
+        expect(text).toContain("fresh New");
+        expect(text).toContain("Import 3 servers");
+      }),
+  );
+
+  it.effect("at an Environment, Replace on its own name adds it to what is imported", () =>
+    Effect.gen(function* () {
+      const pasted = JSON.stringify({ mcpServers: { notes: { command: "notes-v2" } } });
+
+      const markup = yield* render("work", {
+        panel: { kind: "import", text: pasted, choices: { notes: "replace" } },
+      });
+
+      expect(textOf(markup)).toContain("Import 1 server");
+    }),
+  );
+
   it.effect("holds the import while the text is not pi's JSON", () =>
     Effect.gen(function* () {
       const markup = yield* render("*", { panel: { kind: "import", text: "{", choices: {} } });
@@ -671,6 +870,25 @@ describe("the import", () => {
 });
 
 describe("what the owner's actions write", () => {
+  /** The row the section shows for server `name` at `scope`: its switch and select make the changes it builds. */
+  const rowAt = (scope: string, name: string) => {
+    const view = mcpScopeView({
+      scope,
+      global: GLOBAL_DOCUMENT,
+      globalProblem: undefined,
+      overrides: scope === "*" ? null : WORK_OVERRIDES,
+      overridesProblem: undefined,
+      offered: DEFAULT_SETTINGS.tools.offered,
+      overriddenIn: {},
+    });
+
+    const found = view.rows.find((row) => row.name === name);
+
+    if (found === undefined) throw new Error(`no row ${name} at ${scope}`);
+
+    return found;
+  };
+
   /** What the fake Registry was asked to save, newest last. */
   const recorded = () => {
     const saved: Array<{ readonly rpc: string; readonly payload: unknown }> = [];
@@ -710,7 +928,7 @@ describe("what the owner's actions write", () => {
       Effect.gen(function* () {
         const { saved, layer } = recorded();
 
-        yield* writeMcpChange("work", { kind: "enabled", name: "files", enabled: true }).pipe(
+        yield* writeMcpChange("work", mcpRowChanges(rowAt("work", "files")).enabled(true)).pipe(
           Effect.provide(layer),
         );
 
@@ -732,15 +950,14 @@ describe("what the owner's actions write", () => {
       Effect.gen(function* () {
         const { saved, layer } = recorded();
 
-        yield* writeMcpChange("work", {
-          kind: "exposure",
-          name: "search2",
-          exposure: "codemode",
-        }).pipe(Effect.provide(layer));
+        yield* writeMcpChange(
+          "work",
+          mcpRowChanges(rowAt("work", "files")).exposure("codemode"),
+        ).pipe(Effect.provide(layer));
 
         expect(saved[0]?.payload).toEqual({
           environment: "work",
-          set: { mcp: { servers: { search2: { exposure: "codemode" } } } },
+          set: { mcp: { servers: { files: { exposure: "codemode" } } } },
         });
       }),
   );
@@ -749,7 +966,7 @@ describe("what the owner's actions write", () => {
     Effect.gen(function* () {
       const { saved, layer } = recorded();
 
-      yield* writeMcpChange("work", { kind: "enabled", name: "notes", enabled: false }).pipe(
+      yield* writeMcpChange("work", mcpRowChanges(rowAt("work", "notes")).enabled(false)).pipe(
         Effect.provide(layer),
       );
 
@@ -803,7 +1020,7 @@ describe("what the owner's actions write", () => {
     Effect.gen(function* () {
       const { saved, layer } = recorded();
 
-      yield* writeMcpChange("*", { kind: "enabled", name: "files", enabled: true }).pipe(
+      yield* writeMcpChange("*", mcpRowChanges(rowAt("*", "files")).enabled(true)).pipe(
         Effect.provide(layer),
       );
 
@@ -863,12 +1080,57 @@ describe("what the owner's actions write", () => {
       const failure = yield* writeMcpChange("*", {
         kind: "enabled",
         name: "vanished",
+        target: "own",
         enabled: true,
       }).pipe(Effect.provide(layer), Effect.flip);
 
       expect(failure.message).toContain("vanished");
       expect(saved).toEqual([]);
     }),
+  );
+
+  it.effect(
+    "a switch on an Environment's own server that is gone by the write fails, and does not adjust Global's of the name",
+    () =>
+      Effect.gen(function* () {
+        const saved: Array<unknown> = [];
+
+        // The page showed `search` as the Environment's own, which replaces Global's `search`; the agent then removed it.
+        const change = mcpRowChanges(rowAt("work", "search")).enabled(false);
+
+        const layer = fakeRegistryLayer({
+          ...handlersFor(),
+          getSettingsOverrides: ({ environment }) =>
+            Effect.succeed({
+              environment,
+              settings: DEFAULT_SETTINGS,
+              global: DEFAULT_SETTINGS,
+              overrides: { mcp: { servers: { linear: { enabled: false } } } },
+              instructions: "",
+            }),
+          updateSettingsOverrides: (payload) =>
+            Effect.sync(() => {
+              saved.push(payload);
+
+              return {
+                environment: payload.environment,
+                settings: DEFAULT_SETTINGS,
+                global: DEFAULT_SETTINGS,
+                overrides: {},
+                instructions: "",
+              };
+            }),
+        });
+
+        const failure = yield* writeMcpChange("work", change).pipe(
+          Effect.provide(layer),
+          Effect.flip,
+        );
+
+        expect(change).toMatchObject({ kind: "enabled", name: "search", target: "own" });
+        expect(failure.message).toContain("changed since the page read it");
+        expect(saved).toEqual([]);
+      }),
   );
 
   it.effect("goes through the section's atom, which closes nothing and saves once", () =>
@@ -892,7 +1154,7 @@ describe("what the owner's actions write", () => {
       });
 
       registry.mount(changeMcpAtom("work"));
-      registry.set(changeMcpAtom("work"), { kind: "enabled", name: "files", enabled: true });
+      registry.set(changeMcpAtom("work"), mcpRowChanges(rowAt("work", "files")).enabled(true));
       yield* settled(registry, changeMcpAtom("work"));
 
       expect(saved).toEqual([

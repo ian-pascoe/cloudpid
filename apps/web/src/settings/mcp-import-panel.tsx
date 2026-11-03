@@ -5,6 +5,7 @@
 // (Skip until chosen); a top-level `autoEnableCodemode` is ignored with a hint.
 
 import { useAtom } from "@effect/atom-react";
+import * as Arr from "effect/Array";
 import type { FormEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { DialogProblem } from "../components/ui/dialog.tsx";
@@ -12,10 +13,11 @@ import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
 import { settledFailureOf } from "../registry.ts";
 import { settingsPath } from "../router.ts";
-import { AUTO_ENABLE_CODEMODE_HINT, mcpImportWrites, previewMcpImport } from "./mcp-import.ts";
-import type { McpReferenceNames, McpScopeView } from "./mcp-model.ts";
-import { type McpImportDraft, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
-import { CODE_AREA, Field } from "./parts.tsx";
+import { type McpImportDraft, mcpImportWrites, previewMcpImport } from "./mcp-import.ts";
+import type { McpScopeView } from "./mcp-model.ts";
+import { MessageList, ReferencesNotice } from "./mcp-parts.tsx";
+import { type McpReferencesState, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
+import { CODE_AREA, Field, noteId } from "./parts.tsx";
 
 /** The import: a text box for pi's JSON, and under it each entry it holds, as it would be saved. */
 export const McpImportPanel = ({
@@ -29,13 +31,16 @@ export const McpImportPanel = ({
   atGlobal: boolean;
   draft: McpImportDraft;
   view: McpScopeView;
-  references: McpReferenceNames | null;
+  references: McpReferencesState;
 }) => {
   const [, setPanel] = useAtom(mcpPanelAtom(scope));
   const [saved, save] = useAtom(saveMcpAtom(scope));
   const busy = saved.waiting;
-  const preview = previewMcpImport(draft.text, { names: view.names, atGlobal }, references);
-  const writes = mcpImportWrites(preview, draft.choices);
+  const known = references.status === "ready" ? references.names : null;
+  // At an Environment a `${NAME}` that nothing provides is refused, so the import waits for the names it is checked against.
+  const held = !atGlobal && known === null;
+  const preview = previewMcpImport(draft.text, { names: view.names, atGlobal }, known);
+  const writes = held ? [] : mcpImportWrites(preview, draft.choices);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -60,6 +65,7 @@ export const McpImportPanel = ({
       >
         <textarea
           id={`mcp-import-${scope}`}
+          aria-describedby={noteId(`mcp-import-${scope}`)}
           rows={10}
           value={draft.text}
           placeholder={
@@ -77,10 +83,10 @@ export const McpImportPanel = ({
       </Field>
       {preview.hints.length > 0 && (
         <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
-          {preview.hints.map((hint) => (
-            <li key={hint}>
-              {hint}
-              {hint === AUTO_ENABLE_CODEMODE_HINT && (
+          {preview.hints.map(({ text, link }) => (
+            <li key={text}>
+              {text}
+              {link === "tools" && (
                 <>
                   {" "}
                   <InAppLink
@@ -95,6 +101,7 @@ export const McpImportPanel = ({
           ))}
         </ul>
       )}
+      {!atGlobal && <ReferencesNotice scope={scope} references={references} />}
       {preview.entries.length > 0 && (
         <ul aria-label="Entries to import" className="flex flex-col divide-y">
           {preview.entries.map((entry) => (
@@ -111,27 +118,13 @@ export const McpImportPanel = ({
                         : "New"}
                 </span>
               </div>
-              {entry.problems.length > 0 && (
-                <ul role="alert" className="flex flex-col gap-0.5 text-xs text-destructive">
-                  {entry.problems.map((problem) => (
-                    <li key={problem}>{problem}</li>
-                  ))}
-                </ul>
-              )}
-              {entry.warnings.length > 0 && (
-                <ul className="flex flex-col gap-0.5 text-xs text-amber-600 dark:text-amber-400">
-                  {entry.warnings.map(({ message }) => (
-                    <li key={message}>{message}</li>
-                  ))}
-                </ul>
-              )}
-              {entry.hints.length > 0 && (
-                <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
-                  {entry.hints.map((hint) => (
-                    <li key={hint}>{hint}</li>
-                  ))}
-                </ul>
-              )}
+              <MessageList tone="problem" messages={entry.problems} small />
+              <MessageList
+                tone="warning"
+                messages={Arr.map(entry.warnings, ({ message }) => message)}
+                small
+              />
+              <MessageList tone="hint" messages={entry.hints} small />
               {entry.conflict && entry.problems.length === 0 && (
                 <fieldset className="flex gap-4 text-sm">
                   <legend className="sr-only">{entry.name} is already here</legend>

@@ -11,6 +11,7 @@
 import {
   decodeMcpServerValue,
   DEFAULT_MCP_TIMEOUT,
+  isJsonObject,
   isMcpFullEntry,
   MCP_EXPOSURES,
   MCP_LIMITS,
@@ -24,7 +25,6 @@ import {
 } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
@@ -34,6 +34,7 @@ import {
   mcpMissingReferences,
   mcpReferencesOf,
   type McpReferenceNames,
+  type McpRow,
 } from "./mcp-model.ts";
 
 /** A `KEY=value` row of `env` or `headers`. */
@@ -108,9 +109,6 @@ const FORM_KEYS: ReadonlyArray<string> = [
   "sampling",
   "toolExposure",
 ];
-
-const isObject = (value: Schema.Json | undefined): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 const codemodeOf = (exposure: McpExposure | "codemode-deferred"): McpExposure =>
   exposure === "codemode-deferred" ? "codemode" : exposure;
@@ -220,7 +218,7 @@ export const entryOfJson = (text: string): Result.Result<Schema.JsonObject, stri
   try {
     const parsed: Schema.Json = JSON.parse(text);
 
-    return isObject(parsed)
+    return isJsonObject(parsed)
       ? Result.succeed(parsed)
       : Result.fail('The server is one JSON object, such as {"url": "https://…"}');
   } catch (error) {
@@ -370,3 +368,78 @@ export const MCP_SAMPLING_LABELS: Readonly<Record<McpSampling, string>> = {
   allow: "Allow",
   off: "Off",
 };
+
+/** The form of an Add or an Edit: its fields, which tab is shown, and the JSON tab's text. */
+export interface McpFormDraft {
+  readonly kind: "form";
+  /** `add`; `edit` of the Scope's own server `name`; `replace`, a copy of Global's `name` as this Environment's own. */
+  readonly mode: "add" | "edit" | "replace";
+  readonly fields: McpFields;
+  readonly tab: "form" | "json";
+  readonly json: string;
+  /** Why the JSON tab's text cannot be read into the form, while it is shown. */
+  readonly jsonProblem: string | null;
+}
+
+/** The editor of a Global server's tool exposure at an Environment, which is an adjustment. */
+export interface McpToolsDraft {
+  readonly kind: "tools";
+  readonly name: string;
+  readonly rows: ReadonlyArray<McpToolRow>;
+}
+
+/** What a form of mode `mode` starts from: empty fields for an Add, or the entry `written` of server `name`. */
+export const newMcpForm = (
+  mode: McpFormDraft["mode"],
+  name: string,
+  written: Schema.JsonObject | null,
+): McpFormDraft => ({
+  kind: "form",
+  mode,
+  fields: written === null ? emptyMcpFields() : fieldsOfEntry(name, written),
+  tab: "form",
+  json: "",
+  jsonProblem: null,
+});
+
+/**
+ * The form `draft` after the owner shows tab `tab`: to JSON it writes the fields' entry out; back to the form it reads
+ * the JSON into the fields, or stays on the JSON tab saying why it cannot.
+ */
+export const mcpFormShowing = (draft: McpFormDraft, tab: McpFormDraft["tab"]): McpFormDraft => {
+  if (tab === draft.tab) return draft;
+
+  if (tab === "json") {
+    return { ...draft, tab, json: jsonOfEntry(entryOfFields(draft.fields)), jsonProblem: null };
+  }
+
+  const parsed = entryOfJson(draft.json);
+
+  if (Result.isFailure(parsed)) return { ...draft, jsonProblem: parsed.failure };
+
+  const decoded = decodeMcpServerValue(parsed.success);
+
+  if (Result.isFailure(decoded)) {
+    return {
+      ...draft,
+      jsonProblem: `The form cannot show it until it is fixed: ${Arr.join(
+        Arr.map(decoded.failure, (problem) => problem.line),
+        "; ",
+      )}`,
+    };
+  }
+
+  return {
+    ...draft,
+    tab,
+    fields: fieldsOfEntry(draft.fields.name, parsed.success),
+    jsonProblem: null,
+  };
+};
+
+/** The editor of Global server `row`'s tool exposure at an Environment: it starts from the exposure in force. */
+export const toolsDraftOf = (row: McpRow): McpToolsDraft => ({
+  kind: "tools",
+  name: row.name,
+  rows: rowsOfToolExposure(row.server.toolExposure),
+});

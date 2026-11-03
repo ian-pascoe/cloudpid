@@ -23,6 +23,9 @@ import type { SectionForm } from "./drafts.ts";
 /** The id of the hint, or the problem, under the field whose control is `htmlFor`. */
 export const noteId = (htmlFor: string): string => `${htmlFor}-note`;
 
+/** The id of the label of the field whose controls are a group named `htmlFor` (`Field`'s `group`). */
+export const labelId = (htmlFor: string): string => `${htmlFor}-label`;
+
 /** A section's frame: its heading, the line that says what it is for, and its groups. */
 export const SettingsSection = ({
   title,
@@ -72,7 +75,8 @@ export const Group = ({
  * A field: its label (with `mark` beside it, where a field says where its value comes from: Inherited or Overridden),
  * the control, `note` under it (at Global, the Environments that override it), and its hint, or its problem in place of
  * the hint, which a control can name in its `aria-describedby` as `noteId(htmlFor)`. `anchor` is its id, which a link
- * to the field names (`#field-model`).
+ * to the field names (`#field-model`). A field of several controls (rows of inputs) is a `group`: its label names the
+ * group of its controls, which `htmlFor` only gives an id, rather than pointing at one control that is not there.
  */
 export const Field = ({
   label,
@@ -82,6 +86,7 @@ export const Field = ({
   mark,
   note,
   anchor,
+  group = false,
   children,
 }: {
   label: ReactNode;
@@ -91,16 +96,34 @@ export const Field = ({
   mark?: ReactNode;
   note?: ReactNode;
   anchor?: string | undefined;
+  group?: boolean;
   children: ReactNode;
 }) => (
   <div id={anchor} className="flex min-w-0 scroll-mt-6 flex-col gap-1.5">
     <div className="flex min-h-7 min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <label htmlFor={htmlFor} className="text-sm font-medium">
-        {label}
-      </label>
+      {group ? (
+        <span id={labelId(htmlFor)} className="text-sm font-medium">
+          {label}
+        </span>
+      ) : (
+        <label htmlFor={htmlFor} className="text-sm font-medium">
+          {label}
+        </label>
+      )}
       {mark}
     </div>
-    {children}
+    {group ? (
+      <div
+        role="group"
+        id={htmlFor}
+        aria-labelledby={labelId(htmlFor)}
+        aria-describedby={hint !== undefined || problem !== null ? noteId(htmlFor) : undefined}
+      >
+        {children}
+      </div>
+    ) : (
+      children
+    )}
     {note}
     {problem === null ? (
       hint !== undefined && (
@@ -136,31 +159,38 @@ export const ScopeChip = ({ kind }: { kind: ScopeMarkKind }) => (
 
 /**
  * A field's mark at an Environment: Inherited, with Override (which keeps Global's value as the Environment's own), or
- * Overridden, with Reset to Global. `name` names the field to assistive technology.
+ * Overridden, with Reset to Global (and no Override without an `onOverride`). `name` names the field to assistive
+ * technology.
  */
 export const FieldMark = ({
   kind,
   name,
   onOverride,
   onReset,
+  busy = false,
 }: {
   kind: ScopeMarkKind;
   name: string;
-  onOverride: () => void;
+  /** Override's action; left out where a field is overridden by changing it (an MCP server's switch), with no button. */
+  onOverride?: (() => void) | undefined;
   onReset: () => void;
+  busy?: boolean;
 }) => (
   <span className="flex items-center gap-1">
     <ScopeChip kind={kind} />
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-      aria-label={kind === "inherited" ? `Override ${name}` : `Reset ${name} to Global`}
-      onClick={kind === "inherited" ? onOverride : onReset}
-    >
-      {kind === "inherited" ? "Override" : "Reset to Global"}
-    </Button>
+    {(kind === "overridden" || onOverride !== undefined) && (
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled={busy}
+        className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+        aria-label={kind === "inherited" ? `Override ${name}` : `Reset ${name} to Global`}
+        onClick={kind === "inherited" ? onOverride : onReset}
+      >
+        {kind === "inherited" ? "Override" : "Reset to Global"}
+      </Button>
+    )}
   </span>
 );
 

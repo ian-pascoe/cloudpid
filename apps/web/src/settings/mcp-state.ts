@@ -17,11 +17,12 @@ import * as Result from "effect/Result";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import {
+  environmentSecretsAtom,
   environmentSettingsAtom,
   globalVariablesAtom,
   secretsInAtom,
 } from "../environments-state.ts";
-import { changing, RegistryClient } from "../registry.ts";
+import { changing, failureOf, RegistryClient } from "../registry.ts";
 import { appRuntime } from "../runtime.ts";
 import {
   readSettings,
@@ -38,10 +39,9 @@ import {
   type McpStatuses,
   NO_MCP_STATUSES,
 } from "./mcp-model.ts";
-import type { McpFields } from "./mcp-form.ts";
-import type { McpToolRow } from "./mcp-form.ts";
+import type { McpFormDraft, McpToolsDraft } from "./mcp-form.ts";
+import type { McpImportDraft } from "./mcp-import.ts";
 import { type McpChange, mcpGlobalDocument, mcpOverridesPatch } from "./mcp-write.ts";
-import type { McpConflictChoice } from "./mcp-import.ts";
 
 const isGlobal = (scope: string): boolean => scope === GLOBAL_SCOPE;
 
@@ -54,8 +54,10 @@ const viewOf = (
     scope,
     global: global.overrides,
     globalProblem: global.problem,
+    globalMcpProblems: global.mcpProblems,
     overrides: environment === null ? null : environment.overrides,
     overridesProblem: environment?.problem,
+    overridesMcpProblems: environment?.mcpProblems,
     offered: (environment ?? global).settings.tools.offered,
     overriddenIn: global.overriddenIn,
   });
@@ -72,28 +74,53 @@ export const mcpViewAtom = Atom.family((scope: string) =>
   ),
 );
 
+/** Whether the Secret and Variable names a `${NAME}` may use are known at a Scope: still being asked, failed, or known. */
+export type McpReferencesState =
+  | { readonly status: "loading" }
+  | { readonly status: "failed"; readonly problem: string }
+  | { readonly status: "ready"; readonly names: McpReferenceNames };
+
+const LOADING: McpReferencesState = { status: "loading" };
+
 /**
  * The Secrets and Variables a `${NAME}` may name at Scope `scope`, by name (never a value): at an Environment its Secrets
- * and Global's, then its Variables and Global's; at Global, Global's. Null until they are known.
+ * and Global's, then its Variables and Global's; at Global, Global's. Until they are known, or when asking failed, it says
+ * so: an Environment's Save and Import are held for them (a `${NAME}` that nothing provides must not be missed).
  */
 export const mcpReferenceNamesAtom = Atom.family((scope: string) =>
-  Atom.readable((get): McpReferenceNames | null => {
+  Atom.readable((get): McpReferencesState => {
+    const secrets = get(environmentSecretsAtom);
     const own = get(secretsInAtom(scope));
     const global = get(secretsInAtom(GLOBAL_SCOPE));
 
-    if (own === null || global === null) return null;
+    if (own === null || global === null) {
+      const problem = failureOf(secrets);
 
-    const secrets = Arr.map(isGlobal(scope) ? own : [...own, ...global], ({ name }) => name);
-
-    if (isGlobal(scope)) {
-      return { secrets, variables: Record.keys(get(globalVariablesAtom)) };
+      return problem === null ? LOADING : { status: "failed", problem };
     }
 
-    const environment = get(environmentSettingsAtom(scope)).pipe(AsyncResult.value);
+    const names = Arr.map(isGlobal(scope) ? own : [...own, ...global], ({ name }) => name);
 
-    return Option.isNone(environment)
-      ? null
-      : { secrets, variables: Record.keys(environment.value.settings.variables) };
+    if (isGlobal(scope)) {
+      return {
+        status: "ready",
+        names: { secrets: names, variables: Record.keys(get(globalVariablesAtom)) },
+      };
+    }
+
+    const settings = get(environmentSettingsAtom(scope));
+
+    return Option.match(AsyncResult.value(settings), {
+      onNone: () => {
+        const problem = failureOf(settings);
+
+        return problem === null ? LOADING : { status: "failed", problem };
+      },
+      onSome: (environment): McpReferencesState => ({
+        status: "ready",
+        names: { secrets: names, variables: Record.keys(environment.settings.variables) },
+      }),
+    });
   }),
 );
 
@@ -121,32 +148,6 @@ export const mcpStatusesAtom = Atom.family((scope: string) =>
     );
   }),
 );
-
-/** The form of an Add or an Edit: its fields, which tab is shown, and the JSON tab's text. */
-export interface McpFormDraft {
-  readonly kind: "form";
-  /** `add`; `edit` of the Scope's own server `name`; `replace`, a copy of Global's `name` as this Environment's own. */
-  readonly mode: "add" | "edit" | "replace";
-  readonly fields: McpFields;
-  readonly tab: "form" | "json";
-  readonly json: string;
-  /** Why the JSON tab's text cannot be read into the form, while it is shown. */
-  readonly jsonProblem: string | null;
-}
-
-/** The editor of a Global server's tool exposure at an Environment, which is an adjustment. */
-export interface McpToolsDraft {
-  readonly kind: "tools";
-  readonly name: string;
-  readonly rows: ReadonlyArray<McpToolRow>;
-}
-
-/** The import: the text pasted, and what the owner chose for each name the Scope has. */
-export interface McpImportDraft {
-  readonly kind: "import";
-  readonly text: string;
-  readonly choices: Readonly<Record<string, McpConflictChoice>>;
-}
 
 /** What the section has open above its list at a Scope: a form, the tool exposure editor, the import, or nothing. */
 export type McpPanel = McpFormDraft | McpToolsDraft | McpImportDraft;
