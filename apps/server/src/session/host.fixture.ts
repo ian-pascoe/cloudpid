@@ -77,7 +77,11 @@ import type {
   WaitRequest,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
-import { emptyMcpExtension, type McpHostClientService } from "@cloudpid/extensions/mcp";
+import {
+  emptyMcpExtension,
+  type McpHostClientService,
+  type McpQuestionsService,
+} from "@cloudpid/extensions/mcp";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -704,6 +708,11 @@ export class TestSession extends DurableObject {
     });
 
     return this.#questions;
+  }
+
+  /** The Session's MCP questions, for a subclass that builds MCP tools of its own. */
+  protected mcpQuestionsService(): McpQuestionsService {
+    return this.#mcpQuestions().service;
   }
 
   /**

@@ -13,7 +13,8 @@
 //
 // Every tool is `replay: "safe"` with the `mcp.sent` memo, written before the request leaves (`docs/architecture/
 // mcp-server-requests.md` → The waiting-question record): a rerun after a restart that finds it settles the call as
-// interrupted and never sends it again. The request and the wait are `./exchange.ts`'s, which the resource tools
+// interrupted and never sends it again, unless a Modern server's round of questions waits (`mcp.wait.<r>`), which the
+// rerun waits for again. The request and the wait are `./exchange.ts`'s, which the resource tools
 // (`./resources.ts`) share.
 import {
   type McpExposure,

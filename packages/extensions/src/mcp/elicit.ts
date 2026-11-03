@@ -7,7 +7,9 @@
 // whose wait is the call's: the call's own clock is stopped while it lasts (`pause`, `resume`) and Stop interrupts it
 // (`signal`), which withdraws the card. A form that asks for a credential is declined unseen, a malformed one refused
 // with `-32602`; the owner and the agent both learn of every one, in `details.elicitation` and a diagnostic line.
-// Nothing here keeps what the owner entered: the content goes from the answer to the server and nowhere else.
+// Nothing here keeps what the owner entered: the content goes from the answer to the server and nowhere else. A Modern
+// server's form, on a call that defers (`defers`), is kept for later instead (`McpQuestions.defer`): the hook answers
+// `defer`, and the call waits for the owner after its round (`./exchange.ts`).
 import {
   answeredFields,
   decodeElicitParams,

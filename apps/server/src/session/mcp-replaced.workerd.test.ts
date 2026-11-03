@@ -2,13 +2,17 @@
 // [Deploys under deferred Durable Object code updates](https://github.com/ian-pascoe/cloudpid/issues/423) D4, D6): the old
 // instance keeps its call, which runs to its end, but every storage operation of the Session fails (`refusingStorage`, tripped
 // through the test Session's `replace()`). The result is dropped, since nothing can record it, and the new instance settles
-// the call as one that may have partially run, never sending it again.
+// the call as one that may have partially run, never sending it again. A Modern server's question that reaches the
+// replaced Session gets its no-answer, `cancel`, in the round's retry: never deferred, since its round could not be
+// stored (`docs/architecture/mcp-server-requests.md` → The waiting-question record: How a wait ends).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off newPromise:off
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { ASK_TOOL, modernServer, rpcMethods } from "@cloudpid/mcp/testing";
 import type { McpApplySet, McpEngineDiscoverResult } from "@cloudpid/mcp/types";
-import { describe, expect, it, vi } from "vitest";
+import type * as Schema from "effect/Schema";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineScript } from "../mcp/host.fixture.ts";
 import { constructions, type TestSession } from "./host.fixture.ts";
 
@@ -54,7 +58,75 @@ const FOUND: EngineScript = {
   } as typeof McpEngineDiscoverResult.Encoded,
 };
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/** Wait until the instance a replace reset is followed by a new one, then until that one is idle; its tool results. */
+const afterReplace = async (name: string, id: string) => {
+  await settles(async () => {
+    await runDurableObjectAlarm(env.SESSIONS.getByName(name));
+    expect(constructions.get(id)).toBeGreaterThan(1);
+  });
+
+  const after = env.SESSIONS.getByName(name);
+
+  await settles(async () =>
+    expect(await runInDurableObject(after, (instance: TestSession) => instance.idle())).toBe(true),
+  );
+
+  return runInDurableObject(after, (instance: TestSession) => instance.toolResults());
+};
+
 describe("a Session replaced mid-call", () => {
+  it("answers a Modern server's question cancel, never deferring it, and the new instance settles the call", async () => {
+    const environment = `env-${counter++}`;
+    const name = `mcp-replaced-${environment}`;
+    const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+    const asked: Array<Schema.Json> = [];
+    const options = { moreTools: [ASK_TOOL], asked };
+    const server = modernServer(options);
+    const gate = Promise.withResolvers<void>();
+    let calls = 0;
+
+    // Every outbound `fetch` of the test Worker, the engine's included, reaches the fake server; the first `tools/call`
+    // waits at the gate, so the code update reaches the Session before the server asks.
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = request.method === "POST" ? await request.clone().text() : "";
+
+      if (body.includes('"tools/call"') && (calls += 1) === 1) await gate.promise;
+
+      return server.handle(request);
+    });
+
+    await host.useRealEngine();
+    await host.apply(SET);
+
+    const stub = env.SESSIONS.getByName(name);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.mcpEnvironment(environment, 1);
+      instance.script(['call:mcp__docs__ask:{"message":"Go ahead?"}', "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+
+    await settles(async () => expect(calls).toBe(1));
+    await runInDurableObject(stub, (instance: TestSession) => instance.replace());
+    gate.resolve();
+
+    const results = await afterReplace(name, stub.id.toString());
+
+    // The server was told `cancel` in the round's retry, and nothing was kept for later.
+    expect(options.asked).toEqual([
+      expect.objectContaining({ round: 1, responses: { q1: { action: "cancel" } } }),
+    ]);
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(2);
+    expect(results.at(-1)).toMatch(
+      /mcp__docs__ask was interrupted and may have partially run; it was not sent again\./,
+    );
+  });
+
   it("drops the result of the call it holds, and the new instance settles it as one that may have partially run, never sending it again", async () => {
     const environment = `env-${counter++}`;
     const name = `mcp-replaced-${environment}`;

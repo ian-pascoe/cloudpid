@@ -93,6 +93,14 @@ describe("McpElicitationCard", () => {
     expect(markup).toContain("github&#x27;s call ends in 10:00");
   });
 
+  it("shows no countdown for a Modern server's question, which waits for the owner with no deadline", () => {
+    const { deadline: _deadline, ...modern } = request(FORM);
+    const markup = render(modern);
+
+    expect(markup).toContain("github waits for your answer");
+    expect(markup).not.toContain("call ends in");
+  });
+
   it("draws a widget per kind, prefills defaults and marks required fields", () => {
     const markup = render(request(FORM));
 

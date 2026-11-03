@@ -9,8 +9,6 @@ import {
   type JsonObject,
   McpHostCompleted,
   McpHostInputRequired,
-  type McpHostRequest,
-  type McpHostResourceRequest,
   type McpInputAnswer,
 } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
@@ -18,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf } from "./mcp.fixture.ts";
 import { open } from "./mcp.fixture.ts";
-import { fakeMcpHost } from "./mcp.testing.ts";
+import { type FakeMcpAnswer, fakeMcpHost } from "./mcp.testing.ts";
 import {
   createMcpQuestions,
   type McpQuestionStorage,
@@ -28,6 +26,9 @@ import { openKeptVault } from "./secrets/vault.ts";
 import { answer, call, context } from "./subagents/harness.fixture.ts";
 
 type Answer = typeof McpInputAnswer.Encoded;
+
+/** A request the host was sent. */
+type Sent = Parameters<FakeMcpAnswer>[0];
 
 const SENTINEL = "sentinel-answer-41c9a";
 
@@ -139,11 +140,8 @@ const setup = async (memory = memoryStorage()) => {
 
 /** A host whose call asks `ask()` and ends its round when deferred, then completes the resume, keeping what it was sent. */
 const deferring =
-  (seen: Answer[], resumes: Array<McpHostRequest | McpHostResourceRequest>) =>
-  async (
-    input: McpHostRequest | McpHostResourceRequest,
-    hooks: Parameters<Parameters<ReturnType<typeof fakeMcpHost>["answer"]>[0]>[1],
-  ) => {
+  (seen: Answer[], resumes: Array<Sent>) =>
+  async (input: Sent, hooks: Parameters<FakeMcpAnswer>[1]) => {
     if (input.op === "resume") {
       resumes.push(input);
 
@@ -163,7 +161,7 @@ describe("a Modern server's form", () => {
   it("is kept for later: the round is stored, the owner answers, and one resume carries the answer", async () => {
     const { host, memory, questions, tools, told, session, sent } = await setup();
     const seen: Answer[] = [];
-    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+    const resumes: Array<Sent> = [];
 
     host.answer(deferring(seen, resumes));
     await session.start(tools);
@@ -243,7 +241,7 @@ describe("a Modern server's form", () => {
 
   it("seals an answer given while the call waits, and the resume opens it", async () => {
     const { host, memory, questions, tools, session } = await setup();
-    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+    const resumes: Array<Sent> = [];
     let sealed = "";
 
     host.answer(async (input, hooks) => {
@@ -279,7 +277,7 @@ describe("a Modern server's form", () => {
 
   it("sends a decline in the resume, and the agent is told", async () => {
     const { host, questions, tools, session } = await setup();
-    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+    const resumes: Array<Sent> = [];
 
     host.answer(deferring([], resumes));
     await session.start(tools);
@@ -312,7 +310,7 @@ describe("a Modern server's form", () => {
 
   it("is withdrawn when Stop aborts the waiting call, and no resume is sent", async () => {
     const { host, memory, questions, tools, session } = await setup();
-    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+    const resumes: Array<Sent> = [];
 
     host.answer(deferring([], resumes));
     await session.start(tools);
@@ -335,7 +333,7 @@ describe("a Modern server's form", () => {
     const memory = memoryStorage();
     const { host, tools, session } = await setup(memory);
     const seen: Answer[] = [];
-    const resumes: Array<McpHostRequest | McpHostResourceRequest> = [];
+    const resumes: Array<Sent> = [];
 
     host.answer(async (input, hooks) => {
       memory.refuse();

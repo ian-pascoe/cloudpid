@@ -120,6 +120,7 @@ export default defineConfig({
                 WORKSPACES: { className: "TestWorkspace", useSQLite: true },
                 WORKSPACE_SESSIONS: { className: "TestWorkspaceSession", useSQLite: true },
                 CODEMODE_SESSIONS: { className: "TestCodemodeSession", useSQLite: true },
+                MCP_CODEMODE_SESSIONS: { className: "TestMcpCodemodeSession", useSQLite: true },
                 CODEMODE_SANDBOX: { className: "CodemodeSandbox", useSQLite: true },
               },
               // The Session's `read` prepares images with it; miniflare emulates it with sharp.
