@@ -118,10 +118,16 @@ export class Unreachable extends Schema.TaggedError<
   status: Schema.optionalKey(Schema.Int),
 }) {}
 
-/** The request's stream ended before its answer arrived; a `tools/call` may or may not have run. */
+/**
+ * The request's stream ended before its answer arrived; a `tools/call` may or may not have run. `lost` says where it
+ * was lost when that was not the server's stream: `"engine"`, the host's RPC to the engine broke, which a Session shows
+ * as `details.cut: "engine_lost"` (`docs/architecture/mcp-in-a-session.md` → Calls and results). Optional and read as
+ * any string, so an edge that does not know it, or a value it does not know, still reads the cut.
+ */
 export class Cut extends Schema.TaggedError<Cut, { readonly brand: unique symbol }>()("Cut", {
   message: Schema.String,
   mayHaveRun: Schema.Boolean,
+  lost: Schema.optionalKey(Schema.String),
 }) {}
 
 /** The answer was over its byte limit and was dropped, never truncated. */
@@ -400,6 +406,18 @@ export const MCP_ENGINE_ERAS = ["modern", "legacy"] as const;
 export const McpEngineEra = Schema.Literals(MCP_ENGINE_ERAS);
 
 export type McpEngineEra = typeof McpEngineEra.Type;
+
+/** A mebibyte, the unit of the core's byte limits. */
+export const MiB = 1024 * 1024;
+
+/** The most a `tools/call` result or a large read may weigh (#394 D16); a larger answer is `TooLarge`. */
+export const MCP_LARGE_RESULT_BYTES = 16 * MiB;
+
+/**
+ * How long the engine lets a result's stream go unread before it errors the stream and lets its bytes go (each pull
+ * renews it): the Session's waits for a stream stay under it (`docs/architecture/mcp-connections.md` → Memory).
+ */
+export const MCP_STREAM_HOLD_MS = 60_000;
 
 /** The core's bound on a probe or an `initialize` (#394 D15). */
 export const MCP_CONNECT_TIMEOUT_MS = 15_000;

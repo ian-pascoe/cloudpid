@@ -28,6 +28,7 @@
 // @effect-diagnostics globalDate:off -- a lease's expiry is wall-clock time, across invocations.
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
+import { MCP_STREAM_HOLD_MS } from "@cloudpid/mcp/types";
 import { MiB } from "./units.ts";
 
 /** A call's charges in the pool stop at this; past it the call takes the large slot. */
@@ -37,7 +38,7 @@ export const POOL_CALL_LIMIT = 4 * MiB;
 export const POOL_BYTES = 8 * MiB;
 
 /** How long a returned stream may go unread and still hold its call's lease. */
-export const STREAM_HOLD_MS = 60_000;
+export const STREAM_HOLD_MS = MCP_STREAM_HOLD_MS;
 
 /** What one call holds of the budget. */
 export interface Lease {

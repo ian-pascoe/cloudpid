@@ -10,6 +10,10 @@
 // progress notice (progress resets the engine's timeout too); past that, or when the RPC breaks, the call reads as
 // `host_lost`, which may have run (`docs/architecture/mcp.md` → Deploys). The host answers within the timeout, a wait
 // for a free slot counted in, plus the connects the call makes, which the slack covers.
+//
+// Every tool is `replay: "safe"` with the `mcp.sent` memo, written before the request leaves (`docs/architecture/
+// mcp-server-requests.md` → The waiting-question record): a rerun after a restart that finds it settles the call as
+// interrupted and never sends it again.
 import {
   type McpExposure,
   mcpServerNamespace,
@@ -23,8 +27,15 @@ import {
   type McpHostRequest,
   type McpHostRequestHooks,
 } from "@cloudpid/mcp/types";
+import type { Context } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { defineExtension, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  type Extension,
+  type ToolExecutionApi,
+  type ToolRegistration,
+  type ToolTaskInput,
+} from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -33,14 +44,20 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
+import { baseDetails } from "./details.ts";
 import { exposureKeys, flagsOf, reachesModel } from "./exposure.ts";
 import {
   failedWith,
-  failureMessage,
+  failureResult,
   hostLostResult,
-  type McpDetails,
+  interruptedResult,
+  type McpResultContext,
   resultFor,
+  streamFailure,
 } from "./result.ts";
+import { scriptSchemaOf } from "./schema.ts";
+import { spillTo } from "./spill.ts";
+import { readStreamed, type StreamLimits } from "./stream.ts";
 
 export const extensionName = "mcp";
 
@@ -53,6 +70,9 @@ const DEFAULT_TIMEOUT_S = 60;
  * `MCP_CONNECT_TIMEOUT_MS`) and 15 s more for the RPCs, so the host answers first whenever it can.
  */
 export const MCP_CALL_SLACK_MS = 3 * MCP_CONNECT_TIMEOUT_MS + 15_000;
+
+/** The longest a result's stream may be quiet while the Session reads it before it is read as lost, in ms. */
+export const MCP_STREAM_IDLE_MS = 30_000;
 
 /**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
@@ -81,6 +101,8 @@ const ToolDeclaration = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   description: Schema.optionalKey(Schema.String),
   inputSchema: Schema.optionalKey(Schema.Json),
+  outputSchema: Schema.optionalKey(Schema.Json),
+  annotations: Schema.optionalKey(Schema.Json),
   _meta: Schema.optionalKey(Schema.Json),
 });
 
@@ -98,6 +120,18 @@ const parametersOf = (tool: ToolDeclaration): TSchema => {
   ) as TSchema;
 };
 
+/** Whether the call is a script's (`codemode`): a nested call of the task `api` runs. */
+const isNested = async (api: ToolExecutionApi, context: Context): Promise<boolean> => {
+  const task = await api.getTask(api.taskId, context).catch(() => undefined);
+  // SAFETY: a tool call's task is a `pi.tool` task, whose input is a `ToolTaskInput`.
+  const input = task?.input as ToolTaskInput | undefined;
+
+  return input?.kind === "nested";
+};
+
+/** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
+const SENT = "mcp.sent";
+
 /** How long the Session waits for a call to `server`'s tools since its start or its last progress, in ms. */
 const waitOf = (server: McpBuildServer, slackMs: number): number => {
   const { timeout } = server.server;
@@ -110,6 +144,10 @@ const waitOf = (server: McpBuildServer, slackMs: number): number => {
 /** How the tools wait: the slack past a call's timeout, `MCP_CALL_SLACK_MS` unless a test shortens it. */
 export type McpToolOptions = {
   readonly slackMs?: number;
+  /** How long a result's stream may be quiet, `MCP_STREAM_IDLE_MS` unless a test shortens it. */
+  readonly streamIdleMs?: number;
+  /** How long a result's stream waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
+  readonly streamWaitMs?: number;
 };
 
 /** A promise that resolves when any of `signals` aborts, and never without one. */
@@ -174,24 +212,31 @@ const toolFor = (
   exposure: Exclude<McpExposure, "hidden">,
   options: McpToolOptions,
 ): ToolRegistration => {
-  const base: Mutable<McpDetails> = { server: server.name, tool: tool.name };
-
-  if (tool.title !== undefined) base.title = tool.title;
-
+  const base = baseDetails(server.name, tool);
   const wait = waitOf(server, options.slackMs ?? MCP_CALL_SLACK_MS);
 
   return {
     name,
     description: tool.description ?? "",
     parameters: parametersOf(tool),
+    structuredOutputSchema: scriptSchemaOf(
+      isJsonObject(tool.outputSchema) ? tool.outputSchema : undefined,
+    ),
+    replay: "safe",
     ...flagsOf(exposure),
     execute: async (args, api, context) => {
+      // A rerun after a restart: the request was sent once, so the call may have run, and is never sent again.
+      if ((await api.memo<boolean>(SENT, context)) !== undefined)
+        return interruptedResult(name, base);
+
       const lost = deadline(wait);
       const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
 
       const hooks: McpHostRequestHooks = {
         // Stop, or the Session giving up on the host: either way the host cancels the call.
         untilAborted: () => abortedBy([...stopped, lost.signal]),
+        // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
+        // output text, and gone from the settled call's `details`.
         onProgress: (progress) => {
           lost.reset();
 
@@ -208,6 +253,9 @@ const toolFor = (
         { callId: api.callId, conversation: String(api.conversationId) },
       );
 
+      // Durable before the request leaves, so a restart finds the call sent.
+      await api.memo(SENT, true, context);
+
       const result = await Promise.race([
         Effect.runPromise(client.request(request, hooks)),
         abortedBy([lost.signal]).then(() => undefined),
@@ -217,21 +265,33 @@ const toolFor = (
         return hostLostResult(base);
       }
 
-      if (!Predicate.isTagged(result, "Completed")) {
-        return failedWith(failureMessage(result), base);
-      }
+      if (!Predicate.isTagged(result, "Completed")) return failureResult(result, base);
 
-      if (result.result.kind === "stream") {
-        // A result over 1 MiB comes as a stream, which the Session reads with #458; it is not read here.
-        void result.result.body.cancel().catch(() => undefined);
+      // A script's call gets its value whole and no spill.
+      const call: McpResultContext = (await isNested(api, context))
+        ? { kind: "script", details: base }
+        : { kind: "model", details: base, spill: spillTo(api.env, context) };
 
-        return failedWith(
-          "The tool's result is over 1 MiB, which this build does not read yet",
-          base,
-        );
-      }
+      const finish = (value: Schema.Json) => resultFor(value, result.structuredOutput, call);
 
-      return resultFor(result.result.value, base);
+      if (result.result.kind !== "stream") return finish(result.result.value);
+
+      const limits: Mutable<StreamLimits> = {
+        signal: context.abortSignal,
+        idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+      };
+
+      if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+
+      // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
+      // model or the script gets before the decode slot is given up.
+      return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
+        if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
+
+        return streamed.kind === "value"
+          ? finish(streamed.value)
+          : streamFailure(streamed.kind, base);
+      });
     },
   };
 };

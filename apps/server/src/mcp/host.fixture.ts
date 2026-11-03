@@ -71,6 +71,11 @@ export type EngineScript = {
  */
 export type RequestScript = {
   readonly result: typeof McpEngineRequestResult.Encoded;
+  /**
+   * Answer a completed call with this many bytes as a native byte stream, produced on pull (a `highWaterMark` of 0, so
+   * nothing is pulled until a reader asks), as the engine answers a result over 1 MiB, in place of its `result`'s value.
+   */
+  readonly streamBytes?: number;
   readonly hold?: boolean;
   readonly reject?: string;
   readonly auth?: ReadonlyArray<boolean>;
@@ -194,10 +199,41 @@ export class TestMcpHost extends DurableObject {
 
   readonly #requests: Array<EngineRequest> = [];
 
+  /** How many times a scripted stream was pulled. */
+  #pulls = 0;
+
   #offset = 0;
 
   /** The real engine, once a test asks for it: the test Worker's `McpEngine` entrypoint, over RPC. */
   #real: McpEngineMethods | undefined;
+
+  /** `script`'s completed answer with its value as a stream of `streamBytes` bytes, pulled 64 KiB at a time. */
+  #streamed(script: RequestScript): typeof McpEngineRequestResult.Encoded {
+    const total = script.streamBytes ?? 0;
+    let sent = 0;
+
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull: (controller) => {
+          this.#pulls++;
+
+          if (sent >= total) return controller.close();
+
+          const size = Math.min(64 * 1024, total - sent);
+
+          controller.enqueue(new Uint8Array(size).fill(97));
+          sent += size;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+
+    // SAFETY: a completed answer whose value is a stream, as the engine returns it past 1 MiB.
+    return {
+      ...script.result,
+      result: { kind: "stream", body, bytes: total },
+    } as typeof McpEngineRequestResult.Encoded;
+  }
 
   readonly #engine: McpEngineMethods = {
     request: async (target, prior, request, hooks) => {
@@ -217,6 +253,8 @@ export class TestMcpHost extends DurableObject {
       if (script.hold === true) await this.#holdUntilReleased(target.url);
 
       if (script.reject !== undefined) throw new Error(script.reject);
+
+      if (script.streamBytes !== undefined) return this.#streamed(script);
 
       return script.result;
     },
@@ -436,6 +474,29 @@ export class TestMcpHost extends DurableObject {
     hooks: McpHostRequestHooks,
   ): Promise<McpHostRequestResult> {
     return Effect.runPromise(this.#methods.request(input, hooks));
+  }
+
+  /**
+   * A Session's call, answered here, in this Durable Object, before it crosses to the caller: what the host returned
+   * of a streamed result, and whether it had read any of it (a locked or pulled stream).
+   */
+  async requestStreamed(
+    input: typeof McpHostRequest.Encoded,
+  ): Promise<{ readonly tag: string; readonly stream: { locked: boolean; bytes: number } | null }> {
+    const answer = await Effect.runPromise(this.#methods.request(input, {}));
+
+    if (!Predicate.isTagged(answer, "Completed") || answer.result.kind !== "stream") {
+      return { tag: answer._tag, stream: null };
+    }
+
+    const { body, bytes } = answer.result;
+
+    return { tag: answer._tag, stream: { locked: body.locked, bytes } };
+  }
+
+  /** How many times a scripted stream was pulled so far. */
+  streamPulls(): number {
+    return this.#pulls;
   }
 
   /** The set as the store holds it. */

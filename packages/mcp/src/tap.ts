@@ -27,14 +27,14 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import {
   Cut,
+  MCP_LARGE_RESULT_BYTES,
   type McpError,
+  MiB,
   ProtocolViolation,
   ServerError,
   TooLarge,
   Unreachable,
 } from "./types.ts";
-
-const MiB = 1024 * 1024;
 
 /** What the tap does with a request, by its method. */
 interface Policy {
@@ -52,12 +52,20 @@ interface Policy {
 const OTHER: Policy = { limit: MiB, readOnly: false, probe: false, mayHaveRun: false };
 
 /** A read with a large answer. */
-const LARGE_READ: Policy = { limit: 16 * MiB, readOnly: true, probe: false, mayHaveRun: false };
+const LARGE_READ: Policy = {
+  limit: MCP_LARGE_RESULT_BYTES,
+  readOnly: true,
+  probe: false,
+  mayHaveRun: false,
+};
 
 /** Each method's policy: the reads and `tools/call` get 16 MiB (D16). A `Map`, so no method finds a prototype key. */
 const POLICIES = new Map<string, Policy>([
   ["server/discover", { ...OTHER, probe: true }],
-  ["tools/call", { limit: 16 * MiB, readOnly: false, probe: false, mayHaveRun: true }],
+  [
+    "tools/call",
+    { limit: MCP_LARGE_RESULT_BYTES, readOnly: false, probe: false, mayHaveRun: true },
+  ],
   ["tools/list", LARGE_READ],
   ["prompts/list", LARGE_READ],
   ["resources/list", LARGE_READ],

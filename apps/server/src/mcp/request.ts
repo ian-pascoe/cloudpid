@@ -215,8 +215,17 @@ export const request = (
     );
 
     if (Result.isFailure(answer)) {
-      // The engine is out of reach, or its RPC broke mid-call: the server may have run it.
-      return callFailed(Cut.make({ message: answer.failure.message, mayHaveRun: true }));
+      // The engine is out of reach, or its RPC broke mid-call: the server may have run it. The cause is logged, never
+      // told the model.
+      yield* Effect.logWarning("The MCP engine's end of a call was lost", answer.failure);
+
+      return callFailed(
+        Cut.make({
+          message: "The host's connection to the MCP engine was lost",
+          mayHaveRun: true,
+          lost: "engine",
+        }),
+      );
     }
 
     if (answer.success === "timedOut") {

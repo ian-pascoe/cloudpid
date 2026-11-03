@@ -221,7 +221,10 @@ describe("an MCP tool in a Session", () => {
     expect(declarations[1]).toEqual(declarations[0]);
     expect(declarations[0]).toContain("mcp__docs__work");
     expect(systems[1]).toBe(systems[0]);
-    expect(results.at(-1)).toMatch(/mcp__docs__work was interrupted .*may have partially run/);
+    // The extension's own words, which say the `mcp.sent` marker was found, not pi-durable's for a tool that cannot replay.
+    expect(results.at(-1)).toMatch(
+      /mcp__docs__work was interrupted and may have partially run; it was not sent again\./,
+    );
     // The tools came back from what the Session kept: the start called no host, and the call did not run again.
     expect(await hostAfter.asked()).toEqual([]);
     expect(await hostAfter.engineRequests()).toEqual([]);
