@@ -11,7 +11,9 @@
 //   placeholder) is bounced to the card, nothing kept.
 // - **One record per question** in the Session's storage (an implementation word): `mcp-question:waiting` lists the
 //   questions waiting (small: who asks, which call, when), and each question that ended leaves a settled record
-//   `mcp-question:s:<id>`, the newest `MCP_QUESTION_RECORDS` kept. The full request, with its form, is in memory only.
+//   `mcp-question:s:<id>`, the newest `MCP_QUESTION_RECORDS` kept, with the message and form the owner was shown
+//   (redacted of held Secrets). The full request is in memory only. Nothing reads the records yet: the call card and
+//   `/export` lines that will (#569) are their reader.
 // - **The notification** is told of the first question a call waits on, and of a later one only after 2 min with none
 //   waiting for that call.
 import {
@@ -25,13 +27,13 @@ import type {
   ElicitationContent,
   ElicitationForm,
   McpElicitationRequest,
+  McpElicitationSource,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
@@ -56,6 +58,9 @@ export const MCP_QUESTION_RECORDS = 100;
 /** The most bytes a settled record holds (past it, its form is left out). */
 const MAX_RECORD_BYTES = 64 * 1024;
 
+/** Why a request past the call's cap of `MCP_ELICITATIONS_PER_CALL` is cancelled. */
+export const MCP_ELICITATION_CAP_REASON = "elicitation limit for this call reached";
+
 const WAITING_KEY = "mcp-question:waiting";
 const SETTLED_KEY = "mcp-question:settled";
 const settledKey = (id: string) => `mcp-question:s:${id}`;
@@ -73,8 +78,9 @@ export type McpQuestionAsk = {
   /** The call that waits for the answer. */
   readonly callId: string;
   readonly conversationId: McpElicitationRequest["conversationId"];
-  /** The server's configured name. */
+  /** The server's configured name, and where its definition is. */
   readonly server: string;
+  readonly source?: McpElicitationSource;
   /** The model-facing name of the tool the call is to. */
   readonly tool: string;
   readonly message: string;
@@ -91,8 +97,8 @@ export type McpQuestionOutcome =
       readonly reason?: string;
     };
 
-/** What a question ended without being asked: cloudpid's own decline, written to the record so the owner can learn of it. */
-export type McpQuestionUnseen = Omit<McpQuestionAsk, "key" | "form" | "notes"> & {
+/** A form cloudpid ended before showing it: a credential, or a malformed form. */
+export type McpQuestionUnseen = Omit<McpQuestionAsk, "key" | "form" | "notes" | "source"> & {
   readonly form?: ElicitationForm;
   readonly notes?: ReadonlyArray<string>;
   readonly action: "decline" | "cancel";
@@ -107,6 +113,7 @@ export type McpQuestionRecord = {
   readonly server: string;
   readonly tool: string;
   readonly mode: "form";
+  /** The message as the owner was shown it: redacted of the Secrets the Session held. */
   readonly message: string;
   readonly form?: ElicitationForm;
   readonly notes: ReadonlyArray<string>;
@@ -150,10 +157,15 @@ export type McpQuestionsService = {
   ) => Effect.Effect<void, McpQuestionsError>;
   /** The server stopped waiting for question `key` of call `callId`: withdraw its card. */
   readonly withdraw: (callId: string, key: string, reason: string) => Effect.Effect<void>;
+  /** Server `server` was switched off, hidden or removed: cancel every question it waits on, and withdraw the cards. */
+  readonly withdrawServer: (server: string, reason: string) => Effect.Effect<void>;
   /** The call is done, however it ended: withdraw every question it still waits on, and forget its count. */
   readonly settleCall: (callId: string) => Effect.Effect<void>;
-  /** Record a form cloudpid declined or cancelled unseen (a credential, a malformed form), which asked nobody. */
-  readonly unseen: (unseen: McpQuestionUnseen) => Effect.Effect<void>;
+  /**
+   * Record a form cloudpid declined or cancelled unseen (a credential, a malformed form). It counts toward the call's
+   * cap of `MCP_ELICITATIONS_PER_CALL` like any request: `"capped"` says the call was past it, and the record says so.
+   */
+  readonly unseen: (unseen: McpQuestionUnseen) => Effect.Effect<"recorded" | "capped">;
   /**
    * Expire the questions an earlier instance left waiting: their calls are gone with it. Run once, when the instance
    * starts, before any call can ask.
@@ -168,13 +180,6 @@ export class McpQuestions extends Context.Service<McpQuestions, McpQuestionsServ
   "@cloudpid/extensions/mcp/questions/McpQuestions",
 ) {}
 
-/** What the owner is shown, which `redact` cleans of the Secrets the Session holds. */
-export type McpQuestionShown = {
-  readonly message: string;
-  readonly form: ElicitationForm;
-  readonly notes: ReadonlyArray<string>;
-};
-
 export type McpQuestionsOptions = {
   readonly storage: McpQuestionStorage;
   /** Tell the clients which questions wait; called whenever that changes. */
@@ -184,8 +189,8 @@ export type McpQuestionsOptions = {
    * of a call and for a later one after `MCP_QUESTION_RENOTIFY_MS` with none waiting; never with the message.
    */
   readonly notify?: ((who: { readonly server: string }) => Effect.Effect<void>) | undefined;
-  /** What a Secret the Session holds is replaced by in what the owner is shown. */
-  readonly redact: (shown: McpQuestionShown) => Effect.Effect<McpQuestionShown>;
+  /** `value` with every Secret the Session holds replaced by its reference: all the owner is shown, and all a record keeps. */
+  readonly redact: <A>(value: A) => Effect.Effect<A>;
   /**
    * Whether a string the owner entered holds a Secret the Session holds or a deploy-time credential, in any encoding
    * redaction knows; a Secret Reference's placeholder is refused here whatever this says.
@@ -197,19 +202,24 @@ export type McpQuestionsOptions = {
 
 /** What a call has asked, and whether the owner was told. */
 type CallState = {
+  /** Requests the call made, counted toward its cap: a question, or a form cloudpid ended unseen. */
   asked: number;
+  /** Requests turned away at the cap, to give their records an id. */
+  capped: number;
   waiting: number;
   notified: boolean;
   idleSince: number;
 };
 
 type Waiting = {
+  readonly key: string;
   readonly request: McpElicitationRequest;
   readonly entry: WaitingEntry;
   readonly outcome: Deferred.Deferred<McpQuestionOutcome>;
 };
 
-const questionId = (callId: string, key: string) => `${callId}:${key}`;
+/** A question's id: unique within the Session, and within its call whatever the server's own request ids are. */
+const questionId = (callId: string, sequence: number | string) => `${callId}:${sequence}`;
 
 /** The strings an accepted form's content holds, to check each against the Session's Secrets. */
 const stringsOf = (content: ElicitationContent): ReadonlyArray<readonly [string, string]> => {
@@ -224,6 +234,12 @@ const stringsOf = (content: ElicitationContent): ReadonlyArray<readonly [string,
 
   return found;
 };
+
+const cancelled = (reason: string): McpQuestionOutcome => ({
+  action: "cancel",
+  by: "cloudpid",
+  reason,
+});
 
 /** The Session's MCP questions over its storage. Synchronous: the tools that ask are built before the runtime. */
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
@@ -244,7 +260,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   };
 
   /** Keep `record`, and drop the oldest past the bound. */
-  const keep = (record: McpQuestionRecord) => {
+  const keepNow = (record: McpQuestionRecord) => {
     const bytes = JSON.stringify(record).length;
 
     const stored: McpQuestionRecord =
@@ -269,8 +285,23 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     storage.put(SETTLED_KEY, ids.slice(dropped.length));
   };
 
+  /**
+   * Keep `record`. A storage that fails loses the record, never the answer, and leaves no card behind: it is logged
+   * (the cause holds no value, only storage's own error).
+   */
+  const keep = (record: McpQuestionRecord) =>
+    Effect.try(() => keepNow(record)).pipe(
+      Effect.catch((cause) => Effect.logWarning("Could not keep an MCP question's record", cause)),
+    );
+
   const callOf = (callId: string): CallState => {
-    const held = calls.get(callId) ?? { asked: 0, waiting: 0, notified: false, idleSince: 0 };
+    const held = calls.get(callId) ?? {
+      asked: 0,
+      capped: 0,
+      waiting: 0,
+      notified: false,
+      idleSince: 0,
+    };
 
     calls.set(callId, held);
 
@@ -288,7 +319,6 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       const { request, entry } = held;
 
       waiting.delete(id);
-      putEntries(entries().filter((other) => other.id !== id));
 
       const state = callOf(request.callId);
 
@@ -318,56 +348,81 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         record.reason = outcome.reason;
       }
 
-      keep(record);
+      yield* Effect.try(() => putEntries(entries().filter((other) => other.id !== id))).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not update the waiting MCP questions", cause),
+        ),
+      );
+      yield* keep(record);
       yield* Deferred.succeed(held.outcome, outcome);
       yield* tell;
 
       return true;
     });
 
-  const cancelled = (reason: string): McpQuestionOutcome => ({
-    action: "cancel",
-    by: "cloudpid",
-    reason,
-  });
+  /** What a record keeps of text the owner was shown or would have been: redacted of the Secrets the Session holds. */
+  const shownOf = (ask: {
+    readonly message: string;
+    readonly form?: ElicitationForm | undefined;
+    readonly notes?: ReadonlyArray<string> | undefined;
+    readonly reason?: string;
+  }) =>
+    options.redact({
+      message: ask.message,
+      form: ask.form,
+      notes: ask.notes ?? [],
+      reason: ask.reason,
+    });
 
-  /** A question cloudpid ended before showing it. */
-  const refuse = (ask: McpQuestionAsk, action: "decline" | "cancel", reason: string) =>
+  /** A request turned away at the call's cap, recorded. */
+  const turnedAway = (
+    ask: Omit<McpQuestionAsk, "key" | "form" | "notes" | "source"> & {
+      readonly form?: ElicitationForm;
+      readonly notes?: ReadonlyArray<string>;
+    },
+  ) =>
     Effect.gen(function* () {
+      const state = callOf(ask.callId);
       const now = yield* Clock.currentTimeMillis;
+      const reason = MCP_ELICITATION_CAP_REASON;
+      const shown = yield* shownOf({ ...ask, reason });
 
-      keep({
-        id: questionId(ask.callId, ask.key),
+      state.capped += 1;
+
+      const record: Mutable<McpQuestionRecord> = {
+        id: questionId(ask.callId, `cap${state.capped}`),
         callId: ask.callId,
         conversationId: ask.conversationId,
         server: ask.server,
         tool: ask.tool,
         mode: "form",
-        message: ask.message,
-        form: ask.form,
-        notes: ask.notes,
-        action,
+        message: shown.message,
+        notes: shown.notes,
+        action: "cancel",
         by: "cloudpid",
         reason,
         fields: [],
         askedAt: now,
         settledAt: now,
-      });
+      };
 
-      return { action, by: "cloudpid", reason } satisfies McpQuestionOutcome;
+      if (shown.form !== undefined) record.form = shown.form;
+
+      yield* keep(record);
+
+      return { action: "cancel", by: "cloudpid", reason } satisfies McpQuestionOutcome;
     });
 
   const ask = (question: McpQuestionAsk): Effect.Effect<McpQuestionOutcome> =>
     Effect.gen(function* () {
-      const id = questionId(question.callId, question.key);
       const state = callOf(question.callId);
-      const now = yield* Clock.currentTimeMillis;
 
-      if (state.asked >= MCP_ELICITATIONS_PER_CALL) {
-        return yield* refuse(question, "cancel", "elicitation limit for this call reached");
-      }
+      if (state.asked >= MCP_ELICITATIONS_PER_CALL) return yield* turnedAway(question);
 
       state.asked += 1;
+
+      const id = questionId(question.callId, state.asked);
+      const now = yield* Clock.currentTimeMillis;
 
       const shown = yield* options.redact({
         message: question.message,
@@ -375,7 +430,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         notes: question.notes,
       });
 
-      const request: McpElicitationRequest = {
+      const request: Mutable<McpElicitationRequest> = {
         id,
         callId: question.callId,
         conversationId: question.conversationId,
@@ -387,6 +442,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         deadline: now + waitMs,
       };
 
+      if (question.source !== undefined) request.source = question.source;
+
       const entry: WaitingEntry = {
         id,
         callId: question.callId,
@@ -395,6 +452,33 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         tool: question.tool,
         askedAt: now,
       };
+
+      // Stored before it is shown: a storage that cannot take it leaves no card for a question nobody can expire.
+      const stored = yield* Effect.try(() => putEntries([...entries(), entry])).pipe(Effect.option);
+
+      if (Option.isNone(stored)) {
+        const reason = "cloudpid could not record the question";
+
+        yield* keep({
+          id,
+          callId: question.callId,
+          conversationId: question.conversationId,
+          server: question.server,
+          tool: question.tool,
+          mode: "form",
+          message: shown.message,
+          form: shown.form,
+          notes: shown.notes,
+          action: "cancel",
+          by: "cloudpid",
+          reason,
+          fields: [],
+          askedAt: now,
+          settledAt: now,
+        });
+
+        return cancelled(reason);
+      }
 
       const outcome = yield* Deferred.make<McpQuestionOutcome>();
 
@@ -405,8 +489,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       state.waiting += 1;
       state.notified = true;
-      waiting.set(id, { request, entry, outcome });
-      putEntries([...entries(), entry]);
+      waiting.set(id, { key: question.key, request, entry, outcome });
       yield* tell;
 
       // In the background: the push may take seconds, and the question must not wait on it.
@@ -445,7 +528,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       const checked = validateElicitation(held.request.form, given.content);
 
       if (Result.isFailure(checked)) {
-        const [first] = Object.entries(checked.failure);
+        const [first] = Record.toEntries(checked.failure);
 
         return yield* McpQuestionsError.make({
           message:
@@ -469,15 +552,56 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       if (!taken) return yield* McpQuestionsError.make({ message: "This request ended" });
     });
 
+  const endWhere = (matches: (held: Waiting) => boolean, reason: string) =>
+    Effect.gen(function* () {
+      for (const [id, held] of Arr.fromIterable(waiting.entries())) {
+        if (matches(held)) yield* finish(id, cancelled(reason));
+      }
+    });
+
   const settleCall = (callId: string) =>
     Effect.gen(function* () {
-      for (const [id, held] of waiting) {
-        if (held.request.callId === callId) {
-          yield* finish(id, cancelled("the server's call ended"));
-        }
+      yield* endWhere((held) => held.request.callId === callId, "the server's call ended");
+      calls.delete(callId);
+    });
+
+  const unseen: McpQuestionsService["unseen"] = (form) =>
+    Effect.gen(function* () {
+      const state = callOf(form.callId);
+
+      if (state.asked >= MCP_ELICITATIONS_PER_CALL) {
+        yield* turnedAway(form);
+
+        return "capped" as const;
       }
 
-      calls.delete(callId);
+      state.asked += 1;
+
+      const now = yield* Clock.currentTimeMillis;
+      const shown = yield* shownOf(form);
+
+      const record: Mutable<McpQuestionRecord> = {
+        id: questionId(form.callId, state.asked),
+        callId: form.callId,
+        conversationId: form.conversationId,
+        server: form.server,
+        tool: form.tool,
+        mode: "form",
+        message: shown.message,
+        notes: shown.notes,
+        action: form.action,
+        by: "cloudpid",
+        reason: shown.reason ?? form.reason,
+        fields: [],
+        askedAt: now,
+        settledAt: now,
+      };
+
+      if (shown.form !== undefined) record.form = shown.form;
+
+      yield* keep(record);
+
+      return "recorded" as const;
     });
 
   return {
@@ -485,36 +609,10 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     pending,
     answer,
     withdraw: (callId, key, reason) =>
-      Effect.asVoid(finish(questionId(callId, key), cancelled(reason))),
+      endWhere((held) => held.request.callId === callId && held.key === key, reason),
+    withdrawServer: (server, reason) => endWhere((held) => held.request.server === server, reason),
     settleCall,
-    unseen: (unseen) =>
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const state = callOf(unseen.callId);
-
-        state.asked += 1;
-
-        const record: Mutable<McpQuestionRecord> = {
-          id: questionId(unseen.callId, `unseen-${state.asked}`),
-          callId: unseen.callId,
-          conversationId: unseen.conversationId,
-          server: unseen.server,
-          tool: unseen.tool,
-          mode: "form",
-          message: unseen.message,
-          notes: unseen.notes ?? [],
-          action: unseen.action,
-          by: "cloudpid",
-          reason: unseen.reason,
-          fields: [],
-          askedAt: now,
-          settledAt: now,
-        };
-
-        if (unseen.form !== undefined) record.form = unseen.form;
-
-        keep(record);
-      }),
+    unseen,
     expireStale: Effect.gen(function* () {
       const stale = entries().filter((entry) => !waiting.has(entry.id));
 
@@ -523,7 +621,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       const now = yield* Clock.currentTimeMillis;
 
       for (const entry of stale) {
-        keep({
+        yield* keep({
           id: entry.id,
           callId: entry.callId,
           conversationId: entry.conversationId,
@@ -541,7 +639,11 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         });
       }
 
-      putEntries(entries().filter((entry) => waiting.has(entry.id)));
+      yield* Effect.try(() => putEntries(entries().filter((entry) => waiting.has(entry.id)))).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not update the waiting MCP questions", cause),
+        ),
+      );
       yield* tell;
     }),
     records: Effect.sync(() =>
@@ -553,7 +655,3 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     ),
   } satisfies McpQuestionsService;
 };
-
-/** The Session's `McpQuestions`, expiring what an earlier instance left waiting as it is built. */
-export const mcpQuestionsLayer = (service: McpQuestionsService): Layer.Layer<McpQuestions> =>
-  Layer.merge(Layer.succeed(McpQuestions, service), Layer.effectDiscard(service.expireStale));

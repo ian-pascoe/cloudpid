@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off asyncFunction:off newPromise:off globalTimers:off globalDate:off -- builders over
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off newPromise:off -- builders over
 // plain values, and pi-durable's Promise-based tool seam.
 // The `mcp` extension's tools (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension, Exposure, Calls and
 // results; ADR-0030), built purely from the host's inventory and the offered tools, so a build over unchanged tools gives
@@ -28,6 +28,7 @@ import {
   type McpHostRequest,
   type McpAnswers,
   type McpHostRequestHooks,
+  pausableDeadline,
 } from "@cloudpid/mcp/types";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
@@ -89,6 +90,10 @@ export const McpBuildServer = Schema.Struct({
   name: Schema.String,
   state: Schema.String,
   discoveredAt: Schema.optionalKey(Schema.Finite),
+  /** Where the server's definition is: a question's card says so. */
+  source: Schema.optionalKey(
+    Schema.Struct({ kind: Schema.String, slug: Schema.optionalKey(Schema.String) }),
+  ),
   server: Schema.Struct({
     /** `stdio` for a server that runs in a Workspace's Container; its calls ready the caller's Workspace first. */
     type: Schema.optionalKey(Schema.Json),
@@ -189,42 +194,6 @@ const abortedBy = (signals: ReadonlyArray<AbortSignal>) =>
     }
   });
 
-/**
- * A deadline `ms` away, which `reset` moves `ms` from now and `pause` stops until `resume` (the time left then runs
- * again); `signal` aborts when it passes. Pauses nest: it runs again when every one has resumed.
- */
-const deadline = (ms: number) => {
-  const controller = new AbortController();
-  let timer = setTimeout(() => controller.abort(), ms);
-  let startedAt = Date.now();
-  let left = ms;
-  let paused = 0;
-
-  return {
-    signal: controller.signal,
-    reset: () => {
-      clearTimeout(timer);
-      left = ms;
-      startedAt = Date.now();
-
-      if (paused === 0) timer = setTimeout(() => controller.abort(), ms);
-    },
-    pause: () => {
-      if (paused++ > 0) return;
-
-      clearTimeout(timer);
-      left = Math.max(0, left - (Date.now() - startedAt));
-    },
-    resume: () => {
-      if (--paused > 0) return;
-
-      startedAt = Date.now();
-      timer = setTimeout(() => controller.abort(), left);
-    },
-    clear: () => clearTimeout(timer),
-  };
-};
-
 /** Who the Session's calls are made for: the Session and its Workspace (`ws:<id>`). */
 export type McpCallOrigin = {
   readonly session?: string | undefined;
@@ -322,7 +291,10 @@ const toolFor = (
         }
       }
 
-      const lost = deadline(wait);
+      const lost = await Effect.runPromise(
+        pausableDeadline(wait, () => new Error("The Session gave up on the host")),
+      );
+
       const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
 
       const { questions } = options;
@@ -338,6 +310,7 @@ const toolFor = (
               callId: api.callId,
               conversationId: api.conversationId,
               signal: context.abortSignal,
+              source: server.source,
               pause: lost.pause,
               resume: lost.resume,
             });
@@ -347,11 +320,10 @@ const toolFor = (
         untilAborted: () => abortedBy([...stopped, lost.signal]),
         // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
         // output text, and gone from the settled call's `details`.
-        onProgress: (progress) => {
-          lost.reset();
-
-          return api.details({ ...base, progress }, context).catch(() => undefined);
-        },
+        onProgress: (progress) =>
+          Effect.runPromise(lost.reset).then(() =>
+            api.details({ ...base, progress }, context).catch(() => undefined),
+          ),
       };
 
       if (asking !== undefined) {
@@ -376,7 +348,7 @@ const toolFor = (
         const result = await Promise.race([
           Effect.runPromise(client.request(request, hooks)),
           abortedBy([lost.signal]).then(() => undefined),
-        ]).finally(lost.clear);
+        ]).finally(() => Effect.runPromise(lost.clear));
 
         if (result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")) {
           return hostLostResult(base);

@@ -54,6 +54,10 @@ const mayMatchPrefix = (pattern: string, prefix: string): boolean => {
   );
 };
 
+/** Whether the Session's tools reach `server`: it is not switched off, and its own Exposure is not `hidden`. */
+export const isReachable = (server: Pick<McpBuildServer, "state" | "server">): boolean =>
+  server.state !== "disabled" && exposureKeys(server).exposure !== "hidden";
+
 /**
  * Whether any tool of `server` may be `direct`: its own Exposure, a `toolExposure` key, or an offered pattern that can
  * name one of its tools. A server none of whose tools can be is never waited for.

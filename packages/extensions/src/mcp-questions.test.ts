@@ -52,7 +52,10 @@ const ASK: McpQuestionAsk = {
 
 const SENTINEL = "sentinel-answer-4f1c9";
 
-const open = (storage: McpQuestionStorage, options: { readonly secret?: string } = {}) => {
+const open = (
+  storage: McpQuestionStorage,
+  options: { readonly secret?: string; readonly redact?: (text: string) => string } = {},
+) => {
   const announced: Array<ReadonlyArray<McpElicitationRequest>> = [];
   const told: string[] = [];
 
@@ -66,7 +69,10 @@ const open = (storage: McpQuestionStorage, options: { readonly secret?: string }
       Effect.sync(() => {
         told.push(server);
       }),
-    redact: (shown) => Effect.succeed(shown),
+    redact: (shown) =>
+      Effect.succeed(
+        options.redact === undefined ? shown : JSON.parse(options.redact(JSON.stringify(shown))),
+      ),
     holdsSecret: (text) => Effect.succeed(options.secret !== undefined && text === options.secret),
   });
 
@@ -298,5 +304,127 @@ describe("MCP questions", () => {
 
       expect(records).toHaveLength(MCP_QUESTION_RECORDS);
       expect(records.at(-1)).toMatchObject({ callId: `call-${MCP_QUESTION_RECORDS + 4}` });
+    }));
+  test("give each question its own id, though the server reuses its key", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const { questions } = open(storage);
+
+      yield* Effect.forkChild(questions.ask(ASK));
+      yield* settle;
+      yield* questions.withdraw("call-1", "1", "the server stopped waiting");
+      yield* Effect.forkChild(questions.ask(ASK));
+      yield* settle;
+
+      const [request] = yield* questions.pending;
+
+      expect(request?.id).toBe("call-1:2");
+
+      // The answer to the first is refused: its id is gone, not the second's.
+      const late = yield* Effect.flip(questions.answer("call-1:1", { action: "decline" }));
+
+      expect(late.message).toBe("This request ended");
+      expect(yield* questions.pending).toHaveLength(1);
+    }));
+
+  test("show no card for a question whose record the storage cannot take", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+
+      const { questions, announced, told } = open({
+        ...storage,
+        put: () => {
+          throw new Error("storage is full");
+        },
+      });
+
+      const outcome = yield* questions.ask(ASK);
+
+      expect(outcome).toEqual({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "cloudpid could not record the question",
+      });
+      expect(yield* questions.pending).toEqual([]);
+      expect(announced).toEqual([]);
+      expect(told).toEqual([]);
+    }));
+
+  test("count a form cloudpid ended unseen toward the call's cap", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const { questions } = open(storage);
+
+      const unseen = {
+        callId: "call-1",
+        conversationId: ROOT_CONVERSATION_ID,
+        server: "demo",
+        tool: "mcp__demo__ask",
+        message: "A token, please",
+        action: "decline" as const,
+        reason: "it asked for a credential ('API token')",
+      };
+
+      for (let n = 0; n < 10; n++) expect(yield* questions.unseen(unseen)).toBe("recorded");
+
+      expect(yield* questions.unseen(unseen)).toBe("capped");
+      expect(yield* questions.ask(ASK)).toMatchObject({
+        action: "cancel",
+        reason: "elicitation limit for this call reached",
+      });
+    }));
+
+  test("withdraw every question of a server that was switched off, and no other's", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const { questions } = open(storage);
+
+      const first = yield* Effect.forkChild(questions.ask(ASK));
+
+      yield* Effect.forkChild(
+        questions.ask({ ...ASK, callId: "call-2", server: "other", tool: "mcp__other__ask" }),
+      );
+      yield* settle;
+      yield* questions.withdrawServer("demo", "demo was switched off or removed");
+
+      expect(yield* Fiber.join(first)).toEqual({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "demo was switched off or removed",
+      });
+      expect((yield* questions.pending).map((each) => each.server)).toEqual(["other"]);
+    }));
+
+  test("keep the message as the owner was shown it, redacted, in the record", () =>
+    Effect.gen(function* () {
+      const { storage, dump } = memoryStorage();
+
+      const { questions, announced } = open(storage, {
+        redact: (text) => text.replaceAll("hunter2", "${HUNTER}"),
+      });
+
+      const waiting = yield* Effect.forkChild(
+        questions.ask({ ...ASK, message: "Is hunter2 your password?" }),
+      );
+
+      yield* settle;
+      expect(announced.at(-1)?.[0]?.message).toBe("Is ${HUNTER} your password?");
+      yield* questions.answer("call-1:1", { action: "decline" });
+      yield* Fiber.join(waiting);
+      yield* questions.unseen({
+        callId: "call-2",
+        conversationId: ROOT_CONVERSATION_ID,
+        server: "demo",
+        tool: "mcp__demo__ask",
+        message: "Tell me hunter2",
+        action: "decline",
+        reason: "it asked for a credential ('hunter2')",
+      });
+
+      expect(dump()).not.toContain("hunter2");
+      expect((yield* questions.records).map((record) => record.message)).toEqual([
+        "Is ${HUNTER} your password?",
+        "Tell me ${HUNTER}",
+      ]);
     }));
 });

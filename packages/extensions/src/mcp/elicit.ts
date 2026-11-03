@@ -10,13 +10,18 @@
 // Nothing here keeps what the owner entered: the content goes from the answer to the server and nowhere else.
 import {
   answeredFields,
-  isJsonObject,
   decodeElicitParams,
+  isJsonObject,
   type McpInputAnswer,
   type McpInputRequest,
+  messageIsCut,
   normalizeElicitationForm,
+  plainLine,
+  plainMessage,
+  quote,
+  safeName,
 } from "@cloudpid/mcp/types";
-import type { ElicitationContent, ElicitationForm } from "@cloudpid/protocol";
+import type { ElicitationContent, ElicitationForm, McpElicitationSource } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
   ConversationId,
@@ -32,11 +37,17 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpElicitationDetail } from "./details.ts";
-import type { McpQuestionOutcome, McpQuestionsService } from "./questions.ts";
+import {
+  MCP_ELICITATION_CAP_REASON,
+  type McpQuestionAsk,
+  type McpQuestionOutcome,
+  type McpQuestionsService,
+  type McpQuestionUnseen,
+} from "./questions.ts";
 
 /** What a form that asks for the credential `field` is declined with: the server is told, the agent reads why. */
 export const credentialReason = (field: string): string =>
-  `it asked for a credential ('${field}'), which MCP servers must not ask for in a form; the user can give the server a key through its MCP server definition (a Secret as \`\${NAME}\`), or the server can ask on its own page.`;
+  `it asked for a credential (${quote(field)}), which MCP servers must not ask for in a form; the user can give the server a key through its MCP server definition (a Secret as \`\${NAME}\`), or the server can ask on its own page.`;
 
 /** The call that asks, as the tool knows it. */
 export type ElicitingCall = {
@@ -46,11 +57,13 @@ export type ElicitingCall = {
   readonly tool: string;
   readonly callId: string;
   readonly conversationId: ConversationId;
+  /** Where the server's definition is. */
+  readonly source?: McpElicitationSource | undefined;
   /** Aborts when Stop does: a question waiting then is withdrawn. */
   readonly signal: AbortSignal | undefined;
   /** Stop the call's own clock while a question waits, and start it again. */
-  readonly pause: () => void;
-  readonly resume: () => void;
+  readonly pause: Effect.Effect<void>;
+  readonly resume: Effect.Effect<void>;
 };
 
 /** The hooks of a call that may be asked questions, and the questions it was asked. */
@@ -69,6 +82,13 @@ const unsupported = (reason: string): typeof McpInputAnswer.Encoded => ({
   message: `unsupported elicitation form: ${reason}`,
   code: -32602,
 });
+
+/** What the server is told of a request past the call's cap. */
+const CANCELLED: typeof McpInputAnswer.Encoded = { kind: "answered", result: { action: "cancel" } };
+
+/** The note that says a message was cut, when it was. */
+const cutNotes = (message: string): ReadonlyArray<string> =>
+  messageIsCut(message) ? ["the message was cut at 4,000 characters"] : [];
 
 /** `content` for the wire, whose lists are mutable. */
 const mutableContent = (content: ElicitationContent) =>
@@ -101,29 +121,40 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     asked.push(detail);
   };
 
-  /** A form cloudpid ends unseen: recorded for the owner and the agent. */
+  /**
+   * A form cloudpid ends unseen: recorded for the owner and the agent. It counts toward the call's cap like any request;
+   * `true` says the call was past it, and the server is to be told `cancel` whatever cloudpid would have said.
+   */
   const endUnseen = (
-    request: typeof McpInputRequest.Encoded,
     message: string,
     action: "decline" | "cancel",
     reason: string,
-    form: ElicitationForm | undefined,
-  ) => {
-    note(action, "cloudpid", [], reason);
-
-    const unseen = {
+    form?: ElicitationForm,
+  ): Promise<boolean> => {
+    const unseen: Mutable<McpQuestionUnseen> = {
       callId: call.callId,
       conversationId: call.conversationId,
       server: call.server,
       tool: call.tool,
-      message: message.slice(0, 4000),
+      message: plainMessage(message),
+      notes: cutNotes(message),
       action,
       reason,
     };
 
-    return Effect.runPromise(
-      call.questions.unseen(form === undefined ? unseen : { ...unseen, form }),
-    ).then(() => request);
+    if (form !== undefined) unseen.form = form;
+
+    return Effect.runPromise(call.questions.unseen(unseen)).then((recorded) => {
+      if (recorded === "capped") {
+        note("cancel", "cloudpid", [], MCP_ELICITATION_CAP_REASON);
+
+        return true;
+      }
+
+      note(action, "cloudpid", [], reason);
+
+      return false;
+    });
   };
 
   const onInput: Eliciting["onInput"] = async (request) => {
@@ -132,55 +163,60 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     const params = decodeElicitParams(request.params);
 
     if (Option.isNone(params)) {
-      await endUnseen(request, "", "cancel", "the request is malformed", undefined);
+      const capped = await endUnseen("", "cancel", "the request is malformed");
 
-      return unsupported("the request is malformed");
+      return capped ? CANCELLED : unsupported("the request is malformed");
     }
 
     const { message, mode, requestedSchema } = params.value;
 
     if (mode !== undefined && mode !== "form") {
-      await endUnseen(request, message, "decline", `${mode} mode is not supported`, undefined);
+      const reason = `${safeName(mode, 20)} mode is not supported`;
+      const capped = await endUnseen(message, "decline", reason);
 
-      return unsupported(`${mode} mode is not supported`);
+      return capped ? CANCELLED : unsupported(reason);
     }
 
     const normalized = normalizeElicitationForm(requestedSchema);
 
     if (Result.isFailure(normalized)) {
-      await endUnseen(request, message, "cancel", normalized.failure, undefined);
+      const capped = await endUnseen(message, "cancel", normalized.failure);
 
-      return unsupported(normalized.failure);
+      return capped ? CANCELLED : unsupported(normalized.failure);
     }
 
     const { form, notes, credential } = normalized.success;
 
     if (credential !== undefined) {
-      await endUnseen(request, message, "decline", credentialReason(credential), undefined);
+      const capped = await endUnseen(message, "decline", credentialReason(credential), form);
 
-      return { kind: "answered", result: { action: "decline" } };
+      return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
     }
 
-    call.pause();
+    await Effect.runPromise(call.pause);
+
+    const question: Mutable<McpQuestionAsk> = {
+      key: request.key,
+      callId: call.callId,
+      conversationId: call.conversationId,
+      server: call.server,
+      tool: call.tool,
+      message: plainMessage(message),
+      form,
+      notes: [...notes, ...cutNotes(message)],
+    };
+
+    if (call.source !== undefined) question.source = call.source;
 
     const outcome: McpQuestionOutcome = await Effect.runPromise(
-      call.questions.ask({
-        key: request.key,
-        callId: call.callId,
-        conversationId: call.conversationId,
-        server: call.server,
-        tool: call.tool,
-        message,
-        form,
-        notes,
-      }),
+      call.questions.ask(question),
       call.signal === undefined ? undefined : { signal: call.signal },
     )
       .catch(
         // Stop interrupted the wait (the question is withdrawn): nobody answers, the server may ask again.
         (): McpQuestionOutcome => ({ action: "cancel", by: "cloudpid", reason: "Run stopped" }),
       )
-      .finally(call.resume);
+      .finally(() => Effect.runPromise(call.resume));
 
     if (outcome.action === "accept") {
       note("accept", "owner", [...answeredFields(form, outcome.content)]);
@@ -216,7 +252,7 @@ const lineOf = (detail: McpElicitationDetail): string | undefined => {
     return `The user ${detail.action === "decline" ? "declined" : "cancelled"} ${detail.server}'s request for input. Don't repeat the call unless the user asks.`;
   }
 
-  return `cloudpid ${detail.action === "decline" ? "declined" : "cancelled"} ${detail.server}'s request for input: ${detail.reason ?? "no reason given"}`;
+  return `cloudpid ${detail.action === "decline" ? "declined" : "cancelled"} ${detail.server}'s request for input: ${plainLine(detail.reason ?? "no reason given", 400).replace(/[<>]/g, "")}`;
 };
 
 /**

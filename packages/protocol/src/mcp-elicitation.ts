@@ -103,6 +103,14 @@ export const ElicitationAction = Schema.Literals(["accept", "decline", "cancel"]
 
 export type ElicitationAction = typeof ElicitationAction.Type;
 
+/** Where the server's definition is: Global, the Environment, or a Repo's `.pi/mcp.json` (then its `owner/repo`). */
+export const McpElicitationSource = Schema.Struct({
+  kind: Schema.String,
+  slug: Schema.optionalKey(Schema.String),
+});
+
+export type McpElicitationSource = typeof McpElicitationSource.Type;
+
 /**
  * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is the
  * moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's clock.
@@ -116,6 +124,8 @@ export const McpElicitationRequest = Schema.Struct({
   conversationId: ConversationId,
   /** The server's configured name, never what it calls itself. */
   server: Schema.String,
+  /** Where the definition is, for the card's badge; absent when the Session does not know. */
+  source: Schema.optionalKey(McpElicitationSource),
   /** The model-facing name of the tool the call is to (`mcp__<server>__<tool>`). */
   tool: Schema.String,
   /** The server's message, cut and cleaned. */
