@@ -246,6 +246,30 @@ const oauthProblems = (
     if (clientSecret !== undefined) at("privateKey", "is refused together with clientSecret");
   }
 
+  if (oauth.grantType === "client_credentials") {
+    // The grant has no owner to ask: it needs its client, the authorization server it may sign in at, and a way to prove
+    // itself, and has no registration or client name of its own (→ Client Credentials).
+    if (clientId === undefined) at("clientId", 'is needed for grantType "client_credentials"');
+
+    if (oauth.issuer === undefined && oauth.authServerMetadataUrl === undefined) {
+      at(
+        "issuer",
+        'or authServerMetadataUrl is needed to pin the authorization server for "client_credentials"',
+      );
+    }
+
+    if (clientSecret === undefined && privateKey === undefined) {
+      at("clientSecret", 'or privateKey is needed for grantType "client_credentials"');
+    }
+
+    if (oauth.clientRegistration !== undefined) {
+      at("clientRegistration", 'is refused with grantType "client_credentials"');
+    }
+
+    if (clientName !== undefined)
+      at("clientName", 'is refused with grantType "client_credentials"');
+  }
+
   if (keyId !== undefined && (keyId.length < 1 || keyId.length > 256)) {
     at("keyId", "must be 1 to 256 characters");
   }

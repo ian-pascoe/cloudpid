@@ -302,6 +302,12 @@ export const McpEngineTarget = Schema.Struct({
   redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
   timeoutMs: Schema.optionalKey(Schema.Int),
+  /**
+   * The MCP extensions this connection declares besides MCP Apps, in both eras (`docs/architecture/mcp.md` →
+   * Extensions): today only OAuth Client Credentials, and only on a connection that signs in with that grant. The engine
+   * declares the ones it knows and no other. Absent from a host older than this field, and from any other connection.
+   */
+  extensions: Schema.Record(Schema.String, JsonObject).pipe(Schema.optionalKey),
 });
 
 export type McpEngineTarget = typeof McpEngineTarget.Type;

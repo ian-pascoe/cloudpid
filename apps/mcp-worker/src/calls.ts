@@ -18,12 +18,15 @@
 import {
   connect,
   type ListItems,
+  type McpDeps,
   type ListKind,
   type McpConnection,
   type McpConnectionStats,
 } from "@cloudpid/mcp";
 import {
   Cut,
+  MCP_CLIENT_CREDENTIALS_CAPABILITY,
+  MCP_CLIENT_CREDENTIALS_EXTENSION,
   type McpCallContext,
   type McpEngineCompleted,
   McpEngineDiscoverResult,
@@ -80,6 +83,22 @@ interface CallInput {
   /** Whether the server may have run the request once it was sent: only a `tools/call`. */
   readonly mayHaveRun: boolean;
 }
+
+/**
+ * `deps` declaring the extensions the host named for the call's connection, the ones this engine knows (OAuth Client
+ * Credentials, `docs/architecture/mcp.md` → Extensions) and no other: a third party's extension is never declared, and a
+ * connection the host named none for declares none.
+ */
+const withExtensions = (deps: McpDeps, named: McpEngineTarget["extensions"]): McpDeps => {
+  const known = named?.[MCP_CLIENT_CREDENTIALS_EXTENSION];
+
+  return known === undefined
+    ? deps
+    : {
+        ...deps,
+        extensions: { [MCP_CLIENT_CREDENTIALS_EXTENSION]: MCP_CLIENT_CREDENTIALS_CAPABILITY },
+      };
+};
 
 const cutOnceAborted = (untilAborted: () => Promise<void>, mayHaveRun: boolean) =>
   Effect.tryPromise(() => untilAborted()).pipe(
@@ -153,7 +172,7 @@ const runCall = Effect.fnUntraced(function* <A, R>(
             ),
           );
 
-          const connection = yield* connect(server, call.deps);
+          const connection = yield* connect(server, withExtensions(call.deps, server.extensions));
 
           wire = connection.stats;
 

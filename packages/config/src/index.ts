@@ -16,6 +16,8 @@ export * from "./mcp-servers.ts";
 
 export * from "./mcp-server-set.ts";
 
+export * from "./mcp-client-grant.ts";
+
 export * from "./mcp-connection.ts";
 
 export * from "./mcp-exposure.ts";

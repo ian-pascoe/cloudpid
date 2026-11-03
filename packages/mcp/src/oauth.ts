@@ -9,12 +9,17 @@
  * (`node:http`) and `authorizeMcp`, which cloudpid never uses (`authorizeMcp` drops the client and the tokens on
  * `invalid_client`). The additions pi-mcp lacks live here, and go to pi as an issue first (The MCP core #394 D6): RFC 7009
  * revocation, `client_secret_expires_at` and the issuer pin, and the size bounds the Registry holds sign-ins to.
- * Left for later slices: the `client_credentials` grant and `private_key_jwt`.
+ * The `client_credentials` grant and `private_key_jwt` are in `./oauth-client-credentials.ts`, re-exported here.
  */
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off -- plain functions over values and Promises, as `fetch` is.
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
+import { basicAuthorization, boundedText, type OAuthFetch } from "./oauth-http.ts";
+
+export { boundedText, type OAuthFetch } from "./oauth-http.ts";
+
+export * from "./oauth-client-credentials.ts";
 
 export {
   buildAuthorizationServerDiscoveryUrls,
@@ -55,9 +60,6 @@ export type {
   TokenRequestOptions,
 } from "@earendil-works/pi-mcp/oauth";
 
-/** How an OAuth request is sent: `guardedFetch` in the Worker, a fake in a test. */
-export type OAuthFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
-
 /** Each OAuth fetch gets this long (`docs/architecture/mcp-sign-in.md` → Code). */
 export const OAUTH_FETCH_TIMEOUT_MS = 15_000;
 
@@ -71,57 +73,6 @@ const encoder = new TextEncoder();
 
 /** The size of `text` as UTF-8, in bytes. */
 export const byteLength = (text: string): number => encoder.encode(text).byteLength;
-
-/**
- * `response`'s body as text, read until `limit` bytes and no further; undefined when it is longer (the rest is not
- * read). The 64 KiB bound on a token response (→ Bounds) is the limit its readers pass, in the slices that take token
- * responses in (#450 completing a sign-in, #454 refreshing).
- */
-export const boundedText = async (
-  response: Response,
-  limit: number,
-): Promise<string | undefined> => {
-  const declared = Number(response.headers.get("content-length"));
-
-  if (Number.isFinite(declared) && declared > limit) {
-    await response.body?.cancel();
-
-    return undefined;
-  }
-
-  const reader = response.body?.getReader();
-
-  if (reader === undefined) return "";
-
-  const chunks: Array<Uint8Array> = [];
-  let length = 0;
-
-  for (;;) {
-    const { done, value } = await reader.read();
-
-    if (done) break;
-
-    length += value.byteLength;
-
-    if (length > limit) {
-      await reader.cancel();
-
-      return undefined;
-    }
-
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  return new TextDecoder().decode(bytes);
-};
 
 // The issuer pin ------------------------------------------------------------------------------------------------------
 
@@ -256,14 +207,6 @@ const revocationAuth = (
   if (listed === undefined || listed.includes("client_secret_basic")) return "basic";
 
   return undefined;
-};
-
-/** RFC 6749 §2.3.1: the id and secret are form-encoded before they are joined and Base64-encoded. */
-const basicAuthorization = (id: string, secret: string): string => {
-  const form = (value: string) => encodeURIComponent(value).replaceAll("%20", "+");
-  const bytes = encoder.encode(`${form(id)}:${form(secret)}`);
-
-  return `Basic ${btoa(String.fromCharCode(...bytes))}`;
 };
 
 const ErrorBody = Schema.fromJsonString(Schema.Struct({ error: Schema.String }));

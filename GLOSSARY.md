@@ -435,7 +435,7 @@ Who an MCP server says may call one of its tools: the model, the server's App Vi
 _Avoid_: Exposure (that is the owner's choice), audience
 
 **MCP sign-in**:
-The owner's permission, given on an MCP server's own sign-in page, for cloudpid to use that server as the owner. It belongs to one MCP server, the owner's or one Repo's, by its name and URL, and is kept Global, so every Environment with that server uses it until the owner signs out; a renamed or moved server, or the owner's copy of a Repo's, needs one of its own. The agent can ask for one but never makes or sees one.
+The owner's permission, given on an MCP server's own sign-in page, for cloudpid to use that server as the owner. It belongs to one MCP server, the owner's or one Repo's, by its name and URL, and is kept Global, so every Environment with that server uses it until the owner signs out; a renamed or moved server, or the owner's copy of a Repo's, needs one of its own. The agent can ask for one but never makes or sees one. A server whose MCP server definition says `grantType: "client_credentials"` **signs in on its own**: cloudpid's client proves itself to the server's authorization server with a secret or a key the owner keeps as a Secret, so there is no permission to give, no Sign in, no Sign out and no Sign-in request, and a failure makes the server `failed`, never wait for a sign-in.
 _Avoid_: Login, OAuth token (for the whole), credentials (a Credential is a 1Password item), auth, connection (that is the live link to a server)
 
 **Sign-in request**:

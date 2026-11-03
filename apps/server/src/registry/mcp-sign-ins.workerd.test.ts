@@ -29,6 +29,7 @@ import {
   mcpAccessToken,
   type Refresh,
   reportMcpAuth,
+  signInAskNotApplicable,
   signInTarget,
 } from "./mcp-sign-in-registry.ts";
 import {
@@ -300,10 +301,16 @@ describe("the key a server's sign-in is found by", () => {
         signInTarget(store, DEFAULT_ENVIRONMENT, name),
       );
 
+      // A client grant has a key and a row, but no owner sign-in: the ask answers `not_applicable` for it too.
       expect(reasons.map(({ status }) => status)).toEqual([
         "not_applicable",
         "not_applicable",
-        "not_applicable",
+        "client_grant",
+      ]);
+      expect(reasons.map(signInAskNotApplicable).map((reason) => reason !== undefined)).toEqual([
+        true,
+        true,
+        true,
       ]);
       expect(signInTarget(store, DEFAULT_ENVIRONMENT, "missing").status).toBe("unknown");
       expect(signInTarget(store, "no-such-environment", "local").status).toBe("unknown");

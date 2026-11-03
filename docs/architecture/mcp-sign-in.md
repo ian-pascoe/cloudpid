@@ -39,7 +39,7 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 
 - **Only the Registry holds tokens at rest, and only it refreshes them.** `McpHost` calls `mcpAccessToken({ environment, server, stale? })` before it connects to an OAuth-capable HTTP server. The Registry works out the key from that Environment's own set. The answer is either:
   - `{ status: "ok", token, expiresAt?, resource, signIn, note? }` while the sign-in holds a token that stands, or
-  - `{ status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable", reason, scope? }` when there is none to hand over.
+  - `{ status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable" | "failed", reason, scope? }` when there is none to hand over. `failed` is the client grant's: the Registry could not get a token on its own, and no sign-in can fix it (an older host reads the unknown status as `unavailable`).
 
   Which is which:
 
@@ -299,6 +299,17 @@ The extension `io.modelcontextprotocol/oauth-client-credentials` ([Signing in](h
   - With a key: RFC 7523 §2.2. The request carries `grant_type=client_credentials`, `client_assertion_type=…jwt-bearer`, `client_assertion`, `resource` and `scope`, and no `client_id`. The assertion is signed RS256 (RSA ≥2048) or ES256 (P-256), whichever the server lists. Its claims are `iss` = `sub` = the client id, `aud` = the token endpoint as in the metadata, `iat`, `exp` = +60 s and a 128-bit `jti`, with `kid` = `keyId`. Every request gets a fresh assertion.
 - **Declared only on such connections:** `_meta` `io.modelcontextprotocol/clientCapabilities.extensions` in `2026-07-28`, and `initialize` `capabilities.extensions` in `2025-11-25`.
 - **Failures** make the server `failed` with a problem, never `sign_in`. `mcp_sign_in_ask` answers `not_applicable`, and the row shows "Signs in on its own · <issuer host>", with no Sign in or Sign out.
+- **As built** ([#464](https://github.com/ian-pascoe/cloudpid/issues/464)):
+  - **The seam:** the Registry's `SignInTarget` has a `client_grant` variant, built from an entry whose `oauth.grantType` is `client_credentials`. `signInAskNotApplicable(target)` in `mcp-sign-in-registry.ts` is the rule `mcp_sign_in_ask` reads for its `not_applicable` answer; the tool is [#470](https://github.com/ian-pascoe/cloudpid/issues/470)'s and is not on main, so the rule is tested in the Registry. A `client_grant` row under an entry that is no longer a client grant is treated as a sign-in that is required.
+  - **Configuration** is checked in `@cloudpid/config` (`oauthProblems`), where the other `oauth` problems are; `clientSecret` and `privateKey` are resolved like the other `oauth` values (`resolveOauthValue`), and an unresolved one is a problem, not a missing sign-in.
+  - **Discovery and the pin** reuse the authorization-code path's: the same protected-resource and authorization-server metadata fetches, the same issuer-pin check, and the same guarded fetch. The token request's `resource` is the canonical resource of the server's URL, and `scope` is the configured `oauth.scope` (none if unset); the row's `wantedScope` holds that configured value.
+  - **Client authentication rules:** with a secret, `client_secret_post` or `client_secret_basic` as above. With a key, `private_key_jwt` must be listed when the server lists any methods, and a server that lists none is sent the assertion anyway. The algorithm comes from the key: RSA of at least 2048 bits signs RS256, P-256 signs ES256; other keys are a problem. Only PKCS#8 PEM is read. A server that lists neither the method nor an algorithm the key can sign is a problem naming what it listed.
+  - **The row:** kind `client_grant`, with the access token sealed, no refresh token, `expiresAt`, and the grant id kept through renewals (the sign-in id of `tasks/*` therefore stays through a renewal). The first `put` of a row raises `signInsRevision`; a renewal does not.
+  - **Renewal:** one fetch at a time per key (single flight). A token is renewed at `exp − 60 s`. A 401 from the server, reported with the refused token as `stale`, gets one renewal; an in-memory `afterRefusal` marker keeps a second 401 under the renewed token from asking again, and it reads as `rejected`.
+  - **Failure:** a failed fetch answers `failed` with the problem (the OAuth error code and `error_description` scrubbed of the secret, key, assertion and tokens), and holds the next try back by an in-memory backoff of 10 s, doubling to 5 min. A `failed` server is tried again only on a set change, a reload or a `sign_in` trigger, as the host does for any `failed` server; no timer polls it. A secret that changed in the entry does not invalidate a token that stands; it takes effect at the token's next renewal.
+  - **The host** maps `failed` to the server's `failed` state with the problem as its reason, never `sign_in`, `rejected` or `step_up`: it makes no report, and it never connects without a token to a client-grant server.
+  - **Not here:** the request path's error mapping for a client-grant server (`engineAuth` for a call at its first use) is [#452](https://github.com/ian-pascoe/cloudpid/issues/452)'s.
+  - **Switching** an entry from authorization code to a client grant, or back, leaves the other kind's row as an unused sign-in, listed and signed out in Settings as any other.
 - **Not built:** Enterprise-Managed Authorization is neither built nor advertised ([Enterprise-Managed Authorization for MCP servers (future version)](https://github.com/ian-pascoe/cloudpid/issues/404)), and neither is `private_key_jwt` for authorization-code clients, which is left for later.
 
 ## Sign-in requests
@@ -341,6 +352,7 @@ The extension `io.modelcontextprotocol/oauth-client-credentials` ([Signing in](h
   - a state chip: `Signed in · <issuer host>`, `Needs sign-in`, `More access requested`, `Refused its sign-in`, `Can't refresh: …`, `Signs in on its own` or `Can't open sign-ins`;
   - Sign in, Sign in again and Sign out;
   - the last problem.
+  - As built ([#464](https://github.com/ian-pascoe/cloudpid/issues/464)): the Settings MCP section is [#459](https://github.com/ian-pascoe/cloudpid/issues/459)'s and [#469](https://github.com/ian-pascoe/cloudpid/issues/469)'s and is not on main, so the "Signs in on its own · <issuer host>" row is delivered as a pure data model in `@cloudpid/config`: `signsInOnItsOwn(entry)` and `mcpClientGrantRow(entry, status)`, which say the chip, the issuer host and that Sign in, Sign in again and Sign out are absent. The component renders it when the section lands.
 - **The Add/Edit form** has a "Sign-in (OAuth)" disclosure with [the `oauth` fields](#the-oauth-fields). Next to them it shows the stage's redirect URI with Copy, and the client name that will actually be registered.
 - **Sign-ins:** at Global, a second list (`/settings/all/mcp#sign-ins`), not a Settings section of its own. It shows the server, source, URL host, issuer host, kind, status, scopes, times, the Environments that use each sign-in, unused marks, and Sign out.
 
@@ -352,6 +364,8 @@ The extension `io.modelcontextprotocol/oauth-client-credentials` ([Signing in](h
   - the trigger (`expiry` | `401`) and the outcome;
   - the OAuth error **code** and the HTTP status;
   - `rotated`, and the scope list (≤256 chars).
+
+  `mcp.oauth.client_credentials` is made when a token is wanted from the authorization server (a fetch, or one held back by the backoff), never for an answer from the stored row. It records `mcp.auth_method` (`client_secret_post` | `client_secret_basic` | `private_key_jwt`), `mcp.trigger` (`first` | `expiry` | `401`), `mcp.outcome` (`fetched`, or `backoff`, `unavailable`, `problem`, `discovery_failed`, `failed`, `refused_by_store`), `http.status_code` and `mcp.oauth_error` (the code), beside the server, source kind and issuer host.
 
   The document route adds its fetch attributes (above). `mcp.oauth.refresh` records `mcp.server`, `mcp.source_kind`, `mcp.issuer_host`, `mcp.client_kind`, `mcp.trigger`, `mcp.step_up`, then `mcp.outcome` (`refreshed` and the failures), `http.status_code`, `mcp.oauth_error` (the code), `mcp.rotated` and `mcp.scope`. The host's tokens and reports appear in no span or log: its logs say which server and Environment, and the span of a discovery has none of the token.
 
@@ -366,6 +380,7 @@ The extension `io.modelcontextprotocol/oauth-client-credentials` ([Signing in](h
   - other forms get a 404;
   - `/` and `/oauth/mcp/start` get a 302 to Access;
   - a cookieless `/rpc` is refused.
+- **Client credentials:** `oauth-client-credentials.test.ts` (golden assertion claims and header, key import and algorithm rules, method choice, the bounded and scrubbed errors), `mcp-client-grant.workerd.test.ts` (first use, expiry renewal, one 401 renewal, single flight, backoff, `failed` answers, scrubbing, the row's grant id and revision, over real Durable Object storage and a fake authorization server), `discovery-auth.workerd.test.ts` (the host's `failed` mapping), `extensions.test.ts` in the Worker (the extension declared only for a known name) and the config tests (`mcp-servers.test.ts`, `mcp-client-grant.test.ts`).
 - **The owner's deployed check** gates the merge of the first sign-in slice that completes a document sign-in end to end ([Whether workers.dev stages serve the client document](https://github.com/ian-pascoe/cloudpid/issues/422) D7). The owner revokes the test grants afterwards.
   1. A cookieless GET of the document from at least one hosting network returns 200 `application/json`, with `client_id` equal to its own URL.
   2. Sign in and refresh at Sentry, then at Linear.

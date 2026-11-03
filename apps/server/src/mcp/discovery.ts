@@ -12,9 +12,12 @@
 // failure on the host's side (the engine out of reach or silent) is not the server's: it leaves its state as it was,
 // held back for 30 s. No discovery holds its slot past `DISCOVERY_DEADLINE_MS`: it is then given up the same way.
 // @effect-diagnostics missingPipeableSignature:off -- the scheduler's operations, not combinators.
+import { signsInOnItsOwn } from "@cloudpid/config";
 import { currentTraceId } from "@cloudpid/telemetry";
 import {
   isJsonObject,
+  MCP_CLIENT_CREDENTIALS_CAPABILITY,
+  MCP_CLIENT_CREDENTIALS_EXTENSION,
   type JsonObject,
   type McpEngineDiscoverResult,
   type McpEngineTarget,
@@ -35,6 +38,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
+import type * as Types from "effect/Types";
 import { authorizedDiscovery } from "./discovery-auth.ts";
 import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
 import { inventoryRows } from "./inventory.ts";
@@ -148,8 +152,8 @@ export const targetOf = (environment: string, server: StoredServer) =>
     const { url, headers, timeout } = server.server;
     const written = stringValues(isJsonObject(headers) ? headers : {});
 
-    const target = (resolved: Readonly<Record<string, string>>, redact: ReadonlyArray<string>) =>
-      Result.succeed<McpEngineTarget>({
+    const target = (resolved: Readonly<Record<string, string>>, redact: ReadonlyArray<string>) => {
+      const reached: Types.Mutable<McpEngineTarget> = {
         kind: "http",
         conn: server.conn,
         name: server.name,
@@ -157,7 +161,17 @@ export const targetOf = (environment: string, server: StoredServer) =>
         headers: resolved,
         redact,
         timeoutMs: (Predicate.isNumber(timeout) ? timeout : 60) * 1000,
-      });
+      };
+
+      // A connection that signs in on its own declares the OAuth Client Credentials extension, and no other does.
+      if (signsInOnItsOwn(server.server)) {
+        reached.extensions = {
+          [MCP_CLIENT_CREDENTIALS_EXTENSION]: MCP_CLIENT_CREDENTIALS_CAPABILITY,
+        };
+      }
+
+      return Result.succeed<McpEngineTarget>(reached);
+    };
 
     if (!hasNames(written)) return target(written, []);
 

@@ -9,7 +9,12 @@
 // No answer but `ok` holds a token, and no log line, status or error does: a failure says which row by its hash, and a
 // reason is the owner-facing last error (≤300 chars) or what the Registry found.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-import { mcpSignInKey, type McpResolvedServer, type McpSignInKey } from "@cloudpid/config";
+import {
+  mcpSignInKey,
+  type McpResolvedServer,
+  type McpSignInKey,
+  signsInOnItsOwn,
+} from "@cloudpid/config";
 import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import { stepUpScope } from "@cloudpid/mcp/oauth";
 import { scopesOf } from "@cloudpid/mcp/types";
@@ -44,11 +49,26 @@ export type SignInTarget =
       readonly configuredScope: string | undefined;
     }
   | { readonly status: "unknown"; readonly reason: string }
-  | { readonly status: "not_applicable"; readonly reason: string };
+  | { readonly status: "not_applicable"; readonly reason: string }
+  /**
+   * An HTTP entry with `oauth.grantType: "client_credentials"`: it signs in on its own (→ Client Credentials). It has a
+   * sign-in key and a row (kind `client_grant`) but no owner step: nothing starts, completes or signs out of it, and
+   * a report or an ask about it is not applicable.
+   */
+  | {
+      readonly status: "client_grant";
+      readonly key: McpSignInKey;
+      readonly reason: string;
+      readonly resolved: McpResolvedServer;
+    };
+
+/** Why a server that signs in on its own has no sign-in to start, ask for or sign out of. */
+export const CLIENT_GRANT_REASON =
+  "The server signs in on its own with client credentials, so there is no sign-in to make";
 
 /**
  * The sign-in `resolved` uses (→ MCP sign-ins, Which servers): OAuth applies only to HTTP entries without an
- * `Authorization` header, and `client_credentials` signs in on its own (not built here yet).
+ * `Authorization` header, and `client_credentials` signs in on its own (`client_grant`, → Client Credentials).
  */
 export const signInTargetOf = (resolved: McpResolvedServer): SignInTarget => {
   const entry = resolved.server;
@@ -64,19 +84,27 @@ export const signInTargetOf = (resolved: McpResolvedServer): SignInTarget => {
     };
   }
 
-  if (entry.oauth?.grantType === "client_credentials") {
-    return {
-      status: "not_applicable",
-      reason: "The client credentials grant is not supported yet",
-    };
-  }
-
   const key = mcpSignInKey(resolved);
 
-  return key === undefined
-    ? { status: "not_applicable", reason: "The server has no URL" }
-    : { status: "target", key, configuredScope: entry.oauth?.scope };
+  if (key === undefined) return { status: "not_applicable", reason: "The server has no URL" };
+
+  if (signsInOnItsOwn(entry)) {
+    return { status: "client_grant", key, reason: CLIENT_GRANT_REASON, resolved };
+  }
+
+  return { status: "target", key, configuredScope: entry.oauth?.scope };
 };
+
+/**
+ * Why `mcp_sign_in_ask` answers `not_applicable` at once for the server `target` describes (→ Sign-in requests): a
+ * client grant (it signs in on its own: failures are the server's `failed`, never `sign_in`), an entry with an
+ * `Authorization` header, a stdio server. Undefined when there is an owner sign-in to ask for, or `target` is `unknown`
+ * (which the ask answers as a server that is not there).
+ */
+export const signInAskNotApplicable = (target: SignInTarget): string | undefined =>
+  target.status === "not_applicable" || target.status === "client_grant"
+    ? target.reason
+    : undefined;
 
 /** The sign-in of `server` in `environment`'s set, or why it has none. */
 export const signInTarget = (
@@ -138,6 +166,26 @@ const NO_REFRESH: Refresh = () =>
     reason: "Refreshing a sign-in's tokens is not available in this build",
   });
 
+/** What a client grant is asked: the server that signs in on its own, and the token it just had refused, if any. */
+export type ClientGrantRequest = {
+  readonly environment: string;
+  /** The server's name as the host spells it. */
+  readonly server: string;
+  readonly key: McpSignInKey;
+  readonly resolved: McpResolvedServer;
+  /** The access token a request just carried and the server refused with a 401. */
+  readonly stale?: string | undefined;
+};
+
+/**
+ * What a client grant answers: the token to use, or `failed` with why (`mcp-client-grant.ts`). It gets a token on first
+ * use and again at `exp − 60 s` or after a 401; there is no refresh token and no owner.
+ */
+export type ClientGrant = (
+  request: ClientGrantRequest,
+  now: number,
+) => Effect.Effect<McpAccessTokenAnswer>;
+
 /** What `mcpAccessToken` reads and writes. */
 export type SignInDeps = {
   readonly store: ResolvedServersStore;
@@ -145,6 +193,7 @@ export type SignInDeps = {
   /** The `mcp-oauth` vault, derived once: it fails while `SECRETS_ENCRYPTION_KEY` is malformed. */
   readonly vault: Effect.Effect<KeptVault, SecretVaultError>;
   readonly refresh?: Refresh | undefined;
+  readonly clientGrant?: ClientGrant | undefined;
 };
 
 const unavailable = (reason: string): McpAccessTokenAnswer => ({ status: "unavailable", reason });
@@ -162,6 +211,21 @@ export const mcpAccessToken = (
   now: number,
 ): Effect.Effect<McpAccessTokenAnswer> => {
   const target = signInTarget(deps.store, input.environment, input.server);
+
+  if (target.status === "client_grant") {
+    return deps.clientGrant === undefined
+      ? Effect.succeed(unavailable("Client credentials are not available in this build"))
+      : deps.clientGrant(
+          {
+            environment: input.environment,
+            server: input.server,
+            key: target.key,
+            resolved: target.resolved,
+            stale: input.stale,
+          },
+          now,
+        );
+  }
 
   if (target.status !== "target") return Effect.succeed(unavailable(target.reason));
 
@@ -185,6 +249,11 @@ const answerFor = (
 
   if (row === null || row.sealed === null) {
     return Effect.succeed({ status: "required", reason: row?.lastError ?? "Not signed in" });
+  }
+
+  // The token of a client grant, under a key whose entry now signs in with a code: not a sign-in of this entry's.
+  if (row.client?.kind === "client_grant") {
+    return Effect.succeed({ status: "required", reason: "Not signed in" });
   }
 
   return openTokens(vault, key.hash, row.sealed).pipe(

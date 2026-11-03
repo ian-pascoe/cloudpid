@@ -462,6 +462,16 @@ export type McpSignIns = {
       readonly sealed: SealedValue;
       readonly expiresAt: number | null;
       readonly scope: string | null;
+      /**
+       * What the sign-in records of its authorization server, for a client grant that discovered it again with its
+       * new token (a refresh goes only to the endpoint recorded at sign-in and records nothing).
+       */
+      readonly recorded?: {
+        readonly issuer: string;
+        readonly metadata: string;
+        readonly discovery: string;
+        readonly resource: string;
+      };
     },
     now: number,
   ) => boolean;
@@ -738,6 +748,17 @@ export const openMcpSignIns = (
           now,
           keyHash,
         );
+
+        if (tokens.recorded !== undefined) {
+          sql.exec(
+            "UPDATE mcp_sign_ins SET issuer = ?, metadata = ?, discovery = ?, resource = ? WHERE key_hash = ?",
+            tokens.recorded.issuer,
+            tokens.recorded.metadata,
+            tokens.recorded.discovery,
+            tokens.recorded.resource,
+            keyHash,
+          );
+        }
 
         return true;
       }),

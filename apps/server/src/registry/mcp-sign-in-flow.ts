@@ -135,7 +135,7 @@ const describe = (error: Error): string => {
   return error.message;
 };
 
-const attempt = <A>(what: string, run: () => Promise<A>): Effect.Effect<A, FlowProblem> =>
+export const attempt = <A>(what: string, run: () => Promise<A>): Effect.Effect<A, FlowProblem> =>
   Effect.tryPromise({
     try: run,
     catch: (error) =>
