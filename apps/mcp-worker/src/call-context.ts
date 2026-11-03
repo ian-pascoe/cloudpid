@@ -144,6 +144,8 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   // Where the call's requests go: the Worker's own `fetch`, until a stdio target says otherwise.
   let route: McpDeps["fetch"] = (input, init) => fetch(input, init);
 
+  // The core hands `fetch` a URL (or a `Request`, whose URL is all that is read) and an `init` that carries the method,
+  // headers, body and signal: a bridge's `fetch` builds its own request from them.
   const routed: typeof globalThis.fetch = (input, init) =>
     route(input instanceof Request ? input.url : input, init);
 

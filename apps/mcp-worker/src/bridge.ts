@@ -95,7 +95,10 @@ const refusalOf = (code: string | undefined, message: string | undefined) => {
     case "no_workspace":
       return Unreachable.make({ message: "The Workspace no longer exists", status: 404 });
     case "stopped":
-      return Unreachable.make({ message: said ?? "The Workspace's Container is stopped" });
+      return Unreachable.make({
+        message: said ?? "The Workspace's Container is stopped",
+        stopped: true,
+      });
     case "start_failed":
       return Unreachable.make({ message: said ?? "The Workspace's Container did not start" });
     case "bridge_unreachable":
@@ -186,7 +189,8 @@ type Scrub = (text: string) => string;
 
 /**
  * The end of `tail` a cut quotes: `tail` scrubbed whole first (a secret cut by the quote's start would not be found), then
- * its last `STDERR_QUOTE_BYTES`, cut on a character and, when the cut falls inside a line, from the next line on.
+ * its last `STDERR_QUOTE_BYTES`, cut on a character and, when the cut falls inside a line, from the next line on (the
+ * slice as it is when no line follows).
  */
 const quoted = (tail: string, scrub: Scrub) => {
   const bytes = new TextEncoder().encode(scrub(tail));
@@ -195,10 +199,14 @@ const quoted = (tail: string, scrub: Scrub) => {
 
   const from = bytes.byteLength - STDERR_QUOTE_BYTES;
   const slice = new TextDecoder().decode(bytes.slice(from));
-  const lineStart = bytes[from - 1] === NEWLINE;
-  const newline = slice.indexOf("\n");
+  const whole = slice.trim();
 
-  return (lineStart || newline === -1 ? slice : slice.slice(newline + 1)).trim();
+  if (bytes[from - 1] === NEWLINE) return whole;
+
+  // The cut fell inside a line: quote from the next one, unless that leaves nothing (one long last line).
+  const nextLines = slice.slice(slice.indexOf("\n") + 1).trim();
+
+  return slice.includes("\n") && nextLines !== "" ? nextLines : whole;
 };
 
 /** How an exited child is named: its code or signal, and the end of its stderr. */

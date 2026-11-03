@@ -109,13 +109,18 @@ export class StepUpRequired extends Schema.TaggedError<
   challenge: Schema.optionalKey(McpAuthChallenge),
 }) {}
 
-/** The server could not be reached or is not answering for now: a network error, a 5xx, a 408 or a 429. */
+/**
+ * The server could not be reached or is not answering for now: a network error, a 5xx, a 408 or a 429. `stopped` is set
+ * for a stdio server whose Workspace's Container is not running (the bridge's `stopped` refusal): nothing was wrong, and
+ * the host asks again only where the process runs. Optional, so an edge that does not know it reads the failure as any.
+ */
 export class Unreachable extends Schema.TaggedError<
   Unreachable,
   { readonly brand: unique symbol }
 >()("Unreachable", {
   message: Schema.String,
   status: Schema.optionalKey(Schema.Int),
+  stopped: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /**

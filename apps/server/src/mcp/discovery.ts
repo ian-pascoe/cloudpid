@@ -21,6 +21,7 @@ import {
   MCP_CLIENT_CREDENTIALS_EXTENSION,
   type JsonObject,
   type McpEngineDiscoverResult,
+  type McpEngineRequestResult,
   type McpEngineHttpTarget,
   type McpEngineStdioTarget,
   type McpEngineTarget,
@@ -290,20 +291,23 @@ export const targetOf = (
     return target(values.headers, values.redact ?? []);
   });
 
-/** Whether `result` failed because the bridge's Workspace has no record any more (`Unreachable` with status 404). */
-const isWorkspaceGone = (result: McpEngineDiscoverResult): boolean =>
+/** Whether `result` of a discovery or a call failed because the bridge's Workspace has no record any more (`Unreachable` with status 404). */
+export const isWorkspaceGone = (
+  result: McpEngineDiscoverResult | McpEngineRequestResult,
+): boolean =>
   result.kind === "failed" &&
   Predicate.isTagged(result.error, "Unreachable") &&
   result.error.status === 404;
 
 /**
- * Whether a discovery that was not to start the Container found it not running (or its Workspace gone): `Unreachable`
- * that never reached the server (no status), or with the 404 of a Workspace with no record.
+ * Whether a discovery that was not to start the Container found it not running (the bridge's `stopped` refusal), or its
+ * Workspace gone (the 404 of a Workspace with no record). Any other failure, a bridge that does not answer in a Container
+ * that runs included, is a failure of the refresh like any other.
  */
 const foundNotRunning = (result: McpEngineDiscoverResult): boolean =>
   result.kind === "failed" &&
   Predicate.isTagged(result.error, "Unreachable") &&
-  (result.error.status === undefined || result.error.status === 404);
+  (result.error.stopped === true || result.error.status === 404);
 
 /** Keep what a discovery found: the rows it changed, then the inventory and status, or the status it failed with. */
 const storeDiscoveryResult = (

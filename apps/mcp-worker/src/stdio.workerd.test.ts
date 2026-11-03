@@ -268,6 +268,10 @@ describe("the bridge's refusals", () => {
         kind: "failed",
         error: { _tag: "Unreachable", message: `The stand-in refuses: ${code}` },
       });
+      // Only the stopped Container is told from the others, which the host counts as the failures they are.
+      expect(
+        failed.kind === "failed" && "stopped" in failed.error ? failed.error.stopped : undefined,
+      ).toBe(code === "stopped" ? true : undefined);
       expect(
         failed.kind === "failed" && "status" in failed.error ? failed.error.status : undefined,
       ).toBe(reported);
@@ -335,6 +339,37 @@ describe("a cut", () => {
 
     expect(cut).toContain("[REDACTED]");
     expect(cut).not.toContain("TDERR-1234");
+  });
+
+  it("quotes a last line longer than 2 KiB that ends in a newline: the end of the line, not nothing", async () => {
+    const server = stdio("legacy", "cut-long-line");
+    const discovered = decodeDiscover(await env.MCP_ENGINE.discover(server, {}, {}));
+
+    await control(server, "_stderr_lines?lines=1&width=3000&trail=1");
+    await control(server, "_cut?how=exited");
+
+    const cut = await call(server, discovered.state);
+
+    expect(cut.kind === "failed" ? cut.error.message : "").toContain(
+      `its stderr ended:\n${"0".repeat(2_000)}`,
+    );
+  });
+
+  it("starts the quote at a whole line when the cut falls inside one", async () => {
+    const server = stdio("legacy", "cut-mid-line");
+    const discovered = decodeDiscover(await env.MCP_ENGINE.discover(server, {}, {}));
+
+    await control(server, "_stderr_lines?lines=100&width=99&trail=1");
+    await control(server, "_cut?how=exited");
+
+    const cut = await call(server, discovered.state);
+    const message = cut.kind === "failed" ? cut.error.message : "";
+    const [, quote = ""] = message.split("its stderr ended:\n");
+    const lines = quote.split("\n");
+
+    // Each is a whole line of 99 digits, the first not a part of one.
+    expect(lines.length).toBeGreaterThan(15);
+    expect(lines.every((line) => line.length === 99 && new Set(line).size === 1)).toBe(true);
   });
 
   it("stays a cut when the status says nothing more", async () => {

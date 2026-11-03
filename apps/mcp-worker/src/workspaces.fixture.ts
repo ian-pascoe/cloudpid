@@ -8,7 +8,7 @@
 // `GET https://workspaces.test/<workspace>/<op>` controls and reads one Workspace: `_stop` stops its Container, `_gone` makes
 // it a Workspace with no record (404 `no_workspace`), `_level?value=<n>` sets the level the bridge answers (`none`: no
 // level header, as an older bridge's answer), `_refuse?code=<code>&status=<n>` makes it refuse every request with that code,
-// `_stderr?before=<n>&after=<n>` sets the child's stderr: `before` filler characters and a line, the Secret, then `after`
+// `_stderr_lines?lines=<n>&width=<n>&trail=<0|1>` sets it to lines of one digit each, and `_stderr?before=<n>&after=<n>` sets the child's stderr: `before` filler characters and a line, the Secret, then `after`
 // more characters of one line,
 // `_cut?how=exited|stopped|silent` ends the next `tools/call`'s stream with no answer, the child having exited (code 1, with
 // a stderr tail) or the Container having stopped, or neither, and `_seen` answers what reached it.
@@ -244,6 +244,14 @@ export default {
           code: url.searchParams.get("code") ?? "",
           status: Number(url.searchParams.get("status") ?? 503),
         };
+
+        return new Response("ok");
+      case "_stderr_lines":
+        // `lines` lines of `width` characters, each of one digit (its number's), ended by a newline when `trail` is 1.
+        container.stderr =
+          Array.from({ length: Number(url.searchParams.get("lines")) }, (_, index) =>
+            String(index % 10).repeat(Number(url.searchParams.get("width"))),
+          ).join("\n") + (url.searchParams.get("trail") === "1" ? "\n" : "");
 
         return new Response("ok");
       case "_stderr":

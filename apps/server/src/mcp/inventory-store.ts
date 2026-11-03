@@ -4,9 +4,11 @@
 // child it was opened on), which cross the engine edge as `prior` with their own format `v`. It changes when what a
 // discovery keeps does.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
+import { sha256Hex, sortedJson } from "@cloudpid/config";
 import type { MigrationStorage } from "@cloudpid/effect-durable/sqlite";
 import type { McpEngineState } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
@@ -37,8 +39,11 @@ export type InventoryStore = {
   /** Every inventory, by `conn`; one missing a part is left out. */
   readonly inventories: () => ReadonlyMap<string, InventoryRows>;
   readonly putInventory: (conn: string, rows: InventoryRows) => void;
-  /** Drop the inventories of `conns`: the servers read as never discovered (a reload of a stdio server). */
-  readonly dropInventory: (conns: ReadonlyArray<string>) => void;
+  /**
+   * Mark the inventories of `conns` stale, as their TTL ran out (`ttlUntil` 0): they stay served until a refresh replaces
+   * them (a reload of a stdio server). A `conn` with no inventory is left alone.
+   */
+  readonly expireInventory: (conns: ReadonlyArray<string>) => void;
   /**
    * The era row and the Legacy session row of `conn`, for the engine's `prior`: an HTTP server's, or a stdio server's in
    * `workspace` (`ws:<id>`).
@@ -123,9 +128,31 @@ export const inventoryStore = (storage: MigrationStorage): InventoryStore => {
       });
     },
 
-    dropInventory: (conns) => {
+    expireInventory: (conns) => {
       storage.transactionSync(() => {
-        for (const conn of conns) sql.exec("DELETE FROM mcp_inventories WHERE conn = ?", conn);
+        for (const conn of conns) {
+          const row = sql
+            .exec<{ json: string }>(
+              "SELECT json FROM mcp_inventories WHERE conn = ? AND part = 'meta'",
+              conn,
+            )
+            .toArray()[0];
+
+          const meta = jsonColumn(row?.json);
+
+          if (row === undefined || !Predicate.isObject(meta)) continue;
+
+          // SAFETY: `meta` was parsed from the JSON the inventory wrote, and only a number is set in it.
+          const expired = Object.assign({}, meta, { ttlUntil: 0 }) as Schema.Json;
+          const json = JSON.stringify(sortedJson(expired));
+
+          sql.exec(
+            "UPDATE mcp_inventories SET json = ?, hash = ? WHERE conn = ? AND part = 'meta'",
+            json,
+            sha256Hex(json),
+            conn,
+          );
+        }
       });
     },
 

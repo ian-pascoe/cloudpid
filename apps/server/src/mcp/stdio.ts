@@ -21,7 +21,8 @@ export const rootsOf = (repos: ReadonlyArray<WorkspaceRepo>): ReadonlyArray<McpR
 /**
  * What is done when a stdio server's child ended: the child with spawn id `spawn` (absent when the Workspace itself is
  * gone) of `conn` in `workspace`. The seam for #478, which closes what hung on that child (an outstanding sign-in, a
- * watch); nothing is done with it yet.
+ * watch); nothing is done with it yet. A handler must be idempotent: a Workspace that is gone is told again by every
+ * refresh or call that finds it so (a refresh of what is kept is tried a minute apart), and a spawn id more than once.
  */
 export type McpProcessEndedHandler = (
   conn: string,

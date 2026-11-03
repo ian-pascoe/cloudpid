@@ -292,7 +292,11 @@ describe("discovery", () => {
 });
 
 const notRunning = () =>
-  failedWith({ _tag: "Unreachable", message: "The Workspace's Container is stopped" });
+  failedWith({
+    _tag: "Unreachable",
+    message: "The Workspace's Container is stopped",
+    stopped: true,
+  });
 
 /** The `start` of each discovery the engine was asked for, in order. */
 const starts = async (host: Host) =>
@@ -358,6 +362,22 @@ describe("a refresh of what is kept", () => {
     expect(server?.status?.failures).toBe(1);
   });
 
+  it("counts a refusal that is not the Container's stop (a bridge that does not answer) as a failure of the refresh, the inventory kept", async () => {
+    const host = await discovered(["search"]);
+
+    await host.scriptEngine(keyOf("local"), [
+      failedWith({ _tag: "Unreachable", message: "The Container's MCP bridge does not answer" }),
+    ]);
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await settled(host);
+
+    const [server] = (await host.servers({ parts: ["status", "tools"] })).servers;
+
+    expect(server).toMatchObject({ state: "unavailable", counts: { tools: 1 } });
+    expect(server?.status?.failures).toBe(1);
+  });
+
   it("tells #478's seam when the refresh finds its Workspace gone, and a first discovery too", async () => {
     const host = freshHost();
     const gone = { _tag: "Unreachable", message: "The Workspace no longer exists", status: 404 };
@@ -413,7 +433,7 @@ describe("discoveries per Workspace", () => {
 });
 
 describe("a reload", () => {
-  it("puts a connected stdio server back to never discovered, with no inventory, and starts nothing", async () => {
+  it("keeps a connected stdio server's tools, expired, starts nothing, and the next demand refreshes them where the process runs", async () => {
     const host = await discovered(["search"]);
     const before = (await host.engineCalls()).length;
 
@@ -421,25 +441,64 @@ describe("a reload", () => {
     await settled(host);
 
     expect(await host.engineCalls()).toHaveLength(before);
-
-    const [server] = (await host.servers({ parts: ["tools"] })).servers;
-
-    expect(server).toMatchObject({ state: "not_discovered", counts: { tools: 0 } });
     expect(await host.sessionRows("conn-local")).toEqual([]);
 
-    // The next live request discovers it again, starting the Container.
+    // Still listed, and still built calls' tools: the reload took nothing away.
+    const [server] = (await host.servers({ parts: ["tools"] })).servers;
+
+    expect(server).toMatchObject({ state: "connected", counts: { tools: 1 } });
+
+    await host.scriptRequest(keyOf("local"), [completed("found")]);
+    expect(await host.request(call("local", "search"), {})).toMatchObject({ _tag: "Completed" });
+
+    // The next live request refreshes it without starting the Container, and the new tools land.
     await host.scriptEngine(keyOf("local"), [found(["search", "next"])]);
-    await start(host, WORKSPACE, { waitFor: ["local"], waitMs: 5000 });
+    await restart(host);
     await settled(host);
 
-    expect(await starts(host)).toEqual([true, true]);
+    expect(await starts(host)).toEqual([true, false]);
     expect((await host.servers({ parts: [] })).servers[0]).toMatchObject({
       state: "connected",
       counts: { tools: 2 },
     });
   });
 
-  it("puts a failed one back too, and no demand from no Workspace discovers it", async () => {
+  it("leaves the tools served when the Container is stopped at that refresh: a quiet skip, no failure", async () => {
+    const host = await discovered(["search"]);
+
+    await host.apply(JSON.parse('{"kind":"reload"}'));
+    await host.scriptEngine(keyOf("local"), [notRunning()]);
+    await restart(host);
+    await settled(host);
+
+    const [server] = (await host.servers({ parts: ["status", "tools"] })).servers;
+
+    expect(await starts(host)).toEqual([true, false]);
+    expect(server).toMatchObject({ state: "connected", counts: { tools: 1 } });
+    expect(server?.status?.failures).toBe(0);
+  });
+
+  it("clears the hold and the failures of a failed server that has an inventory, and keeps it", async () => {
+    const host = await discovered(["search"]);
+
+    await host.scriptEngine(keyOf("local"), [
+      failedWith({ _tag: "ProtocolViolation", message: "not MCP" }),
+    ]);
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await settled(host);
+    expect(await stateOf(host, "local")).toBe("failed");
+
+    await host.apply(JSON.parse('{"kind":"reload","servers":["local"]}'));
+
+    const [server] = (await host.servers({ parts: ["status", "tools"] })).servers;
+
+    expect(server).toMatchObject({ state: "failed", counts: { tools: 1 } });
+    expect(server?.status?.failures).toBe(0);
+    expect(server?.status?.nextRetryAt).toBeUndefined();
+  });
+
+  it("puts a failed server with no inventory back to never discovered, and no demand from no Workspace discovers it", async () => {
     const host = freshHost();
 
     await host.apply(setOf(entry("local")));

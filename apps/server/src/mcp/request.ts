@@ -37,12 +37,11 @@ import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { type RequestAccess, requestAccess } from "./discovery-auth.ts";
-import { halt, targetOf, type McpDiscoveryServices } from "./discovery.ts";
+import { halt, isWorkspaceGone, targetOf, type McpDiscoveryServices } from "./discovery.ts";
 import { McpEngineClient } from "./engine.ts";
 import { McpLoadCaps } from "./limits.ts";
 import { recordLogs } from "./logs.ts";
@@ -281,12 +280,7 @@ export const request = (
     }
 
     // Its Workspace no longer exists (the bridge's `no_workspace`): whatever ran there is gone with it.
-    if (
-      workspace !== undefined &&
-      result.kind === "failed" &&
-      Predicate.isTagged(result.error, "Unreachable") &&
-      result.error.status === 404
-    ) {
+    if (workspace !== undefined && isWorkspaceGone(result)) {
       yield* processEnded(server.conn, workspace, undefined);
     }
 

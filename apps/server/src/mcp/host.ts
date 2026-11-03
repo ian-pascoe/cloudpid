@@ -222,9 +222,9 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
 
 /**
  * `reload` (`settings_mcp_reload`, `mcpReconnect`): drop the eras and Legacy sessions of the named servers (all when
- * none is named), then rediscover the HTTP ones at once, whatever their state. A stdio one is put back to never
- * discovered, its inventory dropped, for the next live demand to discover. A name not in the set is left out of the
- * answer.
+ * none is named), then rediscover the HTTP ones at once, whatever their state. A stdio one that has an inventory keeps
+ * it, expired and with its hold cleared, for the next live demand to refresh without starting a Container; one with
+ * none goes back to never discovered, for that demand to discover. A name not in the set is left out of the answer.
  */
 const reload = (environment: string | undefined, input: McpApply) =>
   Effect.gen(function* () {
@@ -246,19 +246,33 @@ const reload = (environment: string | undefined, input: McpApply) =>
 
     // A discovery in flight would write back the rows the reload drops: it goes first.
     yield* interrupt(conns);
-    store.dropPrior(conns);
 
-    // A stdio server is not asked here: that would start a Container with no one waiting for it. It goes back to never
-    // discovered, with no inventory, so the next live `requestStart` or call, which names the caller's Workspace,
-    // discovers it, starting the Container if it must.
+    // A stdio server is not asked here: that would start a Container with no one waiting for it. One that has an inventory
+    // keeps it, expired and with no hold on it, so the next live demand that names a Workspace refreshes it (`start:
+    // false`: a stopped Container leaves the tools it lists served); one with none goes back to never discovered, for
+    // that demand to discover, starting the Container if it must. All of it is written in one synchronous step.
     const stdio = Arr.filter(views, (view) => view.reach === "stdio");
+    const now = yield* Clock.currentTimeMillis;
 
-    if (stdio.length > 0) {
-      const now = yield* Clock.currentTimeMillis;
+    store.dropPrior(conns);
+    yield* Effect.sync(() => {
+      const kept = Arr.filter(stdio, (view) => Option.isSome(view.inventory));
 
-      store.dropInventory(Arr.map(stdio, (view) => view.server.conn));
+      store.expireInventory(Arr.map(kept, (view) => view.server.conn));
 
-      for (const view of stdio) {
+      for (const view of kept) {
+        const { status } = view;
+
+        if (status !== undefined) {
+          store.putStatus({
+            ...status,
+            failures: status.state === "failed" ? 0 : status.failures,
+            nextRetryAt: undefined,
+          });
+        }
+      }
+
+      for (const view of Arr.filter(stdio, (each) => Option.isNone(each.inventory))) {
         store.putStatus({
           conn: view.server.conn,
           state: "not_discovered",
@@ -266,9 +280,9 @@ const reload = (environment: string | undefined, input: McpApply) =>
           failures: 0,
         });
       }
+    });
 
-      yield* refreshVersions;
-    }
+    if (stdio.length > 0) yield* refreshVersions;
 
     if (environment !== undefined) yield* startDue(environment, views, "reload");
 

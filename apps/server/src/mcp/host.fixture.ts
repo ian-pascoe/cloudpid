@@ -187,10 +187,10 @@ export class TestMcpHost extends DurableObject {
 
   readonly #tokenAsks: Array<McpAccessTokenInput> = [];
 
-  /** What the host asked the Registry for a server's values with. */
   /** The child ends the host told its handler of, in order. */
   readonly #ended: Array<{ conn: string; workspace: string; spawn: string | undefined }> = [];
 
+  /** What the host asked the Registry for a server's values with. */
   readonly #valueAsks: Array<{
     readonly server: string;
     readonly workspace?: string | undefined;
