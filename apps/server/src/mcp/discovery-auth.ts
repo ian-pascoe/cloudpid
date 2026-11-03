@@ -405,14 +405,27 @@ export const requestAccess = (environment: string, view: ServerView, target: Mcp
     if (signsInOnItsOwn(view.server.server)) {
       const own = yield* tokens.access(asked);
 
-      return own.kind !== "token"
-        ? ({ kind: "blocked", ...blockedClientGrant(own) } satisfies RequestAccess)
-        : ({
-            kind: "open",
-            auth: engineAuth(tokens, asked),
-            answered: () => Effect.void,
-            refusal: refusalOfClientGrant,
-          } satisfies RequestAccess);
+      if (own.kind !== "token") {
+        return { kind: "blocked", ...blockedClientGrant(own) } satisfies RequestAccess;
+      }
+
+      /** The last access the hook handed the engine: a renewal that gave none says why the server's refusal stands. */
+      let last: TokenAccess = own;
+
+      return {
+        kind: "open",
+        auth: engineAuth(tokens, asked, (seen) => {
+          last = seen;
+        }),
+        answered: () => Effect.void,
+        refusal: (result) => {
+          const refused = refusalOfClientGrant(result);
+
+          return refused !== undefined && last.kind !== "token"
+            ? blockedClientGrant(last).message
+            : refused;
+        },
+      } satisfies RequestAccess;
     }
 
     const access = yield* tokens.access(asked);

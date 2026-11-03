@@ -200,6 +200,7 @@ import { mcpTokenRefresh } from "./mcp-sign-in-refresh.ts";
 import {
   completeMcpSignIn,
   confirmMcpSignIn,
+  environmentsUsing,
   type FlowDeps,
   startMcpSignIn,
 } from "./mcp-sign-in-flow.ts";
@@ -1865,6 +1866,7 @@ export const RegistryLive = Registry.make(
                     vault: mcpVault,
                     refresh: mcpRefresh,
                     clientGrant: mcpGrant,
+                    environmentsUsing: (hash, kind) => environmentsUsing(store, hash, kind),
                   },
                   input,
                   now,

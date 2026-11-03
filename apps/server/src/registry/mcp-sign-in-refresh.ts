@@ -56,7 +56,6 @@ import {
   type FlowDeps,
   hostOf,
   metadataOf,
-  told,
 } from "./mcp-sign-in-flow.ts";
 import {
   clip,
@@ -65,6 +64,7 @@ import {
   REFRESH_MARGIN_MS,
   type Refresh,
   type RefreshRequest,
+  told,
 } from "./mcp-sign-in-registry.ts";
 import type { KeptVault } from "@cloudpid/extensions/secrets/core";
 import { type McpTokens, openTokens, sealTokens } from "./mcp-sign-in-seal.ts";

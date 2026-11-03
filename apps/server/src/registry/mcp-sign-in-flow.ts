@@ -62,6 +62,7 @@ import {
   MAX_SIGN_IN_ERROR_LENGTH,
   mergeScopes,
   signInTargetOf,
+  told,
 } from "./mcp-sign-in-registry.ts";
 import {
   openValue,
@@ -119,9 +120,6 @@ export class FlowProblem extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("FlowProblem", { message: Schema.String, code: Schema.optional(Schema.String) }) {}
 
-/** `text` as the owner is told it: one cut to what a row may hold. */
-export const told = (text: string): string => clip(text, MAX_SIGN_IN_ERROR_LENGTH);
-
 /** What went wrong in `error`, for the owner: an OAuth error's code and description, or a registration's status and body. */
 const describe = (error: Error): string => {
   if (error instanceof OAuthRegistrationError) {
@@ -164,7 +162,8 @@ const serversOf = (
 /**
  * Whether `resolved` is an HTTP server that signs in under the key `hash` in the way `kind` says (an owner's sign-in, or
  * a client grant's, which the same key may hold the row of under another kind of entry), with `clientId` when one is
- * given. A row of the other kind than the entry's is used by nobody: the entry's next token replaces it.
+ * given. An entry of the other kind than the row's does not use it: it replaces the row (revoking an owner's tokens)
+ * only when no set still uses the row as its own kind, and is otherwise told of the clash (`signInClash`).
  */
 const usesSignIn = (
   resolved: McpResolvedServer,

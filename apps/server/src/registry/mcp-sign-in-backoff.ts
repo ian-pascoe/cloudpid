@@ -14,7 +14,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { told } from "./mcp-sign-in-flow.ts";
+import { told } from "./mcp-sign-in-registry.ts";
 
 /** The pause before the one retry of a transient failure. */
 export const RETRY_MS = 1_000;

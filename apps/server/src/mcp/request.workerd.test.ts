@@ -461,6 +461,24 @@ describe("a request to a server that signs in on its own", () => {
     expect(await host.reports()).toEqual([]);
   });
 
+  it("says the Registry's problem, not the server's bare refusal, when the renewal after a 401 fails", async () => {
+    const host = await grantHost([
+      granted(TOKEN),
+      noToken(
+        "failed",
+        "The authorization server does not accept the entry's client id (invalid_client)",
+      ),
+    ]);
+
+    await host.scriptRequest(urlOf("sentry"), [{ result: unauthorized, auth: [false, true] }]);
+
+    expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "Unreachable", message: expect.stringContaining("invalid_client") },
+    });
+    expect(await host.reports()).toEqual([]);
+  });
+
   it("fails as unreachable, naming the scope and the setting, for a 403 for more scope, and reports nothing", async () => {
     const host = await grantHost([granted(TOKEN)]);
 

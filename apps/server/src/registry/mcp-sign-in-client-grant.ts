@@ -64,10 +64,10 @@ import {
 import {
   attempt,
   clientInformation,
+  environmentsUsing,
   type FlowDeps,
   hostOf,
   metadataOf,
-  told,
   type FlowProblem,
 } from "./mcp-sign-in-flow.ts";
 import {
@@ -77,7 +77,9 @@ import {
   MAX_SIGN_IN_ERROR_LENGTH,
   okAnswer,
   REFRESH_MARGIN_MS,
+  signInClash,
   signInTarget,
+  told,
 } from "./mcp-sign-in-registry.ts";
 import { type McpTokens, openTokens, sealTokens } from "./mcp-sign-in-seal.ts";
 import type { McpSignInRow, McpSignIns } from "./mcp-sign-ins.ts";
@@ -371,10 +373,11 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
     vault: KeptVault,
     row: McpSignInRow,
     now: number,
-  ): Effect.Effect<void> =>
+  ): Effect.Effect<string | undefined> =>
     Effect.gen(function* () {
       const { hash } = request.key;
       const { client, sealed } = row;
+      let failure: string | undefined;
       const metadata = row.metadata === null ? Option.none() : metadataOf(row.metadata);
 
       const opened =
@@ -406,20 +409,46 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
                 }),
               );
 
+        const failed = (revoked ?? []).filter((each) => each.status === "failed");
+
         yield* outcomeOf(
           revoked === undefined
             ? "no_revocation_endpoint"
-            : revoked.every((each) => each.status === "revoked")
+            : failed.length === 0
               ? "revoked"
               : "revocation_failed",
         );
+
+        // What failed is said by the kind of token and the status, an OAuth code or the kind of failure: never a token.
+        if (failed.length > 0) {
+          failure = told(
+            `The owner's previous sign-in was dropped, but the authorization server did not revoke its ${failed
+              .map(
+                (each) =>
+                  `${each.token.replace("_", " ")} (${each.status === "failed" ? each.reason : ""})`,
+              )
+              .join(" and ")}`,
+          );
+        }
       } else {
         yield* outcomeOf("not_revoked");
+        failure =
+          "The owner's previous sign-in was dropped without being revoked: its tokens or its authorization server's metadata could not be read";
       }
 
       // Nothing is awaited between this check and the delete.
       if (sameSealed(deps.signIns.get(hash)?.sealed ?? null, sealed))
         deps.signIns.delete(hash, now);
+
+      // Reported as far as there is somebody to tell: the log, and (below) the new row's last problem. Nothing here fails
+      // the fetch.
+      if (failure !== undefined) {
+        yield* Effect.logWarning(
+          `Environment ${request.environment}'s MCP server ${request.key.name}: ${failure}`,
+        );
+      }
+
+      return failure;
     }).pipe(
       Effect.withSpan("mcp.oauth.revoke", {
         attributes: {
@@ -452,11 +481,18 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
         return { status: "unavailable", reason: told(vault.failure.message) };
       }
 
-      // A row of the other kind (an owner's sign-in the entry has turned its back on) is revoked and dropped first.
+      // A row of the other kind (an owner's sign-in the entry has turned its back on) is revoked and dropped first, unless
+      // another Environment's entry still signs in that way under this key: the two would undo each other for ever.
       const owned = deps.signIns.get(hash);
 
+      let switched: string | undefined;
+
       if (owned !== null && owned.sealed !== null && owned.client?.kind !== "client_grant") {
-        yield* retireOwnerSignIn(request, vault.success, owned, startedAt);
+        const users = environmentsUsing(deps.store, hash, "owner");
+
+        if (users.length > 0) return { status: "failed", reason: signInClash(users, "owner") };
+
+        switched = yield* retireOwnerSignIn(request, vault.success, owned, startedAt);
       }
 
       // The row this fetch is about: what it is checked against again just before it writes.
@@ -495,6 +531,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
         baseline,
         trigger,
         startedAt,
+        switched,
       });
     });
 
@@ -560,11 +597,13 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
     readonly vault: KeptVault;
     readonly standing: Standing | undefined;
     readonly baseline: McpSignInRow | null;
+    /** What the revocation of an owner's sign-in this fetch replaced said when it failed. */
+    readonly switched: string | undefined;
     readonly trigger: Trigger;
     readonly startedAt: number;
   }): Effect.Effect<McpAccessTokenAnswer> =>
     Effect.gen(function* () {
-      const { request, entry, standing, baseline, trigger, startedAt } = input;
+      const { request, entry, standing, baseline, trigger, startedAt, switched } = input;
       const { key } = request;
       const { hash } = key;
 
@@ -778,6 +817,9 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
 
           return backedOff(request, standing, trigger, put.message, now);
         }
+
+        // A revocation that failed is the new row's last problem, until its first renewal clears it.
+        if (switched !== undefined) deps.signIns.update(hash, { lastError: switched }, now);
       } else {
         const renewed: Types.Mutable<Parameters<McpSignIns["replaceTokens"]>[1]> = {
           sealed: sealed.success.sealed,

@@ -106,6 +106,7 @@ const metadata = (over: Record<string, string | ReadonlyArray<string>> = {}) => 
 const network = (
   tokens: Handler,
   asMetadata: Record<string, string | ReadonlyArray<string>> = {},
+  revokeStatus = 200,
 ) => {
   const calls: Array<Call> = [];
 
@@ -137,7 +138,11 @@ const network = (
       return Response.json(metadata(asMetadata));
     }
 
-    if (route === `POST ${AS}/revoke`) return new Response(null, { status: 200 });
+    if (route === `POST ${AS}/revoke`) {
+      return revokeStatus === 200
+        ? new Response(null, { status: 200 })
+        : oauthError("unsupported_token_type", revokeStatus);
+    }
 
     if (route === `POST ${AS}/token`) {
       const answer = await tokens(call, tokenCalls().length - 1);
@@ -159,6 +164,8 @@ const run = <A>(
   options: {
     readonly asMetadata?: Record<string, string | ReadonlyArray<string>>;
     readonly secrets?: Record<string, string>;
+    /** The status the revocation endpoint answers. */
+    readonly revokeStatus?: number;
   } = {},
 ) =>
   runInDurableObject(
@@ -167,7 +174,7 @@ const run = <A>(
       const store = openRegistryStore(state.storage);
       const signIns = openMcpSignIns(state.storage, store);
       const vault = await Effect.runPromise(openKeptVault(MASTER, MCP_OAUTH_PURPOSE));
-      const net = network(tokens, options.asMetadata);
+      const net = network(tokens, options.asMetadata, options.revokeStatus);
       const spans: Array<Tracer.NativeSpan> = [];
       const logged: Array<string> = [];
       const secrets = { CLIENT_SECRET: SECRET, ...options.secrets };
@@ -228,7 +235,13 @@ const run = <A>(
         ask: (input = {}, now = NOW) =>
           observed(
             mcpAccessToken(
-              { store, signIns, vault: Effect.succeed(vault), clientGrant },
+              {
+                store,
+                signIns,
+                vault: Effect.succeed(vault),
+                clientGrant,
+                environmentsUsing: (hash, kind) => environmentsUsing(store, hash, kind),
+              },
               { environment: DEFAULT_ENVIRONMENT, server: "docs", ...input },
               now,
             ),
@@ -256,7 +269,10 @@ type Harness = {
   readonly deps: FlowDeps;
   readonly setGlobal: (value: Schema.Json) => void;
   readonly keyOf: () => McpSignInKey;
-  readonly ask: (input?: { stale?: string }, now?: number) => Promise<McpAccessTokenAnswer>;
+  readonly ask: (
+    input?: { stale?: string; environment?: string },
+    now?: number,
+  ) => Promise<McpAccessTokenAnswer>;
   readonly observed: <T>(effect: Effect.Effect<T>) => Promise<T>;
   readonly tokensOf: () => Promise<{ access_token: string; refresh_token?: string }>;
   readonly dump: () => string;
@@ -920,8 +936,15 @@ describe("when the entry changes", () => {
 });
 
 /** An owner's sign-in of `docs`' key, as an authorization-code flow left it: configured client, with a refresh token. */
-const ownerSignIn = async (h: Harness) => {
-  const key = h.keyOf();
+const ownerSignIn = async (
+  h: Harness,
+  options: {
+    readonly key?: McpSignInKey;
+    readonly clientId?: string;
+    readonly revocation?: boolean;
+  } = {},
+) => {
+  const key = options.key ?? h.keyOf();
 
   const sealed = await Effect.runPromise(
     sealTokens(h.vault, key.hash, {
@@ -937,11 +960,15 @@ const ownerSignIn = async (h: Harness) => {
       key,
       status: "ok",
       issuer: AS,
-      metadata: JSON.stringify(metadata({ revocation_endpoint: `${AS}/revoke` })),
+      metadata: JSON.stringify(
+        options.revocation === false
+          ? metadata()
+          : metadata({ revocation_endpoint: `${AS}/revoke` }),
+      ),
       discovery: "{}",
       resource: SERVER_URL,
       client: {
-        id: CLIENT_ID,
+        id: options.clientId ?? CLIENT_ID,
         kind: "configured",
         secretRef: { scope: "secret", name: "CLIENT_SECRET" },
         registration: null,
@@ -990,7 +1017,10 @@ describe("switching from a code sign-in to a client grant", () => {
       { asMetadata: { revocation_endpoint: `${AS}/revoke` } },
     ));
 
-  it("still drops the row and goes on when the server has no revocation endpoint or refuses", () =>
+  const revokeOutcome = (spans: ReadonlyArray<Tracer.NativeSpan>) =>
+    spans.find((span) => span.name === "mcp.oauth.revoke")?.attributes.get("mcp.outcome");
+
+  it("drops the row and goes on when the server refuses the revocation, and says so in the log and on the new row", () =>
     run(
       () => issued(FIRST),
       async (h) => {
@@ -998,7 +1028,150 @@ describe("switching from a code sign-in to a client grant", () => {
         await ownerSignIn(h);
 
         expect(okOf(await h.ask()).token).toBe(FIRST);
-        expect(h.signIns.get(h.keyOf().hash)?.client?.kind).toBe("client_grant");
+        expect(h.signIns.get(h.keyOf().hash)).toMatchObject({
+          status: "ok",
+          client: { kind: "client_grant" },
+          lastError: expect.stringMatching(/did not revoke its refresh token.*access token/),
+        });
+        expect(revokeOutcome(h.spans)).toBe("revocation_failed");
+        expect(h.logged.join("\n")).toMatch(/did not revoke/);
+
+        // Neither the token nor the reason's detail leaks: only the kinds of token and the code.
+        for (const value of ["owner-refresh-token-1", "owner-access-token-1"]) {
+          expect(h.logged.join("\n")).not.toContain(value);
+          expect(h.dump()).not.toContain(value);
+        }
+
+        // The first renewal clears the note.
+        expect(okOf(await h.ask({}, EXPIRING)).token).toBe(FIRST);
+        expect(h.signIns.get(h.keyOf().hash)?.lastError).toBeNull();
+      },
+      { revokeStatus: 400 },
+    ));
+
+  it("revokes as a public client when the old client's secret no longer resolves, with only its id", () =>
+    run(
+      () => issued(FIRST),
+      async (h) => {
+        h.setGlobal(GRANT);
+        // The entry's client is another one now: the old client's secret cannot be found from it.
+        await ownerSignIn(h, { clientId: "old-client" });
+
+        expect(okOf(await h.ask()).token).toBe(FIRST);
+
+        const revocations = h.net.calls.filter((call) => call.url === `${AS}/revoke`);
+
+        expect(revocations).toHaveLength(2);
+
+        for (const call of revocations) {
+          expect(call.form.get("client_id")).toBe("old-client");
+          expect(call.form.has("client_secret")).toBe(false);
+          expect(call.headers.has("authorization")).toBe(false);
+        }
+
+        expect(revokeOutcome(h.spans)).toBe("revoked");
+      },
+    ));
+
+  it("says nothing of revocation when the server advertises no endpoint, and still switches", () =>
+    run(
+      () => issued(FIRST),
+      async (h) => {
+        h.setGlobal(GRANT);
+        await ownerSignIn(h, { revocation: false });
+
+        expect(okOf(await h.ask()).token).toBe(FIRST);
+        expect(h.net.calls.some((call) => call.url === `${AS}/revoke`)).toBe(false);
+        expect(revokeOutcome(h.spans)).toBe("no_revocation_endpoint");
+        expect(h.signIns.get(h.keyOf().hash)).toMatchObject({
+          client: { kind: "client_grant" },
+          lastError: null,
+        });
+      },
+    ));
+});
+
+describe("two Environments whose entries of one name sign in differently", () => {
+  /** Global's `docs` is a code entry, and Environment `env-a` overrides it with a client grant. */
+  const split = (h: Harness) => {
+    h.setGlobal({ url: SERVER_URL });
+    h.store.createEnvironment("env-a", "Env A", 1);
+    h.store.putSettingsOverrides("env-a", { mcp: { servers: { docs: GRANT } } });
+
+    const target = signInTarget(h.store, "env-a", "docs");
+    const shared = signInTarget(h.store, DEFAULT_ENVIRONMENT, "docs");
+
+    if (target.status !== "client_grant" || shared.status !== "target") {
+      throw new Error(`Not split: ${target.status} ${shared.status}`);
+    }
+
+    return target.key;
+  };
+
+  it("leaves the owner's live sign-in alone, and tells the client grant's Environment of the clash", () =>
+    run(
+      () => issued(FIRST),
+      async (h) => {
+        const key = split(h);
+
+        await ownerSignIn(h, { key });
+
+        const owner = h.signIns.get(key.hash);
+        const revision = h.signIns.revision();
+
+        const answer = await h.ask({ environment: "env-a" });
+
+        expect(failedWith(answer)).toMatch(/uses this server's sign-in as the owner's own/);
+        expect(failedWith(answer)).toMatch(/rename one of the entries/);
+        expect(h.net.calls).toHaveLength(0);
+        expect(h.signIns.get(key.hash)?.grantId).toBe(owner?.grantId);
+        expect(h.signIns.revision()).toBe(revision);
+
+        // And the owner's Environment still gets its own token, as many times as the other asks.
+        const mine = await h.ask({ environment: DEFAULT_ENVIRONMENT }, NOW + 1000);
+
+        expect(okOf(mine).token).toBe("owner-access-token-1");
+        expect(failedWith(await h.ask({ environment: "env-a" }, NOW + 2000))).toMatch(/rename/);
+        expect(h.signIns.revision()).toBe(revision);
+      },
+    ));
+
+  it("leaves the client grant's row alone, and tells the code entry's Environment of the clash", () =>
+    run(
+      () => issued(FIRST),
+      async (h) => {
+        const key = split(h);
+
+        expect(okOf(await h.ask({ environment: "env-a" })).token).toBe(FIRST);
+
+        const grant = h.signIns.get(key.hash);
+        const revision = h.signIns.revision();
+
+        const answer = await h.ask({ environment: DEFAULT_ENVIRONMENT }, NOW + 1000);
+
+        expect(failedWith(answer)).toMatch(/with client credentials/);
+        expect(h.signIns.get(key.hash)?.grantId).toBe(grant?.grantId);
+        expect(h.signIns.revision()).toBe(revision);
+
+        // The client grant's Environment keeps its token.
+        expect(okOf(await h.ask({ environment: "env-a" }, NOW + 2000)).token).toBe(FIRST);
+      },
+    ));
+
+  it("switches as before once no other Environment uses the row's kind", () =>
+    run(
+      () => issued(FIRST),
+      async (h) => {
+        const key = split(h);
+
+        await ownerSignIn(h, { key });
+
+        // Every Environment now has the client grant.
+        h.setGlobal(GRANT);
+        h.store.putSettingsOverrides("env-a", {});
+
+        expect(okOf(await h.ask({ environment: "env-a" })).token).toBe(FIRST);
+        expect(h.signIns.get(key.hash)?.client?.kind).toBe("client_grant");
       },
     ));
 });

@@ -17,7 +17,7 @@ import {
 } from "@cloudpid/config";
 import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import { MAX_SIGN_IN_ERROR_LENGTH, stepUpScope } from "@cloudpid/mcp/oauth";
-import { scopesOf } from "@cloudpid/mcp/types";
+import { type McpSignInEnvironment, scopesOf } from "@cloudpid/mcp/types";
 import type {
   McpAccessTokenAnswer,
   McpAccessTokenInput,
@@ -123,6 +123,9 @@ export const signInTarget = (
     : signInTargetOf(resolved);
 };
 
+/** `text` as the owner is told it: one cut to what a row may hold. */
+export const told = (text: string): string => clip(text, MAX_SIGN_IN_ERROR_LENGTH);
+
 /** `text` cut to `limit` characters at a code point, for a row that holds what a server said. */
 export const clip = (text: string, limit: number): string => {
   const points = Array.from(text);
@@ -194,6 +197,32 @@ export type SignInDeps = {
   readonly vault: Effect.Effect<KeptVault, SecretVaultError>;
   readonly refresh?: Refresh | undefined;
   readonly clientGrant?: ClientGrant | undefined;
+  /**
+   * The Environments whose set holds a server that uses the sign-in `hash` as an entry of `kind` (`mcp-sign-in-flow.ts`).
+   * Unset counts none, so a row of the other kind is always replaced.
+   */
+  readonly environmentsUsing?:
+    | ((hash: string, kind: "owner" | "client_grant") => ReadonlyArray<McpSignInEnvironment>)
+    | undefined;
+};
+
+/**
+ * Why a sign-in shared by two kinds of entry is left as it is (→ Client Credentials, Switching): the key is the entry's
+ * source, name and URL, whatever its grant type, so Environments whose entries of that name sign in differently (one with a
+ * code, one with client credentials) cannot both hold the row. `theirs` is the kind the other Environments' entries are.
+ */
+export const signInClash = (
+  users: ReadonlyArray<McpSignInEnvironment>,
+  theirs: "owner" | "client_grant",
+): string => {
+  const names = Arr.map(Arr.take(users, 3), ({ name }) => name).join(", ");
+  const more = users.length > 3 ? ` and ${String(users.length - 3)} more` : "";
+
+  return told(
+    `${names}${more} ${users.length === 1 ? "uses" : "use"} this server's sign-in ${
+      theirs === "client_grant" ? "with client credentials" : "as the owner's own"
+    }, and an entry of the other kind would undo it: rename one of the entries`,
+  );
 };
 
 const unavailable = (reason: string): McpAccessTokenAnswer => ({ status: "unavailable", reason });
@@ -252,8 +281,15 @@ const answerFor = (
   }
 
   // The token of a client grant, under a key whose entry now signs in with a code: not a sign-in of this entry's. It is
-  // dropped (its access token is short-lived and has no refresh token to revoke), and the owner signs in.
+  // dropped (its access token is short-lived and has no refresh token to revoke), and the owner signs in, unless another
+  // Environment's entry still uses it as a client grant: then neither of the two can have it.
   if (row.client?.kind === "client_grant") {
+    const users = deps.environmentsUsing?.(key.hash, "client_grant") ?? [];
+
+    if (users.length > 0) {
+      return Effect.succeed({ status: "failed", reason: signInClash(users, "client_grant") });
+    }
+
     deps.signIns.delete(key.hash, now);
 
     return Effect.succeed({ status: "required", reason: "Not signed in" });
