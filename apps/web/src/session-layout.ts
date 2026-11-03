@@ -137,12 +137,13 @@ export const withOpen = <A extends string | number>(
 /**
  * A disclosure of a thread on the Session's page, as its open state is kept: in the root's thread or a subagent's
  * (`conversationId`), a tool card by its call, thinking by its message and its place there, a Skill by its message and
- * name, a notice by its message.
+ * name, an MCP prompt's block by its message, a notice by its message.
  */
 export type TranscriptDisclosure = { readonly conversationId: number | undefined } & (
   | { readonly kind: "tool"; readonly callId: string }
   | { readonly kind: "thinking"; readonly messageId: string; readonly index: number }
   | { readonly kind: "skill"; readonly messageId: string; readonly name: string }
+  | { readonly kind: "mcp-prompt"; readonly messageId: string }
   | { readonly kind: "notice"; readonly messageId: string }
 );
 
@@ -155,6 +156,8 @@ const disclosureInThread = (disclosure: TranscriptDisclosure): string => {
       return `thinking:${disclosure.messageId}:${disclosure.index}`;
     case "skill":
       return `skill:${disclosure.messageId}:${disclosure.name}`;
+    case "mcp-prompt":
+      return `mcp-prompt:${disclosure.messageId}`;
     case "notice":
       return `notice:${disclosure.messageId}`;
   }

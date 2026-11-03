@@ -25,6 +25,7 @@ import {
   answerOf,
   entriesOf,
   type ShownSkill,
+  shownMcpPrompt,
   shownPages,
   shownReview,
   shownSkills,
@@ -34,6 +35,7 @@ import type { AttachedPage } from "@cloudpid/protocol";
 import { pageHost, pageLabel } from "./attached-pages.ts";
 import { entryIdOf } from "../session/tree.ts";
 import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
+import { McpPromptDisclosure } from "./prompt-message.tsx";
 import { ViaChip } from "./via-chip.tsx";
 
 /**
@@ -112,11 +114,13 @@ const UserMessage = () => {
   const pages = shownPages(custom);
   const review = shownReview(custom);
   const via = shownVia(custom);
+  const prompt = shownMcpPrompt(custom);
 
   return (
     <MessagePrimitive.Root className="group/message flex flex-col items-end gap-1">
       <div className="max-w-[85%] min-w-0 rounded-lg bg-muted px-4 py-2 break-words">
         <MessagePrimitive.Parts components={USER_PARTS} />
+        {prompt !== undefined && <McpPromptDisclosure prompt={prompt} messageId={id} />}
         {via !== undefined && <ViaChip via={via} />}
         {pages.length > 0 && (
           <ul aria-label="Attached pages" className="mt-1.5 flex flex-col gap-1.5">
