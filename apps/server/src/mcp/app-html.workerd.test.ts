@@ -63,6 +63,15 @@ const setOf = (...entries: ReadonlyArray<McpSetEntry>): McpApplySet => ({
 
 const URI = "ui://docs/app";
 
+/** A page read and marked mounted at `now`, as a mount's `ui/html` does it (`request.ts`'s `mountedPage`). */
+const mounted = (store: ReturnType<typeof openMcpHostStore>, hash: string, now: number) => {
+  const page = store.readApp(hash);
+
+  if (page !== undefined) store.touchApp(hash, now);
+
+  return page;
+};
+
 /** `echo`, `app` (whose App is `URI`) and `later` (whose App is `ui://docs/later`), as the server lists them. */
 const TOOLS = [
   { name: "echo", inputSchema: { type: "object" } },
@@ -788,13 +797,13 @@ describe("the App store", () => {
       });
 
       // Mounting the oldest makes it the most recent: the next one in line goes when another page comes.
-      expect(store.appHtml("hash-p0", 5000)?.html.length).toBe(size);
+      expect(mounted(store, "hash-p0", 5000)?.html.length).toBe(size);
 
       store.putApp("conn", "ui://app/16", "v1", pageOf("p16", size), 6000);
 
-      expect(store.appHtml("hash-p1", 7000)).toBeUndefined();
-      expect(store.appHtml("hash-p0", 7000)).toBeDefined();
-      expect(store.appHtml("hash-p16", 7000)).toBeDefined();
+      expect(mounted(store, "hash-p1", 7000)).toBeUndefined();
+      expect(mounted(store, "hash-p0", 7000)).toBeDefined();
+      expect(mounted(store, "hash-p16", 7000)).toBeDefined();
       expect(store.appUi("conn", "ui://app/1")).toBeUndefined();
       expect(store.appUi("conn", "ui://app/0")).toEqual({ hash: "hash-p0", version: "v1" });
       expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM mcp_app_ui").one()).toEqual({
@@ -810,7 +819,7 @@ describe("the App store", () => {
       store.putApp("conn", "ui://app/big", "v1", pageOf("big", 4 * 1024 * 1024), 8000);
       store.putApp("conn", "ui://app/big2", "v1", pageOf("big2", 4 * 1024 * 1024), 9000);
 
-      expect(store.appHtml("hash-big2", 9500)).toBeDefined();
+      expect(mounted(store, "hash-big2", 9500)).toBeDefined();
     });
   });
 
@@ -826,7 +835,7 @@ describe("the App store", () => {
       expect(
         Number(state.storage.sql.exec("SELECT COUNT(*) AS n FROM mcp_app_html").one()["n"]),
       ).toBeGreaterThan(1);
-      expect(store.appHtml("h", 2)).toEqual({ hash: "h", html, meta: { domain: "d.test" } });
+      expect(mounted(store, "h", 2)).toEqual({ hash: "h", html, meta: { domain: "d.test" } });
     });
   });
 
@@ -854,7 +863,7 @@ describe("the App store", () => {
       store.pruneOutsideSet(["conn-other"], 40 * day);
 
       expect(store.appUi("conn-gone", URI)).toBeUndefined();
-      expect(store.appHtml("hash-a", 3)).toBeDefined();
+      expect(mounted(store, "hash-a", 3)).toBeDefined();
     });
   });
 });

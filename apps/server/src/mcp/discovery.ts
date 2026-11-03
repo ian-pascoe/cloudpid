@@ -126,6 +126,22 @@ export const halt = Effect.gen(function* () {
   discovery.halted.value = true;
 });
 
+/** Whether a storage operation has failed: background work (discoveries, a call's App read) does not start. */
+export const isHalted = Effect.gen(function* () {
+  const discovery = yield* McpDiscovery;
+
+  return discovery.halted.value;
+});
+
+/**
+ * A `catchCause` handler that stops background work (`halt`) and answers `failure`: for a method whose storage operation
+ * failed, so its answer is the failure and the instance starts nothing more.
+ */
+export const orHalt =
+  <A>(failure: A) =>
+  () =>
+    Effect.as(halt, failure);
+
 /** Run a write that may fail without failing its caller: a failure halts background work instead. */
 export const writeOrHalt = (write: () => void) => Effect.asVoid(attemptOrHalt(write));
 

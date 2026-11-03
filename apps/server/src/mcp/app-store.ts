@@ -4,6 +4,8 @@
 // (`mcp_app_html_meta`), and its HTML as UTF-8 chunks (`mcp_app_html`). A page is kept once however many servers or URIs
 // give it, at most 64 MiB of them per Environment, the least recently mounted evicted at each write. An App record
 // pins a hash, so a page outlives the `mcp_app_ui` row that named it until it is evicted.
+// Noting a mount (`touchApp`) is a write apart from the read (`readApp`), so a refused note (a replaced instance,
+// `mcp-connections.md` → Deploys) never costs the page that was read.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 import type { MigrationStorage } from "@cloudpid/effect-durable/sqlite";
 import { McpAppUiMeta, MiB } from "@cloudpid/mcp/types";
@@ -43,8 +45,10 @@ export type AppStore = {
     page: AppPage,
     now: number,
   ) => string;
-  /** The page kept under `hash`, marked mounted at `now`; absent when it was evicted or never kept. */
-  readonly appHtml: (hash: string, now: number) => AppPage | undefined;
+  /** The page kept under `hash`, marked nowhere: the read alone, which a refused write cannot fail; absent when it was evicted or never kept. */
+  readonly readApp: (hash: string) => AppPage | undefined;
+  /** Mark the page under `hash` mounted at `now`, so the pages evicted first are those no View mounted lately. */
+  readonly touchApp: (hash: string, now: number) => void;
 };
 
 const utf8 = new TextEncoder();
@@ -142,7 +146,7 @@ export const appStore = (storage: MigrationStorage): AppStore => {
       return page.hash;
     },
 
-    appHtml: (hash, now) => {
+    readApp: (hash) => {
       const meta = sql
         .exec<{
           readonly bytes: number;
@@ -173,13 +177,15 @@ export const appStore = (storage: MigrationStorage): AppStore => {
 
       if (at !== meta.bytes) return undefined;
 
-      sql.exec("UPDATE mcp_app_html_meta SET last_mounted_at = ? WHERE hash = ?", now, hash);
-
       return {
         hash,
         html: decoder.decode(whole),
         meta: Option.getOrElse(decodeMeta(jsonColumn(meta.meta_json)), () => ({})),
       };
+    },
+
+    touchApp: (hash, now) => {
+      sql.exec("UPDATE mcp_app_html_meta SET last_mounted_at = ? WHERE hash = ?", now, hash);
     },
   };
 };

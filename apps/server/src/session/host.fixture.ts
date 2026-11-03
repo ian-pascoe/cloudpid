@@ -5,6 +5,7 @@
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
+import { type RefusingStorage, refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import {
   Browser,
   BrowserError,
@@ -780,9 +781,22 @@ export class TestSession extends DurableObject {
   /** Resolves when this instance's model request reaches the gate. */
   readonly gated = Promise.withResolvers<void>();
 
+  /**
+   * The gate over this instance's storage, for a Session whose name starts with `mcp-replaced-`: everything the instance
+   * reads or writes goes through it, and `replace()` makes it refuse (`docs/development/workers.md` → Deploys and Durable
+   * Object code updates).
+   */
+  readonly #replaceable: RefusingStorage<DurableObjectStorage> | undefined;
+
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     constructions.set(ctx.id.toString(), (constructions.get(ctx.id.toString()) ?? 0) + 1);
+
+    if (ctx.id.name?.startsWith("mcp-replaced-") === true) {
+      this.#replaceable = refusingStorage(ctx.storage);
+      // Every `ctx.storage` this object reads from here on is the gate, as the host and its layers are built over it.
+      Object.defineProperty(ctx, "storage", { value: this.#replaceable.storage });
+    }
 
     // As the model proxy's provider is named, so the settings' model ids resolve.
     const faux = fauxProvider({
@@ -1867,6 +1881,14 @@ export class TestSession extends DurableObject {
   /** The statuses this Session reported, oldest first, counting only reports the Registry received. */
   reported(): readonly SessionStatus[] {
     return this.ctx.storage.kv.get<SessionStatus[]>("reported") ?? [];
+  }
+
+  /**
+   * The code update reaches this instance (a Session named `mcp-replaced-*`): from now on its storage refuses every
+   * operation, while the calls it has carry on.
+   */
+  replace(): void {
+    this.#replaceable?.trip();
   }
 
   /** Put this Session in Environment `environment`, whose MCP set has `servers` servers, as the Registry says. */

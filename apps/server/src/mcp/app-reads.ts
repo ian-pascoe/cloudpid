@@ -30,6 +30,7 @@ import {
   type McpHostRequestResult,
   TimedOut,
 } from "@cloudpid/mcp/types";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -44,7 +45,7 @@ import { isJsonObject } from "@cloudpid/mcp/types";
 import type { PriorRows } from "./store.ts";
 import { appContentOf, jsonOf, listedUiMetaOf, pageOf } from "./app-html.ts";
 import { type AppPage } from "./app-store.ts";
-import { type McpDiscoveryServices, attemptOrHalt } from "./discovery.ts";
+import { type McpDiscoveryServices, attemptOrHalt, halt, isHalted } from "./discovery.ts";
 import {
   abortOf,
   callContextOf,
@@ -356,16 +357,20 @@ const fly = (
 
     return yield* finish(page.success);
   }).pipe(
-    // A read that dies of a defect still ends its flight, with a failure that is no server's.
-    Effect.catchCause(() =>
-      Effect.suspend(() => {
-        if (reads.flights.get(keyOf(read)) === flight) reads.flights.delete(keyOf(read));
+    // A read that dies of a defect (a storage operation that failed) still ends its flight, with a failure that is no
+    // server's, and stops background work. One that was interrupted is no failure.
+    Effect.catchCause((cause) =>
+      Effect.andThen(
+        Cause.hasInterruptsOnly(cause) ? Effect.void : halt,
+        Effect.suspend(() => {
+          if (reads.flights.get(keyOf(read)) === flight) reads.flights.delete(keyOf(read));
 
-        return Deferred.succeed(flight.done, {
-          kind: "failed",
-          answer: HostFailed.make({ message: "The MCP host could not read an App's HTML" }),
-        });
-      }),
+          return Deferred.succeed(flight.done, {
+            kind: "failed",
+            answer: HostFailed.make({ message: "The MCP host could not read an App's HTML" }),
+          });
+        }),
+      ),
     ),
     Effect.asVoid,
     // A backstop: an ended flight is never left in the map.
@@ -429,13 +434,16 @@ export const startMountRead = (
 /**
  * A call's read of `read`'s page: the one in flight if there is one, else a new one, none when the page's last read
  * failed for this inventory `version` less than a minute ago. The caller's abort cancels a read it started, until
- * `stopWatching`; with no `hooks`, nothing does.
+ * `stopWatching`; with no `hooks`, nothing does. None once a storage operation has failed (background work stopped).
  */
 export const startCallRead = (
   read: AppRead,
   hooks: McpHostRequestHooks | undefined,
 ): Effect.Effect<Option.Option<StartedRead>, never, AppReadServices> =>
   Effect.gen(function* () {
+    // A storage operation failed: this instance was replaced, and a read it started could not keep its page.
+    if (yield* isHalted) return Option.none();
+
     const reads = yield* McpAppReads;
     const key = keyOf(read);
     const held = reads.failures.get(key);

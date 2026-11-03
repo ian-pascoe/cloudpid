@@ -41,6 +41,7 @@ import type { Mutable } from "effect/Types";
 import { type RequestAccess, requestAccess } from "./discovery-auth.ts";
 import {
   attemptOrHalt,
+  halt,
   isWorkspaceGone,
   targetOf,
   type McpDiscoveryServices,
@@ -388,10 +389,12 @@ export const sendToEngine = (
     yield* access.answered(result);
 
     // What the server said during the call: kept in its ring, `warning` and above also a span event. A write the
-    // storage refuses loses the logs, never the result.
+    // storage refuses loses the logs, never the result, and stops background work.
     yield* recordLogs(server.conn, result.logs).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("The call's MCP server logs were not kept", cause),
+        Effect.logWarning("The call's MCP server logs were not kept", cause).pipe(
+          Effect.andThen(halt),
+        ),
       ),
     );
 
