@@ -300,7 +300,26 @@ describe("Sign-in requests", () => {
       yield* Fiber.interrupt(other);
     }));
 
-  test("take the Registry's last failure at a re-check, and keep what they show when it has none", () =>
+  test("keep a failure a failed attempt carried over the Registry's older last failure at a re-check", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const { signIns, script } = open(storage);
+
+      yield* Effect.forkChild(signIns.ask(ASK));
+      yield* settle;
+      yield* signIns.failed(["signin-1"], "The code was refused");
+
+      // The Registry's `lastError` has no time: it is no newer than what the card shows.
+      script.state.answer = () => ({ ...OPEN, problem: "An older failure" });
+      yield* signIns.recheck;
+      expect((yield* signIns.pending)[0]?.problem).toBe("The code was refused");
+
+      // A carried failure is the newest word, and replaces whatever shows.
+      yield* signIns.failed(["signin-1"], "The code was refused again");
+      expect((yield* signIns.pending)[0]?.problem).toBe("The code was refused again");
+    }));
+
+  test("fill a card that shows no problem with the Registry's last failure at a re-check, and keep it when the Registry has none", () =>
     Effect.gen(function* () {
       const { storage } = memoryStorage();
       const { signIns, script } = open(storage);

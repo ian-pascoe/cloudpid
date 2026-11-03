@@ -204,8 +204,16 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
       return true;
     });
 
-  /** Show `problem` (none clears it) on each of the open requests `ids`, telling the clients when one changed. */
-  const showProblem = (ids: ReadonlyArray<string>, problem: string | undefined) =>
+  /**
+   * Show `problem` (none clears it) on each of the open requests `ids`, telling the clients when one changed. With
+   * `only: "unshown"`, a request that shows a problem already keeps it: the Registry's `lastError` carries no time, so it is not
+   * known to be newer than what a failed attempt carried here.
+   */
+  const showProblem = (
+    ids: ReadonlyArray<string>,
+    problem: string | undefined,
+    only: "all" | "unshown" = "all",
+  ) =>
     Effect.gen(function* () {
       const shown =
         problem === undefined ? undefined : (yield* options.redact({ problem })).problem;
@@ -217,6 +225,8 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
           if (!Arr.contains(ids, each.request.id) || each.outcome !== undefined) return each;
 
           if (each.request.problem === shown) return each;
+
+          if (only === "unshown" && each.request.problem !== undefined) return each;
 
           changed += 1;
 
@@ -245,9 +255,9 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
 
           if (ended !== undefined) return Effect.asVoid(finish(each.request.id, ended));
 
-          // Still open: the Registry's word on the sign-in now (its last failure, when it has one) is what the card shows.
+          // Still open: the Registry's word on the sign-in (its last failure, when it has one) fills a card that shows none.
           return answer.status === "open" && answer.problem !== undefined
-            ? Effect.asVoid(showProblem([each.request.id], answer.problem))
+            ? Effect.asVoid(showProblem([each.request.id], answer.problem, "unshown"))
             : Effect.void;
         }),
         Effect.catch((error) =>

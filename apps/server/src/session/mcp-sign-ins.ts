@@ -1,8 +1,9 @@
 // The Session's Sign-in requests (`docs/architecture/mcp-sign-in.md` → Sign-in requests): the agent's asks that the owner
 // sign in to an MCP server, shown on every client's card over the Session socket and pushed once for the first open request
 // of a sign-in's key. They are durable (the Session's storage), and the Registry keeps one waiter row for each, which
-// the Registry reads back when a sign-in completes, and the main Worker carries the result to the Session (`mcp/sign-in-sessions.ts`, which calls the Session's `mcpSignInsResolved`). The
-// tool that asks is built outside the Session's runtime (`./mcp-host.ts`), so the service is made synchronously, and the
+// it reads back when a sign-in completes. The main Worker carries the result to the Session (`mcp/sign-in-sessions.ts`):
+// `mcpSignInsResolved` ends the requests a completed sign-in resolved, and `mcpSignInsFailed` shows a failed attempt on
+// the requests that stay open. The tool that asks is built outside the Session's runtime (`./mcp-host.ts`), so the service is made synchronously, and the
 // Secrets the agent's words are redacted of are bound when the runtime builds its layer.
 import {
   createMcpSignIns,

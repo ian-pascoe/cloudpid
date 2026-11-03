@@ -104,7 +104,9 @@ const call = (
 /** A host whose set is `entries`, each discovered with `tools`, its Registry answering `tokens` for each in turn. */
 const discovered = async (
   tools: ReadonlyArray<string>,
-  ...entries: ReadonlyArray<McpSetEntry & { readonly tokens?: ReadonlyArray<McpAccessTokenAnswer> }>
+  ...entries: ReadonlyArray<
+    McpSetEntry & { readonly tokens?: ReadonlyArray<McpAccessTokenAnswer | "unreachable"> }
+  >
 ) => {
   const host = freshHost();
 
@@ -620,7 +622,7 @@ const failedCall = (error: Readonly<Record<string, Schema.Json>>) =>
 const unauthorized = failedCall({ _tag: "SignInRequired", message: "401", rejected: false });
 
 /** `sentry` in a host's set, discovered, with its Registry answering `tokens` in turn (the last for good). */
-const signedIn = (tokens: ReadonlyArray<McpAccessTokenAnswer>) =>
+const signedIn = (tokens: ReadonlyArray<McpAccessTokenAnswer | "unreachable">) =>
   discovered(["search"], { ...entry("sentry"), tokens });
 
 describe("a request to a server with a sign-in", () => {
@@ -736,6 +738,17 @@ describe("a request that is not sent for a sign-in that cannot be used for now",
   );
 });
 
+describe("a request that is not sent because the Registry cannot be asked for a token", () => {
+  it("fails as a plain unreachable, with no signIn: it is not a problem of the owner's sign-in", async () => {
+    const host = await signedIn([{ status: "required", reason: "Not signed in" }, "unreachable"]);
+    const answer = await host.request(call("sentry", "search"), {});
+
+    expect(answer).toMatchObject({ _tag: "CallFailed", error: { _tag: "Unreachable" } });
+    expect(answer).not.toHaveProperty("error.signIn");
+    expect(await host.engineRequests()).toEqual([]);
+  });
+});
+
 describe("a request to a server that signs in on its own", () => {
   const GRANT = {
     oauth: {
@@ -797,8 +810,8 @@ describe("a request to a server that signs in on its own", () => {
     }
   });
 
-  it("never marks a refresh that fails, or a Registry that is not available, as a sign-in the owner could give", async () => {
-    for (const status of ["refresh_failing", "unavailable"] as const) {
+  it("never marks a refresh that fails, a Registry that is not available or a token that could not be had as a sign-in the owner could give", async () => {
+    for (const status of ["refresh_failing", "unavailable", "failed"] as const) {
       const host = await grantHost([
         {
           status: "ok",

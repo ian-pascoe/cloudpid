@@ -120,7 +120,7 @@ const asRejected = (result: McpEngineDiscoverResult): McpEngineDiscoverResult =>
 
 /**
  * Why there is no token to connect with, as the state and message the server is left in; undefined to connect without
- * one.
+ * one. A Registry that cannot be asked at all is `unavailable` and no `userSignIn`: it is no problem of the sign-in's.
  */
 const blockedBy = (access: NoToken, previous: McpServerState | undefined): Blocked | undefined => {
   if (access.kind === "unreachable") return { state: "unavailable", message: access.message };
@@ -147,7 +147,12 @@ const blockedBy = (access: NoToken, previous: McpServerState | undefined): Block
         userSignIn: true,
       };
     default:
-      return { state: "unavailable", message: access.reason, userSignIn: true };
+      // `failed` is a client grant's: no sign-in of the owner's is in the way, even where its entry changed mid-call.
+      return {
+        state: "unavailable",
+        message: access.reason,
+        userSignIn: access.status === "unavailable",
+      };
   }
 };
 

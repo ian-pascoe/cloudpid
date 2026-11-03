@@ -65,8 +65,6 @@ export const MCP_RESOURCE_TOOLS: ReadonlyArray<string> = [
   "read_mcp_resource",
 ];
 
-/** The sign-in tool: the intro names it only when the `mcp` extension registers it. */
-
 /** Which tools the intro may name: those the build registers. Each sentence about one is added in `mcpServersIntro`. */
 export type McpIntroFeatures = { readonly resourceTools: boolean; readonly signIn: boolean };
 
