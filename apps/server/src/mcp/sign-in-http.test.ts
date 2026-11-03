@@ -359,7 +359,7 @@ describe("the start", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("location")).toBe(null);
-      expect(response.headers.get("content-security-policy")).toContain("form-action 'self'");
+      expect(response.headers.get("content-security-policy")).not.toContain("form-action");
       expect(html).toContain(`<form method="post" action="/oauth/mcp/start">`);
       expect(html).toContain(`name="environment" value="env_1"`);
       expect(html).toContain(`name="server" value="sentry"`);

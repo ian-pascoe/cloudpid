@@ -84,8 +84,40 @@ describe("the CSP hashes", () => {
       clientId: "https://cloudpid.example/oauth/mcp/client.json",
     });
 
-    expect(interstitial.headers["content-security-policy"]).toContain("form-action 'self'");
     expect(interstitial.headers["content-security-policy"]).toContain("script-src 'none'");
+  });
+});
+
+describe("the CSP of the form pages", () => {
+  const forms = [
+    startPromptPage({
+      environment: "env_1",
+      server: "sentry",
+      stepUp: false,
+      requester: undefined,
+      back: undefined,
+    }),
+    interstitialPage({
+      state: "s".repeat(43),
+      server: "sentry",
+      source: "owner",
+      url: "https://mcp.example/mcp",
+      issuer: "https://as.example",
+      clientId: "client",
+    }),
+  ];
+
+  // Browsers apply `form-action` to every redirect after the submission, so `'self'` blocks the POST's 303 to the
+  // authorization server. Nothing else is loosened.
+  it.each(forms)("has no form-action and keeps every other directive", (page) => {
+    const csp = page.headers["content-security-policy"] ?? "";
+
+    expect(csp).not.toContain("form-action");
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'none'");
+    expect(csp).toContain("base-uri 'none'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(page.headers["x-frame-options"]).toBe("DENY");
   });
 });
 
@@ -315,7 +347,7 @@ describe("the page a start asks on", () => {
     });
 
     expect(page.status).toBe(200);
-    expect(page.headers["content-security-policy"]).toContain("form-action 'self'");
+    expect(page.headers["content-security-policy"]).not.toContain("form-action");
     expect(page.headers["content-security-policy"]).toContain("script-src 'none'");
     expect(page.html).not.toContain("<i>");
     expect(page.html).toContain("All Environments");

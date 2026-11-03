@@ -105,7 +105,10 @@ const render = (status: number, body: Body): Page => {
     `style-src ${cspHash(PAGE_STYLE)}`,
     `script-src ${body.outcome === undefined ? "'none'" : cspHash(CALLBACK_SCRIPT)}`,
     "base-uri 'none'",
-    `form-action ${body.formAction ? "'self'" : "'none'"}`,
+    // A form page has no `form-action`: browsers apply it to every redirect after the submission too, so `'self'` blocks the
+    // 303 to the authorization server (whose origin is not known when the page renders, so it cannot be listed). The POST's
+    // safety is the Worker's own (`Origin` and `Sec-Fetch-Site`), and the page cannot be framed or run a script.
+    ...(body.formAction ? [] : ["form-action 'none'"]),
     "frame-ancestors 'none'",
   ].join("; ");
 
