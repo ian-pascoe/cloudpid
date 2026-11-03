@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-durable/codemode";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import type { Mutable } from "effect/Types";
 import type { McpRequestStartInput, McpToolsService } from "./mcp.ts";
 import type { FakeMcpServer } from "./mcp.testing.ts";
 import { openSubagentHarness } from "./subagents/harness.fixture.ts";
@@ -75,17 +76,28 @@ export const codemodeWith = (namespaces: ReadonlyArray<CodemodeNamespace>) =>
 export const open = async (
   script: Parameters<typeof openSubagentHarness>[0],
   env?: NonNullable<Parameters<typeof openSubagentHarness>[3]>["env"],
+  /** The subagent options (its toolsets, say) and the Session's Subagent Workspaces. */
+  more: {
+    readonly options?: Parameters<typeof openSubagentHarness>[1];
+    readonly workspaces?: NonNullable<Parameters<typeof openSubagentHarness>[3]>["workspaces"];
+  } = {},
 ) => {
+  const wiring: Mutable<NonNullable<Parameters<typeof openSubagentHarness>[3]>> = {};
+
+  if (env !== undefined) wiring.env = env;
+
+  if (more.workspaces !== undefined) wiring.workspaces = more.workspaces;
+
   const session = await openSubagentHarness(
     script,
-    {},
+    more.options ?? {},
     [
       await Effect.runPromise(
         ToolSearch(["read"]).pipe(Effect.provide(fixedToolSearchSettings([]))),
       ),
       codemodeWith([]),
     ],
-    env === undefined ? {} : { env },
+    wiring,
   );
 
   /** What a reinstall of `tools` gives, installed with `codemode` and `tool-search` together, as the Session does. */

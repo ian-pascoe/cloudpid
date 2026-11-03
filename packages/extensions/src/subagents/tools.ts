@@ -338,7 +338,7 @@ const SpawnParameters = Schema.Struct({
       Schema.Array(Schema.String.check(Schema.isMinLength(1))),
     ]).annotate({
       description:
-        'Presets: "read" grants read, grep, find, ls; "modify" adds bash, edit, write; "none" grants only the base toolset. An array names exact ordinary tools. Tools a preset or an array grants are offered to the child even if they are deferred for you; omit to grant your own ordinary tools, of which the child is offered the usual defaults and finds the rest with tool_search (all of them when you have no tool_search). Grants never exceed your own tools; coordinator tools are granted by delegation and must not appear here.',
+        'Presets: "read" grants read, grep, find, ls; "modify" adds bash, edit, write; "none" grants only the base toolset. An array names exact ordinary tools. Tools a preset or an array grants are offered to the child even if they are deferred for you; omit to grant your own ordinary tools, of which the child is offered the usual defaults and finds the rest with tool_search (all of them when you have no tool_search). MCP tools (mcp__<server>__<tool>) come with the child only when you omit tools, name them in the array, or the toolsets the owner set name them. Grants never exceed your own tools; coordinator tools are granted by delegation and must not appear here.',
     }),
   ),
   delegation: Schema.optionalKey(
