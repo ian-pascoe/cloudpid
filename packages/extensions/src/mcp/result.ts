@@ -233,7 +233,10 @@ export const failureResult = (
       ? // The host answers with a task only to a call that asked for one (`ctx.allowTask`), which a tool call does not
         // yet; the Session-side tools that follow tasks come with their own ticket.
         failedWith("The MCP host answered with an MCP task the call did not ask for.", details)
-      : failedWith(result.message, details);
+      : Predicate.isTagged(result, "AppHtml")
+        ? // Only a `ui/html` request is answered so, and a tool call is never one.
+          failedWith("The MCP host answered a call with App HTML", details)
+        : failedWith(result.message, details);
 
 const isTaskAnswer = (result: McpHostRequestResult) =>
   Predicate.isTagged(result, "Task") ||

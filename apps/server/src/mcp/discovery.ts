@@ -127,8 +127,11 @@ export const halt = Effect.gen(function* () {
 });
 
 /** Run a write that may fail without failing its caller: a failure halts background work instead. */
-export const writeOrHalt = (write: () => void) =>
-  Effect.sync(write).pipe(Effect.catchCause(() => halt));
+export const writeOrHalt = (write: () => void) => Effect.asVoid(attemptOrHalt(write));
+
+/** `work`'s value, or undefined when the storage refuses it: a refusal halts background work, and fails no one. */
+export const attemptOrHalt = <A>(work: () => A) =>
+  Effect.sync(work).pipe(Effect.catchCause(() => Effect.as(halt, undefined)));
 
 /**
  * The servers and the inventory's versions over them, the versions kept for the next reader. A read that fails fails

@@ -23,7 +23,7 @@ import {
   McpDestroyed,
   McpNoServer,
   McpReloaded,
-  type McpHostRequest,
+  type McpHostRequestInput,
   type McpHostRequestHooks,
   type McpHostRequestResult,
   type McpRequestStart,
@@ -62,6 +62,7 @@ import {
 } from "./discovery.ts";
 import { McpEngineClient, type McpEngineClientService } from "./engine.ts";
 import { serverHashes } from "./inventory.ts";
+import { McpAppReads } from "./app-reads.ts";
 import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
 import { request } from "./request.ts";
@@ -76,8 +77,8 @@ export {
   McpRegistryUnavailable,
 } from "./registry-port.ts";
 
-/** What the host's methods run over: its storage, the Registry, the engine, its load caps and the discoveries in flight. */
-export type McpHostServices = McpDiscoveryServices;
+/** What the host's methods run over: its storage, the Registry, the engine, its load caps, the discoveries in flight and the App reads. */
+export type McpHostServices = McpDiscoveryServices | McpAppReads;
 
 /**
  * The host's services over `store`, `registry` and `engine`, with a fresh set of discoveries; `references` sets the
@@ -98,6 +99,7 @@ export const mcpHostLayer = (deps: {
     McpTokens.layer.pipe(Layer.provide(Layer.succeed(McpRegistryPort, deps.registry))),
     McpDiscovery.layer,
     McpLoadCaps.layer,
+    McpAppReads.layer,
     deps.processEnded === undefined
       ? McpProcessEnded.none
       : Layer.succeed(McpProcessEnded, deps.processEnded),
@@ -689,7 +691,7 @@ export type McpHostMethods = {
    * `op` this host does not know is `HostUnsupported`.
    */
   readonly request: (
-    input: typeof McpHostRequest.Encoded,
+    input: typeof McpHostRequestInput.Encoded,
     hooks: McpHostRequestHooks,
   ) => Effect.Effect<McpHostRequestResult>;
 };

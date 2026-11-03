@@ -1,64 +1,81 @@
-// `McpHost.request` (`docs/architecture/mcp-connections.md` → RPC, The engine → Load caps): a Session's call to one of
-// the Environment's MCP servers, sent through `McpEngine` with the caller's hooks. As built (#452, #460), `op: "tools/call"`
-// to a server that has an inventory, an HTTP server or a stdio server run in the caller's Workspace (`ctx.workspace`; the
-// call may start its Container); any other `op` is `HostUnsupported`.
+// `McpHost.request` (`docs/architecture/mcp-connections.md` → RPC, The engine → Load caps): a Session's request to one of
+// the Environment's MCP servers, through `McpEngine` with the caller's hooks. An `op` not in `McpHostRequestInput` is
+// `HostUnsupported`.
 //
-// The call runs inside the caller's invocation, so the caller's `untilAborted`, `onProgress` and `onInput` stubs live as
-// long as it does (#409 answer 2), and they go on to the engine as they came. A question a Legacy server asks reaches
-// the caller's `onInput` this way (`ctx.answers` says which kinds it takes), and the call's timeout, the engine's, is
-// paused while it waits: the host holds no question state. It takes a request slot on its server (8) and on
-// the host (32), then a slot of the engine queue as a call, served before background work (`limits.ts`). The wait for
-// a slot counts toward the call's timeout: a call still waiting when its timeout passes is answered `Cut` that did not
-// run, never sent, and one sent gives the engine what is left of it. The caller's abort ends a wait at once; once sent,
-// the engine cuts the server request itself. Its target is a discovery's (`targetOf`): the `${NAME}` values resolved, and
-// the Secret ones listed for the engine to scrub (`redact`). A server with a sign-in gets its token through the engine's
-// `auth(stale)` hook, and what it answered is reported to the Registry as a discovery's is (`requestAccess`, in
-// `discovery-auth.ts`); with no token to call with, the call is not sent. The logs the server sent come back in the
-// result, and are kept as a discovery's are (`recordLogs`).
+// - **`tools/call`** (#452, #460): the call of a tool of a server that has an inventory, an HTTP server or a stdio server
+//   run in the caller's Workspace (`ctx.workspace`; the call may start its Container). It runs inside the caller's
+//   invocation, so the caller's `untilAborted`, `onProgress` and `onInput` stubs live as long as it does (#409 answer 2),
+//   and go on to the engine as they came. A question a Legacy server asks reaches the caller's `onInput` this way
+//   (`ctx.answers` says which kinds it takes), and the call's timeout, the engine's, is paused while it waits: the host
+//   holds no question state. It may be offered an MCP task (`ctx.allowTask`, an agent's or an App View's call to an
+//   HTTP server). For an App tool (#466) it also starts the read of the App's HTML when none is kept for the inventory
+//   (`app-reads.ts`), beside the call when the connection is established already and after it otherwise; the call never
+//   waits for it, and answers `app.htmlHash` only if the read has stored the page by then.
+// - **`tasks/get`, `tasks/update`, `tasks/cancel`** (#455): follow a task. They carry the task's server and tool and the
+//   `conn` it was started on, and answer `ServerChanged` when the name's `conn` is another. The host keeps nothing of a
+//   task. A task on a stdio server is `HostUnsupported` until [#494](https://github.com/ian-pascoe/cloudpid/issues/494)
+//   (`docs/architecture/mcp-server-requests.md` → MCP tasks).
+// - **`ui/html`** (#466): App HTML for a View that mounts. By `hash` it is the host's own storage, which needs only a
+//   server of the set. By `uri` it is a read through the engine, joined with the one in flight, with the checks of a call.
+//
+// How a request reaches the engine (the target, the access, the slots, what is done with the answer) is in
+// `engine-round.ts`.
 // @effect-diagnostics missingPipeableSignature:off -- the host's method, not a combinator.
-import { signsInOnItsOwn } from "@cloudpid/config";
 import {
   Cut,
   HostFailed,
   HostUnsupported,
-  McpHostCallFailed,
-  McpHostCompleted,
-  type McpEngineHooks,
-  type McpEngineRequest,
-  type McpEngineRequestResult,
-  McpHostRequest,
   isMcpHostRequestOp,
   isMcpHostTaskRequest,
   MCP_TASK_TIMEOUT_MS,
   MCP_UNASKED_TASK_MESSAGE,
-  type McpHostRequestContext,
-  type McpHostRequestHooks,
-  type McpHostRequestResult,
+  McpHostAppHtml,
+  McpHostAppHtmlRequest,
+  McpHostCompleted,
+  McpHostRequest,
   McpHostTaskAck,
   McpHostTaskStarted,
   McpHostTaskState,
+  type McpEngineRequest,
+  type McpEngineRequestResult,
+  type McpHostRequestContext,
+  type McpHostRequestHooks,
+  type McpHostRequestInput,
+  type McpHostRequestResult,
   McpToolDefinition,
+  NoAppHtml,
   NotAllowed,
   ProtocolViolation,
-  ServerChanged,
-  SignInRequired,
-  Unreachable,
   UnknownServer,
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { type RequestAccess, requestAccess } from "./discovery-auth.ts";
-import { halt, isWorkspaceGone, targetOf, type McpDiscoveryServices } from "./discovery.ts";
-import { McpEngineClient } from "./engine.ts";
-import { McpLoadCaps } from "./limits.ts";
-import { recordLogs } from "./logs.ts";
-import { viewServers } from "./server-state.ts";
-import { processEnded } from "./stdio.ts";
+import { appUriOf } from "./app-html.ts";
+import {
+  type AppRead,
+  type AppReadServices,
+  appReadSoFar,
+  awaitAppRead,
+  readsAlongside,
+  startCallRead,
+  startMountRead,
+  type StartedRead,
+} from "./app-reads.ts";
+import {
+  callContextOf,
+  callFailed,
+  reachServer,
+  resolve,
+  sendToEngine,
+  serverOf,
+} from "./engine-round.ts";
+import { versionsOf } from "./server-state.ts";
 import { McpHostStore } from "./store.ts";
 
 const OpOnly = Schema.Struct({ op: Schema.String });
@@ -66,6 +83,8 @@ const OpOnly = Schema.Struct({ op: Schema.String });
 const decodeOp = Schema.decodeUnknownOption(OpOnly);
 
 const decodeRequest = Schema.decodeUnknownOption(McpHostRequest);
+
+const decodeAppHtml = Schema.decodeUnknownOption(McpHostAppHtmlRequest);
 
 const decodeDefinition = Schema.decodeUnknownOption(McpToolDefinition);
 
@@ -89,58 +108,33 @@ const taskHash = (taskId: string) =>
     ),
   );
 
-const callFailed = (error: McpHostCallFailed["error"]) => McpHostCallFailed.make({ error });
-
-/** A server's `timeout` when its entry has none (`targetOf` always sets one). */
-const DEFAULT_TIMEOUT_MS = 60_000;
+/** The hash an App tool's call answers: the page kept for this inventory, or the one a read already in flight has kept. */
+const keptHash = (started: Option.Option<StartedRead>) =>
+  Option.match(started, {
+    onNone: () => Effect.succeedNone,
+    onSome: ({ flight }) =>
+      appReadSoFar(flight).pipe(
+        Effect.map((outcome) =>
+          Option.flatMap(outcome, (each) =>
+            each.kind === "kept" ? Option.some(each.hash) : Option.none(),
+          ),
+        ),
+      ),
+  });
 
 /**
- * Pending until the caller aborts; never, for a caller with no `untilAborted`. A caller that died rejects it, which
- * ends the wait as an abort does.
+ * `request` for a `tools/call` or a `tasks/*` request: to the server it names, through the engine. For a `tools/call` of an
+ * App tool whose HTML is not kept for this inventory's `version`, the read of its `ui://` resource beside it
+ * (`docs/architecture/mcp-apps.md` → Declaring and reading Apps); the call answers when it is done, with `app` only if the
+ * page is kept by then.
  */
-const abortOf = (hooks: McpHostRequestHooks) =>
-  hooks.untilAborted === undefined
-    ? Effect.never
-    : Effect.tryPromise(() => hooks.untilAborted?.() ?? Promise.resolve()).pipe(Effect.ignore);
-
-/**
- * `request`: the call `input` asks for, to the server it names, with the caller's `hooks`. Never fails: a server not in
- * the set is `UnknownServer`, one that may not be called (switched off or `hidden`, not discovered, a tool its inventory
- * does not list) is `NotAllowed`, and what the engine or the server failed with is `CallFailed`. Without an
- * Environment the host has no Registry to resolve `${NAME}` values with, and refuses.
- *
- * `tools/call` may be offered an MCP task (`ctx.allowTask`, an agent's or an App View's call to an HTTP server), and
- * `tasks/get`, `tasks/update` and `tasks/cancel` follow one: they carry the task's server and tool and the `conn` it was
- * started on, and answer `ServerChanged` when the name's `conn` is another. The host keeps nothing of a task. A task on a
- * stdio server is `HostUnsupported` until [#494](https://github.com/ian-pascoe/cloudpid/issues/494)
- * (`docs/architecture/mcp-server-requests.md` → MCP tasks).
- */
-export const request = (
-  environment: string | undefined,
-  input: typeof McpHostRequest.Encoded,
-  hooks: McpHostRequestHooks,
-): Effect.Effect<McpHostRequestResult, never, McpDiscoveryServices> => {
-  const op = Option.getOrUndefined(decodeOp(input))?.op ?? "";
-
-  return run(environment, op, input, hooks).pipe(
-    Effect.catchCause(() =>
-      Effect.succeed(HostFailed.make({ message: "The MCP host could not read its storage" })),
-    ),
-    Effect.withSpan("mcp.request", { attributes: { op } }),
-  );
-};
-
-const run = (
+const toolCall = (
   environment: string | undefined,
   op: string,
-  input: typeof McpHostRequest.Encoded,
+  input: typeof McpHostRequestInput.Encoded,
   hooks: McpHostRequestHooks,
-): Effect.Effect<McpHostRequestResult, never, McpDiscoveryServices> =>
+): Effect.Effect<McpHostRequestResult, never, AppReadServices> =>
   Effect.gen(function* () {
-    if (!isMcpHostRequestOp(op)) {
-      return HostUnsupported.make({ message: `This host does not know the request ${op}`, op });
-    }
-
     const decoded = decodeRequest(input);
 
     if (Option.isNone(decoded)) return NotAllowed.make({ message: `The ${op} is malformed` });
@@ -153,62 +147,14 @@ const run = (
       yield* Effect.annotateCurrentSpan("mcp.task", yield* taskHash(call.params.taskId));
     }
 
-    if (environment === undefined) {
-      return NotAllowed.make({ message: "The MCP host's name is unknown" });
-    }
+    const resolved = yield* resolve(environment, name, ctx, call);
 
-    const view = Arr.findFirst(yield* viewServers, (each) => each.server.name === name);
+    if (Result.isFailure(resolved)) return resolved.failure;
 
-    if (Option.isNone(view)) {
-      return UnknownServer.make({ message: `No MCP server ${name} in this Environment` });
-    }
-
-    const { server, reach, inventory, state } = view.value;
-
-    // A task is the server's under the `conn` it was started on: another one is another server.
-    if (isMcpHostTaskRequest(call) && call.params.conn !== server.conn) {
-      return ServerChanged.make({
-        message: `MCP server ${name} changed since the task was started`,
-        conn: server.conn,
-        identity: server.identity,
-      });
-    }
-
-    // A cancel is allowed for a server switched off since: the task it started should not outlive the switch.
-    if (reach === "off" && call.op !== "tasks/cancel") {
-      return NotAllowed.make({ message: `MCP server ${name} is switched off or hidden` });
-    }
-
-    // MCP tasks do not run on stdio servers yet (#494); a stdio call is made as it always was.
-    if (reach === "stdio" && isMcpHostTaskRequest(call)) {
-      return HostUnsupported.make({
-        message: `MCP server ${name} runs in a Workspace; MCP tasks on stdio servers are not supported yet`,
-        op,
-      });
-    }
-
-    // A stdio server runs in the Workspace of the caller: with none named, there is no Container to call it in.
-    const workspace = reach === "stdio" ? (ctx.workspace ?? "") : undefined;
-
-    if (workspace === "") {
-      return NotAllowed.make({
-        message: `MCP server ${name} runs in a Workspace, and the call named none`,
-      });
-    }
-
-    // A server that wants a sign-in is not sent the call: the owner signs in first.
-    // (A server that signs in on its own has no such state to wait in: the Registry is asked below.)
-    if ((state === "sign_in" || state === "rejected") && !signsInOnItsOwn(server.server)) {
-      return callFailed(
-        SignInRequired.make({
-          message: `MCP server ${name} needs you signed in`,
-          rejected: state === "rejected",
-        }),
-      );
-    }
+    const { view, views, workspace } = resolved.success;
 
     const heldTool = (toolName: string) =>
-      Option.flatMap(inventory, (held) =>
+      Option.flatMap(view.inventory, (held) =>
         Option.flatMap(
           Arr.findFirst(held.tools, (each) => each["name"] === toolName),
           decodeDefinition,
@@ -216,13 +162,8 @@ const run = (
       );
 
     // A call is offered a task only when the caller can wait for one, for an HTTP server; a `tasks/*` request is a task's.
-    const offeredTask = !isMcpHostTaskRequest(call) && reach === "http" && mayWaitForTask(ctx);
-
-    const callCtx: Mutable<McpEngineToolCall["ctx"]> = { origin: ctx.origin };
-
-    if (ctx.conversation !== undefined) callCtx.conversation = ctx.conversation;
-
-    if (ctx.workspace !== undefined) callCtx.workspace = ctx.workspace;
+    const offeredTask = !isMcpHostTaskRequest(call) && view.reach === "http" && mayWaitForTask(ctx);
+    const callCtx: Mutable<McpEngineToolCall["ctx"]> = { ...callContextOf(ctx) };
 
     if (offeredTask || isMcpHostTaskRequest(call)) callCtx.allowTask = true;
 
@@ -239,162 +180,228 @@ const run = (
       });
     }
 
+    const reached = yield* reachServer(resolved.success);
+
+    if (Result.isFailure(reached)) return reached.failure;
+
     const store = yield* McpHostStore;
-    const engine = yield* McpEngineClient;
-    const caps = yield* McpLoadCaps;
-    const target = yield* targetOf(environment, server, workspace);
 
-    if (Result.isFailure(target)) {
-      return callFailed(Unreachable.make({ message: target.failure.message }));
-    }
+    // An App tool's HTML is read when it is not kept for this inventory.
+    const tool =
+      call.op === "tools/call" ? Option.getOrUndefined(heldTool(call.params.name)) : undefined;
 
-    // A stdio server has no sign-in: its call is made as it is.
-    const access: RequestAccess =
-      target.success.kind === "stdio"
-        ? { kind: "open", answered: () => Effect.void }
-        : yield* requestAccess(environment, view.value, target.success);
+    const uri = tool === undefined ? undefined : appUriOf(tool);
+    const version = versionsOf(views).version;
+    const stored = uri === undefined ? undefined : store.appUi(view.server.conn, uri);
 
-    // No token to call with: not sent, as a discovery would not connect.
-    if (access.kind === "blocked") {
-      return callFailed(
-        access.state === "sign_in" || access.state === "rejected"
-          ? SignInRequired.make({
-              message: `MCP server ${name} needs you signed in: ${access.message}`,
-              rejected: access.state === "rejected",
+    // The call's read waits behind calls in the engine queue.
+    const read: AppRead | undefined =
+      uri === undefined || stored?.version === version
+        ? undefined
+        : {
+            resolved: resolved.success,
+            reached: reached.success,
+            uri,
+            version,
+            ctx,
+            priority: "background",
+          };
+
+    // Beside the call when its connection is established already; else after it, so the two never initialize at once.
+    const alongside =
+      read !== undefined && readsAlongside(store.prior(view.server.conn, workspace));
+
+    const early =
+      read !== undefined && alongside
+        ? yield* startCallRead(read, hooks)
+        : Option.none<StartedRead>();
+
+    // A call that did not complete ends the read it started. One that did leaves it to go on: the caller's stubs end
+    // with this invocation, and the read is its own after that. However the call ends, the watcher goes.
+    const sent = yield* sendToEngine({
+      resolved: resolved.success,
+      reached: reached.success,
+      request: sending.value,
+      hooks,
+      mayHaveRun: true,
+      timeoutMs: isMcpHostTaskRequest(call) ? MCP_TASK_TIMEOUT_MS : undefined,
+      what: isMcpHostTaskRequest(call) ? "The request" : undefined,
+    }).pipe(
+      Effect.tap((result) =>
+        Result.isFailure(result)
+          ? Option.match(early, {
+              onNone: () => Effect.void,
+              onSome: (each) => each.cancel,
             })
-          : Unreachable.make({ message: access.message }),
-      );
-    }
-
-    const run = Effect.runPromiseWith(yield* Effect.context<never>());
-    const { auth } = access;
-
-    const engineHooks: McpEngineHooks =
-      auth === undefined ? hooks : { ...hooks, auth: (stale) => run(auth(stale)) };
-
-    /** Whether the engine was given the call: an abort before it was cannot have run anything. */
-    let sent = false;
-
-    const timeoutMs = isMcpHostTaskRequest(call)
-      ? MCP_TASK_TIMEOUT_MS
-      : (target.success.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-
-    const what = isMcpHostTaskRequest(call) ? "The request" : "The call";
-    const queuedAt = yield* Clock.currentTimeMillis;
-
-    const engineCall = Effect.gen(function* () {
-      const waited = (yield* Clock.currentTimeMillis) - queuedAt;
-
-      sent = true;
-
-      return yield* engine.request(
-        { ...target.success, timeoutMs: Math.max(1, timeoutMs - waited) },
-        store.prior(server.conn, workspace),
-        sending.value,
-        engineHooks,
-      );
-    });
-
-    /** The call's timeout passing while it still waits for a slot; once it is sent, the engine keeps the timeout. */
-    const queuedPast = Effect.sleep(timeoutMs).pipe(
-      Effect.andThen(
-        Effect.suspend(() => (sent ? Effect.never : Effect.succeed("timedOut" as const))),
+          : Effect.void,
+      ),
+      Effect.ensuring(
+        Option.match(early, { onNone: () => Effect.void, onSome: (each) => each.stopWatching }),
       ),
     );
 
-    const answer = yield* caps
-      .inFlight(server.conn, caps.engineCall("call", engineCall), workspace)
-      .pipe(
-        Effect.map((result) => ({ result })),
-        Effect.raceFirst(Effect.as(abortOf(hooks), "aborted" as const)),
-        Effect.raceFirst(queuedPast),
-        Effect.result,
-      );
+    if (Result.isFailure(sent)) return sent.failure;
 
-    if (Result.isFailure(answer)) {
-      // The engine is out of reach, or its RPC broke mid-call: the server may have run it. The cause is logged, never
-      // told the model.
-      yield* Effect.logWarning("The MCP engine's end of a call was lost", answer.failure);
-
-      return callFailed(
-        Cut.make({
-          message: "The host's connection to the MCP engine was lost",
-          mayHaveRun: true,
-          lost: "engine",
-        }),
-      );
-    }
-
-    if (answer.success === "timedOut") {
-      return callFailed(
-        Cut.make({
-          message: `${what} waited for a free slot past its ${timeoutMs / 1000} s timeout, and was not sent`,
-          mayHaveRun: false,
-        }),
-      );
-    }
-
-    if (answer.success === "aborted") {
-      return callFailed(
-        Cut.make({
-          message: sent
-            ? `${what} was cancelled; it may or may not have run`
-            : `${what} was cancelled before it was sent`,
-          mayHaveRun: sent,
-        }),
-      );
-    }
-
-    const { result } = answer.success;
-    const now = yield* Clock.currentTimeMillis;
-
-    // The rows the call changed are kept as a discovery's are; a write the storage refuses never fails the result.
-    const ended = yield* Effect.sync(() =>
-      store.applyEngineState(
-        server.conn,
-        result.state,
-        now,
-        workspace === undefined ? undefined : { workspace, spawn: result.spawn },
-      ),
-    ).pipe(Effect.catchCause(() => Effect.as(halt, undefined)));
-
-    // A stdio server spawned again: the child the row named has ended.
-    if (workspace !== undefined && ended !== undefined) {
-      yield* processEnded(server.conn, workspace, ended);
-    }
-
-    // Its Workspace no longer exists (the bridge's `no_workspace`): whatever ran there is gone with it.
-    if (workspace !== undefined && isWorkspaceGone(result)) {
-      yield* processEnded(server.conn, workspace, undefined);
-    }
-
-    // What the server answered of its sign-in, told the Registry on a change; a report never fails the call.
-    yield* access.answered(result);
-
-    // What the server said during the call: kept in its ring, `warning` and above also a span event. A write the
-    // storage refuses loses the logs, never the result.
-    yield* recordLogs(server.conn, result.logs).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("The call's MCP server logs were not kept", cause),
-      ),
-    );
-
-    if (result.kind === "failed") {
-      // A client grant's refused token is not a sign-in the agent could ask for: the call is unreachable with why.
-      const refusal = access.refusal?.(result);
-
-      return callFailed(
-        refusal === undefined ? result.error : Unreachable.make({ message: refusal }),
-      );
-    }
-
-    return answered(call, result, {
-      conn: server.conn,
-      identity: server.identity,
-      signIn: access.signIn?.(),
+    const answer = answered(call, sent.success.result, {
+      conn: view.server.conn,
+      identity: view.server.identity,
+      signIn: sent.success.signIn,
       mayStartTask: offeredTask,
     });
+
+    // Only a completed call answers an App's hash.
+    if (!Predicate.isTagged(answer, "Completed")) return answer;
+
+    const late =
+      read !== undefined && !alongside
+        ? yield* startCallRead(read, undefined)
+        : Option.none<StartedRead>();
+
+    // The page kept for this inventory, or the one the read has kept by now; a read still running is not waited for.
+    const htmlHash =
+      stored?.version === version
+        ? stored.hash
+        : Option.getOrUndefined(yield* keptHash(Option.orElse(early, () => late)));
+
+    return htmlHash === undefined ? answer : { ...answer, app: { htmlHash } };
   });
+
+/**
+ * `request({ op: "ui/html" })`: App HTML for a View that mounts. By `hash`, the page the host kept, marked mounted: it
+ * touches nothing remote, so it needs only a server of the set, however it is exposed or signed in, and no Workspace. By
+ * `uri`, the `ui://` resource read now and kept, for a call whose read failed, was held back or whose HTML was evicted:
+ * the checks of a call (a server that may be called, in the request's Workspace if it is stdio), and a URI that some
+ * listed tool of the server declares as its App. It joins the read in flight, and is never held back by a failed one.
+ */
+const appHtml = (
+  environment: string | undefined,
+  input: typeof McpHostRequestInput.Encoded,
+  hooks: McpHostRequestHooks,
+): Effect.Effect<McpHostRequestResult, never, AppReadServices> =>
+  Effect.gen(function* () {
+    const asked = decodeAppHtml(input);
+
+    if (Option.isNone(asked)) return NotAllowed.make({ message: "The ui/html is malformed" });
+
+    const { server: name, params, ctx } = asked.value;
+    const store = yield* McpHostStore;
+
+    if ("hash" in params) {
+      const named = yield* serverOf(name);
+
+      if (Option.isNone(named)) {
+        return UnknownServer.make({ message: `No MCP server ${name} in this Environment` });
+      }
+
+      const now = yield* Clock.currentTimeMillis;
+      const page = store.appHtml(params.hash, now);
+
+      return page === undefined
+        ? NoAppHtml.make({ message: "The host holds no App HTML under that hash" })
+        : McpHostAppHtml.make(page);
+    }
+
+    const { uri } = params;
+    const resolved = yield* resolve(environment, name, ctx);
+
+    if (Result.isFailure(resolved)) return resolved.failure;
+
+    const { view, views } = resolved.success;
+
+    const declared = Arr.some(
+      view.inventory.pipe(
+        Option.map((held) => held.tools),
+        Option.getOrElse(() => []),
+      ),
+      (tool) => Option.exists(decodeDefinition(tool), (each) => appUriOf(each) === uri),
+    );
+
+    if (!declared) {
+      return NotAllowed.make({
+        message: `No tool of MCP server ${name} declares ${uri} as its App`,
+      });
+    }
+
+    const reached = yield* reachServer(resolved.success);
+
+    if (Result.isFailure(reached)) return reached.failure;
+
+    const read: AppRead = {
+      resolved: resolved.success,
+      reached: reached.success,
+      uri,
+      version: versionsOf(views).version,
+      ctx,
+      priority: "call",
+    };
+
+    let started = yield* startMountRead(read, hooks);
+    let outcome = yield* awaitAppRead(started.flight, hooks);
+
+    // The read this mount joined was cancelled by its starter's abort: no failure, and not this mount's to give up on.
+    // It reads once more, as the starter of its own.
+    if (outcome !== "left" && outcome.kind === "cancelled") {
+      started = yield* startMountRead(read, hooks);
+      outcome = yield* awaitAppRead(started.flight, hooks);
+    }
+
+    // The mount ended, by its abort or its answer: the read it started goes with it, if it is not done.
+    if (outcome === "left" || outcome.kind === "cancelled") {
+      yield* started.cancel;
+
+      return callFailed(
+        Cut.make({ message: "The read of the App's HTML was cancelled", mayHaveRun: false }),
+      );
+    }
+
+    yield* started.stopWatching;
+
+    if (outcome.kind === "failed") return outcome.answer;
+
+    if (outcome.kind === "unkept") return McpHostAppHtml.make(outcome.page);
+
+    const now = yield* Clock.currentTimeMillis;
+    const page = store.appHtml(outcome.hash, now);
+
+    return page === undefined
+      ? NoAppHtml.make({ message: "The App's HTML was evicted as it was read" })
+      : McpHostAppHtml.make(page);
+  });
+
+/**
+ * `request`: the request `input` asks for, to the server it names, with the caller's `hooks`. Never fails: a server not in
+ * the set is `UnknownServer`, one that may not be called (switched off or `hidden`, not discovered, a tool its inventory
+ * does not list) is `NotAllowed`, and what the engine or the server failed with is `CallFailed`. Without an
+ * Environment the host has no Registry to resolve `${NAME}` values with, and refuses.
+ *
+ * `tools/call` may be offered an MCP task (`ctx.allowTask`, an agent's or an App View's call to an HTTP server), and
+ * `tasks/get`, `tasks/update` and `tasks/cancel` follow one: they carry the task's server and tool and the `conn` it was
+ * started on, and answer `ServerChanged` when the name's `conn` is another. The host keeps nothing of a task. A task on a
+ * stdio server is `HostUnsupported` until [#494](https://github.com/ian-pascoe/cloudpid/issues/494)
+ * (`docs/architecture/mcp-server-requests.md` → MCP tasks). `ui/html` is App HTML for a View that mounts (#466).
+ */
+export const request = (
+  environment: string | undefined,
+  input: typeof McpHostRequestInput.Encoded,
+  hooks: McpHostRequestHooks,
+): Effect.Effect<McpHostRequestResult, never, AppReadServices> => {
+  const op = Option.getOrUndefined(decodeOp(input))?.op ?? "";
+
+  return Effect.gen(function* () {
+    if (!isMcpHostRequestOp(op)) {
+      return HostUnsupported.make({ message: `This host does not know the request ${op}`, op });
+    }
+
+    return op === "ui/html"
+      ? yield* appHtml(environment, input, hooks)
+      : yield* toolCall(environment, op, input, hooks);
+  }).pipe(
+    Effect.catchCause(() =>
+      Effect.succeed(HostFailed.make({ message: "The MCP host could not read its storage" })),
+    ),
+    Effect.withSpan("mcp.request", { attributes: { op } }),
+  );
+};
 
 /**
  * The engine's request for `call` with `ctx`: none for a `tools/call` of a tool the inventory does not list. A `tasks/get`

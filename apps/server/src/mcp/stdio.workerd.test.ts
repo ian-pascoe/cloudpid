@@ -11,6 +11,7 @@ import type {
   McpEngineDiscoverResult,
   McpEngineRequestResult,
   McpHostRequest,
+  McpHostRequestInput,
   McpRequestStart,
   McpSetEntry,
 } from "@cloudpid/mcp/types";
@@ -147,6 +148,9 @@ const discovered = async (tools: ReadonlyArray<string>, ...more: ReadonlyArray<E
 
   return host;
 };
+
+/** `vi.waitFor` with a wait that a loaded machine does not run out of. */
+const waitFor = <A>(check: () => A | Promise<A>) => vi.waitFor(check, { timeout: 8000 });
 
 describe("discovery", () => {
   it("is made on a live caller's demand, in the caller's Workspace, the Container started for it", async () => {
@@ -418,13 +422,13 @@ describe("discoveries per Workspace", () => {
     }
 
     await start(host, WORKSPACE);
-    await vi.waitFor(async () => expect(await host.engineCalls()).toHaveLength(2));
+    await waitFor(async () => expect(await host.engineCalls()).toHaveLength(2));
     await pause();
     expect(await host.engineCalls()).toHaveLength(2);
 
     await host.release(keyOf("a"));
     await host.release(keyOf("b"));
-    await vi.waitFor(async () => expect(await host.engineCalls()).toHaveLength(3));
+    await waitFor(async () => expect(await host.engineCalls()).toHaveLength(3));
     await host.release(keyOf("c"));
     await settled(host);
 
@@ -644,5 +648,153 @@ describe("a call", () => {
     expect(await host.sessionRows("conn-local")).toEqual([
       { workspace: WORKSPACE, spawn: "spawn-2" },
     ]);
+  });
+});
+
+describe("an App tool", () => {
+  const URI = "ui://local/app";
+
+  const APP_TOOL = {
+    name: "app",
+    inputSchema: { type: "object" },
+    _meta: { ui: { resourceUri: URI } },
+  };
+
+  /** The read of the App's HTML. */
+  const readOf = (html: string): RequestScript => ({
+    op: "resources/read",
+    // SAFETY: a completed answer, encoded as the engine sends it.
+    result: {
+      kind: "complete",
+      result: {
+        kind: "inline",
+        value: {
+          contents: [{ uri: URI, mimeType: "text/html;profile=mcp-app", text: html }],
+        },
+      },
+      cacheable: true,
+      fetchedAt: Date.now(),
+      state: {},
+    } as typeof McpEngineRequestResult.Encoded,
+  });
+
+  const htmlBy = (
+    params: { readonly hash: string } | { readonly uri: string },
+    workspace?: string,
+  ): typeof McpHostRequestInput.Encoded => ({
+    op: "ui/html",
+    server: "local",
+    params,
+    ctx:
+      workspace === undefined
+        ? { origin: "app", session: "s-1", conversation: "1" }
+        : { origin: "app", session: "s-1", conversation: "1", workspace },
+  });
+
+  const requestsOf = async (host: Host, op: string) =>
+    (await host.engineRequests()).filter((each) => each.request.op === op);
+
+  const sessionRow = {
+    v: 1,
+    sessionId: "session-1",
+    protocolVersion: "2025-11-25",
+    serverInfo: { name: "local", version: "1" },
+    capabilities: { tools: {} },
+    initializedAt: 1,
+  };
+
+  /** A host whose `local` server was discovered in `WORKSPACE` as `found` says, with the App tool. */
+  const appHost = async (extra: Partial<Encoded> & { readonly spawn?: string }) => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("local")));
+    await host.scriptEngine(keyOf("local"), [found([], { tools: [APP_TOOL], ...extra })]);
+    await start(host, WORKSPACE, { waitFor: ["local"], waitMs: 5000 });
+    await settled(host);
+
+    return host;
+  };
+
+  const legacy = { v: 1, era: "legacy", version: "2025-11-25", probedAt: 1 } as const;
+
+  /** The call held at the server, whether the read is sent while it is, and then the call's and the read's ends. */
+  const readSentWhileHeld = async (host: Host) => {
+    await host.scriptRequest(keyOf("local"), [
+      { ...completed("ok"), hold: true },
+      readOf("<p>app</p>"),
+    ]);
+
+    const pending = host.request(call("local", "app"), {});
+
+    await waitFor(async () => expect(await requestsOf(host, "tools/call")).toHaveLength(1));
+    await pause();
+
+    const alongside = (await requestsOf(host, "resources/read")).length;
+
+    await host.release(keyOf("local"));
+    await pending;
+    await waitFor(async () => expect(await host.appPages()).toHaveLength(1));
+
+    return { alongside, reads: await requestsOf(host, "resources/read") };
+  };
+
+  it("is read beside its call from a Modern server, in the call's Workspace", async () => {
+    const host = await appHost({});
+    const { alongside, reads } = await readSentWhileHeld(host);
+
+    expect(alongside).toBe(1);
+    expect(reads.map((each) => each.target)).toMatchObject([
+      { kind: "stdio", workspace: WORKSPACE, start: true },
+    ]);
+  });
+
+  it("is read beside its call from a Legacy server whose session the Workspace has", async () => {
+    const host = await appHost({
+      era: "legacy",
+      protocolVersion: "2025-11-25",
+      spawn: "spawn-1",
+      state: { era: legacy, session: sessionRow },
+    });
+
+    expect((await readSentWhileHeld(host)).alongside).toBe(1);
+  });
+
+  it("is read only after its call from a Legacy server with no session, so the two never initialize at once", async () => {
+    const host = await appHost({
+      era: "legacy",
+      protocolVersion: "2025-11-25",
+      state: { era: legacy },
+    });
+
+    const { alongside, reads } = await readSentWhileHeld(host);
+
+    // Two `initialize`s would make the bridge spawn a child for each, the second replacing the call's.
+    expect(alongside).toBe(0);
+    expect(reads).toHaveLength(1);
+  });
+
+  it("is served by its hash with no Workspace and no Container, but a read of its URI needs the Workspace", async () => {
+    const host = await appHost({});
+
+    await readSentWhileHeld(host);
+
+    const hash = (await host.appPages())[0]?.hash ?? "";
+
+    expect(await host.request(htmlBy({ hash }), {})).toMatchObject({
+      _tag: "AppHtml",
+      html: "<p>app</p>",
+    });
+    expect(await host.request(htmlBy({ uri: URI }), {})).toMatchObject({ _tag: "NotAllowed" });
+
+    // With the Workspace it is read, in that Workspace, and may start its Container.
+    await host.scriptRequest(keyOf("local"), [readOf("<p>again</p>")]);
+    expect(await host.request(htmlBy({ uri: URI }, ELSEWHERE), {})).toMatchObject({
+      _tag: "AppHtml",
+      html: "<p>again</p>",
+    });
+    expect((await requestsOf(host, "resources/read")).at(-1)?.target).toMatchObject({
+      workspace: ELSEWHERE,
+      start: true,
+    });
   });
 });

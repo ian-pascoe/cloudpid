@@ -13,6 +13,7 @@ import {
   WebStandardStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/server";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 
@@ -159,8 +160,38 @@ const AskArguments = Schema.Struct({
   giveUpMs: Schema.optionalKey(Schema.Int),
 });
 
+/** The MIME type of an MCP App's HTML (`docs/architecture/mcp-apps.md` → Declaring and reading Apps). */
+export const APP_MIME_TYPE = "text/html;profile=mcp-app";
+
+/** A tool of an App server whose App is the `ui://` resource `uri`: it answers as `echo` does. */
+export const appTool = (name: string, uri: string): Tool => ({
+  name,
+  description: "Echo its text, with an App.",
+  inputSchema: { type: "object" as const },
+  _meta: { ui: { resourceUri: uri } },
+});
+
+/** One content item of a fake's resource: text or a base64 blob, with its MIME type and its own `_meta`. */
+export type FakeContent = {
+  readonly uri: string;
+  readonly mimeType?: string;
+  readonly _meta?: Record<string, Schema.Json>;
+} & ({ readonly text: string } | { readonly blob: string });
+
+/** A resource a fake lists and reads: its listing entry's `_meta`, and the content items `resources/read` answers. */
+export interface FakeResource {
+  readonly uri: string;
+  readonly name: string;
+  readonly mimeType?: string;
+  readonly _meta?: Record<string, Schema.Json>;
+  /** What `resources/read` answers; a function makes it at each read, so a test of many large pages holds one at a time. */
+  readonly contents: ReadonlyArray<FakeContent> | (() => ReadonlyArray<FakeContent>);
+}
+
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
 export interface FakeOptions {
+  /** Declares `resources`, lists these, and answers `resources/read` for each by its URI (an unknown one is an error). */
+  readonly resources?: ReadonlyArray<FakeResource>;
   /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
   readonly listMore?: boolean;
   /** What the server says of itself: its `instructions` (default `Use the echo tool.`) and the name in its `serverInfo`. */
@@ -216,6 +247,8 @@ const fakeMcp = (
 
   if (options.logs !== undefined) capabilities.logging = {};
 
+  if (options.resources !== undefined) capabilities.resources = {};
+
   if (options.extensions !== undefined) capabilities.extensions = { ...options.extensions };
 
   const server = new Server(
@@ -244,6 +277,24 @@ const fakeMcp = (
         }
       : { tools: [ECHO_TOOL], nextCursor: "page-2" };
   });
+
+  if (options.resources !== undefined) {
+    const { resources } = options;
+
+    server.setRequestHandler("resources/list", async () => ({
+      resources: resources.map(({ contents: _contents, ...listed }) => listed),
+    }));
+    server.setRequestHandler("resources/read", async (request) => {
+      const found = resources.find((each) => each.uri === request.params.uri);
+
+      if (found === undefined) throw new Error(`No resource ${request.params.uri}`);
+
+      return {
+        contents: [...(Predicate.isFunction(found.contents) ? found.contents() : found.contents)],
+      };
+    });
+  }
+
   server.setRequestHandler("tools/call", async (request, ctx) => {
     await sends?.(server);
 

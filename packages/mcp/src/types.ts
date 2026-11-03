@@ -652,6 +652,12 @@ export const McpEngineRequest = Schema.Union([
     taskId: Schema.String,
     ctx: McpCallContext,
   }),
+  /** One `resources/read`: the server's `ReadResourceResult` is the value. */
+  Schema.Struct({
+    op: Schema.Literal("resources/read"),
+    uri: Schema.String,
+    ctx: McpCallContext,
+  }),
 ]);
 
 export type McpEngineRequest = typeof McpEngineRequest.Type;
@@ -921,6 +927,48 @@ export const McpHostTaskCancel = Schema.Struct({
 
 export type McpHostTaskCancel = typeof McpHostTaskCancel.Type;
 
+/** The MIME type of an MCP App's HTML, which a `ui://` resource's one content item must have exactly. */
+export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
+
+/** The most an App's HTML may weigh, as text. */
+export const MCP_APP_HTML_MAX_BYTES = 4 * MiB;
+
+/**
+ * The most a `resources/read` of a `ui://` resource may answer, JSON as sent (the core's read limit for `ui://`, in
+ * `tap.ts`): 4 MiB of HTML as base64, or escaped, with room.
+ */
+export const MCP_APP_READ_BYTES = 12 * MiB;
+
+/**
+ * What the View is mounted with besides its HTML: the `_meta.ui` of the content item, or of the resource's listing
+ * entry, of which only these keys are kept (`docs/architecture/mcp-apps.md` → Declaring and reading Apps).
+ */
+export const McpAppUiMeta = Schema.Struct({
+  csp: Schema.optionalKey(JsonObject),
+  permissions: Schema.optionalKey(JsonObject),
+  domain: Schema.optionalKey(Schema.String),
+  prefersBorder: Schema.optionalKey(Schema.Boolean),
+});
+
+export type McpAppUiMeta = typeof McpAppUiMeta.Type;
+
+/**
+ * `request({ op: "ui/html" })`: App HTML of server `server`. With `params.hash`, the HTML the host kept under that hash
+ * (what an App record pins); with `params.uri`, the host reads the `ui://` resource now, keeps it and answers it, for a
+ * mount whose read with the call failed.
+ */
+export const McpHostAppHtmlRequest = Schema.Struct({
+  op: Schema.Literal("ui/html"),
+  server: Schema.String,
+  params: Schema.Union([
+    Schema.Struct({ hash: Schema.String }),
+    Schema.Struct({ uri: Schema.String }),
+  ]),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostAppHtmlRequest = typeof McpHostAppHtmlRequest.Type;
+
 /** What `request` takes. Other `op`s (`prompts/get`, `resources/read`, …) come with their slices. */
 export const McpHostRequest = Schema.Union([
   McpHostToolCall,
@@ -931,9 +979,14 @@ export const McpHostRequest = Schema.Union([
 
 export type McpHostRequest = typeof McpHostRequest.Type;
 
+/** Every request the host's `request` answers: what a Session's tool calls and tasks send, or App HTML for a View that mounts. */
+export const McpHostRequestInput = Schema.Union([...McpHostRequest.members, McpHostAppHtmlRequest]);
+
+export type McpHostRequestInput = typeof McpHostRequestInput.Type;
+
 /** The `op`s `request` takes, read from its union: the one list the host's allowlist and its routing come from. */
 const MCP_HOST_REQUEST_OPS: ReadonlyArray<string> = Arr.map(
-  McpHostRequest.members,
+  McpHostRequestInput.members,
   (member) => member.fields.op.literal,
 );
 
@@ -973,6 +1026,8 @@ export interface McpHostRequestHooks {
 export const McpHostCompleted = Schema.TaggedStruct("Completed", {
   result: McpEngineValue,
   structuredOutput: Schema.optionalKey(McpStructuredOutput),
+  /** An App tool's call: the hash its App's HTML is kept under (`ui/html`), once the host has it (`app_html`). */
+  app: Schema.optionalKey(Schema.Struct({ htmlHash: Schema.String })),
 });
 
 export type McpHostCompleted = typeof McpHostCompleted.Type;
@@ -1036,6 +1091,20 @@ export const McpHostCallFailed = Schema.TaggedStruct("CallFailed", {
 
 export type McpHostCallFailed = typeof McpHostCallFailed.Type;
 
+/** `request({ op: "ui/html" })` completed: the HTML under `hash` and what its View is mounted with. */
+export const McpHostAppHtml = Schema.TaggedStruct("AppHtml", {
+  hash: Schema.String,
+  html: Schema.String,
+  meta: McpAppUiMeta,
+});
+
+export type McpHostAppHtml = typeof McpHostAppHtml.Type;
+
+/** The host holds no HTML under that hash: evicted, or never kept. */
+export const NoAppHtml = Schema.TaggedStruct("NoAppHtml", { message: Schema.String });
+
+export type NoAppHtml = typeof NoAppHtml.Type;
+
 /** No server of that name is in the set. */
 export const UnknownServer = Schema.TaggedStruct("UnknownServer", { message: Schema.String });
 
@@ -1049,6 +1118,8 @@ export type NotAllowed = typeof NotAllowed.Type;
 /** What `request` answers. */
 export const McpHostRequestResult = Schema.Union([
   McpHostCompleted,
+  McpHostAppHtml,
+  NoAppHtml,
   McpHostCallFailed,
   UnknownServer,
   NotAllowed,

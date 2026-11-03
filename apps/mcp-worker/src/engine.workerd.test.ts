@@ -12,6 +12,7 @@ import {
   TimedOut,
   Unsupported,
 } from "@cloudpid/mcp/types";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { MiB } from "./units.ts";
@@ -31,7 +32,15 @@ declare global {
 
 /** A target on a fake of `kind`, fresh for `key`. */
 const target = (
-  kind: "modern" | "legacy" | "stateful" | "headers" | "logging" | "unauthorized" | "forbidden",
+  kind:
+    | "modern"
+    | "legacy"
+    | "stateful"
+    | "headers"
+    | "logging"
+    | "apps"
+    | "unauthorized"
+    | "forbidden",
   key: string,
 ) => ({
   kind: "http" as const,
@@ -116,6 +125,52 @@ describe("discover", () => {
     );
 
     expect(discovered).toMatchObject({ kind: "discovered", era: "modern" });
+  });
+});
+
+describe("a resources/read request", () => {
+  it("reads a resource and returns the server's result, scrubbed of the token it was sent", async () => {
+    const server = { ...target("apps", "read-app"), redact: ["sk-echoed-secret-0123456789"] };
+
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        server,
+        {},
+        { op: "resources/read", uri: "ui://docs/app", ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      kind: "complete",
+      result: {
+        kind: "inline",
+        value: {
+          contents: [
+            {
+              uri: "ui://docs/app",
+              mimeType: "text/html;profile=mcp-app",
+              text: "<p>[REDACTED]</p>",
+              _meta: { ui: { prefersBorder: true } },
+            },
+          ],
+        },
+      },
+    });
+    expect((await seen(server)).methods).toContain("resources/read");
+  });
+
+  it("fails as the server's error for a resource it does not have", async () => {
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        target("apps", "read-missing"),
+        {},
+        { op: "resources/read", uri: "ui://docs/none", ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(result.kind === "failed" && Predicate.isTagged(result.error, "ServerError")).toBe(true);
   });
 });
 

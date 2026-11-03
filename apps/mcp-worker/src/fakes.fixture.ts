@@ -4,6 +4,8 @@
 // https://<kind>.test/<key>/_seen` answers what that server received and which of its calls were cancelled.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off -- a fetch handler, Promise-based at its seam.
 import {
+  APP_MIME_TYPE,
+  appTool,
   type FakeOptions,
   type FakeServer,
   hostileServer,
@@ -90,8 +92,31 @@ const wallServer = (status: 401 | 403, challenge: string) => (options: FakeOptio
     () => new Response("denied", { status, headers: { "www-authenticate": challenge } }),
   );
 
+/** A Modern App server: its `app` tool has the App `ui://docs/app`, whose HTML echoes a token its server must not leak. */
+const appServer = (options: FakeOptions) =>
+  modernServer({
+    ...options,
+    resources: [
+      {
+        uri: "ui://docs/app",
+        name: "app",
+        mimeType: APP_MIME_TYPE,
+        contents: [
+          {
+            uri: "ui://docs/app",
+            mimeType: APP_MIME_TYPE,
+            text: `<p>${ECHOED_SECRET}</p>`,
+            _meta: { ui: { prefersBorder: true } },
+          },
+        ],
+      },
+    ],
+    moreTools: [appTool("app", "ui://docs/app")],
+  });
+
 const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map([
   ["modern.test", modernServer],
+  ["apps.test", appServer],
   ["legacy.test", legacyStatelessServer],
   ["stateful.test", legacyStatefulServer],
   ["headers.test", headersServer],

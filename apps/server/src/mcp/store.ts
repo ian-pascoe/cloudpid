@@ -1,14 +1,15 @@
 // `McpHost`'s storage (`docs/architecture/mcp-connections.md` → Storage): the migrations, and the store over them,
-// made of four parts that change for different reasons: the set and `mcp_meta` (`set-store.ts`), the statuses
+// made of five parts that change for different reasons: the set and `mcp_meta` (`set-store.ts`), the statuses
 // (`status-store.ts`), per connection key `conn` the MCP inventory and the rows the engine keeps (`inventory-
-// store.ts`), and the log ring (`log-store.ts`). Here are what spans them: the wipe, and the pruning after a set apply. What the host holds is what the
-// Registry pushed, `${NAME}` unresolved, so no resolved value is ever here; the rest of the tables (watches, App HTML)
+// store.ts`), the log ring (`log-store.ts`) and the App HTML (`app-store.ts`). Here are what spans them: the wipe, and the pruning after a set apply. What the host holds is what the
+// Registry pushed, `${NAME}` unresolved, so no resolved value is ever here; the rest of the tables (watches)
 // come with the slices that use them. Migrations only add, and each shipped one has its digest in
 // `migrations.manifest.ts`. `mcp_sessions.spawn` is unused until the stdio bridge (#460) gives spawn ids.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 // @effect-diagnostics asyncFunction:off -- the object's `deleteAll` is a Promise, and the wipe is its Promise's.
 import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect-durable/sqlite";
 import * as Context from "effect/Context";
+import { type AppStore, appStore } from "./app-store.ts";
 import { type InventoryStore, inventoryStore } from "./inventory-store.ts";
 import { type LogStore, logStore } from "./log-store.ts";
 import { type SetStore, setStore } from "./set-store.ts";
@@ -22,6 +23,8 @@ export {
   type InventoryRows,
   type PriorRows,
 } from "./inventory-store.ts";
+
+export { type AppPage, type AppUiRow, MAX_APP_STORE_BYTES } from "./app-store.ts";
 
 export type { MetaRow, StoredServer, StoredSet } from "./set-store.ts";
 
@@ -104,6 +107,29 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       PRIMARY KEY (conn, seq)
     ) STRICT`);
   },
+  // 5: App HTML (`docs/architecture/mcp-apps.md` → Declaring and reading Apps): per (`conn`, URI) the hash of the page
+  // last read and the inventory `version` it was read at; per hash its size, `_meta.ui` and last mount; its HTML in chunks.
+  (sql) => {
+    sql.exec(`CREATE TABLE mcp_app_ui (
+      conn TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      version TEXT NOT NULL,
+      PRIMARY KEY (conn, uri)
+    ) STRICT`);
+    sql.exec(`CREATE TABLE mcp_app_html_meta (
+      hash TEXT PRIMARY KEY,
+      bytes INTEGER NOT NULL,
+      meta_json TEXT NOT NULL,
+      last_mounted_at INTEGER NOT NULL
+    ) STRICT`);
+    sql.exec(`CREATE TABLE mcp_app_html (
+      hash TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      chunk BLOB NOT NULL,
+      PRIMARY KEY (hash, seq)
+    ) STRICT`);
+  },
 ];
 
 /** How long the inventory of a `conn` that left the set is kept, and how many such `conn`s at most. */
@@ -114,7 +140,8 @@ export const LEFT_INVENTORY_LIMIT = 20;
 export type McpHostStoreService = SetStore &
   StatusStore &
   InventoryStore &
-  LogStore & {
+  LogStore &
+  AppStore & {
     /**
      * Wipe the storage: every table's rows, and the tables, which are made again empty, keeping `revision` as the
      * floor of the sets that may fill it again. Rejects when the storage cannot.
@@ -150,6 +177,7 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
     ...statusStore(storage),
     ...inventoryStore(storage),
     ...logStore(storage),
+    ...appStore(storage),
 
     destroy: async (revision) => {
       await storage.deleteAll();
@@ -182,6 +210,8 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
         sql.exec("DELETE FROM mcp_inventories WHERE conn NOT IN (SELECT conn FROM mcp_status)");
         // So does a ring: it goes with the status of its `conn`, which the discovery that heard it wrote first.
         sql.exec("DELETE FROM mcp_logs WHERE conn NOT IN (SELECT conn FROM mcp_status)");
+        // The page a `conn` read goes with its status; the pages stay, pinned by App records, until evicted.
+        sql.exec("DELETE FROM mcp_app_ui WHERE conn NOT IN (SELECT conn FROM mcp_status)");
       });
     },
   };

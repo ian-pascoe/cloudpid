@@ -5,9 +5,13 @@
  */
 export {
   ASK_TOOL,
+  APP_MIME_TYPE,
+  appTool,
   BIG_TOOL,
   ECHO_TOOL,
+  type FakeContent,
   type FakeOptions,
+  type FakeResource,
   type FakeServer,
   fetchTo,
   HANG_TOOL,

@@ -8,6 +8,8 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import {
+  APP_MIME_TYPE,
+  appTool,
   ECHO_TOOL,
   SHOUT_TOOL,
   type FakeOptions,
@@ -67,6 +69,41 @@ describe.each(servers)("against a %s server", (_name, makeServer, era, streams) 
     expect(tools.value.map((tool) => tool.name)).toEqual(["echo", "shout"]);
     expect(completed(called).value.content).toEqual([{ type: "text", text: "HI" }]);
     expect(rpcMethods(server).filter((method) => method === "tools/list")).toHaveLength(2);
+  });
+
+  it("reads a resource by its URI, and fails for one the server does not have", async () => {
+    const server = makeServer({
+      resources: [
+        {
+          uri: "ui://docs/app",
+          name: "app",
+          mimeType: APP_MIME_TYPE,
+          contents: [{ uri: "ui://docs/app", mimeType: APP_MIME_TYPE, text: "<p>hi</p>" }],
+        },
+      ],
+      moreTools: [appTool("app", "ui://docs/app")],
+    });
+
+    const { read, missing, tools } = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
+        const tools = yield* connection.list("tools", HOST);
+        const read = yield* connection.readResource("ui://docs/app", HOST);
+        const missing = yield* Effect.flip(connection.readResource("ui://docs/none", HOST));
+
+        return { read, missing, tools };
+      }),
+    );
+
+    expect(tools.value.find((tool) => tool.name === "app")?._meta).toEqual({
+      ui: { resourceUri: "ui://docs/app" },
+    });
+    expect(read.kind).toBe("complete");
+    expect(read.value.contents).toEqual([
+      { uri: "ui://docs/app", mimeType: APP_MIME_TYPE, text: "<p>hi</p>" },
+    ]);
+    expect(missing._tag).toBe("ServerError");
+    expect(rpcMethods(server).filter((method) => method === "resources/read")).toHaveLength(2);
   });
 
   it("passes a call's progress to onProgress, and asks for none without it", async () => {
