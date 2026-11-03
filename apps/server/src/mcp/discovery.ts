@@ -143,7 +143,7 @@ const hasNames = (headers: Readonly<Record<string, string>>): boolean =>
   Arr.some(Record.values(headers), (value) => value.includes("${"));
 
 /** An HTTP server's target, its `${NAME}` values resolved by the Registry, or why it cannot be reached. */
-const targetOf = (environment: string, server: StoredServer) =>
+export const targetOf = (environment: string, server: StoredServer) =>
   Effect.gen(function* () {
     const { url, headers, timeout } = server.server;
     const written = stringValues(isJsonObject(headers) ? headers : {});

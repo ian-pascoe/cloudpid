@@ -19,7 +19,10 @@ import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_LIST_WALK_TIMEOUT_MS,
   McpEngineDiscoverResult,
+  type McpEngineHooks,
   type McpEngineMethods,
+  McpEngineRequest,
+  McpEngineRequestResult,
   McpEngineTarget,
 } from "@cloudpid/mcp/types";
 import * as Context from "effect/Context";
@@ -51,6 +54,17 @@ export type McpEngineClientService = {
     target: McpEngineTarget,
     prior: PriorRows,
   ) => Effect.Effect<McpEngineDiscoverResult, McpEngineUnreachable>;
+  /**
+   * Send `request` to the server `target` names, from the rows the host keeps for it, with the caller's `hooks`: a
+   * caller's call runs inside the caller's invocation, so its stubs live as long as the call. No timeout of the
+   * host's own: the engine bounds the call by its `timeout`, which progress resets, and `untilAborted` cuts it.
+   */
+  readonly request: (
+    target: McpEngineTarget,
+    prior: PriorRows,
+    request: McpEngineRequest,
+    hooks: McpEngineHooks,
+  ) => Effect.Effect<McpEngineRequestResult, McpEngineUnreachable>;
 };
 
 /** The engine, as the host sees it: `McpEngine` over the `MCP_ENGINE` binding, or a fake. */
@@ -62,12 +76,42 @@ const encodeTarget = Schema.encodeEffect(McpEngineTarget);
 
 const decodeDiscovered = Schema.decodeUnknownEffect(McpEngineDiscoverResult);
 
+const encodeRequest = Schema.encodeEffect(McpEngineRequest);
+
+const decodeRequested = Schema.decodeUnknownEffect(McpEngineRequestResult);
+
 const unreachable = (message: string) => McpEngineUnreachable.make({ message });
+
+/** An engine with no `request`: an older binding, or a fake that scripts discoveries only. */
+const noRequest: McpEngineMethods["request"] = () =>
+  Promise.reject(new Error("This engine takes no requests"));
 
 /** The engine over `engine`, the `MCP_ENGINE` binding's stub or a fake that answers as one. */
 export const mcpEngineClient = (
-  engine: Pick<McpEngineMethods, "discover">,
+  engine: Pick<McpEngineMethods, "discover"> & Partial<Pick<McpEngineMethods, "request">>,
 ): McpEngineClientService => ({
+  request: (target, prior, request, hooks) =>
+    Effect.gen(function* () {
+      const encoded = yield* Effect.all([encodeTarget(target), encodeRequest(request)]).pipe(
+        Effect.mapError(() => unreachable("The request could not be encoded")),
+      );
+
+      const send = engine.request ?? noRequest;
+
+      const answer = yield* Effect.tryPromise({
+        try: () => send(encoded[0], prior, encoded[1], hooks),
+        catch: (error) =>
+          unreachable(
+            `The MCP engine could not be reached: ${error instanceof Error ? error.message : "no answer"}`,
+          ),
+      });
+
+      return yield* decodeRequested(answer).pipe(
+        Effect.mapError(() =>
+          unreachable("The MCP engine answered with something this build cannot read"),
+        ),
+      );
+    }),
   discover: (target, prior) =>
     Effect.gen(function* () {
       const encoded = yield* encodeTarget(target).pipe(

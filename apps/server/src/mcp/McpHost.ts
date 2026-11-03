@@ -4,10 +4,11 @@
 // MCP servers (the main Worker pushes nothing to one, and a Session skips `requestStart`).
 //
 // Here: the set's storage with its revision, `apply` (`set`, `reload`, `sign_ins`, `destroy`), the pull at
-// `windowOpened`, the MCP inventory (`requestStart`, `servers`) with its discoveries through `McpEngine`, and the host's
-// access tokens (`ask` of the Registry, kept in memory, and the reports of what a server answered: `McpRegistryPort`'s
-// `accessToken` and `reportAuth` below), over one `ManagedRuntime` kept for the object's life. `request` and the rest of `apply` come with their slices; an `apply` kind this build does not
-// know fails as `HostUnsupported`.
+// `windowOpened`, the MCP inventory (`requestStart`, `servers`) with its discoveries through `McpEngine`, a Session's
+// `tools/call` (`request`), and the host's access tokens (`ask` of the Registry, kept in memory, and the reports of what
+// a server answered: `McpRegistryPort`'s `accessToken` and `reportAuth` below), over one `ManagedRuntime` kept for the
+// object's life. The other `request` ops and the rest of `apply` come with their slices; an `apply` kind or `op` this
+// build does not know fails as `HostUnsupported`.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import {

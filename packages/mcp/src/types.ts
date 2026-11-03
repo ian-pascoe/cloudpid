@@ -10,8 +10,10 @@
  * (`docs/architecture/mcp-connections.md` → The engine), and the host's own RPC (`./host.ts`).
  */
 import * as Match from "effect/Match";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import { HostFailed, McpHostFailure, OtherHostFailureFromWire } from "./host.ts";
 import { JsonObject } from "./json.ts";
 import { McpLogEntry } from "./log.ts";
 import { McpAuthChallenge } from "./sign-in.ts";
@@ -513,8 +515,23 @@ export const McpEngineRequestResult = Schema.Union([McpEngineCompleted, McpEngin
 export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
 
 /**
+ * A server's `notifications/progress` on a call, as it reaches the caller (`docs/architecture/mcp-in-a-session.md` →
+ * Calls and results): how far the call is, of `total` if the server knows it, and a message.
+ */
+export const McpProgress = Schema.Struct({
+  progress: Schema.Finite,
+  total: Schema.optionalKey(Schema.Finite),
+  message: Schema.optionalKey(Schema.String),
+});
+
+export type McpProgress = typeof McpProgress.Type;
+
+/** The most progress notices a call passes on in a second (`docs/architecture/mcp-connections.md` → RPC). */
+export const MCP_PROGRESS_PER_SECOND = 10;
+
+/**
  * The callbacks a call carries, passed as RPC stubs that live as long as the caller's invocation (`docs/architecture/
- * mcp.md` → RPC edges). Later slices add `onInput` and `onProgress`. There is no `onLog`: a server's logs come back in
+ * mcp.md` → RPC edges). Later slices add `onInput`. There is no `onLog`: a server's logs come back in
  * the result (`logs`), so a discovery, which passes no hooks, brings them too (`docs/architecture/mcp-connections.md` →
  * Telemetry).
  */
@@ -530,6 +547,11 @@ export interface McpEngineHooks {
   readonly auth?: (stale: boolean) => Promise<string | undefined>;
   /** Called when a request's response headers arrive, so the host can keep its outbound queue across engine calls. */
   readonly opened?: () => void | Promise<void>;
+  /**
+   * A `tools/call`'s progress, at most `MCP_PROGRESS_PER_SECOND` a second; each one also resets the call's timeout. A
+   * hook that fails or is slow fails nothing: the notice is dropped.
+   */
+  readonly onProgress?: (progress: McpProgress) => void | Promise<void>;
 }
 
 /** `McpEngine`'s arguments as they cross RPC, encoded; the engine decodes each. */
@@ -553,5 +575,109 @@ export interface McpEngineMethods {
     hooks: McpEngineHooks,
   ) => Promise<typeof McpEngineRequestResult.Encoded>;
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `McpHost.request`: a Session's call through the host (`docs/architecture/mcp-connections.md` → RPC). Here because it
+// carries the engine's values and failures; the rest of the host's RPC is in `./host.ts`. The edge only gains: an `op`
+// this host does not know is `HostUnsupported`, and a failure under a tag the caller does not know reads as
+// `HostFailed` (`readMcpHostRequestResult`).
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Who a request is for, and how long it may take: the call's id, its origin, and where it comes from. */
+export const McpHostRequestContext = Schema.Struct({
+  callId: Schema.optionalKey(Schema.String),
+  origin: McpCallOrigin,
+  session: Schema.optionalKey(Schema.String),
+  conversation: Schema.optionalKey(Schema.String),
+  /** The calling Workspace (`ws:<id>`), where a stdio server runs. */
+  workspace: Schema.optionalKey(Schema.String),
+});
+
+export type McpHostRequestContext = typeof McpHostRequestContext.Type;
+
+/** `request({ op: "tools/call" })`: call tool `params.name` (the server's own name for it) of server `server`. */
+export const McpHostToolCall = Schema.Struct({
+  op: Schema.Literal("tools/call"),
+  server: Schema.String,
+  params: Schema.Struct({
+    name: Schema.String,
+    arguments: Schema.optionalKey(JsonObject),
+  }),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostToolCall = typeof McpHostToolCall.Type;
+
+/** What `request` takes. Other `op`s (`prompts/get`, `resources/read`, …) come with their slices. */
+export const McpHostRequest = McpHostToolCall;
+
+export type McpHostRequest = typeof McpHostRequest.Type;
+
+/**
+ * The callbacks a Session's request carries, passed as RPC stubs that live as long as its invocation, so the Session
+ * awaits the request for its whole length (`docs/architecture/mcp-connections.md` → RPC).
+ */
+export interface McpHostRequestHooks {
+  /** Pending until the caller aborts the request (it resolves) or dies (it rejects); either way the host cancels it. */
+  readonly untilAborted?: () => Promise<void>;
+  /** The request's progress, at most `MCP_PROGRESS_PER_SECOND` a second. */
+  readonly onProgress?: (progress: McpProgress) => void | Promise<void>;
+}
+
+/** The request completed: the server's result (a `tools/call`'s, `isError` included) and how it fits the output schema. */
+export const McpHostCompleted = Schema.TaggedStruct("Completed", {
+  result: McpEngineValue,
+  structuredOutput: Schema.optionalKey(McpStructuredOutput),
+});
+
+export type McpHostCompleted = typeof McpHostCompleted.Type;
+
+/** The request failed on the way to the server, or the server failed it: the core's failure. */
+export const McpHostCallFailed = Schema.TaggedStruct("CallFailed", {
+  error: McpErrorWire,
+});
+
+export type McpHostCallFailed = typeof McpHostCallFailed.Type;
+
+/** No server of that name is in the set. */
+export const UnknownServer = Schema.TaggedStruct("UnknownServer", { message: Schema.String });
+
+export type UnknownServer = typeof UnknownServer.Type;
+
+/** The server or tool may not be called: switched off, `hidden`, not discovered, or not in its inventory. */
+export const NotAllowed = Schema.TaggedStruct("NotAllowed", { message: Schema.String });
+
+export type NotAllowed = typeof NotAllowed.Type;
+
+/** What `request` answers. */
+export const McpHostRequestResult = Schema.Union([
+  McpHostCompleted,
+  McpHostCallFailed,
+  UnknownServer,
+  NotAllowed,
+  ...McpHostFailure.members,
+]);
+
+export type McpHostRequestResult = typeof McpHostRequestResult.Type;
+
+const McpHostRequestResultWire = Schema.Union([
+  ...McpHostRequestResult.members,
+  OtherHostFailureFromWire,
+]);
+
+const decodeHostRequestResult = Schema.decodeUnknownOption(McpHostRequestResultWire);
+
+/**
+ * `answer`, a `request` answer as it crossed the edge, as a result this build knows: a failure under a tag it does not
+ * know, or anything that is no result, is `HostFailed`.
+ */
+export const readMcpHostRequestResult = (
+  answer: typeof McpHostRequestResult.Encoded,
+): McpHostRequestResult =>
+  Option.getOrElse(decodeHostRequestResult(answer), () =>
+    HostFailed.make({
+      message: "The MCP host answered the request with something that is no result",
+    }),
+  );
 
 export * from "./sign-in.ts";

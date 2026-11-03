@@ -47,6 +47,7 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
+import type { Mutable } from "effect/Types";
 import { authChallenge, classify, type Failure, signInRequired } from "./failures.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
 import { MCP_LOG_LEVEL } from "./log.ts";
@@ -60,6 +61,7 @@ import {
   type McpCallContext,
   type McpAuthChallenge,
   type McpError,
+  type McpProgress,
   ProtocolViolation,
   type SessionRow,
   SessionRowV1,
@@ -106,6 +108,11 @@ export interface McpDeps {
    * without it, it asks for none.
    */
   readonly onLog?: (log: McpLog) => void;
+  /**
+   * A `tools/call`'s progress. With it, a call asks the server for progress (a `progressToken`), and each notice also
+   * resets the call's timeout; without it, the server is asked for none.
+   */
+  readonly onProgress?: (progress: McpProgress) => void;
 }
 
 /** A `notifications/message` as the server sent it: the level, the logger's name and the data, any JSON. */
@@ -737,6 +744,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           toolDefinition: Struct.omit(params.tool, ["outputSchema"]),
         };
 
+        if (deps.onProgress !== undefined) options.onprogress = progressOf(deps.onProgress);
+
         return client.callTool(call, options);
       }, true);
 
@@ -773,6 +782,27 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
   return connection;
 });
+
+/** The SDK's progress callback over `onProgress`: the notice's fields the core passes on, and nothing more. */
+const progressOf =
+  (onProgress: (progress: McpProgress) => void) =>
+  ({
+    progress,
+    total,
+    message,
+  }: {
+    progress: number;
+    total?: number | undefined;
+    message?: string | undefined;
+  }) => {
+    const notice: Mutable<McpProgress> = { progress };
+
+    if (total !== undefined) notice.total = total;
+
+    if (message !== undefined) notice.message = message;
+
+    onProgress(notice);
+  };
 
 /** Whether a token is in play, so redirects are never followed (The MCP core #394, smaller decisions). */
 const tokenBearing = (target: McpTarget, deps: McpDeps) =>

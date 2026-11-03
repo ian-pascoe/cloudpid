@@ -132,7 +132,9 @@ export class TestSubagentSession extends DurableObject {
           Layer.provide(
             Layer.mergeAll(
               Layer.succeed(SessionRegistry, {
-                report: () => Effect.void,
+                // A message is placed once the Session reports itself running, so holding the report holds a message
+                // in the middle of being placed (`holdPlacing`).
+                report: () => Effect.promise(() => this.#placing?.promise ?? Promise.resolve()),
                 // Recorded in storage, so a test reads them across instances; `failAgentReports` makes them fail.
                 reportAgents: (agents) =>
                   ctx.storage.kv.get<boolean>(AGENT_REPORTS_FAIL) === true
@@ -148,17 +150,11 @@ export class TestSubagentSession extends DurableObject {
                 setTitle: () => Effect.void,
               }),
               sessionSettingsLayer({
-                // The read of the settings is the first step of placing a message, so holding it holds a message
-                // in the middle of being placed (`holdPlacing`).
-                read: Effect.promise(() => this.#placing?.promise ?? Promise.resolve()).pipe(
-                  // Read after the hold, at each read: `Effect.as` would take the overrides once, when the layer is built.
-                  Effect.andThen(
-                    Effect.sync(() => ({
-                      global: ctx.storage.kv.get<Schema.Json>("overrides") ?? {},
-                      overrides: {},
-                    })),
-                  ),
-                ),
+                // Read at each read: `Effect.as` would take the overrides once, when the layer is built.
+                read: Effect.sync(() => ({
+                  global: ctx.storage.kv.get<Schema.Json>("overrides") ?? {},
+                  overrides: {},
+                })),
                 kv: ctx.storage.kv,
               }),
             ),
@@ -415,7 +411,7 @@ export class TestSubagentSession extends DurableObject {
     );
   }
 
-  /** While set, a message being placed waits for `finishPlacing`: the read of the settings that starts it is held. */
+  /** While set, a message being placed waits for `finishPlacing`: its report of the Session running is held. */
   #placing: PromiseWithResolvers<void> | undefined;
 
   /** Hold the placing of the next message, once it starts, until `finishPlacing`. */

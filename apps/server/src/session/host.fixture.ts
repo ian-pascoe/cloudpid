@@ -65,6 +65,8 @@ import type {
   WaitRequest,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
+import { emptyMcpExtension } from "@cloudpid/extensions/mcp";
+import type { McpHostRequestResult } from "@cloudpid/mcp/types";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -80,10 +82,12 @@ import {
   type EntryRecord,
   type Extension,
   type HarnessOptions,
+  LiveDoc,
   ROOT_CONVERSATION_ID,
   type SnapshotEvent,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
+import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -98,7 +102,10 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
+import type { TestMcpHost } from "../mcp/host.fixture.ts";
+import { mcpHostName } from "../mcp/name.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { mcpHostClient, mcpRequestStart } from "./mcp-host.ts";
 import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
@@ -121,6 +128,7 @@ import {
 import {
   type Answer,
   SessionHost,
+  type SessionHostOptions,
   sessionHostLayer,
   type SessionHostService,
   type SlashCommand,
@@ -167,6 +175,7 @@ declare global {
     interface Env {
       readonly REGISTRIES: DurableObjectNamespace<TestRegistry>;
       readonly SESSIONS: DurableObjectNamespace<TestSession>;
+      readonly MCP_HOSTS: DurableObjectNamespace<TestMcpHost>;
     }
   }
 }
@@ -487,7 +496,8 @@ export class TestSession extends DurableObject {
    * the `settings_*` tools and those that wait for Approval over the test Registry's Settings; for one whose name
    * starts with `instructions-`, the `owner_instructions` section over the Instructions the Session last read; and, for
    * one whose name starts with `tool-search-`, `tool_search` over the Registry's offered tools, which is installed
-   * again when they change.
+   * again when they change; and, for one whose name starts with `mcp-`, an empty `mcp` extension and `tool_search`,
+   * which its request starts install again (`hostRequestStart`).
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
@@ -508,6 +518,7 @@ export class TestSession extends DurableObject {
     const changing = this.ctx.id.name?.startsWith("environment-") === true;
     const configuring = this.ctx.id.name?.startsWith("settings-") === true;
     const instructing = this.ctx.id.name?.startsWith("instructions-") === true;
+    const mcp = this.#hasMcpTools();
     const settingsRegistry = this.#settingsRegistry();
     const session = this.ctx.id.name;
 
@@ -570,6 +581,7 @@ export class TestSession extends DurableObject {
         yield* secretsExtension([tool]),
         browser,
         yield* Todo,
+        ...(mcp ? [emptyMcpExtension] : []),
       ];
 
       if (writing) {
@@ -596,7 +608,51 @@ export class TestSession extends DurableObject {
 
   /** Whether this Session defers the tools its settings do not offer (the tests that look at it name it so). */
   #searching(): boolean {
-    return this.ctx.id.name?.startsWith("tool-search-") === true;
+    return this.ctx.id.name?.startsWith("tool-search-") === true || this.#hasMcpTools();
+  }
+
+  /** Whether this Session has MCP tools (the tests that look at them name it so). */
+  #hasMcpTools(): boolean {
+    return this.ctx.id.name?.startsWith("mcp-") === true;
+  }
+
+  /**
+   * The request start of a Session with MCP tools (`#hasMcpTools`): as the Session DO's, over the test Worker's `McpHost`
+   * objects, with the Workspace `ws:test`, whose marks before a host call are counted, and a stand-in `codemode`
+   * that keeps the namespaces it is built with.
+   */
+  protected hostRequestStart(): SessionHostOptions["requestStart"] {
+    if (!this.#hasMcpTools()) return undefined;
+
+    const { kv } = this.ctx.storage;
+    const hosts = this.env.MCP_HOSTS;
+
+    return mcpRequestStart({
+      session: this.ctx.id.name,
+      host: (environment) =>
+        mcpHostClient(() => {
+          const host = hosts.getByName(mcpHostName(environment));
+
+          return {
+            requestStart: (input) => Effect.tryPromise(() => host.requestStart(input)),
+            servers: (input) => Effect.tryPromise(() => host.servers(input)),
+            request: (input, hooks) =>
+              Effect.tryPromise((): Promise<typeof McpHostRequestResult.Encoded> =>
+                host.request(input, hooks),
+              ),
+          };
+        }),
+      workspace: Effect.succeed("ws:test"),
+      ready: () =>
+        Effect.sync(() => {
+          kv.put("mcp-ready", (kv.get<number>("mcp-ready") ?? 0) + 1);
+        }),
+      codemode: (namespaces) => {
+        kv.put("codemode-namespaces", namespaces);
+
+        return defineExtension({ name: "codemode", tools: [] });
+      },
+    });
   }
 
   /** What builds a conversation's execution environment, if this Session has one. */
@@ -685,6 +741,7 @@ export class TestSession extends DurableObject {
               onSettled: (newest) =>
                 Effect.flatMap(Effect.service(SessionRuns), (runs) => runs.settled(newest)),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
+              requestStart: this.hostRequestStart(),
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
               // The Workspace's side of the hold cap: the activity noted is counted, and the held stops are what a
@@ -1571,6 +1628,37 @@ export class TestSession extends DurableObject {
     return this.ctx.storage.kv.get<SessionStatus[]>("reported") ?? [];
   }
 
+  /** Put this Session in Environment `environment`, whose MCP set has `servers` servers, as the Registry says. */
+  mcpEnvironment(environment: string, servers: number): void {
+    this.ctx.storage.kv.put("mcp", { environment, servers });
+  }
+
+  /** How many times the Session marked its Workspace used before an MCP host call. */
+  mcpReady(): number {
+    return this.ctx.storage.kv.get<number>("mcp-ready") ?? 0;
+  }
+
+  /** The namespaces `codemode` was last installed with. */
+  codemodeNamespaces(): ReadonlyArray<CodemodeNamespace> | undefined {
+    return this.ctx.storage.kv.get<ReadonlyArray<CodemodeNamespace>>("codemode-namespaces");
+  }
+
+  /** What the root conversation's tool calls of the current round published in `details`, in call order. */
+  liveToolDetails(): Promise<ReadonlyArray<unknown>> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+        const root = yield* harness.root({});
+
+        const live = yield* callDurable("snapshot", (context) =>
+          harness.harness.snapshot(LiveDoc, root.id, context),
+        );
+
+        return Arr.map(live?.tools ?? [], (slot) => slot.details);
+      }),
+    );
+  }
+
   /** Stop the root conversation's run, as a client's `abort` does. */
   abortRoot(): Promise<void> {
     return Effect.runPromise(this.#host.abort());
@@ -1853,7 +1941,18 @@ export class TestSession extends DurableObject {
     const { kv } = this.ctx.storage;
     const registry = kv.get<string>("registry");
 
-    if (registry === undefined) return { global: {}, overrides: {} };
+    if (registry === undefined) {
+      const mcp = kv.get<{ readonly environment: string; readonly servers: number }>("mcp");
+
+      return mcp === undefined
+        ? { global: {}, overrides: {} }
+        : {
+            global: {},
+            overrides: {},
+            environment: mcp.environment,
+            mcp: { servers: mcp.servers },
+          };
+    }
 
     if (kv.get<string>("settingsMode") === "failing") throw new Error("Registry is down");
 

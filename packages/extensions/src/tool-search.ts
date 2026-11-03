@@ -5,7 +5,8 @@
 // other tools call it any time. The rule is a wrap on every other tool, so a tool of a later extension is deferred
 // without being named in the settings. Wraps are pure, as pi-durable requires: the extension is built from one offered
 // set, and the Session installs a new one over it (`reloadToolSearch`) when the settings it reads change, which
-// pi-durable applies to the next phase it starts, never to one that is under way.
+// pi-durable applies to the next phase it starts, never to one that is under way. MCP tools are the `mcp` extension's
+// to defer, by their Exposure: this extension leaves them alone and does not name them in `deferred_tools`.
 import {
   defineExtension,
   type Extension,
@@ -79,6 +80,13 @@ const byFamily = (names: ReadonlyArray<string>): string => {
   return Arr.join(lines, "\n");
 };
 
+/**
+ * Whether `name` is an MCP tool's (`mcp__<server>__<tool>`): the `mcp` extension sets its deferral from the offered set
+ * itself, by its Exposure, so this extension neither wraps nor names it (`docs/architecture/mcp-in-a-session.md` →
+ * Exposure).
+ */
+export const isMcpToolName = (name: string): boolean => name.startsWith("mcp__");
+
 /** Whether the options offer tool `name`. */
 export const isOffered = (options: ToolSearchOptions, name: string): boolean =>
   Arr.contains(ALWAYS_OFFERED, name) ||
@@ -109,7 +117,12 @@ const deferredTools = section("deferred_tools", (input) => {
   const names = Arr.sort(
     Arr.dedupe(
       Arr.map(
-        Arr.filter([...agent.tools, ...agent.deferred], (tool) => tool.deferred === true),
+        // An MCP tool's family by its first `_` would lump every server together: the `mcp_servers` section says how
+        // each server's tools are reached instead.
+        Arr.filter(
+          [...agent.tools, ...agent.deferred],
+          (tool) => tool.deferred === true && !isMcpToolName(tool.name),
+        ),
         (tool) => tool.name,
       ),
     ),
@@ -138,7 +151,10 @@ export const toolSearchExtension = (
     tools: [createToolSearchTool()],
     sections: [deferredTools],
     wraps: Arr.map(
-      Arr.filter(Arr.dedupe(toolNames), (name) => !Arr.contains(ALWAYS_OFFERED, name)),
+      Arr.filter(
+        Arr.dedupe(toolNames),
+        (name) => !Arr.contains(ALWAYS_OFFERED, name) && !isMcpToolName(name),
+      ),
       (name) => ({
         tool: name,
         wrap: (tool: ToolRegistration) => withDeferral(tool, !isOffered(options, name)),
