@@ -38,6 +38,7 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { type PageCrop, PageCropType } from "./annotations.ts";
+import type { McpPromptData } from "./mcp-prompts.ts";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
 import type { SessionVia } from "./mcp-api.ts";
 import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
@@ -95,6 +96,11 @@ export type TranscriptMessage = {
   readonly review?: readonly ShownReviewAnnotation[];
   /** Who sent an owner's message that came over the MCP endpoint (never the owner's email). */
   readonly via?: SessionVia;
+  /**
+   * The MCP prompt an owner's message got (`text`: the block the model got), which the message shows by its parts and
+   * the typed text instead of the block and its inline images.
+   */
+  readonly mcpPrompt?: McpPromptData & { readonly text: string };
 };
 
 const userParts = (content: UserMessage["content"]): TranscriptPart[] =>
@@ -211,6 +217,32 @@ const withoutCrops = (parts: readonly TranscriptPart[], data: UserEntryData) => 
 };
 
 /**
+ * `parts` of a message that got an MCP prompt without the prompt: its block (the first text part, returned as `block`)
+ * and the inline images after it, which the prompt's parts count (an image kept in a file has a `path`).
+ */
+const promptShown = (parts: TranscriptPart[], prompt: McpPromptData | undefined) => {
+  const first = parts[0];
+
+  if (prompt === undefined || first?.type !== "text") return { parts, block: undefined };
+
+  const inline = prompt.parts.filter(
+    (part) => part.type === "image" && part.path === undefined,
+  ).length;
+
+  let skipped = 0;
+
+  const rest = parts.slice(1).filter((part) => {
+    if (part.type !== "image" || skipped >= inline) return true;
+
+    skipped++;
+
+    return false;
+  });
+
+  return { parts: rest, block: first.text };
+};
+
+/**
  * An owner's message the Session expanded or attached pages to, as the owner typed it: the typed text in place of the
  * expansion, which is the message's first text part (left as it is when the owner typed none), its other parts as they
  * were but for the block of page content, which a chip per page replaces, and each expanded Skill with the block the
@@ -223,7 +255,8 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
 
   if (data === undefined || message?.role !== "user") return undefined;
 
-  const { parts: carried, crops } = withoutCrops(userParts(message.content), data);
+  const prompted = promptShown(userParts(message.content), data.mcpPrompt);
+  const { parts: carried, crops } = withoutCrops(prompted.parts, data);
   const parts = data.pages === undefined ? carried : withoutPageBlock(carried);
   const first = parts.findIndex((part) => part.type === "text");
   const expanded = parts[first];
@@ -265,7 +298,12 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
 
   const reviewed = review === undefined ? paged : { ...paged, review };
 
-  return data.via === undefined ? reviewed : { ...reviewed, via: data.via };
+  const prompt =
+    prompted.block === undefined || data.mcpPrompt === undefined
+      ? reviewed
+      : { ...reviewed, mcpPrompt: { ...data.mcpPrompt, text: prompted.block } };
+
+  return data.via === undefined ? prompt : { ...prompt, via: data.via };
 };
 
 /**

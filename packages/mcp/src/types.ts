@@ -27,7 +27,7 @@ export * from "./host.ts";
 
 export * from "./log.ts";
 
-export { isJsonObject, JsonObject } from "./json.ts";
+export { isJsonObject, JsonObject, jsonListOf, present } from "./json.ts";
 
 export { xMcpHeaderProblems } from "./tool-headers.ts";
 
@@ -586,6 +586,9 @@ export const MCP_LIST_WALK_TIMEOUT_MS = 120_000;
 /** What a `tasks/*` request may take, in the core and at the host: 30 s each (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions). */
 export const MCP_TASK_TIMEOUT_MS = 30_000;
 
+/** What a `prompts/get` waits at most (or the entry's lower `timeout`): `docs/architecture/mcp-connections.md` → Requests and Legacy sessions. */
+export const MCP_PROMPT_GET_TIMEOUT_MS = 30_000;
+
 /**
  * A discovery (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): what the server is, every
  * page of its tools and prompts, and the tools whose output schema could not be compiled. The inventory's bounds,
@@ -683,6 +686,13 @@ export const McpEngineRequest = Schema.Union([
   Schema.Struct({
     op: Schema.Literal("resources/templates/list_page"),
     cursor: Schema.optionalKey(Schema.String),
+    ctx: McpCallContext,
+  }),
+  /** One `prompts/get`: the server's `GetPromptResult` is the value. */
+  Schema.Struct({
+    op: Schema.Literal("prompts/get"),
+    name: Schema.String,
+    arguments: Schema.Record(Schema.String, Schema.String),
     ctx: McpCallContext,
   }),
 ]);
@@ -1001,6 +1011,23 @@ export const McpHostAppHtmlRequest = Schema.Struct({
 
 export type McpHostAppHtmlRequest = typeof McpHostAppHtmlRequest.Type;
 
+/**
+ * `request({ op: "prompts/get" })`: get prompt `params.name` of server `server` with `params.arguments`, the owner's
+ * pick at send (`docs/architecture/mcp-in-a-session.md` → Getting a prompt at send). The prompt must be in the server's
+ * inventory. Answered `Completed` with the server's `GetPromptResult` as its result.
+ */
+export const McpHostPromptGet = Schema.Struct({
+  op: Schema.Literal("prompts/get"),
+  server: Schema.String,
+  params: Schema.Struct({
+    name: Schema.String,
+    arguments: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  }),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostPromptGet = typeof McpHostPromptGet.Type;
+
 /** `request({ op: "resources/read" })`: read the resource `params.uri` of server `server`, whether or not any list names it. */
 export const McpHostResourceRead = Schema.Struct({
   op: Schema.Literal("resources/read"),
@@ -1046,7 +1073,7 @@ export const McpHostResourceRequest = Schema.Union([
 
 export type McpHostResourceRequest = typeof McpHostResourceRequest.Type;
 
-/** What `request` takes. Other `op`s (`prompts/get`, …) come with their slices. */
+/** What `request` takes for a tool call or a task. */
 export const McpHostRequest = Schema.Union([
   McpHostToolCall,
   McpHostTaskGet,
@@ -1056,11 +1083,15 @@ export const McpHostRequest = Schema.Union([
 
 export type McpHostRequest = typeof McpHostRequest.Type;
 
-/** Every request the host's `request` answers: what a Session's tool calls and tasks send, or App HTML for a View that mounts. */
+/**
+ * Every request the host's `request` answers: what a Session's tool calls and tasks send, App HTML for a View that
+ * mounts, the resource requests, or the owner's prompt get.
+ */
 export const McpHostRequestInput = Schema.Union([
   ...McpHostRequest.members,
   McpHostAppHtmlRequest,
   ...McpHostResourceRequest.members,
+  McpHostPromptGet,
 ]);
 
 export type McpHostRequestInput = typeof McpHostRequestInput.Type;

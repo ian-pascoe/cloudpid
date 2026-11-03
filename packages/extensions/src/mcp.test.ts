@@ -8,6 +8,7 @@ import { getCurrentTools } from "@earendil-works/pi-ai";
 import { type Extension, LiveDoc } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { HostLost, type McpHostClientService, makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import {
@@ -190,6 +191,34 @@ describe("a request start", () => {
     const grown = Option.getOrThrow(await build(tools, startOf(1, { offered: ["mcp__*"] })));
 
     expect(grown.tools?.map((tool) => tool.name)).toContain("mcp__docs_site__index");
+  });
+
+  it("does not build again for a prompts-only change: the prompts version moves, the version and the tools do not", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const tools = makeMcpTools(host.client);
+
+    expect(Option.isSome(await build(tools))).toBe(true);
+
+    const versions = async () => {
+      const read = await Effect.runPromise(host.client.servers({ parts: ["prompts"] }));
+
+      if (Predicate.isTagged(read, "HostFailed")) throw new Error(read.message);
+
+      return { version: read.version, promptsVersion: read.promptsVersion };
+    };
+
+    const before = await versions();
+
+    // The server grew a prompt: its prompts version moves, its inventory version does not.
+    host.set([{ ...DOCS, prompts: [{ name: "summarize", description: "Summarize a page" }] }]);
+
+    const after = await versions();
+
+    expect(after.version).toBe(before.version);
+    expect(after.promptsVersion).not.toBe(before.promptsVersion);
+
+    // The `mcp` extension is not installed again.
+    expect(Option.isNone(await build(tools))).toBe(true);
   });
 
   it("offers no MCP tools from an older host without the features they use, and keeps them through a host failure", async () => {

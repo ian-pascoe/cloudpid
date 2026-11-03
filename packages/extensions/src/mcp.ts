@@ -79,6 +79,13 @@ export {
 } from "./mcp/sign-in.ts";
 
 export {
+  MCP_STREAM_SLOT_WAIT_MS,
+  readStreamed,
+  type Streamed,
+  type StreamLimits,
+} from "./mcp/stream.ts";
+
+export {
   createMcpQuestions,
   MCP_QUESTION_RECORDS,
   MCP_QUESTION_RENOTIFY_MS,

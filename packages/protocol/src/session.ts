@@ -16,6 +16,7 @@ import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import { ElicitationAction, ElicitationContent, McpElicitationRequest } from "./mcp-elicitation.ts";
+import { McpCatalogServer, McpPromptEntry, McpPromptRef } from "./mcp-prompts.ts";
 
 /**
  * The text the client sends to keep the socket alive, and the server's answer. The object answers it without waking,
@@ -75,6 +76,12 @@ const CommandId = Schema.optionalKey(Schema.String);
  * gone ("Your drafts changed: check them and send again"); the drafts are deleted once the Session takes it, and come
  * back when Stop withdraws it before it was placed.
  *
+ * With `mcpPrompt`, the owner picked an MCP prompt from the `/` menu (`McpPromptRef`): the Session gets it when the message
+ * is admitted (`prompts/get`, outside its lock, in the conversation's line), and the owner's one message is the prompt's
+ * result, then what they typed (`input`) and the rest (docs/architecture/mcp-in-a-session.md → Prompts). A failed get
+ * refuses the send with an `error` that carries a `code` (`MCP_PROMPT_*`), and nothing is placed. It cannot be sent
+ * with `annotations`, and a text that only looks like a prompt's command (`/mcp__…`) is refused without it.
+ *
  * Stop also withdraws a message still being prepared, or waiting its turn behind one that is, in its conversation's
  * line (docs/architecture/mcp-in-a-session.md → Getting a prompt at send): nothing is placed, and the command is
  * answered with `null` instead, as a client takes withdrawn queued input, gone without a failure.
@@ -93,6 +100,7 @@ export const Submit = Schema.Struct({
       Schema.isMaxLength(MAX_ANNOTATIONS),
     ),
   ),
+  mcpPrompt: Schema.optionalKey(McpPromptRef),
 });
 
 /**
@@ -1145,12 +1153,18 @@ export type CatalogEntry = typeof CatalogEntry.Type;
 /**
  * The answer to `catalog`. Templates and Skills are those of the conversation's directory and the directories above it
  * up to the Workspace root, nearest first; Skills include the ones the model is not offered
- * (`disable-model-invocation`), which exist for the owner to name.
+ * (`disable-model-invocation`), which exist for the owner to name. `prompts` and `mcpServers` are the Environment's MCP
+ * prompts and the servers whose prompts are not there yet (docs/architecture/mcp-in-a-session.md → The `/` menu and
+ * the catalog); a client that does not know them ignores them.
  */
 export const Catalog = Schema.Struct({
   commands: Schema.Array(CatalogCommand),
   templates: Schema.Array(CatalogEntry),
   skills: Schema.Array(CatalogEntry),
+  /** The MCP prompts of the Environment's servers (`McpPromptEntry`), the same in every conversation; absent from an older Session. */
+  prompts: McpPromptEntry.pipe(Schema.Array, Schema.optionalKey),
+  /** The servers with no prompts to show yet, as muted rows; absent from an older Session. */
+  mcpServers: McpCatalogServer.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type Catalog = typeof Catalog.Type;
@@ -1330,6 +1344,13 @@ export const ErrorMessage = Schema.Struct({
   /** With `changes`: the Changes watch ended and is dropped, rather than one listing failing. */
   ended: Schema.optionalKey(Schema.Literal(true)),
   message: Schema.String,
+  /**
+   * Why a command was refused, for a client that acts on it: an `MCP_PROMPT_*` code (`MCP_PROMPT_ERROR_CODES`) for a send that
+   * names an MCP prompt. A client reads a code it does not know as none, and shows `message`.
+   */
+  code: Schema.optionalKey(Schema.String),
+  /** With `code`: the MCP server it is about, for a Sign in link. */
+  server: Schema.optionalKey(Schema.String),
 });
 
 /** Server → client. */

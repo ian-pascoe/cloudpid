@@ -25,7 +25,16 @@ import {
 import { type McpProgress, ServerError, Unsupported } from "./types.ts";
 import { connect, SUPPORTED_PROTOCOL_VERSIONS } from "./index.ts";
 import type { McpCallContext } from "./types.ts";
-import { HOST, AGENT, completed, run, testDeps, TARGET, failedWith } from "./core.fixture.ts";
+import {
+  HOST,
+  AGENT,
+  OWNER,
+  completed,
+  run,
+  testDeps,
+  TARGET,
+  failedWith,
+} from "./core.fixture.ts";
 
 /** `echo`, declared with an outputSchema its answers never meet. */
 const COUNTING_TOOL = {
@@ -104,6 +113,42 @@ describe.each(servers)("against a %s server", (_name, makeServer, era, streams) 
     ]);
     expect(missing._tag).toBe("ServerError");
     expect(rpcMethods(server).filter((method) => method === "resources/read")).toHaveLength(2);
+  });
+
+  it("gets a prompt with its arguments, and fails for one the server does not have", async () => {
+    const server = makeServer({
+      prompts: [
+        {
+          name: "review_pr",
+          arguments: [{ name: "pr_number", required: true }],
+          get: (args) => ({
+            description: "Review a PR",
+            messages: [
+              { role: "user", content: { type: "text", text: `Review PR ${args["pr_number"]}` } },
+            ],
+          }),
+        },
+      ],
+    });
+
+    const { got, listed, missing } = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
+        const listed = yield* connection.list("prompts", HOST);
+        const got = yield* connection.getPrompt("review_pr", { pr_number: "123" }, OWNER);
+        const missing = yield* Effect.flip(connection.getPrompt("none", {}, OWNER));
+
+        return { got, listed, missing };
+      }),
+    );
+
+    expect(listed.value.map((prompt) => prompt.name)).toEqual(["review_pr"]);
+    expect(got.kind).toBe("complete");
+    expect(got.value.messages).toEqual([
+      { role: "user", content: { type: "text", text: "Review PR 123" } },
+    ]);
+    expect(missing._tag).toBe("ServerError");
+    expect(rpcMethods(server).filter((method) => method === "prompts/get")).toHaveLength(2);
   });
 
   it("passes a call's progress to onProgress, and asks for none without it", async () => {

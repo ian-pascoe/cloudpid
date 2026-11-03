@@ -10,6 +10,7 @@ import type {
   McpEngineDiscoverResult,
   McpEngineRequestResult,
   McpHostRequest,
+  McpHostRequestInput,
   McpSetEntry,
 } from "@cloudpid/mcp/types";
 import { MCP_UNASKED_TASK_MESSAGE } from "@cloudpid/mcp/types";
@@ -127,7 +128,7 @@ const discovered = async (
   return host;
 };
 
-const tagOf = async (host: Host, input: typeof McpHostRequest.Encoded) =>
+const tagOf = async (host: Host, input: typeof McpHostRequestInput.Encoded) =>
   (await host.request(input, {}))._tag;
 
 describe("a request", () => {
@@ -160,7 +161,7 @@ describe("a request", () => {
 
     // An `op` a later build sends, as it crosses the edge to this host (parsed, so it is not typed as ours).
     const later: typeof McpHostRequest.Encoded = JSON.parse(
-      JSON.stringify({ ...call("docs", "search"), op: "prompts/get" }),
+      JSON.stringify({ ...call("docs", "search"), op: "completion/complete" }),
     );
 
     expect(await tagOf(host, later)).toBe("HostUnsupported");
@@ -344,6 +345,124 @@ const withCtx = (
   input: typeof McpHostRequest.Encoded,
   ctx: Partial<typeof McpHostRequest.Encoded.ctx>,
 ): typeof McpHostRequest.Encoded => ({ ...input, ctx: { ...input.ctx, ...ctx } });
+
+/** A `prompts/get` of `prompt` on `server`, as a Session sends it for the owner's pick. */
+const getPrompt = (
+  server: string,
+  prompt: string,
+  args?: Readonly<Record<string, string>>,
+): typeof McpHostRequestInput.Encoded => ({
+  op: "prompts/get",
+  server,
+  params: args === undefined ? { name: prompt } : { name: prompt, arguments: args },
+  ctx: { origin: "owner", session: "s-1", conversation: "1", workspace: "ws:w-1" },
+});
+
+/** A host whose set is `entries`, each discovered with the prompts `names`. */
+const discoveredPrompts = async (
+  names: ReadonlyArray<string>,
+  ...entries: ReadonlyArray<McpSetEntry>
+) => {
+  const host = freshHost();
+
+  await host.apply(setOf(...entries));
+
+  const script = found([]);
+
+  for (const each of entries) {
+    await host.scriptEngine(urlOf(each.name), [
+      {
+        ...script,
+        // SAFETY: a discovered answer, encoded as the engine sends it.
+        result: {
+          ...script.result,
+          capabilities: { prompts: {} },
+          prompts: names.map((name) => ({ name, arguments: [{ name: "pr", required: true }] })),
+        } as typeof McpEngineDiscoverResult.Encoded,
+      },
+    ]);
+  }
+
+  await host.requestStart({
+    caller: { session: "s-1", conversation: "1", workspace: "ws:w-1" },
+    waitFor: entries.map((each) => each.name),
+    waitMs: 5000,
+  });
+
+  return host;
+};
+
+describe("a prompts/get request", () => {
+  it("sends a listed prompt's get to the engine as the owner's, with its arguments, and answers the server's result", async () => {
+    const host = await discoveredPrompts(["review"], entry("docs", { timeout: 10 }));
+    const result = { description: "d", messages: [] };
+
+    await host.scriptRequest(urlOf("docs"), [
+      {
+        result: {
+          kind: "complete",
+          result: { kind: "inline", value: result },
+          cacheable: true,
+          fetchedAt: Date.now(),
+          state: {},
+        },
+      },
+    ]);
+
+    expect(await host.request(getPrompt("docs", "review", { pr: "123" }), {})).toEqual({
+      _tag: "Completed",
+      result: { kind: "inline", value: result },
+    });
+
+    const [sent] = await host.engineRequests();
+
+    expect(sent?.request).toEqual({
+      op: "prompts/get",
+      name: "review",
+      arguments: { pr: "123" },
+      ctx: { origin: "owner", conversation: "1", workspace: "ws:w-1" },
+    });
+    // The entry's lower timeout bounds it.
+    expect(sent?.target).toMatchObject({ timeoutMs: expect.any(Number) });
+    expect(sent?.target.timeoutMs ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(10_000);
+  });
+
+  it("refuses a prompt the inventory does not list, a server that is unknown or off, and a malformed request, sending nothing", async () => {
+    const host = await discoveredPrompts(
+      ["review"],
+      entry("docs"),
+      entry("off", { enabled: false }),
+    );
+
+    expect(await tagOf(host, getPrompt("docs", "missing"))).toBe("NotAllowed");
+    expect(await tagOf(host, getPrompt("nowhere", "review"))).toBe("UnknownServer");
+    expect(await tagOf(host, getPrompt("off", "review"))).toBe("NotAllowed");
+    // SAFETY: a request whose params are not a prompt's, as a broken caller sends it.
+    expect(await tagOf(host, { ...getPrompt("docs", "review"), params: {} } as never)).toBe(
+      "NotAllowed",
+    );
+    expect(await host.engineRequests()).toEqual([]);
+  });
+
+  it("answers the engine's failure as a failed call, never as a result", async () => {
+    const host = await discoveredPrompts(["review"], entry("docs"));
+
+    await host.scriptRequest(urlOf("docs"), [
+      {
+        result: {
+          kind: "failed",
+          error: { _tag: "ServerError", message: "bad pr", code: -32602 },
+          state: {},
+        },
+      },
+    ]);
+
+    expect(await host.request(getPrompt("docs", "review", { pr: "x" }), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "ServerError", code: -32602 },
+    });
+  });
+});
 
 describe("an MCP task", () => {
   it("is offered to a call from the agent or an app, to an HTTP server, and to no other caller", async () => {

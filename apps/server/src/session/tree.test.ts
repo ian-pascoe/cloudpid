@@ -13,6 +13,8 @@ import {
   buildSessionTree,
   EMPTY_TREE,
   planNavigation,
+  nodeOf,
+  ownerMessageText,
   type SessionTreeState,
   SessionTreeDoc,
 } from "./tree.ts";
@@ -152,6 +154,36 @@ describe("the Session tree a client shows", () => {
 
     expect(active.branches.map((branch) => branch.conversationId)).toEqual([1, 8]);
     expect(active.leaf).toBe(2);
+  });
+});
+
+describe("a node for a message that got an MCP prompt", () => {
+  const picked = (display: string) =>
+    asEntry({
+      id: 1,
+      kind: "cloudpid.user",
+      data: {
+        display,
+        skills: [],
+        mcpPrompt: {
+          server: "github",
+          command: "/mcp__github__review",
+          name: "review",
+          arguments: {},
+          parts: [{ role: "user", type: "text" }],
+          resources: [],
+        },
+      },
+      model: [{ role: "user", content: "<mcp_prompt>…</mcp_prompt>", timestamp: 1 }],
+    });
+
+  it("shows what the owner typed, else the chip label, never the block", () => {
+    expect(nodeOf(picked("focus on tests"))?.text).toBe("focus on tests");
+    expect(nodeOf(picked(""))?.text).toBe("github · review");
+  });
+
+  it("restores only what was typed to the composer: the label is the chip's, not text", () => {
+    expect(ownerMessageText(picked(""))).toBe("");
   });
 });
 

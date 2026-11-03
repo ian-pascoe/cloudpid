@@ -18,6 +18,8 @@
 // - **`resources/list`, `resources/templates/list`, `resources/read`** (#471): a page of a server's resources or templates,
 //   from a cursor, kept in the list cache for a Modern server's `ttlMs`; and a read with the SHA-256 of its contents
 //   (`resources.ts`).
+// - **`prompts/get`** (#463): the owner's pick of a prompt of a server whose inventory lists it, a read through the engine
+//   with the checks of a call, bounded at 30 s (or the entry's lower `timeout`).
 // - **`ui/html`** (#466): App HTML for a View that mounts. By `hash` it is the host's own storage, which needs only a
 //   server of the set. By `uri` it is a read through the engine, joined with the one in flight, with the checks of a call.
 //
@@ -30,11 +32,13 @@ import {
   HostUnsupported,
   isMcpHostRequestOp,
   isMcpHostTaskRequest,
+  MCP_PROMPT_GET_TIMEOUT_MS,
   MCP_TASK_TIMEOUT_MS,
   MCP_UNASKED_TASK_MESSAGE,
   McpHostAppHtml,
   McpHostAppHtmlRequest,
   McpHostCompleted,
+  McpHostPromptGet,
   McpHostRequest,
   McpHostTaskAck,
   McpHostTaskStarted,
@@ -78,8 +82,8 @@ import {
   sendToEngine,
   serverOf,
 } from "./engine-round.ts";
-import { orHalt, writeOrHalt } from "./discovery.ts";
 import { resourceRequest } from "./resources.ts";
+import { type McpDiscoveryServices, orHalt, writeOrHalt } from "./discovery.ts";
 import { versionsOf } from "./server-state.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 
@@ -90,6 +94,8 @@ const decodeOp = Schema.decodeUnknownOption(OpOnly);
 const decodeRequest = Schema.decodeUnknownOption(McpHostRequest);
 
 const decodeAppHtml = Schema.decodeUnknownOption(McpHostAppHtmlRequest);
+
+const decodePromptGet = Schema.decodeUnknownOption(McpHostPromptGet);
 
 const decodeDefinition = Schema.decodeUnknownOption(McpToolDefinition);
 
@@ -389,6 +395,74 @@ const appHtml = (
   });
 
 /**
+ * `request({ op: "prompts/get" })`: the owner's pick of a prompt, got when its message is sent (`docs/architecture/
+ * mcp-in-a-session.md` → Getting a prompt at send). The checks of a call (a server that may be called, in the request's
+ * Workspace if it is stdio) and a prompt the server's inventory lists; it is a read, so the server cannot have run
+ * anything if it is cut. Bounded at 30 s, or the entry's lower `timeout`. `ctx.answers` and `onInput` are passed on as
+ * a call's are, when the caller has them; the Session does not yet (#492), so a question the server asks during the
+ * get is cancelled.
+ */
+const promptGet = (
+  environment: string | undefined,
+  input: typeof McpHostRequestInput.Encoded,
+  hooks: McpHostRequestHooks,
+): Effect.Effect<McpHostRequestResult, never, McpDiscoveryServices> =>
+  Effect.gen(function* () {
+    const asked = decodePromptGet(input);
+
+    if (Option.isNone(asked)) return NotAllowed.make({ message: "The prompts/get is malformed" });
+
+    const { server: name, params, ctx } = asked.value;
+    const resolved = yield* resolve(environment, name, ctx);
+
+    if (Result.isFailure(resolved)) return resolved.failure;
+
+    const listed = Option.exists(resolved.success.view.inventory, (held) =>
+      Arr.some(held.prompts, (prompt) => prompt["name"] === params.name),
+    );
+
+    if (!listed) {
+      return NotAllowed.make({ message: `MCP server ${name} lists no prompt ${params.name}` });
+    }
+
+    const reached = yield* reachServer(resolved.success);
+
+    if (Result.isFailure(reached)) return reached.failure;
+
+    const callCtx: Mutable<McpEngineToolCall["ctx"]> = { ...callContextOf(ctx) };
+
+    if (ctx.answers !== undefined) callCtx.answers = ctx.answers;
+
+    const sent = yield* sendToEngine({
+      resolved: resolved.success,
+      reached: reached.success,
+      request: {
+        op: "prompts/get",
+        name: params.name,
+        arguments: params.arguments ?? {},
+        ctx: callCtx,
+      },
+      hooks,
+      mayHaveRun: false,
+      timeoutMs: Math.min(
+        MCP_PROMPT_GET_TIMEOUT_MS,
+        reached.success.target.timeoutMs ?? MCP_PROMPT_GET_TIMEOUT_MS,
+      ),
+      what: "The prompt get",
+    });
+
+    if (Result.isFailure(sent)) return sent.failure;
+
+    return sent.success.result.kind === "complete"
+      ? McpHostCompleted.make({ result: sent.success.result.result })
+      : callFailed(
+          ProtocolViolation.make({
+            message: `The engine answered prompts/get with ${sent.success.result.kind}`,
+          }),
+        );
+  });
+
+/**
  * `request`: the request `input` asks for, to the server it names, with the caller's `hooks`. Never fails: a server not in
  * the set is `UnknownServer`, one that may not be called (switched off or `hidden`, not discovered, a tool its inventory
  * does not list) is `NotAllowed`, and what the engine or the server failed with is `CallFailed`. Without an
@@ -413,6 +487,8 @@ export const request = (
     }
 
     if (op === "ui/html") return yield* appHtml(environment, input, hooks);
+
+    if (op === "prompts/get") return yield* promptGet(environment, input, hooks);
 
     return op === "resources/list" || op === "resources/templates/list" || op === "resources/read"
       ? yield* resourceRequest(environment, op, input, hooks)

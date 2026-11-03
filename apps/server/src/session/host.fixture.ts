@@ -46,6 +46,7 @@ import type {
   StageImportFinish,
   Annotation,
   AnnotationDraft,
+  AttachedPage,
   Catalog,
   ChangeFile,
   CommandOutcome,
@@ -56,6 +57,7 @@ import type {
   FileMatches,
   HistoryPage,
   LastRun,
+  McpPromptRef,
   Navigated,
   PullList,
   RunDiff,
@@ -65,6 +67,7 @@ import type {
   StopRequest,
   SubmitRequest,
   TranscriptRequest,
+  UserInput,
   ViewedFile,
   WaitRequest,
   WorkspaceChanges,
@@ -138,6 +141,7 @@ import {
   type SessionHostOptions,
   sessionHostLayer,
   type SessionHostService,
+  type Prompt,
   type SlashCommand,
 } from "./host.ts";
 import type { NavigateRequest } from "./branches.ts";
@@ -1593,6 +1597,69 @@ export class TestSession extends DurableObject {
     return this.#runtime.runPromise(this.#host.submit({ requestId, input: text }));
   }
 
+  /** Submit `text` as the owner typed it, and say why it was refused: its message, and the code and server it carries. */
+  submitFailure({ requestId, text }: TestPrompt): Promise<{
+    readonly message: string;
+    readonly code: string | undefined;
+    readonly server: string | undefined;
+  }> {
+    return this.#runtime.runPromise(
+      this.#host.submit({ requestId, input: text }).pipe(
+        Effect.flip,
+        Effect.map((error) => ({ message: error.message, code: error.code, server: error.server })),
+      ),
+    );
+  }
+
+  /**
+   * Submit `text` with the MCP prompt `ref`, as the socket's `submit` does: the submission, or why it was refused (its
+   * message, and its code and server when it carries them).
+   */
+  submitMcpPrompt({
+    requestId,
+    text,
+    ref,
+    input,
+    pages,
+  }: TestPrompt & {
+    readonly ref: McpPromptRef;
+    /** The owner's whole input, in place of `text`: its text and the images they attached. */
+    readonly input?: UserInput;
+    /** The pages the message attaches, as read. */
+    readonly pages?: ReadonlyArray<AttachedPage>;
+  }): Promise<
+    | { readonly submission: number }
+    /** Stop withdrew it before it was placed. */
+    | { readonly withdrawn: true }
+    | {
+        readonly failure: {
+          readonly message: string;
+          readonly code?: string | undefined;
+          readonly server?: string | undefined;
+        };
+      }
+  > {
+    const prompt: Types.Mutable<Prompt> = {
+      requestId,
+      input: input ?? text,
+      mcpPrompt: { ref, redact: Effect.succeed(<A>(value: A): A => value) },
+    };
+
+    if (pages !== undefined) prompt.attachPages = Effect.succeed(pages);
+
+    return this.#runtime.runPromise(
+      this.#host.submit(prompt).pipe(
+        Effect.map((submission) => ({ submission })),
+        Effect.catchIf(isWithdrawn, () => Effect.succeed({ withdrawn: true as const })),
+        Effect.catch((error) =>
+          Effect.succeed({
+            failure: { message: error.message, code: error.code, server: error.server },
+          }),
+        ),
+      ),
+    );
+  }
+
   /**
    * Submit `text` with its preparation held for good (a page read that never ends), and say how it ended: `withdrawn`
    * when Stop withdrew it, `placed` otherwise. Any other failure rejects.
@@ -1722,6 +1789,40 @@ export class TestSession extends DurableObject {
         Effect.map((outcome) => ({ outcome })),
         Effect.catch((error) => Effect.succeed({ failure: error.message })),
       ),
+    );
+  }
+
+  /**
+   * The parts of the root conversation's last owner message, each as `text:<text>` or `image:<base64>`, so a test reads
+   * their order.
+   */
+  lastUserContent(): Promise<ReadonlyArray<string>> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+        const root = yield* harness.root({});
+
+        const page = yield* callDurable("entries", (context) =>
+          root.entries({ order: "descending" }, 100, undefined, context),
+        );
+
+        const owner = Arr.findFirst(
+          page.items,
+          (entry) => entry.kind === "cloudpid.user" || entry.kind === "pi.user",
+        );
+
+        const message = Option.flatMap(owner, (entry) => Option.fromNullishOr(entry.model?.[0]));
+
+        if (Option.isNone(message) || message.value.role !== "user") return [];
+
+        const { content } = message.value;
+
+        return Predicate.isString(content)
+          ? [`text:${content}`]
+          : Arr.map(content, (block) =>
+              block.type === "text" ? `text:${block.text}` : `image:${block.data}`,
+            );
+      }),
     );
   }
 

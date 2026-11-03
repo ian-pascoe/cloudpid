@@ -143,10 +143,32 @@ const resourcesServer = (options: FakeOptions) =>
     ],
   });
 
+/** A Modern server with a `review` prompt, whose message echoes a token its server must not leak. */
+const promptServer = (options: FakeOptions) =>
+  modernServer({
+    ...options,
+    prompts: [
+      {
+        name: "review",
+        arguments: [{ name: "pr", required: true }],
+        get: (args) => ({
+          description: "Review a PR",
+          messages: [
+            {
+              role: "user",
+              content: { type: "text", text: `Review ${args["pr"]} ${ECHOED_SECRET}` },
+            },
+          ],
+        }),
+      },
+    ],
+  });
+
 const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map([
   ["modern.test", modernServer],
   ["apps.test", appServer],
   ["resources.test", resourcesServer],
+  ["prompts.test", promptServer],
   ["legacy.test", legacyStatelessServer],
   ["stateful.test", legacyStatefulServer],
   ["headers.test", headersServer],

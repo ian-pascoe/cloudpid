@@ -3,6 +3,7 @@
 import type {
   McpApply,
   McpApplyResult,
+  McpHostPromptGet,
   McpHostRequest,
   McpHostRequestHooks,
   McpHostRequestResult,
@@ -40,9 +41,12 @@ export type McpHostClientService = {
    * or whose answer cannot be read `HostFailed` (`readMcpApplyResult`).
    */
   readonly apply: (input: McpApply) => Effect.Effect<McpApplyResult>;
-  /** A request with its hooks; the effect lasts as long as the request, so the hooks' stubs do too. */
+  /**
+   * A request with its hooks; the effect lasts as long as the request, so the hooks' stubs do too. A tool call or task
+   * from the `mcp` extension, or the owner's `prompts/get` from the Session host.
+   */
   readonly request: (
-    input: McpHostRequest | McpHostResourceRequest,
+    input: McpHostRequest | McpHostResourceRequest | McpHostPromptGet,
     hooks: McpHostRequestHooks,
   ) => Effect.Effect<McpHostRequestResult | HostLost>;
 };

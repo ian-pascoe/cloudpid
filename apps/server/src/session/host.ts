@@ -45,6 +45,15 @@ import {
   type TodoTask,
   type Annotation,
   type AttachedPage,
+  attachmentPath,
+  INLINE_IMAGE_BUDGET,
+  type McpPromptData,
+  type McpPromptErrorCode,
+  type McpPromptRef,
+  MCP_PROMPT_NOT_PICKED_MESSAGE,
+  looksLikeMcpPromptCommand,
+  promptArguments,
+  promptArgumentsProblem,
   SessionVia,
   clampPage,
   pageBlock,
@@ -101,6 +110,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Queue from "effect/Queue";
@@ -134,13 +144,25 @@ import type { ImportDefaults } from "./import-model.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
 import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure } from "./errors.ts";
+import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
+import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
+import {
+  imageCharacters,
+  promptContent,
+  promptData,
+  promptPartCount,
+  promptRefusal,
+  redactedError,
+  typedAndBeside,
+} from "./mcp-prompt-send.ts";
+import { linkSkillReferences } from "./skill-references.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
 import type { EntriesRequest, FollowState, SettledInput } from "./mcp-reads.ts";
 import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file-search.ts";
 import { cropParts, fitCrops } from "./crops.ts";
-import { inputProblem, storedBytes } from "./input-guard.ts";
+import { type InputProblem, inputProblemOf, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { AgentsReport, sessionAgentsOf } from "./agents-report.ts";
@@ -280,6 +302,40 @@ export type SessionHostMcpBuild<R> = {
   readonly announce: Effect.Effect<void, never, R>;
 };
 
+/** The prompt a send got from an MCP server: the owner's pick, and where its conversation works. */
+export type SessionHostMcpPromptGet = {
+  /** The configured server's name. */
+  readonly server: string;
+  /** The prompt's own name. */
+  readonly name: string;
+  /** The arguments to send: only those the prompt declares, cleaned. */
+  readonly arguments: Readonly<Record<string, string>>;
+  readonly conversationId: ConversationId;
+  /** The Subagent Workspace (`ws:<id>`) the conversation works in; undefined for the Session's own. */
+  readonly workspace: string | undefined;
+};
+
+/** The Session's MCP prompts (`docs/architecture/mcp-in-a-session.md` → The `/` menu and the catalog, Getting a prompt at send). */
+export type SessionHostMcpPrompts = {
+  /** The Session's name, where its files are kept (`/workspace/.cloudpid/uploads/<session>/`); undefined when unknown. */
+  readonly session: string | undefined;
+  /**
+   * The composer's `prompts` and `mcpServers`, from the host's inventory alone: nothing here reads a server or starts a
+   * Container. Never fails: a host that does not answer offers none.
+   */
+  readonly catalog: (values: SessionSettingsValues) => Effect.Effect<PromptCatalog>;
+  /**
+   * Get `call`'s prompt once, as its message is admitted, and run `use` over the server's `GetPromptResult` (a large
+   * one is read under the decode slot, which `use` holds until it is done). Fails with a `SessionError` that carries an
+   * `MCP_PROMPT_*` code, never with the server's own words unredacted.
+   */
+  readonly get: <A>(
+    values: SessionSettingsValues,
+    call: SessionHostMcpPromptGet,
+    use: (result: Schema.Json) => Promise<A>,
+  ) => Effect.Effect<A, SessionError>;
+};
+
 /** The Session's MCP tools, as the Session host runs them (`SessionHostOptions.mcp`). */
 export type SessionHostMcp<R> = {
   /**
@@ -316,6 +372,8 @@ export type SessionHostMcp<R> = {
     conversationId: ConversationId,
     values: SessionSettingsValues,
   ) => Effect.Effect<void, never, R>;
+  /** The owner's MCP prompts. Absent: none are offered, and a send that names one is refused. */
+  readonly prompts?: SessionHostMcpPrompts;
 };
 
 export type SessionHostOptions<R = never> = {
@@ -432,6 +490,15 @@ export type Prompt = {
    * entry keeps it for the chip.
    */
   readonly attachPages?: Effect.Effect<ReadonlyArray<AttachedPage>, SessionError>;
+  /**
+   * An MCP prompt the owner picked from the `/` menu (`submit.mcpPrompt`), got in the message's prepare step, once and
+   * outside the Session's lock, and made the first part of the message: its block, its images, then the typed text.
+   * `redact` takes the held Secrets out of the arguments the entry keeps and of what the server answers.
+   */
+  readonly mcpPrompt?: {
+    readonly ref: McpPromptRef;
+    readonly redact: Effect.Effect<<A>(value: A) => A, SessionError>;
+  };
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
   /**
@@ -1664,7 +1731,26 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ),
       ],
       { concurrency: 2 },
-    ).pipe(Effect.map(([rollover, [skills, templates]]) => catalogOf(skills, templates, rollover)));
+    ).pipe(
+      Effect.flatMap(([rollover, [skills, templates]]) => {
+        const catalog = catalogOf(skills, templates, rollover);
+        const prompts = options.mcp?.prompts;
+
+        return prompts === undefined
+          ? Effect.succeed(catalog)
+          : prompts.catalog(settings.current()).pipe(
+              Effect.map(({ prompts: offered, mcpServers }): typeof catalog => {
+                const withMcp: Types.Mutable<typeof catalog> = { ...catalog };
+
+                if (offered.length > 0) withMcp.prompts = offered;
+
+                if (mcpServers.length > 0) withMcp.mcpServers = mcpServers;
+
+                return withMcp;
+              }),
+            );
+      }),
+    );
 
   const listings = yield* FileListings;
 
@@ -1704,6 +1790,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     draft: InputSubmissionDraft,
     input: UserInput,
     pages: ReadonlyArray<AttachedPage>,
+    // The parts the pages go after: an MCP prompt's block and images, which come before the owner's own parts.
+    from = 0,
   ): InputSubmissionDraft => {
     const block = { type: "text" as const, text: pageBlock(pages) };
 
@@ -1714,7 +1802,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       : [...draft.content];
 
     const at = Option.getOrElse(
-      Arr.findFirstIndex(parts, (part) => part.type === "image"),
+      Arr.findFirstIndex(parts, (part, index) => index >= from && part.type === "image"),
       () => parts.length,
     );
 
@@ -1729,6 +1817,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         skills: data?.skills ?? [],
         pages: Arr.map(pages, (page) => clampPage(page)),
         review: data?.review,
+        mcpPrompt: data?.mcpPrompt,
       }),
     };
   };
@@ -1737,12 +1826,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a Review's data is strings, numbers, and arrays and objects of them, as its Schema says: JSON, only typed read-only.
   const reviewJson = (data: ReviewData): JsonValue => data as unknown as JsonValue;
 
+  /** An MCP prompt's data as the entry stores it. */
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: an MCP prompt's data is strings, and arrays and objects of them, as its Schema says: JSON, only typed read-only.
+  const mcpPromptJson = (data: McpPromptData): JsonValue => data as unknown as JsonValue;
+
   /** What a `cloudpid.user` entry stores (`UserEntryData`), as JSON. */
   type OwnerEntryData = {
     display: string;
     skills: Array<UserEntryData["skills"][number]>;
     pages?: Array<AttachedPage>;
     review?: JsonValue;
+    mcpPrompt?: JsonValue;
   };
 
   /**
@@ -1754,12 +1848,15 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     readonly skills: UserEntryData["skills"];
     readonly pages?: ReadonlyArray<AttachedPage> | undefined;
     readonly review?: ReviewData | undefined;
+    readonly mcpPrompt?: McpPromptData | undefined;
   }) => {
     const data: OwnerEntryData = { display: kept.display, skills: [...kept.skills] };
 
     if (kept.pages !== undefined) data.pages = [...kept.pages];
 
     if (kept.review !== undefined) data.review = reviewJson(kept.review);
+
+    if (kept.mcpPrompt !== undefined) data.mcpPrompt = mcpPromptJson(kept.mcpPrompt);
 
     return { kind: USER_ENTRY_KIND, data };
   };
@@ -1791,7 +1888,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * goes as typed.
    */
   const expandedDraft = (prompt: Prompt): Effect.Effect<DraftOf, SessionError> => {
-    const { conversationId, input, review, attachPages: _attachPages, via: _via, ...rest } = prompt;
+    const {
+      conversationId,
+      input,
+      review,
+      attachPages: _attachPages,
+      via: _via,
+      mcpPrompt: _mcpPrompt,
+      ...rest
+    } = prompt;
+
     const typed = typedText(input);
 
     // A Review is the owner's message too: the summary as typed (or expanded), then its Markdown; its entry keeps both.
@@ -1874,21 +1980,233 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     );
   };
 
+  /** The Subagent Workspace `conversationId` works in, or undefined for the Session's own. Fails for no agent's. */
+  const subagentWorkspaceOf = (conversationId: ConversationId) =>
+    agentConversation(conversationId).pipe(
+      Effect.andThen(attempt("workspace", () => harness.harness.snapshot(SubagentsDoc, context))),
+      Effect.map((state) =>
+        state === undefined ? undefined : conversationWorkspace(state, conversationId),
+      ),
+    );
+
+  /**
+   * Check the pick `picked` of `prompt` before anything is asked of a server: this Session has MCP prompts, the message
+   * is no Review, the Environment still offers the prompt and the arguments are sound. What it answers is what the get
+   * sends: the prompt as the catalog lists it, and the arguments cleaned (`promptArguments`).
+   */
+  const checkedPick = (prompt: Prompt, picked: NonNullable<Prompt["mcpPrompt"]>) =>
+    Effect.gen(function* () {
+      const { ref } = picked;
+
+      const refused = (code: McpPromptErrorCode, message: string) =>
+        promptRefusal(code, message, ref.server);
+
+      const prompts = options.mcp?.prompts;
+
+      if (prompts === undefined) {
+        return yield* refused("MCP_PROMPT_FAILED", "This Session has no MCP prompts");
+      }
+
+      if (prompt.review !== undefined) {
+        return yield* refused("MCP_PROMPT_FAILED", "An MCP prompt cannot go with a Review");
+      }
+
+      const values = settings.current();
+      const catalog = yield* prompts.catalog(values);
+
+      const offered = Arr.findFirst(
+        catalog.prompts,
+        (each) => each.server === ref.server && each.name === ref.name,
+      );
+
+      if (Option.isNone(offered)) {
+        return yield* refused(
+          "MCP_PROMPT_FAILED",
+          `${ref.server} does not offer the prompt ${ref.name} (any more)`,
+        );
+      }
+
+      const wanted = ref.arguments ?? {};
+      const problem = promptArgumentsProblem(offered.value.arguments, wanted);
+
+      if (problem !== undefined) return yield* refused("MCP_PROMPT_ARGUMENTS", problem);
+
+      return {
+        prompts,
+        values,
+        entry: offered.value,
+        sent: promptArguments(offered.value.arguments, wanted),
+      };
+    });
+
+  /**
+   * Where the files of a prompt's result go: the Session's uploads directory, written through the lookup environment,
+   * which never starts the Container (ADR-0018). A result with no such file never needs it, so an environment that is
+   * not there is only a refusal of the files.
+   */
+  const promptFiles = (conversation: Conversation, session: string | undefined) =>
+    Effect.gen(function* () {
+      const env = yield* environment(conversation, { lookup: true }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(
+            "The Workspace environment for a prompt's files is not there",
+            error,
+          ).pipe(Effect.as(undefined)),
+        ),
+      );
+
+      // The files this send makes are named by a number of its own and their order.
+      const tag = (yield* Random.nextInt).toString(36);
+      let files = 0;
+
+      const save = async (file: PromptFile): Promise<string> => {
+        if (env === undefined || session === undefined) {
+          throw new Error("This Session has no Workspace to keep the file in");
+        }
+
+        const path = attachmentPath(session, promptFileName(file, `${tag}${files++}`));
+        const written = await env.writeFile(path, file.bytes, context);
+
+        if (!written.ok) throw new Error(written.error.message);
+
+        return path;
+      };
+
+      return { env, save };
+    });
+
+  /**
+   * The draft of a message that names an MCP prompt: the prompt is got now, once, as the message is admitted
+   * (`docs/architecture/mcp-in-a-session.md` → Getting a prompt at send), and its block, its images and the typed text are
+   * the message's parts, in the order `promptContent` names, with what the owner attached after them (`from`, the
+   * parts that are the prompt's own: `promptPartCount`). Anything that goes wrong refuses the send with a code, and
+   * nothing is placed.
+   */
+  const mcpPromptDraft = (
+    prompt: Prompt,
+    picked: NonNullable<Prompt["mcpPrompt"]>,
+  ): Effect.Effect<{ readonly draft: InputSubmissionDraft; readonly from: number }, SessionError> =>
+    Effect.gen(function* () {
+      const { ref } = picked;
+
+      const {
+        conversationId: _conversationId,
+        input,
+        review: _review,
+        attachPages: _attachPages,
+        via: _via,
+        mcpPrompt: _mcpPrompt,
+        ...rest
+      } = prompt;
+
+      // A resend of a message that was admitted finds the first submission: the prompt is not got again.
+      if (yield* wasAdmitted(prompt)) {
+        return { draft: { type: "input" as const, content: input, ...rest }, from: 0 };
+      }
+
+      const { prompts, values, entry, sent } = yield* checkedPick(prompt, picked);
+
+      const conversation = yield* addressed(prompt.conversationId);
+      const redact = yield* picked.redact;
+      const workspace = yield* subagentWorkspaceOf(conversation.id);
+      const { env, save } = yield* promptFiles(conversation, prompts.session);
+      const { typed, beside } = typedAndBeside(input);
+
+      const made = yield* prompts
+        .get(
+          values,
+          {
+            server: ref.server,
+            name: ref.name,
+            arguments: sent,
+            conversationId: conversation.id,
+            workspace: workspace?.object,
+          },
+          (result) =>
+            promptMessage({
+              server: ref.server,
+              name: ref.name,
+              title: entry.title,
+              result,
+              typed,
+              imageBudget: INLINE_IMAGE_BUDGET - imageCharacters(beside),
+              redact,
+              save,
+            }),
+        )
+        .pipe(Effect.mapError((error) => redactedError(error, redact)));
+
+      if (Result.isFailure(made)) {
+        return yield* promptRefusal(made.failure.code, redact(made.failure.message), ref.server);
+      }
+
+      const message = made.success;
+
+      // `$name` Skill links still apply to the typed text; no command runs.
+      const skills =
+        typed.includes("$") && env !== undefined ? yield* orNone("Skills", skillsIn(env)) : [];
+
+      return {
+        draft: {
+          type: "input" as const,
+          content: promptContent(message, linkSkillReferences(typed, skills), beside),
+          ...rest,
+          entry: ownerEntry({
+            display: typed,
+            skills: [],
+            mcpPrompt: promptData(entry, redact(sent), message),
+          }),
+        },
+        from: promptPartCount(message),
+      };
+    });
+
+  /**
+   * What `prompt` is before its pages: a message that names an MCP prompt, or the owner's own input expanded, as a
+   * draft of its Review, and how many of its first parts the pages go after. A typed `/mcp__…` that was not picked is
+   * refused: an MCP prompt is picked from the `/` menu.
+   */
+  const prepared = (
+    prompt: Prompt,
+  ): Effect.Effect<{ readonly expanded: DraftOf; readonly from: number }, SessionError> => {
+    const { mcpPrompt } = prompt;
+
+    if (mcpPrompt !== undefined) {
+      return mcpPromptDraft(prompt, mcpPrompt).pipe(
+        Effect.map(({ draft, from }) => ({ expanded: () => draft, from })),
+      );
+    }
+
+    const typed = typedText(prompt.input);
+
+    if (typed !== undefined && looksLikeMcpPromptCommand(typed)) {
+      return Effect.fail(
+        SessionError.make({
+          operation: "submit",
+          message: MCP_PROMPT_NOT_PICKED_MESSAGE,
+          code: "MCP_PROMPT_FAILED",
+        }),
+      );
+    }
+
+    return expandedDraft(prompt).pipe(Effect.map((expanded) => ({ expanded, from: 0 })));
+  };
+
   /**
    * `draft` with the pages attached to `prompt`: their block of page content as a text part of its own, before the first
    * image (the pages' screens, then the Attachments' pictures), apart from the owner's words, and the entry that keeps
    * what was read of them for the transcript's chips (`docs/architecture/client-and-protocol.md` → Attached pages).
    */
   const draftOf = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> =>
-    expandedDraft(prompt).pipe(
-      Effect.flatMap((expanded) =>
+    prepared(prompt).pipe(
+      Effect.flatMap(({ expanded, from }) =>
         attachedPages(prompt).pipe(
           Effect.map(
             (pages): DraftOf =>
               (rendered) =>
                 pages.length === 0
                   ? expanded(rendered)
-                  : withPages(expanded(rendered), prompt.input, pages),
+                  : withPages(expanded(rendered), prompt.input, pages, from),
           ),
         ),
       ),
@@ -1958,18 +2276,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
-  /**
-   * The pages `prompt` attaches, read now. Not read for a `requestId` the conversation has already admitted: that
-   * submit finds the first submission, whatever the pages are now.
-   */
-  const attachedPages = (
-    prompt: Prompt,
-  ): Effect.Effect<ReadonlyArray<AttachedPage>, SessionError> => {
-    const { attachPages, requestId } = prompt;
+  /** Whether the conversation has admitted `prompt`'s `requestId` already: a resend finds the first submission. */
+  const wasAdmitted = (prompt: Prompt): Effect.Effect<boolean, SessionError> => {
+    const { requestId } = prompt;
 
-    if (attachPages === undefined) return Effect.succeed([]);
-
-    if (requestId === undefined) return attachPages;
+    if (requestId === undefined) return Effect.succeed(false);
 
     return addressed(prompt.conversationId).pipe(
       Effect.flatMap((conversation) =>
@@ -1978,7 +2289,23 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context),
         ),
       ),
-      Effect.flatMap((admitted) => (admitted === undefined ? attachPages : Effect.succeed([]))),
+      Effect.map((admitted) => admitted !== undefined),
+    );
+  };
+
+  /**
+   * The pages `prompt` attaches, read now. Not read for a `requestId` the conversation has already admitted: that
+   * submit finds the first submission, whatever the pages are now.
+   */
+  const attachedPages = (
+    prompt: Prompt,
+  ): Effect.Effect<ReadonlyArray<AttachedPage>, SessionError> => {
+    const { attachPages } = prompt;
+
+    if (attachPages === undefined) return Effect.succeed([]);
+
+    return wasAdmitted(prompt).pipe(
+      Effect.flatMap((admitted) => (admitted ? Effect.succeed([]) : attachPages)),
     );
   };
 
@@ -1988,20 +2315,38 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * expansion is in it, so what is measured is what would be written. Run in arrival order, so the inbox read is not
    * outgrown by a message admitted meanwhile.
    */
-  const guard = (conversationId: ConversationId | undefined, draft: InputSubmissionDraft) =>
+  const guard = (
+    conversationId: ConversationId | undefined,
+    draft: InputSubmissionDraft,
+    // The server of the MCP prompt the message got: its refusal then says why with a code.
+    prompt?: string,
+  ) =>
     Effect.suspend(() => {
-      const refused = (message: string) => SessionError.make({ operation: "submit", message });
+      const refused = (problem: InputProblem) =>
+        prompt === undefined
+          ? SessionError.make({ operation: "submit", message: problem.message })
+          : promptRefusal(
+              // Only a size is a prompt too large; an image type the providers do not take is the owner's own
+              // attachment (only types they take are inlined from the server's content), which fails the send.
+              problem.kind === "size" ? "MCP_PROMPT_TOO_LARGE" : "MCP_PROMPT_FAILED",
+              problem.message,
+              prompt,
+            );
 
       // The row pi-durable writes is the entry (its model message, from `content`, and its kind and data, from `entry`) or
       // the inbox document holding it, both as JSON; `{ content, entry }` is that JSON but for a few fields (IDs, the
       // timestamp, the role), which the room between `MAX_STORED_INPUT_BYTES` and the 8 MiB row (workerd#7493) leaves.
-      const alone = inputProblem(draft, 0);
+      const alone = inputProblemOf(draft, 0);
 
       if (alone !== undefined) return Effect.fail(refused(alone));
 
       return queuedBytes(conversationId).pipe(
+        // The storage could not be read: not a size, whatever the message is.
+        Effect.mapError((error) =>
+          prompt === undefined ? error : promptRefusal("MCP_PROMPT_FAILED", error.message, prompt),
+        ),
         Effect.flatMap((queued) => {
-          const problem = inputProblem(draft, queued);
+          const problem = inputProblemOf(draft, queued);
 
           return problem === undefined ? Effect.void : Effect.fail(refused(problem));
         }),
@@ -2025,6 +2370,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               skills: data?.skills ?? [],
               pages: data?.pages,
               review: data?.review,
+              mcpPrompt: data?.mcpPrompt,
             });
 
             return { ...draft, entry: { ...kept, data: { ...kept.data, via: encoded } } };
@@ -2100,7 +2446,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
           ),
         (conversationId, draft) =>
-          guard(conversationId, draft).pipe(
+          guard(conversationId, draft, prompt.mcpPrompt?.ref.server).pipe(
             Effect.andThen(admitDraft(conversationId, draft, { named: true, started: true })),
           ),
         requestId,
@@ -2995,13 +3341,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     close: Effect.sync(() => agentsReport.stop()).pipe(
       Effect.andThen(attempt("close", () => harness.harness.close(context))),
     ),
-    workspaceOf: (conversationId) =>
-      agentConversation(conversationId).pipe(
-        Effect.andThen(attempt("workspace", () => harness.harness.snapshot(SubagentsDoc, context))),
-        Effect.map((state) =>
-          state === undefined ? undefined : conversationWorkspace(state, conversationId),
-        ),
-      ),
+    workspaceOf: subagentWorkspaceOf,
     workspaces,
     taskGraph: taskGraphSummaries,
     usage: usageUpdates,

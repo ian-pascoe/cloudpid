@@ -6,11 +6,13 @@ import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import {
   type Catalog,
   type CatalogEntry,
+  MCP_PROMPT_COMMAND_PREFIX,
   projectEntry,
   sessionCommandsFor,
   type TranscriptMessage,
   type TranscriptPart,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 
 const entryOf = (entry: { readonly name: string; readonly description: string }) => ({
@@ -18,16 +20,24 @@ const entryOf = (entry: { readonly name: string; readonly description: string })
   description: entry.description,
 });
 
-/** What a catalog offers from a directory that has `skills` and `templates`, nearest first. */
+/**
+ * What a catalog offers from a directory that has `skills` and `templates`, nearest first. A template named `mcp__…` is
+ * left out: that prefix is reserved for MCP prompts (`docs/architecture/mcp-in-a-session.md` → The `/` menu and the
+ * catalog).
+ */
 export const catalogEntries = (
   skills: ReadonlyArray<Pick<Skill, "name" | "description">>,
   templates: ReadonlyArray<Pick<PromptTemplate, "name" | "description" | "argumentHint">>,
 ): Pick<Catalog, "templates" | "skills"> => ({
-  templates: templates.map((template): CatalogEntry =>
-    template.argumentHint === undefined
-      ? entryOf(template)
-      : { ...entryOf(template), argumentHint: template.argumentHint },
-  ),
+  templates: Arr.flatMap(templates, (template): ReadonlyArray<CatalogEntry> => {
+    if (`/${template.name}`.startsWith(MCP_PROMPT_COMMAND_PREFIX)) return [];
+
+    return [
+      template.argumentHint === undefined
+        ? entryOf(template)
+        : { ...entryOf(template), argumentHint: template.argumentHint },
+    ];
+  }),
   // Every Skill, those the model is not offered too: they exist for the owner to name.
   skills: skills.map(entryOf),
 });

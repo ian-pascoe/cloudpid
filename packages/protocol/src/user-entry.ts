@@ -8,6 +8,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AttachedPage } from "./attached-pages.ts";
 import { SessionVia } from "./mcp-api.ts";
+import { McpPromptData, mcpPromptLabel } from "./mcp-prompts.ts";
 import { ReviewData } from "./review.ts";
 
 /** The kind of an owner's message the Session expanded. */
@@ -23,13 +24,17 @@ export type ExpandedSkill = typeof ExpandedSkill.Type;
  * expanded into the model's message, the pages attached to it (`pages`, what the Session read of them; the model
  * got them as a block of page content, which the transcript shows as chips instead), and for a Review, the Annotations
  * it sent (`review`), whose Markdown ends the model message's first text, after the summary. An input sent over the MCP
- * endpoint keeps who sent it (`via`: the client's name and how it got in, never the owner's email).
+ * endpoint keeps who sent it (`via`: the client's name and how it got in, never the owner's email). A message that sent an
+ * MCP prompt keeps what it was (`mcpPrompt`), for the transcript's chip and disclosure, and for Branch to give the chip
+ * back (docs/architecture/mcp-in-a-session.md → Into the conversation).
  */
 export const UserEntryData = Schema.Struct({
   display: Schema.String,
   skills: Schema.Array(ExpandedSkill),
   pages: AttachedPage.pipe(Schema.Array, Schema.optionalKey),
   review: Schema.optionalKey(ReviewData),
+  // A prompt this version cannot read leaves the entry readable, without it.
+  mcpPrompt: Schema.optionalKey(McpPromptData).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
   // A mark this version cannot read leaves the entry readable, without the mark.
   via: Schema.optionalKey(SessionVia).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
 });
@@ -44,6 +49,15 @@ export const userEntryData = (entry: {
   readonly data?: unknown;
 }): UserEntryData | undefined =>
   entry.kind === USER_ENTRY_KIND ? Option.getOrUndefined(decodeData(entry.data)) : undefined;
+
+/**
+ * What names an owner's message where the transcript is not drawn: what they typed, else the chip label of the MCP
+ * prompt they sent, else nothing (`docs/architecture/mcp-in-a-session.md` → Into the conversation).
+ */
+export const ownerDisplay = (data: UserEntryData): string =>
+  data.display === "" && data.mcpPrompt !== undefined
+    ? mcpPromptLabel(data.mcpPrompt)
+    : data.display;
 
 /** A Skill as the model reads it, in local pi's block: `body` is its `SKILL.md` without the frontmatter. */
 export const skillBlock = (skill: {

@@ -159,6 +159,31 @@ describe("firstExchange", () => {
     });
   });
 
+  it("names a message that got an MCP prompt by its chip label when the owner typed nothing", () => {
+    const picked: EntryRecord = {
+      ...user(1, '<mcp_prompt server="github" name="review">Review PR 7</mcp_prompt>'),
+      kind: "cloudpid.user",
+      data: {
+        display: "",
+        skills: [],
+        mcpPrompt: {
+          server: "github",
+          command: "/mcp__github__review",
+          name: "review",
+          title: "Review PR",
+          arguments: { pr: "7" },
+          parts: [{ role: "user", type: "text" }],
+          resources: [],
+        },
+      },
+    };
+
+    expect(firstExchange([picked, assistant(2, "Reviewed.")])).toEqual({
+      question: "github · Review PR",
+      answer: "Reviewed.",
+    });
+  });
+
   it("has nothing before the first message", () => {
     expect(firstExchange([])).toBeUndefined();
   });

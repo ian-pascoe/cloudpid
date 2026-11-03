@@ -4,6 +4,7 @@
 import type { McpEngineDiscovered } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
@@ -40,6 +41,65 @@ const read = (rows: ReturnType<typeof inventoryRows>) => Option.getOrThrow(readI
 
 const names = (rows: ReturnType<typeof inventoryRows>) =>
   Arr.map(read(rows).tools, (each) => each.name);
+
+describe("the prompts an inventory keeps", () => {
+  const prompts = (listed: ReadonlyArray<Schema.Json>) =>
+    read(
+      inventoryRows(
+        // SAFETY: prompts are JSON objects.
+        discovered({ prompts: listed as McpEngineDiscovered["prompts"] }),
+        0,
+      ),
+    );
+
+  it("are cut, cleaned and stripped of what a menu does not use", () => {
+    const kept = prompts([
+      {
+        name: "review",
+        title: `${"t".repeat(130)}\u0000`,
+        description: `${"d".repeat(1100)}`,
+        icons: [{ src: "https://x.test/i.png" }],
+        _meta: { a: 1 },
+        arguments: [
+          { name: "pr", description: "p".repeat(600), required: true, _meta: {} },
+          { name: "note", title: "Note\u0007", required: false },
+        ],
+      },
+    ]);
+
+    const [prompt] = kept.prompts;
+
+    expect(Record.keys(prompt ?? {}).sort()).toEqual(["arguments", "description", "name", "title"]);
+    expect(prompt?.["title"]).toEqual("t".repeat(119) + "…");
+    expect(prompt?.["description"]).toEqual("d".repeat(999) + "…");
+    expect(prompt?.["arguments"]).toEqual([
+      { name: "pr", description: expect.stringMatching(/^p{499}…$/), required: true },
+      { name: "note", title: "Note" },
+    ]);
+  });
+
+  it("leave out a prompt with too many arguments, a bad argument or a long name, each with its problem", () => {
+    const many = Arr.makeBy(17, (index) => ({ name: `a${index}` }));
+
+    const kept = prompts([
+      { name: "ok" },
+      { name: "many", arguments: many },
+      { name: "empty", arguments: [{ name: "" }] },
+      { name: "twice", arguments: [{ name: "a" }, { name: "a" }] },
+      { name: "n".repeat(129) },
+    ]);
+
+    expect(Arr.map(kept.prompts, (each) => each["name"])).toEqual(["ok"]);
+    expect(Arr.map(kept.meta.problems, (each) => each.prompt)).toEqual([
+      "many",
+      "empty",
+      "twice",
+      // The name in a problem is cut as the others are, so a long one costs the inventory no more than its bound.
+      `${"n".repeat(127)}…`,
+    ]);
+    expect(kept.meta.problems[0]?.problem).toBe("not offered: it has more than 16 arguments");
+  });
+});
 
 describe("inventoryRows", () => {
   it("leaves out a Modern tool with an invalid x-mcp-header, with its problem, and keeps a Legacy one", () => {

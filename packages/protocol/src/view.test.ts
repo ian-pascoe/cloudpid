@@ -688,6 +688,54 @@ describe("the session view", () => {
 });
 
 describe("the transcript projection", () => {
+  it("shows an owner's message that got an MCP prompt as typed, with the block and its inline images beside it", () => {
+    const [projected] = projectEntries([
+      asEntry({
+        id: 1,
+        conversationId: 1,
+        kind: "cloudpid.user",
+        data: {
+          display: "focus on tests",
+          skills: [],
+          mcpPrompt: {
+            server: "github",
+            command: "/mcp__github__review",
+            name: "review",
+            arguments: { pr: "1" },
+            parts: [
+              { role: "user", type: "text" },
+              { role: "user", type: "image", mimeType: "image/png" },
+              { role: "user", type: "image", mimeType: "image/png", path: "/workspace/x.png" },
+            ],
+            resources: [],
+          },
+        },
+        model: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: '<mcp_prompt server="github" name="review">…</mcp_prompt>' },
+              { type: "image", data: "PROMPT", mimeType: "image/png" },
+              { type: "text", text: "focus on tests" },
+              { type: "image", data: "OWNER", mimeType: "image/png" },
+            ],
+            timestamp: 1,
+          },
+        ],
+      }),
+    ]);
+
+    expect(projected?.parts).toEqual([
+      { type: "text", text: "focus on tests" },
+      { type: "image", data: "OWNER", mimeType: "image/png" },
+    ]);
+    expect(projected?.mcpPrompt).toMatchObject({
+      server: "github",
+      name: "review",
+      text: '<mcp_prompt server="github" name="review">…</mcp_prompt>',
+    });
+  });
+
   it("shows an owner's expanded message as typed, with each Skill's block beside it", () => {
     const block = skillBlock({
       name: "review",

@@ -24,6 +24,7 @@ import {
   type DiscoverResult,
   extractWWWAuthenticateParams,
   type FetchLike,
+  type GetPromptResult,
   type Implementation,
   type JSONObject,
   type JsonSchemaValidator,
@@ -333,6 +334,15 @@ export interface McpConnection {
     ctx: McpCallContext,
     options?: ReadOptions,
   ) => Effect.Effect<ReadComplete, McpError>;
+  /**
+   * One `prompts/get` of prompt `name` with `args`: a read of a server's own template, so it is sent once more after a
+   * cut. The owner's request, never the agent's (`docs/architecture/mcp-in-a-session.md` → Getting a prompt at send).
+   */
+  readonly getPrompt: (
+    name: string,
+    args: Readonly<Record<string, string>>,
+    ctx: McpCallContext,
+  ) => Effect.Effect<Complete<GetPromptResult>, McpError>;
 }
 
 /**
@@ -1475,6 +1485,29 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       } satisfies Complete<ListedPage<ListItems[K]>>;
     });
 
+  const getPrompt = (name: string, args: Readonly<Record<string, string>>, ctx: McpCallContext) =>
+    Effect.gen(function* () {
+      const meta = metaFor(ctx);
+      const sent = { name, arguments: { ...args } };
+      const params = meta === undefined ? sent : { ...sent, _meta: meta };
+
+      const value = yield* request(
+        (client, signal) =>
+          client.request({ method: "prompts/get", params }, { signal, timeout: PAGE_TIMEOUT_MS }),
+        false,
+      );
+
+      const fetchedAt = yield* Clock.currentTimeMillis;
+
+      return {
+        kind: "complete",
+        value,
+        cacheable: true,
+        fetchedAt,
+        ...Option.getOrUndefined(decodeCacheHints(value)),
+      } satisfies Complete<GetPromptResult>;
+    });
+
   const connection: McpConnection = {
     get era() {
       return live.era;
@@ -1497,6 +1530,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     task,
     listPage,
     readResource,
+    getPrompt,
   };
 
   return connection;

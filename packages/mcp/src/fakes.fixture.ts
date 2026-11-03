@@ -6,6 +6,8 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off newPromise:off globalDate:off
 import {
   createMcpHandler,
+  type GetPromptResult,
+  type Prompt,
   inputRequired,
   Server,
   type ServerCapabilities,
@@ -210,6 +212,23 @@ export interface FakeResourceTemplate {
   readonly mimeType?: string;
 }
 
+/** A prompt a fake lists and gets: its listing entry, and the messages `prompts/get` answers for the arguments it was sent. */
+export interface FakePrompt {
+  readonly name: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly arguments?: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string;
+    readonly required?: boolean;
+  }>;
+  /** What `prompts/get` answers; a throw is the server's error. */
+  readonly get: (args: Readonly<Record<string, string>>) => {
+    readonly description?: string;
+    readonly messages: GetPromptResult["messages"];
+  };
+}
+
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
 export interface FakeOptions {
   /** Declares `resources`, lists these, and answers `resources/read` for each by its URI (an unknown one is an error). */
@@ -220,6 +239,8 @@ export interface FakeOptions {
   readonly resourcePageSize?: number;
   /** The cache hints both lists answer with: `ttlMs`, and `cacheScope` (a Modern server's; a Legacy one sends none, as it has no such field). */
   readonly listCache?: { readonly ttlMs: number; readonly cacheScope?: "public" | "private" };
+  /** Declares `prompts`, lists these, and answers `prompts/get` for each by its name (an unknown one is an error). */
+  readonly prompts?: ReadonlyArray<FakePrompt>;
   /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
   readonly listMore?: boolean;
   /** What the server says of itself: its `instructions` (default `Use the echo tool.`) and the name in its `serverInfo`. */
@@ -278,6 +299,8 @@ const fakeMcp = (
   if (options.resources !== undefined || options.resourceTemplates !== undefined) {
     capabilities.resources = {};
   }
+
+  if (options.prompts !== undefined) capabilities.prompts = { listChanged: true };
 
   if (options.extensions !== undefined) capabilities.extensions = { ...options.extensions };
 
@@ -367,6 +390,29 @@ const fakeMcp = (
       return {
         contents: [...(Predicate.isFunction(found.contents) ? found.contents() : found.contents)],
       };
+    });
+  }
+
+  if (options.prompts !== undefined) {
+    const { prompts } = options;
+
+    server.setRequestHandler("prompts/list", async () => ({
+      prompts: prompts.map(({ get: _get, arguments: args, ...listed }) => {
+        const entry: Prompt = { ...listed };
+
+        if (args !== undefined) entry.arguments = [...args];
+
+        return entry;
+      }),
+    }));
+    server.setRequestHandler("prompts/get", async (request) => {
+      const found = prompts.find((each) => each.name === request.params.name);
+
+      if (found === undefined) throw new Error(`No prompt ${request.params.name}`);
+
+      const got = found.get(request.params.arguments ?? {});
+
+      return { ...got, messages: [...got.messages] };
     });
   }
 
