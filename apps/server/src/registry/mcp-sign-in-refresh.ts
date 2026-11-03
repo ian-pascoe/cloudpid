@@ -2,7 +2,8 @@
 // Telemetry and redaction; ADR-0034): the `Refresh` seam `mcpAccessToken` calls when the access token is at `exp − 60
 // s`, or the host's request was refused with it by a 401.
 //
-// - **Single-flight per sign-in.** A Durable Object's input gate opens on `fetch`, so a second refresh racing with the
+// - **Single-flight per sign-in** (`singleFlight` in `mcp-sign-in-backoff.ts`, with the retry and the backoff, which a client
+//   grant shares). A Durable Object's input gate opens on `fetch`, so a second refresh racing with the
 //   same rotating refresh token would get `invalid_grant`: callers that arrive while one is in flight wait for it and
 //   share its answer. A refresh once sent is never cancelled (its region is uninterruptible), and one an eviction cuts
 //   short may have lost a rotated refresh token, which the owner mends by signing in again.
@@ -36,20 +37,25 @@ import {
 } from "@cloudpid/mcp/oauth";
 import type { McpAccessTokenAnswer } from "@cloudpid/mcp/types";
 import * as Clock from "effect/Clock";
-import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
+import {
+  inMemoryBackoffs,
+  outcomeOf,
+  reasonOf,
+  retryOnce,
+  RETRY_MS,
+  sameSealed,
+  singleFlight,
+} from "./mcp-sign-in-backoff.ts";
 import {
   clientInformation,
   errorCodeOf,
   type FlowDeps,
   hostOf,
   metadataOf,
-  told,
 } from "./mcp-sign-in-flow.ts";
 import {
   clip,
@@ -58,22 +64,15 @@ import {
   REFRESH_MARGIN_MS,
   type Refresh,
   type RefreshRequest,
+  told,
 } from "./mcp-sign-in-registry.ts";
-import { type KeptVault, SealedValue } from "@cloudpid/extensions/secrets/core";
+import type { KeptVault } from "@cloudpid/extensions/secrets/core";
 import { type McpTokens, openTokens, sealTokens } from "./mcp-sign-in-seal.ts";
 import type { ClientKind } from "./mcp-sign-ins.ts";
 
-/** The pause before the one retry of a transient failure. */
-export const REFRESH_RETRY_MS = 1_000;
-
-/** The first backoff after a refresh that failed twice; it doubles, up to {@link MAX_REFRESH_BACKOFF_MS}. */
-export const REFRESH_BACKOFF_MS = 10_000;
-
-export const MAX_REFRESH_BACKOFF_MS = 5 * 60_000;
-
 /** What a refresh needs: the flow's stores, vault, network and `${NAME}` sources, and the pause before a retry. */
 export type RefreshDeps = Pick<FlowDeps, "store" | "signIns" | "vault" | "fetch" | "sources"> & {
-  /** Defaults to {@link REFRESH_RETRY_MS}; a test shortens it. */
+  /** Defaults to `RETRY_MS`; a test shortens it. */
   readonly retryMs?: number | undefined;
 };
 
@@ -100,27 +99,6 @@ const isFinal = (outcome: Outcome, client: ClientKind): boolean =>
     (outcome.code === "invalid_grant" ||
       outcome.code === "invalid_scope" ||
       (isClientRefused(outcome.code) && client !== "document")));
-
-/** The reason a failure leaves on the row, for the owner. */
-const reasonOf = (outcome: Extract<Outcome, { kind: "refused" | "failed" }>): string => {
-  if (outcome.kind === "failed") return told(outcome.message);
-
-  if (outcome.code === "server_error" && outcome.status !== undefined) {
-    return `The authorization server answered HTTP ${outcome.status}`;
-  }
-
-  return outcome.message === outcome.code
-    ? outcome.code
-    : told(`${outcome.code} (${outcome.message})`);
-};
-
-const sameSealed = Schema.toEquivalence(Schema.NullOr(SealedValue));
-
-const outcomeOf = (outcome: string) => Effect.annotateCurrentSpan({ "mcp.outcome": outcome });
-
-/** The delay of the backoff after the `failures`th failed refresh (1-based). */
-const backoffMs = (failures: number): number =>
-  Math.min(REFRESH_BACKOFF_MS * 2 ** (failures - 1), MAX_REFRESH_BACKOFF_MS);
 
 /**
  * Whether the token of the request still stands at `now`: only for a refresh the expiry asked for, never a refused
@@ -181,8 +159,7 @@ const send = async (deps: Pick<RefreshDeps, "fetch">, input: Send): Promise<Outc
 
 /** The refresh over `deps`: single-flight per sign-in, with its backoff in memory. */
 export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
-  const flights = new Map<string, Deferred.Deferred<McpAccessTokenAnswer>>();
-  const backoffs = new Map<string, { readonly failures: number; readonly retryAt: number }>();
+  const backoffs = inMemoryBackoffs();
 
   /** The answer for a refresh that did not give a new token: the old while it stands (with its note), else why not. */
   const withoutNewToken = (
@@ -207,9 +184,7 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
     now: number,
   ): McpAccessTokenAnswer => {
     const { hash } = asked.key;
-    const failures = (backoffs.get(hash)?.failures ?? 0) + 1;
-
-    backoffs.set(hash, { failures, retryAt: now + backoffMs(failures) });
+    backoffs.failed(hash, now);
 
     // A pending step-up keeps its status, and its error, which marks its token as rejected.
     if ((deps.signIns.get(hash) ?? asked.row).status !== "step_up") {
@@ -228,21 +203,17 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
     const kept = clip(reason, MAX_SIGN_IN_ERROR_LENGTH);
 
     deps.signIns.dropTokens(asked.key.hash, kept, now);
-    backoffs.delete(asked.key.hash);
+    backoffs.clear(asked.key.hash);
 
     return { status: "required", reason: kept };
   };
 
   const sendWithRetry = (input: Send, client: ClientKind): Effect.Effect<Outcome> =>
-    Effect.gen(function* () {
-      const first = yield* Effect.promise(() => send(deps, input));
-
-      if (isFinal(first, client)) return first;
-
-      yield* Effect.sleep(Duration.millis(deps.retryMs ?? REFRESH_RETRY_MS));
-
-      return yield* Effect.promise(() => send(deps, input));
-    });
+    retryOnce(
+      Effect.promise(() => send(deps, input)),
+      (outcome) => isFinal(outcome, client),
+      deps.retryMs ?? RETRY_MS,
+    );
 
   /**
    * The tokens are no use any more: the span says why (`outcome`), the row drops them, and the answer is `required`.
@@ -322,7 +293,7 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
         },
         now,
       );
-      backoffs.delete(hash);
+      backoffs.clear(hash);
       deps.signIns.touch(hash, now);
 
       yield* Effect.annotateCurrentSpan({
@@ -410,7 +381,7 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
       const began = yield* Clock.currentTimeMillis;
       const elapsed = Effect.map(Clock.currentTimeMillis, (at) => startedAt + (at - began));
 
-      const held = backoffs.get(first.key.hash);
+      const held = backoffs.held(first.key.hash);
 
       if (held !== undefined && startedAt < held.retryAt) {
         yield* outcomeOf("backoff");
@@ -542,24 +513,5 @@ export const mcpTokenRefresh = (deps: RefreshDeps): Refresh => {
       return answerFailing(asked, reasonOf(outcome), now);
     }).pipe(Effect.withSpan("mcp.oauth.refresh"));
 
-  return (asked, now) =>
-    Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const { hash } = asked.key;
-        const flight = flights.get(hash);
-
-        if (flight !== undefined) return yield* restore(Deferred.await(flight));
-
-        const own = Deferred.makeUnsafe<McpAccessTokenAnswer>();
-
-        flights.set(hash, own);
-
-        const exit = yield* Effect.exit(run(asked, now));
-
-        flights.delete(hash);
-        yield* Deferred.done(own, exit);
-
-        return yield* exit;
-      }),
-    );
+  return singleFlight(run);
 };

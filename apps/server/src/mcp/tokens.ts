@@ -30,8 +30,17 @@ export const NO_EXPIRY_HOLD_MS = 15 * MINUTE_MS;
 export type NoToken =
   | {
       readonly kind: "none";
-      /** `required`, `step_up`, `rejected`, `refresh_failing` or `unavailable`; the Registry's own status. */
-      readonly status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable";
+      /**
+       * `required`, `step_up`, `rejected`, `refresh_failing`, `unavailable`, or `failed` (a server that signs in on its
+       * own, whose token could not be had); the Registry's own status.
+       */
+      readonly status:
+        | "required"
+        | "step_up"
+        | "rejected"
+        | "refresh_failing"
+        | "unavailable"
+        | "failed";
       readonly reason: string;
       readonly scope?: string;
     }

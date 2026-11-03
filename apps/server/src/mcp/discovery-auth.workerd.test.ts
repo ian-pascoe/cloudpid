@@ -97,7 +97,7 @@ const ok = (token: string, over: Partial<Granted> = {}): Granted => ({
 });
 
 const noToken = (
-  status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable",
+  status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable" | "failed",
   reason: string,
   scope?: string,
 ): McpAccessTokenAnswer => (scope === undefined ? { status, reason } : { status, reason, scope });
@@ -790,5 +790,137 @@ describe("the heal at windowOpened", () => {
     await settled(host);
 
     expect(await stateOf(host, "sentry")).toBe("connected");
+  });
+});
+
+describe("a server that signs in on its own", () => {
+  const GRANT = {
+    oauth: {
+      grantType: "client_credentials",
+      clientId: "cloudpid-prod",
+      clientSecret: "${CLIENT_SECRET}",
+      issuer: "https://auth.example.com",
+    },
+  } as const;
+
+  const EXTENSION = "io.modelcontextprotocol/oauth-client-credentials";
+
+  it("declares the OAuth Client Credentials extension on its connection, and no other connection does", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("sentry", GRANT), entry("linear")));
+    await host.scriptToken("sentry", [ok(TOKEN)]);
+    await host.scriptToken("linear", [noToken("required", "Not signed in")]);
+    await host.scriptEngine(urlOf("sentry"), [found(["issues"])]);
+    await host.scriptEngine(urlOf("linear"), [found(["tasks"])]);
+    await start(host, { waitFor: ["sentry", "linear"], waitMs: 5000 });
+    await settled(host);
+
+    const targets = Object.fromEntries(
+      (await host.engineCalls()).map(({ target }) => [target.name, target.extensions]),
+    );
+
+    expect(targets["sentry"]).toEqual({ [EXTENSION]: {} });
+    expect(targets["linear"]).toBeUndefined();
+  });
+
+  it("sends the Registry's token and reports nothing to it", async () => {
+    const host = await discovered([ok(TOKEN)], [found(["issues"])], GRANT);
+
+    expect(await stateOf(host, "sentry")).toBe("connected");
+    expect(await sent(host)).toEqual([`Bearer ${TOKEN}`]);
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("is `failed` with the Registry's problem, never `sign_in`, when there is no token; and no call is made", async () => {
+    const host = await discovered(
+      [noToken("failed", "The authorization server does not accept the entry's client id")],
+      [found(["never"])],
+      GRANT,
+    );
+
+    expect(await stateOf(host, "sentry")).toBe("failed");
+    expect(await host.engineCalls()).toHaveLength(0);
+    expect((await host.servers({ parts: [] })).servers[0]?.error).toContain("client id");
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("never connects without a token, whatever status stands in the token's place", async () => {
+    for (const status of ["required", "step_up", "rejected", "refresh_failing"] as const) {
+      const host = await discovered([noToken(status, "no")], [found(["never"])], GRANT);
+
+      expect(await stateOf(host, "sentry")).toBe("failed");
+      expect(await host.engineCalls()).toHaveLength(0);
+      expect(await host.reports()).toEqual([]);
+    }
+
+    const host = await discovered([noToken("unavailable", "no")], [found(["never"])], GRANT);
+
+    expect(await stateOf(host, "sentry")).toBe("unavailable");
+  });
+
+  it("asks for a new token after a 401, retries once with it, and reports nothing", async () => {
+    const host = await discovered(
+      [ok(TOKEN), ok(NEXT)],
+      [unauthorized(), found(["issues"])],
+      GRANT,
+    );
+
+    expect(await stateOf(host, "sentry")).toBe("connected");
+    expect(await host.tokenAsks()).toEqual([
+      { environment: expect.any(String), server: "sentry" },
+      { environment: expect.any(String), server: "sentry", stale: TOKEN },
+    ]);
+    expect(await sent(host)).toEqual([`Bearer ${TOKEN}`, `Bearer ${NEXT}`]);
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("is `failed`, not `rejected` or `sign_in`, when a renewed token is refused too", async () => {
+    const host = await discovered(
+      [ok(TOKEN), ok(NEXT)],
+      [unauthorized(), failedWith({ _tag: "SignInRequired", message: "401", rejected: false })],
+      GRANT,
+    );
+
+    expect(await stateOf(host, "sentry")).toBe("failed");
+    expect((await host.servers({ parts: [] })).servers[0]?.error).toContain(
+      "refused the access token its client credentials gave",
+    );
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("is `failed` when the Registry hands the same token again, which is what it does after one renewal", async () => {
+    const host = await discovered([ok(TOKEN)], [unauthorized(), found(["never"])], GRANT);
+
+    expect(await stateOf(host, "sentry")).toBe("failed");
+    expect(await host.engineCalls()).toHaveLength(1);
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("is `failed`, not `sign_in`, for a 403 for more scope, which names the scope and the setting, and is not reported", async () => {
+    const host = await discovered(
+      [ok(TOKEN)],
+      [failedWith({ _tag: "StepUpRequired", message: "403", scope: "write" })],
+      GRANT,
+    );
+
+    expect(await stateOf(host, "sentry")).toBe("failed");
+    expect((await host.servers({ parts: [] })).servers[0]?.error).toMatch(
+      /scope write.*oauth\.scope/,
+    );
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("keeps no token in the storage, the log or a span", async () => {
+    const host = await discovered(
+      [ok(TOKEN), ok(NEXT)],
+      [unauthorized(), found(["issues"])],
+      GRANT,
+    );
+
+    for (const secret of [TOKEN, NEXT]) {
+      expect(await host.dump()).not.toContain(secret);
+      expect(await host.observed()).not.toContain(secret);
+    }
   });
 });

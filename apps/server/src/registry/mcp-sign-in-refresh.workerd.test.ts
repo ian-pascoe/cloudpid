@@ -21,7 +21,8 @@ import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
 import { completeMcpSignIn, type FlowDeps, startMcpSignIn } from "./mcp-sign-in-flow.ts";
-import { mcpTokenRefresh, MAX_REFRESH_BACKOFF_MS } from "./mcp-sign-in-refresh.ts";
+import { MAX_BACKOFF_MS } from "./mcp-sign-in-backoff.ts";
+import { mcpTokenRefresh } from "./mcp-sign-in-refresh.ts";
 import { mcpAccessToken, reportMcpAuth, signInTarget } from "./mcp-sign-in-registry.ts";
 import { MCP_OAUTH_PURPOSE, openTokens, type McpTokens } from "./mcp-sign-in-seal.ts";
 import { type McpSignInRow, type McpSignIns, openMcpSignIns } from "./mcp-sign-ins.ts";
@@ -775,7 +776,7 @@ describe("transient failures", () => {
           at += wait + 500;
         }
 
-        expect(MAX_REFRESH_BACKOFF_MS).toBe(300_000);
+        expect(MAX_BACKOFF_MS).toBe(300_000);
 
         // A success resets it: the next failure waits 10 s again.
         down = false;

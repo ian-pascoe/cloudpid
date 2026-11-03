@@ -367,3 +367,148 @@ describe("a request to a server with a sign-in", () => {
     ]);
   });
 });
+
+describe("a request to a server that signs in on its own", () => {
+  const GRANT = {
+    oauth: {
+      grantType: "client_credentials",
+      clientId: "cloudpid-prod",
+      clientSecret: "${CLIENT_SECRET}",
+      issuer: "https://auth.example.com",
+    },
+  } as const;
+
+  const grantHost = (tokens: ReadonlyArray<McpAccessTokenAnswer>) =>
+    discovered(["search"], { ...entry("sentry", GRANT), tokens });
+
+  const noToken = (
+    status: "required" | "step_up" | "rejected" | "refresh_failing" | "unavailable" | "failed",
+    reason: string,
+  ): McpAccessTokenAnswer => ({ status, reason });
+
+  it("carries the Registry's token through the auth hook and reports nothing", async () => {
+    const host = await grantHost([granted(TOKEN)]);
+
+    await host.scriptRequest(urlOf("sentry"), [{ result: completed("found"), auth: [false] }]);
+
+    expect(await tagOf(host, call("sentry", "search"))).toBe("Completed");
+
+    const [sent] = await host.engineRequests();
+
+    expect(sent?.hooks).toContain("auth");
+    expect(sent?.tokens).toEqual([TOKEN]);
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("is not sent, and fails as unreachable with the Registry's problem, when there is no token, whatever the status", async () => {
+    for (const status of [
+      "failed",
+      "required",
+      "step_up",
+      "rejected",
+      "refresh_failing",
+    ] as const) {
+      // The discovery's token has run out by the call, and the Registry has none to give instead.
+      const host = await grantHost([
+        {
+          status: "ok",
+          token: TOKEN,
+          resource: urlOf("sentry"),
+          signIn: "grant-1",
+          expiresAt: Date.now(),
+        },
+        noToken(status, "The client id is not accepted"),
+      ]);
+
+      expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+        _tag: "CallFailed",
+        error: { _tag: "Unreachable", message: "The client id is not accepted" },
+      });
+      expect(await host.engineRequests()).toEqual([]);
+      expect(await host.reports()).toEqual([]);
+    }
+  });
+
+  it("asks again with the refused token as stale after a 401, and retries with the renewed one", async () => {
+    const host = await grantHost([granted(TOKEN), granted(NEXT)]);
+
+    await host.scriptRequest(urlOf("sentry"), [
+      { result: completed("found"), auth: [false, true] },
+    ]);
+
+    expect(await tagOf(host, call("sentry", "search"))).toBe("Completed");
+    expect((await host.engineRequests())[0]?.tokens).toEqual([TOKEN, NEXT]);
+    expect((await host.tokenAsks()).at(-1)).toMatchObject({ server: "sentry", stale: TOKEN });
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("fails as unreachable, never as a sign-in, when the renewed token is refused too, and reports nothing", async () => {
+    const host = await grantHost([granted(TOKEN), granted(NEXT)]);
+
+    await host.scriptRequest(urlOf("sentry"), [{ result: unauthorized, auth: [false, true] }]);
+
+    const answer = await host.request(call("sentry", "search"), {});
+
+    expect(answer).toMatchObject({
+      _tag: "CallFailed",
+      error: {
+        _tag: "Unreachable",
+        message: expect.stringContaining("refused the access token its client credentials gave"),
+      },
+    });
+    expect(JSON.stringify(answer)).not.toContain("SignInRequired");
+    expect(JSON.stringify(answer)).not.toContain("mcp_sign_in_ask");
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("says the Registry's problem, not the server's bare refusal, when the renewal after a 401 fails", async () => {
+    const host = await grantHost([
+      granted(TOKEN),
+      noToken(
+        "failed",
+        "The authorization server does not accept the entry's client id (invalid_client)",
+      ),
+    ]);
+
+    await host.scriptRequest(urlOf("sentry"), [{ result: unauthorized, auth: [false, true] }]);
+
+    expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "Unreachable", message: expect.stringContaining("invalid_client") },
+    });
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("fails as unreachable, naming the scope and the setting, for a 403 for more scope, and reports nothing", async () => {
+    const host = await grantHost([granted(TOKEN)]);
+
+    await host.scriptRequest(urlOf("sentry"), [
+      {
+        result: failedCall({ _tag: "StepUpRequired", message: "403", scope: "write" }),
+        auth: [false],
+      },
+    ]);
+
+    expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "Unreachable", message: expect.stringMatching(/scope write.*oauth\.scope/) },
+    });
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("leaves the server's other failures as they are", async () => {
+    const host = await grantHost([granted(TOKEN)]);
+
+    await host.scriptRequest(urlOf("sentry"), [
+      {
+        result: failedCall({ _tag: "OtherMcpError", message: "boom" }),
+        auth: [false],
+      },
+    ]);
+
+    expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "OtherMcpError" },
+    });
+  });
+});

@@ -10,6 +10,15 @@
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 
+/**
+ * The extension a connection that signs in with OAuth Client Credentials declares, in both eras
+ * (`docs/architecture/mcp.md` → Extensions; `docs/architecture/mcp-sign-in.md` → Client Credentials), and what it declares.
+ */
+export const MCP_CLIENT_CREDENTIALS_EXTENSION = "io.modelcontextprotocol/oauth-client-credentials";
+
+/** The extension's capability: no settings. */
+export const MCP_CLIENT_CREDENTIALS_CAPABILITY = {} as const;
+
 /** `mcpAccessToken({ environment, server, stale? })`: the host asks before it connects to an OAuth-capable HTTP server. */
 export const McpAccessTokenInput = Schema.Struct({
   environment: Schema.String,
@@ -52,8 +61,17 @@ export const McpAccessTokenAnswer = Schema.Union([
     note: Schema.optionalKey(McpSignInNote),
   }),
   Schema.Struct({
-    status: Schema.Literals(["required", "step_up", "rejected", "refresh_failing", "unavailable"]),
-    /** Why, for the owner: the last error, or what the Registry found. Never a token. */
+    status: Schema.Literals([
+      "required",
+      "step_up",
+      "rejected",
+      "refresh_failing",
+      "unavailable",
+      // A server that signs in on its own (Client Credentials) whose token could not be had: never `required` or
+      // `step_up`, which would send the owner to a sign-in there is none of.
+      "failed",
+    ]),
+    /** Why, for the owner: the last error, or what the Registry found. Never a token or a secret. */
     reason: Schema.String,
     /** The scope a step-up wants. */
     scope: Schema.optionalKey(Schema.String),

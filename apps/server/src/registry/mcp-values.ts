@@ -76,7 +76,7 @@ export const resolveMcpServerValues = (
   };
 };
 
-/** The client secret of an entry, resolved at use (→ The `oauth` fields). */
+/** A secret of an entry's `oauth`, resolved at use (→ The `oauth` fields). */
 export type OauthSecret =
   | { readonly status: "none" }
   | { readonly status: "ok"; readonly value: string; readonly ref: McpSignInSecretRef | null }
@@ -84,16 +84,20 @@ export type OauthSecret =
 
 const WHOLE_REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
+/** The `oauth` fields that hold a `${NAME}` secret: the client secret, and the private key of `client_credentials`. */
+export type OauthSecretField = "clientSecret" | "privateKey";
+
 /**
- * `resolved`'s `oauth.clientSecret`: exactly one `${NAME}`, read from the Secrets (an owner's entry only) and then the
+ * `resolved`'s `oauth.<field>`: exactly one `${NAME}`, read from the Secrets (an owner's entry only) and then the
  * Variables, with the reference it resolved to; or a literal, which only a Repo's file may hold (it has no reference). A name
  * with no value is `missing`. Nothing here logs a value.
  */
-export const resolveOauthSecret = (
+export const resolveOauthValue = (
   resolved: McpResolvedServer,
   sources: McpValueSources,
+  field: OauthSecretField,
 ): OauthSecret => {
-  const text = resolved.server.type === "http" ? resolved.server.oauth?.clientSecret : undefined;
+  const text = resolved.server.type === "http" ? resolved.server.oauth?.[field] : undefined;
 
   if (text === undefined) return { status: "none" };
 
@@ -113,3 +117,9 @@ export const resolveOauthSecret = (
     ? { status: "ok", value: variable.value, ref: { scope: "variable", name } }
     : { status: "missing", name };
 };
+
+/** `resolved`'s `oauth.clientSecret` ({@link resolveOauthValue}). */
+export const resolveOauthSecret = (
+  resolved: McpResolvedServer,
+  sources: McpValueSources,
+): OauthSecret => resolveOauthValue(resolved, sources, "clientSecret");

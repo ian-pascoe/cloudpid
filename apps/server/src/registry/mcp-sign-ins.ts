@@ -462,6 +462,21 @@ export type McpSignIns = {
       readonly sealed: SealedValue;
       readonly expiresAt: number | null;
       readonly scope: string | null;
+      /**
+       * The `${NAME}` the client's secret or key resolved to for this fetch, for a client grant: the row's reference follows
+       * the entry (null for a literal). Unset leaves the row's own.
+       */
+      readonly secretRef?: McpSignInSecretRef | null;
+      /**
+       * What the sign-in records of its authorization server, for a client grant that discovered it again with its
+       * new token (a refresh goes only to the endpoint recorded at sign-in and records nothing).
+       */
+      readonly recorded?: {
+        readonly issuer: string;
+        readonly metadata: string;
+        readonly discovery: string;
+        readonly resource: string;
+      };
     },
     now: number,
   ) => boolean;
@@ -738,6 +753,25 @@ export const openMcpSignIns = (
           now,
           keyHash,
         );
+
+        if (tokens.secretRef !== undefined) {
+          sql.exec(
+            "UPDATE mcp_sign_ins SET client_secret_ref = ? WHERE key_hash = ?",
+            tokens.secretRef === null ? null : JSON.stringify(tokens.secretRef),
+            keyHash,
+          );
+        }
+
+        if (tokens.recorded !== undefined) {
+          sql.exec(
+            "UPDATE mcp_sign_ins SET issuer = ?, metadata = ?, discovery = ?, resource = ? WHERE key_hash = ?",
+            tokens.recorded.issuer,
+            tokens.recorded.metadata,
+            tokens.recorded.discovery,
+            tokens.recorded.resource,
+            keyHash,
+          );
+        }
 
         return true;
       }),

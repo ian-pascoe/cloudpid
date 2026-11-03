@@ -272,24 +272,59 @@ describe("the `oauth` fields", () => {
     expect(refused(oauth({ clientId: "a", clientSecret: "x${S}" }))).toHaveLength(1);
   });
 
+  const GRANT = {
+    grantType: "client_credentials",
+    clientId: "a",
+    issuer: "https://auth.example.com",
+  } as const;
+
   it("refuse a literal private key, and one outside `client_credentials` or beside a client secret", () => {
-    expect(refused(oauth({ grantType: "client_credentials", privateKey: "-----BEGIN" }))).toEqual([
+    expect(refused(oauth({ ...GRANT, privateKey: "-----BEGIN" }))).toEqual([
       expect.stringMatching(/^oauth\.privateKey: must be exactly one/),
     ]);
     expect(refused(oauth({ privateKey: "${KEY}" }))).toEqual([
       expect.stringMatching(/^oauth\.privateKey: is only for/),
     ]);
+    expect(refused(oauth({ ...GRANT, clientSecret: "${S}", privateKey: "${KEY}" }))).toEqual([
+      expect.stringMatching(/^oauth\.privateKey: is refused together/),
+    ]);
+    accepted(oauth({ ...GRANT, privateKey: "${KEY}" }));
+  });
+
+  it("need, for `client_credentials`, a client id, a pin and a secret or a key", () => {
+    accepted(oauth({ ...GRANT, clientSecret: "${S}" }));
+    accepted(oauth({ ...GRANT, privateKey: "${KEY}", keyId: "k1", scope: "read" }));
+    accepted(
+      oauth({
+        grantType: "client_credentials",
+        clientId: "a",
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+        clientSecret: "${S}",
+      }),
+    );
     expect(
       refused(
-        oauth({
-          grantType: "client_credentials",
-          clientId: "a",
-          clientSecret: "${S}",
-          privateKey: "${KEY}",
-        }),
+        oauth({ grantType: "client_credentials", issuer: GRANT.issuer, privateKey: "${KEY}" }),
       ),
-    ).toEqual([expect.stringMatching(/^oauth\.privateKey: is refused together/)]);
-    accepted(oauth({ grantType: "client_credentials", clientId: "a", privateKey: "${KEY}" }));
+    ).toEqual([expect.stringMatching(/^oauth\.clientId: is needed/)]);
+    expect(
+      refused(oauth({ grantType: "client_credentials", clientId: "a", clientSecret: "${S}" })),
+    ).toEqual([expect.stringMatching(/^oauth\.issuer: or authServerMetadataUrl is needed/)]);
+    expect(refused(oauth(GRANT))).toEqual([
+      expect.stringMatching(/^oauth\.clientSecret: or privateKey is needed/),
+    ]);
+  });
+
+  it("refuse a registration setting and a client name for `client_credentials`, and leave the code grant alone", () => {
+    expect(refused(oauth({ ...GRANT, clientSecret: "${S}", clientRegistration: "dcr" }))).toEqual([
+      expect.stringMatching(/^oauth\.clientRegistration: .*client_credentials/),
+    ]);
+    expect(refused(oauth({ ...GRANT, clientSecret: "${S}", clientName: "n" }))).toEqual([
+      expect.stringMatching(/^oauth\.clientName: .*client_credentials/),
+    ]);
+    accepted(
+      oauth({ grantType: "authorization_code", clientRegistration: "dcr", clientName: "n" }),
+    );
   });
 
   it("refuse `cimd` beside a client id or a client name", () => {

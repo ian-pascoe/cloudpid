@@ -13,6 +13,10 @@
 //   reported `rejected` (the sign-in keeps its tokens). A 403 for more scope is reported `step_up` with the wanted
 //   scope. A server that works after being `sign_in` or `rejected`, or on a token whose note says `rejected`, is
 //   reported `working`.
+// - A server that signs in on its own (OAuth Client Credentials, `docs/architecture/mcp-sign-in.md` → Client Credentials)
+//   is asked the same way, but there is nobody to sign in: no token (the Registry's `failed`), a 401 that a renewed
+//   token does not cure, and a 403 for more scope are all the server's `failed` with a problem, never `sign_in`,
+//   `rejected` or `step_up`, and nothing is reported to the Registry. It never connects without a token.
 //
 // Reports are on transitions of the Registry's own status of the sign-in, and best effort: the Registry that cannot be
 // asked leaves them to the next discovery. The Registry's note on the token it handed over says what it already
@@ -41,6 +45,7 @@ import {
   scopesOf,
   SignInRequired,
 } from "@cloudpid/mcp/types";
+import { signsInOnItsOwn } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -127,6 +132,91 @@ const blockedBy = (
   }
 };
 
+/**
+ * Why a server that signs in on its own has no token to connect with: always `failed` or `unavailable`, never a status
+ * that sends the owner to a sign-in there is none of.
+ */
+const blockedClientGrant = (
+  access: NoToken,
+): { readonly state: McpServerState; readonly message: string } =>
+  access.kind === "unreachable" || access.status === "unavailable"
+    ? {
+        state: "unavailable",
+        message: access.kind === "unreachable" ? access.message : access.reason,
+      }
+    : { state: "failed", message: access.reason };
+
+/** What the server's refusal of a client grant's token says, for the status: the HTTP answer, and its error code. */
+const refusalOfClientGrant = (result: EngineAnswer): string | undefined => {
+  if (result.kind !== "failed") return undefined;
+
+  if (Predicate.isTagged(result.error, "SignInRequired")) {
+    const code = result.error.challenge?.error;
+
+    return `The server refused the access token its client credentials gave (HTTP 401${code === undefined ? "" : `, ${code}`})`;
+  }
+
+  if (Predicate.isTagged(result.error, "StepUpRequired")) {
+    const scope = stepUpOf(result)?.scope;
+
+    return `The server asks for more access than the client credentials give${scope === undefined ? "" : ` (scope ${scope})`}: set oauth.scope`;
+  }
+
+  return undefined;
+};
+
+/**
+ * A discovery of a server that signs in on its own: its token comes from the Registry, a token the server refuses is
+ * renewed once, and whatever the token comes to, no sign-in is asked for or reported.
+ */
+const clientGrantDiscovery = (
+  asked: TokenFor,
+  target: McpEngineTarget,
+  call: (target: McpEngineTarget) => Effect.Effect<McpEngineDiscoverResult, McpEngineUnreachable>,
+) =>
+  Effect.gen(function* () {
+    const tokens = yield* McpTokens;
+    const access = yield* tokens.access(asked);
+
+    if (access.kind !== "token") {
+      return { kind: "blocked", ...blockedClientGrant(access) } satisfies DiscoveryAccess;
+    }
+
+    const refusedAs = (result: McpEngineDiscoverResult): DiscoveryAccess | undefined => {
+      const message = refusalOfClientGrant(result);
+
+      return message === undefined
+        ? undefined
+        : ({ kind: "blocked", state: "failed", message } satisfies DiscoveryAccess);
+    };
+
+    const first = yield* call(withBearer(target, access.token));
+
+    // A 403 for more scope is not cured by a new token; any other answer is the server's.
+    if (!isSignInRequired(first)) {
+      return refusedAs(first) ?? answered(first);
+    }
+
+    // The server refused the token: the Registry fetches another once, and the call is made once more with it.
+    const again = yield* tokens.refused({ ...asked, token: access.token });
+
+    if (again.kind !== "token") {
+      return { kind: "blocked", ...blockedClientGrant(again) } satisfies DiscoveryAccess;
+    }
+
+    // The same token again is what the Registry hands over when it already renewed once after a refusal.
+    const second =
+      again.token === access.token ? first : yield* call(withBearer(target, again.token));
+
+    return refusedAs(second) ?? answered(second);
+  });
+
+/** `result` as what a discovery answers. */
+const answered = (result: McpEngineDiscoverResult): DiscoveryAccess => ({
+  kind: "answered",
+  result,
+});
+
 /** The server a report is about. */
 type Subject = Pick<TokenFor, "environment" | "server">;
 
@@ -166,12 +256,11 @@ export const authorizedDiscovery = (
     const { name } = view.server;
     const asked: TokenFor = { environment, server: name, url: target.url };
 
-    const answered = (result: McpEngineDiscoverResult): DiscoveryAccess => ({
-      kind: "answered",
-      result,
-    });
-
     if (hasOwnAuthorization(target)) return answered(yield* call(target));
+
+    // Nobody signs in to this server: its token is the Registry's to get, and its failures are its own.
+    if (signsInOnItsOwn(view.server.server))
+      return yield* clientGrantDiscovery(asked, target, call);
 
     const access = yield* tokens.access(asked);
 
@@ -284,6 +373,12 @@ export type RequestAccess =
   | {
       readonly kind: "open";
       readonly auth?: (stale: boolean) => Effect.Effect<string | undefined>;
+      /**
+       * For a server that signs in on its own: why the server's refusal of the token (a 401 after the hook's one
+       * renewal, or a 403 for more scope) fails the call, as a failure no sign-in answers; undefined for any other
+       * answer.
+       */
+      readonly refusal?: (result: McpEngineRequestResult) => string | undefined;
       readonly answered: (
         result: McpEngineRequestResult,
       ) => Effect.Effect<void, never, McpRegistryPort>;
@@ -304,6 +399,33 @@ export const requestAccess = (environment: string, view: ServerView, target: Mcp
 
     if (hasOwnAuthorization(target)) {
       return { kind: "open", answered: () => Effect.void } satisfies RequestAccess;
+    }
+
+    // A server that signs in on its own never calls without a token, and no answer is a sign-in the owner could give.
+    if (signsInOnItsOwn(view.server.server)) {
+      const own = yield* tokens.access(asked);
+
+      if (own.kind !== "token") {
+        return { kind: "blocked", ...blockedClientGrant(own) } satisfies RequestAccess;
+      }
+
+      /** The last access the hook handed the engine: a renewal that gave none says why the server's refusal stands. */
+      let last: TokenAccess = own;
+
+      return {
+        kind: "open",
+        auth: engineAuth(tokens, asked, (seen) => {
+          last = seen;
+        }),
+        answered: () => Effect.void,
+        refusal: (result) => {
+          const refused = refusalOfClientGrant(result);
+
+          return refused !== undefined && last.kind !== "token"
+            ? blockedClientGrant(last).message
+            : refused;
+        },
+      } satisfies RequestAccess;
     }
 
     const access = yield* tokens.access(asked);
