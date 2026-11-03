@@ -36,6 +36,11 @@ export interface CatalogLookup<K> {
    * `CATALOG_RETRY_MS` asks again.
    */
   readonly askCatalogAtom: (key: K) => Atom.AtomResultFn<void, void>;
+  /**
+   * Ask for the catalog of `key` now, fresh or not (unless a request is out): a send of an MCP prompt was refused, so the
+   * prompt may be gone or changed.
+   */
+  readonly refreshCatalogAtom: (key: K) => Atom.AtomResultFn<void, void>;
 }
 
 /** Catalogs per key, each asked for with `ask`. */
@@ -46,16 +51,16 @@ export const catalogLookup = <K, E>(
     Atom.make<Held>({ catalog: null, asking: false, nextAt: 0 }),
   );
 
-  return {
-    catalogAtom: Atom.family((key: K) => Atom.map(heldAtom(key), (held) => held.catalog)),
-    askCatalogAtom: Atom.family((key: K) =>
+  /** The atoms that ask for a key's catalog: one that waits for it to be stale, and one (`force`) that does not. */
+  const askerOf = (force: boolean) =>
+    Atom.family((key: K) =>
       appRuntime.fn(
         (_: void, get) =>
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
             const held = get(heldAtom(key));
 
-            if (held.asking || now < held.nextAt) return;
+            if (held.asking || (!force && now < held.nextAt)) return;
 
             const settle = (change: (held: Held) => Held) =>
               Effect.sync(() => {
@@ -80,13 +85,19 @@ export const catalogLookup = <K, E>(
           }),
         { concurrent: true },
       ),
-    ),
+    );
+
+  return {
+    catalogAtom: Atom.family((key: K) => Atom.map(heldAtom(key), (held) => held.catalog)),
+    askCatalogAtom: askerOf(false),
+    refreshCatalogAtom: askerOf(true),
   };
 };
 
 /** The conversations' catalogs, asked of their Session. */
-export const { catalogAtom, askCatalogAtom } = catalogLookup((key: ConversationKey, get) =>
-  get
-    .result(sessionClientAtom(key.sessionId))
-    .pipe(Effect.flatMap((client) => client.catalog(key.conversationId))),
+export const { catalogAtom, askCatalogAtom, refreshCatalogAtom } = catalogLookup(
+  (key: ConversationKey, get) =>
+    get
+      .result(sessionClientAtom(key.sessionId))
+      .pipe(Effect.flatMap((client) => client.catalog(key.conversationId))),
 );

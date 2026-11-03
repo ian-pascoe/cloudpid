@@ -1,6 +1,10 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- the Workspaces' ages are read against the wall clock as the menu renders, and JSX lists of options are native arrays.
 
 import { NEW_WORKSPACE, type EnvironmentRecord, type WorkspaceRecord } from "@cloudpid/protocol";
+import { ArgumentForm } from "./chat/argument-form.tsx";
+import { draftPromptAtoms, promptTitle } from "./chat/mcp-prompt-state.ts";
+import { PromptChipView } from "./chat/prompt-chip.tsx";
+import { usePromptChip } from "./chat/use-prompt-chip.ts";
 import {
   RegistryContext,
   useAtom,
@@ -563,6 +567,7 @@ export const DraftComposer = () => {
     <DraftComposerScope.Provider
       value={{
         lookups: draftLookups,
+        prompt: draftPromptAtoms,
         text: () => registry.get(draftTextAtom),
         subscribe: (listener) => registry.subscribe(draftTextAtom, listener),
         input: () => box.current,
@@ -605,6 +610,18 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
 
   useAtomMount(state.effects);
 
+  const { chip, setChip, form, setForm, standing, pickPrompt, finishForm, cancelForm, editChip } =
+    usePromptChip({
+      state,
+      catalog,
+      focusInput: () => {
+        requestAnimationFrame(() => {
+          box.current?.focus();
+        });
+      },
+      clearNote: () => {},
+    });
+
   const edit = (next: Edited) => {
     Atom.batch(() => {
       setText(next.text);
@@ -617,13 +634,14 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
     });
   };
 
-  // Templates and Skills only: the draft has no Session to run a command on.
+  // Templates, Skills and MCP prompts only: the draft has no Session to run a command on.
   const completion = useCompletion({
     state,
     commands: [],
     catalog: catalog ?? undefined,
     files,
     edit,
+    pickPrompt,
   });
 
   const trackCaret = (element: HTMLTextAreaElement) => {
@@ -632,7 +650,12 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
 
   const workspaces = (allWorkspaces ?? []).filter((known) => known.environment === environment);
   const workspace = effectiveWorkspace(picked, workspaces);
-  const input: DraftInput = { text, environment, workspace, branch, base };
+
+  // The prompt as the catalog has it now, with the values filled in; one it no longer offers waits for the owner.
+  const prompt =
+    standing?.kind === "ready" && chip !== null ? { ...chip, prompt: standing.prompt } : undefined;
+
+  const input: DraftInput = { text, environment, workspace, branch, base, prompt };
   const sending = sent.waiting;
 
   // A file attached while the draft is sent would miss its message.
@@ -647,7 +670,17 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
   const attached = attachments.items.length > 0;
   // Why Send waits for the Attachments, shown under the box.
   const waiting = attached ? draftWaitingFor(attachments) : null;
-  const sendable = draftSendable(input, attached) && waiting === null && !sending;
+
+  const promptWaiting =
+    form !== null
+      ? "Fill in the prompt's arguments, or cancel them."
+      : standing === null || standing.kind === "ready"
+        ? null
+        : standing.message;
+
+  const sendable =
+    draftSendable(input, attached) && waiting === null && promptWaiting === null && !sending;
+
   // The failure of the last send shows until the next one starts, with the text kept.
   const problem = settledFailureOf(sent);
   const environmentName = names[environment] ?? (environments === null ? "…" : environment);
@@ -679,7 +712,8 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
         : `Start from: ${baseProblem}`
       : `Branch: ${branchProblem}`;
 
-  const status = fieldProblem ?? (uploading ? "Uploading the attachments…" : waiting);
+  const status =
+    fieldProblem ?? (uploading ? "Uploading the attachments…" : (waiting ?? promptWaiting));
 
   return (
     <div ref={page} className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">
@@ -712,6 +746,22 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
           </h1>
         </div>
         <form onSubmit={submit} className="relative flex flex-col">
+          {form !== null && (
+            <div className="mb-3">
+              <ArgumentForm
+                title={promptTitle(form.prompt)}
+                server={form.prompt.server}
+                fields={form.prompt.arguments}
+                values={form.values}
+                problem={form.problem}
+                onChange={(values) => {
+                  setForm({ ...form, values, problem: undefined });
+                }}
+                onDone={finishForm}
+                onCancel={cancelForm}
+              />
+            </div>
+          )}
           {completion.menu !== null && (
             <CompletionMenu
               id={completion.id}
@@ -724,6 +774,16 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
             />
           )}
           <div className={cn(composerBox(dragging), "relative z-10 flex flex-col")}>
+            {chip !== null && (
+              <PromptChipView
+                chip={chip}
+                gone={standing?.kind === "gone" ? standing.message : undefined}
+                onEdit={editChip}
+                onRemove={() => {
+                  if (!sending) setChip(null);
+                }}
+              />
+            )}
             <AttachmentTiles
               items={attachments.items}
               fits={attachments.fits}

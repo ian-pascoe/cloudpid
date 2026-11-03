@@ -1,11 +1,31 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- assertions over the menu's native arrays and records.
 
+import type { McpPromptEntry } from "@cloudpid/protocol";
+import * as Match from "effect/Match";
 import { describe, expect, it } from "vitest";
 import type { ComposerCommand } from "./commands.ts";
 import { detectTrigger } from "./completion.ts";
-import { completionFor, type FileResults, menuKey } from "./menu.ts";
+import {
+  completionFor,
+  type FileResults,
+  menuKey,
+  type MenuPick,
+  promptHint,
+  promptSummary,
+} from "./menu.ts";
 
 const run = () => null;
+
+/** What a pick does, in words: the text it inserts, or `run <command>`. */
+const pickedAs = (pick: MenuPick): string =>
+  Match.value(pick).pipe(
+    Match.discriminatorsExhaustive("kind")({
+      insert: ({ text }) => text,
+      run: ({ command }) => `run ${command.name}`,
+      prompt: () => "prompt",
+      none: () => "none",
+    }),
+  );
 
 const commands: readonly ComposerCommand[] = [
   { name: "compact", description: "Compact", argument: "optional", argumentHint: "[focus]", run },
@@ -57,10 +77,7 @@ describe("the composer's menu", () => {
     const completion = completionFor(detectTrigger("/", 1)!, commands, catalog);
 
     const picks = Object.fromEntries(
-      completion?.entries.map((entry) => [
-        entry.label,
-        entry.pick.kind === "insert" ? entry.pick.text : `run ${entry.pick.command.name}`,
-      ]) ?? [],
+      completion?.entries.map((entry) => [entry.label, pickedAs(entry.pick)]) ?? [],
     );
 
     expect(picks).toEqual({
@@ -186,6 +203,99 @@ describe("a file row", () => {
       ["chat/", "src/"],
       ["menu.ts", "src/chat/"],
     ]);
+  });
+});
+
+describe("the MCP prompts in the composer's menu", () => {
+  const prompt = (
+    server: string,
+    name: string,
+    more: Partial<McpPromptEntry> = {},
+  ): McpPromptEntry => ({
+    command: `/mcp__${server}__${name}`,
+    server,
+    source: "owner",
+    name,
+    description: "",
+    arguments: [],
+    completions: false,
+    ...more,
+  });
+
+  const withPrompts = {
+    ...catalog,
+    prompts: [
+      prompt("docs", "review", {
+        title: "Review PR",
+        description: "Review a pull request\nin depth",
+        arguments: [
+          { name: "pr", required: true },
+          { name: "focus", required: false },
+        ],
+      }),
+      prompt("docs", "summarize"),
+      prompt("lint", "fix", { source: "repo:acme/web", title: "Fix lint" }),
+    ],
+    mcpServers: [
+      { server: "wiki", state: "connecting" },
+      { server: "crm", state: "sign_in" },
+      { server: "old", state: "a state a newer Session adds" },
+    ],
+  };
+
+  const menuFor = (text: string) => {
+    const trigger = detectTrigger(text, text.length);
+
+    return trigger === null ? null : completionFor(trigger, commands, withPrompts);
+  };
+
+  it("lists them after the Skills, a section for each server, and says where a Repo's definition is", () => {
+    expect(menuFor("/")?.sections.map((section) => section.label)).toEqual([
+      "Commands",
+      "Prompt templates",
+      "Skills",
+      "MCP · docs",
+      "MCP · lint · from acme/web",
+      "MCP · wiki",
+      "MCP · crm",
+      "MCP · old",
+    ]);
+  });
+
+  it("shows a row with `mcp__<server>__` muted before its name, its argument hint, then its title and first description line", () => {
+    const row = menuFor("/")?.entries.find((entry) => entry.id === "prompt:docs:review");
+
+    expect(row).toMatchObject({
+      prefix: "/mcp__docs__",
+      label: "review",
+      hint: "<pr> [focus]",
+      description: "Review PR — Review a pull request",
+    });
+    expect(row?.pick).toMatchObject({ kind: "prompt", prompt: { name: "review" } });
+  });
+
+  it("says why a server has no prompts yet in a muted row that cannot be picked", () => {
+    const rows = menuFor("/")?.entries.filter((entry) => entry.muted === true);
+
+    expect(rows?.map((row) => [row.label, row.description, row.pick.kind])).toEqual([
+      ["wiki", "connecting…", "none"],
+      ["crm", "sign-in needed", "none"],
+      ["old", "unavailable", "none"],
+    ]);
+  });
+
+  it("ranks the rows by what is typed, across the command, and leaves them out of the `$` menu", () => {
+    expect(menuFor("/rev")?.entries.map((entry) => entry.id)).toContain("prompt:docs:review");
+    expect(menuFor("/mcp__lint")?.entries.map((entry) => entry.id)).toEqual(["prompt:lint:fix"]);
+    expect(menuFor("$")?.entries.some((entry) => entry.id.startsWith("prompt:"))).toBe(false);
+  });
+
+  it("hints required arguments in angle brackets and optional ones in square brackets, and nothing for none", () => {
+    expect(promptHint(prompt("a", "b"))).toBeUndefined();
+    expect(promptSummary(prompt("a", "b"))).toBeUndefined();
+    expect(promptSummary(prompt("a", "b", { description: "Only a description" }))).toBe(
+      "Only a description",
+    );
   });
 });
 

@@ -2,6 +2,7 @@
 
 import { MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -247,6 +248,57 @@ describe("a composer's Attachments", () => {
           Exit.isSuccess(AsyncResult.toExit(yield* settled(registry, sendAttachedAtom(ROOT)))),
         ).toBe(true);
         expect(summary()).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "send an MCP prompt with the message, and fail with the refusal's code and server so the composer can act on them",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest } = yield* setup;
+
+        const prompt = {
+          prompt: {
+            command: "/mcp__docs__review",
+            server: "docs",
+            source: "owner",
+            name: "review",
+            title: "Review PR",
+            description: "",
+            arguments: [{ name: "pr", required: true }],
+            completions: false,
+          },
+          values: { pr: "7", gone: "dropped" },
+        };
+
+        registry.set(
+          sendAttachedAtom(ROOT),
+          callOf({ typed: "focus on tests", whenBusy: "followUp", prompt }),
+        );
+        yield* settle;
+
+        const [submit] = sent(latest(), "submit");
+
+        expect(submit).toMatchObject({
+          input: "focus on tests",
+          mcpPrompt: { server: "docs", name: "review", arguments: { pr: "7" } },
+        });
+
+        yield* latest().say({
+          type: "error",
+          id: submit?.id,
+          message: "docs is not signed in",
+          code: "MCP_SIGN_IN_REQUIRED",
+          server: "docs",
+        });
+
+        const exit = AsyncResult.toExit(yield* settled(registry, sendAttachedAtom(ROOT)));
+
+        expect(exitFailure(exit)).toBe("docs is not signed in");
+        expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : null).toMatchObject({
+          code: "MCP_SIGN_IN_REQUIRED",
+          server: "docs",
+        });
       }),
   );
 

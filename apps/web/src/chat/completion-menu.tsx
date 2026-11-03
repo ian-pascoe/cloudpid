@@ -10,6 +10,10 @@ export type CompletionRow = {
   readonly description?: string | undefined;
   /** What `label` is in, such as a file's folder: muted after it, and cut from its start when the menu is narrow. */
   readonly detail?: string | undefined;
+  /** What comes before `label`, muted: an MCP prompt's `/mcp__<server>__`. */
+  readonly prefix?: string | undefined;
+  /** A row that cannot be picked (a server whose prompts are not there yet): muted, and announced as disabled. */
+  readonly muted?: boolean | undefined;
 };
 
 /** A labelled group of rows: Commands, Prompt templates, Skills, Files. */
@@ -86,6 +90,7 @@ export const CompletionMenu = ({
                     id={rowId(id, at)}
                     role="option"
                     aria-selected={at === highlighted}
+                    aria-disabled={row.muted === true ? true : undefined}
                     aria-label={row.detail === undefined ? undefined : `${row.detail}${row.label}`}
                     onMouseMove={() => {
                       if (at !== highlighted) onHighlight(at);
@@ -93,9 +98,15 @@ export const CompletionMenu = ({
                     onClick={() => {
                       onPick(at);
                     }}
-                    className="flex min-w-0 cursor-pointer items-baseline gap-2 rounded-md px-2.5 py-1.5 select-none aria-selected:bg-accent aria-selected:text-accent-foreground pointer-coarse:min-h-11 pointer-coarse:items-center"
+                    className={cn(
+                      "flex min-w-0 cursor-pointer items-baseline gap-2 rounded-md px-2.5 py-1.5 select-none aria-selected:bg-accent aria-selected:text-accent-foreground pointer-coarse:min-h-11 pointer-coarse:items-center",
+                      row.muted === true && "cursor-default text-muted-foreground",
+                    )}
                   >
                     <span className="max-w-full shrink-0 truncate font-mono text-[0.8125rem]">
+                      {row.prefix !== undefined && (
+                        <span className="text-muted-foreground">{row.prefix}</span>
+                      )}
                       {row.label}
                     </span>
                     {row.detail !== undefined && (

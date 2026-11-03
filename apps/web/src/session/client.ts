@@ -26,6 +26,7 @@ import {
   LiveViewLinks,
   OwnerTabLinks,
   OwnerTabListing,
+  type McpPromptRef,
   type PageRef,
   reduceEvents,
   withEarlier,
@@ -98,7 +99,12 @@ const NOT_CONNECTED = "The session is not connected; try again once it is.";
 export class SessionCommandError extends Schema.TaggedError<
   SessionCommandError,
   { readonly brand: unique symbol }
->()("SessionCommandError", { message: Schema.String }) {}
+>()("SessionCommandError", {
+  message: Schema.String,
+  /** The code a refusal of an MCP prompt send carries (`error.code`), and the server it names. */
+  code: Schema.optionalKey(Schema.String),
+  server: Schema.optionalKey(Schema.String),
+}) {}
 
 /**
  * Asks over HTTP why a Session's socket does not open: a WebSocket cannot see why it failed. A service, so a test can
@@ -417,6 +423,10 @@ interface PendingSubmit {
   readonly conversationId: number | undefined;
   /** A Review's drafts, by ID. */
   readonly annotations: readonly string[] | undefined;
+  /** The MCP prompt it got, which the Session gets as the message is sent. */
+  readonly mcpPrompt: McpPromptRef | undefined;
+  /** What its lane says while the Session prepares it, in place of `text`. */
+  readonly getting: string | undefined;
   /** Whether it went out on the current socket. */
   sent: boolean;
   /** Where whoever submitted it hears how it ended; they show a refusal themselves. */
@@ -584,7 +594,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     previous: readonly SendingEntry[] | undefined,
   ): readonly SendingEntry[] => {
     const next = pending.flatMap((submit) =>
-      submit.conversationId === conversationId ? [{ id: submit.commandId, text: submit.text }] : [],
+      submit.conversationId === conversationId
+        ? [{ id: submit.commandId, text: submit.getting ?? submit.text }]
+        : [],
     );
 
     if (previous === undefined) return next.length === 0 ? NO_SENDING : next;
@@ -604,7 +616,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     const previous = current.sending;
 
     const next = pending.flatMap((submit) =>
-      submit.conversationId === undefined ? [{ id: submit.commandId, text: submit.text }] : [],
+      submit.conversationId === undefined
+        ? [{ id: submit.commandId, text: submit.getting ?? submit.text }]
+        : [],
     );
 
     // Keep the same array while nothing changed, so a view of it need not re-render.
@@ -742,13 +756,28 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     update({}, conversationId);
   };
 
-  const settle = (submit: PendingSubmit, failure: string | null): void => {
+  const settle = (
+    submit: PendingSubmit,
+    failure: string | null,
+    refusal?: { readonly code?: string | undefined; readonly server?: string | undefined },
+  ): void => {
     if (submit.outcome === undefined) return;
 
-    Deferred.doneUnsafe(
-      submit.outcome,
-      failure === null ? Effect.void : Effect.fail(SessionCommandError.make({ message: failure })),
-    );
+    if (failure === null) {
+      Deferred.doneUnsafe(submit.outcome, Effect.void);
+
+      return;
+    }
+
+    const error: Types.Mutable<ConstructorParameters<typeof SessionCommandError>[0]> = {
+      message: failure,
+    };
+
+    if (refusal?.code !== undefined) error.code = refusal.code;
+
+    if (refusal?.server !== undefined) error.server = refusal.server;
+
+    Deferred.doneUnsafe(submit.outcome, Effect.fail(SessionCommandError.make(error)));
   };
 
   /**
@@ -759,6 +788,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     commandId: string,
     submissionId: string | undefined,
     failure: string | null = null,
+    refusal?: { readonly code?: string | undefined; readonly server?: string | undefined },
   ): void => {
     const index = pending.findIndex((submit) => submit.commandId === commandId);
     const submit = pending[index];
@@ -766,7 +796,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     if (submit === undefined) return;
 
     pending.splice(index, 1);
-    settle(submit, failure);
+    settle(submit, failure, refusal);
 
     if (submissionId !== undefined) {
       texts.set(submissionId, submit.text);
@@ -811,6 +841,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       if (submit.pages !== undefined && submit.pages.length > 0) message.pages = [...submit.pages];
 
       if (submit.annotations !== undefined) message.annotations = submit.annotations;
+
+      if (submit.mcpPrompt !== undefined) message.mcpPrompt = submit.mcpPrompt;
 
       submit.sent = true;
       send(message);
@@ -1130,7 +1162,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         } else if (message.id !== undefined) {
           const submit = pending.find((held) => held.commandId === message.id);
 
-          answered(message.id, undefined, message.message);
+          answered(message.id, undefined, message.message, message);
 
           // A submitter told how it ended shows the refusal itself.
           if (submit?.outcome !== undefined) return;
@@ -1350,9 +1382,16 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     // @effect-diagnostics-next-line cryptoRandomUUID:off
     requestId: string = crypto.randomUUID(),
   ): void => {
-    const { input, display, pages, annotations } = Predicate.isString(message)
-      ? { input: message, display: message, pages: undefined, annotations: undefined }
-      : message;
+    const { input, display, pages, annotations, mcpPrompt, getting } = Predicate.isString(message)
+      ? {
+          input: message,
+          display: message,
+          pages: undefined,
+          annotations: undefined,
+          mcpPrompt: undefined,
+          getting: undefined,
+        }
+      : { mcpPrompt: undefined, getting: undefined, ...message };
 
     pending.push({
       commandId: nextCommandId(),
@@ -1363,6 +1402,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       whenBusy,
       conversationId: isRoot(conversationId) ? undefined : conversationId,
       annotations: annotations === undefined || annotations.length === 0 ? undefined : annotations,
+      mcpPrompt,
+      getting,
       sent: false,
       outcome,
     });

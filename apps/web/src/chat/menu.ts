@@ -4,7 +4,14 @@
 
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over native arrays, not combinators.
 
-import { type CatalogEntry, rank } from "@cloudpid/protocol";
+import { normalizeMcpName } from "@cloudpid/config";
+import * as Match from "effect/Match";
+import {
+  type CatalogEntry,
+  type McpCatalogServer,
+  type McpPromptEntry,
+  rank,
+} from "@cloudpid/protocol";
 import type { ComposerCommand } from "./commands.ts";
 import type { CompletionRow, CompletionSection } from "./completion-menu.tsx";
 import type { Trigger } from "./completion.ts";
@@ -15,7 +22,11 @@ import type { Trigger } from "./completion.ts";
  */
 export type MenuPick =
   | { readonly kind: "insert"; readonly text: string; readonly continues?: true }
-  | { readonly kind: "run"; readonly command: ComposerCommand; readonly args: string };
+  | { readonly kind: "run"; readonly command: ComposerCommand; readonly args: string }
+  /** An MCP prompt: it leaves the text, and the composer asks for its arguments, or holds it as a chip at once. */
+  | { readonly kind: "prompt"; readonly prompt: McpPromptEntry }
+  /** A muted row (a server whose prompts are not there yet): it cannot be picked. */
+  | { readonly kind: "none" };
 
 export type MenuEntry = CompletionRow & { readonly pick: MenuPick };
 
@@ -29,10 +40,15 @@ export type Completion = {
   readonly notice?: string;
 };
 
-/** The Prompt templates and Skills of the conversation's directory, as far as the Session has said. */
+/**
+ * The Prompt templates and Skills of the conversation's directory, as far as the Session has said, and the Environment's
+ * MCP prompts and the servers whose prompts are not there yet (`Catalog.prompts`, `Catalog.mcpServers`).
+ */
 export type MenuCatalog = {
   readonly templates: readonly CatalogEntry[];
   readonly skills: readonly CatalogEntry[];
+  readonly prompts?: readonly McpPromptEntry[] | undefined;
+  readonly mcpServers?: readonly McpCatalogServer[] | undefined;
 };
 
 const NO_CATALOG: MenuCatalog = { templates: [], skills: [] };
@@ -87,6 +103,91 @@ const filesMenu = (query: string, files: FileResults): Completion => {
         : "No matching files or folders.";
 
   return { label: "Files", sections: [], entries: [], notice };
+};
+
+/** What a prompt's arguments look like in a row: `<required> [optional]`, in declared order. */
+export const promptHint = (prompt: McpPromptEntry): string | undefined =>
+  prompt.arguments.length === 0
+    ? undefined
+    : prompt.arguments
+        .map((argument) => (argument.required ? `<${argument.name}>` : `[${argument.name}]`))
+        .join(" ");
+
+/** The first line of `text`, trimmed. */
+const firstLine = (text: string): string => text.split("\n", 1)[0]?.trim() ?? "";
+
+/** A prompt's title, " — " and the first line of its description; either alone when the other is absent. */
+export const promptSummary = (prompt: McpPromptEntry): string | undefined => {
+  const description = firstLine(prompt.description);
+
+  const joined = [prompt.title, description === "" ? undefined : description].filter(
+    (part): part is string => part !== undefined && part !== "",
+  );
+
+  return joined.length === 0 ? undefined : joined.join(" — ");
+};
+
+/** What a menu section for a server says of where its definition is: nothing for the owner's, the Repo's for a Repo's. */
+const sourceNote = (source: string): string =>
+  source.startsWith("repo:") ? ` · from ${source.slice("repo:".length)}` : "";
+
+/** What a server's muted row says of why its prompts are not there. */
+const stateNote = (state: string): string =>
+  Match.value(state).pipe(
+    Match.when("connecting", () => "connecting…"),
+    Match.when("sign_in", () => "sign-in needed"),
+    Match.orElse(() => "unavailable"),
+  );
+
+/**
+ * The MCP prompts the menu lists, after the Skills: one section per server, "MCP · <server>" (and "· from <repo>" for a
+ * Repo's), each prompt a row with `mcp__<server>__` muted before its name, its argument hint, then its title and the
+ * first line of its description. With no query the servers are in the catalog's order; while typing, the rows are ranked
+ * and a server's section stands where its best row does. A server whose prompts are not there yet is a muted row.
+ */
+const mcpSections = (
+  query: string,
+  catalog: MenuCatalog,
+): readonly { readonly label: string; readonly rows: readonly MenuEntry[] }[] => {
+  const ranked = rank(query, catalog.prompts ?? [], ({ command }) => command.slice(1));
+  const servers = [...new Set(ranked.map(({ server }) => server))];
+
+  const prompts = servers.map((server) => {
+    const own = ranked.filter((prompt) => prompt.server === server);
+    const source = own[0]?.source ?? "owner";
+
+    return {
+      label: `MCP · ${server}${sourceNote(source)}`,
+      rows: own.map((prompt): MenuEntry => {
+        const lead = `/mcp__${normalizeMcpName(prompt.server)}__`;
+        const led = prompt.command.startsWith(lead);
+
+        return {
+          id: `prompt:${prompt.server}:${prompt.name}`,
+          prefix: led ? lead : undefined,
+          label: led ? prompt.command.slice(lead.length) : prompt.command,
+          hint: promptHint(prompt),
+          description: promptSummary(prompt),
+          pick: { kind: "prompt", prompt },
+        };
+      }),
+    };
+  });
+
+  const muted = rank(query, catalog.mcpServers ?? [], (server) => server.server).map((server) => ({
+    label: `MCP · ${server.server}`,
+    rows: [
+      {
+        id: `mcp-server:${server.server}`,
+        label: server.server,
+        description: stateNote(server.state),
+        muted: true,
+        pick: { kind: "none" },
+      } satisfies MenuEntry,
+    ],
+  }));
+
+  return [...prompts, ...muted];
 };
 
 /** The menu of `sections`, leaving out those with no rows; null when none has any. */
@@ -152,6 +253,7 @@ export const completionFor = (
           }),
         ),
       },
+      ...mcpSections(trigger.query, catalog),
     ]);
   }
 
