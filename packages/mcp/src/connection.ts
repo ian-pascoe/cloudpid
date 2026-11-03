@@ -35,6 +35,7 @@ import {
   ProtocolError,
   ProtocolErrorCode,
   type ProtocolEra,
+  type ReadResourceResult,
   type Resource,
   type ResourceTemplateType,
   type RequestOptions,
@@ -295,6 +296,11 @@ export interface McpConnection {
     ctx: McpCallContext,
   ) => Effect.Effect<Outcome<CallToolResult>, McpError>;
   readonly task: McpTasks;
+  /** One `resources/read` of `uri`: a read, so it is sent once more after a cut. */
+  readonly readResource: (
+    uri: string,
+    ctx: McpCallContext,
+  ) => Effect.Effect<Complete<ReadResourceResult>, McpError>;
 }
 
 const CONNECT_TIMEOUT_MS = MCP_CONNECT_TIMEOUT_MS;
@@ -1322,6 +1328,31 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     cancel: (taskId, ctx) => taskCommand("tasks/cancel", { taskId }, ctx),
   };
 
+  const readResource = (uri: string, ctx: McpCallContext) =>
+    Effect.gen(function* () {
+      const meta = metaFor(ctx);
+      const params = meta === undefined ? { uri } : { uri, _meta: meta };
+
+      const value = yield* request(
+        (client, signal) =>
+          client.request(
+            { method: "resources/read", params },
+            { signal, timeout: PAGE_TIMEOUT_MS },
+          ),
+        false,
+      );
+
+      const fetchedAt = yield* Clock.currentTimeMillis;
+
+      return {
+        kind: "complete",
+        value,
+        cacheable: true,
+        fetchedAt,
+        ...Option.getOrUndefined(decodeCacheHints(value)),
+      } satisfies Complete<ReadResourceResult>;
+    });
+
   const connection: McpConnection = {
     get era() {
       return live.era;
@@ -1342,6 +1373,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     list,
     callTool,
     task,
+    readResource,
   };
 
   return connection;

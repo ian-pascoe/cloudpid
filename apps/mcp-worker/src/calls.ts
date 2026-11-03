@@ -461,6 +461,8 @@ const toolNamed = (tools: ReadonlyArray<McpToolDefinition>, name: string) =>
 
 type ToolCall = McpEngineRequest & { readonly op: "tools/call" };
 
+type ResourceRead = McpEngineRequest & { readonly op: "resources/read" };
+
 /** The server's tools, listed again after a `-32020`, and their schema problems. */
 interface Refreshed {
   readonly tools: ReadonlyArray<McpToolDefinition>;
@@ -631,11 +633,27 @@ const runTaskOp = Effect.fnUntraced(function* (
   return state satisfies RequestOutcome;
 });
 
+/** Runs a `resources/read`: the server's result as it is, its strings scrubbed of the call's tokens on the way out. */
+const runRead = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: ResourceRead,
+  env: CallEnvironment,
+) {
+  const { value, kind: _kind, ...meta } = yield* connection.readResource(req.uri, req.ctx);
+
+  return {
+    kind: "complete",
+    ...meta,
+    result: yield* toEngineValue(value, call, env),
+  } satisfies Completed;
+});
+
 /** Walks a list to its end; a `tools/list` also brings its tools' schema problems. */
 const runList = Effect.fnUntraced(function* (
   connection: McpConnection,
   call: CallContext,
-  req: Exclude<McpEngineRequest, ToolCall | TaskOp>,
+  req: Exclude<McpEngineRequest, ToolCall | TaskOp | ResourceRead>,
   env: CallEnvironment,
   validators: ValidatorsApi,
 ) {
@@ -680,8 +698,8 @@ const runList = Effect.fnUntraced(function* (
 });
 
 /**
- * Runs one request: a `tools/call`, a `tasks/*` request on the MCP task wire, or a list walked to its end. An `op` this
- * engine does not know is `Unsupported`.
+ * Runs one request: a `tools/call`, a `tasks/*` request on the MCP task wire, a `resources/read`, or a list walked to its
+ * end. An `op` this engine does not know is `Unsupported`.
  */
 export const request = Effect.fn("mcp.engine.request")(function* (
   target: McpEngineTargetEncoded,
@@ -711,12 +729,17 @@ export const request = Effect.fn("mcp.engine.request")(function* (
       env,
       mayHaveRun: req.op === "tools/call" || (isTaskRequest(req) && req.op !== "tasks/get"),
     },
-    (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
-      req.op === "tools/call"
-        ? runToolCall(connection, context, req, env, validators, bridge)
-        : isTaskRequest(req)
-          ? runTaskOp(connection, context, req, env, validators)
-          : runList(connection, context, req, env, validators),
+    (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> => {
+      if (req.op === "tools/call") {
+        return runToolCall(connection, context, req, env, validators, bridge);
+      }
+
+      if (isTaskRequest(req)) return runTaskOp(connection, context, req, env, validators);
+
+      return req.op === "resources/read"
+        ? runRead(connection, context, req, env)
+        : runList(connection, context, req, env, validators);
+    },
   );
 
   const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);

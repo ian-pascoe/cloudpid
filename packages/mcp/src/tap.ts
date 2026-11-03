@@ -27,6 +27,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import {
   Cut,
+  MCP_APP_READ_BYTES,
   MCP_LARGE_RESULT_BYTES,
   McpError,
   MiB,
@@ -79,6 +80,15 @@ const POLICIES = new Map<string, Policy>([
   ["tasks/update", { ...OTHER, mayHaveRun: true }],
   ["tasks/cancel", { ...OTHER, mayHaveRun: true }],
 ]);
+
+/** A read of a `ui://` resource: an App's HTML, which `MCP_APP_READ_BYTES` bounds, and not a large read. */
+const APP_READ: Policy = { ...LARGE_READ, limit: MCP_APP_READ_BYTES };
+
+/** `method`'s policy, for a read of `uri` if it is one. */
+const policyOf = (method: string, uri: string | undefined) =>
+  method === "resources/read" && uri?.startsWith("ui://") === true
+    ? APP_READ
+    : (POLICIES.get(method) ?? OTHER);
 
 const MAX_RETRY_AFTER_MS = 10_000;
 
@@ -163,9 +173,13 @@ const decodeMessage = Schema.decodeUnknownOption(
     Schema.Struct({
       id: Schema.optionalKey(JsonRpcId),
       method: Schema.optionalKey(Schema.String),
+      params: Schema.optionalKey(Schema.Unknown),
     }),
   ),
 );
+
+/** The `uri` a request's `params` name, if they are an object that has one: `params` of another shape name none. */
+const decodeUri = Schema.decodeUnknownOption(Schema.Struct({ uri: Schema.String }));
 
 /** A JSON-RPC request the SDK is sending: one with an id and a method, and what the tap does with it. */
 interface Outgoing {
@@ -177,10 +191,17 @@ interface Outgoing {
 const outgoing = (init: RequestInit | undefined): Outgoing | undefined =>
   Option.match(decodeMessage(init?.body), {
     onNone: () => undefined,
-    onSome: ({ id, method }) =>
+    onSome: ({ id, method, params }) =>
       id === undefined || id === null || method === undefined
         ? undefined
-        : { id, method, policy: POLICIES.get(method) ?? OTHER },
+        : {
+            id,
+            method,
+            policy: policyOf(
+              method,
+              Option.getOrUndefined(Option.map(decodeUri(params), ({ uri }) => uri)),
+            ),
+          },
   });
 
 const JsonRpcAnswer = Schema.Struct({

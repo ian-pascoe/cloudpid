@@ -297,11 +297,13 @@ export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostA
  * - `call`: the host answers `request({ op: "tools/call" })`, with its `untilAborted` and `onProgress` hooks.
  * - `tasks`: the host answers `request({ op: "tasks/get" | "tasks/update" | "tasks/cancel" })` and takes `ctx.allowTask`
  *   on a `tools/call` (`mcp-server-requests.md` → MCP tasks).
+ * - `app_html`: a `tools/call` of an App tool answers the `htmlHash` of its App, and the host answers
+ *   `request({ op: "ui/html" })` (`docs/architecture/mcp-apps.md` → Declaring and reading Apps).
  *
  * The Session side's own list, `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`), names those of these its MCP tools
  * need; a feature added here reaches the Session only once that list names it.
  */
-export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory", "call", "tasks"];
+export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory", "call", "tasks", "app_html"];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
 export const McpCaller = Schema.Struct({

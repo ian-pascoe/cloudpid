@@ -30,6 +30,7 @@ import {
 } from "./fakes.fixture.ts";
 import { Cut, NotFound, ProtocolViolation, ServerError, TooLarge, Unreachable } from "./types.ts";
 import { connect } from "./index.ts";
+import { tapFetch, Verdicts } from "./tap.ts";
 
 const MiB = 1024 * 1024;
 
@@ -172,6 +173,61 @@ describe.each(bases)("a hostile %s server", (_name, base) => {
     const { called } = await attempt(server);
 
     expect(called).toEqual(failedWith(TooLarge, { limit: 16 * MiB }));
+  });
+
+  it("limits a read of a ui:// resource to 12 MiB, and any other read to 16", async () => {
+    const readOf = (uri: string, bytes: number) =>
+      run(
+        Effect.gen(function* () {
+          const server = answering(base(), "resources/read", (rpc) =>
+            Response.json({
+              jsonrpc: "2.0",
+              id: rpc.id ?? null,
+              result: {
+                resultType: "complete",
+                ttlMs: 0,
+                cacheScope: "private",
+                contents: [{ uri, mimeType: "text/plain", text: "x".repeat(bytes) }],
+              },
+            }),
+          );
+
+          const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
+
+          return yield* connection.readResource(uri, AGENT).pipe(
+            Effect.map(() => ({ read: true })),
+            Effect.catch((error) => Effect.succeed({ failed: error })),
+          );
+        }),
+      );
+
+    expect(await readOf("ui://docs/app", 11 * MiB)).toEqual({ read: true });
+    expect(await readOf("ui://docs/app", 13 * MiB)).toEqual(
+      failedWith(TooLarge, { limit: 12 * MiB }),
+    );
+    expect(await readOf("file:///big.txt", 13 * MiB)).toEqual({ read: true });
+  });
+
+  it("still tracks a read whose params are not an object: a read-only request, retried", async () => {
+    let sent = 0;
+    let retried = 0;
+
+    const wire = tapFetch(
+      async () => {
+        sent += 1;
+
+        return new Response("{}", { status: sent === 1 ? 503 : 200 });
+      },
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+      { response: () => undefined, retried: () => (retried += 1) },
+    );
+
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "resources/read", params: "x" });
+
+    await wire("https://example.test/mcp", { method: "POST", body });
+
+    expect({ sent, retried }).toEqual({ sent: 2, retried: 1 });
   });
 
   it("answers with the wrong content type: not an MCP server", async () => {

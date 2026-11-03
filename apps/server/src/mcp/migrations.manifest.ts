@@ -13,4 +13,6 @@ export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   "1988766cefcda198",
   // 4: per `conn`, the server log ring.
   "35478948f07bbf90",
+  // 5: `mcp_app_ui`, `mcp_app_html_meta` and `mcp_app_html`, the App HTML by hash.
+  "325ceb96ef159fca",
 ];

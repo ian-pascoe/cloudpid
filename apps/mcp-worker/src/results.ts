@@ -23,12 +23,13 @@ export const INLINE_LIMIT = MiB;
 /** The size of the pieces a large value's stream yields. */
 const STREAM_CHUNK = 64 * 1024;
 
-/** What a request completes with: a `tools/call` result, or a list's items. */
+/** What a request completes with: a `tools/call` result, a `resources/read` result, or a list's items. */
 export type Answer =
   | Extract<
       Effect.Success<ReturnType<McpConnection["callTool"]>>,
       { readonly kind: "complete" }
     >["value"]
+  | Effect.Success<ReturnType<McpConnection["readResource"]>>["value"]
   | ReadonlyArray<ListItems[ListKind]>;
 
 /** A server's answer the engine cannot read: the server is not speaking MCP. */

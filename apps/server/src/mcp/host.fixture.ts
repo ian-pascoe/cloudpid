@@ -15,7 +15,7 @@ import {
   type McpApplyResult,
   type McpEngineDiscoverResult,
   type McpEngineMethods,
-  type McpHostRequest,
+  type McpHostRequestInput,
   type McpHostRequestHooks,
   type McpHostRequestResult,
   type McpEnginePriorEncoded,
@@ -70,12 +70,18 @@ export type EngineScript = {
  * makes first, in order, as its connection does (`[false]` for a token, `[false, true]` for a 401 and its retry).
  */
 export type RequestScript = {
+  /** The engine `op` this answers; when absent, a `tools/call` or a `tasks/*` request. Each `op` takes the scripts of its own, in order. */
+  readonly op?: string;
   readonly result: typeof McpEngineRequestResult.Encoded;
   /**
    * Answer a completed call with this many bytes as a native byte stream, produced on pull (a `highWaterMark` of 0, so
    * nothing is pulled until a reader asks), as the engine answers a result over 1 MiB, in place of its `result`'s value.
    */
   readonly streamBytes?: number;
+  /** As `streamBytes`, the stream carrying this JSON text: a result over 1 MiB that a decoder can read. */
+  readonly streamJson?: Schema.Json;
+  /** The stream's first pull waits for `releaseStreams()`: a read that has its answer and is slow to take it. */
+  readonly holdStream?: boolean;
   readonly hold?: boolean;
   readonly reject?: string;
   readonly auth?: ReadonlyArray<boolean>;
@@ -221,21 +227,38 @@ export class TestMcpHost extends DurableObject {
   /** The real engine, once a test asks for it: the test Worker's `McpEngine` entrypoint, over RPC. */
   #real: McpEngineMethods | undefined;
 
-  /** `script`'s completed answer with its value as a stream of `streamBytes` bytes, pulled 64 KiB at a time. */
+  /** The pulls of streams that wait (`holdStream`) for `releaseStreams()`. */
+  readonly #gated: Array<() => void> = [];
+
+  /**
+   * `script`'s completed answer with its value as a stream of `streamBytes` bytes, or of its `streamJson`'s text,
+   * pulled 64 KiB at a time.
+   */
   #streamed(script: RequestScript): typeof McpEngineRequestResult.Encoded {
-    const total = script.streamBytes ?? 0;
+    const text =
+      script.streamJson === undefined
+        ? undefined
+        : new TextEncoder().encode(JSON.stringify(script.streamJson));
+
+    const total = text?.byteLength ?? script.streamBytes ?? 0;
     let sent = 0;
+    let gated = script.holdStream === true;
 
     const body = new ReadableStream<Uint8Array>(
       {
-        pull: (controller) => {
+        pull: async (controller) => {
           this.#pulls++;
+
+          if (gated) {
+            gated = false;
+            await new Promise<void>((resolve) => this.#gated.push(resolve));
+          }
 
           if (sent >= total) return controller.close();
 
           const size = Math.min(64 * 1024, total - sent);
 
-          controller.enqueue(new Uint8Array(size).fill(97));
+          controller.enqueue(text?.slice(sent, sent + size) ?? new Uint8Array(size).fill(97));
           sent += size;
         },
       },
@@ -258,9 +281,17 @@ export class TestMcpHost extends DurableObject {
       // @effect-diagnostics-next-line preferEffectRecord:off -- the hooks' names as they crossed, whatever they are.
       this.#requests.push({ target, prior, request, hooks: Object.keys(hooks), tokens });
 
-      const script = this.#requestScripts.get(keyOf(target))?.shift();
+      const queue = this.#requestScripts.get(keyOf(target)) ?? [];
 
-      if (script === undefined) throw new Error(`No request scripted for ${keyOf(target)}`);
+      const next = queue.findIndex((each) =>
+        each.op === undefined ? !request.op.startsWith("resources/") : each.op === request.op,
+      );
+
+      const script = next < 0 ? undefined : queue.splice(next, 1)[0];
+
+      if (script === undefined) {
+        throw new Error(`No ${request.op} request scripted for ${keyOf(target)}`);
+      }
 
       for (const stale of script.auth ?? []) tokens.push(await hooks.auth?.(stale));
 
@@ -268,7 +299,9 @@ export class TestMcpHost extends DurableObject {
 
       if (script.reject !== undefined) throw new Error(script.reject);
 
-      if (script.streamBytes !== undefined) return this.#streamed(script);
+      if (script.streamBytes !== undefined || script.streamJson !== undefined) {
+        return this.#streamed(script);
+      }
 
       return script.result;
     },
@@ -456,6 +489,11 @@ export class TestMcpHost extends DurableObject {
     this.#held.delete(url);
   }
 
+  /** Let the streams that wait for it (`holdStream`) be pulled. */
+  releaseStreams(): void {
+    for (const resolve of this.#gated.splice(0)) resolve();
+  }
+
   /** The discoveries the engine was asked for, in order. */
   engineCalls(): ReadonlyArray<EngineCall> {
     return this.#calls;
@@ -505,7 +543,7 @@ export class TestMcpHost extends DurableObject {
 
   /** A Session's call, as the McpHost DO answers it: with the caller's hooks, which live as long as this call. */
   request(
-    input: typeof McpHostRequest.Encoded,
+    input: typeof McpHostRequestInput.Encoded,
     hooks: McpHostRequestHooks,
   ): Promise<McpHostRequestResult> {
     return Effect.runPromise(this.#methods.request(input, hooks));
@@ -516,7 +554,7 @@ export class TestMcpHost extends DurableObject {
    * of a streamed result, and whether it had read any of it (a locked or pulled stream).
    */
   async requestStreamed(
-    input: typeof McpHostRequest.Encoded,
+    input: typeof McpHostRequestInput.Encoded,
   ): Promise<{ readonly tag: string; readonly stream: { locked: boolean; bytes: number } | null }> {
     const answer = await Effect.runPromise(this.#methods.request(input, {}));
 
@@ -556,6 +594,29 @@ export class TestMcpHost extends DurableObject {
       .toArray();
   }
 
+  /** The pages of App HTML the host keeps: hash and size, by hash. */
+  appPages(): ReadonlyArray<{ readonly hash: string; readonly bytes: number }> {
+    return this.ctx.storage.sql
+      .exec<{ hash: string; bytes: number }>(
+        "SELECT hash, bytes FROM mcp_app_html_meta ORDER BY hash",
+      )
+      .toArray();
+  }
+
+  /** What each (`conn`, URI) read last: its page's hash and the inventory `version` it was read at. */
+  appUiRows(): ReadonlyArray<{
+    readonly conn: string;
+    readonly uri: string;
+    readonly hash: string;
+    readonly version: string;
+  }> {
+    return this.ctx.storage.sql
+      .exec<{ conn: string; uri: string; hash: string; version: string }>(
+        "SELECT conn, uri, hash, version FROM mcp_app_ui ORDER BY conn, uri",
+      )
+      .toArray();
+  }
+
   /** What the host's runtime logged, and every span it made with its attributes, as text: to look for what must not be there. */
   observed(): string {
     return JSON.stringify([
@@ -579,6 +640,8 @@ export class TestMcpHost extends DurableObject {
         "mcp_eras",
         "mcp_sessions",
         "mcp_logs",
+        "mcp_app_ui",
+        "mcp_app_html_meta",
       ].map((table) => this.ctx.storage.sql.exec(`SELECT * FROM ${table}`).toArray()),
     );
   }
