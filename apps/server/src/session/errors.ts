@@ -42,6 +42,9 @@ export const withdrawnFailure = (): SessionError =>
     message: "Stopped before it was sent: nothing was sent, so send it again.",
   });
 
-/** Whether `error` says Stop withdrew the message. */
+/**
+ * Whether `error` says Stop withdrew the message. Not a type guard: callers hold errors of several kinds (`SessionError`
+ * and others), and narrowing them to `SessionError` would make their other branches `never`. It takes anything tagged.
+ */
 export const isWithdrawn = (error: { readonly _tag: string }): boolean =>
   Schema.is(SessionError)(error) && error.operation === WITHDRAWN;

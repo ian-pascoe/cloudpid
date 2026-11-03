@@ -1,11 +1,7 @@
 // The subagent tools through real runs: a scripted model drives the root and its children in one Harness.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
-import {
-  type ConversationId,
-  type JsonObject,
-  ROOT_CONVERSATION_ID,
-} from "@earendil-works/pi-durable";
+import { type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import {
   answer,
@@ -1451,16 +1447,37 @@ describe("Subagent Workspaces", () => {
     await session.settle();
 
     const child = (await session.state()).agents["agent-1"]?.conversationId;
-    const reached: ConversationId[] = [];
+    const order: string[] = [];
+
+    // The Harness's conversations, noting each abort.
+    const conversation = session.harness.conversation.bind(session.harness);
+
+    session.harness.conversation = async (id, withContext) => {
+      const found = await conversation(id, withContext);
+
+      if (found === undefined) return found;
+
+      const abort = found.abort.bind(found);
+
+      found.abort = (...args) => {
+        order.push(`abort ${id}`);
+
+        return abort(...args);
+      };
+
+      return found;
+    };
 
     await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context, (id) => {
-      reached.push(id);
+      order.push(`before ${id}`);
 
       return Promise.resolve();
     });
 
     expect(child).toBeDefined();
-    expect(reached).toContain(child);
+    // Each conversation is told of before it is aborted.
+    expect(order.indexOf(`before ${child}`)).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf(`before ${child}`)).toBeLessThan(order.indexOf(`abort ${child}`));
   });
 });
 

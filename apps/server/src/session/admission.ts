@@ -21,6 +21,8 @@ type Member = {
   readonly left: Deferred.Deferred<void>;
   /** Done when Stop withdraws the message: whatever it is preparing is cancelled. */
   readonly cancel: Deferred.Deferred<void>;
+  /** The `requestId` it was sent under, if any: kept when it is withdrawn, so a resend is withdrawn too. */
+  readonly requestId: string | undefined;
   state: MemberState;
 };
 
@@ -35,9 +37,13 @@ type Place = {
  * The lines of one Session, and the conversations a message is in line for. Held in memory: an eviction drops them.
  * `inArrivalOrder` is the Session's lock, under which a message's conversation is fixed.
  */
-export const admissionLines = (
-  inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
-) => {
+export const admissionLines = (options: {
+  readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /** Keep `requestId` of a withdrawn message, so that sent again it is withdrawn again. Never failing. */
+  readonly remember: (requestId: string) => Effect.Effect<void>;
+}) => {
+  const { inArrivalOrder, remember } = options;
+
   // Messages take their place in line one at a time, so two that arrive together are in line in the order they arrived,
   // though the read that tells which conversation each is for may finish in either.
   const arriving = Semaphore.withPermit(Semaphore.makeUnsafe(1));
@@ -58,12 +64,13 @@ export const admissionLines = (
 
   // Synchronous, so that taking a place is one step with being first or last in line. `seen` is the stop count when the
   // message was sent.
-  const join = (key: ConversationId, seen: number): Place => {
+  const join = (key: ConversationId, seen: number, requestId: string | undefined): Place => {
     const previous = tails.get(key);
 
     const member: Member = {
       left: Deferred.makeUnsafe<void>(),
       cancel: Deferred.makeUnsafe<void>(),
+      requestId,
       state: (stoppedAt.get(key) ?? 0) > seen ? "withdrawn" : "in-line",
     };
 
@@ -112,16 +119,18 @@ export const admissionLines = (
     which: Effect.Effect<ConversationId, E1, R1>,
     prepare: (conversationId: ConversationId) => Effect.Effect<P, E2, R2>,
     place: (conversationId: ConversationId, prepared: P) => Effect.Effect<A, E3, R3>,
+    requestId?: string,
   ): Effect.Effect<A, E1 | E2 | E3 | SessionError, R1 | R2 | R3> =>
-    Effect.suspend(() => {
-      const seen = stops;
+    Effect.uninterruptibleMask((restore) =>
+      Effect.suspend(() => {
+        const seen = stops;
 
-      onTheirWay += 1;
+        // Inside the mask, so that an interrupt cannot come between counting the message and the `arrived` that ends it.
+        onTheirWay += 1;
 
-      return Effect.uninterruptibleMask((restore) =>
-        arriving(
+        return arriving(
           inArrivalOrder(
-            restore(which).pipe(Effect.map((key) => ({ key, line: join(key, seen) }))),
+            restore(which).pipe(Effect.map((key) => ({ key, line: join(key, seen, requestId) }))),
           ),
         ).pipe(
           Effect.ensuring(arrived),
@@ -148,11 +157,22 @@ export const admissionLines = (
                 : Effect.raceFirst(prepare(key), cancelled).pipe(Effect.flatMap(placed)),
             );
 
-            return line.turn.pipe(Effect.andThen(restore(run)), Effect.ensuring(line.leave));
+            // Withdrawn on joining (a Stop reached its conversation after it was sent): remembered here, as `withdrawLine`
+            // remembers the ones it reaches, with no wait that an interrupt could cut short.
+            const remembered =
+              member.state === "withdrawn" && requestId !== undefined
+                ? remember(requestId)
+                : Effect.void;
+
+            return remembered.pipe(
+              Effect.andThen(line.turn),
+              Effect.andThen(restore(run)),
+              Effect.ensuring(line.leave),
+            );
           }),
-        ),
-      );
-    });
+        );
+      }),
+    );
 
   /**
    * Withdraw the messages in conversation `key`'s line that are not being placed, and the ones sent before this Stop
@@ -168,6 +188,7 @@ export const admissionLines = (
 
       const placing: Array<Deferred.Deferred<void>> = [];
       const reached: Array<Member> = [];
+      const toRemember: Array<string> = [];
 
       for (const member of members.get(key) ?? []) {
         if (member.state === "placing") placing.push(member.left);
@@ -175,13 +196,18 @@ export const admissionLines = (
         if (member.state === "in-line") {
           member.state = "withdrawn";
           reached.push(member);
+
+          if (member.requestId !== undefined) toRemember.push(member.requestId);
         }
       }
 
       // After every one is marked: cancelling a message may carry the one behind it on at once.
       for (const member of reached) Deferred.doneUnsafe(member.cancel, Effect.void);
 
-      return Effect.forEach(placing, (left) => Deferred.await(left), { discard: true });
+      // Remembered here, not by each message as it ends: a submitter interrupted meanwhile must not skip it.
+      return Effect.forEach(toRemember, remember, { discard: true }).pipe(
+        Effect.andThen(Effect.forEach(placing, (left) => Deferred.await(left), { discard: true })),
+      );
     });
 
   /** Whether a message is in line for conversation `key`, not yet placed. */

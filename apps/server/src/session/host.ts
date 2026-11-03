@@ -131,14 +131,7 @@ import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { contextUsageOf } from "./context-usage.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
-import {
-  attempt,
-  CONVERSATION_MISSING,
-  isWithdrawn,
-  refuse,
-  SessionError,
-  withdrawnFailure,
-} from "./errors.ts";
+import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure } from "./errors.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
@@ -201,6 +194,9 @@ const WITHDRAWN_KEY = "withdrawn-requests";
 const WITHDRAWN_KEPT_MS = 10 * 60 * 1000;
 
 const MAX_WITHDRAWN = 64;
+
+/** The longest `requestId` kept as withdrawn: a longer one is withdrawn, but a resend of it is not. */
+const MAX_WITHDRAWN_ID = 256;
 
 type WithdrawnRequest = { readonly requestId: string; readonly at: number };
 
@@ -789,7 +785,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   // (docs/architecture/mcp-in-a-session.md → Getting a prompt at send).
   const inArrivalOrder = Semaphore.withPermit(yield* Semaphore.make(1));
 
-  const admission = admissionLines(inArrivalOrder);
+  const admission = admissionLines({
+    inArrivalOrder,
+    remember: (requestId) => rememberWithdrawn(requestId),
+  });
 
   // The Harness's stop (`stopConversation`, which deleting an agent shares) is Promise-based and calls this before it
   // aborts each conversation: it runs the Effect that withdraws the conversation's line, with the services this Effect
@@ -1857,39 +1856,51 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         );
 
-  /** Whether Stop withdrew a message sent under `requestId` lately. */
+  /** Whether Stop withdrew a message sent under `requestId` lately. A record that cannot be read says it did not. */
   const wasWithdrawn = (requestId: string) =>
     Clock.currentTimeMillis.pipe(
-      Effect.map((now) =>
-        Arr.some(
-          kv.get<ReadonlyArray<WithdrawnRequest>>(WITHDRAWN_KEY) ?? [],
-          (kept) => kept.requestId === requestId && now - kept.at < WITHDRAWN_KEPT_MS,
+      Effect.flatMap((now) =>
+        Effect.try(() =>
+          Arr.some(
+            kv.get<ReadonlyArray<WithdrawnRequest>>(WITHDRAWN_KEY) ?? [],
+            (kept) => kept.requestId === requestId && now - kept.at < WITHDRAWN_KEPT_MS,
+          ),
         ),
       ),
+      Effect.orElseSucceed(() => false),
     );
 
-  /** Keep `requestId` as withdrawn: the recent ones only, and at most `MAX_WITHDRAWN`. */
-  const rememberWithdrawn = (requestId: string) =>
-    Clock.currentTimeMillis.pipe(
-      Effect.tap((now) =>
-        Effect.sync(() => {
-          const recent = Arr.filter(
-            kv.get<ReadonlyArray<WithdrawnRequest>>(WITHDRAWN_KEY) ?? [],
-            (kept) => kept.requestId !== requestId && now - kept.at < WITHDRAWN_KEPT_MS,
-          );
+  /**
+   * Keep `requestId` as withdrawn: the recent ones only, at most `MAX_WITHDRAWN`, and none longer than
+   * `MAX_WITHDRAWN_ID`. Never failing: a write the storage refuses leaves the withdrawal as it is.
+   */
+  const rememberWithdrawn = (requestId: string): Effect.Effect<void> =>
+    requestId.length > MAX_WITHDRAWN_ID
+      ? Effect.void
+      : Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) =>
+            Effect.try(() => {
+              const recent = Arr.filter(
+                kv.get<ReadonlyArray<WithdrawnRequest>>(WITHDRAWN_KEY) ?? [],
+                (kept) => kept.requestId !== requestId && now - kept.at < WITHDRAWN_KEPT_MS,
+              );
 
-          kv.put(WITHDRAWN_KEY, [...recent.slice(-(MAX_WITHDRAWN - 1)), { requestId, at: now }]);
-        }),
-      ),
-    );
+              kv.put(WITHDRAWN_KEY, [
+                ...recent.slice(-(MAX_WITHDRAWN - 1)),
+                { requestId, at: now },
+              ]);
+            }),
+          ),
+          Effect.ignore,
+        );
 
   /**
    * Admit `prompt` in two steps (docs/architecture/mcp-in-a-session.md → Getting a prompt at send). It first takes its
    * place in the line of its conversation, where it waits for the messages sent before it; the Session tree does not
    * move while it is in line. It is then prepared, with no lock held, so a slow expansion or page read holds back
    * neither Stop nor another conversation. Last it is placed, briefly under `inArrivalOrder`: checked, then admitted.
-   * Stop withdraws it until it is placed: it then fails as `withdrawnFailure()`, places nothing, and its `requestId`
-   * is remembered for a while (`WITHDRAWN_KEY`).
+   * Stop withdraws it until it is placed: it then fails as `withdrawnFailure()` and places nothing, and the line
+   * remembers its `requestId` for a while (`WITHDRAWN_KEY`).
    */
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
     Effect.gen(function* () {
@@ -1900,27 +1911,20 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         return yield* withdrawnFailure();
       }
 
-      return yield* admission
-        .inLine(
-          addressed(prompt.conversationId).pipe(Effect.map((conversation) => conversation.id)),
-          (conversationId) =>
-            // A message the Session would refuse is not expanded first.
-            unlessForking.pipe(
-              Effect.andThen(draftOf({ ...prompt, conversationId })),
-              Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
-            ),
-          (conversationId, draft) =>
-            guard(conversationId, draft).pipe(
-              Effect.andThen(admitDraft(conversationId, draft, true)),
-            ),
-        )
-        .pipe(
-          Effect.tapError((error) =>
-            requestId !== undefined && isWithdrawn(error)
-              ? rememberWithdrawn(requestId)
-              : Effect.void,
+      return yield* admission.inLine(
+        addressed(prompt.conversationId).pipe(Effect.map((conversation) => conversation.id)),
+        (conversationId) =>
+          // A message the Session would refuse is not expanded first.
+          unlessForking.pipe(
+            Effect.andThen(draftOf({ ...prompt, conversationId })),
+            Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
           ),
-        );
+        (conversationId, draft) =>
+          guard(conversationId, draft).pipe(
+            Effect.andThen(admitDraft(conversationId, draft, true)),
+          ),
+        requestId,
+      );
     });
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {
