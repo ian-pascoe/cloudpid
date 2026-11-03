@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc,
   type Conversation,
+  type Cursor,
   type EntryId,
   type EntryRecord,
   type HarnessInspection,
@@ -47,7 +48,12 @@ const context = BACKGROUND_CONTEXT;
  */
 const FILL_KEY = "fork-copy";
 
-type Filling = { readonly ids: Readonly<Record<string, number>>; readonly import?: true };
+type Filling = {
+  readonly ids: Readonly<Record<string, number>>;
+  readonly import?: true;
+  /** A Session import's entries are all in the root (`importTranslated`). */
+  readonly written?: true;
+};
 
 /**
  * Set on a source Session while a Fork or Clone carries its files to a new Workspace, in its key-value storage: until
@@ -317,27 +323,65 @@ export const sessionForks = (options: ForksOptions) => {
   );
 
   /**
-   * Append a Session import's translated entries to the root conversation in one transaction, so a translation is in
-   * whole or not at all. Their IDs and heads are the translation's own: each is renumbered as it is appended.
+   * Write a Session import's translated entries to the root conversation, a page at a time. Their IDs are 1 to N in order
+   * (`Translation.count`), and each head and edit names one: each is renumbered as its page is appended.
+   *
+   * The entries land in whole or not at all as far as anything can see: a page is one commit, and until the import ends
+   * the Session takes no message and no move (`importing`), so nothing reads, runs from or shows a root that holds only
+   * some of them; an import that is cancelled, expires or is given up deletes the Session with them. A translation that
+   * is cut off part way is run again (it is a function of the file, so its pages are the same), and finds the entries the
+   * root already has by reading their IDs back: it appends only the rest, with the heads and edits of the first ones
+   * still naming the entries they named. The flag `written` is set once the last page is in, so a retry after it
+   * only has to end the import.
    */
-  const importTranslated = (entries: ReadonlyArray<EntryRecord>) =>
+  const importTranslated = (pages: Iterable<ReadonlyArray<EntryRecord>>) =>
     Effect.gen(function* () {
       const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
 
       if (filling?.import !== true) return yield* refuse("This Session is not importing.");
 
+      const root = yield* options.root;
+
+      /** The entry the root gave each translated one, by the translation's own ID (its position, from 1). */
       const ids = new Map<number, number>();
 
-      yield* attempt("importEntries", () =>
-        harness.commit(async (tx) => {
-          for (const entry of entries) {
-            const appended = await tx.appendEntry(ROOT_CONVERSATION_ID, copiedDraft(entry, ids));
+      let cursor: Cursor | undefined;
 
-            ids.set(entry.id, appended.id);
-          }
-        }, context),
-      );
+      do {
+        const page = yield* attempt("entries", () =>
+          root.entries({ order: "ascending" }, EXPORT_PAGE_ENTRIES, cursor, context),
+        );
+
+        for (const entry of page.items) ids.set(ids.size + 1, entry.id);
+
+        cursor = page.next;
+      } while (cursor !== undefined);
+
+      for (const page of pages) {
+        const fresh = Arr.filter(page, (entry) => entry.id > ids.size);
+
+        if (fresh.length === 0) continue;
+
+        yield* attempt("importEntries", () =>
+          harness.commit(async (tx) => {
+            for (const entry of fresh) {
+              const appended = await tx.appendEntry(ROOT_CONVERSATION_ID, copiedDraft(entry, ids));
+
+              ids.set(entry.id, appended.id);
+            }
+          }, context),
+        );
+      }
+
+      kv.put(FILL_KEY, { ...filling, written: true } satisfies Filling);
     });
+
+  /** Whether every translated entry of a Session import is in the root (see `importTranslated`). */
+  const importWritten = Effect.sync(() => {
+    const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
+
+    return filling?.import === true && filling.written === true;
+  });
 
   /** Take the agent and documents the plan carries, and take messages from then on. */
   const importFinish = (plan: ForkPlan) =>
@@ -395,6 +439,7 @@ export const sessionForks = (options: ForksOptions) => {
     importBegin,
     importEntries,
     importTranslated,
+    importWritten,
     importFinish,
     releaseFork,
     refusal,

@@ -212,17 +212,17 @@ const sessionImport = (options: SessionImportOptions) =>
     });
 
     /**
-     * `record`, with `held` found out when a translation was cut off after it wrote the entries and before it noted so:
-     * the root has entries then, which are only ever written whole.
+     * `record`, with `held` found out when a translation was cut off after it wrote the last of its entries and before it
+     * noted so (`host.importWritten`: the root holds only some of them until then, and a Session that is importing runs
+     * nothing from them, so a partly written import is never held).
      */
     const adopted = (record: ImportRecord) =>
       Effect.gen(function* () {
         if (record.phase !== "finishing" || record.held === true) return record;
 
-        const root = yield* host.root;
-        const entries = yield* host.entries({ conversationId: root, order: "ascending", limit: 1 });
-
-        return entries.length === 0 ? record : update(record, { held: true, expiresAt: undefined });
+        return (yield* host.importWritten)
+          ? update(record, { held: true, expiresAt: undefined })
+          : record;
       });
 
     /** The held Secrets' redaction, with the GitHub token pass: every text that leaves the object goes through it. */
@@ -386,13 +386,20 @@ const sessionImport = (options: SessionImportOptions) =>
         defaults,
       );
 
+      const tools = yield* host.importTools;
+
       const translation = yield* Effect.try({
         try: () =>
-          translate(linesOf(staging.rows()), {
-            branch: record.workspace.branch,
-            repos: record.workspace.repos,
-            warnings: chosen.warnings,
-          }),
+          translate(
+            // The translation reads the file more than once, which a generator cannot: each read starts over from the rows.
+            { [Symbol.iterator]: () => linesOf(staging.rows()) },
+            {
+              branch: record.workspace.branch,
+              repos: record.workspace.repos,
+              warnings: chosen.warnings,
+              tools,
+            },
+          ),
         catch: (cause) => SessionError.make({ operation: "translate", message: String(cause) }),
       });
 
@@ -408,11 +415,10 @@ const sessionImport = (options: SessionImportOptions) =>
 
       const root = yield* host.root;
 
-      // The entries go in whole or not at all, so a root that has any holds them all: a translation cut off after that
-      // resumes at the next step.
-      const held = yield* host.entries({ conversationId: root, order: "ascending", limit: 1 });
-
-      if (held.length === 0) yield* host.importTranslated(translation.entries);
+      // The entries are written a page at a time (`host.importTranslated`), and until the import ends nothing reads them,
+      // so they are in whole or not at all to anything that can see. A translation cut off part way resumes after the
+      // pages the root already has.
+      if (record.held !== true) yield* host.importTranslated(translation.pages());
 
       // From here the entries are in the Session, and a Run may start from them: the import is no longer counted in
       // attempts, never given up and never expires. All that is left is to tell the Registry it ended.
@@ -425,8 +431,8 @@ const sessionImport = (options: SessionImportOptions) =>
           text: null,
           agent: chosen.agent,
           pick: chosen.pick,
-          context: null,
-          todo: null,
+          context: translation.context,
+          todo: translation.todo,
         });
         yield* sockets.greetAgain;
       }

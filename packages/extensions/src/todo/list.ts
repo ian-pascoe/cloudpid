@@ -381,7 +381,7 @@ const applyAction = (list: TodoList, input: TodoInput): TodoOutcome => {
 };
 
 /** Whether the list fits in what the model reads of a result. */
-const fits = (tasks: ReadonlyArray<TodoTask>): boolean => {
+export const fits = (tasks: ReadonlyArray<TodoTask>): boolean => {
   const text = formatTasks(tasks);
 
   return text.length <= MAX_LIST_CHARACTERS && text.split("\n").length <= MAX_LIST_LINES;

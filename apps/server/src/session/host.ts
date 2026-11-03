@@ -632,10 +632,20 @@ export type SessionHostService = {
    * no message and no move until `importFinish`.
    */
   readonly importBegin: Effect.Effect<void, SessionError>;
-  /** Append a Session import's translated entries to the root conversation, in one transaction (`importTranslated`). */
+  /**
+   * Write a Session import's translated entries to the root conversation a page at a time, resuming after those a cut-off
+   * run wrote (`importTranslated`).
+   */
   readonly importTranslated: (
-    entries: ReadonlyArray<EntryRecord>,
+    pages: Iterable<ReadonlyArray<EntryRecord>>,
   ) => Effect.Effect<void, SessionError>;
+  /** Whether a Session import's translated entries are all in the root conversation. */
+  readonly importWritten: Effect.Effect<boolean>;
+  /**
+   * The names of the tools the root conversation's requests declare, for the import notice's list of laptop tools this
+   * Session lacks; none when they cannot be read.
+   */
+  readonly importTools: Effect.Effect<ReadonlyArray<string> | undefined>;
   /**
    * Run the Session's title task once, as after its first answer: the Session is named if it is not, from its first
    * message and answer. For an import that came with no title. Never fails.
@@ -3287,6 +3297,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     importFinish: forks.importFinish,
     importBegin: forks.importBegin,
     importTranslated: forks.importTranslated,
+    importWritten: forks.importWritten,
+    importTools: root.pipe(
+      Effect.flatMap((conversation) => attempt("agent", () => conversation.agent(context))),
+      Effect.map((agent): ReadonlyArray<string> | undefined =>
+        Arr.map(agent.tools, (tool) => tool.name),
+      ),
+      Effect.catch((error) =>
+        Effect.logWarning("Reading the tools of an import's Session failed", error).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    ),
     nameSession: titles.run,
     contextUsage: readContextUsage,
     // The settings are read again first, as `configure` does: the default is the one in force now. A read that fails

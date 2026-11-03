@@ -40,6 +40,7 @@ import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/extensions/settings";
 import { SettingsMcpAccess } from "@cloudpid/extensions/settings-mcp";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
+import { ContextDoc } from "@cloudpid/extensions/context";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
 import type {
   StageImportAppend,
@@ -182,7 +183,7 @@ import {
   sessionImportLayer,
 } from "./import.ts";
 import { type ImportStaging, importStaging } from "./import-staging.ts";
-import { translatePiSession } from "./import-translate.ts";
+import { translatePiSession, translated } from "./import-translate.ts";
 import {
   type ChangesSource,
   SessionChanges,
@@ -953,7 +954,29 @@ export class TestSession extends DurableObject {
               throw new Error("The translation failed.");
             }
 
-            return translatePiSession(lines, facts);
+            const translation = translatePiSession(lines, facts);
+            const after = ctx.storage.kv.get<number>("import-pages-fail-after");
+
+            if (after === undefined || !translated(translation)) return translation;
+
+            // A test cuts the writing off after `after` pages, once, as a crash of the object between two commits does.
+            return {
+              ...translation,
+              pages: function* () {
+                let written = 0;
+
+                for (const page of translation.pages()) {
+                  if (written >= after) {
+                    ctx.storage.kv.delete("import-pages-fail-after");
+
+                    throw new Error("The object was cut off between two pages.");
+                  }
+
+                  written += 1;
+                  yield page;
+                }
+              },
+            };
           },
         }).pipe(
           Layer.provideMerge(sessionSocketsLayer(ctx)),
@@ -1279,6 +1302,11 @@ export class TestSession extends DurableObject {
   /** How long finish waits for the translation, in milliseconds (read at each finish). */
   importFinishWait(ms: number): void {
     this.ctx.storage.kv.put("import-finish-wait", ms);
+  }
+
+  /** Cut the next translation's writing off after `pages` pages (once), as a crash between two commits does. */
+  importPagesFailAfter(pages: number): void {
+    this.ctx.storage.kv.put("import-pages-fail-after", pages);
   }
 
   /** Make every translation fail (or not), as one that crashes the object does. */
@@ -1894,7 +1922,13 @@ export class TestSession extends DurableObject {
 
   /** The root conversation's entries, oldest first: each one's kind, data, and the text of its message. */
   rootEntries(): Promise<
-    ReadonlyArray<{ readonly kind: string; readonly data: unknown; readonly text: string }>
+    ReadonlyArray<{
+      readonly id: number;
+      readonly kind: string;
+      readonly data: unknown;
+      readonly text: string;
+      readonly head: number | undefined;
+    }>
   > {
     return this.#runtime.runPromise(
       Effect.gen(function* () {
@@ -1924,7 +1958,7 @@ export class TestSession extends DurableObject {
                     "",
                   );
 
-          return { kind: entry.kind, data: entry.data, text };
+          return { id: entry.id, kind: entry.kind, data: entry.data, text, head: entry.head };
         });
       }),
     );
@@ -1946,6 +1980,20 @@ export class TestSession extends DurableObject {
     );
 
     return { lists, stop: () => void fiber.pipe(Fiber.interrupt, Effect.runFork) };
+  }
+
+  /** The root conversation's Todo List and its Notes and Handoff, as the documents hold them. */
+  importedDocs() {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        return yield* callDurable("snapshot", async (context) => ({
+          todo: await harness.harness.snapshot(TodoDoc, ROOT_CONVERSATION_ID, context),
+          context: await harness.harness.snapshot(ContextDoc, ROOT_CONVERSATION_ID, context),
+        }));
+      }),
+    );
   }
 
   /** The tasks of the root conversation's Todo List. */

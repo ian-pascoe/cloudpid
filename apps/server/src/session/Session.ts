@@ -79,6 +79,7 @@ import {
   subagentSettings,
   toolSearchSettings,
 } from "./settings.ts";
+import { absentToolFlatteningModels } from "./absent-tools.ts";
 import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
@@ -861,7 +862,7 @@ export const SessionLive = Session.make(
                 // Each request is a span too, measured where it leaves for the proxy.
                 models: Effect.map(Effect.service(Secrets), (held) =>
                   tracingModels(
-                    scrubbingModels(imageLimitedModels(models), held),
+                    scrubbingModels(absentToolFlatteningModels(imageLimitedModels(models)), held),
                     telemetry.context,
                   ),
                 ),

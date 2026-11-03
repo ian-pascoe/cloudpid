@@ -12,7 +12,15 @@ import { CONTEXT_GUIDELINES, ContextHistory, ContextNotes } from "./context/tool
 
 export const extensionName = "context";
 
-export { ContextDoc, type ContextState, type Note } from "./context/notes.ts";
+export {
+  ContextDoc,
+  type ContextState,
+  MAX_NOTE_CHARACTERS,
+  MAX_NOTE_NAME,
+  MAX_NOTES,
+  type Note,
+  NOTE_NAME,
+} from "./context/notes.ts";
 
 export {
   CONTINUE_ENTRY,
