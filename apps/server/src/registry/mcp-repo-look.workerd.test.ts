@@ -514,4 +514,43 @@ describe("a Repo's servers in the Environment's set", () => {
         redact: [],
       });
     }));
+
+  it("offer a stdio server of a Repo's file that Repo alone as a Root, though its Workspace has more Repos", () =>
+    inRegistry(async ({ store, github, looks }) => {
+      store.addRepo(DEFAULT_ENVIRONMENT, { name: "lib", url: "https://github.com/acme/lib" });
+      github.push("acme/app", { [FILE]: file({ local: LOCAL }) });
+      await looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "moved", now: 0 });
+      store.createSession(
+        {
+          id: "s-roots",
+          title: null,
+          workspace: {
+            kind: "new",
+            id: "0a1b2c3d",
+            environment: DEFAULT_ENVIRONMENT,
+            branch: "cloudpid/0a1b2c3d",
+            base: null,
+          },
+          origin: null,
+          marks: null,
+          requestId: undefined,
+        },
+        1,
+      );
+
+      expect(store.getWorkspaceSetup("0a1b2c3d")?.repos.map(({ name }) => name)).toEqual([
+        "app",
+        "lib",
+      ]);
+
+      const conn = environmentMcpSet(store, DEFAULT_ENVIRONMENT)?.entries[0]?.conn ?? "";
+
+      expect(
+        mcpServerValuesAnswer(
+          store,
+          { environment: DEFAULT_ENVIRONMENT, server: "local", conn, workspace: "ws:0a1b2c3d" },
+          {},
+        ),
+      ).toMatchObject({ status: "values", repos: [{ directory: "app", slug: "acme/app" }] });
+    }));
 });

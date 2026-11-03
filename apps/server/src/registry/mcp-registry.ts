@@ -33,6 +33,7 @@ import {
   resolvedMcpServers,
   shouldPushMcpSet,
 } from "./mcp-set.ts";
+import { workspaceIdOf } from "../workspace/binding.ts";
 import { githubRepoOf } from "../workspace/github-pulls.ts";
 import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { signInsRevisionOf } from "./mcp-sign-ins.ts";
@@ -223,9 +224,7 @@ const reposOf = (
     return [{ directory: resolved.source.directory, slug: resolved.source.slug }];
   }
 
-  const id = workspace.startsWith("ws:") ? workspace.slice("ws:".length) : workspace;
-
-  const setup = store.getWorkspaceSetup(id);
+  const setup = store.getWorkspaceSetup(workspaceIdOf(workspace));
 
   return setup === null
     ? undefined

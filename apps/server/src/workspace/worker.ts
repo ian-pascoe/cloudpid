@@ -3,7 +3,7 @@
 // Container's egress back to the DO (`ctx.exports.WorkspaceProxy`), and `ContainerExitReports`, which logs what the
 // Container's supervisor reports when computerd stops on its own (`ctx.exports.ContainerExitReports`), and
 // `WorkspaceContainerPreviews`, which the browser Worker binds to reach a Workspace's Container preview and nothing else
-// of the DO, and `WorkspaceMcpBridge`, which `McpWorker` is to bind (as `MCP_BRIDGE`, #460) to reach a Workspace's Container MCP
+// of the DO, and `WorkspaceMcpBridge`, which `McpWorker` binds (as `MCP_BRIDGE`) to reach a Workspace's Container MCP
 // bridge and nothing else of the DO. It is a plain (async) Worker because alchemy's Effect Workers export only their Effect-defined classes.
 // @effect-diagnostics globalConsole:off asyncFunction:off
 import { isContainerPreviewWorkspace } from "@cloudpid/extensions/browser/contract";

@@ -66,6 +66,7 @@ import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
 import { request } from "./request.ts";
 import { type ServerView, type Trigger, viewServers } from "./server-state.ts";
+import { McpProcessEnded, type McpProcessEndedHandler } from "./stdio.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 import { McpTokens } from "./tokens.ts";
 
@@ -86,6 +87,8 @@ export const mcpHostLayer = (deps: {
   readonly store: McpHostStoreService;
   readonly registry: McpRegistryPortService;
   readonly engine: McpEngineClientService;
+  /** What is done when a stdio server's child ended; nothing, until #478. */
+  readonly processEnded?: McpProcessEndedHandler;
   readonly references?: Layer.Layer<never>;
 }): Layer.Layer<McpHostServices> =>
   Layer.mergeAll(
@@ -95,6 +98,9 @@ export const mcpHostLayer = (deps: {
     McpTokens.layer.pipe(Layer.provide(Layer.succeed(McpRegistryPort, deps.registry))),
     McpDiscovery.layer,
     McpLoadCaps.layer,
+    deps.processEnded === undefined
+      ? McpProcessEnded.none
+      : Layer.succeed(McpProcessEnded, deps.processEnded),
     deps.references ?? Layer.empty,
   );
 
@@ -216,8 +222,9 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
 
 /**
  * `reload` (`settings_mcp_reload`, `mcpReconnect`): drop the eras and Legacy sessions of the named servers (all when
- * none is named), then rediscover the HTTP ones at once, whatever their state. A name not in the set is left out of
- * the answer.
+ * none is named), then rediscover the HTTP ones at once, whatever their state. A stdio one is put back to never
+ * discovered, its inventory dropped, for the next live demand to discover. A name not in the set is left out of the
+ * answer.
  */
 const reload = (environment: string | undefined, input: McpApply) =>
   Effect.gen(function* () {
@@ -240,6 +247,28 @@ const reload = (environment: string | undefined, input: McpApply) =>
     // A discovery in flight would write back the rows the reload drops: it goes first.
     yield* interrupt(conns);
     store.dropPrior(conns);
+
+    // A stdio server is not asked here: that would start a Container with no one waiting for it. It goes back to never
+    // discovered, with no inventory, so the next live `requestStart` or call, which names the caller's Workspace,
+    // discovers it, starting the Container if it must.
+    const stdio = Arr.filter(views, (view) => view.reach === "stdio");
+
+    if (stdio.length > 0) {
+      const now = yield* Clock.currentTimeMillis;
+
+      store.dropInventory(Arr.map(stdio, (view) => view.server.conn));
+
+      for (const view of stdio) {
+        store.putStatus({
+          conn: view.server.conn,
+          state: "not_discovered",
+          since: now,
+          failures: 0,
+        });
+      }
+
+      yield* refreshVersions;
+    }
 
     if (environment !== undefined) yield* startDue(environment, views, "reload");
 

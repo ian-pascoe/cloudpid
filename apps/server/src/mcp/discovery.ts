@@ -54,18 +54,22 @@ import {
   hostFailureStatus,
   isDue,
   RECENT_USE_MS,
+  RETRY_FLOOR_MS,
   type ServerView,
   STALE_CONNECTING_MS,
   stateOfError,
   type Trigger,
 } from "./server-state.ts";
 import { McpHostStore, type StatusRow, type StoredServer } from "./store.ts";
-import { processEnded, rootsOf } from "./stdio.ts";
+import { type McpProcessEnded, processEnded, rootsOf } from "./stdio.ts";
 import { SECOND_MS } from "./time.ts";
 import type { McpTokens } from "./tokens.ts";
 
 /** At most 3 discoveries at once per host. */
 export const MAX_DISCOVERIES = 3;
+
+/** At most 2 stdio discoveries at once per Workspace: its Container starts and spawns them (D7). */
+export const MAX_STDIO_DISCOVERIES_PER_WORKSPACE = 2;
 
 /**
  * The longest a discovery holds its slot, waiting for its turn included: past the engine call's own timeout, so only
@@ -80,6 +84,8 @@ export type McpDiscoveryService = {
   readonly startedAt: Map<string, number>;
   /** At most `MAX_DISCOVERIES` at once. */
   readonly slots: Semaphore.Semaphore;
+  /** The slots of the Workspaces with a stdio discovery in flight or waiting, by `ws:<id>`; one goes once none is. */
+  readonly workspaceSlots: Map<string, { readonly slots: Semaphore.Semaphore; users: number }>;
   /** Set once a storage operation failed: no discovery starts after it. */
   readonly halted: { value: boolean };
 };
@@ -95,6 +101,7 @@ export class McpDiscovery extends Context.Service<McpDiscovery, McpDiscoveryServ
         fibers: yield* FiberMap.make<string>(),
         startedAt: new Map<string, number>(),
         slots: yield* Semaphore.make(MAX_DISCOVERIES),
+        workspaceSlots: new Map(),
         halted: { value: false },
       };
     }),
@@ -108,6 +115,7 @@ export type McpDiscoveryServices =
   | McpRegistryPort
   | McpDiscovery
   | McpLoadCaps
+  | McpProcessEnded
   | McpTokens;
 
 /** Stop new discoveries: a storage operation failed, so this instance's writes are refused from now on. */
@@ -150,8 +158,17 @@ const stringValues = (record: JsonObject) =>
 const hasNames = (headers: Readonly<Record<string, string>>): boolean =>
   Arr.some(Record.values(headers), (value) => value.includes("${"));
 
-/** A stdio server's target in `workspace`, its `env` resolved and its Roots from that Workspace's Repos, or why it cannot be reached. */
-const stdioTargetOf = (environment: string, server: StoredServer, workspace: string | undefined) =>
+/**
+ * A stdio server's target in `workspace`, its `env` resolved and its Roots from that Workspace's Repos, or why it cannot
+ * be reached. `start` says whether the call may start the Workspace's Container: a live caller's demand for a server with
+ * no inventory, or a call; never the refresh of an inventory kept (`docs/architecture/mcp-connections.md` → Discovery).
+ */
+const stdioTargetOf = (
+  environment: string,
+  server: StoredServer,
+  workspace: string | undefined,
+  start: boolean,
+) =>
   Effect.gen(function* () {
     if (workspace === undefined) {
       return notReached("unavailable", "A stdio server runs in a Workspace, and none was named");
@@ -188,8 +205,7 @@ const stdioTargetOf = (environment: string, server: StoredServer, workspace: str
       conn: server.conn,
       name: server.name,
       workspace,
-      // A live caller's demand is what discovers a stdio server, so it may start the Container.
-      start: true,
+      start,
       command: Predicate.isString(command) ? command : "",
       env: values.env,
       roots: rootsOf(values.repos ?? []),
@@ -206,11 +222,19 @@ const stdioTargetOf = (environment: string, server: StoredServer, workspace: str
 
 /**
  * A server's target, its `${NAME}` values resolved by the Registry, or why it cannot be reached. An HTTP server's is its
- * URL and headers; a stdio server's is what its Workspace's bridge spawns, so it needs the `workspace`.
+ * URL and headers; a stdio server's is what its Workspace's bridge spawns, so it needs the `workspace`, and `start` (a
+ * call's, by default) says whether the call may start the Container.
  */
-export const targetOf = (environment: string, server: StoredServer, workspace?: string) =>
+export const targetOf = (
+  environment: string,
+  server: StoredServer,
+  workspace?: string,
+  start = true,
+) =>
   Effect.gen(function* () {
-    if (server.server.type === "stdio") return yield* stdioTargetOf(environment, server, workspace);
+    if (server.server.type === "stdio") {
+      return yield* stdioTargetOf(environment, server, workspace, start);
+    }
 
     const { url, headers, timeout } = server.server;
     const written = stringValues(isJsonObject(headers) ? headers : {});
@@ -266,6 +290,21 @@ export const targetOf = (environment: string, server: StoredServer, workspace?: 
     return target(values.headers, values.redact ?? []);
   });
 
+/** Whether `result` failed because the bridge's Workspace has no record any more (`Unreachable` with status 404). */
+const isWorkspaceGone = (result: McpEngineDiscoverResult): boolean =>
+  result.kind === "failed" &&
+  Predicate.isTagged(result.error, "Unreachable") &&
+  result.error.status === 404;
+
+/**
+ * Whether a discovery that was not to start the Container found it not running (or its Workspace gone): `Unreachable`
+ * that never reached the server (no status), or with the 404 of a Workspace with no record.
+ */
+const foundNotRunning = (result: McpEngineDiscoverResult): boolean =>
+  result.kind === "failed" &&
+  Predicate.isTagged(result.error, "Unreachable") &&
+  (result.error.status === undefined || result.error.status === 404);
+
 /** Keep what a discovery found: the rows it changed, then the inventory and status, or the status it failed with. */
 const storeDiscoveryResult = (
   conn: string,
@@ -285,6 +324,10 @@ const storeDiscoveryResult = (
     );
 
     if (workspace !== undefined && ended !== undefined) yield* processEnded(conn, workspace, ended);
+
+    if (workspace !== undefined && isWorkspaceGone(result)) {
+      yield* processEnded(conn, workspace, undefined);
+    }
 
     yield* Effect.annotateCurrentSpan(
       Match.value(result).pipe(
@@ -382,7 +425,9 @@ const discoverOne = (
         });
       }
 
-      const reached = yield* targetOf(environment, view.server, workspace);
+      // A server with an inventory is refreshed only in a Container that runs: only one with none may start it.
+      const mayStart = Option.isNone(view.inventory);
+      const reached = yield* targetOf(environment, view.server, workspace, mayStart);
 
       if (Result.isFailure(reached)) {
         const { state, message } = reached.failure;
@@ -432,7 +477,22 @@ const discoverOne = (
         return;
       }
 
-      yield* storeDiscoveryResult(conn, result.success.result, previous, now, workspace);
+      const answered = result.success.result;
+
+      // A refresh that found no running process (a stopped Container, a Workspace gone) leaves the server as it was: its
+      // state and inventory stand, nothing counts as a failure, and it is asked again a minute on.
+      if (!mayStart && workspace !== undefined && foundNotRunning(answered)) {
+        store.putStatus({
+          ...(previous ?? { conn, state: "not_discovered", since: started, failures: 0 }),
+          nextRetryAt: now + RETRY_FLOOR_MS,
+        });
+
+        if (isWorkspaceGone(answered)) yield* processEnded(conn, workspace, undefined);
+
+        return;
+      }
+
+      yield* storeDiscoveryResult(conn, answered, previous, now, workspace);
     });
 
     yield* discovery.pipe(
@@ -511,6 +571,36 @@ export const reviveStale = Effect.gen(function* () {
   }
 });
 
+/** `effect` within `workspace`'s slots (at most 2 stdio discoveries at once), when it is for one. */
+const inWorkspaceSlot = <A, E, R>(
+  discovery: McpDiscoveryService,
+  workspace: string | undefined,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> => {
+  if (workspace === undefined) return effect;
+
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const held = discovery.workspaceSlots.get(workspace) ?? {
+        slots: Semaphore.makeUnsafe(MAX_STDIO_DISCOVERIES_PER_WORKSPACE),
+        users: 0,
+      };
+
+      discovery.workspaceSlots.set(workspace, held);
+      held.users += 1;
+
+      return held;
+    }),
+    (held) => held.slots.withPermits(1)(effect),
+    (held) =>
+      Effect.sync(() => {
+        held.users -= 1;
+
+        if (held.users === 0) discovery.workspaceSlots.delete(workspace);
+      }),
+  );
+};
+
 /**
  * Start the discoveries of `views` that are due for `trigger`, unless storage failed before. One already in flight is
  * left to run. A storage failure in a discovery stops new ones.
@@ -547,17 +637,20 @@ export const startDue = (
           }),
         );
 
+        // A stdio discovery takes its Workspace's slot first, so one waiting for it holds none of the host's 3.
         yield* FiberMap.run(
           discovery.fibers,
           conn,
-          discovery.slots
-            .withPermits(1)(
+          inWorkspaceSlot(
+            discovery,
+            view.reach === "stdio" ? workspace : undefined,
+            discovery.slots.withPermits(1)(
               Effect.andThen(started, discoverOne(environment, view, cause, workspace)),
-            )
-            .pipe(
-              Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
-              Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),
             ),
+          ).pipe(
+            Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
+            Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),
+          ),
         );
       }
     }

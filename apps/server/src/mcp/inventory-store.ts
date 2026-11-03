@@ -37,6 +37,8 @@ export type InventoryStore = {
   /** Every inventory, by `conn`; one missing a part is left out. */
   readonly inventories: () => ReadonlyMap<string, InventoryRows>;
   readonly putInventory: (conn: string, rows: InventoryRows) => void;
+  /** Drop the inventories of `conns`: the servers read as never discovered (a reload of a stdio server). */
+  readonly dropInventory: (conns: ReadonlyArray<string>) => void;
   /**
    * The era row and the Legacy session row of `conn`, for the engine's `prior`: an HTTP server's, or a stdio server's in
    * `workspace` (`ws:<id>`).
@@ -118,6 +120,12 @@ export const inventoryStore = (storage: MigrationStorage): InventoryStore => {
             rows[part].hash,
           );
         }
+      });
+    },
+
+    dropInventory: (conns) => {
+      storage.transactionSync(() => {
+        for (const conn of conns) sql.exec("DELETE FROM mcp_inventories WHERE conn = ?", conn);
       });
     },
 

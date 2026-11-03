@@ -166,9 +166,10 @@ const reachBridge = Effect.fnUntraced(function* (
   }
 
   const hint = Option.map(decodeEraRow(era), (row) => row.era);
-  const through = stdioBridge(bridge, server, Option.getOrUndefined(hint));
+  const scrub = (text: string) => scrubRaw(text, call.tokens);
+  const through = stdioBridge(bridge, server, Option.getOrUndefined(hint), scrub);
 
-  call.reach(through.fetch, server.roots ?? []);
+  call.routeVia(through.fetch, server.roots ?? []);
 
   return through;
 });
@@ -187,20 +188,14 @@ const connectTarget = (server: McpEngineTarget): McpTarget => {
   return target;
 };
 
-/** `cut`, named from the bridge's status when the call went through one; as it was for an HTTP server. */
-const nameCut = (bridge: StdioBridge | undefined, cut: Cut) =>
-  bridge === undefined
-    ? Effect.fail(cut)
-    : Effect.flatMap(
-        Effect.promise(() => bridge.named(cut)),
-        (named) => Effect.fail(named),
-      );
-
-/** `error`, named from the bridge's status if it is a cut of a stdio call; a `tools/call` hands its failure back as a result, so it comes here. */
+/**
+ * `error`, named from the bridge's status if it is a cut of a stdio call (a `tools/call` hands its failure back as a
+ * result, so it comes here too); as it was for an HTTP server.
+ */
 const named = (bridge: StdioBridge | undefined, error: McpError) =>
   bridge === undefined || !Predicate.isTagged(error, "Cut")
     ? Effect.succeed(error)
-    : Effect.promise(() => bridge.named(error));
+    : Effect.promise(() => bridge.explainCut(error));
 
 /**
  * Runs `work` over a new connection to the call's target, racing the caller's abort: the outcome, its error scrubbed
@@ -247,7 +242,7 @@ const runCall = Effect.fnUntraced(function* <A, R>(
               return yield* work(connection, call, bridge);
             }).pipe(
               // A cut of a stdio call is named from the bridge's status, whichever step it came in.
-              Effect.catchTag("Cut", (cut) => nameCut(bridge, cut)),
+              Effect.catchTag("Cut", (cut) => Effect.flatMap(named(bridge, cut), Effect.fail)),
             ),
           ),
           Effect.scoped,

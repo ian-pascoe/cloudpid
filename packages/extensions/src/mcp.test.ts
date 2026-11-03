@@ -443,8 +443,8 @@ describe("a call", () => {
     expect(await session.texts("toolResult")).toEqual(['search {"query":"effect"}']);
   });
 
-  it("names the Subagent Workspace a conversation works in, and the Session's for the others", async () => {
-    const host = fakeMcpHost([DOCS]);
+  it("names the Subagent Workspace a conversation works in for a stdio server's call", async () => {
+    const host = fakeMcpHost([{ ...DOCS, entry: { type: "stdio", command: "npx" } }]);
     const tools = makeMcpTools(host.client);
     const workspaces = fakeSubagentWorkspaces();
 
@@ -480,6 +480,45 @@ describe("a call", () => {
     );
 
     expect(named).toEqual([[{ query: "in the child" }, "ws:00000001"]]);
+  });
+
+  it("names the Session's Workspace for an HTTP server's call, whichever Workspace the conversation works in", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const tools = makeMcpTools(host.client);
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "root") {
+          return request.text === "go"
+            ? call(["subagent", { task: "Work", workspace: "new" }])
+            : answer("ok");
+        }
+
+        return request.text.endsWith("Work")
+          ? call(["mcp__docs_site__search", { query: "in the child" }])
+          : answer("done");
+      },
+      {},
+      [
+        await Effect.runPromise(
+          ToolSearch(["read"]).pipe(Effect.provide(fixedToolSearchSettings([]))),
+        ),
+        codemodeWith([]),
+      ],
+      { workspaces: workspaces.host },
+    );
+
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+    Option.map(tools.reinstall([]), ({ mcp }) => session.registry.install(mcp));
+    await session.prompt("go");
+    await session.settle();
+
+    const named = host.calls.flatMap((each) =>
+      each.method === "request" ? [[each.input.params.arguments, each.input.ctx.workspace]] : [],
+    );
+
+    expect(named).toEqual([[{ query: "in the child" }, "ws:w1"]]);
   });
 
   it("readies the caller's Workspace before a call to a stdio server, and sends nothing when it did not answer", async () => {

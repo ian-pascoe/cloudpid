@@ -54,7 +54,7 @@ export interface CallContext {
    * Sends the call's requests through `route` instead of the Worker's own `fetch` (a stdio target's bridge, still metered),
    * and offers the server `roots`: a connection is declared them only through here, so a remote server never is.
    */
-  readonly reach: (route: McpDeps["fetch"], roots: McpDeps["roots"]) => void;
+  readonly routeVia: (route: McpDeps["fetch"], roots: McpDeps["roots"]) => void;
 }
 
 /** A row store over one in-memory cell, recording whether the call kept or dropped its row. */
@@ -163,7 +163,7 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     ),
     eras: eras.store,
     sessions: sessions.store,
-    // Roots are offered on a bridge connection only (`reach`); the questions a server may ask come with later slices.
+    // Roots are offered on a bridge connection only (`routeVia`); the questions a server may ask come with later slices.
     capabilities: () => ({}),
     clientInfo: { name: "cloudpid", version: env.version },
     onLog: logs.hear,
@@ -202,7 +202,7 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     handedOff: () => handed,
     logs: logs.entries,
     bytes: () => bytes,
-    reach: (through, roots) => {
+    routeVia: (through, roots) => {
       route = through;
 
       if (roots !== undefined) deps.roots = roots;

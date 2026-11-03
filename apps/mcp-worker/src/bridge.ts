@@ -50,7 +50,9 @@ export const MCP_BRIDGE_MIN_LEVEL = 1;
 export const OLD_BRIDGE_MESSAGE = "this Container runs an older bridge; restart it";
 
 /** The URL the core connects a stdio server at: the binding takes the request whatever its origin is. */
-export const STDIO_URL = `https://container.bridge.invalid${MCP_BRIDGE_MCP_PATH}`;
+const BRIDGE_ORIGIN = "https://container.bridge.invalid";
+
+export const STDIO_URL = `${BRIDGE_ORIGIN}${MCP_BRIDGE_MCP_PATH}`;
 
 /** How long a probe or an `initialize` may take through the bridge: the Container may start and the server spawn (60 s). */
 export const STDIO_CONNECT_TIMEOUT_MS = 60_000;
@@ -112,7 +114,7 @@ const Refusal = Schema.Struct({ error: Schema.String, message: Schema.optionalKe
 const decodeRefusal = Schema.decodeUnknownOption(Schema.fromJsonString(Refusal));
 
 /** A response with no bridge level: `WorkspaceMcpBridge`'s refusal if it reads as one, else an older bridge's. */
-const unmarked = async (response: Response) => {
+const oldOrRefused = async (response: Response) => {
   const text = await response.text().catch(() => "");
   const refusal = response.ok ? Option.none() : decodeRefusal(text);
 
@@ -177,17 +179,30 @@ type StatusChild = (typeof Status.Type)["children"][number];
 
 const decodeStatus = Schema.decodeUnknownOption(Status);
 
-/** The last `STDERR_QUOTE_BYTES` of `tail`, cut on a character. */
-const quoted = (tail: string) => {
-  const bytes = new TextEncoder().encode(tail);
+const NEWLINE = 0x0a;
 
-  return bytes.byteLength <= STDERR_QUOTE_BYTES
-    ? tail.trim()
-    : new TextDecoder().decode(bytes.slice(bytes.byteLength - STDERR_QUOTE_BYTES)).trim();
+/** Takes the secrets a call keeps out of `text`. */
+type Scrub = (text: string) => string;
+
+/**
+ * The end of `tail` a cut quotes: `tail` scrubbed whole first (a secret cut by the quote's start would not be found), then
+ * its last `STDERR_QUOTE_BYTES`, cut on a character and, when the cut falls inside a line, from the next line on.
+ */
+const quoted = (tail: string, scrub: Scrub) => {
+  const bytes = new TextEncoder().encode(scrub(tail));
+
+  if (bytes.byteLength <= STDERR_QUOTE_BYTES) return new TextDecoder().decode(bytes).trim();
+
+  const from = bytes.byteLength - STDERR_QUOTE_BYTES;
+  const slice = new TextDecoder().decode(bytes.slice(from));
+  const lineStart = bytes[from - 1] === NEWLINE;
+  const newline = slice.indexOf("\n");
+
+  return (lineStart || newline === -1 ? slice : slice.slice(newline + 1)).trim();
 };
 
 /** How an exited child is named: its code or signal, and the end of its stderr. */
-const exitedAs = (child: StatusChild) => {
+const exitedAs = (child: StatusChild, scrub: Scrub) => {
   const { exit } = child;
 
   const how =
@@ -197,7 +212,7 @@ const exitedAs = (child: StatusChild) => {
         ? `signal ${exit.signal}`
         : `code ${exit?.code ?? "unknown"}`;
 
-  const tail = child.stderrTail === undefined ? "" : quoted(child.stderrTail);
+  const tail = child.stderrTail === undefined ? "" : quoted(child.stderrTail, scrub);
 
   return tail === ""
     ? `stdio server exited (${how})`
@@ -209,8 +224,8 @@ export interface StdioBridge {
   readonly fetch: FetchLike;
   /** The spawn id the last response about the child carried. */
   readonly spawn: () => string | undefined;
-  /** `cut` named from the bridge's status (`start: false`), or as it was when the status says nothing more. */
-  readonly named: (cut: Cut) => Promise<Cut>;
+  /** `cut` with what the bridge's status (`start: false`) says ended the call, or as it was when the status says nothing more. */
+  readonly explainCut: (cut: Cut) => Promise<Cut>;
 }
 
 /** The bridge of `target`'s Workspace for one call, from the era row's hint (`legacy` or `modern`) if it has one. */
@@ -218,16 +233,17 @@ export const stdioBridge = (
   binding: McpBridgeBinding,
   target: McpEngineStdioTarget,
   era: "legacy" | "modern" | undefined,
+  scrub: Scrub,
 ): StdioBridge => {
   const config = configOf(target);
   const header = mcpBridgeConfigHeader(config);
   let spawn: string | undefined;
 
-  /** The bridge's answer to `request`, judged: its own, at or above the minimum level, or a failure. */
-  const judged = async (response: Response) => {
+  /** The bridge's answer to `request`, vetted: its own, at or above the minimum level, or a failure. */
+  const vetted = async (response: Response) => {
     const level = levelOf(response);
 
-    if (level === undefined) throw await unmarked(response);
+    if (level === undefined) throw await oldOrRefused(response);
 
     if (level < MCP_BRIDGE_MIN_LEVEL) {
       void response.body?.cancel().catch(() => undefined);
@@ -264,13 +280,13 @@ export const stdioBridge = (
 
     const response = await raceAbort(answered, init?.signal);
 
-    return abortable(await judged(response), init?.signal);
+    return abortable(await vetted(response), init?.signal);
   };
 
   const status = async (): Promise<Cut | undefined> => {
     const response = await binding.mcpBridge(
       target.workspace,
-      new Request(`https://container.bridge.invalid${MCP_BRIDGE_STATUS_PATH}`),
+      new Request(`${BRIDGE_ORIGIN}${MCP_BRIDGE_STATUS_PATH}`),
       { start: false, use: false },
     );
 
@@ -298,24 +314,24 @@ export const stdioBridge = (
 
     return Option.isSome(child) &&
       (child.value.state === "exited" || child.value.exit !== undefined)
-      ? Cut.make({ message: exitedAs(child.value), mayHaveRun: true })
+      ? Cut.make({ message: exitedAs(child.value, scrub), mayHaveRun: true })
       : undefined;
   };
 
   return {
     fetch,
     spawn: () => spawn,
-    named: async (cut) => {
+    explainCut: async (cut) => {
       const timeout = new Promise<undefined>((resolve) => {
         setTimeout(() => resolve(undefined), STATUS_TIMEOUT_MS);
       });
 
-      const named = await Promise.race([status().catch(() => undefined), timeout]);
+      const ended = await Promise.race([status().catch(() => undefined), timeout]);
 
       // The status knows what ended the call, not whether the server had run it: that is the cut's own.
-      return named === undefined
+      return ended === undefined
         ? cut
-        : Cut.make({ message: named.message, mayHaveRun: cut.mayHaveRun });
+        : Cut.make({ message: ended.message, mayHaveRun: cut.mayHaveRun });
     },
   };
 };

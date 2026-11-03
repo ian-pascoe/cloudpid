@@ -28,6 +28,10 @@ export const WORKSPACE_CONTAINER = "WorkspaceContainer";
  */
 export const workspaceObjectName = (id: string): string => `ws:${id}`;
 
+/** The id of the Workspace whose object `name` names (`workspaceObjectName`'s inverse); `name` itself when it is not an object's name. */
+export const workspaceIdOf = (name: string): string =>
+  isWorkspaceObjectName(name) ? name.slice(workspaceObjectName("").length) : name;
+
 /** Whether `value` is the name of a Workspace's object (`workspaceObjectName`), as no Build's is. */
 export const isWorkspaceObjectName = (value: string): boolean => /^ws:[\w-]+$/.test(value);
 

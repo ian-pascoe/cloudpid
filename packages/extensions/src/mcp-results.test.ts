@@ -701,4 +701,52 @@ describe("replay", () => {
     ]);
     expect(sent()).toBe(1);
   });
+
+  it("readies a stdio call's Workspace once: a rerun that finds the call sent does not ready it again", async () => {
+    const memos = new Map<string, JsonValue>();
+    const host = fakeMcpHost([server()]);
+    const readied: Array<string> = [];
+
+    host.answer(async () => completed({ content: [{ type: "text", text: "done" }] }));
+
+    const extension = mcpExtension(
+      {
+        servers: [
+          {
+            name: "Docs-Site",
+            state: "connected",
+            discoveredAt: 1,
+            server: { type: "stdio", exposure: "direct" },
+            tools: [{ name: "search", inputSchema: { type: "object" } }],
+          },
+        ],
+        offered: [],
+      },
+      host.client,
+      { workspace: "ws:w1" },
+      {
+        ready: async (workspace) => {
+          readied.push(workspace);
+
+          return true;
+        },
+      },
+    );
+
+    const tool = Option.getOrThrow(Arr.head(extension.tools ?? []));
+
+    const api = apiWith({
+      callId: "call-1",
+      env: undefined,
+      getTask: async () => undefined,
+      details: async () => undefined,
+      memo: memoryMemo(memos),
+    });
+
+    await tool.execute({}, api, context);
+    await tool.execute({}, api, context);
+
+    expect(readied).toEqual(["ws:w1"]);
+    expect(Arr.filter(host.calls, (each) => each.method === "request")).toHaveLength(1);
+  });
 });

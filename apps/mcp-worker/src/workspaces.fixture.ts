@@ -6,7 +6,10 @@
 // `start` and stops on demand, forgetting its sessions as a stopped Container does.
 //
 // `GET https://workspaces.test/<workspace>/<op>` controls and reads one Workspace: `_stop` stops its Container, `_gone` makes
-// it a Workspace with no record (404 `no_workspace`), `_level?value=<n>` sets the level the bridge answers (0: none),
+// it a Workspace with no record (404 `no_workspace`), `_level?value=<n>` sets the level the bridge answers (`none`: no
+// level header, as an older bridge's answer), `_refuse?code=<code>&status=<n>` makes it refuse every request with that code,
+// `_stderr?before=<n>&after=<n>` sets the child's stderr: `before` filler characters and a line, the Secret, then `after`
+// more characters of one line,
 // `_cut?how=exited|stopped|silent` ends the next `tools/call`'s stream with no answer, the child having exited (code 1, with
 // a stderr tail) or the Container having stopped, or neither, and `_seen` answers what reached it.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off newPromise:off missingPipeableSignature:off
@@ -25,7 +28,9 @@ import {
 } from "@cloudpid/sandbox-image/mcp-bridge";
 
 /** What the child writes to stderr when it exits, with a Secret in it, so a test sees it scrubbed. */
-const STDERR = "boom: could not open /data with SECRET-IN-STDERR-1234\n";
+const SECRET = "SECRET-IN-STDERR-1234";
+
+const STDERR = `boom: could not open /data with ${SECRET}\n`;
 
 interface Seen {
   readonly method: string;
@@ -43,6 +48,8 @@ interface Container {
   server: FakeServer | undefined;
   level: number | undefined;
   gone: boolean;
+  refuse: { readonly code: string; readonly status: number } | undefined;
+  stderr: string;
   cut: "exited" | "stopped" | "silent" | undefined;
   exited: boolean;
   config: McpBridgeConfig | undefined;
@@ -67,6 +74,8 @@ const containerOf = (workspace: string): Container => {
     server: undefined,
     level: 1,
     gone: false,
+    refuse: undefined,
+    stderr: STDERR,
     cut: undefined,
     exited: false,
     config: undefined,
@@ -102,7 +111,7 @@ const start = (container: Container) => {
 const asBridge = (container: Container, response: Response) => {
   const answered = new Response(response.body, response);
 
-  if (container.level !== undefined && container.level > 0) {
+  if (container.level !== undefined) {
     answered.headers.set(MCP_BRIDGE_LEVEL_HEADER, String(container.level));
   }
 
@@ -133,7 +142,7 @@ const statusOf = async (container: Container) => ({
             spawnId: `spawn-${container.spawn}`,
             state: "exited",
             exit: { code: 1, signal: null, at: "2026-01-01T00:00:00.000Z" },
-            stderrTail: STDERR,
+            stderrTail: container.stderr,
           },
         ],
 });
@@ -157,6 +166,10 @@ export class WorkspaceMcpBridge extends WorkerEntrypoint {
     });
 
     if (container.gone) return refusal(404, "no_workspace");
+
+    if (container.refuse !== undefined) {
+      return refusal(container.refuse.status, container.refuse.code);
+    }
 
     if (!container.running && (url.pathname === MCP_BRIDGE_STATUS_PATH || !options.start)) {
       return stopped();
@@ -220,7 +233,21 @@ export default {
 
         return new Response("ok");
       case "_level":
-        container.level = Number(url.searchParams.get("value"));
+        container.level =
+          url.searchParams.get("value") === "none"
+            ? undefined
+            : Number(url.searchParams.get("value"));
+
+        return new Response("ok");
+      case "_refuse":
+        container.refuse = {
+          code: url.searchParams.get("code") ?? "",
+          status: Number(url.searchParams.get("status") ?? 503),
+        };
+
+        return new Response("ok");
+      case "_stderr":
+        container.stderr = `${"p".repeat(Number(url.searchParams.get("before")))}\nxx ${SECRET}${"y".repeat(Number(url.searchParams.get("after")))}`;
 
         return new Response("ok");
       case "_cut":

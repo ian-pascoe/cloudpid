@@ -215,7 +215,7 @@ describe("the minimum bridge level", () => {
   it("fails a server whose bridge answers with no level: this Container runs an older bridge", async () => {
     const server = stdio("legacy", "old-bridge");
 
-    await control(server, "_level?value=0");
+    await control(server, "_level?value=none");
 
     const discovered = decodeDiscover(await env.MCP_ENGINE.discover(server, {}, {}));
 
@@ -225,10 +225,21 @@ describe("the minimum bridge level", () => {
     });
   });
 
+  it("fails a server whose bridge answers a level below the minimum the same way", async () => {
+    const server = stdio("legacy", "level-zero");
+
+    await control(server, "_level?value=0");
+
+    expect(decodeDiscover(await env.MCP_ENGINE.discover(server, {}, {}))).toMatchObject({
+      kind: "failed",
+      error: { _tag: "Unsupported", message: "this Container runs an older bridge; restart it" },
+    });
+  });
+
   it("fails a call the same way", async () => {
     const server = stdio("legacy", "old-bridge-call");
 
-    await control(server, "_level?value=0");
+    await control(server, "_level?value=none");
 
     expect(await call(server, {})).toMatchObject({
       kind: "failed",
@@ -238,6 +249,31 @@ describe("the minimum bridge level", () => {
 });
 
 describe("the bridge's refusals", () => {
+  it.each([
+    ["stopped", 503, undefined],
+    ["start_failed", 502, undefined],
+    ["bridge_unreachable", 502, undefined],
+    ["bridge_failed", 502, 502],
+    ["a_code_a_later_bridge_adds", 502, 502],
+  ] as const)(
+    "reads %s as an unreachable server, with the bridge's words",
+    async (code, status, reported) => {
+      const server = stdio("legacy", `refused-${code}`);
+
+      await control(server, `_refuse?code=${code}&status=${status}`);
+
+      const failed = await call(server, {});
+
+      expect(failed).toMatchObject({
+        kind: "failed",
+        error: { _tag: "Unreachable", message: `The stand-in refuses: ${code}` },
+      });
+      expect(
+        failed.kind === "failed" && "status" in failed.error ? failed.error.status : undefined,
+      ).toBe(reported);
+    },
+  );
+
   it("reads 404 no_workspace as a Workspace that is gone: unreachable with status 404, never run", async () => {
     const server = stdio("legacy", "gone");
 
@@ -285,6 +321,20 @@ describe("a cut", () => {
     expect(
       (await seen(server)).seen.filter((each) => each.path === "/_bridge/status"),
     ).toMatchObject([{ start: false, use: false }]);
+  });
+
+  it("quotes the end of stderr scrubbed whole: a Secret across the start of the quote is still found", async () => {
+    const server = stdio("legacy", "cut-straddle");
+    const discovered = decodeDiscover(await env.MCP_ENGINE.discover(server, {}, {}));
+
+    // The last 2 KiB of the stderr begin ten characters into the Secret.
+    await control(server, "_stderr?before=500&after=2038");
+    await control(server, "_cut?how=exited");
+
+    const cut = JSON.stringify(await call(server, discovered.state));
+
+    expect(cut).toContain("[REDACTED]");
+    expect(cut).not.toContain("TDERR-1234");
   });
 
   it("stays a cut when the status says nothing more", async () => {

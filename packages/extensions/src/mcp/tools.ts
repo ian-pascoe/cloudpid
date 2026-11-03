@@ -260,11 +260,14 @@ const toolFor = (
       if ((await api.memo<boolean>(SENT, context)) !== undefined)
         return interruptedResult(name, base);
 
-      // A conversation in a Subagent Workspace calls for it, not for the Session's: a stdio server runs in the Container of
-      // the Workspace that calls it, which is marked used before the call that may start it.
-      const workspace = await workspaceOfCall(api, context, origin.workspace);
+      // An HTTP server is called from the Session's Workspace, as it always was. A stdio server runs in the Container of the
+      // Workspace that calls it: a conversation in a Subagent Workspace calls for it, not for the Session's, and the
+      // Workspace is marked used before the call that may start the Container.
+      let workspace = origin.workspace;
 
       if (server.server.type === "stdio") {
+        workspace = await workspaceOfCall(api, context, origin.workspace);
+
         const ready = workspace !== undefined && (await (options.ready?.(workspace) ?? true));
 
         if (!ready) {

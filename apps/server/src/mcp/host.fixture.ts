@@ -188,6 +188,9 @@ export class TestMcpHost extends DurableObject {
   readonly #tokenAsks: Array<McpAccessTokenInput> = [];
 
   /** What the host asked the Registry for a server's values with. */
+  /** The child ends the host told its handler of, in order. */
+  readonly #ended: Array<{ conn: string; workspace: string; spawn: string | undefined }> = [];
+
   readonly #valueAsks: Array<{
     readonly server: string;
     readonly workspace?: string | undefined;
@@ -341,6 +344,10 @@ export class TestMcpHost extends DurableObject {
           }),
       },
       engine: mcpEngineClient(this.#engine),
+      processEnded: (conn, workspace, spawn) =>
+        Effect.sync(() => {
+          this.#ended.push({ conn, workspace, spawn });
+        }),
       references: Layer.mergeAll(
         Layer.succeed(
           Clock.Clock,
@@ -389,6 +396,15 @@ export class TestMcpHost extends DurableObject {
   /** Script the Registry's answer for `server`'s `${NAME}` values. */
   scriptValues(server: string, answer: McpServerValuesAnswer): void {
     this.#values.set(server, answer);
+  }
+
+  /** The child ends the host told its handler of, in order. */
+  endedProcesses(): ReadonlyArray<{
+    readonly conn: string;
+    readonly workspace: string;
+    readonly spawn: string | undefined;
+  }> {
+    return this.#ended;
   }
 
   /** What the host asked the Registry for the values of a server with, in order. */

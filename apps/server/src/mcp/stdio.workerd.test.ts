@@ -16,7 +16,7 @@ import type {
 } from "@cloudpid/mcp/types";
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { EngineScript, RequestScript, TestMcpHost } from "./host.fixture.ts";
 
 declare global {
@@ -117,6 +117,9 @@ const restart = (host: Host, workspace: string = WORKSPACE) =>
 
 const stateOf = async (host: Host, name: string, workspace: string = WORKSPACE) =>
   (await restart(host, workspace)).servers[name]?.state;
+
+/** Long enough for a discovery that was started to reach the engine. */
+const pause = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 /** Wait for every discovery in flight to end. */
 const settled = (host: Host) => host.servers({ parts: [], waitMs: 10_000 });
@@ -285,6 +288,178 @@ describe("discovery", () => {
 
     expect(answer.servers.local?.state).toBe("skipped");
     expect(await host.engineCalls()).toEqual([]);
+  });
+});
+
+const notRunning = () =>
+  failedWith({ _tag: "Unreachable", message: "The Workspace's Container is stopped" });
+
+/** The `start` of each discovery the engine was asked for, in order. */
+const starts = async (host: Host) =>
+  (await host.engineCalls()).map((each) =>
+    each.target.kind === "stdio" ? each.target.start : null,
+  );
+
+describe("a refresh of what is kept", () => {
+  it("never starts a Container: past its TTL a connected server is asked only where its process runs, and stands if not", async () => {
+    const host = await discovered(["search"]);
+
+    await host.scriptEngine(keyOf("local"), [notRunning(), found(["search", "more"])]);
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await settled(host);
+
+    // Asked without starting the Container, which was stopped: the state and the inventory stand, and nothing failed.
+    expect(await starts(host)).toEqual([true, false]);
+
+    const [server] = (await host.servers({ parts: ["status", "tools"] })).servers;
+
+    expect(server).toMatchObject({ state: "connected", counts: { tools: 1 } });
+    expect(server?.status?.failures).toBe(0);
+    expect(server?.error).toBeUndefined();
+    expect(await host.endedProcesses()).toEqual([]);
+
+    // Held back a minute, then asked again; this time the process runs, and the refresh lands.
+    await restart(host);
+    await settled(host);
+    expect(await starts(host)).toEqual([true, false]);
+    await host.advance(61_000);
+    await restart(host);
+    await settled(host);
+    expect(await starts(host)).toEqual([true, false, false]);
+    expect((await host.servers({ parts: [] })).servers[0]).toMatchObject({
+      state: "connected",
+      counts: { tools: 2 },
+    });
+  });
+
+  it("never starts a Container for an unavailable server that has an inventory, nor counts the stop as a failure", async () => {
+    const host = await discovered(["search"]);
+
+    await host.scriptEngine(keyOf("local"), [
+      failedWith({ _tag: "Unreachable", message: "down", status: 502 }),
+      notRunning(),
+    ]);
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await settled(host);
+    expect(await stateOf(host, "local")).toBe("unavailable");
+
+    // After its backoff: asked again without starting the Container.
+    await host.advance(31_000);
+    await restart(host);
+    await settled(host);
+
+    expect(await starts(host)).toEqual([true, false, false]);
+
+    const [server] = (await host.servers({ parts: ["status"] })).servers;
+
+    expect(server).toMatchObject({ state: "unavailable", counts: { tools: 1 } });
+    expect(server?.status?.failures).toBe(1);
+  });
+
+  it("tells #478's seam when the refresh finds its Workspace gone, and a first discovery too", async () => {
+    const host = freshHost();
+    const gone = { _tag: "Unreachable", message: "The Workspace no longer exists", status: 404 };
+
+    await host.apply(setOf(entry("local")));
+    await host.scriptEngine(keyOf("local"), [
+      failedWith(gone),
+      found(["search"]),
+      failedWith(gone),
+    ]);
+    await start(host, WORKSPACE, { waitFor: ["local"], waitMs: 5000 });
+    await settled(host);
+    expect(await host.endedProcesses()).toEqual([
+      { conn: "conn-local", workspace: WORKSPACE, spawn: undefined },
+    ]);
+
+    await host.advance(31_000);
+    await restart(host);
+    await settled(host);
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await settled(host);
+
+    expect(await host.endedProcesses()).toHaveLength(2);
+    expect(await stateOf(host, "local")).toBe("connected");
+  });
+});
+
+describe("discoveries per Workspace", () => {
+  it("runs at most 2 stdio discoveries at once in a Workspace: the third waits for a slot of its Workspace", async () => {
+    const host = freshHost();
+    const names = ["a", "b", "c"];
+
+    await host.apply(setOf(...names.map((name) => entry(name))));
+
+    for (const name of names) {
+      await host.scriptEngine(keyOf(name), [{ ...found(["search"]), hold: true }]);
+    }
+
+    await start(host, WORKSPACE);
+    await vi.waitFor(async () => expect(await host.engineCalls()).toHaveLength(2));
+    await pause();
+    expect(await host.engineCalls()).toHaveLength(2);
+
+    await host.release(keyOf("a"));
+    await host.release(keyOf("b"));
+    await vi.waitFor(async () => expect(await host.engineCalls()).toHaveLength(3));
+    await host.release(keyOf("c"));
+    await settled(host);
+
+    expect(await stateOf(host, "c")).toBe("connected");
+  });
+});
+
+describe("a reload", () => {
+  it("puts a connected stdio server back to never discovered, with no inventory, and starts nothing", async () => {
+    const host = await discovered(["search"]);
+    const before = (await host.engineCalls()).length;
+
+    await host.apply(JSON.parse('{"kind":"reload"}'));
+    await settled(host);
+
+    expect(await host.engineCalls()).toHaveLength(before);
+
+    const [server] = (await host.servers({ parts: ["tools"] })).servers;
+
+    expect(server).toMatchObject({ state: "not_discovered", counts: { tools: 0 } });
+    expect(await host.sessionRows("conn-local")).toEqual([]);
+
+    // The next live request discovers it again, starting the Container.
+    await host.scriptEngine(keyOf("local"), [found(["search", "next"])]);
+    await start(host, WORKSPACE, { waitFor: ["local"], waitMs: 5000 });
+    await settled(host);
+
+    expect(await starts(host)).toEqual([true, true]);
+    expect((await host.servers({ parts: [] })).servers[0]).toMatchObject({
+      state: "connected",
+      counts: { tools: 2 },
+    });
+  });
+
+  it("puts a failed one back too, and no demand from no Workspace discovers it", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("local")));
+    await host.scriptEngine(keyOf("local"), [
+      failedWith({ _tag: "ProtocolViolation", message: "not MCP" }),
+      found(["search"]),
+    ]);
+    await start(host, WORKSPACE, { waitFor: ["local"], waitMs: 5000 });
+    await settled(host);
+    expect(await stateOf(host, "local")).toBe("failed");
+
+    await host.apply(JSON.parse('{"kind":"reload","servers":["local"]}'));
+    expect(await stateOf(host, "local", "")).toBe("not_discovered");
+    expect(await host.engineCalls()).toHaveLength(1);
+
+    // At once, not a minute after its failure: the reload cleared it.
+    await start(host, WORKSPACE, { waitFor: ["local"], waitMs: 5000 });
+    await settled(host);
+    expect(await stateOf(host, "local")).toBe("connected");
+    expect(await starts(host)).toEqual([true, true]);
   });
 });
 
