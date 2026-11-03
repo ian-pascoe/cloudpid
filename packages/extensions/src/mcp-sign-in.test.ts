@@ -410,6 +410,25 @@ describe("Sign-in requests", () => {
       yield* Fiber.interrupt(other);
     }));
 
+  test("tell no client when nothing was abandoned, which is how every idle Session runs it", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const { signIns, announced } = open(storage);
+
+      yield* signIns.dropAbandoned;
+      expect(announced).toEqual([]);
+
+      const waiting = yield* Effect.forkChild(signIns.ask(ASK));
+
+      yield* settle;
+
+      const told = announced.length;
+
+      yield* signIns.dropAbandoned;
+      expect(announced).toHaveLength(told);
+      yield* Fiber.interrupt(waiting);
+    }));
+
   test("are dropped with their waiters when no call waits for them any more", () =>
     Effect.gen(function* () {
       const { storage } = memoryStorage();

@@ -465,17 +465,21 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
       }),
     recheck: Effect.suspend(() => Effect.forEach(open(), recheckOne, { discard: true })),
     dropAbandoned: Effect.gen(function* () {
+      let dropped = 0;
+
       for (const each of held()) {
         if (waiters.has(each.request.id)) continue;
 
         keep(Arr.filter(held(), (other) => other.request.id !== each.request.id));
+        dropped += 1;
 
         if (each.outcome === undefined) {
           yield* dropWaiter(each.request.id);
         }
       }
 
-      yield* tell;
+      // Whenever the Session settles this runs: the clients are told only when a request went.
+      if (dropped > 0) yield* tell;
     }),
   } satisfies McpSignInsService;
 };
