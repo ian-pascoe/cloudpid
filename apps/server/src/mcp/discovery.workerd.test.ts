@@ -338,7 +338,7 @@ describe("states and backoff", () => {
     expect(await calls(host)).toBe(3);
   });
 
-  it("gives up a discovery that outlives its deadline, freeing its slot, and drops its answer", async () => {
+  it("gives up a discovery that outlives its deadline, holding the server back 30 s, and drops its answer", async () => {
     const host = freshHost();
 
     await host.apply(setOf(entry("slow")));
@@ -348,6 +348,17 @@ describe("states and backoff", () => {
     expect(await stateOf(host, "slow")).toBe("connecting");
 
     await host.advance(DISCOVERY_DEADLINE_MS + 1_000);
+    await restart(host);
+
+    const [given] = (await host.servers({ parts: ["status"] })).servers;
+
+    expect(given).toMatchObject({
+      state: "not_discovered",
+      error: "The discovery did not end in time",
+    });
+    expect(await calls(host)).toBe(1);
+
+    await host.advance(30_000);
     await restart(host);
     await settled(host);
 
@@ -360,6 +371,33 @@ describe("states and backoff", () => {
     const [slow] = (await host.servers({ parts: ["tools"] })).servers;
 
     expect(slow?.tools?.map((tool) => tool.name)).toEqual(["b"]);
+  });
+
+  it("counts a discovery's deadline from when it holds a slot, not while it waits for one", async () => {
+    const host = freshHost();
+    const names = ["q1", "q2", "q3", "q4"];
+
+    await host.apply(setOf(...names.map((name) => entry(name))));
+
+    for (const name of names)
+      await host.scriptEngine(urlOf(name), [{ ...found(["a"]), hold: true }]);
+
+    await restart(host);
+    await vi.waitFor(async () => expect(await calls(host)).toBe(3));
+
+    await host.advance(DISCOVERY_DEADLINE_MS + 1_000);
+    await restart(host);
+
+    // The three that held their slots past the deadline are given up; the fourth, which waited, now runs.
+    await vi.waitFor(async () => expect(await calls(host)).toBe(4));
+
+    const answer = await restart(host);
+
+    expect(answer.servers.q4?.state).toBe("connecting");
+    expect(answer.servers.q1?.state).toBe("not_discovered");
+
+    for (const name of names) await host.release(urlOf(name));
+    await settled(host);
   });
 
   it("never retries a failed server on demand, and a set change retries it once a minute has passed", async () => {

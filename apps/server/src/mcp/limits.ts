@@ -8,13 +8,16 @@
 //
 // They compose in one order, server then host then engine queue, so no holder of a later slot ever waits for an
 // earlier one: a request takes its server's slot, then the host's, then an engine slot for its engine call.
+//
+// Each is a `slotPool`, not an Effect `Semaphore`: a freed slot goes straight to the oldest waiter of the first class
+// waiting, and a newcomer never takes a slot while anyone of its class or a class before it waits.
 // @effect-diagnostics missingPipeableSignature:off -- the caps' operations, not combinators.
+import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import * as Semaphore from "effect/Semaphore";
 
 /** At most 8 requests in flight per HTTP server. */
 export const MAX_IN_FLIGHT_PER_SERVER = 8;
@@ -44,110 +47,154 @@ export type McpLoadCapsService = {
   ) => Effect.Effect<A, E, R>;
   /** The engine calls in flight, by kind. */
   readonly engineCalls: () => { readonly call: number; readonly background: number };
+  /** The servers whose cap is held now: any with a request in flight or waiting. */
+  readonly serversHeld: () => number;
 };
 
-/** The engine queue: the calls in flight by kind, and those waiting, calls apart from background work. */
-const engineQueue = () => {
-  const running = { call: 0, background: 0 };
+/** A pool of slots: what runs and waits per class, and whether one more of a class fits. */
+type SlotPool<K extends string> = {
+  /** Run `effect` in a slot of `kind`, waiting first come first served for one. */
+  readonly run: <A, E, R>(kind: K, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /** The slots of `kind` held now. */
+  readonly count: (kind: K) => number;
+};
 
-  const waiting: Record<EngineCallKind, Array<Deferred.Deferred<void>>> = {
-    call: [],
-    background: [],
+/**
+ * A pool of slots handed out by class, `classes` in the order they are served: a freed slot goes to the oldest waiter
+ * of the first class with one that `fits`, and a newcomer takes a slot at once only when no one of its class or of a
+ * class before it waits. A waiter is queued where nothing can interrupt it, and only its wait is interruptible: one
+ * interrupted while it waits leaves the queue, and one interrupted once given its slot gives it back.
+ */
+const slotPool = <K extends string>(
+  classes: ReadonlyArray<K>,
+  fits: (count: (kind: K) => number, kind: K) => boolean,
+): SlotPool<K> => {
+  const running = new Map<K, number>();
+  const waiting = new Map<K, Array<Deferred.Deferred<void>>>();
+
+  const count = (kind: K) => running.get(kind) ?? 0;
+
+  const queueOf = (kind: K) => {
+    const queue = waiting.get(kind) ?? [];
+
+    waiting.set(kind, queue);
+
+    return queue;
   };
 
-  const total = () => running.call + running.background;
+  const take = (kind: K) => running.set(kind, count(kind) + 1);
 
-  const fits = (kind: EngineCallKind) =>
-    total() < MAX_ENGINE_CALLS &&
-    (kind === "call" || running.background < MAX_BACKGROUND_ENGINE_CALLS);
-
-  /** Hand the free slots out: to calls waiting first, then to background work within its share. */
   const dispatch = () => {
-    for (const kind of ["call", "background"] as const) {
-      while (waiting[kind].length > 0 && fits(kind)) {
-        const next = waiting[kind].shift();
+    for (const kind of classes) {
+      const queue = queueOf(kind);
+
+      while (queue.length > 0 && fits(count, kind)) {
+        const next = queue.shift();
 
         if (next !== undefined) {
-          running[kind] += 1;
+          take(kind);
           Deferred.doneUnsafe(next, Exit.void);
         }
       }
     }
   };
 
-  const release = (kind: EngineCallKind) =>
+  const release = (kind: K) =>
     Effect.sync(() => {
-      running[kind] -= 1;
+      running.set(kind, count(kind) - 1);
       dispatch();
     });
 
-  /** Take a slot, or wait for one; a waiter interrupted once given its slot gives it back. */
-  const acquire = (kind: EngineCallKind) =>
+  /** No one of `kind`'s class, or of a class served before it, waits. */
+  const noneAhead = (kind: K) =>
+    Arr.every(Arr.take(classes, classes.indexOf(kind) + 1), (each) => queueOf(each).length === 0);
+
+  /** Leave the queue; a waiter already given its slot gives it back. */
+  const cancel = (kind: K, slot: Deferred.Deferred<void>) =>
     Effect.suspend(() => {
-      const ahead = kind === "call" ? waiting.call : [...waiting.call, ...waiting.background];
+      const queue = queueOf(kind);
+      const index = queue.indexOf(slot);
 
-      if (ahead.length === 0 && fits(kind)) {
-        running[kind] += 1;
+      if (index < 0) return release(kind);
 
-        return Effect.void;
-      }
+      queue.splice(index, 1);
 
-      const slot = Deferred.makeUnsafe<void>();
-
-      waiting[kind].push(slot);
-
-      return Deferred.await(slot).pipe(
-        Effect.onInterrupt(() =>
-          Effect.suspend(() => {
-            const index = waiting[kind].indexOf(slot);
-
-            if (index >= 0) {
-              waiting[kind].splice(index, 1);
-
-              return Effect.void;
-            }
-
-            return release(kind);
-          }),
-        ),
-      );
+      return Effect.void;
     });
 
   return {
-    run: <A, E, R>(kind: EngineCallKind, effect: Effect.Effect<A, E, R>) =>
+    run: (kind, effect) =>
       Effect.uninterruptibleMask((restore) =>
-        Effect.andThen(
-          restore(acquire(kind)),
-          restore(effect).pipe(Effect.ensuring(release(kind))),
-        ),
+        Effect.suspend(() => {
+          const inSlot = restore(effect).pipe(Effect.ensuring(release(kind)));
+
+          if (noneAhead(kind) && fits(count, kind)) {
+            take(kind);
+
+            return inSlot;
+          }
+
+          const slot = Deferred.makeUnsafe<void>();
+
+          queueOf(kind).push(slot);
+
+          return restore(Deferred.await(slot)).pipe(
+            Effect.onInterrupt(() => cancel(kind, slot)),
+            Effect.andThen(inSlot),
+          );
+        }),
       ),
-    counts: () => ({ ...running }),
+    count,
   };
 };
 
+/** A cap of `max` slots of one class, first come first served. */
+const cap = (max: number) => slotPool(["held"] as const, (count) => count("held") < max);
+
 /** A fresh set of load caps, for one host object. */
 export const makeLoadCaps = (): McpLoadCapsService => {
-  const host = Semaphore.makeUnsafe(MAX_IN_FLIGHT_PER_HOST);
-  const servers = new Map<string, Semaphore.Semaphore>();
-  const queue = engineQueue();
+  const host = cap(MAX_IN_FLIGHT_PER_HOST);
 
-  const serverSlots = (conn: string) => {
-    const known = servers.get(conn);
+  const engine = slotPool(
+    ["call", "background"] as const,
+    (count, kind) =>
+      count("call") + count("background") < MAX_ENGINE_CALLS &&
+      (kind === "call" || count("background") < MAX_BACKGROUND_ENGINE_CALLS),
+  );
 
-    if (known !== undefined) return known;
+  // A server's cap lives while a request holds or waits for it, so a server that left the set leaves nothing behind.
+  const servers = new Map<string, { readonly pool: ReturnType<typeof cap>; users: number }>();
 
-    const made = Semaphore.makeUnsafe(MAX_IN_FLIGHT_PER_SERVER);
+  const serverCap = (conn: string) => {
+    const held = servers.get(conn) ?? { pool: cap(MAX_IN_FLIGHT_PER_SERVER), users: 0 };
 
-    servers.set(conn, made);
+    servers.set(conn, held);
+    held.users += 1;
 
-    return made;
+    return held;
   };
+
+  const leave = (conn: string, held: { users: number }) =>
+    Effect.sync(() => {
+      held.users -= 1;
+
+      if (held.users === 0) servers.delete(conn);
+    });
 
   return {
     inFlight: (conn, effect) =>
-      Semaphore.withPermit(serverSlots(conn), Semaphore.withPermit(host, effect)),
-    engineCall: (kind, effect) => queue.run(kind, effect),
-    engineCalls: queue.counts,
+      Effect.uninterruptibleMask((restore) =>
+        Effect.suspend(() => {
+          const held = serverCap(conn);
+
+          return restore(held.pool.run("held", host.run("held", effect))).pipe(
+            Effect.ensuring(leave(conn, held)),
+          );
+        }),
+      ),
+    engineCall: (kind, effect) => engine.run(kind, effect),
+    engineCalls: () => ({ call: engine.count("call"), background: engine.count("background") }),
+    serversHeld: () => servers.size,
   };
 };
 

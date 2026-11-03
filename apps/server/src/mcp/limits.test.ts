@@ -37,6 +37,26 @@ const held = (
     return { fiber, release: Deferred.succeed(release, undefined) };
   });
 
+/** Start one held request in flight on `conn`, recording when it got its slots; `release` ends it. */
+const heldRequest = (
+  caps: McpLoadCapsService,
+  conn: string,
+  started: Array<string>,
+  label: string,
+) =>
+  Effect.gen(function* () {
+    const release = yield* Deferred.make<void>();
+
+    const fiber = yield* Effect.forkChild(
+      caps.inFlight(
+        conn,
+        Effect.sync(() => started.push(label)).pipe(Effect.andThen(Deferred.await(release))),
+      ),
+    );
+
+    return { fiber, release: Deferred.succeed(release, undefined) };
+  });
+
 const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 10 }));
 
 describe("the engine queue", () => {
@@ -182,5 +202,48 @@ describe("requests in flight", () => {
     );
 
     expect(peaks).toEqual({ server: MAX_IN_FLIGHT_PER_SERVER, host: MAX_IN_FLIGHT_PER_HOST });
+  });
+
+  it("serves an older waiter before a later arrival when a slot frees", async () => {
+    const started = await run((caps) =>
+      Effect.gen(function* () {
+        const started: Array<string> = [];
+
+        const holders = yield* Effect.forEach(Arr.range(1, MAX_IN_FLIGHT_PER_SERVER), (n) =>
+          heldRequest(caps, "linear", started, `holder ${n}`),
+        );
+
+        yield* heldRequest(caps, "linear", started, "older");
+        yield* settle;
+
+        // The slot freed and the later arrival come in the same step: the older waiter still gets the slot.
+        yield* holders[0]!.release;
+        yield* heldRequest(caps, "linear", started, "later");
+        yield* settle;
+
+        return [...started];
+      }),
+    );
+
+    expect(started.slice(MAX_IN_FLIGHT_PER_SERVER)).toEqual(["older"]);
+  });
+
+  it("keeps no cap for a server once nothing holds or waits for it", async () => {
+    const held = await run((caps) =>
+      Effect.gen(function* () {
+        const started: Array<string> = [];
+        const request = yield* heldRequest(caps, "gone", started, "one");
+
+        yield* settle;
+        const during = caps.serversHeld();
+
+        yield* request.release;
+        yield* Fiber.join(request.fiber);
+
+        return { during, after: caps.serversHeld() };
+      }),
+    );
+
+    expect(held).toEqual({ during: 1, after: 0 });
   });
 });

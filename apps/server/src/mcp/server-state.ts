@@ -27,6 +27,9 @@ export const BACKOFF_MS: ReadonlyArray<number> = [
   10 * MINUTE_MS,
 ];
 
+/** How long a failure on the host's side holds a server back from another try on demand, every time: 30 s. */
+export const HOST_FAILURE_HOLD_MS = 30 * SECOND_MS;
+
 /** A `failed` server is retried at most once a minute; a `skipped` one is looked at again after a minute. */
 export const RETRY_FLOOR_MS = MINUTE_MS;
 
@@ -152,7 +155,7 @@ export const truncateError = (message: string) => message.slice(0, MAX_ERROR);
 /**
  * The status a failure on the host's side leaves the server in (the engine out of reach or silent, the host's own
  * invocation ended): not the server's failure, so its state and failures stay as they were, and it is held back from
- * another try on demand for the backoff's first step.
+ * another try on demand for `HOST_FAILURE_HOLD_MS`, with no growth.
  */
 export const hostFailureStatus = (
   conn: string,
@@ -165,7 +168,7 @@ export const hostFailureStatus = (
   error: truncateError(message),
   since: previous?.since ?? now,
   failures: previous?.failures ?? 0,
-  nextRetryAt: now + (BACKOFF_MS[0] ?? RETRY_FLOOR_MS),
+  nextRetryAt: now + HOST_FAILURE_HOLD_MS,
   lastOkAt: previous?.lastOkAt,
 });
 

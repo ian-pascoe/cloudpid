@@ -11,9 +11,9 @@
 import { sha256Hex, sortedJson } from "@cloudpid/config";
 import {
   isJsonObject,
-  type JsonObject,
+  JsonObject,
   type McpEngineDiscovered,
-  McpEra,
+  McpEngineEra,
   McpInventoryProblem,
   type McpServerState,
   type McpToolDefinition,
@@ -51,15 +51,13 @@ export const MIN_TTL_MS = MINUTE_MS;
 
 export const MAX_TTL_MS = DAY_MS;
 
-const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json);
-
 /** The `meta` part: what the server is, when and where it was discovered, until when it is fresh, and the problems. */
 const InventoryMeta = Schema.Struct({
-  era: McpEra,
+  era: McpEngineEra,
   protocolVersion: Schema.String,
-  serverInfo: Schema.optionalKey(JsonObjectSchema),
+  serverInfo: Schema.optionalKey(JsonObject),
   instructions: Schema.optionalKey(Schema.String),
-  capabilities: JsonObjectSchema,
+  capabilities: JsonObject,
   discoveredAt: Schema.Finite,
   discoveredIn: Schema.optionalKey(Schema.String),
   ttlUntil: Schema.Finite,
@@ -116,7 +114,7 @@ const requiresTasks = (tool: McpToolDefinition): boolean => {
 };
 
 /** Why a Session must not register `tool` on a server of `era`, if it must not. */
-const refusal = (tool: McpToolDefinition, era: McpEra): Option.Option<string> => {
+const refusal = (tool: McpToolDefinition, era: McpEngineEra): Option.Option<string> => {
   const headers = era === "modern" ? xMcpHeaderProblems(tool.inputSchema) : [];
 
   if (headers.length > 0) return Option.some(Arr.join(headers, "; "));
@@ -219,9 +217,7 @@ export const inventoryRows = (discovered: McpEngineDiscovered, now: number): Inv
   };
 };
 
-const decodeTools = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Array(JsonObjectSchema)),
-);
+const decodeTools = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(JsonObject)));
 
 const decodeMeta = Schema.decodeUnknownOption(Schema.fromJsonString(InventoryMeta));
 

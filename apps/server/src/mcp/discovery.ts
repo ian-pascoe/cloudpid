@@ -209,11 +209,18 @@ const storeDiscoveryResult = (
     );
   });
 
-/** The status before a discovery: a `connecting` one left by another discovery reads as the state before it. */
-const statusBefore = (status: StatusRow | undefined): StatusRow | undefined =>
-  status?.state === "connecting"
+/** `status` put back from `connecting` to the state before it; any other status as it is. */
+const statusBeforeConnecting = (status: StatusRow): StatusRow =>
+  status.state === "connecting"
     ? { ...status, state: status.previousState ?? "not_discovered", previousState: undefined }
     : status;
+
+/** The status before a discovery: a `connecting` one left by another discovery reads as the state before it. */
+const statusBefore = (status: StatusRow | undefined): StatusRow | undefined =>
+  status === undefined ? undefined : statusBeforeConnecting(status);
+
+/** The message a discovery given up past its deadline leaves. */
+const PAST_DEADLINE = "The discovery did not end in time";
 
 /** Discover one server, single-flight per `conn`, within the host's slots. */
 const discoverOne = (environment: string, view: ServerView) =>
@@ -228,9 +235,9 @@ const discoverOne = (environment: string, view: ServerView) =>
     // Past its deadline: given up on the host's side, so the server's state goes back as it was, held back a while.
     const giveUp = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
-      const message = "The discovery did not end in time";
-
-      yield* writeOrHalt(() => store.putStatus(hostFailureStatus(conn, message, previous, now)));
+      yield* writeOrHalt(() =>
+        store.putStatus(hostFailureStatus(conn, PAST_DEADLINE, previous, now)),
+      );
     });
 
     // Interrupted by the host itself (a set change, a reload, a destroy): the status goes back as it was before.
@@ -296,7 +303,8 @@ const discoverOne = (environment: string, view: ServerView) =>
   );
 
 /**
- * Give up each discovery of this instance that outlived its deadline, and return each `connecting` status older than
+ * Give up each discovery of this instance that held its slot past its deadline (its server held back 30 s, as for any
+ * failure on the host's side), and return each `connecting` status older than
  * 120 s that no discovery of this instance holds to the state before it, with no backoff: the discovery died with the
  * instance that ran it. Reads fail their caller; a refused write halts background work.
  */
@@ -310,9 +318,16 @@ export const reviveStale = Effect.gen(function* () {
     ([, startedAt]) => now - startedAt > DISCOVERY_DEADLINE_MS,
   );
 
-  yield* Effect.forEach(overdue, ([conn]) => FiberMap.remove(discovery.fibers, conn), {
-    discard: true,
-  });
+  // Given up on the host's side like one that times out itself: put back, then held back a while.
+  for (const [conn] of overdue) {
+    yield* FiberMap.remove(discovery.fibers, conn);
+
+    const current = store.statuses().get(conn);
+
+    yield* writeOrHalt(() =>
+      store.putStatus(hostFailureStatus(conn, PAST_DEADLINE, statusBefore(current), now)),
+    );
+  }
 
   for (const status of store.statuses().values()) {
     if (
@@ -320,13 +335,7 @@ export const reviveStale = Effect.gen(function* () {
       now - status.since > STALE_CONNECTING_MS &&
       !FiberMap.hasUnsafe(discovery.fibers, status.conn)
     ) {
-      yield* writeOrHalt(() =>
-        store.putStatus({
-          ...status,
-          state: status.previousState ?? "not_discovered",
-          previousState: undefined,
-        }),
-      );
+      yield* writeOrHalt(() => store.putStatus(statusBeforeConnecting(status)));
     }
   }
 });
@@ -350,13 +359,18 @@ export const startDue = (environment: string, views: ReadonlyArray<ServerView>, 
       const { conn } = view.server;
 
       if (!FiberMap.hasUnsafe(discovery.fibers, conn) && isDue(view, trigger, now, usedRecently)) {
-        discovery.startedAt.set(conn, now);
+        // Its deadline counts from when it holds one of the 3 slots, not while it waits for one.
+        const started = Effect.flatMap(Clock.currentTimeMillis, (at) =>
+          Effect.sync(() => {
+            discovery.startedAt.set(conn, at);
+          }),
+        );
 
         yield* FiberMap.run(
           discovery.fibers,
           conn,
           discovery.slots
-            .withPermits(1)(discoverOne(environment, view))
+            .withPermits(1)(Effect.andThen(started, discoverOne(environment, view)))
             .pipe(
               Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
               Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),

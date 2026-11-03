@@ -12,10 +12,11 @@
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import { JsonObject } from "./json.ts";
 
 export * from "./host.ts";
 
-export { isJsonObject, type JsonObject } from "./json.ts";
+export { isJsonObject, JsonObject } from "./json.ts";
 
 export { xMcpHeaderProblems } from "./tool-headers.ts";
 
@@ -268,9 +269,6 @@ export const mayHaveRun = (error: McpErrorWire, method: string): boolean => {
 // an older engine fails as `Unsupported`, and a new success shape is returned only when the request asked for it.
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** A JSON object, as rows, server answers and definitions cross the edge. */
-const JsonObject = Schema.Record(Schema.String, Schema.Json);
-
 /**
  * The server a call goes to: its connection key `conn`, its name and its `timeout`, and for an HTTP server its URL and
  * headers, `${NAME}` values resolved. `kind` keeps room for stdio targets (`workspace`, `start`, `env`), which an
@@ -351,12 +349,12 @@ export const McpEngineFailed = Schema.Struct({
 
 export type McpEngineFailed = typeof McpEngineFailed.Type;
 
-/** A server's protocol era (`docs/architecture/mcp.md` → Protocol eras). */
-export const MCP_ERAS = ["modern", "legacy"] as const;
+/** A server's protocol era as the engine reports it (`docs/architecture/mcp.md` → Protocol eras). */
+export const MCP_ENGINE_ERAS = ["modern", "legacy"] as const;
 
-export const McpEra = Schema.Literals(MCP_ERAS);
+export const McpEngineEra = Schema.Literals(MCP_ENGINE_ERAS);
 
-export type McpEra = typeof McpEra.Type;
+export type McpEngineEra = typeof McpEngineEra.Type;
 
 /** The core's bound on a probe or an `initialize` (#394 D15). */
 export const MCP_CONNECT_TIMEOUT_MS = 15_000;
@@ -371,7 +369,7 @@ export const MCP_LIST_WALK_TIMEOUT_MS = 120_000;
  */
 export const McpEngineDiscovered = Schema.Struct({
   kind: Schema.Literal("discovered"),
-  era: McpEra,
+  era: McpEngineEra,
   protocolVersion: Schema.String,
   serverInfo: Schema.optionalKey(JsonObject),
   capabilities: JsonObject,
