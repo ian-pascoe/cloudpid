@@ -50,7 +50,6 @@ import * as Option from "effect/Option";
 import type { Mutable } from "effect/Types";
 
 export {
-  createDeferredQuestions,
   MCP_DEFERRED_DEADLINE_MS,
   type McpDeferredAnswer,
   type McpDeferredRound,

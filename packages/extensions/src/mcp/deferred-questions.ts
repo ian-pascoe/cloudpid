@@ -170,6 +170,19 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       Result.fromNullishOr(readQuestion(id), () => undefined),
     );
 
+  /**
+   * The record's questions, when this build can answer every one: all stored, and all elicitations. A record holding
+   * another kind (a Sampling request, from a later build) is neither shown, answered nor waited for again.
+   */
+  const answerable = (record: DeferredRecord): ReadonlyArray<DeferredQuestion> | undefined => {
+    const questions = questionsOf(record);
+
+    return questions.length === record.questions.length &&
+      questions.every((question) => kindOf(question) === "elicitation")
+      ? questions
+      : undefined;
+  };
+
   /** Store `record`, listed. Throws when the storage cannot take it. */
   const writeRecord = (record: DeferredRecord) => {
     storage.put(deferredKey(record.callId), record);
@@ -208,14 +221,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
   const shown = (): ReadonlyArray<McpElicitationRequest> =>
     Arr.flatMap(deferredIds(), (callId) => {
       const record = readRecord(callId);
+      const questions = record?.round?.shown === true ? (answerable(record) ?? []) : ([] as const);
 
-      return record?.round?.shown === true
-        ? Arr.filterMap(questionsOf(record), (question) =>
-            question.answer === undefined && kindOf(question) === "elicitation"
-              ? Result.succeed(question.request)
-              : Result.failVoid,
-          )
-        : [];
+      return Arr.filterMap(questions, (question) =>
+        question.answer === undefined ? Result.succeed(question.request) : Result.failVoid,
+      );
     });
 
   /** Wake the call that waits for `callId`'s round, if one does in this instance: it reads the record again. */
@@ -310,11 +320,26 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           askedAt: now,
         };
 
-        storage.put(questionKey(id), question);
+        // Listed first: a question whose write fails is dropped with the record, never left behind unlisted.
         writeRecord({ callId: ask.callId, server: ask.server, questions: [...earlier, id] });
+        storage.put(questionKey(id), question);
       }).pipe(Effect.option);
 
       if (Option.isSome(stored)) return "deferred" as const;
+
+      // Unlist it again, if the storage takes that much: the round goes on without it.
+      yield* Effect.try(() => {
+        const record = readRecord(ask.callId);
+
+        storage.delete(questionKey(id));
+
+        if (record === undefined || !record.questions.includes(id)) return;
+
+        const rest = record.questions.filter((each) => each !== id);
+
+        if (rest.length === 0) removeRecord(record);
+        else writeRecord({ ...record, questions: rest });
+      }).pipe(Effect.ignore);
 
       yield* basics.keep(
         basics.settledOf(
@@ -343,11 +368,8 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       const chunks = Math.max(1, Math.ceil(text.length / RESUME_CHUNK));
       const { asked } = basics.callOf(callId);
 
+      // The record, with its chunk count, first: a chunk whose write fails is dropped with the record (`removeRecord`).
       yield* Effect.try(() => {
-        for (let n = 0; n < chunks; n += 1) {
-          storage.put(chunkKey(callId, n), text.slice(n * RESUME_CHUNK, (n + 1) * RESUME_CHUNK));
-        }
-
         writeRecord({
           ...record,
           round: {
@@ -359,6 +381,10 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
             count: asked,
           },
         });
+
+        for (let n = 0; n < chunks; n += 1) {
+          storage.put(chunkKey(callId, n), text.slice(n * RESUME_CHUNK, (n + 1) * RESUME_CHUNK));
+        }
       }).pipe(Effect.mapError(unrecorded));
     });
 
@@ -393,15 +419,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       if (record === undefined || round === undefined) return undefined;
 
-      const questions = yield* Effect.try(() => questionsOf(record)).pipe(Effect.option);
+      const questions = yield* Effect.try(() => answerable(record)).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
 
-      if (
-        Option.isNone(questions) ||
-        questions.value.length !== record.questions.length ||
-        questions.value.some((question) => kindOf(question) !== "elicitation")
-      ) {
-        return undefined;
-      }
+      if (questions === undefined) return undefined;
 
       const parts = yield* Effect.try(() =>
         Arr.makeBy(round.chunks, (n) => storage.get<string>(chunkKey(callId, n))),
@@ -414,14 +436,10 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       if (Option.isNone(resume)) return undefined;
 
       // A rerun's call counts on toward its cap, and the owner, told when the round was shown, is not told again.
-      const state = basics.callOf(callId);
-
-      state.asked = Math.max(state.asked, round.count);
-
-      if (round.shown === true) {
-        state.notified = true;
-        state.waiting = record.questions.length;
-      }
+      basics.restoreCall(callId, {
+        count: round.count,
+        waiting: round.shown === true ? questions.length : undefined,
+      });
 
       active.add(callId);
 
@@ -528,7 +546,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       record?.round?.shown === true &&
       record.questions.includes(id) &&
       question.answer === undefined &&
-      kindOf(question) === "elicitation"
+      answerable(record) !== undefined
       ? question
       : undefined;
   };
@@ -579,20 +597,24 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         };
       }
 
-      // The first answer wins: read again, since another client may have answered while this one was sealed.
-      const still = yield* Effect.try(() => findShown(id)).pipe(
-        Effect.orElseSucceed(() => undefined),
+      // The first answer wins: read again, since another client may have answered while this one was sealed, and
+      // written in the same step, so no settle between the two can see its key deleted and then written again.
+      const still = yield* Effect.try(() => {
+        const found = findShown(id);
+
+        if (found !== undefined) storage.put(questionKey(id), { ...found, answer: kept });
+
+        return found;
+      }).pipe(
+        Effect.mapError(() =>
+          McpQuestionsError.make({ message: "The answer could not be kept; try again" }),
+        ),
       );
 
       if (still === undefined) {
         return yield* McpQuestionsError.make({ message: "This request ended" });
       }
 
-      yield* Effect.try(() => storage.put(questionKey(id), { ...still, answer: kept })).pipe(
-        Effect.mapError(() =>
-          McpQuestionsError.make({ message: "The answer could not be kept; try again" }),
-        ),
-      );
       yield* tell;
       yield* wake(still.request.callId);
 

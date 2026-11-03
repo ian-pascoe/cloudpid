@@ -236,6 +236,24 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     return held;
   };
 
+  /**
+   * A rerun's call, as an earlier instance left it: `count` requests made toward its cap, and, for a round already
+   * shown, `waiting` questions the owner was told of, so they are not told again.
+   */
+  const restoreCall = (
+    callId: string,
+    restored: { readonly count: number; readonly waiting: number | undefined },
+  ) => {
+    const state = callOf(callId);
+
+    state.asked = Math.max(state.asked, restored.count);
+
+    if (restored.waiting !== undefined) {
+      state.notified = true;
+      state.waiting = restored.waiting;
+    }
+  };
+
   /** `count` of the call's questions stopped waiting at `now`. */
   const stopWaiting = (callId: string, count: number, now: number) => {
     const state = calls.get(callId);
@@ -435,6 +453,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     keep,
     records,
     callOf,
+    restoreCall,
     count,
     startWaiting,
     stopWaiting,

@@ -100,17 +100,12 @@ export {
 
 export {
   createMcpQuestions,
-  MCP_CALL_ENDED_REASON,
-  MCP_DEFERRED_DEADLINE_MS,
   MCP_QUESTION_RECORDS,
   MCP_QUESTION_RENOTIFY_MS,
   McpQuestions,
   McpQuestionsError,
-  type McpDeferredAnswer,
-  type McpDeferredRound,
   type McpQuestionAsk,
   type McpQuestionOutcome,
-  type McpQuestionVault,
   type McpQuestionRecord,
   type McpQuestionsOptions,
   type McpQuestionsService,

@@ -59,12 +59,13 @@ const memoryStorage = () => {
   const map = new Map<string, unknown>();
   const puts: string[] = [];
   let refusing = false;
+  let refusesPut = (_key: string) => false;
 
   const storage: McpQuestionStorage = {
     // SAFETY: the questions read back only what they wrote under each key.
     get: <T>(key: string) => map.get(key) as T | undefined,
     put: (key, value) => {
-      if (refusing) throw new Error("This storage refuses every operation");
+      if (refusing || refusesPut(key)) throw new Error("This storage refuses every operation");
 
       map.set(key, structuredClone(value));
       puts.push(JSON.stringify(value));
@@ -84,6 +85,10 @@ const memoryStorage = () => {
     puts,
     refuse: () => {
       refusing = true;
+    },
+    /** Refuse only the writes of keys `refuses` names. */
+    refusePuts: (refuses: (key: string) => boolean) => {
+      refusesPut = refuses;
     },
   };
 };
@@ -111,8 +116,12 @@ const until = async (check: () => Promise<boolean>) => {
   }
 };
 
-const setup = async (memory = memoryStorage()) => {
-  const host = fakeMcpHost([DOCS]);
+const setup = async (
+  memory = memoryStorage(),
+  server: NonNullable<Parameters<typeof fakeMcpHost>[0]>[number] = DOCS,
+  tool: readonly [string, JsonObject] = ["mcp__docs_site__search", {}],
+) => {
+  const host = fakeMcpHost([server]);
   const told: string[] = [];
   const vault = await testVault();
 
@@ -132,9 +141,7 @@ const setup = async (memory = memoryStorage()) => {
   const questions = make();
   const tools = makeMcpTools(host.client, memoryMcpToolsStore(), { slackMs: 0, questions });
 
-  const session = await open((request) =>
-    request.text === "go" ? call(["mcp__docs_site__search", {}]) : answer("ok"),
-  );
+  const session = await open((request) => (request.text === "go" ? call(tool) : answer("ok")));
 
   const sent = () => host.calls.flatMap((each) => (each.method === "request" ? [each.input] : []));
 
@@ -392,6 +399,46 @@ describe("a Modern server's form", () => {
     expect(seen).toEqual([{ kind: "answered", result: { action: "decline" } }]);
   });
 
+  it("is answered live on a read of a resource, never deferred, even on a host that resumes", async () => {
+    const files = { name: "files", exposure: "direct", resources: true, tools: [] };
+
+    const { host, questions, tools, session, sent } = await setup(memoryStorage(), files, [
+      "read_mcp_resource",
+      { server: "files", uri: "file:///a.txt" },
+    ]);
+
+    const seen: Answer[] = [];
+
+    host.answer(async (_input, hooks) => {
+      const reply = await hooks.onInput?.(ask());
+
+      if (reply !== undefined) seen.push(reply);
+
+      return McpHostCompleted.make({
+        result: { kind: "inline", value: { contents: [{ uri: "file:///a.txt", text: "read" }] } },
+      });
+    });
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    // A live card: a countdown, not `waits`.
+    expect(request).not.toHaveProperty("waits");
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" }));
+    await submitted.wait(context);
+
+    // The host resumes (`resume` is listed), yet the read said it keeps nothing for later.
+    expect(sent()).toEqual([expect.objectContaining({ op: "resources/read", server: "files" })]);
+    expect(sent()[0]?.ctx.answers).toMatchObject({ elicitation: true });
+    expect(sent()[0]?.ctx.answers).not.toHaveProperty("defer");
+    expect(seen).toEqual([{ kind: "answered", result: { action: "decline" } }]);
+    expect(await session.texts("toolResult")).toEqual([expect.stringContaining("read")]);
+  });
+
   it("keeps a round an earlier instance stored on its cards, and drops it once the Session is idle with no call for it", async () => {
     const { host, memory, questions, make, tools, session } = await setup();
 
@@ -454,8 +501,7 @@ describe("a deferred round in the Session's storage", () => {
     asked: [],
   };
 
-  const service = async (memory = memoryStorage()) => {
-    const told: string[] = [];
+  const service = async (memory = memoryStorage(), told: string[] = []) => {
     const vault = await testVault();
 
     const questions = createMcpQuestions({
@@ -564,5 +610,126 @@ describe("a deferred round in the Session's storage", () => {
     await expect(
       Effect.runPromise(questions.answer("call-9:1", { action: "decline" })),
     ).rejects.toThrow("This request ended");
+  });
+
+  it("shows none of a round that holds a Sampling request beside a form, nor takes an answer to the form", async () => {
+    const { questions, memory } = await service();
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.defer({ ...ASK, key: "8" }));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    const key = "mcp-question:q:call-9:2";
+
+    memory.storage.put(key, { ...memory.storage.get<object>(key), kind: "sampling" });
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    await expect(
+      Effect.runPromise(questions.answer("call-9:1", { action: "decline" })),
+    ).rejects.toThrow("This request ended");
+    expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toBeUndefined();
+  });
+
+  /** The pushes still running in the background have had their turn. */
+  const settled = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("tells the owner of a round once: a rerun in a new instance does not tell again", async () => {
+    const memory = memoryStorage();
+    const told: string[] = [];
+    const first = await service(memory, told);
+
+    await Effect.runPromise(first.questions.defer(ASK));
+    await Effect.runPromise(first.questions.commitRound(ROUND));
+    await Effect.runPromise(first.questions.showRound(ASK.callId));
+    await settled();
+
+    expect(told).toEqual(["Docs-Site"]);
+
+    // The rerun's instance finds the round shown, and shows it again without telling the owner.
+    const { questions } = await service(memory, told);
+
+    expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toMatchObject({
+      round: 1,
+    });
+    await Effect.runPromise(questions.showRound(ASK.callId));
+    await settled();
+
+    expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+    expect(told).toEqual(["Docs-Site"]);
+  });
+
+  it("tells the owner once of a round its instance stored and marked but never showed", async () => {
+    const memory = memoryStorage();
+    const told: string[] = [];
+    const first = await service(memory, told);
+
+    await Effect.runPromise(first.questions.defer(ASK));
+    await Effect.runPromise(first.questions.commitRound(ROUND));
+
+    // The instance went before `showRound`; the rerun's shows the round, and tells of it.
+    const { questions } = await service(memory, told);
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toMatchObject({
+      round: 1,
+    });
+    await Effect.runPromise(questions.showRound(ASK.callId));
+    await settled();
+
+    expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+    expect(told).toEqual(["Docs-Site"]);
+  });
+
+  it("leaves no key behind when the storage refuses the call's record or its question", async () => {
+    for (const refused of [/^mcp-question:d:/, /^mcp-question:q:/]) {
+      const memory = memoryStorage();
+      const { questions } = await service(memory);
+
+      memory.refusePuts((key) => refused.test(key));
+
+      expect(await Effect.runPromise(questions.defer(ASK))).toBe("unrecorded");
+      // Only its settled record, which says why it was cancelled.
+      expect(memory.keys().filter((key) => key.startsWith("mcp-question:"))).toEqual([
+        "mcp-question:s:call-9:1",
+        "mcp-question:settled",
+      ]);
+    }
+  });
+
+  it("leaves no key behind when the storage refuses the round or its `ResumeState`", async () => {
+    for (const refused of [/^mcp-question:d:call-9$/, /^mcp-question:d:call-9:\d+$/]) {
+      const memory = memoryStorage();
+      const { questions } = await service(memory);
+
+      await Effect.runPromise(questions.defer(ASK));
+      memory.refusePuts((key) => refused.test(key));
+
+      await expect(Effect.runPromise(questions.commitRound(ROUND))).rejects.toThrow(
+        "cloudpid could not record the question",
+      );
+
+      // The call ends as one that may have run, and its end drops what was stored.
+      await Effect.runPromise(questions.settleCall(ASK.callId));
+
+      expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
+    }
+  });
+
+  it("refuses an answer once the call's round is settled, and writes nothing back", async () => {
+    const memory = memoryStorage();
+    const { questions } = await service(memory);
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+    await Effect.runPromise(questions.settleCall(ASK.callId));
+
+    await expect(
+      Effect.runPromise(
+        questions.answer("call-9:1", { action: "accept", content: { name: SENTINEL } }),
+      ),
+    ).rejects.toThrow("This request ended");
+    expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
   });
 });
