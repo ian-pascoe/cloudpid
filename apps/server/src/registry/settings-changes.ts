@@ -20,7 +20,6 @@ import {
   overridesWithFields,
   parseMcpField,
   resetsOverride,
-  resolveMcpServerSet,
   settingsFieldPath,
   settingsFieldValue,
   withOverrideFields,
@@ -33,6 +32,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
 import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
+import { mcpServerNamed, resolvedMcpServers } from "./mcp-set.ts";
 import {
   mcpLayersOf,
   type DocumentStore,
@@ -282,14 +282,13 @@ const valueInForce = (
   if (parsed === null || parsed.key === null) return stored;
 
   const { key, name } = parsed;
-  const layers = mcpLayersOf(store, overrides, mcpRepoLayers(store, environment));
 
-  const found = Arr.findFirst(
-    resolveMcpServerSet(layers.global, layers.overrides, layers.repos).servers,
-    (each) => each.name === name,
+  const found = mcpServerNamed(
+    resolvedMcpServers(mcpLayersOf(store, overrides, mcpRepoLayers(store, environment))),
+    name,
   );
 
-  return Option.isNone(found) ? stored : found.value.server[key];
+  return found === undefined ? stored : found.server[key];
 };
 
 /**
@@ -530,7 +529,7 @@ const replacedByOwnEntry = (overrides: Schema.Json, change: AgentChange): boolea
  * whether it is inherited).
  */
 export const revertSettingsOverrideChange = (
-  store: SettingsStore,
+  store: SettingsStore & McpRepoFilesStore,
   changes: AgentChanges,
   environment: string,
   change: AgentChange,
@@ -543,12 +542,17 @@ export const revertSettingsOverrideChange = (
   const value = settingsFieldValue(known.settings, change.field);
   const inherited = overrideInherited(known.overrides, change.field);
 
+  // What the field is now, as it is recorded and told: the value in force when it is inherited.
+  const shown = inherited
+    ? valueInForce(store, environment, known.overrides, change.field, value)
+    : value;
+
   if (
     inherited !== (change.afterInherited ?? false) ||
     (!inherited && !sameJson(value, change.after)) ||
     replacedByOwnEntry(known.overrides, change)
   ) {
-    return { status: "changed-since", field: change.field, current: value };
+    return { status: "changed-since", field: change.field, current: shown };
   }
 
   const next = withOverrideFields(
@@ -569,6 +573,9 @@ export const revertSettingsOverrideChange = (
 
   if (Result.isFailure(saved)) return { status: "refused", message: saved.failure.message };
 
+  const afterInherited = overrideInherited(saved.success.overrides, change.field);
+  const after = settingsFieldValue(saved.success.settings, change.field);
+
   const recorded = changes.record({
     scope: environment,
     at: now,
@@ -578,11 +585,13 @@ export const revertSettingsOverrideChange = (
     tool: null,
     reason: `Reverted change ${change.id}${Predicate.isNotNull(change.tool) ? ` (${change.tool})` : ""}`,
     field: change.field,
-    before: value,
-    after: settingsFieldValue(saved.success.settings, change.field),
+    before: shown,
+    after: afterInherited
+      ? valueInForce(store, environment, saved.success.overrides, change.field, after)
+      : after,
     reverts: change.id,
     beforeInherited: inherited,
-    afterInherited: overrideInherited(saved.success.overrides, change.field),
+    afterInherited,
   });
 
   return { status: "reverted", change: recorded, state: saved.success };

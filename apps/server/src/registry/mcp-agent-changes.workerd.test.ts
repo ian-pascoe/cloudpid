@@ -304,7 +304,16 @@ describe("the agent's change of a key at an Environment", () => {
 
       // The Settings do not see the Repo's file: the record still says what was in force, not "not set".
       expect(made).toMatchObject({ before: "direct", after: "hidden", beforeInherited: true });
-      expect(revertAt(STAGING, made?.id ?? 0).status).toBe("reverted");
+      const reverted = revertAt(STAGING, made?.id ?? 0);
+
+      expect(reverted.status).toBe("reverted");
+      // The owner's revert record says what was in force on each side too, not "not set".
+      expect(reverted.status === "reverted" ? reverted.change : null).toMatchObject({
+        before: "hidden",
+        after: "direct",
+        afterInherited: true,
+      });
+
       expect(store.getSettingsOverrides(STAGING)).toEqual({});
     }));
 

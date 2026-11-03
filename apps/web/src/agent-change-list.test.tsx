@@ -50,7 +50,7 @@ describe("an Agent change of an MCP server", () => {
     expect(markup).toContain("Revert change 4");
   });
 
-  it("says a value was inherited from the server's own entry, and one not set", () => {
+  it("says a value was inherited, and one that was the default", () => {
     const markup = render(
       change("mcp.servers.linear.exposure", {
         before: "direct",
@@ -59,11 +59,11 @@ describe("an Agent change of an MCP server", () => {
       }),
     );
 
-    expect(markup).toContain("Before · Inherited from the server&#x27;s own entry");
+    expect(markup).toContain("Before · Inherited (Global&#x27;s or a Repo&#x27;s)");
     expect(markup).not.toContain("After ·");
     expect(markup).toContain(">direct</pre>");
     expect(render(change("mcp.servers.linear.exposure", { before: null }))).toContain(
-      ">not set</pre>",
+      ">codemode (default)</pre>",
     );
   });
 

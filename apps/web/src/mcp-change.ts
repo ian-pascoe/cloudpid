@@ -23,9 +23,21 @@ export const mcpFieldText = (field: string): string | null => {
     : `MCP server ${found.name} · ${MCP_KEY_LABELS[found.key]}`;
 };
 
-/** A key's value of an Agent change, as shown: on or off, the exposure, or one line per `toolExposure` key. */
+/**
+ * A key's value of an Agent change, as shown: on or off, the exposure, or one line per `toolExposure` key. A key a record
+ * holds as null is one its entry did not write, which reads as its default.
+ */
 const keyValueText = (key: McpAdjustmentKey, value: Schema.Json | null): string => {
-  if (value === null) return "not set";
+  if (value === null) {
+    switch (key) {
+      case "enabled":
+        return "on (default)";
+      case "exposure":
+        return "codemode (default)";
+      case "toolExposure":
+        return "no keys";
+    }
+  }
 
   switch (key) {
     case "enabled":
@@ -72,7 +84,7 @@ export const mcpEntryTexts = (
 
 /**
  * What an Agent change says of a value that was inherited (at an Environment): its own words for a server's entry
- * (`Global's entry (inherited)`) and for one of its keys (the server's own layer is Global's entry or a Repo's file), the plain
+ * (`Global's entry (inherited)`) and for one of its keys (the layer it comes from is Global's entry or a Repo's file), the plain
  * note for any other setting; null for a value that is not.
  */
 export const inheritedNote = (field: string, inherited: boolean | undefined): string | null => {
@@ -82,9 +94,7 @@ export const inheritedNote = (field: string, inherited: boolean | undefined): st
 
   if (found === null) return "Inherited from Global";
 
-  return found.key === null
-    ? "Global's entry (inherited)"
-    : "Inherited from the server's own entry";
+  return found.key === null ? "Global's entry (inherited)" : "Inherited (Global's or a Repo's)";
 };
 
 /** `label`, with the note that its value was inherited when it was. */

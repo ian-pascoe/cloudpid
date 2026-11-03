@@ -10,29 +10,22 @@ import {
   type McpResolvedServer,
   type OverrideFieldChange,
   overridesWithFields,
-  resolveMcpServerSet,
   settingsFieldValue,
   sortedJson,
   withOverrideFields,
 } from "@cloudpid/config";
 import type { McpFieldChange, SettingsMcpChangeCheck, SettingsMcpReach } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
-import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import type { McpSetStore } from "./mcp-registry.ts";
 import { mcpRepoLayers } from "./mcp-repo-files.ts";
+import { mcpServerNamed, resolvedMcpServers } from "./mcp-set.ts";
 import {
   mcpLayersOf,
   readSettings,
   readSettingsOverrides,
   type SettingsStore,
 } from "./settings.ts";
-
-const serverOf = (
-  servers: ReadonlyArray<McpResolvedServer>,
-  name: string,
-): McpResolvedServer | undefined =>
-  Option.getOrUndefined(Arr.findFirst(servers, (each) => each.name === name));
 
 const sameEntry = (left: McpResolvedServer | undefined, right: McpResolvedServer | undefined) =>
   left === undefined || right === undefined
@@ -60,15 +53,9 @@ export const mcpChangeCheck = (
     before: ReturnType<typeof mcpLayersOf>,
     after: ReturnType<typeof mcpLayersOf>,
   ): SettingsMcpReach | undefined => {
-    const was = serverOf(
-      resolveMcpServerSet(before.global, before.overrides, before.repos).servers,
-      name,
-    );
+    const was = mcpServerNamed(resolvedMcpServers(before), name);
 
-    const now = serverOf(
-      resolveMcpServerSet(after.global, after.overrides, after.repos).servers,
-      name,
-    );
+    const now = mcpServerNamed(resolvedMcpServers(after), name);
 
     return was === undefined && now === undefined
       ? undefined
@@ -149,10 +136,7 @@ export const mcpDefinedIn = (
       mcpRepoLayers(store, each.id),
     );
 
-    return serverOf(
-      resolveMcpServerSet(layers.global, layers.overrides, layers.repos).servers,
-      name,
-    ) === undefined
+    return mcpServerNamed(resolvedMcpServers(layers), name) === undefined
       ? Result.failVoid
       : Result.succeed({ id: each.id, name: each.name });
   });

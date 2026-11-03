@@ -22,10 +22,13 @@ describe("how an MCP change reads", () => {
     );
   });
 
-  it("shows a key's values in words, and null as not set", () => {
+  it("shows a key's values in words, and null as the default", () => {
     expect(fieldValueText("mcp.servers.linear.enabled", false)).toBe("off");
     expect(fieldValueText("mcp.servers.linear.enabled", true)).toBe("on");
-    expect(fieldValueText("mcp.servers.linear.enabled", null)).toBe("not set");
+    // A key an entry did not write reads as its default.
+    expect(fieldValueText("mcp.servers.linear.enabled", null)).toBe("on (default)");
+    expect(fieldValueText("mcp.servers.linear.exposure", null)).toBe("codemode (default)");
+    expect(fieldValueText("mcp.servers.linear.toolExposure", null)).toBe("no keys");
     expect(fieldValueText("mcp.servers.linear.exposure", "hidden")).toBe("hidden");
     expect(
       fieldValueText("mcp.servers.linear.toolExposure", {
@@ -65,7 +68,7 @@ describe("inheritedNote", () => {
   it("is the entry's words for an entry and the plain note for a key", () => {
     expect(inheritedNote("mcp.servers.linear", true)).toBe("Global's entry (inherited)");
     expect(inheritedNote("mcp.servers.linear.enabled", true)).toBe(
-      "Inherited from the server's own entry",
+      "Inherited (Global's or a Repo's)",
     );
     expect(inheritedNote("roles.small", true)).toBe("Inherited from Global");
   });
