@@ -14,17 +14,16 @@
 // A look never throws: what goes wrong is `unreadable`. Looks of one Repo that overlap are one.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off -- GitHub is read through a Promise API; plain functions over values.
 import { MCP_LIMITS } from "@cloudpid/config";
-import type { EnvironmentRepo } from "@cloudpid/protocol";
+import { type EnvironmentRepo, MCP_REPO_FILE_PATH } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { githubRepoOf } from "../workspace/github-pulls.ts";
 import {
-  MCP_REPO_FILE_PATH,
   MCP_REPO_LOOK_INTERVAL_MS,
   MCP_REPO_THROTTLE_MS,
   type McpRepoFileRecord,
+  recordOf,
 } from "./mcp-repo-files.ts";
 import type { RegistryStore } from "./store.ts";
 
@@ -81,7 +80,7 @@ export const lookAtMcpRepo = async (
   const slug = `${remote.owner}/${remote.name}`;
 
   // What the last look left of this Repo's own file; another address under the same directory name is another Repo.
-  const held = input.held?.slug === slug ? input.held : null;
+  const last = input.held?.slug === slug ? input.held : null;
 
   try {
     const file = await reader.file(remote, null, MCP_REPO_FILE_PATH);
@@ -93,26 +92,26 @@ export const lookAtMcpRepo = async (
     }
 
     // The same blob as the copy held: nothing to read again.
-    if (held !== null && held.text !== null && held.blob === file.sha) {
-      return { ...held, state: "read", lookedAt: now, error: null, failingSince: null };
+    if (last !== null && last.text !== null && last.blob === file.sha) {
+      return { ...last, state: "read", lookedAt: now, error: null, failingSince: null };
     }
 
     const text = new TextDecoder().decode(await reader.blob(remote, file.sha));
 
     return { ...bare, slug, state: "read", blob: file.sha, text, readAt: now };
   } catch (cause) {
-    const kept = !input.drop && held !== null && held.text !== null;
+    const kept = !input.drop && last !== null && last.text !== null;
 
     return {
       ...bare,
       slug,
       state: "unreadable",
-      blob: kept ? held.blob : null,
-      text: kept ? held.text : null,
-      readAt: kept ? held.readAt : null,
+      blob: kept ? last.blob : null,
+      text: kept ? last.text : null,
+      readAt: kept ? last.readAt : null,
       error: failureText(cause),
       failingSince:
-        held?.state === "unreadable" && held.failingSince !== null ? held.failingSince : now,
+        last?.state === "unreadable" && last.failingSince !== null ? last.failingSince : now,
     };
   }
 };
@@ -121,8 +120,10 @@ export const lookAtMcpRepo = async (
 export type McpRepoLookReason =
   /** The host asks for the set: a Repo not looked at in 10 minutes. */
   | "due"
-  /** `addRepo`, or a Build that noticed the default branch moved: unless looked at in the last 30 s. */
+  /** A Build that noticed the default branch moved: unless looked at in the last 30 s. */
   | "moved"
+  /** `addRepo`: a Repo just added, looked at at once (there is no look of it to be recent). */
+  | "added"
   /** The owner's Reload: at once, and a Repo that cannot be read loses its last good copy. */
   | "reload";
 
@@ -146,7 +147,7 @@ const lookDue = (
   held: McpRepoFileRecord | null,
   now: number,
 ): boolean => {
-  if (reason === "reload" || held === null) return true;
+  if (reason === "reload" || reason === "added" || held === null) return true;
 
   return (
     now - held.lookedAt >= (reason === "due" ? MCP_REPO_LOOK_INTERVAL_MS : MCP_REPO_THROTTLE_MS)
@@ -159,7 +160,38 @@ const lookDue = (
  * Environment's, so a Repo removed meanwhile is not left a row.
  */
 export const openMcpRepoLooks = (store: McpRepoLookStore, reader: McpRepoReader): McpRepoLooks => {
-  const inFlight = new Map<string, Promise<void>>();
+  const inFlight = new Map<
+    string,
+    { readonly reason: McpRepoLookReason; readonly promise: Promise<void> }
+  >();
+
+  const once = async (
+    environment: string,
+    repo: EnvironmentRepo,
+    reason: McpRepoLookReason,
+    now: number,
+  ): Promise<void> => {
+    const held = recordOf(store.getMcpRepoFiles(environment), repo.name);
+
+    if (!lookDue(reason, held, now)) return;
+
+    const record = await lookAtMcpRepo(reader, {
+      environment,
+      repo,
+      held,
+      now,
+      drop: reason === "reload",
+    });
+
+    const current = store.getEnvironment(environment);
+
+    if (
+      current !== null &&
+      Arr.some(current.repos, (it) => it.name === repo.name && it.url === repo.url)
+    ) {
+      store.putMcpRepoFile(record);
+    }
+  };
 
   const lookAt = (
     environment: string,
@@ -170,39 +202,21 @@ export const openMcpRepoLooks = (store: McpRepoLookStore, reader: McpRepoReader)
     const key = `${environment}\n${repo.name}`;
     const running = inFlight.get(key);
 
-    if (running !== undefined) return running;
+    // A look joins the one running, unless it is a Reload joining another: that look would keep the copy a Reload drops,
+    // so the Reload looks again once it is over.
+    if (running !== undefined && (reason !== "reload" || running.reason === "reload")) {
+      return running.promise;
+    }
 
-    const run = (async () => {
-      const heldRecord = Arr.findFirst(
-        store.getMcpRepoFiles(environment),
-        (row) => row.repo === repo.name,
-      ).pipe(Option.getOrNull);
-
-      if (!lookDue(reason, heldRecord, now)) return;
-
-      const record = await lookAtMcpRepo(reader, {
-        environment,
-        repo,
-        held: heldRecord,
-        now,
-        drop: reason === "reload",
+    const promise: Promise<void> = (running?.promise.catch(() => undefined) ?? Promise.resolve())
+      .then(() => once(environment, repo, reason, now))
+      .finally(() => {
+        if (inFlight.get(key)?.promise === promise) inFlight.delete(key);
       });
 
-      const current = store.getEnvironment(environment);
+    inFlight.set(key, { reason, promise });
 
-      if (
-        current !== null &&
-        Arr.some(current.repos, (it) => it.name === repo.name && it.url === repo.url)
-      ) {
-        store.putMcpRepoFile(record);
-      }
-    })().finally(() => {
-      inFlight.delete(key);
-    });
-
-    inFlight.set(key, run);
-
-    return run;
+    return promise;
   };
 
   return {

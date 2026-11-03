@@ -171,6 +171,31 @@ describe("githubContents", () => {
       expect(await reader.file(repo, null, ".pi/mcp.json")).toBeNull();
     });
 
+    it("has no file where the path is a link or a submodule", async () => {
+      for (const type of ["symlink", "submodule"]) {
+        const { reader } = harness([json({ type, sha: "b1", size: 0 })]);
+
+        expect(await reader.file(repo, null, ".pi/mcp.json"), type).toBeNull();
+      }
+    });
+
+    it("fails, not finds no file, where the body does not arrive or is not a file's", async () => {
+      const broken = new Response(
+        new ReadableStream({
+          pull: (controller) => {
+            controller.error(new Error("connection reset"));
+          },
+        }),
+        { status: 200 },
+      );
+
+      for (const answer of [broken, new Response("{not json"), json({ sha: "b1" })]) {
+        const { reader } = harness([answer]);
+
+        expect((await failure(reader.file(repo, null, ".pi/mcp.json"))).kind).toBe("failed");
+      }
+    });
+
     it("fails as every read does for a refused token", async () => {
       const { reader } = harness([json({ message: "Bad credentials" }, { status: 403 })]);
 

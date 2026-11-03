@@ -65,8 +65,13 @@ import {
 } from "./skills.ts";
 import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
-import { buildMovedRepos, mcpRepoFileViews, mcpUnlookedRepos } from "./mcp-repo-files.ts";
-import { openMcpRepoLooks } from "./mcp-repo-look.ts";
+import {
+  buildMovedRepos,
+  MCP_FIRST_LOOK_WAIT,
+  mcpRepoFileViews,
+  mcpUnlookedRepos,
+} from "./mcp-repo-files.ts";
+import { type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
   previewSkillUpdates,
@@ -753,12 +758,16 @@ export type RegistryMethods = {
   readonly buildWork: (input: {
     readonly environments?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<ReadonlyArray<BuildWork>>;
-  /** Record what an Environment's Build object answered: its last good Build, and the one in progress or the last failure. */
+  /**
+   * Record what an Environment's Build object answered: its last good Build, and the one in progress or the last failure.
+   * It looks at the `.pi/mcp.json` of each Repo whose default branch the Build found moved, and answers those Repos (so
+   * that the caller pushes what that changed).
+   */
   readonly recordBuild: (input: {
     readonly environment: string;
     readonly build: EnvironmentBuild | null;
     readonly status: BuildProgress | null;
-  }) => Effect.Effect<void>;
+  }) => Effect.Effect<ReadonlyArray<string>>;
   /** Where each Environment's Build stands, for the owner. */
   readonly listBuilds: () => Effect.Effect<ReadonlyArray<EnvironmentBuildState>>;
   /** Every kept Secret: names, scopes, build flags and times, never a value. */
@@ -873,14 +882,14 @@ export type RegistryMethods = {
   }) => Effect.Effect<ReadonlyArray<McpRepoFileView> | null>;
   /**
    * Look at `environment`'s Repos' `.pi/mcp.json` on GitHub (only `repo`'s when given) and answer them as `mcpRepoFiles` does.
-   * `moved` (a Repo was added, or its default branch moved) looks unless the Repo was looked at in the last 30 s; `reload`
-   * (the owner's) looks at once, and a Repo that cannot be read loses its last good copy. The Registry never calls out, so
-   * the caller pushes the set after. Never fails.
+   * `added` (a Repo was just added) looks at once; `reload` (the owner's) looks at once, and a Repo that cannot be read loses
+   * its last good copy, even when another look was running. The Registry never calls out, so the caller pushes the set
+   * after. Never fails.
    */
   readonly mcpLookRepoFiles: (input: {
     readonly environment: string;
     readonly repo?: string | undefined;
-    readonly reason: "moved" | "reload";
+    readonly reason: Extract<McpRepoLookReason, "added" | "reload">;
   }) => Effect.Effect<ReadonlyArray<McpRepoFileView> | null>;
   /**
    * The names of `environment`'s MCP servers, in the set's order, or null when it is not registered. Read-only: it
@@ -1743,6 +1752,8 @@ export const RegistryLive = Registry.make(
                   mcpLooks.look({ environment, repos: moved, reason: "moved", now }),
                 );
               }
+
+              return moved;
             }),
           listBuilds: () =>
             Effect.sync(() =>
@@ -1818,7 +1829,10 @@ export const RegistryLive = Registry.make(
             ),
           sessionSettings: ({ session }) =>
             Effect.gen(function* () {
-              // A Repo added before its file was read is looked at once, so that its servers count (and wake the host).
+              // A Repo added before its file was read is looked at once, so that its servers count (and wake the host): a
+              // Session with no servers never asks the host for its set, so none would else. The wait is bounded (a look
+              // can be three GitHub requests in a row): past it the answer is made without those Repos, and the look goes on
+              // in the background, so the Session's next Context Window counts them.
               const environment = store.getSession(session)?.environment;
 
               const unlooked =
@@ -1829,7 +1843,7 @@ export const RegistryLive = Registry.make(
 
                 yield* Effect.promise(() =>
                   mcpLooks.look({ environment, repos: unlooked, reason: "due", now }),
-                );
+                ).pipe(Effect.timeoutOption(MCP_FIRST_LOOK_WAIT));
               }
 
               return sessionSettingsSource(store, session);

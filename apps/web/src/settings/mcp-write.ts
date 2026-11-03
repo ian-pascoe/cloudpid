@@ -12,7 +12,7 @@ import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { isFollowedRow, type McpRow, mcpServersIn } from "./mcp-model.ts";
+import { isFollowedRow, type McpRow, mcpServersIn, repoBaseOf } from "./mcp-model.ts";
 
 /**
  * What a switch, select or tool exposure change is of, as the row it was made on showed it: the Scope's own entry (the
@@ -232,5 +232,26 @@ export const mcpRowChanges = (row: McpRow) => {
       target,
       exposure,
     }),
+  };
+};
+
+/**
+ * What a Repo's server's switch and Exposure write (D9: a Repo's server is only switched off here): switching off or
+ * hiding writes the adjustment; what the Repo's file says is what Reset brings back, so choosing it resets the key.
+ */
+export const mcpRepoRowChanges = (row: McpRow) => {
+  const base = repoBaseOf(row);
+  const changes = mcpRowChanges(row);
+
+  const resetOf = (key: string): McpChange => ({
+    kind: "reset",
+    fields: mcpAdjustmentFields(row.name, [key]),
+  });
+
+  return {
+    enabled: (enabled: boolean): McpChange =>
+      enabled === base.enabled ? resetOf("enabled") : changes.enabled(enabled),
+    exposure: (exposure: McpExposure): McpChange =>
+      exposure === base.exposure ? resetOf("exposure") : changes.exposure(exposure),
   };
 };

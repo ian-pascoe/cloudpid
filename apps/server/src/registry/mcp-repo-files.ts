@@ -4,7 +4,12 @@
 // (`mcpRepoLayers`), and what the page is told of it (`mcpRepoFileViews`). Pure over the store's rows.
 // @effect-diagnostics missingPipeableSignature:off globalDate:off -- plain functions over values, not combinators; a read time is said as ISO text.
 import { MCP_LIMITS, type McpRepoLayer } from "@cloudpid/config";
-import type { McpRepoFileView } from "@cloudpid/protocol";
+import {
+  MCP_REPO_FILE_PATH,
+  type McpRepoFileState,
+  type McpRepoFileView,
+  mcpRepoLayerOf,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
@@ -12,20 +17,24 @@ import * as Result from "effect/Result";
 import type { EnvironmentBuild } from "../workspace/build-record.ts";
 import type { RegistryStore } from "./store.ts";
 
-/** The file a Repo's MCP servers are read from. */
-export const MCP_REPO_FILE_PATH = ".pi/mcp.json";
-
 /** How old the last look may be before the host's pull looks again. */
 export const MCP_REPO_LOOK_INTERVAL_MS = 10 * 60_000;
 
 /** The least time between two looks at one (Environment, Repo): the scheduled looks and a Build's are held to it. */
 export const MCP_REPO_THROTTLE_MS = 30_000;
 
+/** How long a Session's first look at a Repo's file is waited for: the look goes on in the background past it. */
+export const MCP_FIRST_LOOK_WAIT = "5 seconds";
+
 /** How long looks fail before the Repo's last good copy is a problem. */
 export const MCP_REPO_STALE_MS = 24 * 60 * 60_000;
 
-/** What the last look found, as kept: `read` holds a copy; `unreadable` holds the last good one, if there was one. */
-export type McpRepoLookState = "read" | "absent" | "oversize" | "unreadable" | "not_github";
+/** The record of `repo` among `records`, if a look has left one. */
+export const recordOf = (
+  records: ReadonlyArray<McpRepoFileRecord>,
+  repo: string,
+): McpRepoFileRecord | null =>
+  Arr.findFirst(records, (held) => held.repo === repo).pipe(Option.getOrNull);
 
 /** One Repo's row of `mcp_repo_files`. Times are epoch milliseconds. */
 export type McpRepoFileRecord = {
@@ -34,7 +43,8 @@ export type McpRepoFileRecord = {
   readonly repo: string;
   /** `owner/repo`; null for a Repo that is not on GitHub. */
   readonly slug: string | null;
-  readonly state: McpRepoLookState;
+  /** What the last look found: `read` holds a copy; `unreadable` holds the last good one, if there was one. */
+  readonly state: McpRepoFileState;
   /** The blob SHA of `text`, or of the file that was too large. */
   readonly blob: string | null;
   /** The last good copy of the file. */
@@ -55,39 +65,7 @@ export type McpRepoFileRecord = {
 export type McpRepoFilesStore = Pick<RegistryStore, "getEnvironment" | "getMcpRepoFiles">;
 
 /** Whether `record` holds a copy whose servers are in the set: a good read, or the last one an unreadable Repo keeps. */
-const holdsCopy = (record: McpRepoFileRecord): boolean =>
-  record.text !== null && (record.state === "read" || record.state === "unreadable");
-
-/**
- * The Repo layers of `environment`'s MCP server set, in its Repo order: each Repo whose file's last good copy is held, with
- * the text of that copy. A Repo with no copy (not looked at yet, no file, over 64 KiB, not on GitHub, unreadable from the
- * start) has none and adds no server. `[]` for no Environment, such as Global's.
- */
-export const mcpRepoLayers = (
-  store: McpRepoFilesStore,
-  environment: string | null,
-): ReadonlyArray<McpRepoLayer> => {
-  const known = environment === null ? null : store.getEnvironment(environment);
-
-  if (environment === null || known === null) return [];
-
-  const records = store.getMcpRepoFiles(environment);
-
-  return Arr.filterMap(known.repos, (repo) => {
-    const record = Arr.findFirst(records, (held) => held.repo === repo.name).pipe(
-      Option.getOrUndefined,
-    );
-
-    return record !== undefined && holdsCopy(record) && record.slug !== null && record.text !== null
-      ? Result.succeed<McpRepoLayer>({
-          directory: record.repo,
-          slug: record.slug,
-          path: MCP_REPO_FILE_PATH,
-          text: record.text,
-        })
-      : Result.failVoid;
-  });
-};
+const holdsCopy = (record: McpRepoFileRecord): boolean => record.text !== null;
 
 type Mutable<A> = { -readonly [K in keyof A]: A[K] };
 
@@ -115,9 +93,41 @@ export const mcpRepoFileProblem = (record: McpRepoFileRecord, now: number): stri
         : null;
     }
 
-    default:
+    // Nothing to say beyond the state: a parse says what is wrong with a copy, and the page words a state it does not know
+    // (an `unknown` one is a row a later build wrote, which holds no copy here).
+    case "never":
+    case "read":
+    case "absent":
+    case "not_github":
+    case "unknown":
       return null;
   }
+};
+
+/** `record` as the page is told of it, without what the clock says (`problem`); a Repo with no record is `never`. */
+const viewOf = (repo: string, record: McpRepoFileRecord | null): McpRepoFileView => {
+  if (record === null) return { repo, path: MCP_REPO_FILE_PATH, state: "never" };
+
+  const view: Mutable<McpRepoFileView> = {
+    repo,
+    path: MCP_REPO_FILE_PATH,
+    state: record.state,
+    lookedAt: record.lookedAt,
+  };
+
+  if (record.slug !== null) view.slug = record.slug;
+
+  if (record.blob !== null) view.blob = record.blob;
+
+  if (record.text !== null) view.text = record.text;
+
+  if (record.readAt !== null) view.readAt = record.readAt;
+
+  if (record.error !== null) view.error = record.error;
+
+  if (record.failingSince !== null) view.errorSince = record.failingSince;
+
+  return view;
 };
 
 /** Each of `environment`'s Repos' files as the page shows them, in the Environment's Repo order; null for no Environment. */
@@ -133,36 +143,36 @@ export const mcpRepoFileViews = (
   const records = store.getMcpRepoFiles(environment);
 
   return Arr.map(known.repos, (repo): McpRepoFileView => {
-    const record = Arr.findFirst(records, (held) => held.repo === repo.name).pipe(
-      Option.getOrUndefined,
-    );
-
-    if (record === undefined) return { repo: repo.name, path: MCP_REPO_FILE_PATH, state: "never" };
-
-    const view: Mutable<McpRepoFileView> = {
-      repo: repo.name,
-      path: MCP_REPO_FILE_PATH,
-      state: record.state,
-      lookedAt: record.lookedAt,
-    };
-
-    if (record.slug !== null) view.slug = record.slug;
-
-    if (record.blob !== null) view.blob = record.blob;
-
-    if (record.text !== null) view.text = record.text;
-
-    if (record.readAt !== null) view.readAt = record.readAt;
-
-    if (record.error !== null) view.error = record.error;
-
-    if (record.failingSince !== null) view.errorSince = record.failingSince;
-
-    const problem = mcpRepoFileProblem(record, now);
+    const record = recordOf(records, repo.name);
+    const view: Mutable<McpRepoFileView> = { ...viewOf(repo.name, record) };
+    const problem = record === null ? null : mcpRepoFileProblem(record, now);
 
     if (problem !== null) view.problem = problem;
 
     return view;
+  });
+};
+
+/**
+ * The Repo layers of `environment`'s MCP server set, in its Repo order: each Repo whose file's last good copy is held, with
+ * the text of that copy (the rule the page shares, `mcpRepoLayerOf`). A Repo with no copy (not looked at yet, no file,
+ * over 64 KiB, not on GitHub, unreadable from the start) has none and adds no server. `[]` for no Environment, such as
+ * Global's.
+ */
+export const mcpRepoLayers = (
+  store: McpRepoFilesStore,
+  environment: string | null,
+): ReadonlyArray<McpRepoLayer> => {
+  const known = environment === null ? null : store.getEnvironment(environment);
+
+  if (environment === null || known === null) return [];
+
+  const records = store.getMcpRepoFiles(environment);
+
+  return Arr.filterMap(known.repos, (repo) => {
+    const layer = mcpRepoLayerOf(viewOf(repo.name, recordOf(records, repo.name)));
+
+    return layer === undefined ? Result.failVoid : Result.succeed(layer);
   });
 };
 
@@ -193,8 +203,6 @@ export const mcpUnlookedRepos = (
   return known === null
     ? []
     : Arr.filterMap(known.repos, (repo) =>
-        Arr.some(records, (held) => held.repo === repo.name)
-          ? Result.failVoid
-          : Result.succeed(repo.name),
+        recordOf(records, repo.name) === null ? Result.succeed(repo.name) : Result.failVoid,
       );
 };

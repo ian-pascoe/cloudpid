@@ -58,11 +58,12 @@ const SAMPLING_HINTS: Readonly<Record<(typeof MCP_SAMPLING)[number], string>> = 
   off: "The server's requests for a model's reply are refused.",
 };
 
-/** A select of the four Exposures. */
+/** A select of the four Exposures, or of `options` (a Repo's server is only ever hidden here). */
 export const ExposureSelect = ({
   id,
   label,
   value,
+  options = MCP_EXPOSURE_OPTIONS,
   disabled,
   describedBy,
   onChange,
@@ -70,6 +71,7 @@ export const ExposureSelect = ({
   id?: string | undefined;
   label?: string | undefined;
   value: McpExposure;
+  options?: ReadonlyArray<McpExposure> | undefined;
   disabled?: boolean | undefined;
   describedBy?: string | undefined;
   onChange: (exposure: McpExposure) => void;
@@ -77,7 +79,7 @@ export const ExposureSelect = ({
   <OptionSelect
     id={id}
     label={label}
-    options={MCP_EXPOSURE_OPTIONS}
+    options={options}
     labels={MCP_EXPOSURE_LABELS}
     value={value}
     disabled={disabled}
@@ -229,12 +231,15 @@ export const ToolRows = ({
   rows,
   listId,
   disabled,
+  hideOnly = false,
   onChange,
 }: {
   rows: ReadonlyArray<McpToolRow>;
   /** The id of the datalist of tool names. */
   listId: string;
   disabled?: boolean | undefined;
+  /** A Repo's server's: a tool may only be hidden (a row the Repo gave another Exposure shows it as it is). */
+  hideOnly?: boolean | undefined;
   onChange: (rows: ReadonlyArray<McpToolRow>) => void;
 }) => (
   <Rows
@@ -263,6 +268,7 @@ export const ToolRows = ({
         <ExposureSelect
           label={`Tool exposure ${index + 1} exposure`}
           value={row.exposure}
+          options={hideOnly ? Arr.dedupe<Array<McpExposure>>(["hidden", row.exposure]) : undefined}
           disabled={disabled}
           onChange={(exposure) => {
             onChange(replaced(rows, index, { ...row, exposure }));
@@ -783,11 +789,13 @@ export const McpToolsPanel = ({
         Saved as this environment's own tool exposure for {draft.name}, over {base}
         {row?.adjusted.includes("toolExposure") === true ? "" : ", which it follows until you save"}
         . The first pattern that matches wins; an exact name goes before any pattern.
+        {directory !== null && " A Repo's server can only have tools hidden here."}
       </p>
       <Suggestions id={listId} options={tools} />
       <ToolRows
         rows={draft.rows}
         listId={listId}
+        hideOnly={directory !== null}
         onChange={(rows) => {
           setPanel({ ...draft, rows });
         }}

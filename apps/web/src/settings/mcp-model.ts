@@ -13,10 +13,11 @@ import {
   isJsonObject,
   isMcpFullEntry,
   MCP_ADJUSTMENT_KEYS,
+  MCP_EXPOSURES,
+  type McpExposure,
   type McpProblem,
   type McpProblemSource,
   type McpRepoLayer,
-  type McpNamedEntry,
   type McpServerEntry,
   type McpSettingsProblem,
   type McpShadowed,
@@ -28,12 +29,13 @@ import {
   resolveMcpServerSet,
 } from "@cloudpid/config";
 import {
+  MCP_REPO_FILE_PATH,
+  mcpRepoLayerOf,
   mcpStateIsProblem,
   type McpRepoFileView,
   type McpServersView,
   type McpServerView,
   type OverridingEnvironment,
-  readMcpRepoFileState,
   readMcpServerState,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -78,9 +80,12 @@ export interface McpRow {
   readonly shadowed: ReadonlyArray<McpShadowed>;
   /**
    * The entry as written where it is defined (Global's, or the Environment's own); `${NAME}` kept. For a Repo's server,
-   * the entry of its file as a copy keeps it: `cwd` made absolute, `allow` read as `ask`.
+   * the entry of its file as a copy keeps it: as the file has it, but for `cwd`, made absolute (`sampling: "allow"` is
+   * kept, since a copy is the owner's to allow).
    */
   readonly written: Schema.JsonObject;
+  /** A Repo's server only: the entry exactly as its file has it, for View as JSON. */
+  readonly fileEntry: Schema.JsonObject | undefined;
   /** The adjustment keys the Environment holds over Global's server; empty for any other row. */
   readonly adjusted: ReadonlyArray<McpAdjustmentKey>;
   /** At Global, the Environments that override it, by its entry or any adjustment key. */
@@ -118,6 +123,27 @@ export const isRepoRow = (row: McpRow): boolean => row.source.kind === "repo";
 /** The Repo's directory name of a Repo's server's row, or null for any other. */
 export const repoDirectoryOf = (row: McpRow): string | null =>
   row.source.kind === "repo" ? row.source.directory : null;
+
+/** What a Repo's file says of a Repo's server's switch and Exposure. */
+export interface RepoBase {
+  readonly enabled: boolean;
+  readonly exposure: McpExposure;
+}
+
+/**
+ * What a Repo's file itself says of a Repo's server's switch and Exposure, before any adjustment of the owner's: a Repo's
+ * server is only ever switched off here (D9), so these are what Reset brings back.
+ */
+export const repoBaseOf = (row: McpRow): RepoBase => {
+  const exposure = row.fileEntry?.["exposure"];
+
+  return {
+    enabled: row.fileEntry?.["enabled"] !== false,
+    exposure: Arr.findFirst(MCP_EXPOSURES, (known) => known === exposure).pipe(
+      Option.getOrElse((): McpExposure => "codemode"),
+    ),
+  };
+};
 
 /** A warning of the section. */
 export type McpWarning = {
@@ -176,27 +202,14 @@ export interface McpScopeInput {
   readonly repoFiles?: ReadonlyArray<McpRepoFileView> | undefined;
 }
 
-/**
- * The Repo layers of the set that `files` make: each whose copy is held, a good read or the last one an unreadable Repo
- * keeps, and that is on GitHub (it has a slug). The Registry makes its set from the same rule (`mcpRepoLayers`), so the
- * page and the host see the same servers.
- */
+/** The Repo layers of the set that `files` make, by the rule the Registry makes its set by (`mcpRepoLayerOf`). */
 export const mcpRepoLayersOf = (
   files: ReadonlyArray<McpRepoFileView>,
 ): ReadonlyArray<McpRepoLayer> =>
   Arr.filterMap(files, (file) => {
-    const state = readMcpRepoFileState(file.state);
+    const layer = mcpRepoLayerOf(file);
 
-    return (state === "read" || state === "unreadable") &&
-      file.text !== undefined &&
-      file.slug !== undefined
-      ? Result.succeed<McpRepoLayer>({
-          directory: file.repo,
-          slug: file.slug,
-          path: file.path,
-          text: file.text,
-        })
-      : Result.failVoid;
+    return layer === undefined ? Result.failVoid : Result.succeed(layer);
   });
 
 /** Where `source` is, as a problem names it. */
@@ -210,9 +223,6 @@ export const mcpSourceName = (source: McpSource): string => {
       return `Repo ${source.directory} (${source.path})`;
   }
 };
-
-/** A Repo's file path in its Repo. */
-const MCP_REPO_PATH = ".pi/mcp.json";
 
 const REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
@@ -424,23 +434,41 @@ const offersCodemode = (offered: ReadonlyArray<string>): boolean =>
 const shadowedNote = (shadowed: McpShadowed): string =>
   `${mcpSourceName(shadowed.source)} has ${shadowed.name}, which this server hides${shadowed.differs ? " (it differs)" : ""}`;
 
-/** The entry `name` of Repo `directory`'s file as a copy keeps it, as plain JSON; none gives `{}`. */
-const repoEntryOf = (
-  repoEntries: ReadonlyArray<{
-    readonly directory: string;
-    readonly entries: ReadonlyArray<McpNamedEntry>;
-  }>,
-  directory: string,
-  name: string,
-): Schema.JsonObject => {
-  const found = Arr.findFirst(repoEntries, (held) => held.directory === directory).pipe(
-    Option.flatMap(({ entries }) => Arr.findFirst(entries, (entry) => entry.name === name)),
-  );
+/** A Repo's entry as the page shows it: as the file has it, and as a copy keeps it. */
+interface RepoEntry {
+  /** The entry exactly as the file has it, for View as JSON. */
+  readonly verbatim: Schema.JsonObject;
+  /** What a copy starts from: the same, with `cwd` made absolute (`/workspace/<directory>/<cwd>`), as the set reads it. */
+  readonly copy: Schema.JsonObject;
+}
 
-  // SAFETY: a decoded entry is plain JSON, which a copy writes out and the form reads back.
-  return Option.isSome(found)
-    ? (JSON.parse(JSON.stringify(found.value.value)) as Schema.JsonObject)
-    : {};
+/** The entry `name` of Repo `directory`'s file `text` (the file's `mcpServers` as written); none gives `{}` twice. */
+const repoEntryOf = (text: string, directory: string, name: string): RepoEntry => {
+  const parsed = Result.try({ try: (): Schema.Json => JSON.parse(text), catch: () => undefined });
+
+  const servers =
+    Result.isSuccess(parsed) && isJsonObject(parsed.success)
+      ? parsed.success["mcpServers"]
+      : undefined;
+
+  const given = isJsonObject(servers) ? servers[name] : undefined;
+  const verbatim = isJsonObject(given) ? given : {};
+
+  // The absolute `cwd` is the set's own reading of the file, which the entry in the file does not hold.
+  const read = Arr.findFirst(
+    readMcpRepoFile(text, directory).entries,
+    (entry) => entry.name === name,
+  ).pipe(Option.getOrUndefined);
+
+  const cwd = read?.value.cwd;
+
+  return {
+    verbatim,
+    copy:
+      cwd === undefined
+        ? verbatim
+        : Record.fromEntries(Arr.append(Record.toEntries(verbatim), ["cwd", cwd] as const)),
+  };
 };
 
 /** The servers (and their problems) the page shows at the Scope, and the section's warnings. */
@@ -450,12 +478,6 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
   const repoFiles = atGlobal ? [] : (input.repoFiles ?? []);
   const layers = mcpRepoLayersOf(repoFiles);
   const set = resolveMcpServerSet(input.global, overrides, layers);
-
-  // The Repo entries as a copy keeps them, by Repo directory.
-  const repoEntries = Arr.map(layers, (layer) => ({
-    directory: layer.directory,
-    entries: readMcpRepoFile(layer.text, layer.directory).entries,
-  }));
 
   // The set names some of what the Registry's read left out too (a Global server shadowed by a twin name): once each.
   const lines: ReadonlyArray<McpProblemLine> = Arr.dedupeWith(
@@ -477,10 +499,15 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
     const document = own ? overrides : input.global;
     const adjusted = own || atGlobal ? [] : adjustmentKeysOf(serverIn(overrides, name));
 
-    const written =
+    const fileEntry =
       source.kind === "repo"
-        ? repoEntryOf(repoEntries, source.directory, name)
-        : (writtenEntry(document, name) ?? {});
+        ? Arr.findFirst(layers, (layer) => layer.directory === source.directory).pipe(
+            Option.map((layer) => repoEntryOf(layer.text, layer.directory, name)),
+            Option.getOrUndefined,
+          )
+        : undefined;
+
+    const written = fileEntry?.copy ?? writtenEntry(document, name) ?? {};
 
     return {
       name,
@@ -497,6 +524,7 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
             : "inherited",
       shadowed: resolved.shadowed,
       written,
+      fileEntry: fileEntry?.verbatim,
       adjusted,
       overriddenIn: atGlobal ? overridingEnvironments(input.overriddenIn, name) : [],
       problems: Arr.filter(lines, (line) => line.name === name),
@@ -520,11 +548,10 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
   // A file's own problems are on its row, not under Problems.
   const ofFile = (line: McpProblemLine, directory: string): boolean =>
     line.name === null &&
-    line.source === mcpSourceName({ kind: "repo", directory, slug: "", path: MCP_REPO_PATH });
+    line.source === mcpSourceName({ kind: "repo", directory, slug: "", path: MCP_REPO_FILE_PATH });
 
   const files = Arr.map(repoFiles, (file): McpFileRow => {
     const source = mcpSourceName({ kind: "repo", directory: file.repo, slug: "", path: file.path });
-    const state = readMcpRepoFileState(file.state);
 
     return {
       file,
@@ -533,16 +560,6 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
         ...(file.problem === undefined
           ? []
           : [{ name: null, source, message: file.problem, reset: [] }]),
-        ...(state === "unknown"
-          ? [
-              {
-                name: null,
-                source,
-                message: `is in a state this page does not know (${file.state})`,
-                reset: [],
-              },
-            ]
-          : []),
       ],
     };
   });

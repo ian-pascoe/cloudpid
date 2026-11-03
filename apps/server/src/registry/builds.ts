@@ -28,7 +28,6 @@ import {
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import { writeEnvironmentSettings } from "./environment-settings.ts";
 import type { McpPushes } from "../mcp/push.ts";
-import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { noEnvironment, reason } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import type { Spares } from "./rpc.ts";
@@ -257,15 +256,13 @@ export const buildUpkeep = (
       const answered: BuildState = wanted ? state : { ...state, last: null, progress: null };
 
       if (!recordedAs(work.recorded, answered)) {
-        yield* registry.recordBuild({
+        const moved = yield* registry.recordBuild({
           environment: work.environment,
           build: answered.last,
           status: answered.progress,
         });
 
-        if (mcp !== undefined && buildMovedRepos(work.recorded.build, answered.last).length > 0) {
-          yield* mcp.sync(work.environment);
-        }
+        if (mcp !== undefined && moved.length > 0) yield* mcp.sync(work.environment);
 
         // The spare is made from the last good Build: one made from another is stale now.
         if (answered.last?.snapshot.id !== work.recorded.build?.snapshot.id) {

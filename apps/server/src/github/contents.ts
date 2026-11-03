@@ -44,6 +44,14 @@ const decodeFile = Schema.decodeUnknownOption(FileAnswer);
 
 const isReadError = Schema.is(GithubReadError);
 
+/** What GitHub's Contents API says of a path that is not a file: a directory (a list), a link or a submodule. */
+const NotFileAnswer = Schema.Union([
+  Schema.Array(Schema.Unknown),
+  Schema.Struct({ type: Schema.Literals(["dir", "symlink", "submodule"]) }),
+]);
+
+const isNotFile = Schema.is(NotFileAnswer);
+
 const ErrorAnswer = Schema.Struct({ message: Schema.String });
 
 const decodeError = Schema.decodeUnknownOption(ErrorAnswer);
@@ -212,10 +220,19 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
           gone(repo),
         );
 
-        // A directory, a link or a submodule at the path is no file.
-        const found = decodeFile(await response.json().catch(() => null));
+        // A body that does not arrive, or is not what GitHub answers for a file, fails the read (the last copy is kept);
+        // only a path GitHub says is not a file (a directory, a link, a submodule) has no file.
+        const body: unknown = await bodyOf(() => response.json());
 
-        return Option.isNone(found) ? null : { sha: found.value.sha, size: found.value.size };
+        if (isNotFile(body)) return null;
+
+        const found = decodeFile(body);
+
+        if (Option.isNone(found)) {
+          throw GithubReadError.of("failed", "GitHub's answer to the file was not a file");
+        }
+
+        return { sha: found.value.sha, size: found.value.size };
       } catch (cause) {
         // GitHub's 404 is the repo's and the path's alike: the commit asked for says which it was.
         if (isReadError(cause) && cause.kind === "not_found") {

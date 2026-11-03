@@ -80,6 +80,7 @@ import type { SkillSearcher } from "./skill-search.ts";
 import type { McpPushes } from "../mcp/push.ts";
 import { mcpStatus } from "../mcp/status.ts";
 import type { McpHostMethods } from "../mcp/host.ts";
+import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -1146,8 +1147,12 @@ const fakeRegistries = () => {
       }),
     recordBuild: ({ environment, build, status }) =>
       Effect.sync(() => {
+        const moved = buildMovedRepos(buildRecords.get(environment)?.build ?? null, build);
+
         calls.push(`recordBuild:${environment}`);
         buildRecords.set(environment, { build, status });
+
+        return moved;
       }),
     listBuilds: () =>
       Effect.sync(() =>
@@ -5845,7 +5850,7 @@ describe("handing the MCP server set to the hosts", () => {
     await fake.runBackground();
 
     expect(fake.mcpLooks).toEqual([
-      `moved ${DEFAULT_ENVIRONMENT} app`,
+      `added ${DEFAULT_ENVIRONMENT} app`,
       `sync ${DEFAULT_ENVIRONMENT}`,
     ]);
   });

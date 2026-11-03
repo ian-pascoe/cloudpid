@@ -16,6 +16,7 @@
 // by the agent · 5 min ago" on a row (the `settings_mcp_*` tools, #484, are what make the records it reads: the row's
 // meta line is where it goes).
 
+import type { McpExposure } from "@cloudpid/config";
 import { GLOBAL_SCOPE, readMcpRepoFileState } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
@@ -49,6 +50,7 @@ import {
   mcpProblemText,
   mcpRepoReferenceProblems,
   type McpStatuses,
+  repoBaseOf,
   repoDirectoryOf,
 } from "./mcp-model.ts";
 import { MessageList } from "./mcp-parts.tsx";
@@ -64,7 +66,12 @@ import {
   reloadMcpRepoAtom,
   removeMcpAtom,
 } from "./mcp-state.ts";
-import { mcpAdjustmentFields, type McpChange, mcpRowChanges } from "./mcp-write.ts";
+import {
+  mcpAdjustmentFields,
+  type McpChange,
+  mcpRepoRowChanges,
+  mcpRowChanges,
+} from "./mcp-write.ts";
 import { FieldMark, Group, noteId, OverriddenIn, Pending, SettingsSection } from "./parts.tsx";
 
 /** What a row's target is: the command it runs, or the URL it connects to. */
@@ -183,7 +190,12 @@ const McpRowView = ({
   const own = isOwnRow(row);
   const fromRepo = isRepoRow(row);
   const toolKeys = Record.size(row.server.toolExposure);
-  const changes = mcpRowChanges(row);
+  const changes = fromRepo ? mcpRepoRowChanges(row) : mcpRowChanges(row);
+  const repoBase = fromRepo ? repoBaseOf(row) : null;
+  // A Repo's server is only switched off or hidden here; what the Repo's file says comes back by Reset.
+  const switchOnLocked = repoBase !== null && !row.server.enabled && !repoBase.enabled;
+  const exposureLocked = repoBase !== null && repoBase.exposure === "hidden";
+
   const problemsId = noteId(`mcp-row-${row.name}`);
   const hintsId = `mcp-row-hints-${row.name}`;
 
@@ -249,7 +261,7 @@ const McpRowView = ({
             aria-label={`${row.name} enabled`}
             aria-describedby={describedBy}
             checked={row.server.enabled}
-            disabled={busy}
+            disabled={busy || switchOnLocked}
             onChange={(event) => {
               onChange(changes.enabled(event.target.checked));
             }}
@@ -261,7 +273,12 @@ const McpRowView = ({
           <ExposureSelect
             label={`${row.name} exposure`}
             value={row.server.exposure}
-            disabled={busy}
+            options={
+              repoBase === null
+                ? undefined
+                : Arr.dedupe<Array<McpExposure>>([repoBase.exposure, "hidden", row.server.exposure])
+            }
+            disabled={busy || exposureLocked}
             describedBy={describedBy}
             onChange={(exposure) => {
               onChange(changes.exposure(exposure));
@@ -376,13 +393,13 @@ const McpRowView = ({
           <p className="text-xs text-muted-foreground">
             Read-only: from Repo {repoDirectoryOf(row)}'s .pi/mcp.json on its default branch. It
             runs without Secrets, so its <code>{"${NAME}"}</code> values read this environment's
-            Variables only. Switch it off or hide tools here, or copy it to keep an entry of your
-            own.
+            Variables only. Switch it off or hide tools here (Reset brings back what its file says),
+            or copy it to keep an entry of your own.
           </p>
           <details className="text-xs">
             <summary className="cursor-pointer text-muted-foreground">View as JSON</summary>
             <pre className="mt-1 max-w-full overflow-x-auto rounded-md border bg-muted/40 p-2 font-mono">
-              {JSON.stringify({ [row.name]: row.written }, null, 2)}
+              {JSON.stringify({ [row.name]: row.fileEntry ?? row.written }, null, 2)}
             </pre>
           </details>
         </>

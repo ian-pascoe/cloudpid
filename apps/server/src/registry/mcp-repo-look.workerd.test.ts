@@ -384,16 +384,38 @@ describe("a Repo's .pi/mcp.json", () => {
       expect(store.getMcpRepoFiles("5a5a5a5a")).toEqual([]);
     }));
 
-  it("makes one look of looks that overlap", () =>
+  it("makes one look of looks of one reason that overlap", () =>
     inRegistry(async ({ github, looks }) => {
       github.push("acme/app", { [FILE]: file({ docs: DOCS }) });
 
       await Promise.all([
         looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "due", now: 0 }),
-        looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "reload", now: 0 }),
+        looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "moved", now: 0 }),
+        looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "due", now: 0 }),
       ]);
 
       expect(github.requests.filter((request) => request.startsWith("file"))).toHaveLength(1);
+    }));
+
+  it("makes a Reload that overlaps a scheduled look look again, so that it drops the copy a failed look keeps", () =>
+    inRegistry(async ({ github, looks, servers, view }) => {
+      github.push("acme/app", { [FILE]: file({ docs: DOCS }) });
+      await looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "added", now: 0 });
+      github.fail("acme/app", GithubReadError.of("failed", "GitHub answered 502"));
+      github.reset();
+
+      // The scheduled look is running when the owner's Reload comes.
+      await Promise.all([
+        looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "due", now: 11 * MINUTE }),
+        looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "reload", now: 11 * MINUTE }),
+        looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "reload", now: 11 * MINUTE }),
+      ]);
+
+      expect(servers()).toEqual([]);
+      expect(view(11 * MINUTE)[0]).toMatchObject({ state: "unreadable" });
+      expect(view(11 * MINUTE)[0]?.text).toBeUndefined();
+      // The scheduled look, and one more for the Reloads, which join each other.
+      expect(github.requests.filter((request) => request.startsWith("file"))).toHaveLength(2);
     }));
 });
 

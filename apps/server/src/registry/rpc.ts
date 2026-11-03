@@ -9,6 +9,7 @@ import {
   MAX_ENVIRONMENT_SECRETS,
   McpNoEnvironment,
   McpRepoFiles,
+  type McpRepoFileView,
   NEW_WORKSPACE,
   parseRepoSource,
   RegistryRpcs,
@@ -96,7 +97,7 @@ export type SessionObjects = {
 };
 
 /** `mcpRepoFiles`' answer for the files the Registry gave, or null for an Environment it does not list. */
-const repoFilesView = (files: Parameters<typeof McpRepoFiles.make>[0]["files"] | null) =>
+const repoFilesView = (files: ReadonlyArray<McpRepoFileView> | null) =>
   files === null ? McpNoEnvironment.make({}) : McpRepoFiles.make({ files });
 
 /**
@@ -764,7 +765,7 @@ export const serveRegistryRpc = <R = never>(
               // The Repo's `.pi/mcp.json` is looked at first; the set it changes is pushed after.
               yield* background(
                 registry
-                  .mcpLookRepoFiles({ environment, repo, reason: "moved" })
+                  .mcpLookRepoFiles({ environment, repo, reason: "added" })
                   .pipe(Effect.andThen(mcp.sync(environment))),
               );
 

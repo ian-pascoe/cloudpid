@@ -55,7 +55,7 @@ import {
   reloadMcpRepoAtom,
   writeMcpChange,
 } from "./mcp-state.ts";
-import { mcpRowChanges } from "./mcp-write.ts";
+import { mcpRepoRowChanges, mcpRowChanges } from "./mcp-write.ts";
 
 const WORK: EnvironmentRecord = { id: "work", name: "Work", repos: [], createdAt: 1 };
 const HOME: EnvironmentRecord = { id: "home", name: "Home", repos: [], createdAt: 2 };
@@ -643,13 +643,87 @@ describe("a Repo's .pi/mcp.json at an Environment", () => {
     }),
   );
 
-  it.effect("shows the entry as JSON as a copy keeps it: ${NAME} kept, cwd made absolute", () =>
+  it.effect(
+    "shows the entry as JSON exactly as the file has it: ${NAME} kept, cwd as written",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", { held: WITH_REPO });
+
+        expect(rowOf(markup, "docs")).toContain("View as JSON");
+        expect(textOf(rowOf(markup, "docs"))).toContain('"Authorization": "Bearer ${NOTES_KEY}"');
+        expect(textOf(rowOf(markup, "build"))).toContain('"cwd": "tools"');
+        expect(textOf(rowOf(markup, "build"))).not.toContain("/workspace/app/tools");
+      }),
+  );
+
+  it.effect(
+    'shows and copies a `sampling: "allow"` as the file has it, not as the set reads it',
+    () =>
+      Effect.gen(function* () {
+        const text = JSON.stringify({
+          mcpServers: { chat: { command: "chat", sampling: "allow", cwd: "tools" } },
+        });
+
+        const row = repoRowOf("chat", repoFile({ text }));
+        const markup = yield* render("work", { held: { repoFiles: [repoFile({ text })] } });
+
+        // The set reads it as `ask`, with a problem saying to copy it to allow it.
+        expect(row.server.sampling).toBe("ask");
+        expect(textOf(markup)).toContain("copy it into the Settings to allow it");
+        expect(textOf(rowOf(markup, "chat"))).toContain('"sampling": "allow"');
+        // The copy keeps `allow`, with the one change a copy needs: the directory made absolute.
+        expect(row.written).toEqual({
+          command: "chat",
+          sampling: "allow",
+          cwd: "/workspace/app/tools",
+        });
+        expect(mcpCopyForm(row)).toMatchObject({ fields: { sampling: "allow" } });
+      }),
+  );
+
+  it.effect("only switches a Repo's server off, and Reset brings back what its file says", () =>
     Effect.gen(function* () {
       const markup = yield* render("work", { held: WITH_REPO });
+      const docs = rowOf(markup, "docs");
 
-      expect(rowOf(markup, "docs")).toContain("View as JSON");
-      expect(textOf(rowOf(markup, "docs"))).toContain('"Authorization": "Bearer ${NOTES_KEY}"');
-      expect(textOf(rowOf(markup, "build"))).toContain('"cwd": "/workspace/app/tools"');
+      // Exposure: what the file has, or hidden; never direct or deferred.
+      expect(docs).toMatch(/aria-label="docs exposure"[\s\S]*?<\/select>/);
+
+      const select =
+        /<select[^>]*aria-label="docs exposure"[\s\S]*?<\/select>/.exec(docs)?.[0] ?? "";
+
+      expect(select).toContain('value="codemode"');
+      expect(select).toContain('value="hidden"');
+      expect(select).not.toContain('value="direct"');
+      expect(select).not.toContain('value="deferred"');
+
+      const changes = mcpRepoRowChanges(repoRowOf("docs"));
+
+      // Off writes the adjustment; what the file says is a Reset of it.
+      expect(changes.enabled(false)).toMatchObject({ kind: "enabled", enabled: false });
+      expect(changes.enabled(true)).toEqual({
+        kind: "reset",
+        fields: ["mcp.servers.docs.enabled"],
+      });
+      expect(changes.exposure("hidden")).toMatchObject({ kind: "exposure", exposure: "hidden" });
+      expect(changes.exposure("codemode")).toEqual({
+        kind: "reset",
+        fields: ["mcp.servers.docs.exposure"],
+      });
+    }),
+  );
+
+  it.effect("does not switch on a server its file switched off", () =>
+    Effect.gen(function* () {
+      const text = JSON.stringify({
+        mcpServers: { idle: { command: "idle", enabled: false, exposure: "hidden" } },
+      });
+
+      const markup = yield* render("work", { held: { repoFiles: [repoFile({ text })] } });
+      const idle = rowOf(markup, "idle");
+
+      expect(idle).toMatch(/aria-label="idle enabled"[^>]*disabled/);
+      expect(idle).toMatch(/<select[^>]*aria-label="idle exposure"[^>]*disabled/);
     }),
   );
 
@@ -969,26 +1043,28 @@ describe("a Repo's .pi/mcp.json at an Environment", () => {
   );
 });
 
+/** The row of Repo server `name` (of Repo `app`'s `file`) as the section shows it at Work. */
+const repoRowOf = (name: string, file: McpRepoFileView = repoFile()) => {
+  const view = mcpScopeView({
+    scope: "work",
+    global: GLOBAL_DOCUMENT,
+    globalProblem: undefined,
+    overrides: WORK_OVERRIDES,
+    overridesProblem: undefined,
+    offered: DEFAULT_SETTINGS.tools.offered,
+    overriddenIn: {},
+    repoFiles: [file],
+  });
+
+  const found = view.rows.find((row) => row.name === name);
+
+  if (found === undefined) throw new Error(`no row ${name}`);
+
+  return found;
+};
+
 describe("Copy of a Repo's server", () => {
-  /** The row of Repo server `name` as the section shows it. */
-  const repoRow = (name: string) => {
-    const view = mcpScopeView({
-      scope: "work",
-      global: GLOBAL_DOCUMENT,
-      globalProblem: undefined,
-      overrides: WORK_OVERRIDES,
-      overridesProblem: undefined,
-      offered: DEFAULT_SETTINGS.tools.offered,
-      overriddenIn: {},
-      repoFiles: [repoFile()],
-    });
-
-    const found = view.rows.find((row) => row.name === name);
-
-    if (found === undefined) throw new Error(`no row ${name}`);
-
-    return found;
-  };
+  const repoRow = (name: string) => repoRowOf(name);
 
   it("makes a form of the entry as the file gives it, named for the Repo it comes from", () => {
     const draft = mcpCopyForm(repoRow("build"));
@@ -1124,24 +1200,7 @@ describe("what the owner's switch writes on a Repo's server", () => {
     return { writes, handlers };
   };
 
-  const docsRow = () => {
-    const view = mcpScopeView({
-      scope: "work",
-      global: GLOBAL_DOCUMENT,
-      globalProblem: undefined,
-      overrides: WORK_OVERRIDES,
-      overridesProblem: undefined,
-      offered: DEFAULT_SETTINGS.tools.offered,
-      overriddenIn: {},
-      repoFiles: [repoFile()],
-    });
-
-    const found = view.rows.find((row) => row.name === "docs");
-
-    if (found === undefined) throw new Error("no row docs");
-
-    return found;
-  };
+  const docsRow = () => repoRowOf("docs");
 
   it.effect("is an adjustment of this Environment, over the Repo's server", () =>
     Effect.gen(function* () {

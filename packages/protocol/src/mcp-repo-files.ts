@@ -3,8 +3,12 @@
 //
 // Every answer only gains (`docs/architecture/mcp.md` → Deploys): a state is a string and one this build does not know
 // reads as `unknown` (`readMcpRepoFileState`); an answer of a tag this build does not know reads as `Unavailable`.
+import type { McpRepoLayer } from "@cloudpid/config";
 import * as Schema from "effect/Schema";
 import { McpNoEnvironment, McpUnavailable, OtherAnswerFromWire } from "./mcp-status.ts";
+
+/** The file a Repo's MCP servers are read from, in the Repo. */
+export const MCP_REPO_FILE_PATH = ".pi/mcp.json";
 
 /**
  * Where a Repo's file stands: `never` (not looked at yet), `read` (its copy is held), `absent` (the Repo has no such file),
@@ -54,6 +58,21 @@ export const McpRepoFileView = Schema.Struct({
 });
 
 export type McpRepoFileView = typeof McpRepoFileView.Type;
+
+/**
+ * The Repo layer of the set that `file` makes, if it makes one: a file whose copy is held (a good read, or the last one an
+ * unreadable Repo keeps) and that is on GitHub (it has a slug). The Registry makes the host's set and the page its rows from
+ * this one rule, so both see the same servers. A state this build does not know holds no copy.
+ */
+export const mcpRepoLayerOf = (file: McpRepoFileView): McpRepoLayer | undefined => {
+  const state = readMcpRepoFileState(file.state);
+
+  return (state === "read" || state === "unreadable") &&
+    file.text !== undefined &&
+    file.slug !== undefined
+    ? { directory: file.repo, slug: file.slug, path: file.path, text: file.text }
+    : undefined;
+};
 
 /** `mcpRepoFiles`' and `mcpReloadRepoFiles`' answer: each Repo's file in the Environment's Repo order, or why not. */
 export const McpRepoFiles = Schema.TaggedStruct("RepoFiles", {

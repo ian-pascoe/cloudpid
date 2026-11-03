@@ -20,6 +20,7 @@ import {
   SPARE_BRANCH,
   TitleSource,
   workspaceDirectory,
+  readMcpRepoFileState,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -28,7 +29,7 @@ import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { SessionStatus } from "../session/status.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
-import type { McpRepoFileRecord, McpRepoLookState } from "./mcp-repo-files.ts";
+import type { McpRepoFileRecord } from "./mcp-repo-files.ts";
 import { dropUnreferencedSkillFiles } from "./skills.ts";
 
 // The Registry's tables over the Registry DO's SQLite storage (`docs/architecture/overview.md` → Durable Objects). Synchronous, as
@@ -651,8 +652,8 @@ const toMcpRepoFile = (row: McpRepoFileRow): McpRepoFileRecord => ({
   environment: row.environment,
   repo: row.repo,
   slug: row.slug,
-  // SAFETY: only `putMcpRepoFile` writes `state`, from a `McpRepoLookState`.
-  state: row.state as McpRepoLookState,
+  // A state this build does not know (a row a later build wrote) reads as `unknown`, which holds no copy.
+  state: readMcpRepoFileState(row.state),
   blob: row.blob,
   text: row.text,
   size: row.size,
