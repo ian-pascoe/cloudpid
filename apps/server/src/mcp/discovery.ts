@@ -35,6 +35,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
+import { authorizedDiscovery } from "./discovery-auth.ts";
 import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
 import { inventoryRows } from "./inventory.ts";
 import { McpLoadCaps } from "./limits.ts";
@@ -53,6 +54,7 @@ import {
 } from "./server-state.ts";
 import { McpHostStore, type StatusRow, type StoredServer } from "./store.ts";
 import { SECOND_MS } from "./time.ts";
+import type { McpTokens } from "./tokens.ts";
 
 /** At most 3 discoveries at once per host. */
 export const MAX_DISCOVERIES = 3;
@@ -97,7 +99,8 @@ export type McpDiscoveryServices =
   | McpEngineClient
   | McpRegistryPort
   | McpDiscovery
-  | McpLoadCaps;
+  | McpLoadCaps
+  | McpTokens;
 
 /** Stop new discoveries: a storage operation failed, so this instance's writes are refused from now on. */
 export const halt = Effect.gen(function* () {
@@ -298,12 +301,20 @@ const discoverOne = (environment: string, view: ServerView, cause: string | unde
         return;
       }
 
-      const result = yield* caps
-        .inFlight(
+      // Each engine call takes its place in the caps; the token is asked for, and a refused one asked for again, in between.
+      const call = (target: McpEngineTarget) =>
+        caps.inFlight(
           conn,
-          caps.engineCall("background", engine.discover(reached.success, store.prior(conn))),
-        )
-        .pipe(Effect.result);
+          caps.engineCall("background", engine.discover(target, store.prior(conn))),
+        );
+
+      const result = yield* authorizedDiscovery(
+        environment,
+        view,
+        previous?.state,
+        reached.success,
+        call,
+      ).pipe(Effect.result);
 
       const now = yield* Clock.currentTimeMillis;
 
@@ -313,7 +324,16 @@ const discoverOne = (environment: string, view: ServerView, cause: string | unde
         return;
       }
 
-      yield* storeDiscoveryResult(conn, result.success, previous, now);
+      // No token to connect with: no call was made, and the server is left in the state the sign-in's answer says.
+      if (result.success.kind === "blocked") {
+        const { state, message } = result.success;
+
+        store.putStatus(failedStatus(conn, state, message, previous, now));
+
+        return;
+      }
+
+      yield* storeDiscoveryResult(conn, result.success.result, previous, now);
     });
 
     yield* discovery.pipe(

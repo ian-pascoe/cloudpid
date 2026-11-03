@@ -10,6 +10,8 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import {
+  McpAccessTokenAnswer,
+  McpAuthReportAnswer,
   type McpEngineMethods,
   McpServerSetAnswer,
   McpServerValuesAnswer,
@@ -40,6 +42,10 @@ export class McpHost extends Cloudflare.DurableObject<McpHost, McpHostMethods>()
 const decodeAnswer = Schema.decodeUnknownEffect(McpServerSetAnswer);
 
 const decodeValues = Schema.decodeUnknownEffect(McpServerValuesAnswer);
+
+const decodeToken = Schema.decodeUnknownEffect(McpAccessTokenAnswer);
+
+const decodeReport = Schema.decodeUnknownEffect(McpAuthReportAnswer);
 
 /** A failed Registry call for `what`, as the host reads it: the Registry unavailable, never with a value in it. */
 const registryUnavailable = (what: string) => (cause: Cause.Cause<unknown>) =>
@@ -79,6 +85,29 @@ export const McpHostLive = McpHost.make(
               .pipe(
                 Effect.flatMap(decodeValues),
                 Effect.catchCause(registryUnavailable("an MCP server's values")),
+              ),
+          // A token is in the answer: the failure a call leaves says which call, never what it held.
+          accessToken: (input) =>
+            registries
+              .getByName(REGISTRY_NAME)
+              .mcpAccessToken(input)
+              .pipe(
+                Effect.flatMap(decodeToken),
+                Effect.catchCause(() =>
+                  Effect.fail(
+                    McpRegistryUnavailable.make({
+                      message: "The Registry did not answer for an MCP server's access token",
+                    }),
+                  ),
+                ),
+              ),
+          reportAuth: (report) =>
+            registries
+              .getByName(REGISTRY_NAME)
+              .reportMcpAuth(report)
+              .pipe(
+                Effect.flatMap(decodeReport),
+                Effect.catchCause(registryUnavailable("an MCP sign-in report")),
               ),
         };
 

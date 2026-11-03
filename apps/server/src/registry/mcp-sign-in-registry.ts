@@ -2,8 +2,8 @@
 // object; ADR-0034): `mcpAccessToken`, which hands a short-lived access token over Durable Object RPC (the host keeps it in
 // memory only), `reportMcpAuth`, which records the transitions a host sees, and `signInsRevision`. Only the Registry holds
 // tokens at rest. The sign-in is found from the Environment's own MCP server set (its source, normalized name and URL),
-// never from what the host says. The Registry never calls out: a refresh is a seam (`Refresh`, #454, which fills it with
-// refreshing and single-flight), and what a report resolves goes back in the answer.
+// never from what the host says. The Registry never calls out: a refresh is a seam (`Refresh`, filled by
+// `mcp-sign-in-refresh.ts` with single-flight, backoff and the authorization server's answers), and what a report resolves goes back in the answer.
 //
 // No answer but `ok` holds a token, and no log line, status or error does: a failure says which row by its hash, and a
 // reason is the owner-facing last error (≤300 chars) or what the Registry found.
@@ -210,7 +210,7 @@ const answerFor = (
 
         const mustRefresh = refused && !tokenRejected;
         // The token is asked for again from a minute before it expires (`REFRESH_MARGIN_MS`); the last minute's token is
-        // never served, not even without a refresh token (#454 settles that with the refresh).
+        // never served as it is: a refresh is asked for it (`Refresh`), or it is withheld when there is no refresh token.
         const expiring = row.expiresAt !== null && row.expiresAt - REFRESH_MARGIN_MS <= now;
 
         if (!mustRefresh && !expiring) {
@@ -223,8 +223,8 @@ const answerFor = (
           const reason = "The sign-in expired and has no refresh token: sign in again";
 
           // A token past its time with nothing to refresh it is gone: the row says `required` too, so Settings does not
-          // show it as signed in. A token in its last minute, or one the server refused, is withheld but kept: whether
-          // to serve the last minute is #454's, with refresh (→ Refresh and step-up).
+          // show it as signed in. A token in its last minute, or one the server refused, is withheld but kept: a token
+          // that has a refresh token is refreshed (→ Refresh and step-up).
           if (row.expiresAt !== null && row.expiresAt <= now) {
             deps.signIns.dropTokens(key.hash, reason, now);
           }

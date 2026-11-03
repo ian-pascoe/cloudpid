@@ -1,6 +1,15 @@
-// The Registry as `McpHost` sees it (`docs/architecture/mcp-connections.md` → RPC, host → Registry): the set's pull and
-// the `${NAME}` values of a server, over the Registry DO in this script, or a fake. A value is never logged or stored.
-import type { McpServerSetAnswer, McpServerValuesAnswer } from "@cloudpid/mcp/types";
+// The Registry as `McpHost` sees it (`docs/architecture/mcp-connections.md` → RPC, host → Registry): the set's pull, the
+// `${NAME}` values of a server, and an MCP sign-in's access token and the transitions the host reports
+// (`docs/architecture/mcp-sign-in.md` → Tokens reach the host object), over the Registry DO in this script, or a fake. A
+// value or a token is never logged or stored.
+import type {
+  McpAccessTokenAnswer,
+  McpAccessTokenInput,
+  McpAuthReport,
+  McpAuthReportAnswer,
+  McpServerSetAnswer,
+  McpServerValuesAnswer,
+} from "@cloudpid/mcp/types";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -29,6 +38,17 @@ export type McpRegistryPortService = {
     readonly server: string;
     readonly conn: string;
   }) => Effect.Effect<McpServerValuesAnswer, McpRegistryUnavailable>;
+  /**
+   * The access token `server`'s sign-in holds for `environment`, or why there is none; `stale` is the token a server just
+   * refused. The answer is for the host's memory only.
+   */
+  readonly accessToken: (
+    input: McpAccessTokenInput,
+  ) => Effect.Effect<McpAccessTokenAnswer, McpRegistryUnavailable>;
+  /** A transition the host saw: a 401, a 403 for more scope, or a server that works again. */
+  readonly reportAuth: (
+    report: McpAuthReport,
+  ) => Effect.Effect<McpAuthReportAnswer, McpRegistryUnavailable>;
 };
 
 /** The Registry, as the host sees it: the Registry DO, or a fake. */

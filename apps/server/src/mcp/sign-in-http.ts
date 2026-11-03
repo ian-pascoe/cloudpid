@@ -36,6 +36,7 @@ import {
   WELL_FORMED_STATE,
 } from "./sign-in-client.ts";
 import { signInOrigin } from "./sign-in-origin.ts";
+import { type McpSignInCarry, noSignInCarry } from "./sign-in-carry.ts";
 import {
   callbackPage,
   cancelledPage,
@@ -210,11 +211,15 @@ const callbackInput = (path: string, query: URLSearchParams) => {
 
 /**
  * `GET /oauth/mcp/callback[/<hash>]`: the authorization server's answer, public and never reading identity. A `state` that
- * is not one cloudpid makes gets a static page and the Registry is never called; otherwise `completeMcpSignIn` decides, and
- * the page says what happened (→ Page outcomes). A Registry that cannot be reached is a page too, saying nothing was saved.
+ * is not one cloudpid makes gets a static page and the Registry is never called; otherwise `completeMcpSignIn` decides, a
+ * completed sign-in is carried to the hosts that use it (`carry`), and the page says what happened (→ Page outcomes). A Registry that cannot be reached is a page too, saying nothing was saved.
  * The route logs no address: it holds a single-use code.
  */
-export const serveCallback = (registry: () => SignInRegistry, path: string) =>
+export const serveCallback = (
+  registry: () => SignInRegistry,
+  path: string,
+  carry: McpSignInCarry = noSignInCarry,
+) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
 
@@ -235,6 +240,17 @@ export const serveCallback = (registry: () => SignInRegistry, path: string) =>
         },
       },
     );
+
+    // The hosts that use the sign-in are told before the page says so, so the server is asked at once; a host that is not
+    // reached heals at its next `windowOpened`.
+    if (answer.status === "signed_in") {
+      yield* carry.carry({
+        change: "signed_in",
+        server: answer.server,
+        environments: answer.environments,
+        revision: answer.revision,
+      });
+    }
 
     return respond(callbackPage(answer));
   });

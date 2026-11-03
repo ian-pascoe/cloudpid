@@ -35,6 +35,8 @@ export type InventoryStore = {
   readonly applyEngineState: (conn: string, state: McpEngineState, now: number) => void;
   /** Drop the era and Legacy session rows of `conns` (a reload, or a `conn` that left the set). */
   readonly dropPrior: (conns: ReadonlyArray<string>) => void;
+  /** Drop the Legacy session rows of `conns`, keeping their eras (a sign-out closes the server's HTTP session). */
+  readonly dropSessions: (conns: ReadonlyArray<string>) => void;
 };
 
 type InventorySql = {
@@ -143,6 +145,12 @@ export const inventoryStore = (storage: MigrationStorage): InventoryStore => {
             now,
           );
         }
+      });
+    },
+
+    dropSessions: (conns) => {
+      storage.transactionSync(() => {
+        for (const conn of conns) sql.exec("DELETE FROM mcp_sessions WHERE conn = ?", conn);
       });
     },
 

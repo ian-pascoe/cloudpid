@@ -19,6 +19,7 @@ import {
   McpApplyReload,
   type McpApplyResult,
   McpApplySet,
+  McpApplySignIns,
   McpDestroyed,
   McpNoServer,
   McpReloaded,
@@ -30,8 +31,10 @@ import {
   type McpServerInventory,
   type McpServersRequest,
   type McpServersResult,
+  McpSignInsTaken,
   McpStale,
 } from "@cloudpid/mcp/types";
+import { normalizeMcpName } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -58,6 +61,7 @@ import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
 import { type ServerView, type Trigger, viewServers } from "./server-state.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
+import { McpTokens } from "./tokens.ts";
 
 export {
   McpRegistryPort,
@@ -82,6 +86,7 @@ export const mcpHostLayer = (deps: {
     Layer.succeed(McpHostStore, deps.store),
     Layer.succeed(McpRegistryPort, deps.registry),
     Layer.succeed(McpEngineClient, deps.engine),
+    McpTokens.layer.pipe(Layer.provide(Layer.succeed(McpRegistryPort, deps.registry))),
     McpDiscovery.layer,
     McpLoadCaps.layer,
     deps.references ?? Layer.empty,
@@ -96,6 +101,8 @@ const decodeSet = Schema.decodeUnknownOption(McpApplySet);
 const decodeDestroy = Schema.decodeUnknownOption(McpApplyDestroy);
 
 const decodeReload = Schema.decodeUnknownOption(McpApplyReload);
+
+const decodeSignIns = Schema.decodeUnknownOption(McpApplySignIns);
 
 const applied = (set: McpApplySet, changed: boolean): McpApplied =>
   McpApplied.make({ hash: set.hash, changed });
@@ -237,9 +244,63 @@ const reload = (environment: string | undefined, input: McpApply) =>
     ),
   );
 
+/** The sign-in changes after which the servers that wait for one are asked at once; any other leaves them as they are. */
+const REDISCOVERING_CHANGES: ReadonlyArray<string> = ["signed_in", "replaced", "rebound"];
+
 /**
- * `apply`: the pushes and teardown. `set` keeps the Environment's set, `reload` rediscovers its servers and `destroy`
- * wipes the storage; any other `kind` fails as `HostUnsupported`, never as a decode error, so a newer caller's
+ * The servers of the held set that use an MCP sign-in change (`servers`, the names it goes by in this Environment's set, as
+ * the sign-in key compares them): `rediscover` them, the `sign_in`, `rejected`, `unavailable` and `failed` HTTP ones among
+ * them at once, never waking a Container. Every cached token of theirs goes, so the next ask reaches the Registry: for a
+ * `signed_out` it finds none, and the Legacy HTTP session of the server is closed (its row dropped) with the next request. A
+ * server that is not in the set is left out of the answer.
+ */
+const takeSignIns = (
+  environment: string | undefined,
+  input: McpApply,
+): Effect.Effect<McpApplyResult, never, McpHostServices> =>
+  Effect.gen(function* () {
+    const wanted = decodeSignIns(input);
+
+    if (Option.isNone(wanted))
+      return HostFailed.make({ message: "The sign-in change is malformed" });
+
+    const { change, servers: named, revision } = wanted.value;
+    const store = yield* McpHostStore;
+    const tokens = yield* McpTokens;
+    const names = Arr.map(named, normalizeMcpName);
+
+    const views = Arr.filter(
+      yield* viewServers,
+      (view) => view.reach === "http" && names.includes(normalizeMcpName(view.server.name)),
+    );
+
+    yield* tokens.drop(Arr.map(views, (view) => view.server.name));
+
+    // The revision the change raised the sign-ins to: the next pull finds it held and does not act on it twice.
+    yield* writeOrHalt(() => {
+      const held = store.meta().signInsRevision;
+
+      if (held === undefined || revision > held) store.setMeta({ signInsRevision: revision });
+    });
+
+    const conns = Arr.map(views, (view) => view.server.conn);
+
+    if (change === "signed_out") {
+      yield* writeOrHalt(() => store.dropSessions(conns));
+    } else if (environment !== undefined && REDISCOVERING_CHANGES.includes(change)) {
+      yield* startDue(environment, views, "sign_in");
+    }
+
+    return McpSignInsTaken.make({ servers: Arr.map(views, (view) => view.server.name) });
+  }).pipe(
+    Effect.catchCause(() =>
+      Effect.succeed(HostFailed.make({ message: "The sign-in change was not taken" })),
+    ),
+  );
+
+/**
+ * `apply`: the pushes and teardown. `set` keeps the Environment's set, `reload` rediscovers its servers, `sign_ins` takes
+ * a change of an MCP sign-in and `destroy` wipes the storage; any other `kind` fails as `HostUnsupported`, never as a decode error, so a newer caller's
  * operation is refused loudly, and a `set` that is malformed as `HostFailed`. `environment` names the Registry to ask
  * for `${NAME}` values; without one, nothing is discovered.
  */
@@ -262,6 +323,10 @@ export const apply = (
 
     if (kind.value.kind === "reload") {
       return yield* reload(environment, input);
+    }
+
+    if (kind.value.kind === "sign_ins") {
+      return yield* takeSignIns(environment, input);
     }
 
     if (kind.value.kind !== "set") {
@@ -292,30 +357,41 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostServices> 
     const registry = yield* McpRegistryPort;
     const answer = yield* registry.serverSet({ environment, heldHash: store.held()?.hash });
 
+    const known = store.meta().signInsRevision;
     const { revision } = answer;
 
-    if (revision === undefined) return;
+    // An answer with no revision (an Environment the Registry does not know) holds no set to keep.
+    if (revision !== undefined) {
+      const held = store.held();
 
-    const held = store.held();
-
-    if (answer.set !== undefined) {
-      yield* takeSet(environment, {
-        kind: "set",
-        hash: answer.hash,
-        revision,
-        entries: answer.set,
-      });
-    } else if (held === undefined) {
-      // The Registry noted the empty set as handed under this revision, which a push of an older set must not undo.
-      yield* takeSet(environment, { kind: "set", hash: answer.hash, revision, entries: [] });
-    } else if (held.hash === answer.hash) {
-      // The Registry noted the set the host holds as handed under this revision: so does the host.
-      yield* Effect.sync(() => {
-        if (revision > held.revision) store.setRevision(revision);
-      });
+      if (answer.set !== undefined) {
+        yield* takeSet(environment, {
+          kind: "set",
+          hash: answer.hash,
+          revision,
+          entries: answer.set,
+        });
+      } else if (held === undefined) {
+        // The Registry noted the empty set as handed under this revision, which a push of an older set must not undo.
+        yield* takeSet(environment, { kind: "set", hash: answer.hash, revision, entries: [] });
+      } else if (held.hash === answer.hash) {
+        // The Registry noted the set the host holds as handed under this revision: so does the host.
+        yield* Effect.sync(() => {
+          if (revision > held.revision) store.setRevision(revision);
+        });
+      }
     }
 
     yield* Effect.sync(() => store.setMeta({ signInsRevision: answer.signInsRevision }));
+
+    // A change of the sign-ins that no push carried (a lost one, or one made while the host was away) is healed here: the
+    // cached tokens go, and the servers that wait for a sign-in are asked at once.
+    if (known !== answer.signInsRevision) {
+      const tokens = yield* McpTokens;
+
+      yield* tokens.drop();
+      yield* startDue(environment, yield* viewServers, "sign_in");
+    }
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning(`Environment ${environment}'s MCP server set was not pulled`, cause),

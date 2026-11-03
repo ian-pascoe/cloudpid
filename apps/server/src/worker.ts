@@ -46,6 +46,7 @@ import { searchSkillsSh } from "./registry/skill-search.ts";
 import { McpHost, McpHostLive } from "./mcp/McpHost.ts";
 import { mcpPushes } from "./mcp/push.ts";
 import { mcpStatus } from "./mcp/status.ts";
+import { mcpSignInCarry } from "./mcp/sign-in-carry.ts";
 import { REGISTRY_NAME, Registry, RegistryLive } from "./registry/Registry.ts";
 import {
   legacyCleanup,
@@ -327,6 +328,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
       host: (name) => mcpHosts.getByName(name),
     });
 
+    // A completed MCP sign-in (and, later, a sign-out or a rebind) goes to the hosts of the Environments that use it.
+    const signInCarry = mcpSignInCarry({ host: (name) => mcpHosts.getByName(name) });
+
     // The draft composer's lookups. The listings of its `@` menu are held per isolate, as a Session holds its own, in a
     // scope that is never closed: it lives as long as the isolate.
     const listings = yield* Layer.buildWithScope(fileListingsLayer(), yield* Scope.make()).pipe(
@@ -372,7 +376,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
       },
       {
         clientDocument: serveClientDocument(signInEnv),
-        callback: (path) => serveCallback(registry, path),
+        callback: (path) => serveCallback(registry, path, signInCarry),
       },
     );
 

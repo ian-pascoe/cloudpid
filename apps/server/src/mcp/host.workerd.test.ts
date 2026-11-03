@@ -213,10 +213,13 @@ describe("apply({ kind: 'set' })", () => {
     const host = hostOf("a");
 
     // A newer caller's operation, which this build's `McpApply` does not list.
-    const unknown = JSON.parse('{"kind":"sign_ins","revision":3}');
+    const unknown = JSON.parse('{"kind":"end_watches","revision":3}');
 
     expect(await host.apply(unknown)).toEqual(
-      HostUnsupported.make({ message: "This host does not know apply sign_ins", op: "sign_ins" }),
+      HostUnsupported.make({
+        message: "This host does not know apply end_watches",
+        op: "end_watches",
+      }),
     );
     expect(await host.readSet()).toBeNull();
   });
