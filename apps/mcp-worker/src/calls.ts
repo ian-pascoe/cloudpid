@@ -44,6 +44,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -265,6 +266,37 @@ const encodeResult = <A extends { readonly state: McpEngineState }, I>(
   );
 };
 
+/** Whether `name` holds any of `tokens`, which a name must never be rewritten for. */
+const heldIn = (name: string, tokens: ReadonlySet<string>) =>
+  Arr.some([...tokens], (token) => token.length > 0 && name.includes(token));
+
+/** A prompt's name, empty for one that has none. */
+const nameOf = (prompt: Readonly<Record<string, Schema.Json>>) => {
+  const name = prompt["name"];
+
+  return Predicate.isString(name) ? name : "";
+};
+
+/**
+ * The problem of each tool or prompt (`kind`) of `names` that is left out for a name holding a secret: said by its place
+ * in the list, so the problem never quotes the value.
+ */
+const leftOut = (
+  kind: "tool" | "prompt",
+  names: ReadonlyArray<string>,
+  tokens: ReadonlySet<string>,
+) =>
+  Arr.filterMap(
+    Arr.map(names, (name, index) => ({ name, place: index + 1 })),
+    ({ name, place }) =>
+      heldIn(name, tokens)
+        ? Result.succeed<McpToolProblem>({
+            tool: `${kind} #${place}`,
+            problem: "left out: its name held a value this call keeps secret",
+          })
+        : Result.failVoid,
+  );
+
 /** Discovers the server: its era, what it is, every page of its tools and prompts, and its tools' schema problems. */
 export const discover = Effect.fn("mcp.engine.discover")(function* (
   target: McpEngineTargetEncoded,
@@ -276,16 +308,33 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
 
   const { outcome, state, logs, tokens } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: false, discovering: true },
-    (connection) =>
+    (connection, call) =>
       Effect.gen(function* () {
         const tools = yield* connection.list("tools", HOST_WORK);
         const prompts = yield* connection.list("prompts", HOST_WORK);
-        const definitions = yield* definitionsOf(tools.value);
-        const problems = yield* validators.compileAll(definitions);
+        const listed = yield* definitionsOf(tools.value);
 
-        const promptValues = yield* decodePrompts(prompts.value).pipe(
+        const promptsListed = yield* decodePrompts(prompts.value).pipe(
           Effect.mapError(() => malformed("a prompt")),
         );
+
+        // A name is never rewritten, since a call is made by it: one that holds a secret is left out instead.
+        const definitions = Arr.filter(listed, (tool) => !heldIn(tool.name, call.tokens));
+
+        const promptValues = Arr.filter(
+          promptsListed,
+          (prompt) => !heldIn(nameOf(prompt), call.tokens),
+        );
+
+        const problems = [
+          ...leftOut(
+            "tool",
+            Arr.map(listed, ({ name }) => name),
+            call.tokens,
+          ),
+          ...leftOut("prompt", Arr.map(promptsListed, nameOf), call.tokens),
+          ...(yield* validators.compileAll(definitions)),
+        ];
 
         const about = yield* decodeAbout({
           serverInfo: connection.serverInfo,

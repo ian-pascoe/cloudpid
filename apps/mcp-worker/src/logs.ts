@@ -63,36 +63,46 @@ const pairValues = (value: string): Array<string> =>
         );
   });
 
+/** The headers that carry credentials by name, besides `authorization`, `proxy-authorization` and `cookie`. */
+const CREDENTIAL_HEADER = /key|token|secret|auth|session|password|credential|signature/i;
+
 /**
- * What a header's value holds that a server may echo: the value, the credential after a scheme (`Bearer x` is also
- * `x`), the password of a `Basic` one, and the value of each `name=value` part of a cookie or a parameter list. A
- * credential written into a header, rather than referenced as `${NAME}`, is not a Secret to the host, so it is found
- * here.
+ * What the header `name` holds that a server may echo, when it is one that carries a credential; nothing for any other
+ * (`X-Org: acme` is no secret, and scrubbing `acme` would rename a tool). A credential written into a header, rather
+ * than referenced as `${NAME}`, is not a Secret to the host, so it is found here:
+ * - `authorization` and `proxy-authorization`: the credential after the scheme (`Bearer x` gives `x`), and a `Basic` one's
+ *   password;
+ * - `cookie`: the value of each `name=value` part;
+ * - a header whose name looks like a credential's: the whole value, and the value of each `name=value` part.
  */
-const headerSecrets = (value: string): Array<string> => {
+const headerSecrets = (name: string, value: string): Array<string> => {
+  const header = name.toLowerCase();
   const space = value.indexOf(" ");
   const scheme = space < 0 ? "" : value.slice(0, space);
-  const credential = space < 0 ? "" : value.slice(space + 1).trim();
+  const credential = space < 0 ? value : value.slice(space + 1).trim();
 
-  return [
-    value,
-    credential,
-    ...(scheme.toLowerCase() === "basic" ? basicPassword(credential) : []),
-    ...pairValues(value),
-  ];
+  if (header === "authorization" || header === "proxy-authorization") {
+    return [credential, ...(scheme.toLowerCase() === "basic" ? basicPassword(credential) : [])];
+  }
+
+  if (header === "cookie") return pairValues(value);
+
+  return CREDENTIAL_HEADER.test(header) ? [value, ...pairValues(value)] : [];
 };
 
 /**
  * What the call scrubs from everything it hands back besides its access tokens: the Secret values the host
- * substituted into `target` (its `redact`), and what its `headers` hold (`headerSecrets`), each at least
- * `MIN_SECRET_LENGTH` characters.
+ * substituted into `target` (its `redact`, from any header), and what its credential headers hold (`headerSecrets`),
+ * each at least `MIN_SECRET_LENGTH` characters.
  */
 export const secretsOf = (target: McpEngineTargetEncoded): Array<string> =>
   Arr.dedupe(
     Arr.filter(
       [
         ...(target.redact ?? []),
-        ...Arr.flatMap(Record.values(target.headers ?? {}), headerSecrets),
+        ...Arr.flatMap(Record.toEntries(target.headers ?? {}), ([name, value]) =>
+          headerSecrets(name, value),
+        ),
       ],
       (secret) => secret.length >= MIN_SECRET_LENGTH,
     ),

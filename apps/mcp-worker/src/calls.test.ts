@@ -109,7 +109,9 @@ describe("an engine call's span", () => {
 
     expect(answer).toMatchObject({
       kind: "discovered",
-      logs: [{ level: "warning", logger: "auth", data: "rejected [REDACTED] and [REDACTED]" }],
+      logs: [
+        { level: "warning", logger: "auth", data: "rejected Bearer [REDACTED] and [REDACTED]" },
+      ],
     });
     expect(JSON.stringify(answer)).not.toContain(SECRET);
     expect(JSON.stringify(answer)).not.toContain(TOKEN);
@@ -210,8 +212,58 @@ describe("an engine call's span", () => {
     if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
 
     expect(answer.tools.find((tool) => tool.name === "leak")?.description).toBe(
-      "calls with [REDACTED]",
+      "calls with Bearer [REDACTED]",
     );
     expect(JSON.stringify(answer)).not.toContain(SECRET);
+  });
+
+  it("keeps a tool named like a header's value that is no credential, and scrubs what a credential header holds", async () => {
+    const server = modernServer({
+      moreTools: [
+        {
+          name: "acme_search",
+          description: "Searches acme as application/json.",
+          inputSchema: { type: "object" },
+        },
+        { name: "echo_key", description: "Takes key-0123456789.", inputSchema: { type: "object" } },
+      ],
+    });
+
+    const { answer } = await discovering(URL, {
+      server,
+      redact: [],
+      headers: { "X-Org": "acme", Accept: "application/json", "X-Api-Key": "key-0123456789" },
+    });
+
+    if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
+
+    const described = (name: string) =>
+      answer.tools.find((tool) => tool.name === name)?.description;
+
+    expect(described("acme_search")).toBe("Searches acme as application/json.");
+    expect(described("echo_key")).toBe("Takes [REDACTED].");
+  });
+
+  it("leaves out a tool whose name holds a Secret, with a problem that does not quote it", async () => {
+    const server = modernServer({
+      moreTools: [{ name: "acme_search", inputSchema: { type: "object" } }],
+    });
+
+    const { answer } = await discovering(URL, { server, redact: ["acme"], headers: {} });
+
+    if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
+
+    const names = answer.tools.map((tool) => tool.name);
+
+    expect(names).toContain("echo");
+    expect(names).not.toContain("acme_search");
+    expect(names.some((name) => name.includes("REDACTED"))).toBe(false);
+    expect(answer.problems).toEqual([
+      {
+        tool: `tool #${names.length + 1}`,
+        problem: "left out: its name held a value this call keeps secret",
+      },
+    ]);
+    expect(JSON.stringify(answer)).not.toContain("acme");
   });
 });

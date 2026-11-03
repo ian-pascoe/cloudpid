@@ -132,7 +132,7 @@ describe("server logs", () => {
       ["warning", "auth"],
       ["error", undefined],
     ]);
-    expect(discovered.logs?.[0]?.data).toBe("rejected [REDACTED]");
+    expect(discovered.logs?.[0]?.data).toBe("rejected Bearer [REDACTED]");
     expect(discovered.logs?.[1]?.data).toHaveLength(2048);
     expect(JSON.stringify(discovered)).not.toContain("sk-echoed-secret");
   });
