@@ -2323,17 +2323,15 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   ) =>
     Effect.suspend(() => {
       const refused = (problem: InputProblem) =>
-        SessionError.make(
-          prompt === undefined
-            ? { operation: "submit", message: problem.message }
-            : {
-                operation: "submit",
-                message: problem.message,
-                // Only a size is a prompt too large; a wrong image type is the server's content, which fails the get.
-                code: problem.kind === "size" ? "MCP_PROMPT_TOO_LARGE" : "MCP_PROMPT_FAILED",
-                server: prompt,
-              },
-        );
+        prompt === undefined
+          ? SessionError.make({ operation: "submit", message: problem.message })
+          : promptRefusal(
+              // Only a size is a prompt too large; an image type the providers do not take is the owner's own
+              // attachment (only types they take are inlined from the server's content), which fails the send.
+              problem.kind === "size" ? "MCP_PROMPT_TOO_LARGE" : "MCP_PROMPT_FAILED",
+              problem.message,
+              prompt,
+            );
 
       // The row pi-durable writes is the entry (its model message, from `content`, and its kind and data, from `entry`) or
       // the inbox document holding it, both as JSON; `{ content, entry }` is that JSON but for a few fields (IDs, the
@@ -2345,14 +2343,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       return queuedBytes(conversationId).pipe(
         // The storage could not be read: not a size, whatever the message is.
         Effect.mapError((error) =>
-          prompt === undefined
-            ? error
-            : SessionError.make({
-                operation: error.operation,
-                message: error.message,
-                code: "MCP_PROMPT_FAILED",
-                server: prompt,
-              }),
+          prompt === undefined ? error : promptRefusal("MCP_PROMPT_FAILED", error.message, prompt),
         ),
         Effect.flatMap((queued) => {
           const problem = inputProblemOf(draft, queued);

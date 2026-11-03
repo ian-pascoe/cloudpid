@@ -60,6 +60,7 @@ import type {
   SessionHostMcpPrompts,
 } from "./host.ts";
 import { type PromptCatalog, promptCatalog } from "./mcp-prompt-catalog.ts";
+import type { PromptRefusal } from "./mcp-prompt.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
 /** What each of `McpHostClient`'s methods is answered on the wire, before the shared readers. */
@@ -185,19 +186,13 @@ const PROMPT_STREAM_IDLE_MS = 30_000;
 
 const NO_PROMPTS: PromptCatalog = { prompts: [], mcpServers: [] };
 
-/** A refusal of a prompt get, before it is a `SessionError` that names the server. */
-type PromptGetRefusal = {
-  readonly code: McpPromptErrorCode;
-  readonly message: string;
-};
-
-const refusalOf = (code: McpPromptErrorCode, message: string): PromptGetRefusal => ({
+const refusalOf = (code: McpPromptErrorCode, message: string): PromptRefusal => ({
   code,
   message,
 });
 
 /** The failure a `CallFailed`'s error is. */
-const callFailure = (error: McpErrorWire, server: string): PromptGetRefusal =>
+const callFailure = (error: McpErrorWire, server: string): PromptRefusal =>
   Match.value(error).pipe(
     Match.tag("SignInRequired", () =>
       refusalOf("MCP_SIGN_IN_REQUIRED", `Sign in to ${server} to use its prompts`),
@@ -218,7 +213,7 @@ const callFailure = (error: McpErrorWire, server: string): PromptGetRefusal =>
 const failureOf = (
   result: McpHostRequestResult | HostLost,
   server: string,
-): PromptGetRefusal | undefined =>
+): PromptRefusal | undefined =>
   Match.value(result).pipe(
     Match.tag("Completed", () => undefined),
     Match.tag("CallFailed", ({ error }) => callFailure(error, server)),
@@ -426,7 +421,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
     const { environment } = values.mcp;
 
     // Every refusal names the server, as the composer's form says which one it is about.
-    const refused = (refusal: PromptGetRefusal) =>
+    const refused = (refusal: PromptRefusal) =>
       SessionError.make({ operation: "submit", ...refusal, server: call.server });
 
     if (environment === null || options.session === undefined) {
@@ -498,7 +493,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
 /** What a prompt get came to: the result `use` made, or why it is refused. */
 type Got<A> =
   | { readonly ok: true; readonly value: A }
-  | { readonly ok: false; readonly refusal: PromptGetRefusal };
+  | { readonly ok: false; readonly refusal: PromptRefusal };
 
 /** Ask `client` for `request`, read the result (a large one under the decode slot) and run `use` over it. */
 const getFrom = async <A>(

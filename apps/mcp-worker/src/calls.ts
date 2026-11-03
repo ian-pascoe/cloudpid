@@ -466,6 +466,7 @@ type ResourceRead = McpEngineRequest & { readonly op: "resources/read" };
 type ResourcePage = McpEngineRequest & {
   readonly op: "resources/list_page" | "resources/templates/list_page";
 };
+
 type PromptGet = McpEngineRequest & { readonly op: "prompts/get" };
 
 /** The server's tools, listed again after a `-32020`, and their schema problems. */
@@ -717,10 +718,7 @@ const runPrompt = Effect.fnUntraced(function* (
 const runList = Effect.fnUntraced(function* (
   connection: McpConnection,
   call: CallContext,
-  req: Exclude<
-    McpEngineRequest,
-    ToolCall | TaskOp | ResourceRead | ResourcePage | PromptGet
-  >,
+  req: Exclude<McpEngineRequest, ToolCall | TaskOp | ResourceRead | ResourcePage | PromptGet>,
   env: CallEnvironment,
   validators: ValidatorsApi,
 ) {

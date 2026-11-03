@@ -12,6 +12,7 @@ import {
   isInlineImageType,
   MAX_MCP_PROMPT_RESOURCES,
   MAX_MCP_PROMPT_RESULT_DESCRIPTION,
+  type McpPromptErrorCode,
   type McpPromptPart,
   type McpPromptResource,
 } from "@cloudpid/protocol";
@@ -62,9 +63,9 @@ export const promptFileName = (
 ): string =>
   `mcp-${file.kind}-${id}${Option.getOrElse(Record.get(FILE_EXTENSIONS, (file.mimeType ?? "").toLowerCase()), () => ".bin")}`;
 
-/** Why a prompt result cannot be made a message. */
+/** Why a prompt cannot be got or made a message, before it is a `SessionError` that names the server. */
 export type PromptRefusal = {
-  readonly code: "MCP_PROMPT_FAILED" | "MCP_PROMPT_TOO_LARGE";
+  readonly code: McpPromptErrorCode;
   readonly message: string;
 };
 
