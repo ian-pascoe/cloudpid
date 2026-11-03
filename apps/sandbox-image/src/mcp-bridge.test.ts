@@ -113,27 +113,33 @@ type Stream = {
   readonly abort: () => void;
 };
 
-let bridgeProcess: ChildProcess | undefined;
-let base = "";
-let counter = 0;
+/**
+ * How long the shared bridge waits for a child's `server/discover` answer. The wait runs from the spawn, a Node cold
+ * start included, so it is long: a Modern child that is slow to start (a loaded machine) must not be read as Legacy.
+ */
+const PROBE_MS = 15_000;
 
-beforeAll(async () => {
+/** The probe's wait at the bridge of the test that needs a Legacy server's silence to end. */
+const SILENCE_MS = 400;
+
+type RunningBridge = { readonly proc: ChildProcess; readonly base: string };
+
+/** Starts the bridge on a free port, once it says where it listens. A Legacy server's silence lasts `probeMs`. */
+const startBridge = async (probeMs: number): Promise<RunningBridge> => {
   const proc = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", script], {
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       [MCP_BRIDGE_TOKEN_ENV]: TOKEN,
       CLOUDPID_MCP_BRIDGE_PORT: "0",
-      // A Legacy server's silence, shortened.
-      CLOUDPID_MCP_BRIDGE_PROBE_MS: "400",
+      CLOUDPID_MCP_BRIDGE_PROBE_MS: String(probeMs),
     },
     stdio: ["ignore", "pipe", "inherit"],
   });
 
-  bridgeProcess = proc;
   proc.stdout?.setEncoding("utf8");
 
-  base = await new Promise<string>((resolve, reject) => {
+  const url = await new Promise<string>((resolve, reject) => {
     let output = "";
 
     proc.stdout?.on("data", (chunk: string) => {
@@ -145,6 +151,19 @@ beforeAll(async () => {
     });
     proc.on("exit", () => reject(new Error(`the bridge exited: ${output}`)));
   });
+
+  return { proc, base: url };
+};
+
+let bridgeProcess: ChildProcess | undefined;
+let base = "";
+let counter = 0;
+
+beforeAll(async () => {
+  const bridge = await startBridge(PROBE_MS);
+
+  bridgeProcess = bridge.proc;
+  base = bridge.base;
 });
 
 afterAll(() => {
@@ -621,26 +640,38 @@ describe("a Legacy stdio server", () => {
   });
 
   it("reads a silent server, an erroring one and one that exits as Legacy, and a fresh process takes the handshake", async () => {
-    for (const behaviour of ["silent", "error", "exit"]) {
-      const server = config("legacy", { FIXTURE_DISCOVER: behaviour });
-      const started = Date.now();
-      const probed = await post(server, rpc(1, "server/discover", envelope));
+    // Its own bridge, with a short probe: the shared one waits long enough for a slow Modern child.
+    const quick = await startBridge(SILENCE_MS);
+    const shared = base;
 
-      expect(probed.status).toBe(400);
+    base = quick.base;
 
-      // The silence took the probe's time (400 ms here, 15 s in the image); the others answered at once.
-      if (behaviour === "silent") expect(Date.now() - started).toBeGreaterThanOrEqual(350);
+    try {
+      for (const behaviour of ["silent", "error", "exit"]) {
+        const server = config("legacy", { FIXTURE_DISCOVER: behaviour });
+        const started = Date.now();
+        const probed = await post(server, rpc(1, "server/discover", envelope));
 
-      // The verdict is kept: no spawn for a Modern request without a hint.
-      const again = await post(server, callTool(2, "echo", {}, envelope));
+        expect(probed.status).toBe(400);
 
-      expect(again.status).toBe(400);
+        // The silence took the probe's time (400 ms here, 15 s in the image); the others answered at once.
+        if (behaviour === "silent")
+          expect(Date.now() - started).toBeGreaterThanOrEqual(SILENCE_MS - 50);
 
-      const session = await initialize(server);
-      const children = await childrenOf(server);
+        // The verdict is kept: no spawn for a Modern request without a hint.
+        const again = await post(server, callTool(2, "echo", {}, envelope));
 
-      expect(children).toHaveLength(1);
-      expect(children[0]).toMatchObject({ spawnId: session, era: "legacy", state: "running" });
+        expect(again.status).toBe(400);
+
+        const session = await initialize(server);
+        const children = await childrenOf(server);
+
+        expect(children).toHaveLength(1);
+        expect(children[0]).toMatchObject({ spawnId: session, era: "legacy", state: "running" });
+      }
+    } finally {
+      base = shared;
+      quick.proc.kill("SIGTERM");
     }
   });
 });
