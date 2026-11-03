@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { mcpServerSetAnswer } from "./mcp-registry.ts";
 import {
   mcpAccessToken,
   type Refresh,
@@ -914,6 +915,28 @@ describe("the bounds", () => {
 });
 
 describe("the revision", () => {
+  it("is what the host's pull (mcpServerSet) answers, and follows each change to a sign-in", () =>
+    fresh(async ({ setGlobal, signInWith, signIns, store, keyOf }) => {
+      const pulled = () =>
+        mcpServerSetAnswer(store, { environment: DEFAULT_ENVIRONMENT }, NOW).signInsRevision;
+
+      setGlobal({ sentry: SENTRY });
+      expect(pulled()).toBe(0);
+
+      await signInWith("sentry");
+      expect(pulled()).toBe(1);
+      expect(pulled()).toBe(signIns.revision());
+
+      // A pull itself changes nothing, and neither does a set that carries no new sign-in.
+      expect(pulled()).toBe(1);
+      setGlobal({ sentry: SENTRY, linear: { url: "https://mcp.linear.app/mcp" } });
+      expect(pulled()).toBe(1);
+
+      signIns.dropTokens(keyOf("sentry").hash, "invalid_grant", NOW);
+      expect(pulled()).toBe(2);
+      expect(pulled()).toBe(signIns.revision());
+    }));
+
   it("rises with a sign-in, a sign-out, a rebind and a drop of tokens, and with nothing else", () =>
     fresh(async ({ signIns }) => {
       const key = fakeKey(1);

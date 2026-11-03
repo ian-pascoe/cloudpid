@@ -37,6 +37,21 @@ export const SIGN_IN_WAITER_TTL_MS = 30 * 24 * 60 * 60_000;
 /** The document that holds the revision. */
 export const SIGN_INS_REVISION_DOCUMENT = "mcp-sign-ins-revision";
 
+/** The revision a document body holds: 0 for none, or for a body that is not a positive integer. */
+const parseRevision = (body: string | null | undefined): number => {
+  const parsed = Number(body);
+
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+};
+
+/**
+ * The revision of the sign-ins as a store's documents hold it, for the answer to the host's pull (mcpServerSet): the
+ * counter the sign-in store itself reads and rises.
+ */
+export const signInsRevisionOf = (store: {
+  readonly getDocument: (name: string) => string | null;
+}): number => parseRevision(store.getDocument(SIGN_INS_REVISION_DOCUMENT));
+
 /** What a sign-in's status is: `ok`, or what stands in the way (`required`: it has no tokens). */
 export const SIGN_IN_STATUSES = [
   "ok",
@@ -511,9 +526,7 @@ export const openMcpSignIns = (
       SIGN_INS_REVISION_DOCUMENT,
     )?.body;
 
-    const parsed = Number(body);
-
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+    return parseRevision(body);
   };
 
   const rise = (now: number): void => {

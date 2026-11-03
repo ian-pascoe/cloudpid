@@ -33,6 +33,7 @@ import {
   resolvedMcpServers,
   shouldPushMcpSet,
 } from "./mcp-set.ts";
+import { signInsRevisionOf } from "./mcp-sign-ins.ts";
 import { resolveMcpServerValues } from "./mcp-values.ts";
 import { type DocumentStore, mcpLayersOf } from "./settings.ts";
 import type { RegistryStore } from "./store.ts";
@@ -127,8 +128,9 @@ export const mcpServerSetAnswer = (
 ): McpServerSetAnswer => {
   const known = environmentMcpSet(store, input.environment);
 
-  // No MCP sign-ins yet: the revision comes with them.
-  if (known === null) return { hash: EMPTY_MCP_SET_HASH, signInsRevision: 0 };
+  const signInsRevision = signInsRevisionOf(store);
+
+  if (known === null) return { hash: EMPTY_MCP_SET_HASH, signInsRevision };
 
   const state = readHanded(store);
   const revision = state.lastRevision + 1;
@@ -146,7 +148,7 @@ export const mcpServerSetAnswer = (
     now,
   );
 
-  const answer: McpServerSetAnswer = { hash: known.hash, signInsRevision: 0, revision };
+  const answer: McpServerSetAnswer = { hash: known.hash, signInsRevision, revision };
 
   return known.hash === (input.heldHash ?? EMPTY_MCP_SET_HASH)
     ? answer
