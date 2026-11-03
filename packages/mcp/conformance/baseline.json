@@ -32,7 +32,7 @@
         ]
       },
       {
-        "reason": "The core has no `input_required` or `resume` yet (the questions slice)",
+        "reason": "The core answers `input_required` rounds and resumes them since #480, but the scenario client does not drive this scenario yet (it calls none of its tools)",
         "entries": ["sep-2322-client-request-state"]
       }
     ],

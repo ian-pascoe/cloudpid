@@ -136,8 +136,10 @@ export const ROOTS_TOOL = {
 
 /**
  * The fakes' tool that asks the client a form (`elicitation/create`) during the call, and answers with what it got: the
- * `action` and `content` as JSON text, or, when the client refused the request, `isError` with the error's message. A
- * Modern request cannot ask this way, so it answers that it could not.
+ * `action` and `content` as JSON text, or, when the client refused the request, `isError` with the error's message. On
+ * Modern it asks in `input_required` rounds instead (`rounds`, default 1, of `forms` forms each, default 1, keyed `q1`,
+ * `q2`, … and with `roots`, a `roots/list` too), each with a `requestState` of `round-<n>`, and answers the last round's
+ * responses as JSON text; every answer it gets is recorded in `asked`, with the round and the state it came back with.
  */
 export const ASK_TOOL = {
   name: "ask",
@@ -149,6 +151,9 @@ export const ASK_TOOL = {
       requestedSchema: { type: "object" },
       standalone: { type: "boolean" },
       giveUpMs: { type: "number" },
+      rounds: { type: "number" },
+      forms: { type: "number" },
+      roots: { type: "boolean" },
     },
   },
 };
@@ -160,6 +165,10 @@ const AskArguments = Schema.Struct({
   standalone: Schema.optionalKey(Schema.Boolean),
   /** Stop waiting for the answer after this many milliseconds: the server cancels its own request. */
   giveUpMs: Schema.optionalKey(Schema.Int),
+  /** Modern: how many rounds of questions, and how many forms in each; and whether each round asks for Roots too. */
+  rounds: Schema.optionalKey(Schema.Int),
+  forms: Schema.optionalKey(Schema.Int),
+  roots: Schema.optionalKey(Schema.Boolean),
 });
 
 /** The MIME type of an MCP App's HTML (`docs/architecture/mcp-apps.md` → Declaring and reading Apps). */
@@ -470,9 +479,37 @@ const fakeMcp = (
       }
 
       case "ask": {
-        const { message, requestedSchema, standalone, giveUpMs } = Schema.decodeUnknownSync(
-          AskArguments,
-        )(request.params.arguments);
+        const { message, requestedSchema, standalone, giveUpMs, rounds, forms, roots } =
+          Schema.decodeUnknownSync(AskArguments)(request.params.arguments);
+
+        if (modern) {
+          const state = ctx.mcpReq.requestState<string>();
+          const round = state === undefined ? 0 : Number(state.replace("round-", ""));
+          const responses = ctx.mcpReq.inputResponses ?? {};
+
+          if (round > 0 && state !== undefined) {
+            // SAFETY: the client's answers are JSON.
+            options.asked?.push({ round, state, responses: { ...responses } as Json });
+          }
+
+          if (round >= (rounds ?? 1)) {
+            return { content: [{ type: "text", text: JSON.stringify(responses) }] };
+          }
+
+          const inputRequests: Record<string, ReturnType<typeof inputRequired.elicit>> = {};
+
+          for (let form = 1; form <= (forms ?? 1); form++) {
+            inputRequests[`q${form}`] = inputRequired.elicit({
+              message,
+              // SAFETY: the test gives a form's schema, which the SDK's own check reads.
+              requestedSchema: (requestedSchema ?? { type: "object", properties: {} }) as never,
+            });
+          }
+
+          if (roots === true) inputRequests["roots"] = inputRequired.listRoots();
+
+          return inputRequired({ inputRequests, requestState: `round-${round + 1}` });
+        }
 
         try {
           // SAFETY: the test gives a form's schema, which the SDK's own check reads.

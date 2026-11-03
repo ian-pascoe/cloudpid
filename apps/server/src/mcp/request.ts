@@ -20,6 +20,10 @@
 //   (`resources.ts`).
 // - **`prompts/get`** (#463): the owner's pick of a prompt of a server whose inventory lists it, a read through the engine
 //   with the checks of a call, bounded at 30 s (or the entry's lower `timeout`).
+// - **`resume`** (#480): a `tools/call` answered `InputRequired` (only to a caller with `ctx.answers.defer`), sent again
+//   with the answers to its deferred questions. It carries the tool, the `conn` the server asked on (another one now is
+//   `ServerChanged`, nothing sent) and the `ResumeState`, which the host passes on unread and never keeps; it is answered
+//   as a `tools/call` is (`docs/architecture/mcp-server-requests.md` → Questions).
 // - **`ui/html`** (#466): App HTML for a View that mounts. By `hash` it is the host's own storage, which needs only a
 //   server of the set. By `uri` it is a read through the engine, joined with the one in flight, with the checks of a call.
 //
@@ -39,6 +43,7 @@ import {
   McpHostAppHtmlRequest,
   McpHostCompleted,
   McpHostPromptGet,
+  McpHostInputRequired,
   McpHostRequest,
   McpHostTaskAck,
   McpHostTaskStarted,
@@ -189,7 +194,8 @@ const toolCall = (
         ),
       );
 
-    // A call is offered a task only when the caller can wait for one, for an HTTP server; a `tasks/*` request is a task's.
+    // A call (or its resume) is offered a task only when the caller can wait for one, for an HTTP server; a `tasks/*`
+    // request is a task's.
     const offeredTask = !isMcpHostTaskRequest(call) && view.reach === "http" && mayWaitForTask(ctx);
     const callCtx: Mutable<McpEngineToolCall["ctx"]> = { ...callContextOf(ctx) };
 
@@ -204,7 +210,7 @@ const toolCall = (
     // A call names a tool the inventory lists; a task's tool, which only checks a completed result, may have gone.
     if (Option.isNone(sending)) {
       return NotAllowed.make({
-        message: `MCP server ${name} lists no tool ${isMcpHostTaskRequest(call) ? call.params.tool : call.params.name}`,
+        message: `MCP server ${name} lists no tool ${call.op === "tools/call" ? call.params.name : call.params.tool}`,
       });
     }
 
@@ -275,6 +281,7 @@ const toolCall = (
       identity: view.server.identity,
       signIn: sent.success.signIn,
       mayStartTask: offeredTask,
+      mayAsk: ctx.answers?.defer === true,
     });
 
     // Only a completed call answers an App's hash.
@@ -570,6 +577,15 @@ const engineRequestOf = (
 
     case "tasks/cancel":
       return Option.some({ op: "tasks/cancel", taskId: call.params.taskId, ctx });
+
+    case "resume":
+      return Option.map(heldTool(call.params.tool), (tool) => ({
+        op: "resume",
+        tool,
+        resume: call.params.resume,
+        answers: call.params.answers,
+        ctx,
+      }));
   }
 };
 
@@ -581,6 +597,8 @@ interface Answered {
   readonly signIn: string | undefined;
   /** Whether the call could be offered a task: one that could not has no task to be answered with. */
   readonly mayStartTask: boolean;
+  /** Whether the caller keeps questions (`ctx.answers.defer`): one that does not has none to be answered with. */
+  readonly mayAsk: boolean;
 }
 
 /**
@@ -610,6 +628,20 @@ const answered = (
 
   switch (call.op) {
     case "tools/call":
+    case "resume":
+      if (result.kind === "input_required") {
+        // Never to a call whose caller keeps no questions.
+        return about.mayAsk
+          ? McpHostInputRequired.make({
+              requests: result.requests,
+              resume: result.resume,
+              conn: about.conn,
+              identity: about.identity,
+              ...origin,
+            })
+          : misread;
+      }
+
       if (result.kind === "task") {
         // Never to a call that could not be offered one.
         return about.mayStartTask

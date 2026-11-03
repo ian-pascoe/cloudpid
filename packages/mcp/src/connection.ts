@@ -54,12 +54,14 @@ import type * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import type { Mutable } from "effect/Types";
 import { authChallenge, classify, type Failure, signInRequired } from "./failures.ts";
 import { type PausableDeadline, pausableDeadline } from "./deadline.ts";
+import { isJsonObject, JsonObject } from "./json.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
 import { contentsSha256 } from "./read-hash.ts";
 import { MCP_LOG_LEVEL } from "./log.ts";
@@ -77,6 +79,9 @@ import {
   EraRowV1,
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
+  MCP_INPUT_ROUNDS,
+  MCP_RESUME_STATE_EXPIRED,
+  MCP_RESUME_STATE_MAX_BYTES,
   MCP_LIST_WALK_TIMEOUT_MS,
   MCP_TASK_TIMEOUT_MS,
   MCP_TASKS_EXTENSION,
@@ -91,11 +96,13 @@ import {
   type McpTaskInputResponses,
   McpTaskSnapshot,
   ProtocolViolation,
+  ResumeStateV1,
   type SessionRow,
   SessionRowV1,
   SignInRequired,
   StepUpRequired,
   TimedOut,
+  TooLarge,
   Unreachable,
   Unsupported,
 } from "./types.ts";
@@ -214,7 +221,7 @@ export interface ReadComplete extends Complete<ReadResourceResult> {
   readonly sha256: string;
 }
 
-/** A request that completed. Later slices add `input_required`. */
+/** A request that completed. */
 export interface Complete<A> {
   readonly kind: "complete";
   readonly value: A;
@@ -237,8 +244,23 @@ export interface TaskStarted {
   readonly fetchedAt: number;
 }
 
-/** A request's result: it completed, or (for a task-capable `tools/call` only) it started an MCP task. */
-export type Outcome<A> = Complete<A> | TaskStarted;
+/**
+ * A Modern `tools/call` whose server asked questions the caller deferred (`input_required`; ADR-0037): only a call whose
+ * `ctx.answers.defer` is set is ever answered so. `requests` are the deferred questions, as `onInput` was handed them;
+ * `resume` is the `ResumeState` that `resume` sends the call again from, with their answers. The core keeps nothing.
+ */
+export interface InputRequired {
+  readonly kind: "input_required";
+  readonly requests: ReadonlyArray<McpInputRequest>;
+  readonly resume: ResumeStateV1;
+  readonly fetchedAt: number;
+}
+
+/**
+ * A request's result: it completed, (for a task-capable `tools/call` only) it started an MCP task, or (for a Modern
+ * `tools/call` whose caller defers questions) it waits for answers.
+ */
+export type Outcome<A> = Complete<A> | TaskStarted | InputRequired;
 
 /** A `tasks/get` answer: where the task stands and, once it has `completed`, the result of the call that started it. */
 export interface TaskState {
@@ -281,8 +303,8 @@ interface Own {
   readonly token: string;
 }
 
-/** What a question is answered with, in the core: the result the server gets, or a refusal that is its error. */
-type QuestionAnswer = McpInputAnswer;
+/** What a Legacy question is answered with, in the core: the result the server gets, or a refusal that is its error. */
+type QuestionAnswer = Exclude<McpInputAnswer, { readonly kind: "defer" }>;
 
 /** The call a question may be tied to: how long its questions may wait, and its clock to pause meanwhile. */
 interface Asking {
@@ -315,6 +337,18 @@ export interface McpConnection {
     ctx: McpCallContext,
   ) => Effect.Effect<Outcome<CallToolResult>, McpError>;
   readonly task: McpTasks;
+  /**
+   * Sends a Modern `tools/call` that answered `input_required` again from its `ResumeState`, with the answers to the
+   * questions it deferred, by key (every one, or nothing is sent), on a new id: the result, another round of
+   * questions, or a task. `tool` is the tool's definition, for the call's headers. A state this build cannot read (a
+   * format `v` past its 30 days) fails `Unsupported`, as does a server that no longer speaks Modern.
+   */
+  readonly resume: (
+    state: Schema.Json,
+    answers: McpTaskInputResponses,
+    tool: Tool,
+    ctx: McpCallContext,
+  ) => Effect.Effect<Outcome<CallToolResult>, McpError>;
   /**
    * One page of `kind` from `cursor` (the first page without one), for a caller that shows pages and walks them itself.
    * A read, so it is sent once more after a cut; with the cache hints of the page's result. A server without the
@@ -378,10 +412,31 @@ interface RequestPolicy {
   readonly resend?: boolean;
 }
 
-/** What a `tools/call` attempt got: the task wire's answer, or the client's result. */
+/** What a `tools/call` attempt got: the task wire's answer, or the client's result (on Modern, maybe `input_required`). */
 type CallSent =
   | { readonly kind: "wire"; readonly answer: Result }
-  | { readonly kind: "client"; readonly value: CallToolResult };
+  | { readonly kind: "client"; readonly value: CallToolResult | Result };
+
+/** A `tools/call` sent again with the answers to a round of questions (Modern; ADR-0037). */
+interface Retry {
+  readonly inputResponses: McpTaskInputResponses;
+  readonly requestState?: string;
+}
+
+/** One question of a Modern round: answered at once, or deferred by the caller. */
+type RoundAnswer =
+  | { readonly key: string; readonly answer: JsonObject }
+  | { readonly key: string; readonly defer: McpInputRequest };
+
+/** A round of questions a Modern server answered a `tools/call` with: its requests by key, and its state. */
+interface Asked {
+  readonly kind: "asked";
+  readonly inputRequests: Readonly<Record<string, JsonObject>>;
+  readonly requestState?: string;
+}
+
+/** What a `tools/call` attempt came to: an outcome, or a round of questions to answer. */
+type CallAnswer = Outcome<CallToolResult> | Asked;
 
 /** What a request on the task wire is given beside its method and params. */
 interface WireOptions {
@@ -487,6 +542,16 @@ const TaskGetAnswer = Schema.Struct({
 const decodeTaskGetAnswer = Schema.decodeUnknownOption(TaskGetAnswer);
 
 const decodeJson = Schema.decodeUnknownOption(Schema.Json);
+
+/** A Modern `input_required` answer: its questions by key (absent for a round that only carries state), and its state. */
+const AskedAnswer = Schema.Struct({
+  inputRequests: Schema.optionalKey(Schema.Record(Schema.String, JsonObject)),
+  requestState: Schema.optionalKey(Schema.String),
+});
+
+const decodeAsked = Schema.decodeUnknownOption(AskedAnswer);
+
+const decodeResumeState = Schema.decodeUnknownOption(ResumeStateV1);
 
 const decodeSessionRow = Schema.decodeUnknownOption(SessionRowV1);
 
@@ -743,7 +808,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         return cancelled;
       }
 
-      return outcome;
+      // A Legacy question lives only as long as its call: one kept for later is cancelled (ADR-0037).
+      return outcome.kind === "defer" ? cancelled : outcome;
     });
 
   /** Whether the server is asked for logs: `onLog` hears them, and the server declares `logging`. */
@@ -1111,32 +1177,223 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     });
 
   /**
-   * Calls a tool. Whether the call is offered a task is decided at each attempt, on the era and capabilities the server
-   * has then: a call sent again after an era drop to a server that is Legacy now declares nothing.
+   * Sends a tool's call once, or with `retry` the answers to a round of questions. Whether the call is offered a task is
+   * decided at each attempt, on the era and capabilities the server has then: a call sent again after an era drop to a
+   * server that is Legacy now declares nothing, and a retry to one is refused before it is sent.
    */
-  const callTool = (
+  const sendCall = (
     params: CallToolParams,
     ctx: McpCallContext,
-  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    retry?: Retry,
+  ): Effect.Effect<CallAnswer, McpError> =>
     Effect.gen(function* () {
       const timeoutMs = target.timeoutMs ?? CALL_TIMEOUT_MS;
 
       const sent = yield* withAsking(ctx, timeoutMs, (own) =>
         request<CallSent>(
-          (client, signal) =>
-            offersTask(ctx)
-              ? callOnTaskWire(params, ctx, signal).then(
+          (client, signal) => {
+            // Answers go only to the Modern server that asked: one that dropped its era since has no round to answer.
+            if (retry !== undefined && live.era !== "modern") {
+              return Promise.reject(
+                Unsupported.make({
+                  message:
+                    "The server no longer speaks the Modern protocol, so its question can't be answered; call the tool again",
+                }),
+              );
+            }
+
+            return offersTask(ctx)
+              ? callOnTaskWire(params, ctx, signal, retry).then(
                   (answer) => ({ kind: "wire", answer }) as const,
                 )
-              : callOnClient(client, params, ctx, signal, own).then(
+              : callOnClient(client, params, ctx, signal, own, retry).then(
                   (value) => ({ kind: "client", value }) as const,
-                ),
+                );
+          },
           true,
           { declared: () => offersTask(ctx) },
         ),
       );
 
-      return yield* sent.kind === "wire" ? readCallAnswer(sent.answer) : completeCall(sent.value);
+      return yield* sent.kind === "wire"
+        ? readCallAnswer(sent.answer)
+        : readClientAnswer(sent.value);
+    });
+
+  /**
+   * Answers one question of a Modern round, by `key`: Roots from the connection's own, an elicitation through the call's
+   * `onInput` when the call offers it (else `cancel`, as for a question with nowhere to go). Anything else was never
+   * offered, and fails the call locally: the server is told nothing (`InputResponse` has no error form).
+   */
+  const answerOne = (
+    key: string,
+    entry: JsonObject,
+    ctx: McpCallContext,
+  ): Effect.Effect<RoundAnswer, McpError> =>
+    Effect.gen(function* () {
+      const method = entry["method"];
+      const params = isJsonObject(entry["params"]) ? entry["params"] : {};
+
+      if (method === "roots/list" && deps.roots !== undefined) {
+        return {
+          key,
+          answer: { roots: Arr.map(deps.roots, (root) => ({ ...root })) },
+        } satisfies RoundAnswer;
+      }
+
+      if (method !== "elicitation/create") {
+        return yield* ProtocolViolation.make({
+          message: `The server asked for ${Predicate.isString(method) ? method : "something"}, which cloudpid did not offer on this call`,
+        });
+      }
+
+      const { onInput } = deps;
+
+      if (onInput === undefined || ctx.answers?.elicitation !== true) {
+        return { key, answer: { action: "cancel" } };
+      }
+
+      const input: McpInputRequest = { key, kind: "elicitation", params, mode: "deferrable" };
+      const answer = yield* onInput(input);
+
+      if (answer.kind === "defer") {
+        // Only a caller that keeps questions defers one; to any other a deferral is a `cancel`.
+        return ctx.answers.defer === true
+          ? { key, defer: input }
+          : { key, answer: { action: "cancel" } };
+      }
+
+      if (answer.kind === "refused") {
+        return yield* Unsupported.make({ message: answer.message });
+      }
+
+      return { key, answer: { ...answer.result } } satisfies RoundAnswer;
+    });
+
+  /**
+   * Runs a Modern call's rounds of questions from `answer`: each round's questions are answered (Roots by the core, the
+   * rest through `onInput`), then the call is sent again with every answer and the server's `requestState`, on a new
+   * id, at most `MCP_INPUT_ROUNDS` rounds. A round with a question the caller deferred ends here, as `input_required`
+   * with the `ResumeState` `resume` goes on from; a partial round is never sent. A result after questions is never
+   * cacheable.
+   */
+  const drive = (
+    params: CallToolParams,
+    ctx: McpCallContext,
+    first: CallAnswer,
+    firstRound: number,
+  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    Effect.gen(function* () {
+      let answer = first;
+      let round = firstRound;
+
+      while (answer.kind === "asked") {
+        if (round > MCP_INPUT_ROUNDS) {
+          return yield* ProtocolViolation.make({
+            message: `The server asked questions for more than ${MCP_INPUT_ROUNDS} rounds`,
+          });
+        }
+
+        const { inputRequests, requestState } = answer;
+        const answered: Record<string, JsonObject> = {};
+        const deferred: Array<McpInputRequest> = [];
+
+        for (const [key, entry] of Record.toEntries(inputRequests)) {
+          const one = yield* answerOne(key, entry, ctx);
+
+          if ("defer" in one) deferred.push(one.defer);
+          else answered[key] = one.answer;
+        }
+
+        if (deferred.length > 0) {
+          const state: Mutable<ResumeStateV1> = {
+            v: 1,
+            method: "tools/call",
+            name: params.tool.name,
+            arguments: { ...params.arguments },
+            answered,
+            deferred: Arr.map(deferred, (each) => each.key),
+            round,
+          };
+
+          if (requestState !== undefined) state.requestState = requestState;
+
+          if (jsonBytes(state) > MCP_RESUME_STATE_MAX_BYTES) {
+            return yield* TooLarge.make({
+              message: "The server's questions are too large to keep for later",
+              limit: MCP_RESUME_STATE_MAX_BYTES,
+            });
+          }
+
+          return {
+            kind: "input_required",
+            requests: deferred,
+            resume: state,
+            fetchedAt: yield* Clock.currentTimeMillis,
+          } satisfies InputRequired;
+        }
+
+        const retry: Mutable<Retry> = { inputResponses: answered };
+
+        if (requestState !== undefined) retry.requestState = requestState;
+
+        answer = yield* sendCall(params, ctx, retry);
+        round += 1;
+      }
+
+      return answer.kind === "complete" && round > 1 ? { ...answer, cacheable: false } : answer;
+    });
+
+  /** Calls a tool, answering a Modern server's rounds of questions as the call's `ctx` and `onInput` allow. */
+  const callTool = (
+    params: CallToolParams,
+    ctx: McpCallContext,
+  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    Effect.flatMap(sendCall(params, ctx), (answer) => drive(params, ctx, answer, 1));
+
+  const resume = (
+    given: Schema.Json,
+    answers: McpTaskInputResponses,
+    tool: Tool,
+    ctx: McpCallContext,
+  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    Effect.gen(function* () {
+      const decoded = decodeResumeState(given);
+
+      if (Option.isNone(decoded)) {
+        return yield* Unsupported.make({ message: MCP_RESUME_STATE_EXPIRED });
+      }
+
+      const state = decoded.value;
+      const missing = Arr.filter(state.deferred, (key) => answers[key] === undefined);
+
+      // A partial round is never sent (`docs/architecture/mcp-server-requests.md` → Several at once on Modern).
+      if (missing.length > 0) {
+        return yield* ProtocolViolation.make({
+          message: `The resume answers too few questions: ${Arr.join(missing, ", ")} unanswered`,
+        });
+      }
+
+      const inputResponses: Record<string, JsonObject> = { ...state.answered };
+
+      for (const key of state.deferred) {
+        const answer = answers[key];
+
+        if (answer !== undefined) inputResponses[key] = answer;
+      }
+
+      const retry: Mutable<Retry> = { inputResponses };
+
+      if (state.requestState !== undefined) retry.requestState = state.requestState;
+
+      const params: CallToolParams = {
+        tool: { ...tool, name: state.name },
+        arguments: state.arguments,
+      };
+
+      return yield* Effect.flatMap(sendCall(params, ctx, retry), (answer) =>
+        drive(params, ctx, answer, state.round + 1),
+      );
     });
 
   const completeCall = (value: CallToolResult) =>
@@ -1150,6 +1407,13 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           fetchedAt,
         }) satisfies Complete<CallToolResult>,
     );
+
+  /** The client's answer to a `tools/call`: its result, or (Modern) a round of questions. */
+  const readClientAnswer = (value: CallToolResult | Result): Effect.Effect<CallAnswer, McpError> =>
+    value["resultType"] === "input_required"
+      ? askedOf(value)
+      : // SAFETY: anything but `input_required` is the result the SDK validated as a `CallToolResult`.
+        completeCall(value as CallToolResult);
 
   /** The abort signal and timeout of a request: the SDK's own, or, with a clock of its own (`own`), the deadline's. */
   const timingOf = (own: Own | undefined, signal: AbortSignal, timeoutMs: number) => ({
@@ -1181,10 +1445,13 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     ctx: McpCallContext,
     signal: AbortSignal,
     own: Own | undefined,
-  ) => {
+    retry: Retry | undefined,
+  ): Promise<CallToolResult | Result> => {
     const call: CallToolRequestParams = {
       name: params.tool.name,
       arguments: { ...params.arguments },
+      // A round's answers and the server's state go back as top-level params (Modern only; ADR-0037).
+      ...retry,
     };
 
     const meta = metaFor(ctx);
@@ -1204,6 +1471,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     };
 
     if (own === undefined) options.resetTimeoutOnProgress = true;
+
+    // A Modern server's questions come back to the core, which answers them itself (`drive`): never the SDK's own loop.
+    if (live.era === "modern") options.allowInputRequired = true;
 
     if (deps.onProgress !== undefined) {
       const progress = progressOf(deps.onProgress);
@@ -1310,7 +1580,12 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     ProtocolViolation.make({ message: `Not an MCP server: ${what}` });
 
   /** A `tools/call` on the task wire: the server's result, or the task it started. */
-  const callOnTaskWire = (params: CallToolParams, ctx: McpCallContext, signal: AbortSignal) => {
+  const callOnTaskWire = (
+    params: CallToolParams,
+    ctx: McpCallContext,
+    signal: AbortSignal,
+    retry?: Retry,
+  ) => {
     const args = { ...params.arguments };
 
     const options: Mutable<WireOptions> = {
@@ -1325,15 +1600,28 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
     return sendOnTaskWire(
       "tools/call",
-      { name: params.tool.name, arguments: args },
+      { name: params.tool.name, arguments: args, ...retry },
       ctx,
       options,
       signal,
     );
   };
 
+  /** A Modern server's round of questions, as it answered a `tools/call`. */
+  const askedOf = (answer: Result): Effect.Effect<CallAnswer, McpError> =>
+    Option.match(decodeAsked(answer), {
+      onNone: () => Effect.fail(notMcp("its questions are malformed")),
+      onSome: ({ inputRequests, requestState }) => {
+        const asked: Mutable<Asked> = { kind: "asked", inputRequests: inputRequests ?? {} };
+
+        if (requestState !== undefined) asked.requestState = requestState;
+
+        return Effect.succeed(asked);
+      },
+    });
+
   /** What the task wire's answer to a `tools/call` made with the extension declared says. */
-  const readCallAnswer = (answer: Result): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+  const readCallAnswer = (answer: Result): Effect.Effect<CallAnswer, McpError> =>
     Effect.gen(function* () {
       const fetchedAt = yield* Clock.currentTimeMillis;
       const { resultType, ...rest } = answer;
@@ -1346,12 +1634,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           : ({ kind: "task", task: started.value, fetchedAt } satisfies TaskStarted);
       }
 
-      if (resultType === "input_required") {
-        return yield* Unsupported.make({
-          message:
-            "The server asked a question, which cloudpid cannot answer in an MCP task call yet",
-        });
-      }
+      if (resultType === "input_required") return yield* askedOf(answer);
 
       if (resultType !== "complete" || !isCallToolResult(rest)) {
         return yield* notMcp("the answer to tools/call is neither a result nor a task");
@@ -1528,6 +1811,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     list,
     callTool,
     task,
+    resume,
     listPage,
     readResource,
     getPrompt,
@@ -1615,6 +1899,10 @@ const jsonObjectOf = (
     | ElicitRequestParams
     | undefined,
 ) => Option.getOrElse(toJsonObject(JSON.stringify(value ?? {})), () => ({}));
+
+/** How many bytes `value` weighs as JSON. */
+const jsonBytes = (value: Schema.Json) =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength;
 
 /** Keeps a Modern server's era row, unless its `server/discover` result is over 64 KiB (D3). */
 const keepModernEra = (eras: RowStore, version: string, discover: DiscoverResult, now: number) => {

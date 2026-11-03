@@ -301,6 +301,8 @@ export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostA
  *   `request({ op: "ui/html" })` (`docs/architecture/mcp-apps.md` → Declaring and reading Apps).
  * - `resources`: the host answers `request({ op: "resources/list" | "resources/templates/list" | "resources/read" })`
  *   (`docs/architecture/mcp-in-a-session.md` → Resource tools).
+ * - `resume`: a `tools/call` with `ctx.answers.defer` may be answered `InputRequired`, and the host answers
+ *   `request({ op: "resume" })` (`mcp-server-requests.md` → Questions).
  *
  * The Session side names those of these its MCP tools use: `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`) the ones
  * they cannot be built without, `MCP_OPTIONAL_TOOL_FEATURES` the ones it does without when the host lacks them (`resources`).
@@ -312,6 +314,7 @@ export const MCP_HOST_FEATURES: ReadonlyArray<string> = [
   "tasks",
   "app_html",
   "resources",
+  "resume",
 ];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */

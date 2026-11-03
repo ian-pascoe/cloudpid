@@ -39,6 +39,7 @@ import {
   McpEngineRequest,
   type McpEngineRequestEncoded,
   McpEngineRequestResult,
+  type McpEngineInputRequired,
   type McpEngineTaskAck,
   type McpEngineTaskStarted,
   type McpEngineTaskState,
@@ -461,6 +462,8 @@ const toolNamed = (tools: ReadonlyArray<McpToolDefinition>, name: string) =>
 
 type ToolCall = McpEngineRequest & { readonly op: "tools/call" };
 
+type Resume = McpEngineRequest & { readonly op: "resume" };
+
 type ResourceRead = McpEngineRequest & { readonly op: "resources/read" };
 
 type ResourcePage = McpEngineRequest & {
@@ -525,7 +528,8 @@ type RequestOutcome =
   | Omit<McpEngineFailed, "state">
   | Omit<McpEngineTaskStarted, "state">
   | Omit<McpEngineTaskState, "state">
-  | Omit<McpEngineTaskAck, "state">;
+  | Omit<McpEngineTaskAck, "state">
+  | Omit<McpEngineInputRequired, "state">;
 
 /** Runs a `tools/call`, checking its `structuredContent`. */
 const runToolCall = Effect.fnUntraced(function* (
@@ -543,8 +547,63 @@ const runToolCall = Effect.fnUntraced(function* (
     call.tokens,
   );
 
-  const extras = Option.getOrElse(refreshed, () => ({}));
+  return yield* callAnswer(
+    sent,
+    tool,
+    Option.getOrElse(refreshed, () => ({})),
+    {
+      call,
+      env,
+      validators,
+      bridge,
+    },
+  );
+});
 
+/**
+ * Sends a `tools/call` that answered `input_required` again from its `ResumeState`, with the answers: answered as a
+ * `tools/call` is (`docs/architecture/mcp-server-requests.md` → Questions).
+ */
+const runResume = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: Resume,
+  env: CallEnvironment,
+  validators: ValidatorsApi,
+  bridge: StdioBridge | undefined,
+) {
+  const sent = yield* connection
+    .resume(
+      req.resume,
+      req.answers,
+      // SAFETY: a definition the server listed, decoded as one; the SDK reads it as its `Tool`.
+      req.tool as Parameters<McpConnection["resume"]>[2],
+      req.ctx,
+    )
+    .pipe(Effect.result);
+
+  return yield* callAnswer(sent, req.tool, {}, { call, env, validators, bridge });
+});
+
+/** What a call's answer is made with besides itself. */
+interface Answering {
+  readonly call: CallContext;
+  readonly env: CallEnvironment;
+  readonly validators: ValidatorsApi;
+  readonly bridge: StdioBridge | undefined;
+}
+
+/**
+ * What a `tools/call` (or its `resume`) answers: its failure, the task it started, the questions its caller deferred, or
+ * its result with its `structuredContent` checked. What the server says of a task or a question is scrubbed as a result
+ * is; the `ResumeState` goes back as the core made it, the server's `requestState` byte for byte.
+ */
+const callAnswer = Effect.fnUntraced(function* (
+  sent: Result.Result<Effect.Success<ReturnType<McpConnection["callTool"]>>, McpError>,
+  tool: McpToolDefinition,
+  extras: Partial<Refreshed>,
+  { call, env, validators, bridge }: Answering,
+) {
   if (Result.isFailure(sent)) {
     return {
       kind: "failed",
@@ -554,11 +613,21 @@ const runToolCall = Effect.fnUntraced(function* (
   }
 
   // A task is what a call with `ctx.allowTask` may be answered with, and only such a call is (the core declares the
-  // extension for no other). What the server says of it is scrubbed as a result is.
+  // extension for no other).
   if (sent.success.kind === "task") {
     return {
       kind: "task",
       task: scrubValues(sent.success.task, call.tokens),
+      ...extras,
+    } satisfies RequestOutcome;
+  }
+
+  // Questions are what a call with `ctx.answers.defer` may be answered with, and only such a call is.
+  if (sent.success.kind === "input_required") {
+    return {
+      kind: "input_required",
+      requests: scrubValues(sent.success.requests, call.tokens),
+      resume: sent.success.resume,
       ...extras,
     } satisfies RequestOutcome;
   }
@@ -718,7 +787,10 @@ const runPrompt = Effect.fnUntraced(function* (
 const runList = Effect.fnUntraced(function* (
   connection: McpConnection,
   call: CallContext,
-  req: Exclude<McpEngineRequest, ToolCall | TaskOp | ResourceRead | ResourcePage | PromptGet>,
+  req: Exclude<
+    McpEngineRequest,
+    ToolCall | TaskOp | ResourceRead | ResourcePage | PromptGet | Resume
+  >,
   env: CallEnvironment,
   validators: ValidatorsApi,
 ) {
@@ -792,12 +864,17 @@ export const request = Effect.fn("mcp.engine.request")(function* (
       prior,
       hooks,
       env,
-      mayHaveRun: req.op === "tools/call" || (isTaskRequest(req) && req.op !== "tasks/get"),
+      mayHaveRun:
+        req.op === "tools/call" ||
+        req.op === "resume" ||
+        (isTaskRequest(req) && req.op !== "tasks/get"),
     },
     (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> => {
       if (req.op === "tools/call") {
         return runToolCall(connection, context, req, env, validators, bridge);
       }
+
+      if (req.op === "resume") return runResume(connection, context, req, env, validators, bridge);
 
       if (isTaskRequest(req)) return runTaskOp(connection, context, req, env, validators);
 
