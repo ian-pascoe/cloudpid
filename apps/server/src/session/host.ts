@@ -839,11 +839,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /** The Context Window conversation `conversationId` is in: its head marker's entry, or `start` before any. */
   const windowOf = (conversationId: ConversationId) =>
-    attempt("context", async () => {
-      const conversation = await harness.harness.conversation(conversationId, context);
-      const view = await conversation?.context(context);
+    attempt("headMarker", async () => {
+      const marker = await harness.harness.commit(
+        (tx) => tx.latestHeadMarker(conversationId),
+        context,
+      );
 
-      return String(view?.head?.id ?? "start");
+      return String(marker?.id ?? "start");
     }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("The conversation's Context Window is unknown", error).pipe(

@@ -3,13 +3,13 @@
 // server not discovered yet may have a `direct` tool (the first request waits only for those).
 // @effect-diagnostics missingPipeableSignature:off -- readers of plain values, not combinators.
 import { type McpExposure, matchesToolPattern, mcpToolPrefix } from "@cloudpid/config";
-import type { McpServerInventory } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import type { McpBuildServer } from "./tools.ts";
 
 /** An Exposure as an entry spells it; `codemode-deferred` and anything this build does not know read as `codemode`. */
 const ExposureWire = Schema.String.pipe(
@@ -34,7 +34,7 @@ const ExposureKeys = Schema.Struct({
 const decodeExposureKeys = Schema.decodeUnknownOption(ExposureKeys);
 
 /** A server's Exposure keys as its entry in force carries them; an entry this build cannot read has the defaults. */
-export const exposureKeys = (server: McpServerInventory) =>
+export const exposureKeys = (server: Pick<McpBuildServer, "server">) =>
   Option.getOrElse(decodeExposureKeys(server.server), () => ({
     exposure: "codemode" as const,
     toolExposure: {},
@@ -59,7 +59,7 @@ const mayMatchPrefix = (pattern: string, prefix: string): boolean => {
  * name one of its tools. A server none of whose tools can be is never waited for.
  */
 export const mayBeDirect = (
-  server: McpServerInventory,
+  server: Pick<McpBuildServer, "name" | "server">,
   offered: ReadonlyArray<string>,
 ): boolean => {
   const { exposure, toolExposure } = exposureKeys(server);

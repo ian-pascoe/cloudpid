@@ -480,12 +480,6 @@ export const SessionLive = Session.make(
           kv,
           workspace: Effect.tryPromise(() => placement()).pipe(
             Effect.map(({ workspace: id, object }) => (id === null ? null : object)),
-            Effect.catchCause((cause) =>
-              Effect.logWarning(
-                "The Session's Workspace is unknown; it has no MCP tools",
-                cause,
-              ).pipe(Effect.as(null)),
-            ),
           ),
           ready: (object) =>
             Effect.tryPromise(() => workspaces.getByName(object).noteSessionActivity()),

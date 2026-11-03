@@ -4,8 +4,9 @@
 //
 // The call runs inside the caller's invocation, so the caller's `untilAborted` and `onProgress` stubs live as long as
 // it does (#409 answer 2), and they go on to the engine as they came. It takes a request slot on its server (8) and on
-// the host (32), then a slot of the engine queue as a call, served before background work (`limits.ts`); a call that
-// waits for a slot counts the wait toward nothing of the server's. The caller's abort ends a wait at once; once sent,
+// the host (32), then a slot of the engine queue as a call, served before background work (`limits.ts`). The wait for
+// a slot counts toward the call's timeout: a call still waiting when its timeout passes is answered `Cut` that did not
+// run, never sent, and one sent gives the engine what is left of it. The caller's abort ends a wait at once; once sent,
 // the engine cuts the server request itself. Its target is a discovery's (`targetOf`): the `${NAME}` values resolved, and
 // the Secret ones listed for the engine to scrub (`redact`). The logs the server sent come back in the result, and are
 // kept as a discovery's are (`recordLogs`).
@@ -53,6 +54,9 @@ const decodeDefinition = Schema.decodeUnknownOption(McpToolDefinition);
 type McpEngineToolCall = Extract<McpEngineRequest, { readonly op: "tools/call" }>;
 
 const callFailed = (error: McpHostCallFailed["error"]) => McpHostCallFailed.make({ error });
+
+/** A server's `timeout` when its entry has none (`targetOf` always sets one). */
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
  * Pending until the caller aborts; never, for a caller with no `untilAborted`. A caller that died rejects it, which
@@ -140,6 +144,9 @@ export const request = (
     /** Whether the engine was given the call: an abort before it was cannot have run anything. */
     let sent = false;
 
+    const timeoutMs = target.success.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const queuedAt = yield* Clock.currentTimeMillis;
+
     const callCtx: Mutable<McpEngineToolCall["ctx"]> = { origin: ctx.origin };
 
     if (ctx.conversation !== undefined) callCtx.conversation = ctx.conversation;
@@ -154,26 +161,48 @@ export const request = (
 
     if (params.arguments !== undefined) sending.arguments = params.arguments;
 
-    const engineCall = Effect.suspend(() => {
+    const engineCall = Effect.gen(function* () {
+      const waited = (yield* Clock.currentTimeMillis) - queuedAt;
+
       sent = true;
 
-      return engine.request(target.success, store.prior(server.conn), sending, hooks);
+      return yield* engine.request(
+        { ...target.success, timeoutMs: Math.max(1, timeoutMs - waited) },
+        store.prior(server.conn),
+        sending,
+        hooks,
+      );
     });
 
-    const answer = yield* caps
-      .inFlight(server.conn, caps.engineCall("call", engineCall))
-      .pipe(
-        Effect.asSome,
-        Effect.raceFirst(Effect.as(abortOf(hooks), Option.none())),
-        Effect.result,
-      );
+    /** The call's timeout passing while it still waits for a slot; once it is sent, the engine keeps the timeout. */
+    const queuedPast = Effect.sleep(timeoutMs).pipe(
+      Effect.andThen(
+        Effect.suspend(() => (sent ? Effect.never : Effect.succeed("timedOut" as const))),
+      ),
+    );
+
+    const answer = yield* caps.inFlight(server.conn, caps.engineCall("call", engineCall)).pipe(
+      Effect.map((result) => ({ result })),
+      Effect.raceFirst(Effect.as(abortOf(hooks), "aborted" as const)),
+      Effect.raceFirst(queuedPast),
+      Effect.result,
+    );
 
     if (Result.isFailure(answer)) {
       // The engine is out of reach, or its RPC broke mid-call: the server may have run it.
       return callFailed(Cut.make({ message: answer.failure.message, mayHaveRun: true }));
     }
 
-    if (Option.isNone(answer.success)) {
+    if (answer.success === "timedOut") {
+      return callFailed(
+        Cut.make({
+          message: `The call waited for a free slot past its ${timeoutMs / 1000} s timeout, and was not sent`,
+          mayHaveRun: false,
+        }),
+      );
+    }
+
+    if (answer.success === "aborted") {
       return callFailed(
         Cut.make({
           message: sent
@@ -184,7 +213,7 @@ export const request = (
       );
     }
 
-    const result = answer.success.value;
+    const { result } = answer.success;
     const now = yield* Clock.currentTimeMillis;
 
     // The rows the call changed are kept as a discovery's are; a write the storage refuses never fails the result.

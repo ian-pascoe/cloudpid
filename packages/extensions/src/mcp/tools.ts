@@ -8,7 +8,8 @@
 // its whole length, so the stubs outlive it. Stop aborts the call's context, which resolves `untilAborted`, and the host
 // cancels. The Session waits at most the server's `timeout` and `MCP_CALL_SLACK_MS` from the call's start or its last
 // progress notice (progress resets the engine's timeout too); past that, or when the RPC breaks, the call reads as
-// `host_lost`, which may have run (`docs/architecture/mcp.md` → Deploys).
+// `host_lost`, which may have run (`docs/architecture/mcp.md` → Deploys). The host answers within the timeout, a wait
+// for a free slot counted in, plus the connects the call makes, which the slack covers.
 import {
   type McpExposure,
   mcpServerNamespace,
@@ -18,9 +19,9 @@ import {
 import {
   isJsonObject,
   type JsonObject,
+  MCP_CONNECT_TIMEOUT_MS,
   type McpHostRequest,
   type McpHostRequestHooks,
-  type McpServerInventory,
 } from "@cloudpid/mcp/types";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -46,8 +47,33 @@ export const extensionName = "mcp";
 /** A server's `timeout` when its entry has none, in seconds (`DEFAULT_MCP_TIMEOUT`). */
 const DEFAULT_TIMEOUT_S = 60;
 
-/** How long past a call's timeout the Session waits for the host's answer before it reads the call as lost: 30 s. */
-export const MCP_CALL_SLACK_MS = 30_000;
+/**
+ * How long past a call's timeout the Session waits for the host's answer before it reads the call as lost: 60 s, the
+ * connects a call may make before it is sent (three when the server's era is in doubt, each up to
+ * `MCP_CONNECT_TIMEOUT_MS`) and 15 s more for the RPCs, so the host answers first whenever it can.
+ */
+export const MCP_CALL_SLACK_MS = 3 * MCP_CONNECT_TIMEOUT_MS + 15_000;
+
+/**
+ * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
+ * build reads (`timeout`, `description` and the Exposure keys), so what a Session keeps of a build never holds the
+ * entry's URL, headers, `env` or OAuth, where a literal credential may be. Decoding an inventory's server drops the rest.
+ */
+export const McpBuildServer = Schema.Struct({
+  name: Schema.String,
+  state: Schema.String,
+  discoveredAt: Schema.optionalKey(Schema.Finite),
+  server: Schema.Struct({
+    timeout: Schema.optionalKey(Schema.Json),
+    description: Schema.optionalKey(Schema.Json),
+    exposure: Schema.optionalKey(Schema.Json),
+    toolExposure: Schema.optionalKey(Schema.Json),
+  }),
+  tools: Schema.Record(Schema.String, Schema.Json).pipe(Schema.Array, Schema.optionalKey),
+  instructions: Schema.optionalKey(Schema.String),
+});
+
+export type McpBuildServer = typeof McpBuildServer.Type;
 
 /** A tool of the inventory, as far as the Session reads it; the rest of its definition stays the host's. */
 const ToolDeclaration = Schema.Struct({
@@ -73,8 +99,8 @@ const parametersOf = (tool: ToolDeclaration): TSchema => {
 };
 
 /** How long the Session waits for a call to `server`'s tools since its start or its last progress, in ms. */
-const waitOf = (server: McpServerInventory, slackMs: number): number => {
-  const timeout = server.server["timeout"];
+const waitOf = (server: McpBuildServer, slackMs: number): number => {
+  const { timeout } = server.server;
 
   return (
     (Predicate.isNumber(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_S) * 1000 + slackMs
@@ -142,7 +168,7 @@ const requestOf = (
 const toolFor = (
   client: McpHostClientService,
   origin: McpCallOrigin,
-  server: McpServerInventory,
+  server: McpBuildServer,
   tool: ToolDeclaration,
   name: string,
   exposure: Exclude<McpExposure, "hidden">,
@@ -212,7 +238,7 @@ const toolFor = (
 
 /** What the `mcp` extension is built from: the host's servers with their tools, and the tools the settings offer. */
 export type McpBuild = {
-  readonly servers: ReadonlyArray<McpServerInventory>;
+  readonly servers: ReadonlyArray<McpBuildServer>;
   readonly offered: ReadonlyArray<string>;
 };
 
@@ -266,14 +292,14 @@ export const mcpExtension = (
  * undiscovered server has none, nor one switched off.
  */
 export const mcpNamespaces = (
-  servers: ReadonlyArray<McpServerInventory>,
+  servers: ReadonlyArray<McpBuildServer>,
 ): ReadonlyArray<CodemodeNamespace> =>
   Arr.filterMap(servers, (server) => {
     if (server.discoveredAt === undefined || server.state === "disabled") return Result.failVoid;
 
     const name = mcpServerNamespace(server.name);
     const namespace: Mutable<CodemodeNamespace> = { name, prefix: name };
-    const description = server.server["description"];
+    const { description } = server.server;
 
     if (Predicate.isString(description) && description !== "") {
       namespace.description = description;

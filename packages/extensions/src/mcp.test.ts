@@ -223,7 +223,7 @@ describe("a request start", () => {
     expect(starts[1]?.known).toBeTypeOf("string");
   });
 
-  it("opens the window at each Context Window's first request, and at the first after the object started", async () => {
+  it("opens the window once per Context Window, whatever restarts come between", async () => {
     const host = fakeMcpHost([DOCS]);
     const store = memoryMcpToolsStore();
     const tools = makeMcpTools(host.client, store);
@@ -238,14 +238,15 @@ describe("a request start", () => {
       tools,
       startOf(1, { caller: { session: "s1", conversation: "7", workspace: "ws:w1" } }),
     );
-    // The object started again.
+    // The object started again, over what it kept: the window is still open; a new one opens.
     await build(makeMcpTools(host.client, store), startOf(1, { window: "42" }));
+    await build(makeMcpTools(host.client, store), startOf(1, { window: "43" }));
 
     const opened = host.calls.flatMap((each) =>
       each.method === "requestStart" ? [each.input.windowOpened ?? false] : [],
     );
 
-    expect(opened).toEqual([true, false, true, false, true, true]);
+    expect(opened).toEqual([true, false, true, false, true, false, true]);
   });
 
   it("builds again only when the version, the offered tools or the features change", async () => {
@@ -330,6 +331,47 @@ describe("a request start", () => {
 
     expect(built.mcp.tools?.map((tool) => tool.name)).toContain("mcp__docs_site__index");
   });
+
+  it("keeps what an unchanged start confirmed over a read sent before it", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const gate = Promise.withResolvers<void>();
+    let gated = false;
+
+    // The next inventory read answers what the host held when it was sent, once the test lets it.
+    const client: McpHostClientService = {
+      ...host.client,
+      servers: (input) =>
+        input.parts.length === 0 || !gated
+          ? host.client.servers(input)
+          : host.client.servers(input).pipe(Effect.tap(() => Effect.promise(() => gate.promise))),
+    };
+
+    const tools = makeMcpTools(client);
+
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+
+    // The host moves on, and a start's read of it is in flight; the host moves back before another start.
+    gated = true;
+    host.set([{ ...DOCS, tools: [...DOCS.tools, { name: "index" }] }]);
+
+    const stale = Effect.runPromise(tools.requestStart(startOf(1)));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gated = false;
+    host.set([DOCS]);
+    await Effect.runPromise(
+      tools.requestStart(
+        startOf(1, { caller: { session: "s1", conversation: "7", workspace: "ws:w1" } }),
+      ),
+    );
+
+    gate.resolve();
+    await stale;
+
+    const built = Option.getOrThrow(tools.reinstall([]));
+
+    expect(built.mcp.tools?.map((tool) => tool.name)).not.toContain("mcp__docs_site__index");
+  });
 });
 
 describe("a reinstall over unchanged tools", () => {
@@ -400,6 +442,50 @@ describe("a reinstall over unchanged tools", () => {
 
     // Nothing kept: nothing to install.
     expect(Option.isNone(makeMcpTools(host.client).reinstall([]))).toBe(true);
+  });
+
+  it("keeps only what the build reads, never an entry's literal headers or OAuth secret", async () => {
+    const host = fakeMcpHost([
+      {
+        ...DOCS,
+        entry: {
+          headers: { Authorization: "Bearer literal-token-123" },
+          oauth: { clientId: "client", clientSecret: "literal-secret-456" },
+          env: { API_KEY: "literal-key-789" },
+        },
+      },
+    ]);
+
+    const store = memoryMcpToolsStore();
+
+    await build(makeMcpTools(host.client, store));
+
+    const kept = store.load() ?? "";
+
+    expect(kept).toContain("Docs-Site");
+    expect(kept).not.toContain("literal-token-123");
+    expect(kept).not.toContain("literal-secret-456");
+    expect(kept).not.toContain("literal-key-789");
+    expect(kept).not.toContain("https://");
+
+    // Text an older build kept with the whole entry is read without it, and written again so.
+    const older = JSON.stringify({
+      ...JSON.parse(kept),
+      servers: [
+        {
+          ...JSON.parse(kept).servers[0],
+          server: { url: "https://x.test", headers: { Authorization: "Bearer literal-token-123" } },
+        },
+      ],
+    });
+
+    store.save(older);
+    makeMcpTools(host.client, store);
+    expect(store.load()).not.toContain("literal-token-123");
+
+    // Text this build cannot read at all is nothing kept.
+    store.save("{not json");
+    expect(Option.isNone(makeMcpTools(host.client, store).reinstall([]))).toBe(true);
   });
 });
 
@@ -537,10 +623,51 @@ describe("a call", () => {
       [true, [{ type: "text", text: lost }]],
     ]);
     expect(cancelled).toBe(true);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({ server: "Docs-Site", tool: "search", cut: "host_lost" }),
+      expect.objectContaining({ server: "Docs-Site", tool: "search", cut: "host_lost" }),
+    ]);
     // No cause, stack or RPC text reaches the model.
     expect(JSON.stringify(await results(session))).not.toContain("RPC");
   });
+
+  it("waits past the timeout and slack while progress keeps coming", async () => {
+    const host = fakeMcpHost([{ ...DOCS, timeout: 0.2 }]);
+    const tools = makeMcpTools(host.client, memoryMcpToolsStore(), { slackMs: 0 });
+
+    // Four notices 100 ms apart: 500 ms in all, past the 200 ms the Session waits without one.
+    host.answer(async (_input, hooks) => {
+      for (let step = 1; step <= 4; step++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await hooks.onProgress?.({ progress: step, total: 4 } satisfies McpProgress);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      return McpHostCompleted.make({
+        result: { kind: "inline", value: { content: [{ type: "text", text: "done" }] } },
+      });
+    });
+
+    const session = await open((request) =>
+      request.text === "slow" ? call(["mcp__docs_site__search", {}]) : answer("ok"),
+    );
+
+    await session.start(tools);
+    await session.prompt("slow");
+
+    expect(await results(session)).toEqual([[false, [{ type: "text", text: "done" }]]]);
+    expect((await detailsOf(session))[0]).not.toHaveProperty("cut");
+  });
 });
+
+/** The `details` of the root conversation's tool results, oldest first. */
+const detailsOf = async (session: Awaited<ReturnType<typeof open>>) =>
+  (await session.entries()).flatMap((entry) =>
+    (entry.model ?? []).flatMap((message) =>
+      message.role === "toolResult" ? [message.details] : [],
+    ),
+  );
 
 /** The tool results of the root conversation, oldest first: whether each is an error, and its content. */
 const results = async (session: Awaited<ReturnType<typeof open>>) =>

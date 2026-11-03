@@ -65,7 +65,7 @@ import type {
   WaitRequest,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
-import { emptyMcpExtension } from "@cloudpid/extensions/mcp";
+import { emptyMcpExtension, type McpHostClientService } from "@cloudpid/extensions/mcp";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -89,6 +89,7 @@ import {
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -104,7 +105,7 @@ import type * as Types from "effect/Types";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
 import { mcpHostName } from "../mcp/name.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { mcpHostClient, promisedMcpHost, sessionMcp } from "./mcp-host.ts";
+import { type McpHostAnswers, type McpHostStub, mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
@@ -487,6 +488,20 @@ type TestPrompt = { readonly requestId: string; readonly text: string };
 /** The test Worker's `SECRETS_ENCRYPTION_KEY`. */
 const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef");
 
+/** A host stub whose methods answer with Promises, as a Durable Object stub's do over RPC from a test. */
+type McpHostPromises = {
+  readonly [K in keyof McpHostClientService]: (
+    ...args: Parameters<McpHostClientService[K]>
+  ) => Promise<McpHostAnswers[K]>;
+};
+
+/** `host`, a stub that answers with Promises, as one whose calls fail as values. */
+const promisedMcpHost = (host: McpHostPromises): McpHostStub<Cause.UnknownError> => ({
+  requestStart: (input) => Effect.tryPromise(() => host.requestStart(input)),
+  servers: (input) => Effect.tryPromise(() => host.servers(input)),
+  request: (input, hooks) => Effect.tryPromise(() => host.request(input, hooks)),
+});
+
 export class TestSession extends DurableObject {
   /**
    * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
@@ -617,7 +632,8 @@ export class TestSession extends DurableObject {
 
   /**
    * The MCP tools of a Session with them (`#hasMcpTools`): as the Session DO's, over the test Worker's `McpHost` objects,
-   * with the Workspace `ws:test`, whose marks before a host call are counted (`failWorkspace` makes them fail), and a
+   * with the Workspace `ws:test` (`mcpWorkspaceUnknown` makes its lookup fail), whose marks before a host call are
+   * counted (`mcpWorkspaceFails` makes them fail), and a
    * stand-in `codemode` that keeps the namespaces it is built with.
    */
   protected hostMcp(): SessionHostOptions["mcp"] {
@@ -631,7 +647,11 @@ export class TestSession extends DurableObject {
       host: (environment) =>
         mcpHostClient(() => promisedMcpHost(hosts.getByName(mcpHostName(environment)))),
       kv,
-      workspace: Effect.succeed("ws:test"),
+      workspace: Effect.try(() => {
+        if (kv.get<boolean>("mcp-workspace-unknown") === true) throw new Error("No placement");
+
+        return "ws:test";
+      }),
       ready: () =>
         Effect.tryPromise(async () => {
           if (kv.get<boolean>("mcp-ready-fails") === true) throw new Error("The Workspace is down");
@@ -1629,6 +1649,11 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("mcp-global", { tools: { offered } });
 
     return Effect.runPromise(this.#host.sync);
+  }
+
+  /** Make looking up the Session's Workspace fail, or succeed again. */
+  mcpWorkspaceUnknown(unknown: boolean): void {
+    this.ctx.storage.kv.put("mcp-workspace-unknown", unknown);
   }
 
   /** Make marking the Workspace used fail, or succeed again. */

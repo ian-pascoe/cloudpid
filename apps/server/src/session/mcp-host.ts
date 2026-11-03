@@ -6,11 +6,13 @@
 //   cannot read is `HostFailed`; a `requestStart` or `servers` call that fails is `HostFailed` too, and a `request` whose
 //   RPC breaks is `HostLost`, which a `tools/call` reads as maybe run. What failed is logged, never told the model.
 // - **`kvMcpToolsStore`** keeps what the installed MCP tools were built from in the Session's storage, so an object that
-//   starts again installs the very same tools before anything resumes.
+//   starts again installs the very same tools before anything resumes, and each conversation's last opened Context
+//   Window, so `windowOpened` is sent once per window across evictions.
 // - **`sessionMcp`** is the Session host's `mcp` option (`SessionHostMcp`): `McpTools` for the Session's Environment, its
-//   request start (the Workspace marked used first), and its reinstall of `mcp`, `codemode` with the servers as its
-//   namespaces, and `tool-search`, together.
+//   request start (the Workspace looked up and marked used first; either failing keeps the tools built), and its
+//   reinstall of `mcp`, `codemode` with the servers as its namespaces, and `tool-search`, together.
 import {
+  HostLost,
   makeMcpTools,
   type McpHostClientService,
   type McpToolsService,
@@ -26,7 +28,6 @@ import {
   readMcpRequestStartResult,
   readMcpServersResult,
 } from "@cloudpid/mcp/types";
-import { HostLost } from "@cloudpid/extensions/mcp";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
@@ -37,7 +38,7 @@ import type { SessionHostMcp } from "./host.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
 /** What each of `McpHostClient`'s methods is answered on the wire, before the shared readers. */
-type McpHostAnswers = {
+export type McpHostAnswers = {
   readonly requestStart: typeof McpRequestStartResult.Encoded;
   readonly servers: typeof McpServersResult.Encoded;
   readonly request: typeof McpHostRequestResult.Encoded;
@@ -49,20 +50,6 @@ export type McpHostStub<E> = {
     ...args: Parameters<McpHostClientService[K]>
   ) => Effect.Effect<McpHostAnswers[K], E>;
 };
-
-/** A host stub whose methods answer with Promises, as a Durable Object stub's do. */
-export type McpHostPromises = {
-  readonly [K in keyof McpHostClientService]: (
-    ...args: Parameters<McpHostClientService[K]>
-  ) => Promise<McpHostAnswers[K]>;
-};
-
-/** `host`, a stub that answers with Promises, as one whose calls fail as values. */
-export const promisedMcpHost = (host: McpHostPromises): McpHostStub<Cause.UnknownError> => ({
-  requestStart: (input) => Effect.tryPromise(() => host.requestStart(input)),
-  servers: (input) => Effect.tryPromise(() => host.servers(input)),
-  request: (input, hooks) => Effect.tryPromise(() => host.request(input, hooks)),
-});
 
 /** A call to the host that failed, logged with its cause: `HostFailed`, with a message that names only the call. */
 const failed =
@@ -111,14 +98,18 @@ const PART_LENGTH = 256 * 1024;
 /**
  * A store in `kv` for Environment `environment`'s MCP tools: the text in parts of at most `PART_LENGTH` characters
  * under `mcp-tools:<environment>:<n>`, with their count under `mcp-tools:<environment>`, written last, so a text is
- * read whole or not at all.
+ * read whole or not at all; and each conversation's last opened Context Window under
+ * `mcp-window:<environment>:<conversation>`.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a store over two values, not a combinator.
 export const kvMcpToolsStore = (kv: McpToolsKv, environment: string): McpToolsStore => {
   const countKey = `mcp-tools:${environment}`;
   const partKey = (index: number) => `${countKey}:${index}`;
+  const windowKey = (conversation: string) => `mcp-window:${environment}:${conversation}`;
 
   return {
+    window: (conversation) => kv.get<string>(windowKey(conversation)),
+    openWindow: (conversation, window) => kv.put(windowKey(conversation), window),
     load: () => {
       const count = kv.get<number>(countKey);
 
@@ -155,8 +146,11 @@ export type SessionMcpOptions = {
   readonly host: (environment: string) => McpHostClientService;
   /** Where the Session keeps what its MCP tools were built from. */
   readonly kv: McpToolsKv;
-  /** The object of the Session's Workspace (`ws:<id>`), or null with none: then it has no MCP tools. */
-  readonly workspace: Effect.Effect<string | null>;
+  /**
+   * The object of the Session's Workspace (`ws:<id>`), or null with none: then it has no MCP tools. A lookup that fails
+   * keeps the tools as they were built.
+   */
+  readonly workspace: Effect.Effect<string | null, Cause.UnknownError>;
   /** A call to Workspace object `workspace` that marks it used (`noteSessionActivity`). */
   readonly ready: (workspace: string) => Effect.Effect<void, Cause.UnknownError>;
   /** `codemode` with `namespaces`, to install over the one installed. */
@@ -165,19 +159,17 @@ export type SessionMcpOptions = {
 
 /** The Session host's MCP tools (`SessionHostOptions.mcp`), with one `McpTools` for the Session's Environment. */
 export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> => {
-  const held = new Map<string, McpToolsService>();
+  let held: { readonly environment: string; readonly tools: McpToolsService } | undefined;
 
   /** The Session's `McpTools`, made once, from what was kept: its Environment never changes. */
   const toolsOf = (environment: string) => {
-    const known = held.get(environment);
+    if (held?.environment === environment) return held.tools;
 
-    if (known !== undefined) return known;
+    const tools = makeMcpTools(options.host(environment), kvMcpToolsStore(options.kv, environment));
 
-    const made = makeMcpTools(options.host(environment), kvMcpToolsStore(options.kv, environment));
+    held = { environment, tools };
 
-    held.set(environment, made);
-
-    return made;
+    return tools;
   };
 
   /**
@@ -196,20 +188,25 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
       ),
     );
 
+  /** A request start that cannot be made: the tools stay as they were built, and why is logged. */
+  const skipped = (why: string, cause?: Cause.Cause<unknown>) =>
+    Effect.logWarning(
+      `${why} before an MCP request start; the MCP tools stay as they were`,
+      ...(cause === undefined ? [] : [cause]),
+    );
+
   const start = (
     conversationId: ConversationId,
     window: string,
     values: SessionSettingsValues,
-  ): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const { environment, servers } = values.mcp;
+  ): Effect.Effect<void> => {
+    const { environment, servers } = values.mcp;
 
-      // A Session in no Environment has no MCP host to ask.
-      if (environment === null) return;
+    // A Session in no Environment has no MCP host to ask.
+    if (environment === null) return Effect.void;
 
-      const workspace = servers === 0 ? null : yield* options.workspace;
-
-      yield* toolsOf(environment).requestStart({
+    const startFor = (workspace: string | null) =>
+      toolsOf(environment).requestStart({
         // Not read without servers, whose host is never asked. A subagent's conversation calls for the Session's own
         // Workspace too, as its calls do: right until stdio servers run in a Subagent Workspace (#460, #462).
         caller: {
@@ -218,11 +215,25 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
           workspace: workspace ?? "",
         },
         window,
-        servers: workspace === null || options.session === undefined ? 0 : servers,
+        servers: workspace === null ? 0 : servers,
         offered: values.toolSearch.offered,
         ready: workspace === null ? Effect.succeed(true) : readied(workspace),
       });
-    });
+
+    if (servers === 0) return startFor(null);
+
+    // Not knowing who the Session is, or where its Workspace is, is a failure, not "no servers": nothing built is
+    // dropped for it.
+    if (options.session === undefined) return skipped("The Session's name is unknown");
+
+    return options.workspace.pipe(
+      Effect.asSome,
+      Effect.catchCause((cause) =>
+        skipped("The Session's Workspace is unknown", cause).pipe(Effect.as(Option.none())),
+      ),
+      Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: startFor })),
+    );
+  };
 
   const reinstall = (
     installed: readonly Extension[],

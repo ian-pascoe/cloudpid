@@ -308,4 +308,53 @@ describe("an MCP tool in a Session", () => {
     expect(ready).toBe(0);
     expect(offered[0]?.some((name) => name.startsWith("mcp__"))).toBe(false);
   });
+
+  it("keeps a Context Window open across a restart: its next request pulls nothing", async () => {
+    const { environment, host, stub } = await scripted();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["First answer.", "Later answer."]);
+      await instance.prompt({ requestId: "one", text: "First" });
+    });
+
+    expect(await host.asked()).toHaveLength(1);
+
+    // Both objects go away; their storage stays, the host's record of what it was asked does not.
+    await abortAllDurableObjects();
+
+    const after = env.SESSIONS.getByName(`mcp-${environment}`);
+    const hostAfter = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+
+    await runInDurableObject(after, (instance: TestSession) =>
+      instance.prompt({ requestId: "two", text: "Later" }),
+    );
+
+    expect(await hostAfter.asked()).toEqual([]);
+    expect(
+      await runInDurableObject(after, (instance: TestSession) => instance.offeredTools()),
+    ).toEqual([
+      expect.arrayContaining(["mcp__docs__work"]),
+      expect.arrayContaining(["mcp__docs__work"]),
+    ]);
+  });
+
+  it("keeps the tools it built when its Workspace cannot be looked up", async () => {
+    const { stub } = await scripted();
+
+    const offered = await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["First answer.", "Later answer."]);
+      await instance.prompt({ requestId: "one", text: "First" });
+      instance.mcpWorkspaceUnknown(true);
+      await instance.prompt({ requestId: "two", text: "Later" });
+
+      return instance.offeredTools();
+    });
+
+    expect(offered).toEqual([
+      expect.arrayContaining(["mcp__docs__work"]),
+      expect.arrayContaining(["mcp__docs__work"]),
+    ]);
+    // The second start marked no Workspace, so called no host.
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.mcpReady())).toBe(1);
+  });
 });

@@ -41,6 +41,8 @@ export type FakeMcpServer = {
   readonly timeout?: number;
   /** What the server says of itself at `initialize`. */
   readonly instructions?: string;
+  /** More keys of the entry, as a definition spells them (`headers`, `oauth`, ...). */
+  readonly entry?: JsonObject;
 };
 
 /** What the fake was asked, in order. */
@@ -89,6 +91,7 @@ const inventoryOf = (
       name: server.name,
       source: { kind: "environment" },
       server: {
+        ...server.entry,
         type: "http",
         url: `https://${server.name}.test/mcp`,
         exposure: server.exposure ?? "codemode",
@@ -123,7 +126,13 @@ const inventoryOf = (
   });
 
 /** The fake's version: the same inventory always answers the same one, as the host's content hashes do. */
-const versionOf = (servers: ReadonlyArray<FakeMcpServer>) => JSON.stringify(servers);
+const versionOf = (servers: ReadonlyArray<FakeMcpServer>) => {
+  let hash = 5381;
+
+  for (const char of JSON.stringify(servers)) hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0;
+
+  return `v-${hash.toString(16)}`;
+};
 
 /**
  * An in-memory host. `set` replaces its inventory, `features` what `requestStart` lists (the host's own by default),

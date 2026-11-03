@@ -217,4 +217,36 @@ describe("a request", () => {
       error: { _tag: "Cut", mayHaveRun: true },
     });
   });
+
+  it("counts a wait for a free slot toward the timeout, and never sends a call still waiting when it passes", async () => {
+    const host = await discovered(["search"], entry("slow", { timeout: 1 }));
+
+    await host.scriptRequest(
+      urlOf("slow"),
+      Array.from({ length: 5 }, () => ({ result: completed("held"), hold: true })),
+    );
+
+    // Five calls fill the engine queue; the sixth waits for a slot.
+    const holding = Array.from({ length: 5 }, () => host.request(call("slow", "search"), {}));
+
+    while ((await host.engineRequests()).length < 5) await new Promise((r) => setTimeout(r, 10));
+
+    expect(await host.request(call("slow", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "Cut", mayHaveRun: false, message: expect.stringMatching(/not sent/) },
+    });
+
+    const sent = await host.engineRequests();
+
+    expect(sent).toHaveLength(5);
+
+    // A sent call gives the engine what is left of its timeout.
+    for (const each of sent) {
+      expect(each.target.timeoutMs).toBeGreaterThan(0);
+      expect(each.target.timeoutMs).toBeLessThanOrEqual(1000);
+    }
+
+    await host.release(urlOf("slow"));
+    await Promise.all(holding);
+  });
 });

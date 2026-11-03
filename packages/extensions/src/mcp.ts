@@ -17,11 +17,12 @@
 //   an older host means no MCP tools, never a failure. The build is pure, so building over unchanged tools gives
 //   byte-identical declarations.
 //
-// What an install was built from is kept (`McpToolsStore`), so an object that starts again installs the very same tools
-// before anything resumes, without asking the host: a resumed Run, a resumed call and the next request see the
-// declarations the Context Window was shown.
+// What an install was built from is kept (`McpToolsStore`), only what the build reads (`McpBuildServer`), so an object
+// that starts again installs the very same tools before anything resumes, without asking the host: a resumed Run, a
+// resumed call and the next request see the declarations the Context Window was shown. The store also keeps each
+// conversation's last opened Context Window, so `windowOpened` is sent once per window across restarts.
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
-import { type McpCaller, type McpRequestStart, McpServerInventory } from "@cloudpid/mcp/types";
+import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
 import type { Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
@@ -35,6 +36,7 @@ import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { mayBeDirect } from "./mcp/exposure.ts";
 import {
   emptyMcpExtension,
+  McpBuildServer,
   mcpExtension,
   mcpNamespaces,
   type McpToolOptions,
@@ -49,6 +51,7 @@ export {
   extensionName,
   MCP_CALL_SLACK_MS,
   type McpBuild,
+  McpBuildServer,
   type McpCallOrigin,
   mcpExtension,
   mcpNamespaces,
@@ -64,11 +67,14 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
 export const MCP_WAIT_MS = 10_000;
 
-/** What the tools are built from: the inventory's version and servers, the features listed, and who calls. */
+/**
+ * What the tools are built from: the inventory's version and servers (what the build reads of them, `McpBuildServer`),
+ * the features listed, and who calls.
+ */
 const McpInventory = Schema.Struct({
   version: Schema.String,
   features: Schema.Array(Schema.String),
-  servers: Schema.Array(McpServerInventory),
+  servers: Schema.Array(McpBuildServer),
   origin: Schema.Struct({
     session: Schema.optionalKey(Schema.String),
     workspace: Schema.optionalKey(Schema.String),
@@ -81,25 +87,36 @@ const McpInventoryJson = Schema.fromJsonString(McpInventory);
 
 const decodeKept = Schema.decodeUnknownOption(McpInventoryJson);
 
+/** An inventory as the tools are built from it: decoding drops all the build does not read. */
+const projected = Schema.decodeUnknownOption(McpInventory);
+
 const encodeKept = Schema.encodeUnknownOption(McpInventoryJson);
 
 /**
  * Where a Session keeps what its installed MCP tools were built from, as text: none when it has no MCP tools. A text
- * this build cannot read is no tools kept.
+ * this build cannot read is no tools kept. It also keeps, by conversation, the Context Window whose first request
+ * start last asked the host, so `windowOpened` is sent once per window whatever restarts come between.
  */
 export type McpToolsStore = {
   readonly load: () => string | undefined;
   readonly save: (text: string | undefined) => void;
+  readonly window: (conversation: string) => string | undefined;
+  readonly openWindow: (conversation: string, window: string) => void;
 };
 
 /** A store that keeps nothing across runtimes. */
 export const memoryMcpToolsStore = (): McpToolsStore => {
   let kept: string | undefined;
+  const windows = new Map<string, string>();
 
   return {
     load: () => kept,
     save: (text) => {
       kept = text;
+    },
+    window: (conversation) => windows.get(conversation),
+    openWindow: (conversation, window) => {
+      windows.set(conversation, window);
     },
   };
 };
@@ -113,7 +130,7 @@ export type McpRequestStartInput = {
   readonly caller: McpCaller;
   /**
    * The conversation's Context Window: its head marker's entry. The first request start in a window sets
-   * `windowOpened`, as does the first after the object started.
+   * `windowOpened` (the store keeps which window that was, across restarts).
    */
   readonly window: string;
   /** How many MCP servers the Environment's set has, as the Session's Settings last said. */
@@ -171,15 +188,20 @@ export const makeMcpTools = (
     saved === undefined ? Option.none() : decodeKept(saved),
   );
 
+  // A text kept with more than the build reads (an older build's) is written again without it.
+  const rewritten = latest === undefined ? undefined : Option.getOrUndefined(encodeKept(latest));
+
+  if (rewritten !== saved) {
+    store.save(rewritten);
+    saved = rewritten;
+  }
+
   /** The number of the read `latest` came from; the next read to be sent takes `taken + 1`. */
   let kept = 0;
   let taken = 0;
 
   /** The key of what is installed; nothing is before the first `reinstall`. */
   let installed: string | undefined;
-
-  /** The Context Windows whose first request start has asked the host, by conversation and head. */
-  const opened = new Set<string>();
 
   /** Keep `next`, read as number `read`, unless a later read was kept. */
   const keep = (read: number, next: McpInventory | undefined) => {
@@ -213,11 +235,12 @@ export const makeMcpTools = (
 
       const known = latest?.version;
       const wanted = known === undefined ? yield* waitFor(input.offered) : [];
-      const window = `${input.caller.conversation}\u0000${input.window}`;
+      const { conversation } = input.caller;
+      const opening = store.window(conversation) !== input.window;
 
       const start: Mutable<McpRequestStart> = { caller: input.caller };
 
-      if (!opened.has(window)) start.windowOpened = true;
+      if (opening) start.windowOpened = true;
 
       if (known !== undefined) start.known = known;
 
@@ -231,7 +254,7 @@ export const makeMcpTools = (
       // A host that failed keeps the tools built: a request start never fails for it.
       if (Predicate.isTagged(started, "HostFailed")) return;
 
-      opened.add(window);
+      if (opening) store.openWindow(conversation, input.window);
 
       const features = Arr.filter(MCP_TOOL_FEATURES, (each) => started.features.includes(each));
 
@@ -250,14 +273,23 @@ export const makeMcpTools = (
         latest.origin.session === origin.session &&
         latest.origin.workspace === origin.workspace;
 
-      if (unchanged) return;
+      // What the tools are built from is current as of this answer: a read sent before it never lands over it.
+      if (unchanged) return keep(++taken, latest);
 
       const read = ++taken;
       const inventory = yield* client.servers({ parts: ["tools", "instructions"] });
 
       if (Predicate.isTagged(inventory, "HostFailed")) return;
 
-      keep(read, { version: inventory.version, features, servers: inventory.servers, origin });
+      const next = projected({
+        version: inventory.version,
+        features,
+        servers: inventory.servers,
+        origin,
+      });
+
+      // An answer the build cannot read keeps the tools built, as a failed read does.
+      if (Option.isSome(next)) keep(read, next.value);
     },
   );
 
