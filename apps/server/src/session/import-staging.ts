@@ -50,8 +50,13 @@ export type ImportRecord = {
   readonly text?: string | undefined;
   readonly via: SessionVia;
   readonly workspace: { readonly branch: string; readonly repos: ReadonlyArray<ImportRepo> };
-  /** When the import expires (epoch ms): an hour after its last append, then after what ended it badly. Absent once it ended. */
+  /** When the import expires (epoch ms): an hour after its last append, then after what ended it badly. Absent once it ended, or once the entries are held. */
   readonly expiresAt?: number | undefined;
+  /**
+   * The translated entries are in the Session (a Run may be working from them): the import is no longer counted in
+   * attempts, never given up, and never expires. It only waits for the Registry to be told it ended.
+   */
+  readonly held?: true | undefined;
   /** How many times finishing has been started over, so one that keeps failing is given up. */
   readonly attempts: number;
   /** Why it failed, for a `failed` import. */
@@ -84,22 +89,32 @@ const PHASES: ReadonlySet<string> = new Set<ImportPhase>([
 ]);
 
 /**
- * The staging over `storage`. Its tables are made by the first write (the first `begin`), never by opening it, so a
- * Session that is no import, and one whose storage was wiped, keep no table of this file: reads of a store that was
- * never written find nothing.
+ * The staging over `storage`, whose tables `migrations` make. They are made by the first write (the first `begin`),
+ * never by opening it, so a Session that is no import, and one whose storage was wiped, keep no table of this file: a
+ * read of a store that was never written finds nothing. Once they are made (`schema_version` is there), every read and
+ * write first brings them up to the end of `migrations`, so a migration added later reaches an object that has them.
  */
-export const importStaging = (storage: MigrationStorage): ImportStaging => {
+export const importStaging = (
+  storage: MigrationStorage,
+  migrations: ReadonlyArray<Migration> = MIGRATIONS,
+): ImportStaging => {
   const { sql } = storage;
 
-  /** Whether the tables are there: a read before the first write finds none, and makes none. */
-  const present = (): boolean =>
-    sql
-      .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'import_state'")
-      .toArray().length > 0;
-
-  /** Make the tables if they are not there (`migrate` is idempotent, and starts over on storage that was wiped). */
+  /** Make the tables, or bring them up to date (`migrate` is idempotent, and starts over on storage that was wiped). */
   const open = () => {
-    if (!present()) migrate(storage, MIGRATIONS);
+    migrate(storage, migrations);
+  };
+
+  /** Whether the tables were ever made, brought up to date if so: a read before the first write finds none, and makes none. */
+  const present = (): boolean => {
+    const made =
+      sql
+        .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'")
+        .toArray().length > 0;
+
+    if (made) open();
+
+    return made;
   };
 
   const received = (): number => {

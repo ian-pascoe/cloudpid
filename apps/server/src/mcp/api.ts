@@ -83,7 +83,7 @@ import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { Caller } from "../access.ts";
-import type { SessionsResult } from "../registry/session-page.ts";
+import { type SessionsResult, shownStatus } from "../registry/session-page.ts";
 import type { CreatedSession, SessionRefusal } from "../registry/store.ts";
 
 /** The operations this version of `Server` has: `McpServer` serves a tool only when its operation is listed. */
@@ -281,8 +281,7 @@ const summaryOf = (
       id: record.environment,
       name: environments.get(record.environment) ?? record.environment,
     },
-    // An import still filling the Session is what it is doing, whatever its last Run reported.
-    status: record.importing === true ? "importing" : record.status,
+    status: shownStatus(record),
     updated_at: new Date(record.updatedAt).toISOString(),
     archived: record.archivedAt !== null,
     url: `${origin}/sessions/${record.id}`,

@@ -2,7 +2,7 @@
 // → Session import → The import channel): slices kept in SQLite, `importing` until the end, the notice last, the text sent
 // after it, and the expiry. workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { MAX_MCP_INPUT_BYTES } from "@cloudpid/protocol";
@@ -372,10 +372,105 @@ describe("a Session import in the Session object", () => {
     });
   });
 
+  describe("an import whose entries are in the Session", () => {
+    const state = (stub: Stub) =>
+      runInDurableObject(stub, (instance: TestSession) => instance.importState());
+
+    const alarm = (stub: Stub) =>
+      runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+
+    it("is not given up or deleted while the Registry cannot be told, and ends once it can", async () => {
+      const stub = fresh();
+      const failures = 7;
+
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.importEndedFails(failures),
+      );
+      await begin(stub, file, { text: "Carry on" });
+      await send(stub, file);
+
+      // The entries went in, then telling the Registry failed: the import waits, with the attempt that wrote them counted.
+      expect(okValue(await stub.stageFinish({ sha256: await sha256(file) })).status).toBe(
+        "importing",
+      );
+      expect((await state(stub)).record).toMatchObject({
+        phase: "finishing",
+        attempts: 1,
+        held: true,
+      });
+      expect((await entriesOf(stub)).length).toBeGreaterThan(0);
+
+      // Even an hour on, with more failures than attempts allowed, the Session is not deleted and not failed.
+      await runInDurableObject(stub, (instance: TestSession) => instance.expireImport());
+
+      for (let left = failures - 2; left >= 0; left--) {
+        await vi.waitFor(
+          async () => {
+            await alarm(stub);
+
+            expect((await state(stub)).endedFailsLeft).toBe(left);
+          },
+          { timeout: 10_000 },
+        );
+
+        expect((await state(stub)).record).toMatchObject({
+          phase: "finishing",
+          attempts: 1,
+          held: true,
+        });
+        expect((await state(stub)).discards).toBe(0);
+      }
+
+      // The Registry answers at last: the import ends, once, with the instruction sent once.
+      await vi.waitFor(
+        async () => {
+          await alarm(stub);
+
+          expect((await state(stub)).record?.phase).toBe("ended");
+        },
+        { timeout: 10_000 },
+      );
+
+      expect((await state(stub)).discards).toBe(0);
+      expect((await entriesOf(stub)).filter((entry) => entry.text === "Carry on")).toHaveLength(1);
+      expect(okValue(await stub.stageFinish({ sha256: await sha256(file) })).summary).toBeDefined();
+    });
+
+    it("is not cancelled over an end it reached first: the cancel is refused and the import stays ended", async () => {
+      const stub = fresh();
+
+      await runInDurableObject(stub, (instance: TestSession) => {
+        instance.importEndedGate(true);
+        instance.importFinishWait(0);
+      });
+      await begin(stub, file);
+      await send(stub, file);
+
+      // The translation is alive, held at the Registry's answer.
+      expect(okValue(await stub.stageFinish({ sha256: await sha256(file) })).status).toBe(
+        "importing",
+      );
+      expect((await state(stub)).record).toMatchObject({ phase: "finishing", held: true });
+
+      // The cancel read the import as finishing and stops the translation, which cannot stop inside its end.
+      const cancelled = stub.stageCancel();
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await runInDurableObject(stub, (instance: TestSession) => instance.importEndedGate(false));
+
+      expect(errorOf(await cancelled)).toMatchObject({
+        code: "invalid_argument",
+        message: expect.stringMatching(/has ended/u),
+      });
+      expect((await state(stub)).record?.phase).toBe("ended");
+      expect((await state(stub)).discards).toBe(0);
+    });
+  });
+
   describe("an import that expires, with the Session's own deletion", () => {
     const DISCARD_REGISTRY = "import-discard-registry";
 
-    it("leaves no Registry record, no Workspace and no storage, and a retried alarm finds nothing to run", async () => {
+    it("leaves no Registry record, no Workspace and no storage, and a retried alarm, on this instance and a new one, finds nothing to run", async () => {
       const registry = env.REGISTRIES.getByName(DISCARD_REGISTRY);
       const session = "import-session-1";
 
@@ -410,7 +505,9 @@ describe("a Session import in the Session object", () => {
         runInDurableObject(stub, async (_instance: TestSession, state) => ({
           keys: Array.from(state.storage.kv.list(), ([key]) => key),
           tables: state.storage.sql
-            .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%'")
+            .exec<{ name: string }>(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%'",
+            )
             .toArray(),
           alarm: await state.storage.getAlarm(),
         }));
@@ -428,6 +525,24 @@ describe("a Session import in the Session object", () => {
       await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
 
       expect(await empty()).toEqual({ keys: [], tables: [], alarm: null });
+      expect(destroyedWorkspaces.get(stub.id.toString())).toHaveLength(1);
+
+      // The same over a new instance (the object was evicted before the alarm was retried). Waking it opens the
+      // Harness's own empty tables and notes what it reports; the alarm over them adds nothing, and nothing of the
+      // import, the Session or its Workspace is made or run again.
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, () => undefined);
+
+      const woken = await empty();
+
+      expect(woken.alarm).toBeNull();
+      expect(woken.tables.every((table) => table.name.startsWith("pi_"))).toBe(true);
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+
+      expect(await empty()).toEqual(woken);
+      expect(await registry.getSession(session)).toBeNull();
+      expect(await registry.getWorkspace("0a0b0c0d")).toBeNull();
       expect(destroyedWorkspaces.get(stub.id.toString())).toHaveLength(1);
     });
   });

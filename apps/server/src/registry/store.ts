@@ -1210,11 +1210,6 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     return row === undefined ? null : getSession(row.session);
   };
 
-  /**
-   * How many Sessions the MCP endpoint started or imported are running: those the Registry has as running, and those it
-   * made less than `STARTING_MS` ago whose first Run has not reported yet (still idle, status never changed). Archived
-   * ones are stopped, so they never count.
-   */
   /** How many Sessions marked `import` by `auth` are still importing. */
   const openImports = (auth: string): number => {
     const [row] = sql
@@ -1228,6 +1223,11 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     return row?.count ?? 0;
   };
 
+  /**
+   * How many Sessions the MCP endpoint started or imported are running: those the Registry has as running, and those it
+   * made less than `STARTING_MS` ago whose first Run has not reported yet (still idle, status never changed). Archived
+   * ones are stopped, so they never count.
+   */
   const runningMarked = (now: number): number => {
     const [row] = sql
       .exec<{ count: number }>(

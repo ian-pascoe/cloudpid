@@ -23,6 +23,13 @@ export type SessionsPage = {
 /** What `sessions()` answers: a page, or that the cursor is not one (`invalid_cursor` at the endpoint). */
 export type SessionsResult = SessionsPage | { readonly refused: "invalid_cursor" };
 
+/**
+ * The status a Session shows the MCP endpoint: an import still filling it is what it is doing, whatever its last Run
+ * reported, and so is neither idle nor running.
+ */
+export const shownStatus = (session: SessionRecord): SessionRecord["status"] | "importing" =>
+  session.importing === true ? "importing" : session.status;
+
 /** Where a page ends: the last Session it holds, as the list is ordered (newest first, then by id). */
 const Position = Schema.Struct({ t: Schema.Finite, i: Schema.String });
 
@@ -56,9 +63,7 @@ export const pageSessions = (
     all,
     (session) =>
       (query.environment === undefined || session.environment === query.environment) &&
-      // An import still filling a Session is neither idle nor running.
-      (query.status === undefined ||
-        (session.importing !== true && session.status === query.status)) &&
+      (query.status === undefined || shownStatus(session) === query.status) &&
       (session.archivedAt !== null) === archived &&
       (needle === "" || (session.title ?? "").toLowerCase().includes(needle)) &&
       (after === undefined || before(after, { t: session.createdAt, i: session.id })),

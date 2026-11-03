@@ -757,7 +757,20 @@ export class TestSession extends DurableObject {
           staging: this.#staging,
           // A test reads how often the Session asked to be deleted: the deletion itself is the Session DO's.
           discard: this.#discardImport(),
-          ended: Effect.sync(() => {
+          // A test holds the Registry's answer back (`importEndedGate`) or makes it fail (`importEndedFails`).
+          ended: Effect.gen(function* () {
+            while (ctx.storage.kv.get<boolean>("import-ended-gate") === true) {
+              yield* Effect.sleep("10 millis");
+            }
+
+            const failing = ctx.storage.kv.get<number>("import-ended-fails") ?? 0;
+
+            if (failing > 0) {
+              ctx.storage.kv.put("import-ended-fails", failing - 1);
+
+              return yield* Effect.die(new Error("The Registry could not be told."));
+            }
+
             ctx.storage.kv.put("import-ended", true);
           }),
           finishWaitMs: () => ctx.storage.kv.get<number>("import-finish-wait") ?? 30_000,
@@ -1074,6 +1087,7 @@ export class TestSession extends DurableObject {
       record: this.#staging.record(),
       received: this.#staging.received(),
       discards: this.ctx.storage.kv.get<number>("import-discards") ?? 0,
+      endedFailsLeft: this.ctx.storage.kv.get<number>("import-ended-fails") ?? 0,
     };
   }
 
@@ -1085,6 +1099,16 @@ export class TestSession extends DurableObject {
   /** Make every translation fail (or not), as one that crashes the object does. */
   importTranslationFails(fails: boolean): void {
     this.ctx.storage.kv.put("import-translate-fails", fails);
+  }
+
+  /** The next `times` times the Registry is told the import ended, the call fails. */
+  importEndedFails(times: number): void {
+    this.ctx.storage.kv.put("import-ended-fails", times);
+  }
+
+  /** While `blocked`, the call that tells the Registry the import ended does not answer. */
+  importEndedGate(blocked: boolean): void {
+    this.ctx.storage.kv.put("import-ended-gate", blocked);
   }
 
   /** The import's expiry has passed, as an hour with no slice makes it. */

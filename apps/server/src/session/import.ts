@@ -4,7 +4,8 @@
 // move), append keeps the file's slices as rows (`import-staging.ts`), and finish checks the size and `sha256`, then
 // translates the file into the root conversation, applies the model, and sends the instruction. The translation runs in
 // a fiber of the object, which finish waits for up to 30 s and which the alarm resumes after an eviction. An import
-// with no append for an hour expires, and the alarm then deletes the Session (`discard`).
+// with no append for an hour expires, and the alarm then deletes the Session (`discard`); once the entries are in the
+// Session (`held`) it never expires and is never given up, only retried until the Registry is told it ended.
 import { Secrets } from "@cloudpid/extensions/secrets";
 import {
   type ApiResult,
@@ -63,7 +64,11 @@ export type SessionImportOptions = {
    * not retried over empty storage. A failure is its own to log: the import stays, and the alarm tries again.
    */
   readonly discard: Effect.Effect<void>;
-  /** Tell the Registry the import ended, so the Session is no longer shown `importing` and no longer counts as open. */
+  /**
+   * Tell the Registry the import ended, so the Session is no longer shown `importing` and no longer counts as open. A
+   * failure is a defect: the translation stops there and the alarm runs it again, without counting an attempt, until it
+   * is told.
+   */
   readonly ended: Effect.Effect<void>;
   /** Translates the file; `translatePiSession` by default. */
   readonly translate?: ImportTranslator;
@@ -79,7 +84,10 @@ export const FINISH_RETRY_MS = 60_000;
 /** How long an import that ended badly, or was cancelled, waits for its Session to be deleted before it tries again, in milliseconds. */
 const DISCARD_RETRY_MS = 5 * 60_000;
 
-/** How many times a translation is started (each counted before it runs) before the import is given up. */
+/**
+ * How many times a translation is started (each counted before it runs) before the import is given up, while the
+ * entries are not yet in the Session: once they are, it is never given up.
+ */
 const FINISH_ATTEMPTS = 5;
 
 /** The request id the instruction is sent under, so a translation started again does not send it twice. */
@@ -95,6 +103,11 @@ const failure = (message: string | undefined) =>
   apiFailure("invalid_argument", `${message ?? "The import failed."} Cancel it and begin again.`, {
     retryable: false,
   });
+
+const hasEnded = apiFailure(
+  "invalid_argument",
+  "The import has ended: the Session is the owner's now, to delete in cloudpid.",
+);
 
 const expired = apiFailure(
   "import_expired",
@@ -126,9 +139,13 @@ export const importWakeAt = (
 
     if (record === undefined || record.phase === "ended") return undefined;
 
-    // A translation that may have been cut off is started again soon, and given up on at its expiry.
+    // A translation that may have been cut off is started again soon, and given up on at its expiry. One whose entries
+    // are held has no expiry: it is started again until the Registry is told.
     return record.phase === "finishing"
-      ? Math.min(now + FINISH_RETRY_MS, record.expiresAt ?? Infinity)
+      ? Math.min(
+          now + FINISH_RETRY_MS,
+          record.held === true ? Infinity : (record.expiresAt ?? Infinity),
+        )
       : record.expiresAt;
   });
 
@@ -176,9 +193,37 @@ const sessionImport = (options: SessionImportOptions) =>
       return update(record, { ...changes, text: undefined });
     };
 
-    /** Whether `record` passed its expiry (an hour with no append, or the end of a translation's time): the alarm deletes the Session. */
+    /**
+     * Whether `record` passed its expiry (an hour with no append, or the end of a translation's time): the alarm deletes
+     * the Session. Never one whose entries are held: the Session has the work in it, and the import only has to end.
+     */
     const isExpired = (record: ImportRecord, now: number): boolean =>
-      record.phase !== "ended" && record.expiresAt !== undefined && now >= record.expiresAt;
+      record.phase !== "ended" &&
+      record.held !== true &&
+      record.expiresAt !== undefined &&
+      now >= record.expiresAt;
+
+    /** Stop the translation in progress, if there is one, and answer the import's record as it stands then. */
+    const stopRunning = Effect.gen(function* () {
+      if (running !== undefined) yield* Fiber.interrupt(running);
+
+      // Read after the stop: a translation that reached its end first has ended the import, whatever was read before.
+      return staging.record();
+    });
+
+    /**
+     * `record`, with `held` found out when a translation was cut off after it wrote the entries and before it noted so:
+     * the root has entries then, which are only ever written whole.
+     */
+    const adopted = (record: ImportRecord) =>
+      Effect.gen(function* () {
+        if (record.phase !== "finishing" || record.held === true) return record;
+
+        const root = yield* host.root;
+        const entries = yield* host.entries({ conversationId: root, order: "ascending", limit: 1 });
+
+        return entries.length === 0 ? record : update(record, { held: true, expiresAt: undefined });
+      });
 
     /** The held Secrets' redaction, with the GitHub token pass: every text that leaves the object goes through it. */
     const redacted = (texts: ReadonlyArray<string>) =>
@@ -328,9 +373,11 @@ const sessionImport = (options: SessionImportOptions) =>
 
     /** Translate the file into the Session and end the import; safe to run again after a cut. */
     const complete: Effect.Effect<void, SessionError> = Effect.gen(function* () {
-      const record = staging.record();
+      const first = staging.record();
 
-      if (record?.phase !== "finishing") return;
+      if (first?.phase !== "finishing") return;
+
+      let record: ImportRecord = first;
 
       const defaults = yield* host.importDefaults;
 
@@ -349,7 +396,15 @@ const sessionImport = (options: SessionImportOptions) =>
         catch: (cause) => SessionError.make({ operation: "translate", message: String(cause) }),
       });
 
-      if (!translated(translation)) return yield* failed(record, translation.failed);
+      if (!translated(translation)) {
+        // What was held is the Session's now, and a translator that has since changed its mind does not undo it: the
+        // import stays and is run again, and the owner can cancel it.
+        if (record.held === true) {
+          return yield* SessionError.make({ operation: "translate", message: translation.failed });
+        }
+
+        return yield* failed(record, translation.failed);
+      }
 
       const root = yield* host.root;
 
@@ -358,6 +413,10 @@ const sessionImport = (options: SessionImportOptions) =>
       const held = yield* host.entries({ conversationId: root, order: "ascending", limit: 1 });
 
       if (held.length === 0) yield* host.importTranslated(translation.entries);
+
+      // From here the entries are in the Session, and a Run may start from them: the import is no longer counted in
+      // attempts, never given up and never expires. All that is left is to tell the Registry it ended.
+      if (record.held !== true) record = update(record, { held: true, expiresAt: undefined });
 
       if (yield* host.copying) {
         yield* host.importFinish({
@@ -408,9 +467,14 @@ const sessionImport = (options: SessionImportOptions) =>
 
       if (cursor !== undefined) outcome.cursor = cursor;
 
-      // The Registry first: a cut after it is run again, and it is told the same.
-      yield* options.ended;
-      dropped(record, { phase: "ended", expiresAt: undefined, outcome });
+      // The Registry first: a cut after it is run again, and it is told the same. Uninterruptible with the end it
+      // records, so a cancel that stops this fiber finds the import ended or not yet, never half.
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          yield* options.ended;
+          dropped(record, { phase: "ended", expiresAt: undefined, held: undefined, outcome });
+        }),
+      );
 
       // Without a title of pi's, the Session is named once, from the import's first message and answer, beside the rest.
       yield* host.nameSession.pipe(Effect.forkIn(scope), Effect.asVoid);
@@ -419,23 +483,28 @@ const sessionImport = (options: SessionImportOptions) =>
 
     /**
      * Start the translation here, once. The attempt is counted first and durably, so a translation that crashes the
-     * object (memory, CPU, a reset) leaves its count behind: after `FINISH_ATTEMPTS` the import is given up. Answers none
-     * when there is nothing to run.
+     * object (memory, CPU, a reset) leaves its count behind: after `FINISH_ATTEMPTS` the import is given up, unless the
+     * entries are held (then it is run until it ends). Answers none when there is nothing to run.
      */
     const start = Effect.gen(function* () {
       if (running !== undefined) return running;
 
-      const record = staging.record();
+      const found = staging.record();
 
-      if (record?.phase !== "finishing") return undefined;
+      if (found?.phase !== "finishing") return undefined;
 
-      if (record.attempts >= FINISH_ATTEMPTS) {
-        yield* failed(record, "The import could not be completed.");
+      const record = yield* adopted(found);
 
-        return undefined;
+      // Entries held are not given up, and the run that ends the import is not an attempt to count.
+      if (record.held !== true) {
+        if (record.attempts >= FINISH_ATTEMPTS) {
+          yield* failed(record, "The import could not be completed.");
+
+          return undefined;
+        }
+
+        update(record, { attempts: record.attempts + 1 });
       }
-
-      update(record, { attempts: record.attempts + 1 });
 
       const fiber = yield* complete.pipe(
         // A failure that heals is run again by the alarm; what cannot be recorded is logged.
@@ -529,19 +598,15 @@ const sessionImport = (options: SessionImportOptions) =>
       );
 
     const cancel: SessionImportService["cancel"] = Effect.gen(function* () {
-      const record = staging.record();
+      if (staging.record()?.phase === "ended") return hasEnded;
+
+      // A translation under way stops: the Session is deleted next, and what it wrote with it. A translation that
+      // reaches its end first has ended the import, which is then no longer the Local agent's to cancel.
+      const record = yield* stopRunning;
 
       if (record === undefined) return notAnImport;
 
-      if (record.phase === "ended") {
-        return apiFailure(
-          "invalid_argument",
-          "The import has ended: the Session is the owner's now, to delete in cloudpid.",
-        );
-      }
-
-      // A translation under way stops: the Session is deleted next, and what it wrote with it.
-      if (running !== undefined) yield* Fiber.interrupt(running);
+      if (record.phase === "ended") return hasEnded;
 
       const now = yield* Clock.currentTimeMillis;
 
@@ -555,26 +620,34 @@ const sessionImport = (options: SessionImportOptions) =>
     const sweep: SessionImportService["sweep"] = Effect.gen(function* () {
       if (deleted) return true;
 
-      const record = staging.record();
+      const found = staging.record();
 
-      if (record === undefined) return false;
+      if (found === undefined) return false;
 
       const now = yield* Clock.currentTimeMillis;
 
+      const record = yield* adopted(found);
+
       if (isExpired(record, now)) {
         // The bytes and the instruction are discarded before the Session is, so a deletion that fails leaves neither.
-        if (running !== undefined) yield* Fiber.interrupt(running);
+        const stopped = yield* stopRunning;
 
-        dropped(record, { phase: "cancelled", expiresAt: now + DISCARD_RETRY_MS });
-        yield* options.discard;
+        // Ended, or ended since: the Session is the owner's now.
+        if (stopped === undefined || stopped.phase === "ended") return false;
 
-        // Wiped: no record is left to read. Anything else that runs now would write to storage that is empty.
-        deleted = staging.record() === undefined;
+        // The translation wrote its entries before it was stopped: the Session is kept, and the import run again.
+        if (stopped.held !== true) {
+          dropped(stopped, { phase: "cancelled", expiresAt: now + DISCARD_RETRY_MS });
+          yield* options.discard;
 
-        return deleted;
+          // Wiped: no record is left to read. Anything else that runs now would write to storage that is empty.
+          deleted = staging.record() === undefined;
+
+          return deleted;
+        }
       }
 
-      if (record.phase === "finishing") yield* start;
+      if (staging.record()?.phase === "finishing") yield* start;
 
       yield* host.settle;
 
