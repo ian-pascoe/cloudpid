@@ -4,10 +4,12 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
+import { MAX_MCP_INPUT_BYTES } from "@cloudpid/protocol";
 import type { ApiResult, SessionVia, StageImportBegin } from "@cloudpid/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import type { TestSession } from "./host.fixture.ts";
+import { destroyedWorkspaces, type TestSession } from "./host.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -116,6 +118,14 @@ describe("a Session import in the Session object", () => {
       ),
     ).rejects.toThrow(/still importing/u);
 
+    // The tree does not move either (`/tree`).
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) =>
+        // SAFETY: the move is refused before the entry is looked up, so no entry has to exist.
+        instance.navigate({ entryId: 1 as never, position: "at" }),
+      ),
+    ).toMatchObject({ failure: expect.stringMatching(/still importing/u) });
+
     expect((await send(stub, first)).received).toBe(first.length);
 
     // A slice that does not start where the held bytes end says where to send from.
@@ -152,9 +162,11 @@ describe("a Session import in the Session object", () => {
 
     await send(stub, file.slice(20), 20);
 
-    expect(
-      errorOf(await stub.stageFinish({ sha256: await sha256("something else") })),
-    ).toMatchObject({ code: "checksum_mismatch" });
+    const mismatch = errorOf(await stub.stageFinish({ sha256: await sha256("something else") }));
+
+    expect(mismatch).toMatchObject({ code: "checksum_mismatch" });
+    // The bytes are kept: it does not tell the Local agent to begin again, only that the right checksum finishes it.
+    expect(mismatch.message).toMatch(/bytes are kept/u);
 
     // The bytes are kept: the right checksum finishes it.
     expect(okValue(await stub.stageFinish({ sha256: await sha256(file) })).status).not.toBe(
@@ -280,6 +292,144 @@ describe("a Session import in the Session object", () => {
 
     expect(state.discards).toBe(1);
     expect(state.received).toBe(0);
+  });
+
+  it("tells the Local agent when the instruction could not be sent, and still ends the import", async () => {
+    const stub = fresh();
+
+    await begin(stub, file, { text: "x".repeat(MAX_MCP_INPUT_BYTES + 1) });
+    await send(stub, file);
+
+    const finished = okValue(await stub.stageFinish({ sha256: await sha256(file) }));
+
+    expect(finished.warnings.join(" ")).toMatch(/instruction was not sent.*session_send/u);
+    expect(finished.summary).toBeDefined();
+    expect(okValue(await stub.mcpStatus()).status).not.toBe("importing");
+  });
+
+  describe("a translation that does not end", () => {
+    const fails = async (stub: Stub) => {
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.importTranslationFails(true),
+      );
+      await begin(stub, file);
+      await send(stub, file);
+    };
+
+    const state = (stub: Stub) =>
+      runInDurableObject(stub, (instance: TestSession) => instance.importState());
+
+    const alarm = (stub: Stub) =>
+      runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+
+    it("counts each start before it runs, and gives the import up after five", async () => {
+      const stub = fresh();
+
+      await fails(stub);
+
+      // The fiber failed: it is still finishing, with the attempt kept in the record.
+      expect(okValue(await stub.stageFinish({ sha256: await sha256(file) })).status).toBe(
+        "importing",
+      );
+      expect((await state(stub)).record).toMatchObject({ phase: "finishing", attempts: 1 });
+
+      for (let attempt = 2; attempt <= 5; attempt++) {
+        await alarm(stub);
+        await vi.waitFor(async () => expect((await state(stub)).record?.attempts).toBe(attempt));
+      }
+
+      // The sixth would be over the cap: it fails the import, whose bytes and text go, instead of starting.
+      await alarm(stub);
+
+      expect((await state(stub)).record).toMatchObject({ phase: "failed", attempts: 5 });
+      expect((await state(stub)).received).toBe(0);
+      expect(errorOf(await stub.stageFinish({ sha256: await sha256(file) })).message).toMatch(
+        /could not be completed.*Cancel it/u,
+      );
+    });
+
+    it("can be cancelled while it finishes, and its bytes go", async () => {
+      const stub = fresh();
+
+      await fails(stub);
+      await stub.stageFinish({ sha256: await sha256(file) });
+
+      expect((await state(stub)).record?.phase).toBe("finishing");
+      expect(okValue(await stub.stageCancel())).toEqual({ cancelled: true });
+      expect((await state(stub)).record).toMatchObject({ phase: "cancelled" });
+      expect((await state(stub)).received).toBe(0);
+    });
+
+    it("expires while it finishes: the alarm asks for the Session to be deleted", async () => {
+      const stub = fresh();
+
+      await fails(stub);
+      await stub.stageFinish({ sha256: await sha256(file) });
+      await runInDurableObject(stub, (instance: TestSession) => instance.expireImport());
+      await alarm(stub);
+
+      expect((await state(stub)).discards).toBe(1);
+    });
+  });
+
+  describe("an import that expires, with the Session's own deletion", () => {
+    const DISCARD_REGISTRY = "import-discard-registry";
+
+    it("leaves no Registry record, no Workspace and no storage, and a retried alarm finds nothing to run", async () => {
+      const registry = env.REGISTRIES.getByName(DISCARD_REGISTRY);
+      const session = "import-session-1";
+
+      expect(
+        await registry.createSession(
+          {
+            id: session,
+            title: null,
+            workspace: {
+              kind: "new",
+              id: "0a0b0c0d",
+              environment: DEFAULT_ENVIRONMENT,
+              branch: "feature/x",
+              base: null,
+            },
+            marks: { kind: "import", auth: "oauth" },
+          },
+          1_000,
+        ),
+      ).toMatchObject({ id: session, importing: true });
+
+      const stub = fresh();
+
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.importRegistry(session, DISCARD_REGISTRY),
+      );
+      await begin(stub, file);
+      await send(stub, file.slice(0, 10));
+      await runInDurableObject(stub, (instance: TestSession) => instance.expireImport());
+
+      const empty = () =>
+        runInDurableObject(stub, async (_instance: TestSession, state) => ({
+          keys: Array.from(state.storage.kv.list(), ([key]) => key),
+          tables: state.storage.sql
+            .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%'")
+            .toArray(),
+          alarm: await state.storage.getAlarm(),
+        }));
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+
+      // The Registry's record and the Workspace first, the object's own storage last.
+      expect(await registry.getSession(session)).toBeNull();
+      expect(await registry.getWorkspace("0a0b0c0d")).toBeNull();
+      expect(destroyedWorkspaces.get(stub.id.toString())).toHaveLength(1);
+      expect(await empty()).toEqual({ keys: [], tables: [], alarm: null });
+
+      // An alarm that is retried over the wiped storage runs nothing and brings nothing back.
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+
+      expect(await empty()).toEqual({ keys: [], tables: [], alarm: null });
+      expect(destroyedWorkspaces.get(stub.id.toString())).toHaveLength(1);
+    });
   });
 
   it("cancels: the bytes go, and later calls find nothing to import", async () => {

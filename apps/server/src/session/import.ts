@@ -12,8 +12,6 @@ import {
   apiOk,
   IMPORT_EXPIRY_MS,
   IMPORT_FINISH_WAIT_MS,
-  MAX_MCP_IMPORT_BYTES,
-  MAX_MCP_INPUT_BYTES,
   MAX_MCP_SLICE_BYTES,
   redactGithubTokens,
   type StageImportAppend,
@@ -23,7 +21,6 @@ import {
   type StagedFinish,
   type StagedImport,
 } from "@cloudpid/protocol";
-import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -48,9 +45,10 @@ export type SessionImportService = {
   readonly cancel: Effect.Effect<ApiResult<StagedCancel>>;
   /**
    * What the object does when its alarm fires: an import that expired is discarded and its Session deleted, one whose
-   * translation was cut off is started again. Never fails; it leaves the alarm to the next settle.
+   * translation was cut off is started again. Never fails. Answers whether the Session was deleted: nothing else may run
+   * in the object then, for its storage is empty and anything that wrote to it would only bring it back.
    */
-  readonly sweep: Effect.Effect<void>;
+  readonly sweep: Effect.Effect<boolean>;
 };
 
 export class SessionImport extends Context.Service<SessionImport, SessionImportService>()(
@@ -60,10 +58,13 @@ export class SessionImport extends Context.Service<SessionImport, SessionImportS
 export type SessionImportOptions = {
   readonly staging: ImportStaging;
   /**
-   * Delete the Session and its Workspace (when no other Session is in it): an import that expired or went unfinished. It
-   * wipes the object itself, so it may not return.
+   * Delete the Session and its Workspace (when no other Session is in it): an import that expired or went unfinished.
+   * It wipes the object's own storage last, and never resets the object, so the alarm that ran it ends normally and is
+   * not retried over empty storage. A failure is its own to log: the import stays, and the alarm tries again.
    */
   readonly discard: Effect.Effect<void>;
+  /** Tell the Registry the import ended, so the Session is no longer shown `importing` and no longer counts as open. */
+  readonly ended: Effect.Effect<void>;
   /** Translates the file; `translatePiSession` by default. */
   readonly translate?: ImportTranslator;
   /** How long finish waits for the translation, in milliseconds; read at each finish. */
@@ -78,7 +79,7 @@ export const FINISH_RETRY_MS = 60_000;
 /** How long an import that ended badly, or was cancelled, waits for its Session to be deleted before it tries again, in milliseconds. */
 const DISCARD_RETRY_MS = 5 * 60_000;
 
-/** How often a translation that keeps failing is started again before it is given up. */
+/** How many times a translation is started (each counted before it runs) before the import is given up. */
 const FINISH_ATTEMPTS = 5;
 
 /** The request id the instruction is sent under, so a translation started again does not send it twice. */
@@ -88,6 +89,12 @@ const notAnImport = apiFailure(
   "not_found",
   "This Session is not an import in progress: it was cancelled, or expired after an hour with no slice and was deleted.",
 );
+
+/** The import cannot go on (`message`, or a failed one's): it is cancelled, or it expires, and the owner begins again. */
+const failure = (message: string | undefined) =>
+  apiFailure("invalid_argument", `${message ?? "The import failed."} Cancel it and begin again.`, {
+    retryable: false,
+  });
 
 const expired = apiFailure(
   "import_expired",
@@ -119,7 +126,10 @@ export const importWakeAt = (
 
     if (record === undefined || record.phase === "ended") return undefined;
 
-    return record.phase === "finishing" ? now + FINISH_RETRY_MS : record.expiresAt;
+    // A translation that may have been cut off is started again soon, and given up on at its expiry.
+    return record.phase === "finishing"
+      ? Math.min(now + FINISH_RETRY_MS, record.expiresAt ?? Infinity)
+      : record.expiresAt;
   });
 
 const sessionImport = (options: SessionImportOptions) =>
@@ -137,6 +147,9 @@ const sessionImport = (options: SessionImportOptions) =>
     /** The translation in progress in this instance, if any. */
     let running: Fiber.Fiber<void> | undefined;
 
+    /** Whether this instance deleted its Session: a retried alarm then finds it so, and nothing runs over the empty storage. */
+    let deleted = false;
+
     const unavailable = (error: { readonly message: string }) =>
       apiFailure("unavailable", error.message);
 
@@ -153,11 +166,19 @@ const sessionImport = (options: SessionImportOptions) =>
       return next;
     };
 
-    /** Whether `record` passed its expiry without an append: it ends the call, and the alarm deletes the Session. */
+    /**
+     * `record` with the bytes and the instruction dropped and `changes` made: an import that ends badly or is given up
+     * keeps neither. Saved.
+     */
+    const dropped = (record: ImportRecord, changes: Partial<ImportRecord>): ImportRecord => {
+      staging.clear();
+
+      return update(record, { ...changes, text: undefined });
+    };
+
+    /** Whether `record` passed its expiry (an hour with no append, or the end of a translation's time): the alarm deletes the Session. */
     const isExpired = (record: ImportRecord, now: number): boolean =>
-      (record.phase === "staging" || record.phase === "failed" || record.phase === "cancelled") &&
-      record.expiresAt !== undefined &&
-      now >= record.expiresAt;
+      record.phase !== "ended" && record.expiresAt !== undefined && now >= record.expiresAt;
 
     /** The held Secrets' redaction, with the GitHub token pass: every text that leaves the object goes through it. */
     const redacted = (texts: ReadonlyArray<string>) =>
@@ -188,23 +209,6 @@ const sessionImport = (options: SessionImportOptions) =>
             if (known.phase === "staging" && !(yield* host.copying)) yield* host.importBegin;
 
             return apiOk(staged(known));
-          }
-
-          if (request.size_bytes < 0 || request.size_bytes > MAX_MCP_IMPORT_BYTES) {
-            return apiFailure(
-              "import_too_large",
-              `The import is over ${String(MAX_MCP_IMPORT_BYTES)} bytes.`,
-            );
-          }
-
-          if (
-            request.text !== undefined &&
-            new TextEncoder().encode(request.text).length > MAX_MCP_INPUT_BYTES
-          ) {
-            return apiFailure(
-              "input_too_large",
-              `The instruction is over ${String(MAX_MCP_INPUT_BYTES)} bytes.`,
-            );
           }
 
           const now = yield* Clock.currentTimeMillis;
@@ -318,13 +322,7 @@ const sessionImport = (options: SessionImportOptions) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
 
-        staging.clear();
-        update(record, {
-          phase: "failed",
-          failure: message,
-          text: undefined,
-          expiresAt: now + IMPORT_EXPIRY_MS,
-        });
+        dropped(record, { phase: "failed", failure: message, expiresAt: now + IMPORT_EXPIRY_MS });
         yield* host.settle;
       });
 
@@ -379,10 +377,11 @@ const sessionImport = (options: SessionImportOptions) =>
       const over =
         usage === null ? undefined : contextOverWindow(usage.tokens, usage.contextWindow);
 
-      const warnings = yield* redacted([...chosen.warnings, ...(over === undefined ? [] : [over])]);
+      const notes = [...chosen.warnings, ...(over === undefined ? [] : [over])];
 
       // The instruction, once the notice is the last entry and the Session takes messages: marked as from the Local agent.
-      // A repeat finds its first send (the request id), so a translation cut off after it does not send it twice.
+      // A repeat finds its first send (the request id), so a translation cut off after it does not send it twice. One
+      // that is refused is told to the Local agent, which sends it again with `session_send`.
       let cursor: string | undefined;
 
       if (record.text !== undefined) {
@@ -393,9 +392,14 @@ const sessionImport = (options: SessionImportOptions) =>
         });
 
         if (sent.ok) cursor = sent.value.cursor;
-        else
-          yield* Effect.logWarning(`The import's instruction was not sent: ${sent.error.message}`);
+        else {
+          notes.push(
+            `The instruction was not sent (${sent.error.message}): send it with session_send.`,
+          );
+        }
       }
+
+      const warnings = yield* redacted(notes);
 
       const outcome: Types.Mutable<NonNullable<ImportRecord["outcome"]>> = {
         summary: translation.summary,
@@ -404,43 +408,39 @@ const sessionImport = (options: SessionImportOptions) =>
 
       if (cursor !== undefined) outcome.cursor = cursor;
 
-      update(record, { phase: "ended", text: undefined, expiresAt: undefined, outcome });
-      staging.clear();
+      // The Registry first: a cut after it is run again, and it is told the same.
+      yield* options.ended;
+      dropped(record, { phase: "ended", expiresAt: undefined, outcome });
 
       // Without a title of pi's, the Session is named once, from the import's first message and answer, beside the rest.
       yield* host.nameSession.pipe(Effect.forkIn(scope), Effect.asVoid);
       yield* host.settle;
     });
 
-    /** A translation attempt that did not end it: counted, and the import is given up on when it keeps happening. */
-    const attemptFailed = (message: string) =>
-      Effect.gen(function* () {
-        const record = staging.record();
-
-        if (record?.phase !== "finishing") return;
-
-        yield* Effect.logWarning(`Translating a Session import failed: ${message}`);
-
-        const attempts = record.attempts + 1;
-
-        if (attempts >= FINISH_ATTEMPTS) {
-          yield* failed(update(record, { attempts }), "The import could not be completed.");
-        } else {
-          update(record, { attempts });
-        }
-      });
-
-    /** Start the translation here, once; a failure that heals is counted, and one that keeps coming fails the import. */
+    /**
+     * Start the translation here, once. The attempt is counted first and durably, so a translation that crashes the
+     * object (memory, CPU, a reset) leaves its count behind: after `FINISH_ATTEMPTS` the import is given up. Answers none
+     * when there is nothing to run.
+     */
     const start = Effect.gen(function* () {
       if (running !== undefined) return running;
 
+      const record = staging.record();
+
+      if (record?.phase !== "finishing") return undefined;
+
+      if (record.attempts >= FINISH_ATTEMPTS) {
+        yield* failed(record, "The import could not be completed.");
+
+        return undefined;
+      }
+
+      update(record, { attempts: record.attempts + 1 });
+
       const fiber = yield* complete.pipe(
-        Effect.catch((error) => attemptFailed(error.message)),
-        // @effect-diagnostics-next-line missedPipeableOpportunity:off
-        Effect.catchCause((cause) => attemptFailed(Cause.pretty(cause))),
-        // Never fails: what could not be recorded is tried again by the alarm.
+        // A failure that heals is run again by the alarm; what cannot be recorded is logged.
         Effect.catchCause((cause) =>
-          Effect.logWarning("Recording a failed translation failed", cause),
+          Effect.logWarning("Translating a Session import failed", cause),
         ),
         Effect.ensuring(
           Effect.sync(() => {
@@ -462,13 +462,7 @@ const sessionImport = (options: SessionImportOptions) =>
 
           if (record === undefined || record.phase === "cancelled") return notAnImport;
 
-          if (record.phase === "failed") {
-            return apiFailure(
-              "invalid_argument",
-              `${record.failure ?? "The import failed."} Cancel it and begin again.`,
-              { retryable: false },
-            );
-          }
+          if (record.phase === "failed") return failure(record.failure);
 
           const now = yield* Clock.currentTimeMillis;
 
@@ -497,12 +491,17 @@ const sessionImport = (options: SessionImportOptions) =>
             if (held !== sha256.toLowerCase()) {
               return apiFailure(
                 "checksum_mismatch",
-                "The SHA-256 of the bytes held is not the one given: cancel the import and begin again.",
+                "The SHA-256 of the bytes held is not the one given: check the file, then finish again with its SHA-256. The bytes are kept, so slices that were sent need no resending; or cancel the import and begin again.",
                 { retryable: false },
               );
             }
 
-            update(record, { phase: "finishing", expiresAt: undefined, attempts: 0 });
+            // The translation has an hour, to the alarm that gives it up and deletes the Session.
+            update(record, {
+              phase: "finishing",
+              expiresAt: now + IMPORT_EXPIRY_MS,
+              attempts: 0,
+            });
             // The retry for a translation that is cut off.
             yield* host.settle;
           }
@@ -511,25 +510,21 @@ const sessionImport = (options: SessionImportOptions) =>
             const fiber = yield* start;
 
             // Up to 30 s inline; the translation goes on after that, and `session_wait` reports its end.
-            yield* Fiber.await(fiber).pipe(
-              Effect.timeoutOption(Duration.millis(finishWaitMs())),
-              Effect.asVoid,
-            );
+            if (fiber !== undefined) {
+              yield* Fiber.await(fiber).pipe(
+                Effect.timeoutOption(Duration.millis(finishWaitMs())),
+                Effect.asVoid,
+              );
+            }
           }
 
-          const now_ = staging.record();
+          const after = staging.record();
 
-          if (now_ === undefined) return notAnImport;
+          if (after === undefined) return notAnImport;
 
-          if (now_.phase === "failed") {
-            return apiFailure(
-              "invalid_argument",
-              `${now_.failure ?? "The import failed."} Cancel it and begin again.`,
-              { retryable: false },
-            );
-          }
+          if (after.phase === "failed") return failure(after.failure);
 
-          return yield* finishResult(now_);
+          return yield* finishResult(after);
         }),
       );
 
@@ -538,13 +533,6 @@ const sessionImport = (options: SessionImportOptions) =>
 
       if (record === undefined) return notAnImport;
 
-      if (record.phase === "finishing") {
-        return apiFailure(
-          "invalid_argument",
-          "The import was accepted and is being translated: it cannot be cancelled now.",
-        );
-      }
-
       if (record.phase === "ended") {
         return apiFailure(
           "invalid_argument",
@@ -552,37 +540,49 @@ const sessionImport = (options: SessionImportOptions) =>
         );
       }
 
+      // A translation under way stops: the Session is deleted next, and what it wrote with it.
+      if (running !== undefined) yield* Fiber.interrupt(running);
+
       const now = yield* Clock.currentTimeMillis;
 
       // The bytes and the instruction go at once; the caller deletes the Session, and the alarm does if it cannot.
-      staging.clear();
-      update(record, { phase: "cancelled", text: undefined, expiresAt: now + DISCARD_RETRY_MS });
+      dropped(record, { phase: "cancelled", expiresAt: now + DISCARD_RETRY_MS });
       yield* host.settle;
 
       return apiOk<StagedCancel>({ cancelled: true });
     }).pipe(guarded);
 
     const sweep: SessionImportService["sweep"] = Effect.gen(function* () {
+      if (deleted) return true;
+
       const record = staging.record();
 
-      if (record === undefined) return;
+      if (record === undefined) return false;
 
       const now = yield* Clock.currentTimeMillis;
 
       if (isExpired(record, now)) {
         // The bytes and the instruction are discarded before the Session is, so a deletion that fails leaves neither.
-        staging.clear();
-        update(record, { phase: "cancelled", text: undefined, expiresAt: now + DISCARD_RETRY_MS });
+        if (running !== undefined) yield* Fiber.interrupt(running);
+
+        dropped(record, { phase: "cancelled", expiresAt: now + DISCARD_RETRY_MS });
         yield* options.discard;
 
-        return;
+        // Wiped: no record is left to read. Anything else that runs now would write to storage that is empty.
+        deleted = staging.record() === undefined;
+
+        return deleted;
       }
 
       if (record.phase === "finishing") yield* start;
 
       yield* host.settle;
+
+      return false;
     }).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Sweeping a Session import failed", cause)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Sweeping a Session import failed", cause).pipe(Effect.as(false)),
+      ),
     );
 
     return { begin, append, finish, cancel, sweep } satisfies SessionImportService;

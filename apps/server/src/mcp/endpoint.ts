@@ -97,7 +97,16 @@ const backendOf = (
       endpoint.sessions.getByName(id).waitForChange(request).pipe(Effect.orDie),
     transcript: (id, request) =>
       endpoint.sessions.getByName(id).transcriptPage(request).pipe(Effect.orDie),
-    createSession: ({ environment, title, branch, base, marks, requestId, maxRunning }) =>
+    createSession: ({
+      environment,
+      title,
+      branch,
+      base,
+      marks,
+      requestId,
+      maxRunning,
+      maxOpenImports,
+    }) =>
       registry
         .createSession({
           title,
@@ -105,6 +114,7 @@ const backendOf = (
           marks,
           requestId,
           maxRunning,
+          maxOpenImports,
         })
         .pipe(
           Effect.orDie,
@@ -129,15 +139,9 @@ const backendOf = (
       endpoint.sessions.getByName(id).stageImportCancel().pipe(Effect.orDie),
     // The Session's object, then its record, then its Workspace if it was the last Session in it.
     deleteSession: (id) =>
-      Effect.gen(function* () {
-        const removal = removals(registry, endpoint.objects);
-        const known = yield* registry.getSession({ id });
-
-        if (known === null) return;
-
-        yield* removal.deleteSession(known);
-        yield* removal.removeIfEmpty(known.workspace);
-      }).pipe(Effect.orDie),
+      Effect.suspend(() => removals(registry, endpoint.objects).removeSession(id)).pipe(
+        Effect.orDie,
+      ),
   };
 };
 

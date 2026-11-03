@@ -97,7 +97,7 @@ import { changesRefreshingTools, SessionChanges, sessionChangesLayer } from "./c
 import { sessionComparisonsLayer } from "./comparisons.ts";
 import { runsOpeningTools, SessionRuns, sessionRunsLayer } from "./runs.ts";
 import { annotationsPruningTools, SessionReviews, sessionReviewsLayer } from "./reviews.ts";
-import { isImporting } from "./fork-host.ts";
+import { importReadying } from "./import-readying.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
 import {
@@ -373,18 +373,24 @@ export const SessionLive = Session.make(
           console.warn(message),
         );
 
+        // The Session import's bytes and record, in this object's SQLite (`import-staging.ts`).
+        const staging = importStaging(state.raw.storage);
+
         const workspace = sessionWorkspace({
           namespace: workspaces,
           placement,
           // What the Workspace is made of is the Registry's; a Workspace it no longer lists is left as it is.
           // @effect-diagnostics-next-line asyncFunction:off
           prepare: async (id) => {
-            // A Session import readies its Workspace once the import ends: its files are not carried before.
-            if (isImporting(kv)) {
-              throw new Error(
-                "This Session is importing a local pi Session; its Workspace is readied when the import ends.",
-              );
-            }
+            // An import readies its Workspace once it ends, and applies its Changes from a ref of its own.
+            const { carry } = await importReadying({
+              kv,
+              staging,
+              session: name,
+              workspace: id,
+              // @effect-diagnostics-next-line asyncFunction:off
+              placed: async () => (await placement()).workspace,
+            });
 
             // The Registry hands the Environment's Skill set only when it is not the one the Workspace holds.
             const skillSetHash = await workspaces.getByName(workspaceObjectName(id)).skillSetHash();
@@ -393,7 +399,12 @@ export const SessionLive = Session.make(
               registries.getByName(REGISTRY_NAME).getWorkspaceSetup({ id, skillSetHash }),
             );
 
-            if (setup !== null) await prepare(workspaceObjectName(id), setup);
+            if (setup === null) return;
+
+            await prepare(
+              workspaceObjectName(id),
+              carry === undefined ? setup : { ...setup, carry },
+            );
           },
         });
 
@@ -408,9 +419,6 @@ export const SessionLive = Session.make(
         const builds = buildUpkeep(registries, { workspaces: workspaceObjects, spares });
 
         const registryObject = registries.getByName(REGISTRY_NAME);
-
-        // The Session import's bytes and record, in this object's SQLite (`import-staging.ts`).
-        const staging = importStaging(state.raw.storage);
 
         const environments = sessionEnvironments({
           registry: registryObject,
@@ -441,26 +449,32 @@ export const SessionLive = Session.make(
           sessions: { destroy: destroySessionObject(sessions) },
         });
 
+        // What wipes this object's own state (`destroySession`), once the host exists: an import that expired deletes its
+        // Session from inside the alarm, so it neither calls itself over RPC nor resets (`SessionImportOptions.discard`).
+        let wipeHere: Effect.Effect<void> = Effect.die("The Session host is not built yet");
+
         // An import that expired, or was left unfinished, takes its Session with it: the Registry forgets the Session, its
         // Workspace goes with it if no other Session is in it, and the object wipes itself last, so a deletion that fails
         // is tried again at the next alarm (`SessionImport.sweep`).
         const discardImport: Effect.Effect<void> =
           name === undefined
             ? Effect.void
-            : Effect.gen(function* () {
-                const known = yield* registryObject.getSession({ id: name });
+            : removal
+                .removeOwnSession(
+                  name,
+                  Effect.suspend(() => wipeHere),
+                )
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Could not delete an expired Session import", cause),
+                  ),
+                );
 
-                if (known !== null) {
-                  yield* registryObject.deleteSession({ id: name });
-                  yield* removal.removeIfEmpty(known.workspace);
-                }
-
-                yield* destroySessionObject(sessions)(name);
-              }).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("Could not delete an expired Session import", cause),
-                ),
-              );
+        // The import ended: the Registry stops showing the Session `importing` and counting it as open.
+        const importEnded: Effect.Effect<void> =
+          name === undefined
+            ? Effect.void
+            : Effect.orDie(registryObject.endSessionImport({ id: name }));
 
         // The Session's Subagent Workspaces: registered by the Registry as the Session's, removed as a Workspace is.
         const subagentWorkspaces = sessionSubagentWorkspaces({
@@ -770,7 +784,7 @@ export const SessionLive = Session.make(
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
-          sessionImportLayer({ staging, discard: discardImport }).pipe(
+          sessionImportLayer({ staging, discard: discardImport, ended: importEnded }).pipe(
             // The import greets the open pages again once it ends, so it is built over the sockets.
             Layer.provideMerge(sessionSocketsLayer(state.raw)),
             // Reviews, which the sockets send, place through the host and check against the Changes.
@@ -931,13 +945,22 @@ export const SessionLive = Session.make(
         const mcp = Context.get(services, SessionMcp);
         const imports = Context.get(services, SessionImport);
 
+        wipeHere = destroySession({ state: state.raw, closeBrowser: browser.close }).pipe(
+          Effect.provideService(SessionHost, host),
+        );
+
         return {
           // A failed alarm is retried by the runtime. Expired Secrets are deleted first.
           alarm: () =>
             invoked(
               "session.alarm",
               Effect.orDie(
-                held.sweep.pipe(Effect.andThen(imports.sweep), Effect.andThen(host.alarm)),
+                imports.sweep.pipe(
+                  // A Session that deleted itself runs nothing more: its storage is empty, and the alarm ends here.
+                  Effect.flatMap((deleted) =>
+                    deleted ? Effect.void : held.sweep.pipe(Effect.andThen(host.alarm)),
+                  ),
+                ),
               ),
             ),
           fetch: invoked(
@@ -1004,13 +1027,7 @@ export const SessionLive = Session.make(
           stageImportAppend: (request) => invoked("session.import.append", imports.append(request)),
           stageImportFinish: (request) => invoked("session.import.finish", imports.finish(request)),
           stageImportCancel: () => invoked("session.import.cancel", imports.cancel),
-          destroy: () =>
-            invoked(
-              "session.destroy",
-              destroySession({ state: state.raw, closeBrowser: browser.close }).pipe(
-                Effect.provideService(SessionHost, host),
-              ),
-            ),
+          destroy: () => invoked("session.destroy", wipeHere),
           reset: () => Effect.sync(() => state.raw.abort(SESSION_DELETED_REASON)),
         };
       }),

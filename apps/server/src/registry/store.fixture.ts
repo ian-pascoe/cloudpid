@@ -99,10 +99,15 @@ export class TestRegistry extends DurableObject {
       marks?: MarkedOrigin | null;
       requestId?: string | undefined;
       maxRunning?: number;
+      maxOpenImports?: { limit: number; auth: string };
     },
     now: number,
   ): CreatedSession | SessionRefusal {
     return this.#store.createSession(input, now);
+  }
+
+  endSessionImport(id: string): void {
+    this.#store.endSessionImport(id);
   }
 
   getSession(id: string): SessionRecord | null {

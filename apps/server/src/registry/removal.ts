@@ -18,6 +18,7 @@ import type { SessionRecord, WorkspaceRecord } from "./store.ts";
 export type RemovalRegistry = Pick<
   RegistryMethods,
   | "getEnvironment"
+  | "getSession"
   | "listSessions"
   | "deleteSession"
   | "listWorkspaces"
@@ -75,27 +76,29 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
       workspaces.destroy(workspaceObjectName(workspace.id)),
     ).pipe(Effect.andThen(registry.deleteWorkspace({ id: workspace.id })), Effect.asVoid);
 
+  /** Remove Session `id`'s Subagent Workspaces, then forget it: its object is wiped already. */
+  const forgetSession = (id: string) =>
+    Effect.gen(function* () {
+      for (const workspace of yield* registry.listSubagentWorkspaces({ session: id })) {
+        yield* removeSubagentWorkspace(workspace).pipe(
+          Effect.mapError((error) =>
+            SessionActionError.make({
+              message: thenSaying(error.message, "The session is kept."),
+            }),
+          ),
+        );
+      }
+
+      yield* registry.deleteSession({ id });
+    });
+
   /**
    * Wipe a Session's object, then its Subagent Workspaces, then forget it: a wipe that fails leaves it listed (with the
    * Subagent Workspaces left), to try again. The object goes first, so no subagent spawned meanwhile makes another.
    */
   const deleteSession = (session: SessionRecord) =>
     onSession("Could not delete the session", sessions.destroy(session.id)).pipe(
-      Effect.andThen(
-        Effect.gen(function* () {
-          for (const workspace of yield* registry.listSubagentWorkspaces({ session: session.id })) {
-            yield* removeSubagentWorkspace(workspace).pipe(
-              Effect.mapError((error) =>
-                SessionActionError.make({
-                  message: thenSaying(error.message, "The session is kept."),
-                }),
-              ),
-            );
-          }
-        }),
-      ),
-      Effect.andThen(registry.deleteSession({ id: session.id })),
-      Effect.asVoid,
+      Effect.andThen(forgetSession(session.id)),
     );
 
   /**
@@ -121,6 +124,37 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
         Effect.logWarning(`Could not remove workspace ${id} with its last session`, error),
       ),
     );
+
+  /**
+   * Delete Session `id` as the owner's delete does: its object, then its record, then its Workspace if it was the last
+   * Session in it. A Session the Registry does not list is already gone.
+   */
+  const removeSession = (id: string) =>
+    Effect.gen(function* () {
+      const known = yield* registry.getSession({ id });
+
+      if (known === null) return;
+
+      yield* deleteSession(known);
+      yield* removeIfEmpty(known.workspace);
+    });
+
+  /**
+   * A Session deleting itself (an import that expired): its record and Workspace go first, and `wipe`, which empties the
+   * Session's own storage, last, so a failure before it leaves the Session to try again, and one after it leaves nothing
+   * that points at an object that is gone. A Session the Registry no longer lists is only wiped.
+   */
+  const removeOwnSession = (id: string, wipe: Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      const known = yield* registry.getSession({ id });
+
+      if (known !== null) {
+        yield* forgetSession(id);
+        yield* removeIfEmpty(known.workspace);
+      }
+
+      yield* wipe;
+    });
 
   /**
    * Delete every Session `bound` picks (archived ones too), then `wipe` what they worked on, until `settled` says no
@@ -248,6 +282,8 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
 
   return {
     deleteSession,
+    removeSession,
+    removeOwnSession,
     removeWorkspace,
     removeIfEmpty,
     removeSubagentWorkspace,

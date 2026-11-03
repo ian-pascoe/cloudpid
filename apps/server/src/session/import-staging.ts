@@ -74,13 +74,37 @@ export type ImportStaging = {
   readonly clear: () => void;
 };
 
-/** The staging over `storage`, its tables brought up to date. */
-export const importStaging = (storage: MigrationStorage): ImportStaging => {
-  migrate(storage, MIGRATIONS);
+/** The phases this version writes; a stored one that is none of them (a newer version's) reads as `failed`. */
+const PHASES: ReadonlySet<string> = new Set<ImportPhase>([
+  "staging",
+  "finishing",
+  "ended",
+  "failed",
+  "cancelled",
+]);
 
+/**
+ * The staging over `storage`. Its tables are made by the first write (the first `begin`), never by opening it, so a
+ * Session that is no import, and one whose storage was wiped, keep no table of this file: reads of a store that was
+ * never written find nothing.
+ */
+export const importStaging = (storage: MigrationStorage): ImportStaging => {
   const { sql } = storage;
 
+  /** Whether the tables are there: a read before the first write finds none, and makes none. */
+  const present = (): boolean =>
+    sql
+      .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'import_state'")
+      .toArray().length > 0;
+
+  /** Make the tables if they are not there (`migrate` is idempotent, and starts over on storage that was wiped). */
+  const open = () => {
+    if (!present()) migrate(storage, MIGRATIONS);
+  };
+
   const received = (): number => {
+    if (!present()) return 0;
+
     const [row] = sql
       .exec<{ end: number | null }>("SELECT MAX(start + length(bytes)) AS end FROM import_slices")
       .toArray();
@@ -90,14 +114,21 @@ export const importStaging = (storage: MigrationStorage): ImportStaging => {
 
   return {
     record: () => {
+      if (!present()) return undefined;
+
       const [row] = sql
         .exec<{ json: string }>("SELECT json FROM import_state WHERE id = 1")
         .toArray();
 
-      // SAFETY: only `save` writes this row, from an `ImportRecord`.
-      return row === undefined ? undefined : (JSON.parse(row.json) as ImportRecord);
+      if (row === undefined) return undefined;
+
+      // SAFETY: only `save` writes this row, from an `ImportRecord`; a phase it does not know is read as `failed` below.
+      const record = JSON.parse(row.json) as ImportRecord;
+
+      return PHASES.has(record.phase) ? record : { ...record, phase: "failed" };
     },
     save: (record) => {
+      open();
       sql.exec(
         "INSERT OR REPLACE INTO import_state (id, json) VALUES (1, ?)",
         JSON.stringify(record),
@@ -105,6 +136,7 @@ export const importStaging = (storage: MigrationStorage): ImportStaging => {
     },
     received,
     append: (offset, bytes) => {
+      open();
       storage.transactionSync(() => {
         for (let at = 0; at < bytes.length; at += SLICE_ROW_BYTES) {
           sql.exec(
@@ -116,6 +148,8 @@ export const importStaging = (storage: MigrationStorage): ImportStaging => {
       });
     },
     rows: function* () {
+      if (!present()) return;
+
       for (const row of sql.exec<{ bytes: ArrayBuffer }>(
         "SELECT bytes FROM import_slices ORDER BY start",
       )) {
@@ -123,6 +157,8 @@ export const importStaging = (storage: MigrationStorage): ImportStaging => {
       }
     },
     clear: () => {
+      if (!present()) return;
+
       sql.exec("DELETE FROM import_slices");
     },
   };

@@ -18,6 +18,7 @@ import { SETUP_SCRIPT, setupRecord, START_SCRIPT } from "@cloudpid/sandbox-image
 import {
   carryRef,
   carryWorkspaceScript,
+  importCarryRef,
   prepareWorkspaceScript,
   repoSetupScript,
   repoStartScript,
@@ -635,6 +636,43 @@ describe("carrying a Workspace to a Fork's new one", () => {
     // The Repo with nothing uncommitted is on the branch too.
     expect(git("status --porcelain", join(fork, "api"))).toBe("");
     expect(git("branch --show-current", join(fork, "api"))).toBe(FORK);
+  });
+
+  describe("the Changes of a Session import, at a ref of its own", () => {
+    const IMPORT = importCarryRef("0190f0a8-1b2c-7d3e-8f40-123456789abc");
+
+    /** The Changes a Local agent pushed for the import: the carry's commit, at the import's ref and not the branch's. */
+    const pushedForImport = () => {
+      const made = forked();
+      const { app, git, carry } = made;
+
+      expect(carry().status).toBe(0);
+      // The remote's own ref, moved: the Local agent pushes to the import's from the first.
+      git(`update-ref ${IMPORT} ${carryRef(FORK)}`, app.origin);
+      git(`update-ref -d ${carryRef(FORK)}`, app.origin);
+
+      return made;
+    };
+
+    it("are not applied by another Workspace made on the same branch, and are left where they are", () => {
+      const { app, fork, git, ready } = pushedForImport();
+
+      const made = ready();
+
+      expect(made.status, made.stderr).toBe(0);
+      expect(existsSync(join(fork, "app", "new.txt"))).toBe(false);
+      expect(git(`ls-remote ${app.origin} ${IMPORT}`, fork)).not.toBe("");
+    });
+
+    it("are applied by the import's own Workspace, which then takes them off the remote", () => {
+      const { app, fork, git, ready } = pushedForImport();
+
+      const made = ready({ carry: IMPORT });
+
+      expect(made.status, made.stderr).toBe(0);
+      expect(readFileSync(join(fork, "app", "new.txt"), "utf8")).toBe("untracked\n");
+      expect(git(`ls-remote ${app.origin} ${IMPORT}`, fork)).toBe("");
+    });
   });
 
   it("applies the changes to a spare's clones it switches", () => {

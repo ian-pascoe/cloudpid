@@ -53,6 +53,8 @@ export type SessionRecord = {
   readonly updatedAt: number;
   /** When the owner archived the Session, or null while it is not archived. */
   readonly archivedAt: number | null;
+  /** True while a Session import still fills it; absent otherwise. */
+  readonly importing?: true;
   /** The Session it is a Fork or Clone of; absent for one started afresh. */
   readonly origin?: SessionOrigin;
   /** How the MCP endpoint's caller got in, for a Session it started or imported. */
@@ -141,7 +143,9 @@ export type SessionRefusal =
   | { readonly refused: "no-workspace" }
   | { readonly refused: "branch-taken"; readonly workspace: string }
   /** `maxRunning` Sessions started over the MCP endpoint or imported are running already (`createSession`'s `maxRunning`). */
-  | { readonly refused: "too-many-running"; readonly limit: number };
+  | { readonly refused: "too-many-running"; readonly limit: number }
+  /** `limit` imports of the same identity are open already (`createSession`'s `maxOpenImports`). */
+  | { readonly refused: "too-many-imports"; readonly limit: number };
 
 /**
  * A Session `createSession` answers: `repeated` says it was made for an earlier start of the same `requestId`, so a start
@@ -231,9 +235,16 @@ export type RegistryStore = {
        * concurrent starts cannot both pass.
        */
       readonly maxRunning?: number | undefined;
+      /**
+       * For a Session marked `import`: refuse (`too-many-imports`) when `limit` Sessions marked `import` by the same `auth`
+       * are still importing (`importing`), unless `requestId` finds its Session. Counted in the same transaction as the insert.
+       */
+      readonly maxOpenImports?: { readonly limit: number; readonly auth: string } | undefined;
     },
     now: number,
   ) => CreatedSession | SessionRefusal;
+  /** The Session's import ended: it is no longer `importing`. A Session that is not registered is ignored. */
+  readonly endSessionImport: (id: string) => void;
   /** The Session registered under `id`, or null. */
   readonly getSession: (id: string) => SessionRecord | null;
   /**
@@ -402,6 +413,8 @@ type SessionRow = {
   created_at: number;
   updated_at: number;
   archived_at: number | null;
+  /** 1 while a Session import fills the Session. */
+  importing: number;
   /**
    * A Fork or Clone's source Session and which it is; for `mcp` and `import`, the marks as JSON (`MarkedOrigin`) and
    * which. Both null for one started afresh.
@@ -605,6 +618,8 @@ const toSession = (row: SessionRow): SessionRecord => {
   if (marks !== undefined) full.marks = marks;
 
   if (agents !== undefined) full.agents = agents;
+
+  if (row.importing === 1) full.importing = true;
 
   return full;
 };
@@ -1050,6 +1065,12 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     ) STRICT`);
     sql.exec("CREATE INDEX mcp_sign_in_waiters_by_key ON mcp_sign_in_waiters (key_hash)");
   },
+  // 31: whether a Session import still fills a Session (`docs/architecture/mcp-endpoint.md` → Session import): 1 from the
+  // Session's creation as an import until the import ends, 0 for every other, all of those stored before. The open imports
+  // per identity are counted from it, and `sessions_list` shows the Session `importing` meanwhile.
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN importing INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
@@ -1194,6 +1215,19 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
    * made less than `STARTING_MS` ago whose first Run has not reported yet (still idle, status never changed). Archived
    * ones are stopped, so they never count.
    */
+  /** How many Sessions marked `import` by `auth` are still importing. */
+  const openImports = (auth: string): number => {
+    const [row] = sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM sessions
+          WHERE origin_kind = 'import' AND importing = 1 AND json_extract(origin, '$.auth') = ?`,
+        auth,
+      )
+      .toArray();
+
+    return row?.count ?? 0;
+  };
+
   const runningMarked = (now: number): number => {
     const [row] = sql
       .exec<{ count: number }>(
@@ -1223,6 +1257,16 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           return { refused: "too-many-running", limit: input.maxRunning };
         }
 
+        const open = input.maxOpenImports;
+
+        if (
+          open !== undefined &&
+          input.marks?.kind === "import" &&
+          openImports(open.auth) >= open.limit
+        ) {
+          return { refused: "too-many-imports", limit: open.limit };
+        }
+
         const choice = input.workspace;
         let environment: string;
 
@@ -1249,7 +1293,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         const marks = input.marks ?? null;
 
         sql.exec(
-          "INSERT INTO sessions (id, title, title_source, environment, workspace, status, created_at, updated_at, origin, origin_kind) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?)",
+          "INSERT INTO sessions (id, title, title_source, environment, workspace, status, created_at, updated_at, origin, origin_kind, importing) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?)",
           input.id,
           input.title,
           input.title === null ? null : "owner",
@@ -1258,6 +1302,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           now,
           now,
           ...originColumns(origin, marks),
+          marks?.kind === "import" ? 1 : 0,
         );
 
         if (requestId !== undefined) {
@@ -1286,6 +1331,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         if (origin !== null) created.origin = origin;
 
         if (marks !== null) created.marks = marks;
+
+        if (marks?.kind === "import") created.importing = true;
 
         return created;
       }),
@@ -1356,6 +1403,10 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         id,
         status,
       );
+    },
+
+    endSessionImport: (id) => {
+      sql.exec("UPDATE sessions SET importing = 0 WHERE id = ?", id);
     },
 
     setSessionAgents: (id, agents) => {

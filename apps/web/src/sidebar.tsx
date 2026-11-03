@@ -88,7 +88,13 @@ export const SessionLink = ({
     <span className="truncate font-medium">{sessionTitle(session)}</span>
     <span className="flex items-center gap-2 text-xs text-muted-foreground">
       <SessionPlaceNote session={session} />
-      {session.status === "running" ? (
+      {session.importing === true ? (
+        // An import is still filling it: it takes no message until the import ends.
+        <>
+          <span className="pulse-dot size-1.5 rounded-full bg-muted-foreground" aria-hidden />
+          Importing
+        </>
+      ) : session.status === "running" ? (
         <>
           <span className="pulse-dot size-1.5 rounded-full bg-success" aria-hidden />
           Running

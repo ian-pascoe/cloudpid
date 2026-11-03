@@ -1229,6 +1229,7 @@ describe("the import tools", () => {
       title: "pi title",
       marks: { kind: "import", auth: "oauth", client: VIA.client },
       maxRunning: 10,
+      maxOpenImports: { limit: 2, auth: "oauth" },
     });
     expect(stageImportBegin).toHaveBeenCalledWith(ID, {
       size_bytes: 100,
@@ -1249,7 +1250,7 @@ describe("the import tools", () => {
         received: 0,
         max_slice_bytes: 2 * 1024 * 1024,
         expires_at: "2026-01-01T01:00:00.000Z",
-        carry_ref: "refs/cloudpid/carry/cloudpid/abcd1234",
+        carry_ref: `refs/cloudpid/import/${ID}`,
       },
     });
   });
@@ -1308,6 +1309,51 @@ describe("the import tools", () => {
       ok: false,
       error: { code: "too_many_running", retryable: true, details: { limit: 10 } },
     });
+  });
+
+  it("refuses a begin past the open imports of the identity, retryable, with the limit", async () => {
+    const result = await run(
+      service({
+        createSession: () => Effect.succeed({ refused: "too-many-imports", limit: 2 }),
+      }).importBegin(begin),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "too_many_running", retryable: true, details: { limit: 2 } },
+    });
+  });
+
+  it("touches nothing of a Session an earlier call of the same request_id made, when that was no import", async () => {
+    const stageImportBegin = vi.fn(backend().stageImportBegin);
+    const deleteSession = vi.fn(() => Effect.void);
+
+    const result = await run(
+      service({
+        // `session_start` made it under the same id: it carries the endpoint's marks, not an import's.
+        createSession: () =>
+          Effect.succeed({
+            ...record({ marks: { kind: "mcp", auth: "oauth" } }),
+            repeated: true as const,
+          }),
+        stageImportBegin,
+        deleteSession,
+      }).importBegin({ ...begin, request_id: "r-1" }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(stageImportBegin).not.toHaveBeenCalled();
+    expect(deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("lists an import that still fills its Session as importing", async () => {
+    const result = await run(
+      service({
+        sessions: () => Effect.succeed({ sessions: [record({ importing: true })] }),
+      }).sessions({}),
+    );
+
+    expect(result).toMatchObject({ ok: true, value: { sessions: [{ status: "importing" }] } });
   });
 
   it("deletes the Session it made when the Session cannot be set up as an import", async () => {

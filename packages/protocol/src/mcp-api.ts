@@ -25,6 +25,9 @@ export const MAX_MCP_IMPORT_BYTES = 64 * 1024 * 1024;
  */
 export const MAX_MCP_RUNNING = 10;
 
+/** How many Session imports one identity may have open (begun and not ended, cancelled or expired) at once. */
+export const MAX_MCP_OPEN_IMPORTS = 2;
+
 /** The longest `session_wait` may wait, in milliseconds. */
 export const MAX_MCP_WAIT_MS = 300_000;
 
@@ -649,7 +652,7 @@ export const McpSessionSummary = Schema.Struct({
   session_id: Schema.String,
   title: Schema.NullOr(Schema.String),
   environment: Schema.Struct({ id: Schema.String, name: Schema.String }),
-  status: open(Schema.Literals(["running", "idle", "unknown"]), "unknown"),
+  status: open(Schema.Literals(["running", "idle", "importing", "unknown"]), "unknown"),
   origin: Schema.optionalKey(McpSessionOrigin),
   updated_at: Schema.String,
   archived: Schema.Boolean,

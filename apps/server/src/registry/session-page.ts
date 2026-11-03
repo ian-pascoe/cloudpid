@@ -56,7 +56,9 @@ export const pageSessions = (
     all,
     (session) =>
       (query.environment === undefined || session.environment === query.environment) &&
-      (query.status === undefined || session.status === query.status) &&
+      // An import still filling a Session is neither idle nor running.
+      (query.status === undefined ||
+        (session.importing !== true && session.status === query.status)) &&
       (session.archivedAt !== null) === archived &&
       (needle === "" || (session.title ?? "").toLowerCase().includes(needle)) &&
       (after === undefined || before(after, { t: session.createdAt, i: session.id })),

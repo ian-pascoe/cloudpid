@@ -81,6 +81,12 @@ describe("pageSessions", () => {
     expect(ids(pageSessions(all, { query: "  Task 7 " }))).toEqual(["s-007"]);
   });
 
+  it("leaves an import still filling its Session out of the idle and running filters", () => {
+    const all = list(3, (index) => (index === 2 ? { importing: true as const } : {}));
+
+    expect(ids(pageSessions(all, { status: "idle" }))).toEqual(["s-003", "s-001"]);
+  });
+
   it("pages within a filter, whatever the filter hides", () => {
     const all = list(60, (index) => ({ environment: index % 2 === 0 ? "a" : "b" }));
     const first = isPage(pageSessions(all, { environment: "a", limit: 10 }));

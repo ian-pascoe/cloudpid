@@ -606,6 +606,8 @@ export const serveRegistryRpc = <R = never>(
           return failed(
             `${String(refusal.limit)} sessions started over MCP are running: wait for one`,
           );
+        case "too-many-imports":
+          return failed(`${String(refusal.limit)} session imports are open: wait for one to end`);
       }
     };
 

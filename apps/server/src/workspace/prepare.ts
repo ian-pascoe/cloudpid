@@ -213,6 +213,7 @@ export const prepareWorkspace = async (
       branch: setup.branch,
       base: setup.base,
       spare: SPARE_BRANCH,
+      carry: setup.carry,
     }),
     CLONE_TIMEOUT_SECONDS,
   );

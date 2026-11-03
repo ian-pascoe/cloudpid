@@ -30,6 +30,7 @@ import {
   type ImportFinishResult,
   MAX_MCP_IMPORT_BYTES,
   MAX_MCP_INPUT_BYTES,
+  MAX_MCP_OPEN_IMPORTS,
   MAX_MCP_SLICE_BYTES,
   MAX_MCP_RUNNING,
   MAX_MCP_WAIT_MS,
@@ -73,7 +74,7 @@ import {
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
-import { carryRef } from "@cloudpid/sandbox-image/workspaces";
+import { importCarryRef } from "@cloudpid/sandbox-image/workspaces";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -141,6 +142,8 @@ export interface McpBackend {
     readonly marks: MarkedOrigin;
     readonly requestId?: string | undefined;
     readonly maxRunning: number;
+    /** For an import: how many the caller may have open, by how it got in (`auth`). */
+    readonly maxOpenImports?: { readonly limit: number; readonly auth: McpAuth } | undefined;
   }) => Effect.Effect<CreatedSession | SessionRefusal>;
   /** The Session object's `configure()`. */
   readonly configure: (id: string, request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
@@ -278,7 +281,8 @@ const summaryOf = (
       id: record.environment,
       name: environments.get(record.environment) ?? record.environment,
     },
-    status: record.status,
+    // An import still filling the Session is what it is doing, whatever its last Run reported.
+    status: record.importing === true ? "importing" : record.status,
     updated_at: new Date(record.updatedAt).toISOString(),
     archived: record.archivedAt !== null,
     url: `${origin}/sessions/${record.id}`,
@@ -436,6 +440,12 @@ const refusedStart = (
         retryable: true,
         details: { limit: refusal.limit },
       });
+    case "too-many-imports":
+      return apiFailure(
+        "too_many_running",
+        `${String(refusal.limit)} session imports are open: finish or cancel one (session_import_cancel), or wait for one to expire, then begin again.`,
+        { retryable: true, details: { limit: refusal.limit } },
+      );
     case "no-workspace":
       return apiFailure("unavailable", "The Workspace is gone: try again.");
   }
@@ -443,6 +453,34 @@ const refusedStart = (
 
 /** An epoch time as ISO 8601 text. */
 const isoOf = (epochMs: number): string => new Date(epochMs).toISOString();
+
+/** What the Session is told of an import it begins: the size, who sent it, the Workspace's branch and Repos, and what was asked. */
+const importOf = (
+  request: ImportBeginRequest,
+  workspace: WorkspaceRecord,
+  caller: Caller,
+  auth: McpAuth,
+): StageImportBegin => {
+  const begin: Types.Mutable<StageImportBegin> = {
+    size_bytes: request.size_bytes,
+    via: sessionViaOf(request.via, caller, auth),
+    workspace: {
+      branch: workspace.branch,
+      repos: Arr.map(workspace.repos, (name) => ({
+        name,
+        directory: `${WORKSPACE_ROOT}/${name}`,
+      })),
+    },
+  };
+
+  if (request.model !== undefined) begin.model = request.model;
+
+  if (request.thinking !== undefined) begin.thinking = request.thinking;
+
+  if (request.text !== undefined) begin.text = request.text;
+
+  return begin;
+};
 
 /** The failure for an import tool called with an id that is no import of the Registry's: made up, deleted, or another Session. */
 const notAnImport = (id: string) =>
@@ -909,6 +947,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
             marks,
             requestId: request.request_id,
             maxRunning: MAX_MCP_RUNNING,
+            maxOpenImports: { limit: MAX_MCP_OPEN_IMPORTS, auth: identity.auth },
           });
 
           if ("refused" in created) {
@@ -943,41 +982,29 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
             );
           }
 
+          // A `request_id` finds the Session an earlier call made, whatever the call was: one that was no import is
+          // none of this begin's to use, and is left as it is.
+          if (created.marks?.kind !== "import") {
+            return apiFailure(
+              "invalid_argument",
+              "request_id was used by another call that did not begin a session import: use a new request_id.",
+            );
+          }
+
           const id = created.id;
           const workspace = yield* backend.workspace(created.workspace);
 
           // The Registry made the Session: one that cannot be told it is an import is deleted again, so no importing
           // Session is left that nothing will finish (a repeat of a begin that did not get this far finds none).
-          let begun: ApiResult<StagedImport> = unreachable;
+          const begun =
+            workspace === null
+              ? unreachable
+              : yield* backend
+                  .stageImportBegin(id, importOf(request, workspace, context.caller, identity.auth))
+                  .pipe(Effect.catchCause(() => Effect.succeed(unreachable)));
 
-          if (workspace !== null) {
-            const staging: Types.Mutable<StageImportBegin> = {
-              size_bytes: request.size_bytes,
-              via: sessionViaOf(request.via, context.caller, identity.auth),
-              workspace: {
-                branch: workspace.branch,
-                repos: Arr.map(workspace.repos, (name) => ({
-                  name,
-                  directory: `${WORKSPACE_ROOT}/${name}`,
-                })),
-              },
-            };
-
-            if (request.model !== undefined) staging.model = request.model;
-
-            if (request.thinking !== undefined) staging.thinking = request.thinking;
-
-            if (request.text !== undefined) staging.text = request.text;
-
-            begun = yield* backend
-              .stageImportBegin(id, staging)
-              .pipe(Effect.catchCause(() => Effect.succeed(unreachable)));
-          }
-
-          if (!begun.ok || workspace === null) {
-            if (created.repeated !== true) {
-              yield* Effect.ignoreCause(backend.deleteSession(id));
-            }
+          if (workspace === null || !begun.ok) {
+            if (created.repeated !== true) yield* Effect.ignoreCause(backend.deleteSession(id));
 
             return begun.ok ? unreachable : begun;
           }
@@ -989,7 +1016,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
             received: begun.value.received,
             max_slice_bytes: MAX_MCP_SLICE_BYTES,
             expires_at: isoOf(begun.value.expires_at),
-            carry_ref: carryRef(workspace.branch),
+            carry_ref: importCarryRef(id),
           });
         }),
       ),
