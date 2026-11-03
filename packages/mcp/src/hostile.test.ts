@@ -206,6 +206,10 @@ describe.each(bases)("a hostile %s server", (_name, base) => {
       failedWith(TooLarge, { limit: 12 * MiB }),
     );
     expect(await readOf("file:///big.txt", 13 * MiB)).toEqual({ read: true });
+    // An agent's read counts its bytes as they arrive, and stops at 16 MiB.
+    expect(await readOf("file:///big.txt", 17 * MiB)).toEqual(
+      failedWith(TooLarge, { limit: 16 * MiB }),
+    );
   });
 
   it("still tracks a read whose params are not an object: a read-only request, retried", async () => {

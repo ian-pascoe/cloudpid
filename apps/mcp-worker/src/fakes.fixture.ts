@@ -114,9 +114,39 @@ const appServer = (options: FakeOptions) =>
     moreTools: [appTool("app", "ui://docs/app")],
   });
 
+/**
+ * A Modern server with resources: two listed one to a page, a template, the lists' cache hints, and a read whose text
+ * echoes a token its server must not leak.
+ */
+const resourcesServer = (options: FakeOptions) =>
+  modernServer({
+    ...options,
+    resourcePageSize: 1,
+    listCache: { ttlMs: 60_000 },
+    resourceTemplates: [{ uriTemplate: "file:///{path}", name: "files" }],
+    resources: [
+      {
+        uri: "file:///notes.md",
+        name: "notes",
+        mimeType: "text/markdown",
+        contents: [
+          { uri: "file:///notes.md", mimeType: "text/markdown", text: `key ${ECHOED_SECRET}` },
+        ],
+      },
+      {
+        uri: "file:///logo.png",
+        name: "logo",
+        description: `for ${ECHOED_SECRET}`,
+        mimeType: "image/png",
+        contents: [{ uri: "file:///logo.png", mimeType: "image/png", blob: "iVBORw0KGgo=" }],
+      },
+    ],
+  });
+
 const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map([
   ["modern.test", modernServer],
   ["apps.test", appServer],
+  ["resources.test", resourcesServer],
   ["legacy.test", legacyStatelessServer],
   ["stateful.test", legacyStatefulServer],
   ["headers.test", headersServer],

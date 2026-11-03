@@ -7,6 +7,7 @@ import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { McpListCache } from "./list-cache.ts";
 
 /** A Repo of a Workspace, as the Registry lists it: its directory below `/workspace`, and its `owner/repo`. */
 export type WorkspaceRepo = { readonly directory: string; readonly slug: string };
@@ -38,6 +39,16 @@ export class McpProcessEnded extends Context.Service<McpProcessEnded, McpProcess
   static readonly none = Layer.succeed(McpProcessEnded, () => Effect.void);
 }
 
-/** A child's end, told to the host's handler: its spawn id changed under a call, or its Workspace is gone. */
+/**
+ * A child's end, told to the host's handler: its spawn id changed under a call, or its Workspace is gone. The pages the
+ * list cache kept of that process go with it (`docs/architecture/mcp-in-a-session.md` → Resource tools).
+ */
 export const processEnded = (conn: string, workspace: string, spawn: string | undefined) =>
-  Effect.flatMap(McpProcessEnded, (handler) => handler(conn, workspace, spawn));
+  Effect.gen(function* () {
+    const cache = yield* McpListCache;
+    const handler = yield* McpProcessEnded;
+
+    cache.dropServer({ conn, workspace });
+
+    yield* handler(conn, workspace, spawn);
+  });

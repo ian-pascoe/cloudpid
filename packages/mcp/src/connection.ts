@@ -60,6 +60,7 @@ import type { Mutable } from "effect/Types";
 import { authChallenge, classify, type Failure, signInRequired } from "./failures.ts";
 import { type PausableDeadline, pausableDeadline } from "./deadline.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
+import { contentsSha256 } from "./read-hash.ts";
 import { MCP_LOG_LEVEL } from "./log.ts";
 import { CALL_HEADER, type TapObserver, tapFetch, Ties, Verdicts } from "./tap.ts";
 import {
@@ -201,6 +202,17 @@ export interface ListItems {
 
 export type ListKind = keyof ListItems;
 
+/** One page of a list, as `listPage` returns it: its items and where the next page is, if there is one. */
+export interface ListedPage<A> {
+  readonly items: ReadonlyArray<A>;
+  readonly nextCursor?: string;
+}
+
+/** A `resources/read` that completed, with the SHA-256 of what it answered (`./read-hash.ts`). */
+export interface ReadComplete extends Complete<ReadResourceResult> {
+  readonly sha256: string;
+}
+
 /** A request that completed. Later slices add `input_required`. */
 export interface Complete<A> {
   readonly kind: "complete";
@@ -262,6 +274,12 @@ export interface CallToolParams {
 /** The most the SDK's own timer may be given: the core's deadline is the one that ends a call. */
 const SDK_TIMER_MAX_MS = 2_147_483_647;
 
+/** The clock of a call that can be asked questions, and the token that ties its questions to it. */
+interface Own {
+  readonly deadline: PausableDeadline;
+  readonly token: string;
+}
+
 /** What a question is answered with, in the core: the result the server gets, or a refusal that is its error. */
 type QuestionAnswer = McpInputAnswer;
 
@@ -296,11 +314,24 @@ export interface McpConnection {
     ctx: McpCallContext,
   ) => Effect.Effect<Outcome<CallToolResult>, McpError>;
   readonly task: McpTasks;
-  /** One `resources/read` of `uri`: a read, so it is sent once more after a cut. */
+  /**
+   * One page of `kind` from `cursor` (the first page without one), for a caller that shows pages and walks them itself.
+   * A read, so it is sent once more after a cut; with the cache hints of the page's result. A server without the
+   * kind's capability answers an empty page without a request.
+   */
+  readonly listPage: <K extends ListKind>(
+    kind: K,
+    cursor: string | undefined,
+    ctx: McpCallContext,
+  ) => Effect.Effect<Complete<ListedPage<ListItems[K]>>, McpError>;
+  /**
+   * One `resources/read` of `uri`: a read, so it is sent once more after a cut, and the SHA-256 of its contents. A
+   * Legacy server's question during it is the caller's (`ctx.answers`, `deps.onInput`), as a `tools/call`'s is.
+   */
   readonly readResource: (
     uri: string,
     ctx: McpCallContext,
-  ) => Effect.Effect<Complete<ReadResourceResult>, McpError>;
+  ) => Effect.Effect<ReadComplete, McpError>;
 }
 
 const CONNECT_TIMEOUT_MS = MCP_CONNECT_TIMEOUT_MS;
@@ -1015,17 +1046,21 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
    * Calls a tool. Whether the call is offered a task is decided at each attempt, on the era and capabilities the server
    * has then: a call sent again after an era drop to a server that is Legacy now declares nothing.
    */
-  const callTool = (
-    params: CallToolParams,
+  /**
+   * `run` with the clock and the questions of a call, when the call can have them: a Legacy request whose caller can
+   * answer elicitations is tied to its questions by a header the tap strips, and has a clock of its own that a
+   * question's wait can stop (`own`). Every other request keeps the SDK's timeout, as before. What was set up is let go
+   * of however `run` ends.
+   */
+  const withAsking = <A, E>(
     ctx: McpCallContext,
-  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    timeoutMs: number,
+    run: (own: Own | undefined) => Effect.Effect<A, E>,
+  ) =>
     Effect.gen(function* () {
-      const timeoutMs = target.timeoutMs ?? CALL_TIMEOUT_MS;
       const token = `c${(callCount += 1)}`;
       const { answers } = ctx;
 
-      // A Legacy `tools/call` whose caller can answer elicitations is tied to its questions by a header the tap strips,
-      // and has a clock of its own that a question's wait can stop. Every other call keeps the SDK's timeout, as before.
       const askable =
         live.era === "legacy" && deps.onInput !== undefined && answers?.elicitation === true;
 
@@ -1047,20 +1082,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         });
       }
 
-      const own = deadline === undefined ? undefined : { deadline, token };
-
-      const sent = yield* request<CallSent>(
-        (client, signal) =>
-          offersTask(ctx)
-            ? callOnTaskWire(params, ctx, signal).then(
-                (answer) => ({ kind: "wire", answer }) as const,
-              )
-            : callOnClient(client, params, ctx, signal, own).then(
-                (value) => ({ kind: "client", value }) as const,
-              ),
-        true,
-        { declared: () => offersTask(ctx) },
-      ).pipe(
+      return yield* run(deadline === undefined ? undefined : { deadline, token }).pipe(
         Effect.ensuring(
           Effect.andThen(
             deadline === undefined ? Effect.void : deadline.clear,
@@ -1069,6 +1091,29 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
               ties.release(token);
             }),
           ),
+        ),
+      );
+    });
+
+  const callTool = (
+    params: CallToolParams,
+    ctx: McpCallContext,
+  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    Effect.gen(function* () {
+      const timeoutMs = target.timeoutMs ?? CALL_TIMEOUT_MS;
+
+      const sent = yield* withAsking(ctx, timeoutMs, (own) =>
+        request<CallSent>(
+          (client, signal) =>
+            offersTask(ctx)
+              ? callOnTaskWire(params, ctx, signal).then(
+                  (answer) => ({ kind: "wire", answer }) as const,
+                )
+              : callOnClient(client, params, ctx, signal, own).then(
+                  (value) => ({ kind: "client", value }) as const,
+                ),
+          true,
+          { declared: () => offersTask(ctx) },
         ),
       );
 
@@ -1092,7 +1137,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     params: CallToolParams,
     ctx: McpCallContext,
     signal: AbortSignal,
-    own: { readonly deadline: PausableDeadline; readonly token: string } | undefined,
+    own: Own | undefined,
   ) => {
     const call: CallToolRequestParams = {
       name: params.tool.name,
@@ -1328,29 +1373,86 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     cancel: (taskId, ctx) => taskCommand("tasks/cancel", { taskId }, ctx),
   };
 
+  /** A read's own bound: the page timeout, or the entry's `timeout` when that is lower (#394 D15). */
+  const readTimeoutMs = () => Math.min(target.timeoutMs ?? PAGE_TIMEOUT_MS, PAGE_TIMEOUT_MS);
+
   const readResource = (uri: string, ctx: McpCallContext) =>
     Effect.gen(function* () {
       const meta = metaFor(ctx);
       const params = meta === undefined ? { uri } : { uri, _meta: meta };
+      const timeoutMs = readTimeoutMs();
 
-      const value = yield* request(
-        (client, signal) =>
-          client.request(
-            { method: "resources/read", params },
-            { signal, timeout: PAGE_TIMEOUT_MS },
-          ),
-        false,
+      const value = yield* withAsking(ctx, timeoutMs, (own) =>
+        request(
+          (client, signal) =>
+            own === undefined
+              ? client.request({ method: "resources/read", params }, { signal, timeout: timeoutMs })
+              : // The deadline's is the one that ends a read with a clock of its own, as a call's (`callOnClient`).
+                Effect.runPromiseWith(context)(own.deadline.reset).then(() =>
+                  client.request(
+                    { method: "resources/read", params },
+                    {
+                      signal: AbortSignal.any([signal, own.deadline.signal]),
+                      timeout: SDK_TIMER_MAX_MS,
+                      headers: { [CALL_HEADER]: own.token },
+                    },
+                  ),
+                ),
+          false,
+        ),
       );
 
       const fetchedAt = yield* Clock.currentTimeMillis;
+      const sha256 = yield* Effect.promise(() => contentsSha256(value.contents));
 
       return {
         kind: "complete",
         value,
         cacheable: true,
         fetchedAt,
+        sha256,
         ...Option.getOrUndefined(decodeCacheHints(value)),
-      } satisfies Complete<ReadResourceResult>;
+      } satisfies ReadComplete;
+    });
+
+  const listPage = <K extends ListKind>(kind: K, cursor: string | undefined, ctx: McpCallContext) =>
+    Effect.gen(function* () {
+      const { capability, page: listOnePage } = listOf(kind);
+      const fetchedAt = yield* Clock.currentTimeMillis;
+
+      if (live.capabilities[capability] === undefined) {
+        return {
+          kind: "complete",
+          value: { items: [] },
+          cacheable: true,
+          fetchedAt,
+        } satisfies Complete<ListedPage<ListItems[K]>>;
+      }
+
+      const params: PageParams = {};
+      const meta = metaFor(ctx);
+
+      if (cursor !== undefined) params.cursor = cursor;
+
+      if (meta !== undefined) params._meta = meta;
+
+      const timeoutMs = readTimeoutMs();
+
+      const page = yield* request(
+        (client, signal) => listOnePage(client, params, { signal, timeout: timeoutMs }),
+        false,
+      );
+
+      return {
+        kind: "complete",
+        value:
+          page.nextCursor === undefined
+            ? { items: page.items }
+            : { items: page.items, nextCursor: page.nextCursor },
+        cacheable: true,
+        fetchedAt,
+        ...Option.getOrUndefined(decodeCacheHints(page.result)),
+      } satisfies Complete<ListedPage<ListItems[K]>>;
     });
 
   const connection: McpConnection = {
@@ -1373,6 +1475,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     list,
     callTool,
     task,
+    listPage,
     readResource,
   };
 

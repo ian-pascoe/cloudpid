@@ -658,10 +658,26 @@ export const McpEngineRequest = Schema.Union([
     taskId: Schema.String,
     ctx: McpCallContext,
   }),
-  /** One `resources/read`: the server's `ReadResourceResult` is the value. */
+  /** One `resources/read`: the server's `ReadResourceResult` is the value, and `sha256` the hash of its contents. */
   Schema.Struct({
     op: Schema.Literal("resources/read"),
     uri: Schema.String,
+    ctx: McpCallContext,
+  }),
+  /**
+   * One page of `resources/list`, from `cursor` (the first without one): the value is the server's `ListResourcesResult`
+   * as it is, `{ resources, nextCursor? }`. The lists above walk every page, for a discovery's; this is for a caller that
+   * shows a page and walks on by its cursor.
+   */
+  Schema.Struct({
+    op: Schema.Literal("resources/list_page"),
+    cursor: Schema.optionalKey(Schema.String),
+    ctx: McpCallContext,
+  }),
+  /** One page of `resources/templates/list`: `{ resourceTemplates, nextCursor? }`. */
+  Schema.Struct({
+    op: Schema.Literal("resources/templates/list_page"),
+    cursor: Schema.optionalKey(Schema.String),
     ctx: McpCallContext,
   }),
 ]);
@@ -705,6 +721,8 @@ export const McpEngineCompleted = Schema.Struct({
   cacheScope: Schema.optionalKey(Schema.Literals(["public", "private"])),
   fetchedAt: Schema.Finite,
   structuredOutput: Schema.optionalKey(McpStructuredOutput),
+  /** For a `resources/read`, the SHA-256 (lowercase hex) of its contents (`read-hash.ts`); gain-only. */
+  sha256: Schema.optionalKey(Schema.String),
   /**
    * `tools` and `problems` after a `-32020`, sent once more with the fresh definition; for a `tools/list` request,
    * `problems` alone, the listed tools' schema problems.
@@ -975,7 +993,52 @@ export const McpHostAppHtmlRequest = Schema.Struct({
 
 export type McpHostAppHtmlRequest = typeof McpHostAppHtmlRequest.Type;
 
-/** What `request` takes. Other `op`s (`prompts/get`, `resources/read`, …) come with their slices. */
+/** `request({ op: "resources/read" })`: read the resource `params.uri` of server `server`, whether or not any list names it. */
+export const McpHostResourceRead = Schema.Struct({
+  op: Schema.Literal("resources/read"),
+  server: Schema.String,
+  params: Schema.Struct({ uri: Schema.String }),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostResourceRead = typeof McpHostResourceRead.Type;
+
+const ResourceListFields = {
+  server: Schema.String,
+  params: Schema.Struct({ cursor: Schema.optionalKey(Schema.String) }),
+  ctx: McpHostRequestContext,
+};
+
+/**
+ * `request({ op: "resources/list" })`: one page of the server's resources, from `params.cursor`. The answer is
+ * `Completed` whose value is `{ resources, nextCursor? }`; a Modern server's page is kept by the host for its `ttlMs`
+ * (`docs/architecture/mcp-in-a-session.md` → Resource tools).
+ */
+export const McpHostResourcesList = Schema.Struct({
+  op: Schema.Literal("resources/list"),
+  ...ResourceListFields,
+});
+
+export type McpHostResourcesList = typeof McpHostResourcesList.Type;
+
+/** `request({ op: "resources/templates/list" })`: one page of the server's resource templates, `{ resourceTemplates, nextCursor? }`. */
+export const McpHostTemplatesList = Schema.Struct({
+  op: Schema.Literal("resources/templates/list"),
+  ...ResourceListFields,
+});
+
+export type McpHostTemplatesList = typeof McpHostTemplatesList.Type;
+
+/** The resource requests a Session makes, beside the `McpHostRequest`s of its tool calls and tasks (`resources` feature). */
+export const McpHostResourceRequest = Schema.Union([
+  McpHostResourcesList,
+  McpHostTemplatesList,
+  McpHostResourceRead,
+]);
+
+export type McpHostResourceRequest = typeof McpHostResourceRequest.Type;
+
+/** What `request` takes. Other `op`s (`prompts/get`, …) come with their slices. */
 export const McpHostRequest = Schema.Union([
   McpHostToolCall,
   McpHostTaskGet,
@@ -986,7 +1049,11 @@ export const McpHostRequest = Schema.Union([
 export type McpHostRequest = typeof McpHostRequest.Type;
 
 /** Every request the host's `request` answers: what a Session's tool calls and tasks send, or App HTML for a View that mounts. */
-export const McpHostRequestInput = Schema.Union([...McpHostRequest.members, McpHostAppHtmlRequest]);
+export const McpHostRequestInput = Schema.Union([
+  ...McpHostRequest.members,
+  McpHostAppHtmlRequest,
+  ...McpHostResourceRequest.members,
+]);
 
 export type McpHostRequestInput = typeof McpHostRequestInput.Type;
 
@@ -1034,6 +1101,8 @@ export const McpHostCompleted = Schema.TaggedStruct("Completed", {
   structuredOutput: Schema.optionalKey(McpStructuredOutput),
   /** An App tool's call: the hash its App's HTML is kept under (`ui/html`), once the host has it (`app_html`). */
   app: Schema.optionalKey(Schema.Struct({ htmlHash: Schema.String })),
+  /** A `resources/read`: the SHA-256 (lowercase hex) of its contents, the baseline of a Resource watch (`resources`). */
+  sha256: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostCompleted = typeof McpHostCompleted.Type;

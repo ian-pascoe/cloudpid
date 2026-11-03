@@ -12,6 +12,7 @@ export {
   type FakeContent,
   type FakeOptions,
   type FakeResource,
+  type FakeResourceTemplate,
   type FakeServer,
   fetchTo,
   HANG_TOOL,

@@ -15,6 +15,9 @@
 //   `conn` it was started on, and answer `ServerChanged` when the name's `conn` is another. The host keeps nothing of a
 //   task. A task on a stdio server is `HostUnsupported` until [#494](https://github.com/ian-pascoe/cloudpid/issues/494)
 //   (`docs/architecture/mcp-server-requests.md` → MCP tasks).
+// - **`resources/list`, `resources/templates/list`, `resources/read`** (#471): a page of a server's resources or templates,
+//   from a cursor, kept in the list cache for a Modern server's `ttlMs`; and a read with the SHA-256 of its contents
+//   (`resources.ts`).
 // - **`ui/html`** (#466): App HTML for a View that mounts. By `hash` it is the host's own storage, which needs only a
 //   server of the set. By `uri` it is a read through the engine, joined with the one in flight, with the checks of a call.
 //
@@ -76,6 +79,7 @@ import {
   serverOf,
 } from "./engine-round.ts";
 import { orHalt, writeOrHalt } from "./discovery.ts";
+import { resourceRequest } from "./resources.ts";
 import { versionsOf } from "./server-state.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 
@@ -408,8 +412,10 @@ export const request = (
       return HostUnsupported.make({ message: `This host does not know the request ${op}`, op });
     }
 
-    return op === "ui/html"
-      ? yield* appHtml(environment, input, hooks)
+    if (op === "ui/html") return yield* appHtml(environment, input, hooks);
+
+    return op === "resources/list" || op === "resources/templates/list" || op === "resources/read"
+      ? yield* resourceRequest(environment, op, input, hooks)
       : yield* toolCall(environment, op, input, hooks);
   }).pipe(
     // A storage operation that fails stops background work too: the instance was replaced.

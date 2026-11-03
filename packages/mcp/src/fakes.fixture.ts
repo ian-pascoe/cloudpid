@@ -182,16 +182,44 @@ export type FakeContent = {
 export interface FakeResource {
   readonly uri: string;
   readonly name: string;
+  readonly description?: string;
   readonly mimeType?: string;
   readonly _meta?: Record<string, Schema.Json>;
   /** What `resources/read` answers; a function makes it at each read, so a test of many large pages holds one at a time. */
   readonly contents: ReadonlyArray<FakeContent> | (() => ReadonlyArray<FakeContent>);
+  /**
+   * A form the server asks (a Legacy server, on the read's own stream) before it answers: the read's one text content is
+   * then the answer as JSON, in place of `contents`.
+   */
+  readonly asks?: { readonly message: string };
+}
+
+/** A page of a fake's resource list as it is built: its items, the next cursor, and a Modern server's cache hints. */
+interface FakeListPage<A> {
+  items: Array<A>;
+  nextCursor?: string;
+  ttlMs?: number;
+  cacheScope?: string;
+}
+
+/** A resource template a fake lists. */
+export interface FakeResourceTemplate {
+  readonly uriTemplate: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly mimeType?: string;
 }
 
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
 export interface FakeOptions {
   /** Declares `resources`, lists these, and answers `resources/read` for each by its URI (an unknown one is an error). */
   readonly resources?: ReadonlyArray<FakeResource>;
+  /** Lists these as `resources/templates/list` (and declares `resources`). */
+  readonly resourceTemplates?: ReadonlyArray<FakeResourceTemplate>;
+  /** How many items a page of `resources/list` and `resources/templates/list` holds; all of them in one page by default. */
+  readonly resourcePageSize?: number;
+  /** The cache hints both lists answer with: `ttlMs`, and `cacheScope` (a Modern server's; a Legacy one sends none, as it has no such field). */
+  readonly listCache?: { readonly ttlMs: number; readonly cacheScope?: "public" | "private" };
   /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
   readonly listMore?: boolean;
   /** What the server says of itself: its `instructions` (default `Use the echo tool.`) and the name in its `serverInfo`. */
@@ -247,7 +275,9 @@ const fakeMcp = (
 
   if (options.logs !== undefined) capabilities.logging = {};
 
-  if (options.resources !== undefined) capabilities.resources = {};
+  if (options.resources !== undefined || options.resourceTemplates !== undefined) {
+    capabilities.resources = {};
+  }
 
   if (options.extensions !== undefined) capabilities.extensions = { ...options.extensions };
 
@@ -278,16 +308,61 @@ const fakeMcp = (
       : { tools: [ECHO_TOOL], nextCursor: "page-2" };
   });
 
-  if (options.resources !== undefined) {
-    const { resources } = options;
+  if (options.resources !== undefined || options.resourceTemplates !== undefined) {
+    const resources = options.resources ?? [];
+    const templates = options.resourceTemplates ?? [];
 
-    server.setRequestHandler("resources/list", async () => ({
-      resources: resources.map(({ contents: _contents, ...listed }) => listed),
-    }));
-    server.setRequestHandler("resources/read", async (request) => {
+    /** `all`'s page that starts at the numeric `cursor`, with the cursor of the next page and the lists' cache hints. */
+    const pageOf = <A>(all: ReadonlyArray<A>, cursor: string | undefined) => {
+      const size = options.resourcePageSize ?? Math.max(all.length, 1);
+      const from = cursor === undefined ? 0 : Number(cursor);
+      const next = from + size;
+
+      const page: FakeListPage<A> = { items: all.slice(from, next) };
+
+      if (next < all.length) page.nextCursor = String(next);
+
+      // A Legacy server has no cache hints.
+      if (modern && options.listCache !== undefined) Object.assign(page, options.listCache);
+
+      return page;
+    };
+
+    server.setRequestHandler("resources/list", async (request) => {
+      const { items, ...rest } = pageOf(
+        resources.map(({ contents: _contents, asks: _asks, ...listed }) => listed),
+        request.params?.cursor,
+      );
+
+      return { resources: items, ...rest };
+    });
+
+    server.setRequestHandler("resources/templates/list", async (request) => {
+      const { items, ...rest } = pageOf(templates, request.params?.cursor);
+
+      return { resourceTemplates: items.map((each) => ({ ...each })), ...rest };
+    });
+
+    server.setRequestHandler("resources/read", async (request, ctx) => {
       const found = resources.find((each) => each.uri === request.params.uri);
 
       if (found === undefined) throw new Error(`No resource ${request.params.uri}`);
+
+      if (found.asks !== undefined) {
+        const answer = await ctx.mcpReq.send({
+          method: "elicitation/create",
+          params: {
+            message: found.asks.message,
+            requestedSchema: { type: "object", properties: {} },
+          },
+        });
+
+        return {
+          contents: [
+            { uri: found.uri, mimeType: "application/json", text: JSON.stringify({ ...answer }) },
+          ],
+        };
+      }
 
       return {
         contents: [...(Predicate.isFunction(found.contents) ? found.contents() : found.contents)],
