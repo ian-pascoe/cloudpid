@@ -295,11 +295,13 @@ export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostA
  * - `inventory`: `requestStart` answers the MCP inventory's versions and servers and takes `known`, `waitFor` and
  *   `waitMs`, and the host answers `servers` and `apply({ kind: "reload" })`.
  * - `call`: the host answers `request({ op: "tools/call" })`, with its `untilAborted` and `onProgress` hooks.
+ * - `tasks`: the host answers `request({ op: "tasks/get" | "tasks/update" | "tasks/cancel" })` and takes `ctx.allowTask`
+ *   on a `tools/call` (`mcp-server-requests.md` → MCP tasks).
  *
  * The Session side's own list, `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`), names those of these its MCP tools
  * need; a feature added here reaches the Session only once that list names it.
  */
-export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
+export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory", "call", "tasks"];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
 export const McpCaller = Schema.Struct({

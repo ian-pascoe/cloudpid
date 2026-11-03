@@ -240,6 +240,8 @@ describe("the tools listed again after a -32020", () => {
 
     expect(result.kind).toBe("failed");
 
+    if (result.kind !== "failed") return;
+
     const names = result.tools?.map((tool) => tool.name) ?? [];
 
     expect(names).toContain("plain");

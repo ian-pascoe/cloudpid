@@ -9,6 +9,7 @@
  * (`docs/architecture/mcp-connections.md` → Storage), `McpEngine`'s RPC, `McpEngineMethods`
  * (`docs/architecture/mcp-connections.md` → The engine), and the host's own RPC (`./host.ts`).
  */
+import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -42,6 +43,74 @@ export const McpCallContext = Schema.Struct({
 });
 
 export type McpCallContext = typeof McpCallContext.Type;
+
+/**
+ * The MCP tasks extension's id (`docs/architecture/mcp.md` → Extensions): a Modern server advertises it in its
+ * `capabilities.extensions`, and a client declares it in a request's `_meta` client capabilities, only on a
+ * `tools/call` it can wait for (`ctx.allowTask`) and on the `tasks/*` requests of a task it started.
+ */
+export const MCP_TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
+
+/** The statuses of an MCP task (`docs/architecture/mcp-server-requests.md` → MCP tasks). */
+export const McpTaskStatus = Schema.Literals([
+  "working",
+  "input_required",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+export type McpTaskStatus = typeof McpTaskStatus.Type;
+
+/** What every task carries: the server's id for it (never shown to a model), its times and its hints. */
+const TaskFields = {
+  taskId: Schema.String,
+  statusMessage: Schema.optionalKey(Schema.String),
+  createdAt: Schema.String,
+  lastUpdatedAt: Schema.String,
+  /** How long the server keeps the task after it ends, in milliseconds; `null` for as long as it likes. */
+  ttlMs: Schema.NullOr(Schema.Int),
+  pollIntervalMs: Schema.optionalKey(Schema.Int),
+};
+
+/** A task as a `tools/call` created it: `resultType: "task"` without the `resultType`. */
+export const McpTaskCreated = Schema.Struct({ ...TaskFields, status: McpTaskStatus });
+
+export type McpTaskCreated = typeof McpTaskCreated.Type;
+
+/** A JSON-RPC error a failed task ended with. */
+export const McpTaskError = Schema.Struct({
+  code: Schema.Int,
+  message: Schema.String,
+  data: Schema.optionalKey(Schema.Json),
+});
+
+export type McpTaskError = typeof McpTaskError.Type;
+
+/**
+ * What a `tasks/get` answers, by status. A `completed` task's result is the `CallToolResult` the call would have
+ * returned: the core hands it apart from the snapshot (`McpTaskState`), so the engine can validate it and, when large,
+ * stream it as it does any result. `inputRequests` are the server's questions, kept as the server sent them: answering
+ * them comes with the Modern questions, not with the task wire.
+ */
+export const McpTaskSnapshot = Schema.Union([
+  Schema.Struct({ ...TaskFields, status: Schema.Literal("working") }),
+  Schema.Struct({
+    ...TaskFields,
+    status: Schema.Literal("input_required"),
+    inputRequests: Schema.Record(Schema.String, JsonObject),
+  }),
+  Schema.Struct({ ...TaskFields, status: Schema.Literal("completed") }),
+  Schema.Struct({ ...TaskFields, status: Schema.Literal("failed"), error: McpTaskError }),
+  Schema.Struct({ ...TaskFields, status: Schema.Literal("cancelled") }),
+]);
+
+export type McpTaskSnapshot = typeof McpTaskSnapshot.Type;
+
+/** The answers to a task's questions, by the key each was asked under: what `tasks/update` carries. */
+export const McpTaskInputResponses = Schema.Record(Schema.String, JsonObject);
+
+export type McpTaskInputResponses = typeof McpTaskInputResponses.Type;
 
 /**
  * The era row (`mcp_eras`), format 1: the Protocol era a server was found to speak, its negotiated version and, for a
@@ -483,6 +552,9 @@ export const MCP_CONNECT_TIMEOUT_MS = 15_000;
 /** The core's bound on walking every page of a list (#394 D15). */
 export const MCP_LIST_WALK_TIMEOUT_MS = 120_000;
 
+/** What a `tasks/*` request may take, in the core and at the host: 30 s each (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions). */
+export const MCP_TASK_TIMEOUT_MS = 30_000;
+
 /**
  * A discovery (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): what the server is, every
  * page of its tools and prompts, and the tools whose output schema could not be compiled. The inventory's bounds,
@@ -531,6 +603,28 @@ export const McpEngineRequest = Schema.Union([
   }),
   Schema.Struct({
     op: McpEngineListOp,
+    ctx: McpCallContext,
+  }),
+  /**
+   * `tasks/get` of the MCP task `taskId` (Modern only). `tool` is the definition of the tool that started it, when the
+   * host still lists it: the engine checks a completed result's `structuredContent` against its `outputSchema`.
+   */
+  Schema.Struct({
+    op: Schema.Literal("tasks/get"),
+    taskId: Schema.String,
+    tool: Schema.optionalKey(McpToolDefinition),
+    ctx: McpCallContext,
+  }),
+  /** `tasks/update`: the answers to the questions an MCP task is waiting on, by key. */
+  Schema.Struct({
+    op: Schema.Literal("tasks/update"),
+    taskId: Schema.String,
+    inputResponses: McpTaskInputResponses,
+    ctx: McpCallContext,
+  }),
+  Schema.Struct({
+    op: Schema.Literal("tasks/cancel"),
+    taskId: Schema.String,
     ctx: McpCallContext,
   }),
 ]);
@@ -589,11 +683,63 @@ export const McpEngineCompleted = Schema.Struct({
 export type McpEngineCompleted = typeof McpEngineCompleted.Type;
 
 /**
- * A request's result. Neither result union has a fallback member, by design: a new success shape is returned only
- * when the request asked for it (a request flag such as `ctx.allowTask`), so an older host never receives one it
- * cannot read (`docs/architecture/mcp.md` → Deploys); failures fall back through `McpErrorWire`.
+ * A `tools/call` the server answered with an MCP task (`resultType: "task"`): returned only to a call that asked for
+ * one (`ctx.allowTask`), and only when the server is Modern and advertises the tasks extension, so a caller without
+ * `allowTask` never gets one (`docs/architecture/mcp-server-requests.md` → MCP tasks). `tools` and `problems` are as
+ * `McpEngineCompleted`'s after a `-32020`.
  */
-export const McpEngineRequestResult = Schema.Union([McpEngineCompleted, McpEngineFailed]);
+export const McpEngineTaskStarted = Schema.Struct({
+  kind: Schema.Literal("task"),
+  task: McpTaskCreated,
+  ...RefreshedTools,
+  ...EngineLogs,
+  ...EngineSpawn,
+  state: McpEngineState,
+});
+
+export type McpEngineTaskStarted = typeof McpEngineTaskStarted.Type;
+
+/**
+ * A `tasks/get` answer: the task as the server last reported it and, for a `completed` one, the `CallToolResult` it
+ * ended with, as any result's value (inline up to 1 MiB, else a stream) with how it fits the tool's `outputSchema`
+ * (absent when the request named no tool, or the tool declares none).
+ */
+export const McpEngineTaskState = Schema.Struct({
+  kind: Schema.Literal("task_state"),
+  task: McpTaskSnapshot,
+  result: Schema.optionalKey(McpEngineValue),
+  structuredOutput: Schema.optionalKey(McpStructuredOutput),
+  fetchedAt: Schema.Finite,
+  ...EngineLogs,
+  ...EngineSpawn,
+  state: McpEngineState,
+});
+
+export type McpEngineTaskState = typeof McpEngineTaskState.Type;
+
+/** A `tasks/update` or `tasks/cancel` the server took. */
+export const McpEngineTaskAck = Schema.Struct({
+  kind: Schema.Literal("task_ack"),
+  ...EngineLogs,
+  ...EngineSpawn,
+  state: McpEngineState,
+});
+
+export type McpEngineTaskAck = typeof McpEngineTaskAck.Type;
+
+/**
+ * A request's result. Neither result union has a fallback member, by design: a new success shape is returned only
+ * when the request asked for it (a request flag such as `ctx.allowTask`, or an `op` of its own such as `tasks/get`),
+ * so an older host never receives one it cannot read (`docs/architecture/mcp.md` → Deploys); failures fall back
+ * through `McpErrorWire`.
+ */
+export const McpEngineRequestResult = Schema.Union([
+  McpEngineCompleted,
+  McpEngineFailed,
+  McpEngineTaskStarted,
+  McpEngineTaskState,
+  McpEngineTaskAck,
+]);
 
 export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
 
@@ -674,6 +820,12 @@ export const McpHostRequestContext = Schema.Struct({
   conversation: Schema.optionalKey(Schema.String),
   /** The calling Workspace (`ws:<id>`), where a stdio server runs. */
   workspace: Schema.optionalKey(Schema.String),
+  /**
+   * The caller can wait for an MCP task: a `tools/call` made with it may be answered with `Task`, and one made without
+   * it never is. The host passes it on only for an agent's or an App View's call to an HTTP server
+   * (`docs/architecture/mcp-server-requests.md` → MCP tasks, Declaration).
+   */
+  allowTask: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpHostRequestContext = typeof McpHostRequestContext.Type;
@@ -691,10 +843,73 @@ export const McpHostToolCall = Schema.Struct({
 
 export type McpHostToolCall = typeof McpHostToolCall.Type;
 
+/**
+ * The MCP task a `tasks/*` request is for: the server's `taskId`, the tool that started it (its definition checks a
+ * completed result) and the connection key `conn` the task was started on, which the host compares with the server's
+ * current one (`ServerChanged`).
+ */
+const McpHostTaskParams = {
+  taskId: Schema.String,
+  tool: Schema.String,
+  conn: Schema.String,
+};
+
+/** `request({ op: "tasks/get" })`: where the task stands, and its result once it has completed. */
+export const McpHostTaskGet = Schema.Struct({
+  op: Schema.Literal("tasks/get"),
+  server: Schema.String,
+  params: Schema.Struct(McpHostTaskParams),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostTaskGet = typeof McpHostTaskGet.Type;
+
+/** `request({ op: "tasks/update" })`: the answers to the questions the task is waiting on, by key. */
+export const McpHostTaskUpdate = Schema.Struct({
+  op: Schema.Literal("tasks/update"),
+  server: Schema.String,
+  params: Schema.Struct({ ...McpHostTaskParams, inputResponses: McpTaskInputResponses }),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostTaskUpdate = typeof McpHostTaskUpdate.Type;
+
+/** `request({ op: "tasks/cancel" })`: allowed for a server that has been switched off since. */
+export const McpHostTaskCancel = Schema.Struct({
+  op: Schema.Literal("tasks/cancel"),
+  server: Schema.String,
+  params: Schema.Struct(McpHostTaskParams),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostTaskCancel = typeof McpHostTaskCancel.Type;
+
 /** What `request` takes. Other `op`s (`prompts/get`, `resources/read`, …) come with their slices. */
-export const McpHostRequest = McpHostToolCall;
+export const McpHostRequest = Schema.Union([
+  McpHostToolCall,
+  McpHostTaskGet,
+  McpHostTaskUpdate,
+  McpHostTaskCancel,
+]);
 
 export type McpHostRequest = typeof McpHostRequest.Type;
+
+/** The `op`s `request` takes, read from its union: the one list the host's allowlist and its routing come from. */
+const MCP_HOST_REQUEST_OPS: ReadonlyArray<string> = Arr.map(
+  McpHostRequest.members,
+  (member) => member.fields.op.literal,
+);
+
+/** Whether `op` is one `request` takes; any other is `HostUnsupported`, an `op` a later build sends. */
+export const isMcpHostRequestOp = (op: string) => MCP_HOST_REQUEST_OPS.includes(op);
+
+/** A `tasks/*` request: everything `request` takes besides a `tools/call`. */
+export const isMcpHostTaskRequest = (
+  call: McpHostRequest,
+): call is Exclude<McpHostRequest, McpHostToolCall> => call.op !== "tools/call";
+
+/** What a failure for an MCP task the request did not ask for says, in the core and at the host. */
+export const MCP_UNASKED_TASK_MESSAGE = "The server started an MCP task that was not asked for";
 
 /**
  * The callbacks a Session's request carries, passed as RPC stubs that live as long as its invocation, so the Session
@@ -714,6 +929,58 @@ export const McpHostCompleted = Schema.TaggedStruct("Completed", {
 });
 
 export type McpHostCompleted = typeof McpHostCompleted.Type;
+
+/**
+ * What a result of a task says of where it was made (`docs/architecture/mcp-sign-in.md` → The sign-in id): `signIn`,
+ * the MCP sign-in id of the token the server was called with (absent for a server with no sign-in), so a follower can
+ * tell "not reachable under the current sign-in" from "expired"; and `spawn`, the stdio process's id (never present
+ * yet: tasks do not run on stdio servers, #494).
+ */
+const McpHostTaskOrigin = {
+  signIn: Schema.optionalKey(Schema.String),
+  spawn: Schema.optionalKey(Schema.String),
+};
+
+/**
+ * A `tools/call` the server answered with an MCP task, returned only to a call with `ctx.allowTask`. `conn` and
+ * `identity` (`mcpServerIdentity`) are the server's as the call was made, for the caller to pin the task to.
+ */
+export const McpHostTaskStarted = Schema.TaggedStruct("Task", {
+  task: McpTaskCreated,
+  conn: Schema.String,
+  identity: Schema.optionalKey(Schema.String),
+  ...McpHostTaskOrigin,
+});
+
+export type McpHostTaskStarted = typeof McpHostTaskStarted.Type;
+
+/** A `tasks/get` answer: the snapshot and, for a `completed` task, its result, as `Completed`'s. */
+export const McpHostTaskState = Schema.TaggedStruct("TaskState", {
+  task: McpTaskSnapshot,
+  result: Schema.optionalKey(McpEngineValue),
+  structuredOutput: Schema.optionalKey(McpStructuredOutput),
+  ...McpHostTaskOrigin,
+});
+
+export type McpHostTaskState = typeof McpHostTaskState.Type;
+
+/** The server took a `tasks/update` or a `tasks/cancel`. */
+export const McpHostTaskAck = Schema.TaggedStruct("TaskAck", McpHostTaskOrigin);
+
+export type McpHostTaskAck = typeof McpHostTaskAck.Type;
+
+/**
+ * The name's server is not the one the task was started on: its `conn` changed. It carries the current `conn` and
+ * `mcpServerIdentity`, so the caller can tell a re-pin (the same identity) from a new server (`docs/architecture/
+ * mcp-server-requests.md` → MCP tasks, Failures). Nothing was sent.
+ */
+export const ServerChanged = Schema.TaggedStruct("ServerChanged", {
+  message: Schema.String,
+  conn: Schema.String,
+  identity: Schema.optionalKey(Schema.String),
+});
+
+export type ServerChanged = typeof ServerChanged.Type;
 
 /** The request failed on the way to the server, or the server failed it: the core's failure. */
 export const McpHostCallFailed = Schema.TaggedStruct("CallFailed", {
@@ -738,6 +1005,10 @@ export const McpHostRequestResult = Schema.Union([
   McpHostCallFailed,
   UnknownServer,
   NotAllowed,
+  McpHostTaskStarted,
+  McpHostTaskState,
+  McpHostTaskAck,
+  ServerChanged,
   ...McpHostFailure.members,
 ]);
 

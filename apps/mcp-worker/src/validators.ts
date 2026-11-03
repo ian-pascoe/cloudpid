@@ -28,8 +28,9 @@ const MAX_ERRORS = 5;
 type JsonObject = { readonly [key: string]: Schema.Json };
 
 /** A `tools/call` result's `structuredContent`, as the SDK decoded it. */
-type StructuredContent = Effect.Success<
-  ReturnType<McpConnection["callTool"]>
+type StructuredContent = Extract<
+  Effect.Success<ReturnType<McpConnection["callTool"]>>,
+  { readonly kind: "complete" }
 >["value"]["structuredContent"];
 
 /** A compiled schema, or why it could not be compiled. */

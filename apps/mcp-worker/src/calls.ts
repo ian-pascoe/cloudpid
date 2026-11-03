@@ -39,6 +39,9 @@ import {
   McpEngineRequest,
   type McpEngineRequestEncoded,
   McpEngineRequestResult,
+  type McpEngineTaskAck,
+  type McpEngineTaskStarted,
+  type McpEngineTaskState,
   type McpEngineState,
   type McpEngineHttpTarget,
   McpEngineTarget,
@@ -178,8 +181,8 @@ const reachBridge = Effect.fnUntraced(function* (
 const connectTarget = (server: McpEngineTarget): McpTarget => {
   const target: Mutable<McpTarget> =
     server.kind === "http"
-      ? { url: server.url }
-      : { url: STDIO_URL, connectTimeoutMs: STDIO_CONNECT_TIMEOUT_MS };
+      ? { url: server.url, name: server.name }
+      : { url: STDIO_URL, name: server.name, connectTimeoutMs: STDIO_CONNECT_TIMEOUT_MS };
 
   if (server.kind === "http" && server.headers !== undefined) target.headers = server.headers;
 
@@ -509,7 +512,12 @@ const callWithRefresh = Effect.fnUntraced(function* (
 type Completed = Omit<McpEngineCompleted, "state">;
 
 /** A request's result before its rows are added. */
-type RequestOutcome = Completed | Omit<McpEngineFailed, "state">;
+type RequestOutcome =
+  | Completed
+  | Omit<McpEngineFailed, "state">
+  | Omit<McpEngineTaskStarted, "state">
+  | Omit<McpEngineTaskState, "state">
+  | Omit<McpEngineTaskAck, "state">;
 
 /** Runs a `tools/call`, checking its `structuredContent`. */
 const runToolCall = Effect.fnUntraced(function* (
@@ -537,6 +545,16 @@ const runToolCall = Effect.fnUntraced(function* (
     } satisfies RequestOutcome;
   }
 
+  // A task is what a call with `ctx.allowTask` may be answered with, and only such a call is (the core declares the
+  // extension for no other). What the server says of it is scrubbed as a result is.
+  if (sent.success.kind === "task") {
+    return {
+      kind: "task",
+      task: scrubValues(sent.success.task, call.tokens),
+      ...extras,
+    } satisfies RequestOutcome;
+  }
+
   const { value, kind: _kind, ...meta } = sent.success;
 
   // Checked before the value is serialized, so the stream a large one becomes, which takes the call's lease, is made
@@ -560,11 +578,64 @@ const runToolCall = Effect.fnUntraced(function* (
   return completed;
 });
 
+type TaskOp = Extract<
+  McpEngineRequest,
+  { readonly op: "tasks/get" | "tasks/update" | "tasks/cancel" }
+>;
+
+/** Whether `req` is for an MCP task: its `op`s share the `tasks/` prefix. */
+const isTaskRequest = (req: McpEngineRequest): req is TaskOp => req.op.startsWith("tasks/");
+
+/**
+ * Runs a `tasks/*` request on the connection's task wire. A completed task's result is checked against the tool's
+ * `outputSchema` and serialized as any result is, so a large one is a stream; what the server says of the task (its
+ * status message, its error, its questions) is scrubbed of the call's tokens.
+ */
+const runTaskOp = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: TaskOp,
+  env: CallEnvironment,
+  validators: ValidatorsApi,
+) {
+  if (req.op === "tasks/update") {
+    yield* connection.task.update(req.taskId, req.inputResponses, req.ctx);
+
+    return { kind: "task_ack" } satisfies RequestOutcome;
+  }
+
+  if (req.op === "tasks/cancel") {
+    yield* connection.task.cancel(req.taskId, req.ctx);
+
+    return { kind: "task_ack" } satisfies RequestOutcome;
+  }
+
+  const { task, result, fetchedAt } = yield* connection.task.get(req.taskId, req.ctx);
+
+  const state: Mutable<Omit<McpEngineTaskState, "state">> = {
+    kind: "task_state",
+    task: scrubValues(task, call.tokens),
+    fetchedAt,
+  };
+
+  if (result === undefined) return state satisfies RequestOutcome;
+
+  const outputSchema = req.tool?.outputSchema;
+
+  if (outputSchema !== undefined && result.isError !== true) {
+    state.structuredOutput = yield* validators.check(outputSchema, result.structuredContent);
+  }
+
+  state.result = yield* toEngineValue(result, call, env);
+
+  return state satisfies RequestOutcome;
+});
+
 /** Walks a list to its end; a `tools/list` also brings its tools' schema problems. */
 const runList = Effect.fnUntraced(function* (
   connection: McpConnection,
   call: CallContext,
-  req: Exclude<McpEngineRequest, ToolCall>,
+  req: Exclude<McpEngineRequest, ToolCall | TaskOp>,
   env: CallEnvironment,
   validators: ValidatorsApi,
 ) {
@@ -608,7 +679,10 @@ const runList = Effect.fnUntraced(function* (
   return completed;
 });
 
-/** Runs one request: a `tools/call`, or a list walked to its end. An `op` this engine does not know is `Unsupported`. */
+/**
+ * Runs one request: a `tools/call`, a `tasks/*` request on the MCP task wire, or a list walked to its end. An `op` this
+ * engine does not know is `Unsupported`.
+ */
 export const request = Effect.fn("mcp.engine.request")(function* (
   target: McpEngineTargetEncoded,
   prior: McpEnginePriorEncoded,
@@ -629,11 +703,20 @@ export const request = Effect.fn("mcp.engine.request")(function* (
   const req = decoded.value;
 
   const { outcome, state, logs, spawn } = yield* runCall(
-    { target, prior, hooks, env, mayHaveRun: req.op === "tools/call" },
+    // A call, an update and a cancel may have run when the caller aborts; a `tasks/get` and a list only read.
+    {
+      target,
+      prior,
+      hooks,
+      env,
+      mayHaveRun: req.op === "tools/call" || (isTaskRequest(req) && req.op !== "tasks/get"),
+    },
     (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
       req.op === "tools/call"
         ? runToolCall(connection, context, req, env, validators, bridge)
-        : runList(connection, context, req, env, validators),
+        : isTaskRequest(req)
+          ? runTaskOp(connection, context, req, env, validators)
+          : runList(connection, context, req, env, validators),
   );
 
   const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);

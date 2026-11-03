@@ -541,6 +541,31 @@ describe("a call", () => {
     expect(sent?.request).toMatchObject({ ctx: { workspace: WORKSPACE } });
   });
 
+  it("is never offered an MCP task, and a task request for it is unsupported until #494, sending nothing", async () => {
+    const host = await discovered(["search"]);
+
+    await host.scriptRequest(keyOf("local"), [completed("found")]);
+
+    const offered = call("local", "search");
+
+    await host.request({ ...offered, ctx: { ...offered.ctx, allowTask: true } }, {});
+
+    expect((await host.engineRequests())[0]?.request.ctx).not.toHaveProperty("allowTask");
+
+    const asked = await host.request(
+      {
+        op: "tasks/get",
+        server: "local",
+        params: { taskId: "task-1", tool: "search", conn: "conn-local" },
+        ctx: offered.ctx,
+      },
+      {},
+    );
+
+    expect(asked).toMatchObject({ _tag: "HostUnsupported", op: "tasks/get" });
+    expect(await host.engineRequests()).toHaveLength(1);
+  });
+
   it("is refused when it names no Workspace: a stdio server runs in the caller's", async () => {
     const host = await discovered(["search"]);
 

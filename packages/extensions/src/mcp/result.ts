@@ -229,7 +229,16 @@ export const failureResult = (
 ): ToolExecutionResult<JsonValue> =>
   Predicate.isTagged(result, "CallFailed")
     ? endedWith(describeError(result.error), details)
-    : failedWith(result.message, details);
+    : isTaskAnswer(result)
+      ? // The host answers with a task only to a call that asked for one (`ctx.allowTask`), which a tool call does not
+        // yet; the Session-side tools that follow tasks come with their own ticket.
+        failedWith("The MCP host answered with an MCP task the call did not ask for.", details)
+      : failedWith(result.message, details);
+
+const isTaskAnswer = (result: McpHostRequestResult) =>
+  Predicate.isTagged(result, "Task") ||
+  Predicate.isTagged(result, "TaskState") ||
+  Predicate.isTagged(result, "TaskAck");
 
 /** What the model reads when the Session's end of a call was lost: it may have run (`details.cut: "host_lost"`). */
 export const hostLostResult = (details: McpDetails): ToolExecutionResult<JsonValue> =>

@@ -3,14 +3,17 @@
  * Modern, Legacy stateless, Legacy stateful with a GET stream, and a hostile wrapper that answers chosen requests
  * itself. Each records what reached it, so tests can see what the core sent.
  */
-// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off newPromise:off
+// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off newPromise:off globalDate:off
 import {
   createMcpHandler,
   inputRequired,
   Server,
+  type ServerCapabilities,
   type Tool,
   WebStandardStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/server";
+import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 
 /** One request that reached a fake: its HTTP method, URL, headers and, for a POST, its JSON-RPC body. */
@@ -135,6 +138,8 @@ export interface FakeOptions {
   /** What the server says of itself: its `instructions` (default `Use the echo tool.`) and the name in its `serverInfo`. */
   readonly instructions?: string;
   readonly serverName?: string;
+  /** What the server advertises in `capabilities.extensions` (a Modern server's MCP tasks, `io.modelcontextprotocol/tasks`). */
+  readonly extensions?: Readonly<Record<string, Readonly<Record<string, never>>>> | undefined;
   /** The names of the calls whose request was cancelled while they ran. */
   readonly cancelled?: Array<string>;
   /** Further tools listed last, which answer as `echo` does unless something in front of the server answers first. */
@@ -177,13 +182,16 @@ const fakeMcp = (
   options: FakeOptions = {},
   modern = false,
 ) => {
+  const capabilities: ServerCapabilities = { tools: { listChanged: true } };
+
+  if (options.logs !== undefined) capabilities.logging = {};
+
+  if (options.extensions !== undefined) capabilities.extensions = { ...options.extensions };
+
   const server = new Server(
     { name: options.serverName ?? "fake", version: "1.0.0" },
     {
-      capabilities:
-        options.logs === undefined
-          ? { tools: { listChanged: true } }
-          : { tools: { listChanged: true }, logging: {} },
+      capabilities,
       instructions: options.instructions ?? "Use the echo tool.",
     },
   );
@@ -438,3 +446,331 @@ export const sse = (events: ReadonlyArray<Json>) =>
     events.map((event) => `event: message\ndata: ${JSON.stringify(event)}\n\n`).join(""),
     { headers: { "content-type": "text/event-stream" } },
   );
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A fake Modern task server (`docs/architecture/mcp-server-requests.md` → Testing): a Modern server that advertises
+// `io.modelcontextprotocol/tasks` and answers a `tools/call` of `report` with an MCP task when the request declares the
+// extension, and `tasks/get`, `tasks/update` and `tasks/cancel` for the tasks it made. `@modelcontextprotocol/ext-tasks`
+// (0.2.x, a devDependency only) has the requester's side of the wire and no server's, so the fake speaks the wire
+// itself, from its schemas (`core/v2`), and checks what the spec asks of a client: the standard headers
+// (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` mirroring `taskId`) and the extension in the request's `_meta`.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** The MCP tasks extension's id. */
+export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
+
+/**
+ * The tool the task server answers with a task. Its arguments pick what the task does: `region` goes in an
+ * `Mcp-Param-Region` header; `polls` is how many `tasks/get` it takes to complete (default 1); `bytes` makes the
+ * result that much text; `inline` answers at once as a synchronous call does, even to a client that declared the
+ * extension; `ask` makes the task wait for an answer (`tasks/update`) before it completes; `fail` ends it `failed`.
+ */
+export const REPORT_TOOL = {
+  name: "report",
+  description: "Make a report, as an MCP task if the client can wait for one.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      region: { type: "string", "x-mcp-header": "Region" },
+      polls: { type: "number" },
+      bytes: { type: "number" },
+      inline: { type: "boolean" },
+      ask: { type: "boolean" },
+      fail: { type: "boolean" },
+    },
+  },
+};
+
+/** What a task of the fake is doing: its status, the polls it still takes and what it ends with. */
+export interface FakeTask {
+  readonly id: string;
+  status: "working" | "input_required" | "completed" | "failed" | "cancelled";
+  pollsLeft: number;
+  readonly text: string;
+  /** The answers `tasks/update` brought, by key. */
+  answers: { readonly [key: string]: Json } | undefined;
+  readonly fail: boolean;
+}
+
+export interface TaskServerOptions extends FakeOptions {
+  /** Answer a `report` call from a client that did not declare the extension with `-32021`, as a task-only tool does. */
+  readonly requireTask?: boolean;
+  /** Do not advertise the extension. */
+  readonly unadvertised?: boolean;
+  /** Answer a `report` call with a task even to a client that did not declare the extension, as a broken server does. */
+  readonly alwaysTask?: boolean;
+  /** `pollIntervalMs` in every task the server reports. */
+  readonly pollIntervalMs?: number;
+}
+
+export interface TaskServer extends FakeServer {
+  readonly tasks: Map<string, FakeTask>;
+  /** Whether each request declared the tasks extension in its `_meta`, by method. */
+  readonly declared: Array<{ readonly method: string; readonly tasks: boolean }>;
+}
+
+/** The client's declaration in a request's `_meta`: the extensions it names. */
+const Meta = Schema.Struct({
+  "io.modelcontextprotocol/clientCapabilities": Schema.optionalKey(
+    Schema.Struct({
+      extensions: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+    }),
+  ),
+});
+
+const ReportCall = Schema.Struct({
+  name: Schema.String,
+  arguments: Schema.optionalKey(
+    Schema.Struct({
+      region: Schema.optionalKey(Schema.String),
+      polls: Schema.optionalKey(Schema.Int),
+      bytes: Schema.optionalKey(Schema.Int),
+      inline: Schema.optionalKey(Schema.Boolean),
+      ask: Schema.optionalKey(Schema.Boolean),
+      fail: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  _meta: Schema.optionalKey(Meta),
+});
+
+const TaskCall = Schema.Struct({
+  taskId: Schema.String,
+  inputResponses: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  _meta: Schema.optionalKey(Meta),
+});
+
+const decodeReportCall = Schema.decodeUnknownOption(ReportCall);
+
+const decodeTaskCall = Schema.decodeUnknownOption(TaskCall);
+
+const rpcError = (id: string | number | undefined, code: number, message: string, data?: Json) =>
+  Response.json(
+    {
+      jsonrpc: "2.0",
+      id: id ?? null,
+      error: { code, message, data },
+    },
+    { status: 400 },
+  );
+
+const rpcResult = (
+  id: string | number | undefined,
+  result: { readonly [key: string]: Json | undefined },
+) => Response.json({ jsonrpc: "2.0", id: id ?? null, result });
+
+const ID_PATTERN = /^[a-z0-9-]+$/;
+
+const CREATED_AT = "2026-01-01T00:00:00.000Z";
+
+/** A header value, with a `=?base64?<UTF-8 in base64>?=` wrapper (SEP-2243) taken off. */
+const decodedHeader = (value: string | null): string | null => {
+  if (value === null || !value.startsWith("=?base64?") || !value.endsWith("?=")) return value;
+
+  const bytes = Uint8Array.from(atob(value.slice(9, -2)), (char) => char.codePointAt(0) ?? 0);
+
+  return new TextDecoder().decode(bytes);
+};
+
+const TASKS_REQUIRED = {
+  requiredCapabilities: { extensions: { [TASKS_EXTENSION]: {} } },
+};
+
+/** A Modern server that advertises MCP tasks and answers `report` with one. */
+export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer => {
+  const base = modernServer({
+    ...options,
+    listMore: true,
+    moreTools: [...(options.moreTools ?? []), REPORT_TOOL],
+    extensions: options.unadvertised === true ? undefined : { [TASKS_EXTENSION]: {} },
+  });
+
+  const tasks = new Map<string, FakeTask>();
+  const declared: TaskServer["declared"] = [];
+  let next = 0;
+
+  const view = (task: FakeTask) => ({
+    taskId: task.id,
+    status: task.status,
+    createdAt: CREATED_AT,
+    lastUpdatedAt: CREATED_AT,
+    ttlMs: 60_000,
+    statusMessage: task.status === "working" ? "Making the report" : task.status,
+    pollIntervalMs: options.pollIntervalMs,
+  });
+
+  const snapshot = (task: FakeTask) => {
+    switch (task.status) {
+      case "input_required":
+        return {
+          ...view(task),
+          inputRequests: {
+            which: {
+              method: "elicitation/create",
+              params: {
+                message: "Which region?",
+                requestedSchema: { type: "object", properties: {} },
+              },
+            },
+          },
+        };
+      case "completed":
+        return {
+          ...view(task),
+          result: { resultType: "complete", content: [{ type: "text", text: task.text }] },
+        };
+      case "failed":
+        return { ...view(task), error: { code: -32000, message: "the report failed" } };
+      default:
+        return view(task);
+    }
+  };
+
+  /** The `Mcp-*` headers a Modern request must carry, against its body. */
+  const headerProblem = (request: Request, method: string, name: string | undefined) => {
+    if (request.headers.get("mcp-protocol-version") !== "2026-07-28") {
+      return "MCP-Protocol-Version is not 2026-07-28";
+    }
+
+    if (request.headers.get("mcp-method") !== method) return "Mcp-Method does not match the body";
+
+    if (name !== undefined && request.headers.get("mcp-name") !== name) {
+      return "Mcp-Name does not match the body";
+    }
+
+    return undefined;
+  };
+
+  const report = (
+    id: string | number,
+    request: Request,
+    call: typeof ReportCall.Type,
+    extensions: ReadonlyArray<string>,
+  ) => {
+    declared.push({ method: "tools/call", tasks: extensions.includes(TASKS_EXTENSION) });
+
+    const given = call.arguments ?? {};
+    const region = given.region ?? "";
+
+    // The `Mcp-Param` header a tool's `x-mcp-header` asks for must mirror the argument.
+    if (region !== "" && decodedHeader(request.headers.get("mcp-param-region")) !== region) {
+      return rpcError(id, -32020, "Mcp-Param-Region does not match the arguments");
+    }
+
+    const text = (given.bytes ?? 0) > 0 ? "x".repeat(given.bytes ?? 0) : `report:${region}`;
+    const complete = { resultType: "complete", content: [{ type: "text", text }] };
+
+    if (!extensions.includes(TASKS_EXTENSION) && options.alwaysTask !== true) {
+      return options.requireTask === true
+        ? rpcError(id, -32021, "This tool runs only as an MCP task", TASKS_REQUIRED)
+        : rpcResult(id, complete);
+    }
+
+    const problem = headerProblem(request, "tools/call", "report");
+
+    if (problem !== undefined) return rpcError(id, -32020, problem);
+
+    if (given.inline === true) return rpcResult(id, complete);
+
+    next += 1;
+
+    const task: FakeTask = {
+      id: `task-${next}`,
+      status: given.ask === true ? "input_required" : "working",
+      pollsLeft: given.polls ?? 1,
+      text,
+      answers: undefined,
+      fail: given.fail === true,
+    };
+
+    tasks.set(task.id, task);
+
+    return rpcResult(id, { resultType: "task", ...view(task) });
+  };
+
+  const taskMethod = (
+    id: string | number,
+    request: Request,
+    method: "tasks/get" | "tasks/update" | "tasks/cancel",
+    call: typeof TaskCall.Type,
+    extensions: ReadonlyArray<string>,
+  ) => {
+    declared.push({ method, tasks: extensions.includes(TASKS_EXTENSION) });
+
+    if (!ID_PATTERN.test(call.taskId)) return rpcError(id, -32602, "taskId is required");
+
+    const problem = headerProblem(request, method, call.taskId);
+
+    if (problem !== undefined) return rpcError(id, -32020, problem);
+
+    if (!extensions.includes(TASKS_EXTENSION)) {
+      return rpcError(id, -32021, "tasks/* needs the tasks extension", TASKS_REQUIRED);
+    }
+
+    const task = tasks.get(call.taskId);
+
+    if (task === undefined) return rpcError(id, -32602, "Unknown task");
+
+    switch (method) {
+      case "tasks/get": {
+        if (task.status === "working") {
+          task.pollsLeft -= 1;
+
+          if (task.pollsLeft <= 0) task.status = task.fail ? "failed" : "completed";
+        }
+
+        return rpcResult(id, { resultType: "complete", ...snapshot(task) });
+      }
+
+      case "tasks/update": {
+        if (task.status === "input_required" && call.inputResponses !== undefined) {
+          task.answers = call.inputResponses;
+          task.status = "working";
+        }
+
+        return rpcResult(id, { resultType: "complete" });
+      }
+
+      case "tasks/cancel": {
+        if (task.status === "working" || task.status === "input_required") {
+          task.status = "cancelled";
+        }
+
+        return rpcResult(id, { resultType: "complete" });
+      }
+    }
+  };
+
+  const handle = async (request: Request): Promise<Response | undefined> => {
+    const rpc = await readRpc(request);
+
+    if (rpc?.method === undefined || rpc.id === undefined) return undefined;
+
+    const { id, method, params } = rpc;
+
+    if (method === "tools/call") {
+      const call = Option.getOrUndefined(decodeReportCall(params));
+
+      return call?.name === "report"
+        ? report(id, request, call, extensionsOf(call._meta))
+        : undefined;
+    }
+
+    if (method === "tasks/get" || method === "tasks/update" || method === "tasks/cancel") {
+      const call = Option.getOrUndefined(decodeTaskCall(params));
+
+      return call === undefined
+        ? rpcError(id, -32602, "taskId is required")
+        : taskMethod(id, request, method, call, extensionsOf(call._meta));
+    }
+
+    return undefined;
+  };
+
+  const fake = recording(async (request) => (await handle(request)) ?? base.handle(request));
+
+  return { ...fake, tasks, declared };
+};
+
+/** The extensions a request's `_meta` declares the client has. */
+const extensionsOf = (meta: typeof Meta.Type | undefined) =>
+  Record.keys(meta?.["io.modelcontextprotocol/clientCapabilities"]?.extensions ?? {});

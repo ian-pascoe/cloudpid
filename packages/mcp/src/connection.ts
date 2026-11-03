@@ -12,12 +12,14 @@
  */
 import {
   CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
   type CallToolRequestOptions,
   type CallToolRequestParams,
   type CallToolResult,
   Client,
   type ConnectOptions,
   type ClientCapabilities,
+  isCallToolResult,
   type DiscoverResult,
   extractWWWAuthenticateParams,
   type FetchLike,
@@ -26,6 +28,7 @@ import {
   type JsonSchemaValidator,
   LOG_LEVEL_META_KEY,
   type LoggingLevel,
+  PROTOCOL_VERSION_META_KEY,
   type PriorDiscovery,
   type Prompt,
   type ProtocolEra,
@@ -53,16 +56,28 @@ import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts
 import { MCP_LOG_LEVEL } from "./log.ts";
 import { type TapObserver, tapFetch, Verdicts } from "./tap.ts";
 import {
+  openTaskWire,
+  type TaskParams,
+  type TaskRequestOptions,
+  type TaskWire,
+} from "./task-wire.ts";
+import { xMcpHeaders } from "./tool-headers.ts";
+import {
   Cut,
   type EraRow,
   EraRowV1,
   MCP_CONNECT_TIMEOUT_MS,
   MCP_LIST_WALK_TIMEOUT_MS,
+  MCP_TASK_TIMEOUT_MS,
+  MCP_TASKS_EXTENSION,
   type McpCallContext,
   type McpAuthChallenge,
   type McpError,
   type McpProgress,
   type McpRoot,
+  McpTaskCreated,
+  type McpTaskInputResponses,
+  McpTaskSnapshot,
   ProtocolViolation,
   type SessionRow,
   SessionRowV1,
@@ -70,11 +85,14 @@ import {
   StepUpRequired,
   TimedOut,
   Unreachable,
+  Unsupported,
 } from "./types.ts";
 
 /** The server to connect to: an HTTP server, or a stdio server through the Container bridge, by URL. */
 export interface McpTarget {
   readonly url: string;
+  /** The server's configured name, which the one failure that names it says (a `-32021` for an MCP task). */
+  readonly name?: string;
   /** The entry's headers, `${NAME}` values resolved. */
   readonly headers?: Readonly<Record<string, string>>;
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
@@ -163,8 +181,8 @@ export interface ListItems {
 
 export type ListKind = keyof ListItems;
 
-/** A request's result. Later slices add `input_required` and `task`. */
-export interface Outcome<A> {
+/** A request that completed. Later slices add `input_required`. */
+export interface Complete<A> {
   readonly kind: "complete";
   readonly value: A;
   /** False when the result came from answered questions, so no cache may keep it. */
@@ -173,6 +191,43 @@ export interface Outcome<A> {
   readonly ttlMs?: number;
   readonly cacheScope?: "public" | "private";
   readonly fetchedAt: number;
+}
+
+/**
+ * A `tools/call` the server answered with an MCP task (`resultType: "task"`). Only a call with `ctx.allowTask`, made to a
+ * Modern server that advertises the tasks extension, is ever offered one; every other call gets the server's result as
+ * a synchronous call does, or fails.
+ */
+export interface TaskStarted {
+  readonly kind: "task";
+  readonly task: McpTaskCreated;
+  readonly fetchedAt: number;
+}
+
+/** A request's result: it completed, or (for a task-capable `tools/call` only) it started an MCP task. */
+export type Outcome<A> = Complete<A> | TaskStarted;
+
+/** A `tasks/get` answer: where the task stands and, once it has `completed`, the result of the call that started it. */
+export interface TaskState {
+  readonly task: McpTaskSnapshot;
+  /** The `CallToolResult` of a `completed` task. */
+  readonly result?: CallToolResult;
+  readonly fetchedAt: number;
+}
+
+/**
+ * The tasks of a Modern server, on the core's own task wire (`task-wire.ts`). A connection to a Legacy server fails each
+ * as `Unsupported`: a Legacy server has no MCP tasks.
+ */
+export interface McpTasks {
+  readonly get: (taskId: string, ctx: McpCallContext) => Effect.Effect<TaskState, McpError>;
+  /** Answers the questions the task waits on, by key. */
+  readonly update: (
+    taskId: string,
+    inputResponses: McpTaskInputResponses,
+    ctx: McpCallContext,
+  ) => Effect.Effect<void, McpError>;
+  readonly cancel: (taskId: string, ctx: McpCallContext) => Effect.Effect<void, McpError>;
 }
 
 /**
@@ -197,11 +252,17 @@ export interface McpConnection {
   readonly list: <K extends ListKind>(
     kind: K,
     ctx: McpCallContext,
-  ) => Effect.Effect<Outcome<ReadonlyArray<ListItems[K]>>, McpError>;
+  ) => Effect.Effect<Complete<ReadonlyArray<ListItems[K]>>, McpError>;
+  /**
+   * Calls a tool. With `ctx.allowTask`, on a Modern server that advertises the tasks extension, the call is sent on the
+   * task wire with the extension declared, and the server may answer with a task; otherwise the extension is never
+   * declared and the answer is always the tool's result.
+   */
   readonly callTool: (
     params: CallToolParams,
     ctx: McpCallContext,
   ) => Effect.Effect<Outcome<CallToolResult>, McpError>;
+  readonly task: McpTasks;
 }
 
 const CONNECT_TIMEOUT_MS = MCP_CONNECT_TIMEOUT_MS;
@@ -220,6 +281,26 @@ const LEGACY_ERA_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** `discover_json` is kept up to 64 KiB (D3). */
 const MAX_DISCOVER_BYTES = 64 * 1024;
+
+/** What a request's recovery needs to know beyond whether it may have run. */
+interface RequestPolicy {
+  /** Whether the attempt declares the tasks extension, asked at the failure: a `-32021` for it means another thing then. */
+  readonly declared?: () => boolean;
+  /** Sent once more after a cut though it may have run: a request whose repeat the caller knows is safe. */
+  readonly resend?: boolean;
+}
+
+/** What a `tools/call` attempt got: the task wire's answer, or the client's result. */
+type CallSent =
+  | { readonly kind: "wire"; readonly answer: Result }
+  | { readonly kind: "client"; readonly value: CallToolResult };
+
+/** What a request on the task wire is given beside its method and params. */
+interface WireOptions {
+  readonly timeoutMs: number;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly onProgress?: (progress: McpProgress) => void;
+}
 
 /** A list request's params: a cursor, and the client's declaration on Modern. */
 interface PageParams {
@@ -304,6 +385,20 @@ type CacheHints = typeof CacheHints.Type;
 const decodeCacheHints = Schema.decodeUnknownOption(CacheHints);
 
 const decodeEraRow = Schema.decodeUnknownOption(EraRowV1);
+
+const decodeTaskCreated = Schema.decodeUnknownOption(McpTaskCreated);
+
+const decodeTaskSnapshot = Schema.decodeUnknownOption(McpTaskSnapshot);
+
+/** What a `tasks/get` answers beside the task's own fields: its `resultType`, and a completed task's result. */
+const TaskGetAnswer = Schema.Struct({
+  resultType: Schema.Literal("complete"),
+  result: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+});
+
+const decodeTaskGetAnswer = Schema.decodeUnknownOption(TaskGetAnswer);
+
+const decodeJson = Schema.decodeUnknownOption(Schema.Json);
 
 const decodeSessionRow = Schema.decodeUnknownOption(SessionRowV1);
 
@@ -390,12 +485,14 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     observer,
   );
 
-  const failure = (cause: unknown, mayHaveRun = false) =>
+  const failure = (cause: unknown, mayHaveRun = false, tasksDeclared = false) =>
     classify(cause, {
       mayHaveRun,
       tokenSent: auth.tokenSent(),
       challenge,
       verdicts,
+      serverName: target.name,
+      tasksDeclared,
     });
 
   /** Notifications still being sent, which a close would abort: a Legacy `notifications/cancelled` above all. */
@@ -614,6 +711,25 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
   yield* Effect.addFinalizer(() => Effect.suspend(() => closeClient(live.client)));
 
+  /** The task wire, opened at the first task request of a Modern connection and closed with the scope. */
+  let wire: TaskWire | undefined;
+
+  const taskWire = () => {
+    wire ??= openTaskWire(transportFor());
+
+    return wire;
+  };
+
+  yield* Effect.addFinalizer(() =>
+    Effect.suspend(() =>
+      wire === undefined
+        ? Effect.void
+        : Effect.ignore(
+            Effect.tryPromise({ try: () => wire?.close() ?? Promise.resolve(), catch: String }),
+          ),
+    ),
+  );
+
   /** Swaps the live client for one `reopen` opens. */
   const replace = (reopen: Effect.Effect<Live, Failure>) =>
     Effect.gen(function* () {
@@ -625,18 +741,20 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   /**
    * Runs `send` on the live client. When the server refused it before it ran, recovers and sends it once more: a
    * Modern server's era drop (400 with no Modern error, 404, 405, `-32022`) probes again; a Legacy session's
-   * 404 initializes again.
+   * 404 initializes again. `send` looks at `live` each time it runs, so an attempt after a recovery sees the era and
+   * capabilities the server has now.
    */
   const request = <A>(
     send: (client: Client, signal: AbortSignal) => Promise<A>,
     mayHaveRun: boolean,
+    policy: RequestPolicy = {},
   ): Effect.Effect<A, McpError> => {
     const once = Effect.suspend(() => {
       const client = live.client;
 
       return Effect.tryPromise({
         try: (signal) => send(client, signal),
-        catch: (cause) => failure(cause, mayHaveRun),
+        catch: (cause) => failure(cause, mayHaveRun, policy.declared?.() ?? false),
       });
     });
 
@@ -652,8 +770,11 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         return Option.some(Effect.andThen(deps.sessions.drop, replace(open({ kind: "legacy" }))));
       }
 
-      // A read is sent once more after a cut; a `tools/call` never is, in either era (D15).
-      return !mayHaveRun && isCut(failed.error) ? Option.some(Effect.void) : Option.none();
+      // A read is sent once more after a cut, and so is a request whose resend is safe (`tasks/update`, `tasks/cancel`);
+      // a `tools/call` never is, in either era (D15).
+      return (policy.resend === true || !mayHaveRun) && isCut(failed.error)
+        ? Option.some(Effect.void)
+        : Option.none();
     };
 
     return once.pipe(
@@ -691,7 +812,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       const fetchedAt = yield* Clock.currentTimeMillis;
 
       if (live.capabilities[capability] === undefined) {
-        return { kind: "complete", value: [], cacheable: true, fetchedAt } satisfies Outcome<
+        return { kind: "complete", value: [], cacheable: true, fetchedAt } satisfies Complete<
           ReadonlyArray<ListItems[K]>
         >;
       }
@@ -739,7 +860,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         cacheable: true,
         fetchedAt,
         ...hints,
-      } satisfies Outcome<ReadonlyArray<ListItems[K]>>;
+      } satisfies Complete<ReadonlyArray<ListItems[K]>>;
     }).pipe(
       Effect.timeoutOrElse({
         duration: WALK_TIMEOUT,
@@ -747,44 +868,266 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       }),
     );
 
-  const callTool = (params: CallToolParams, ctx: McpCallContext) =>
+  /** Whether `ctx` may be offered an MCP task: it asked, the server is Modern and it advertises the extension. */
+  const offersTask = (ctx: McpCallContext) =>
+    ctx.allowTask === true && live.era === "modern" && advertisesTasks();
+
+  const advertisesTasks = () => live.capabilities.extensions?.[MCP_TASKS_EXTENSION] !== undefined;
+
+  /**
+   * Calls a tool. Whether the call is offered a task is decided at each attempt, on the era and capabilities the server
+   * has then: a call sent again after an era drop to a server that is Legacy now declares nothing.
+   */
+  const callTool = (
+    params: CallToolParams,
+    ctx: McpCallContext,
+  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    request<CallSent>(
+      (client, signal) =>
+        offersTask(ctx)
+          ? callOnTaskWire(params, ctx, signal).then(
+              (answer) => ({ kind: "wire", answer }) as const,
+            )
+          : callOnClient(client, params, ctx, signal).then(
+              (value) => ({ kind: "client", value }) as const,
+            ),
+      true,
+      { declared: () => offersTask(ctx) },
+    ).pipe(
+      Effect.flatMap((sent): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+        sent.kind === "wire" ? readCallAnswer(sent.answer) : completeCall(sent.value),
+      ),
+    );
+
+  const completeCall = (value: CallToolResult) =>
+    Effect.map(
+      Clock.currentTimeMillis,
+      (fetchedAt) =>
+        ({
+          kind: "complete",
+          value,
+          cacheable: true,
+          fetchedAt,
+        }) satisfies Complete<CallToolResult>,
+    );
+
+  const callOnClient = (
+    client: Client,
+    params: CallToolParams,
+    ctx: McpCallContext,
+    signal: AbortSignal,
+  ) => {
+    const call: CallToolRequestParams = {
+      name: params.tool.name,
+      arguments: { ...params.arguments },
+    };
+
+    const meta = metaFor(ctx);
+
+    if (meta !== undefined) {
+      call._meta = meta;
+    }
+
+    const options: CallToolRequestOptions = {
+      signal,
+      timeout: target.timeoutMs ?? CALL_TIMEOUT_MS,
+      resetTimeoutOnProgress: true,
+      // Without `outputSchema`, so the SDK checks no `structuredContent`: the engine does (D17). With the
+      // definition given, the SDK rethrows a `-32020` header mismatch rather than refreshing `tools/list`: the
+      // refresh and one retry (D14) belong to the catalog's owner, the engine, so it surfaces as `ServerError`.
+      toolDefinition: Struct.omit(params.tool, ["outputSchema"]),
+    };
+
+    if (deps.onProgress !== undefined) options.onprogress = progressOf(deps.onProgress);
+
+    return client.callTool(call, options);
+  };
+
+  /**
+   * A Modern request's params framed as the SDK frames one, with the tasks extension declared in the client's
+   * capabilities (the task wire's transport derives its headers from this envelope).
+   */
+  const framed = (params: TaskParams, ctx: McpCallContext, progressToken?: number): TaskParams => {
+    const capabilities = declaredCapabilities(deps.capabilities, deps.extensions, deps.roots, ctx);
+
+    const meta: NonNullable<TaskParams["_meta"]> = {
+      [PROTOCOL_VERSION_META_KEY]: live.protocolVersion,
+      [CLIENT_INFO_META_KEY]: deps.clientInfo,
+      [CLIENT_CAPABILITIES_META_KEY]: {
+        ...capabilities,
+        extensions: { ...capabilities.extensions, [MCP_TASKS_EXTENSION]: {} },
+      },
+    };
+
+    if (wantsLogs(live.capabilities)) meta[LOG_LEVEL_META_KEY] = MCP_LOG_LEVEL;
+
+    if (progressToken !== undefined) meta.progressToken = progressToken;
+
+    return { ...params, _meta: meta };
+  };
+
+  let progressTokens = 0;
+
+  /** Sends `method` on the task wire, with the Modern envelope. */
+  const sendOnTaskWire = (
+    method: string,
+    params: TaskParams,
+    ctx: McpCallContext,
+    options: WireOptions,
+    signal: AbortSignal,
+  ) => {
+    const { onProgress } = options;
+    const token = onProgress === undefined ? undefined : (progressTokens += 1);
+    const sending: Mutable<TaskRequestOptions> = { timeoutMs: options.timeoutMs, signal };
+
+    if (options.headers !== undefined) sending.headers = options.headers;
+
+    if (token !== undefined && onProgress !== undefined) {
+      sending.progress = { token, notify: onProgress };
+    }
+
+    return taskWire().call(method, framed(params, ctx, token), sending);
+  };
+
+  /**
+   * Why a `tasks/*` request cannot be sent to the server as it is now, checked at every attempt, after a recovery's
+   * reconnect included: it is Legacy, or no longer advertises the tasks extension. Both fail `Unsupported`, which on a
+   * `tasks/*` request tells the follower the task is `unknown` (as does `-32021`, a `ServerError`).
+   */
+  const tasksUnavailable = () => {
+    if (live.era !== "modern") {
+      return Unsupported.make({
+        message: "The server speaks the Legacy protocol, which has no MCP tasks",
+      });
+    }
+
+    return advertisesTasks()
+      ? undefined
+      : Unsupported.make({ message: "The server no longer advertises MCP tasks" });
+  };
+
+  /** Sends a `tasks/*` request: refused, before anything is sent, by a server that no longer qualifies. */
+  const taskRequest = <A>(
+    method: "tasks/get" | "tasks/update" | "tasks/cancel",
+    params: TaskParams,
+    ctx: McpCallContext,
+    policy: { readonly mayHaveRun: boolean; readonly resend: boolean },
+    read: (result: Result) => Effect.Effect<A, McpError>,
+  ): Effect.Effect<A, McpError> =>
+    request(
+      (_client, signal) => {
+        const refused = tasksUnavailable();
+
+        return refused === undefined
+          ? sendOnTaskWire(method, params, ctx, { timeoutMs: MCP_TASK_TIMEOUT_MS }, signal)
+          : Promise.reject(refused);
+      },
+      policy.mayHaveRun,
+      { declared: () => true, resend: policy.resend },
+    ).pipe(Effect.flatMap(read));
+
+  const notMcp = (what: string) =>
+    ProtocolViolation.make({ message: `Not an MCP server: ${what}` });
+
+  /** A `tools/call` on the task wire: the server's result, or the task it started. */
+  const callOnTaskWire = (params: CallToolParams, ctx: McpCallContext, signal: AbortSignal) => {
+    const args = { ...params.arguments };
+
+    const options: Mutable<WireOptions> = {
+      timeoutMs: target.timeoutMs ?? CALL_TIMEOUT_MS,
+      headers: xMcpHeaders(
+        Option.getOrElse(decodeJson(params.tool.inputSchema), () => ({})),
+        args,
+      ),
+    };
+
+    if (deps.onProgress !== undefined) options.onProgress = deps.onProgress;
+
+    return sendOnTaskWire(
+      "tools/call",
+      { name: params.tool.name, arguments: args },
+      ctx,
+      options,
+      signal,
+    );
+  };
+
+  /** What the task wire's answer to a `tools/call` made with the extension declared says. */
+  const readCallAnswer = (answer: Result): Effect.Effect<Outcome<CallToolResult>, McpError> =>
     Effect.gen(function* () {
-      const call: CallToolRequestParams = {
-        name: params.tool.name,
-        arguments: { ...params.arguments },
-      };
+      const fetchedAt = yield* Clock.currentTimeMillis;
+      const { resultType, ...rest } = answer;
 
-      const meta = metaFor(ctx);
+      if (resultType === "task") {
+        const started = decodeTaskCreated(rest);
 
-      if (meta !== undefined) {
-        call._meta = meta;
+        return Option.isNone(started)
+          ? yield* notMcp("the task it started is malformed")
+          : ({ kind: "task", task: started.value, fetchedAt } satisfies TaskStarted);
       }
 
-      const value = yield* request((client, signal) => {
-        const options: CallToolRequestOptions = {
-          signal,
-          timeout: target.timeoutMs ?? CALL_TIMEOUT_MS,
-          resetTimeoutOnProgress: true,
-          // Without `outputSchema`, so the SDK checks no `structuredContent`: the engine does (D17). With the
-          // definition given, the SDK rethrows a `-32020` header mismatch rather than refreshing `tools/list`: the
-          // refresh and one retry (D14) belong to the catalog's owner, the engine, so it surfaces as `ServerError`.
-          toolDefinition: Struct.omit(params.tool, ["outputSchema"]),
-        };
+      if (resultType === "input_required") {
+        return yield* Unsupported.make({
+          message:
+            "The server asked a question, which cloudpid cannot answer in an MCP task call yet",
+        });
+      }
 
-        if (deps.onProgress !== undefined) options.onprogress = progressOf(deps.onProgress);
-
-        return client.callTool(call, options);
-      }, true);
-
-      const fetchedAt = yield* Clock.currentTimeMillis;
+      if (resultType !== "complete" || !isCallToolResult(rest)) {
+        return yield* notMcp("the answer to tools/call is neither a result nor a task");
+      }
 
       return {
         kind: "complete",
-        value,
-        cacheable: true,
+        value: rest,
+        cacheable: false,
         fetchedAt,
-      } satisfies Outcome<CallToolResult>;
+      } satisfies Complete<CallToolResult>;
     });
+
+  const taskGet = (taskId: string, ctx: McpCallContext) =>
+    taskRequest(
+      "tasks/get",
+      { taskId },
+      ctx,
+      { mayHaveRun: false, resend: false },
+      (answer): Effect.Effect<TaskState, McpError> =>
+        Effect.gen(function* () {
+          const fetchedAt = yield* Clock.currentTimeMillis;
+          const snapshot = decodeTaskSnapshot(answer);
+          const ended = decodeTaskGetAnswer(answer);
+
+          if (Option.isNone(snapshot) || Option.isNone(ended)) {
+            return yield* notMcp("the answer to tasks/get is not a task");
+          }
+
+          if (snapshot.value.status !== "completed") return { task: snapshot.value, fetchedAt };
+
+          // A completed task's result is the `CallToolResult` the call would have returned.
+          const value = Record.remove(ended.value.result ?? {}, "resultType");
+
+          return isCallToolResult(value)
+            ? { task: snapshot.value, result: value, fetchedAt }
+            : yield* notMcp("the result of a completed task is not a tool result");
+        }),
+    );
+
+  /**
+   * `tasks/update` and `tasks/cancel` answer an empty result. They may have run when cut, and are sent once more anyway:
+   * a repeated answer to a question, or a repeated cancel, changes nothing the task did not already.
+   */
+  const taskCommand = (
+    method: "tasks/update" | "tasks/cancel",
+    params: TaskParams,
+    ctx: McpCallContext,
+  ) => taskRequest(method, params, ctx, { mayHaveRun: true, resend: true }, () => Effect.void);
+
+  const task: McpTasks = {
+    get: taskGet,
+    update: (taskId, inputResponses, ctx) =>
+      taskCommand("tasks/update", { taskId, inputResponses }, ctx),
+    cancel: (taskId, ctx) => taskCommand("tasks/cancel", { taskId }, ctx),
+  };
 
   const connection: McpConnection = {
     get era() {
@@ -805,6 +1148,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     stats: () => ({ ...counts, lastStatus }),
     list,
     callTool,
+    task,
   };
 
   return connection;

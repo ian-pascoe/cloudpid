@@ -177,3 +177,86 @@ export const xMcpHeaderProblems = (inputSchema: Schema.Json): ReadonlyArray<stri
     ...Arr.getSomes(Arr.map(declared, (each, index) => duplicateProblem(declared, each, index))),
   ];
 };
+
+/** The prefix of a header that mirrors a tool argument. */
+const PARAM_HEADER_PREFIX = "Mcp-Param-";
+
+const BASE64_SENTINEL_PREFIX = "=?base64?";
+
+const BASE64_SENTINEL_SUFFIX = "?=";
+
+/** An argument's value as header text: a string, a boolean or a safe integer; anything else is no header. */
+const primitiveText = (value: Schema.Json | undefined): string | undefined => {
+  if (Predicate.isString(value)) return value;
+
+  if (Predicate.isBoolean(value)) return value ? "true" : "false";
+
+  if (Predicate.isNumber(value) && Number.isSafeInteger(value)) return String(value);
+
+  return undefined;
+};
+
+/** Whether `text` cannot go in a header as it is: empty, padded, outside printable ASCII, or looking like an encoding. */
+const needsBase64 = (text: string): boolean => {
+  if (text.length === 0) return true;
+
+  if (text.startsWith(BASE64_SENTINEL_PREFIX) && text.endsWith(BASE64_SENTINEL_SUFFIX)) return true;
+
+  if (text !== text.trim()) return true;
+
+  return Arr.some(Arr.fromIterable(text), (char) => {
+    const code = char.codePointAt(0) ?? 0;
+
+    return code !== 9 && (code < 32 || code > 126);
+  });
+};
+
+/** `text` as a header value: as it is, or `=?base64?<UTF-8 in base64>?=`. */
+const encodeHeaderValue = (text: string): string => {
+  if (!needsBase64(text)) return text;
+
+  const binary = Arr.join(
+    Arr.map(Arr.fromIterable(new TextEncoder().encode(text)), (byte) => String.fromCodePoint(byte)),
+    "",
+  );
+
+  return `${BASE64_SENTINEL_PREFIX}${btoa(binary)}${BASE64_SENTINEL_SUFFIX}`;
+};
+
+/** The value at `path` in `root`, if every step is an object that has it. */
+const valueAt = (root: Schema.Json, path: ReadonlyArray<string>): Schema.Json | undefined => {
+  let node: Schema.Json | undefined = root;
+
+  for (const key of path) {
+    if (node === undefined || !isJsonObject(node)) return undefined;
+
+    node = node[key];
+  }
+
+  return node;
+};
+
+/**
+ * The `Mcp-Param-<Name>` headers a Modern `tools/call` carries (SEP-2243): for each property of the tool's
+ * `inputSchema` that declares `x-mcp-header`, its value in `args`, as it is or base64-wrapped when it is not plain
+ * ASCII. A property that is absent, `null` or not a string, boolean or safe integer has no header. The core sends a
+ * task-capable call on a transport of its own, which has to build them as the SDK's client does for any other
+ * (`docs/architecture/mcp-server-requests.md` → MCP tasks, The wire).
+ */
+export const xMcpHeaders = (
+  inputSchema: Schema.Json,
+  args: Schema.Json,
+): Readonly<Record<string, string>> => {
+  const { declared } = walk(inputSchema, [], true);
+
+  return Record.fromEntries(
+    Arr.getSomes(
+      Arr.map(declared, ({ header, path }) =>
+        Option.map(
+          Option.fromNullishOr(primitiveText(valueAt(args, path))),
+          (text) => [`${PARAM_HEADER_PREFIX}${header}`, encodeHeaderValue(text)] as const,
+        ),
+      ),
+    ),
+  );
+};

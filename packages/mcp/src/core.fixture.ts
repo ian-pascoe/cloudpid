@@ -8,7 +8,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
-import type { McpDeps, McpTarget, RowStore } from "./index.ts";
+import type { Complete, McpDeps, McpTarget, Outcome, RowStore, TaskStarted } from "./index.ts";
 import { expect } from "vitest";
 import type { McpCallContext, McpError } from "./types.ts";
 
@@ -17,6 +17,29 @@ export const TARGET: McpTarget = { url: "https://mcp.example.test/mcp" };
 export const HOST: McpCallContext = { origin: "host" };
 
 export const AGENT: McpCallContext = { origin: "agent", conversation: "conversation-1" };
+
+/** `outcome`, which a test expects to have completed (no MCP task). */
+export const completed = <A>(outcome: Outcome<A>): Complete<A> => {
+  if (outcome.kind !== "complete") {
+    throw new Error(`Expected a completed outcome, got ${outcome.kind}`);
+  }
+
+  return outcome;
+};
+
+/** `outcome`, which a test expects to have started an MCP task. */
+export const started = <A>(outcome: Outcome<A>): TaskStarted => {
+  if (outcome.kind !== "task") throw new Error(`Expected an MCP task, got ${outcome.kind}`);
+
+  return outcome;
+};
+
+/** What `effect` came to: `{ value }`, or `{ failed }` with its error, as `failedWith` matches. */
+export const settled = <A>(effect: Effect.Effect<A, McpError>) =>
+  effect.pipe(
+    Effect.map((value) => ({ value })),
+    Effect.catch((error) => Effect.succeed({ failed: error })),
+  );
 
 /** A row store over one in-memory cell, with the row it holds now. */
 export const memoryStore = (initial?: Schema.Json) => {
