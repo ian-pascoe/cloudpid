@@ -43,6 +43,7 @@ import {
   invalidCallbackPage,
   type Page,
   startProblemPage,
+  type StartLink,
   startPromptPage,
 } from "./sign-in-pages.ts";
 
@@ -262,15 +263,6 @@ const parameter = (query: URLSearchParams, name: string): string | undefined => 
 
 const MAX_FORM_BYTES = 2048;
 
-/** What a start link, or the form of its confirmation, names. */
-type StartLink = {
-  readonly environment: string;
-  readonly server: string;
-  readonly stepUp: boolean;
-  readonly requester: { readonly session: string; readonly request: string } | undefined;
-  readonly back: string | undefined;
-};
-
 /** The link a start is made from, in a query or a form, or undefined when it names no server. */
 const startLinkOf = (source: URLSearchParams): StartLink | undefined => {
   const environment = parameter(source, "environment");
@@ -354,9 +346,12 @@ export const serveStart = (registry: () => SignInRegistry, env: SignInEnv) =>
       );
     }
 
-    return request.headers["sec-fetch-site"] === "same-origin"
-      ? yield* startSignIn(registry, stage, link)
-      : respond(startPromptPage(link));
+    // Only a navigation from a tab of the app starts at once: a same-origin `<img>` or `fetch` must not.
+    const fromApp =
+      request.headers["sec-fetch-site"] === "same-origin" &&
+      request.headers["sec-fetch-mode"] === "navigate";
+
+    return fromApp ? yield* startSignIn(registry, stage, link) : respond(startPromptPage(link));
   });
 
 /** The `POST`: the start a prompt page confirmed, or the issuer interstitial's Continue or Cancel. */

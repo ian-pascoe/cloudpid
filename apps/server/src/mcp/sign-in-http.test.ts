@@ -243,7 +243,7 @@ describe("the start", () => {
       serveStart(() => registryOf, env),
     );
 
-  const SAME = { "sec-fetch-site": "same-origin" };
+  const SAME = { "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate" };
 
   it("sends the owner on to the authorization page with a 303, and passes the link's values and the stage", async () => {
     const scripted = registry({
@@ -364,6 +364,21 @@ describe("the start", () => {
       expect(html).toContain(`name="environment" value="env_1"`);
       expect(html).toContain(`name="server" value="sentry"`);
       expect(html).toContain(`name="return" value="/settings"`);
+      expect(scripted.startMcpSignIn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["no-cors", "cors", "same-origin"])(
+    "starts nothing for a same-origin request whose Sec-Fetch-Mode is %s (an <img> or a fetch)",
+    async (mode) => {
+      const scripted = registry({ start: { status: "redirect", url: "https://as.example/a" } });
+
+      const response = await start(scripted.use(), LIVE, {
+        headers: { "sec-fetch-site": "same-origin", "sec-fetch-mode": mode },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain(`<form method="post" action="/oauth/mcp/start">`);
       expect(scripted.startMcpSignIn).not.toHaveBeenCalled();
     },
   );
@@ -522,11 +537,26 @@ describe("the start", () => {
     it.each([
       ["no Origin", { origin: "" }],
       ["another origin", { origin: "https://evil.example" }],
+      // What a browser sends from a `Referrer-Policy: no-referrer` page: accepting it would take any sandboxed page's POST.
+      ["a null Origin", { origin: "null" }],
     ])("is refused with %s, and the Registry is never called", async (_name, headers) => {
       const scripted = registry({});
       const response = await post(scripted, `state=${STATE}&decision=continue`, headers);
 
       expect(response.status).toBe(403);
+      expect(scripted.confirmMcpSignIn).not.toHaveBeenCalled();
+    });
+
+    it("refuses a forged start from another site, and never calls the Registry", async () => {
+      const scripted = registry({ start: { status: "redirect", url: "https://as.example/a" } });
+
+      const response = await post(scripted, "environment=env_1&server=sentry", {
+        origin: "https://evil.example",
+        "sec-fetch-site": "cross-site",
+      });
+
+      expect(response.status).toBe(403);
+      expect(scripted.startMcpSignIn).not.toHaveBeenCalled();
       expect(scripted.confirmMcpSignIn).not.toHaveBeenCalled();
     });
 

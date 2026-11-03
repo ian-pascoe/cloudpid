@@ -1300,11 +1300,12 @@ const attributesOf = (spans: ReadonlyArray<Tracer.NativeSpan>, name: string) =>
   Object.fromEntries(spans.find((span) => span.name === name)?.attributes ?? []);
 
 describe("the spans", () => {
-  it("say the start's outcome, and a refusal's, without a code, state or URL", () =>
+  it("say the start's outcome, and a refusal's, and never the state, the challenge or a URL", () =>
     run(sentry(), async ({ setGlobal, start, spans }) => {
       setGlobal({ sentry: { url: SERVER_URL } });
 
-      await start();
+      const answer = await start();
+
       await start({ server: "nothing" });
 
       const started = spans.filter((span) => span.name === "mcp.oauth.start");
@@ -1314,10 +1315,13 @@ describe("the spans", () => {
         "problem",
       ]);
 
-      const text = JSON.stringify(started.map((span) => [...span.attributes]));
+      const url = urlOf(answer);
+      const recorded = JSON.stringify(started.map((span) => [...span.attributes]));
 
-      expect(text).not.toContain("code_challenge");
-      expect(text).not.toContain("state=");
+      for (const secret of [stateOf(url), url.searchParams.get("code_challenge") ?? "", url.href]) {
+        expect(secret).not.toBe("");
+        expect(recorded).not.toContain(secret);
+      }
     }));
 
   it("say the callback's outcome, the OAuth error code and the token endpoint's status", () =>
@@ -1331,14 +1335,23 @@ describe("the spans", () => {
       async ({ setGlobal, signIn, complete, spans }) => {
         setGlobal({ sentry: { url: SERVER_URL } });
 
-        await complete(stateOf(await signIn()));
+        const state = stateOf(await signIn());
 
-        expect(attributesOf(spans, "mcp.oauth.callback")).toMatchObject({
+        await complete(state);
+
+        const callback = attributesOf(spans, "mcp.oauth.callback");
+
+        expect(callback).toMatchObject({
           "mcp.outcome": "exchange_failed",
           "mcp.oauth_error": "invalid_grant",
           "http.status_code": 400,
         });
-        expect(JSON.stringify([...(spans.at(-1)?.attributes ?? [])])).not.toContain(CODE);
+
+        const recorded = JSON.stringify(callback);
+
+        for (const secret of [state, CODE, "the code is used"]) {
+          expect(recorded).not.toContain(secret);
+        }
       },
     ));
 

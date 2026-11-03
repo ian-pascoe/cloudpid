@@ -75,8 +75,9 @@ const endedBy = (response: Response, signal: AbortSignal): Response => {
 
         if (done) controller.close();
         else controller.enqueue(value);
-      } catch {
-        // The stream was errored by the signal (or its source failed): the reader has nothing more to say.
+      } catch (error) {
+        // The source failed (or the signal errored the stream already, which this leaves as it is): the reader sees why.
+        controller.error(error);
       }
     },
     cancel: (reason) => reader.cancel(reason),

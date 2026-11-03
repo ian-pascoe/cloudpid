@@ -1,5 +1,6 @@
 // The pages of an MCP sign-in (`docs/architecture/mcp-sign-in.md` → Starting and completing a sign-in, Page outcomes; ADR-0035):
-// the callback's outcome pages, the start's problem page and the issuer interstitial. Pure: a page is a string and its
+// the callback's outcome pages, the start's problem page, the page a start asks on (a link that did not come from a tab of
+// the app) and the issuer interstitial. Pure: a page is a string and its
 // headers, so the security of it is tested without a Worker.
 //
 // The callback is public and its URL carries a single-use code, so its page must not leak it: `Referrer-Policy:
@@ -7,7 +8,9 @@
 // injected scripts copy a nonce, so a nonce would let them run) and no other source, and `history.replaceState` as the first
 // thing its script does. The page holds no token, code, `state` or authorization URL; what an authorization server said is
 // escaped and at most 300 characters. The message it posts on `BroadcastChannel("cloudpid:mcp-sign-in")` is the outcome and
-// nothing else. No page ever redirects on its own: on the installed iOS PWA the sign-in opens in an in-app sheet.
+// nothing else. No page ever redirects on its own: on the installed iOS PWA the sign-in opens in an in-app sheet. The two
+// pages with a form (the prompt and the interstitial) send `Referrer-Policy: same-origin` instead: under `no-referrer` a
+// browser's form POST carries `Origin: null`, which the Worker refuses.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import type {
   McpSignInConfirmation,
@@ -75,10 +78,19 @@ type Body = {
   readonly formAction: boolean;
 };
 
-const headersOf = (csp: string): Page["headers"] => ({
+/**
+ * The referrer policy of a page. `no-referrer` everywhere a page has no form (the callback's address holds a code). A form
+ * page sends `same-origin` instead: under `no-referrer` a browser's form POST carries `Origin: null` (Fetch's origin
+ * serialization), and the Worker takes a POST only from its own origin, so every Continue and Cancel would be refused.
+ * `same-origin` leaves `Origin` as the page's own and sends nothing to another site.
+ */
+const referrerPolicyOf = (formAction: boolean): string =>
+  formAction ? "same-origin" : "no-referrer";
+
+const headersOf = (csp: string, referrerPolicy: string): Page["headers"] => ({
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": referrerPolicy,
   "content-security-policy": csp,
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
@@ -112,11 +124,11 @@ const render = (status: number, body: Body): Page => {
   const html =
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<meta name="referrer" content="no-referrer"><title>${escapeHtml(body.title)}</title>` +
+    `<meta name="referrer" content="${referrerPolicyOf(body.formAction)}"><title>${escapeHtml(body.title)}</title>` +
     `<style>${PAGE_STYLE}</style></head><body${attribute}><main><h1>${escapeHtml(body.title)}</h1>` +
     `${lines}${fields}${body.actions}${script}</main></body></html>`;
 
-  return { status, html, headers: headersOf(csp) };
+  return { status, html, headers: headersOf(csp, referrerPolicyOf(body.formAction)) };
 };
 
 const link = (href: string, text: string): string =>
@@ -266,8 +278,8 @@ export const startProblemPage = (message: string, status: number, back: string |
     formAction: false,
   });
 
-/** What a start link names, for the page that asks before it starts. */
-type PromptLink = {
+/** What a start link, or the form of its confirmation, names. */
+export type StartLink = {
   readonly environment: string;
   readonly server: string;
   readonly stepUp: boolean;
@@ -279,7 +291,7 @@ type PromptLink = {
  * The page of a start link that did not come from a tab of the app (typed in, or the navigation back from an Access
  * login): nothing starts until its Continue, a `POST` the Worker takes only from its own origin.
  */
-export const startPromptPage = (prompt: PromptLink): Page => {
+export const startPromptPage = (prompt: StartLink): Page => {
   const hidden = (name: string, value: string): string =>
     `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
 

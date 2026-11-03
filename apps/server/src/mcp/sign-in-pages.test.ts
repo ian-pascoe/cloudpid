@@ -89,6 +89,47 @@ describe("the CSP hashes", () => {
   });
 });
 
+describe("the referrer policy", () => {
+  const interstitial = interstitialPage({
+    state: "s".repeat(43),
+    server: "sentry",
+    source: "owner",
+    url: "https://mcp.example/mcp",
+    issuer: "https://as.example",
+    clientId: "client",
+  });
+
+  const prompt = startPromptPage({
+    environment: "env_1",
+    server: "sentry",
+    stepUp: false,
+    requester: undefined,
+    back: undefined,
+  });
+
+  // Under `no-referrer` a browser's form POST carries `Origin: null`, which the Worker refuses: a form page must say
+  // `same-origin`, in the header and in the tag.
+  it.each([
+    ["the prompt", prompt],
+    ["the interstitial", interstitial],
+  ])("of %s keeps the form's Origin and sends nothing to another site", (_name, page) => {
+    expect(page.headers["referrer-policy"]).toBe("same-origin");
+    expect(page.html).toContain(`<meta name="referrer" content="same-origin">`);
+    expect(page.html).not.toContain("no-referrer");
+  });
+
+  const withoutForm: ReadonlyArray<readonly [string, Page]> = [
+    ...pages(),
+    ["cancelled", cancelledPage()],
+    ["a problem", startProblemPage("x", 400, undefined)],
+  ];
+
+  it.each(withoutForm)("of the %s page, which has no form, is no-referrer", (_name, page) => {
+    expect(page.headers["referrer-policy"]).toBe("no-referrer");
+    expect(page.html).toContain(`<meta name="referrer" content="no-referrer">`);
+  });
+});
+
 describe("the callback script", () => {
   it("clears the address first and then tells the channel the outcome and nothing else", () => {
     expect(CALLBACK_SCRIPT.startsWith(`history.replaceState(null,"",location.pathname);`)).toBe(

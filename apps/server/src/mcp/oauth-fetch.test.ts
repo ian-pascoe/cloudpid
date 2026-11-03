@@ -179,4 +179,22 @@ describe("an OAuth request", () => {
       "The request timed out",
     );
   });
+
+  it("fails at once, and not as a timeout, when the body's source fails", async () => {
+    const failing = network(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("connection reset"));
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+
+    await expect(guardedOAuthFetch(failing.layer, 5000)("https://as.example/x")).rejects.toThrow(
+      "connection reset",
+    );
+  });
 });

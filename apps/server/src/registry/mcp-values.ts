@@ -66,13 +66,10 @@ export const resolveMcpServerValues = (
   };
 };
 
-/** Where the `oauth.clientSecret` of an entry came from: a `{scope, name}` reference, never a copy. */
-export type OauthSecretRef = McpSignInSecretRef;
-
 /** The client secret of an entry, resolved at use (→ The `oauth` fields). */
 export type OauthSecret =
   | { readonly status: "none" }
-  | { readonly status: "ok"; readonly value: string; readonly ref: OauthSecretRef | null }
+  | { readonly status: "ok"; readonly value: string; readonly ref: McpSignInSecretRef | null }
   | { readonly status: "missing"; readonly name: string };
 
 const WHOLE_REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;

@@ -19,8 +19,9 @@
 //   - `mcp-sign-in-flow.ts`: `put` with its tokens and the step-up bookkeeping a completed step-up writes
 //     (`SignInWrite.wantedScope`, `stepUpCount`), registrations (`getRegistration`, `putRegistration`,
 //     `deleteRegistration`), bindings (`getBinding`, `putBinding`), the pending row (`putPending`, `takePending`),
-//     `dropTokens` at a change of issuer, `noteChallenge`/`update` for a failure's reason and `resolveWaiters`;
-//   - `mcp-sign-in-registry.ts`: `get`, `noteChallenge`, `update`, `dropTokens` and `resolveWaiters`.
+//     `dropTokens` at a change of issuer, `noteChallenge`/`update` for a failure's reason, `get` and `revision` for the row
+//     and the answer, and `resolveWaiters`;
+//   - `mcp-sign-in-registry.ts`: `get`, `touch`, `noteChallenge`, `update`, `dropTokens` and `resolveWaiters`.
 // What has no caller yet, for the slices that follow (the tables and their bounds are #442's):
 //   - #454 (refresh and step-up): `replaceTokens`, through `Refresh`;
 //   - #469 (Settings, sign-out): `list`, `delete`, and `dropUnnamedBindings` once no server set names a binding;
@@ -85,17 +86,12 @@ export type ClientKind = (typeof CLIENT_KINDS)[number];
 
 const isClientKind = Schema.is(Schema.Literals(CLIENT_KINDS));
 
-/** A secret or key as a reference to a Secret or Variable: never a copy. */
-const SecretRef = McpSignInSecretRef;
-
-export type McpSecretRef = typeof SecretRef.Type;
-
 /** The client a sign-in signs in as. */
 export type McpSignInClient = {
   readonly id: string;
   readonly kind: ClientKind;
   /** Where a configured client's secret or key is kept: `{scope, name}`, never its value. */
-  readonly secretRef: McpSecretRef | null;
+  readonly secretRef: McpSignInSecretRef | null;
   /** The registration (`mcp_client_registrations` key) a `registered` client's id and secret are in. */
   readonly registration: string | null;
 };
@@ -278,7 +274,7 @@ const decodeSealed = Schema.decodeUnknownOption(Schema.fromJsonString(SealedValu
 
 const decodeChallenge = Schema.decodeUnknownOption(Schema.fromJsonString(McpAuthChallenge));
 
-const decodeSecretRef = Schema.decodeUnknownOption(Schema.fromJsonString(SecretRef));
+const decodeSecretRef = Schema.decodeUnknownOption(Schema.fromJsonString(McpSignInSecretRef));
 
 const sealedOf = (text: string | null): SealedValue | null =>
   text === null ? null : Option.getOrNull(decodeSealed(text));
