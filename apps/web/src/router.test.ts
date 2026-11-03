@@ -23,6 +23,8 @@ import {
   skillOwnerPath,
   skillPagePath,
   skillRepoParamsAtom,
+  requestParamAtom,
+  requestParamOf,
   skillRepoParamsOf,
   skillRepoPath,
   skillsParamsAtom,
@@ -409,6 +411,34 @@ describe("the page's path", () => {
       entries: ["/sessions/a?pane=tasks", "/sessions/b"],
       at: 1,
     });
+  });
+});
+
+describe("the request a Session page's link names", () => {
+  it("is the request_id of ?request=, whatever else the query holds, and none when empty or absent", () => {
+    expect(requestParamOf("")).toBeUndefined();
+    expect(requestParamOf("?request=")).toBeUndefined();
+    expect(requestParamOf("?pane=subagents")).toBeUndefined();
+    expect(requestParamOf("?request=ab-12")).toBe("ab-12");
+    expect(requestParamOf("?pane=subagents&request=ab-12&shown=subagents")).toBe("ab-12");
+    expect(requestParamOf("?request=a%2Fb%20c")).toBe("a/b c");
+  });
+
+  it("follows the query, and keeps the page's path", () => {
+    stubWindow("/sessions/a?request=r1");
+
+    const registry = AtomRegistry.make();
+
+    registry.mount(requestParamAtom);
+    registry.mount(pageAtom);
+    expect(registry.get(requestParamAtom)).toBe("r1");
+    expect(registry.get(pageAtom)).toEqual({ kind: "session", sessionId: "a" });
+
+    replaceSearch("?request=r2&pane=subagents");
+    expect(registry.get(requestParamAtom)).toBe("r2");
+
+    replaceSearch("");
+    expect(registry.get(requestParamAtom)).toBeUndefined();
   });
 });
 

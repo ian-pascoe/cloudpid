@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Arr from "effect/Array";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ApprovalCard } from "./approval-card.tsx";
+import { requestCardId } from "./request-anchor.ts";
 import { WAITING_REQUESTS_CLASS } from "./waiting-requests.tsx";
 
 const SKILL = `━━ review (/review/SKILL.md) ━━\n${"line of the file\n".repeat(900)}`;
@@ -84,6 +85,13 @@ describe("ApprovalCard", () => {
 
     expect(region(markup, /<dd class="font-mono[^"]*">━━/, "dd")).toContain("whitespace-pre-wrap");
     expect(markup).toContain('<dd class="break-words">one line</dd>');
+  });
+});
+
+describe("a card's anchor", () => {
+  it("is the id `?request=` names, so the page can scroll to it", () => {
+    expect(requestCardId("r1")).toBe("request-r1");
+    expect(render("after")).toMatch(/<section[^>]*id="request-r1"/);
   });
 });
 

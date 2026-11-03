@@ -2,7 +2,7 @@
 // `McpClient` drives it through `MCP_SERVER.serve(request, api)` with an `RpcTarget` of canned answers for `api`. That
 // it runs at all is the answer to "does `createMcpHandler` run without `nodejs_compat`".
 // workerd's RPC APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off preferEffectArray:off preferEffectRecord:off schemaSync:off
+// @effect-diagnostics asyncFunction:off globalFetch:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off schemaSync:off
 import { env, RpcTarget } from "cloudflare:workers";
 import {
   type ApiResult,
@@ -14,6 +14,7 @@ import {
   type SessionDetail,
   type SessionsQuery,
   type TranscriptPage,
+  type WaitResult,
 } from "@cloudpid/protocol/mcp-api";
 import { McpClient, StreamableHttpTransport } from "@earendil-works/pi-mcp";
 import { describe, expect, it } from "vitest";
@@ -87,7 +88,8 @@ class FakeApi extends RpcTarget {
   readonly calls: Array<string> = [];
   /** What `limited` answers: over the rate when set. */
   over: { readonly retryAfterS: number } | undefined;
-  operations = ["environments", "sessions", "session", "transcript"];
+  // The Server's operations are read once per isolate (`toolGate`), so every case sees the same tools.
+  operations = ["environments", "sessions", "session", "transcript", "wait"];
 
   describe() {
     return { operations: this.operations, limits: MCP_API_LIMITS };
@@ -117,6 +119,26 @@ class FakeApi extends RpcTarget {
     this.calls.push(`transcript ${JSON.stringify(request)}`);
 
     return apiOk({ ...PAGE, session_id: request.session_id });
+  }
+
+  /** How long `wait` takes to answer: a real RPC that stays open while the stream does. */
+  waitMs = 150;
+
+  async wait(request: { readonly session_id: string; readonly after?: string }) {
+    this.calls.push(`wait ${JSON.stringify(request)}`);
+
+    await new Promise((resolve) => setTimeout(resolve, this.waitMs));
+
+    return apiOk<WaitResult>({
+      session_id: request.session_id,
+      status: "idle",
+      ended_by: "run_ended",
+      outcome: { result: "answered" },
+      waiting: [],
+      activity: { entries: 2, tool_calls: 1, latest: ["assistant: done"] },
+      answer: { text: "All done", truncated: false },
+      cursor: "cursor-2",
+    });
   }
 
   get limited() {
@@ -154,7 +176,7 @@ const connected = async (api: FakeApi, headers: Record<string, string> = {}) => 
 };
 
 describe("McpServer", () => {
-  it("serves the read tools to pi-mcp's McpClient, with the text and the same structuredContent", async () => {
+  it("serves the read tools and session_wait to pi-mcp's McpClient, with the text and the same structuredContent", async () => {
     const api = new FakeApi();
     const client = await connected(api, { "x-cloudpid-client": "pi-cloudpid/abc1234" });
 
@@ -171,6 +193,7 @@ describe("McpServer", () => {
         "environments_list",
         "sessions_list",
         "session_get",
+        "session_wait",
         "session_transcript",
       ]);
 
@@ -206,6 +229,39 @@ describe("McpServer", () => {
       const transcript = await client.callTool("session_transcript", { session_id: SESSION });
 
       expect(transcript.structuredContent).toMatchObject({ session_id: SESSION, newer: "newer-1" });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves session_wait over a stream that reports progress to the client's progress token", async () => {
+    const api = new FakeApi();
+    const client = await connected(api);
+
+    try {
+      const seen: Array<{ progress: number; message?: string }> = [];
+
+      const waited = await client.callTool(
+        "session_wait",
+        { session_id: SESSION, after: "cursor-1", timeout_s: 30 },
+        {
+          onProgress: (progress) => {
+            seen.push(progress);
+          },
+        },
+      );
+
+      expect(api.calls).toContain(
+        `wait {"session_id":"${SESSION}","after":"cursor-1","timeout_s":30}`,
+      );
+      expect(waited.isError).not.toBe(true);
+      expect(waited.structuredContent).toMatchObject({
+        ended_by: "run_ended",
+        cursor: "cursor-2",
+        answer: { text: "All done" },
+      });
+      // Progress at the start, from McpServer's own timer; the next would come 10 s later.
+      expect(seen[0]).toMatchObject({ progress: 0, message: "Waiting for the Run · 0s" });
     } finally {
       await client.close();
     }
@@ -253,7 +309,7 @@ describe("McpServer", () => {
       // The tool never ran.
       expect(api.calls).not.toContain("environments");
       // Listing is no call: it is not limited.
-      expect(await client.listTools()).toHaveLength(4);
+      expect(await client.listTools()).toHaveLength(5);
     } finally {
       await client.close();
     }

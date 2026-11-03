@@ -27,10 +27,14 @@ import {
   SessionStopResult,
   SessionTranscriptInput,
   SessionTranscriptResult,
+  SessionWaitInput,
+  SessionWaitResult,
 } from "@cloudpid/protocol/mcp-tools";
 import type * as Exit from "effect/Exit";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
+  INTERRUPTED_NOTE,
   renderEnvironments,
   renderSend,
   renderSession,
@@ -38,12 +42,13 @@ import {
   renderStart,
   renderStop,
   renderTranscript,
+  renderWait,
 } from "./render.ts";
 
 /** What `McpServer` calls over RPC (a stub in the Worker, a plain object in the conformance run). */
 export type McpServerApi = Pick<
   McpApi,
-  "environments" | "sessions" | "session" | "transcript" | "start" | "send" | "stop"
+  "environments" | "sessions" | "session" | "transcript" | "start" | "send" | "stop" | "wait"
 > & {
   /** Over RPC a call is a Promise, whatever the method says; a plain object in the conformance run answers at once. */
   readonly describe: () =>
@@ -94,6 +99,9 @@ export type Wire = Schema.Json;
 /** The tools enabled on this deploy, for the `next` sentences: a sentence never names a tool that is not served. */
 export type Enabled = ReadonlySet<McpToolName>;
 
+/** What a span records: short names, numbers and flags. */
+export type SpanAttributes = Readonly<Record<string, string | number | boolean>>;
+
 /** A tool's text and `structuredContent`: one result, said twice, with `next` in both. */
 export interface Presented {
   readonly text: string;
@@ -104,8 +112,13 @@ export interface Presented {
 export interface Tool {
   readonly name: McpToolName;
   readonly title: string;
-  readonly description: string;
+  /** The description `tools/list` shows, over the tools that are served: it never names one that is not. */
+  readonly describe: (enabled: Enabled) => string;
   readonly annotations: Annotations;
+  /** For a tool that waits: what its progress notifications say, `elapsedS` seconds into the call. */
+  readonly progress: ((elapsedS: number) => string) | undefined;
+  /** For a tool that waits: what its span records of the answer (`ended_by`): names and codes, never text. */
+  readonly span: ((value: Wire) => SpanAttributes) | undefined;
   readonly input: Schema.Codec<unknown, unknown>;
   readonly output: Schema.Codec<unknown, unknown>;
   /** Calls the operation with arguments the SDK has validated against `input`; `via` is who is calling. */
@@ -123,8 +136,11 @@ interface ToolSpec<
 > {
   readonly name: McpToolName;
   readonly title: string;
-  readonly description: string;
+  /** Static, or worded over the tools that are served. */
+  readonly description: string | ((enabled: Enabled) => string);
   readonly annotations?: Annotations;
+  readonly progress?: (elapsedS: number) => string;
+  readonly span?: (result: Out["Type"]) => SpanAttributes;
   readonly input: In;
   readonly output: Out;
   readonly call: (api: McpServerApi, args: In["Type"], via: Via) => Promise<Wire>;
@@ -145,8 +161,12 @@ const defineTool = <
   return {
     name: spec.name,
     title: spec.title,
-    description: spec.description,
+    describe: (enabled) =>
+      Predicate.isString(spec.description) ? spec.description : spec.description(enabled),
     annotations: spec.annotations ?? READ_ONLY,
+    progress: spec.progress,
+    // SAFETY: `value` was decoded with `spec.output`.
+    span: spec.span === undefined ? undefined : (value) => spec.span?.(value as Out["Type"]) ?? {},
     input: spec.input,
     output: spec.output,
     // SAFETY: the SDK validated `args` against `spec.input` before the callback runs.
@@ -182,6 +202,10 @@ const calls = (...options: ReadonlyArray<string | undefined>): string | undefine
 
   return present.length === 0 ? undefined : `Call ${present.join(" or ")}.`;
 };
+
+/** " Follow its Run with session_wait." where that tool is served, else nothing. */
+const followWith = (enabled: Enabled): string =>
+  enabled.has("session_wait") ? " Follow its Run with session_wait." : "";
 
 const environmentsList = defineTool({
   name: "environments_list",
@@ -244,6 +268,50 @@ const sessionGet = defineTool({
     ),
 });
 
+/** "2m10s" for 130 seconds. */
+const elapsedText = (seconds: number): string =>
+  seconds < 60
+    ? `${seconds}s`
+    : `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+
+const sessionWait = defineTool({
+  name: "session_wait",
+  title: "Wait for a Session's Run",
+  description:
+    "Wait for a Session's Run: returns when the Run ends (with its outcome and answer), when a request that waits for the owner appears, when an import ends, when a task is parked, or at the timeout. Pass the cursor from session_start, session_send, session_get or the last session_wait as after, and call it in a loop. A request waiting for the owner is the owner's to answer in cloudpid at its url, never yours, and one you have been told of does not end later waits. Waiting never ends the Run; if the connection drops, call again with the same cursor. At most 8 waits per Session at once.",
+  input: SessionWaitInput,
+  output: SessionWaitResult,
+  progress: (elapsedS) => `Waiting for the Run · ${elapsedText(elapsedS)}`,
+  span: (result) =>
+    result.interrupted === true
+      ? { ended_by: result.ended_by, interrupted: true }
+      : { ended_by: result.ended_by },
+  render: renderWait,
+  call: (api, args) => api.wait(args),
+  next: (result, enabled) => {
+    const again = `Call session_wait again with after="${result.cursor}"`;
+
+    switch (result.ended_by) {
+      case "run_ended":
+        return calls(
+          enabled.has("session_send") ? "session_send to give it more work" : undefined,
+          enabled.has("session_transcript") ? "session_transcript to read what it did" : undefined,
+        );
+      case "owner_needed":
+        return `The owner answers the waiting request in cloudpid at the url shown: you cannot. ${again} to keep following the Run, or tell the owner.`;
+      case "import_ended":
+        return calls(
+          enabled.has("session_get") ? "session_get for its state" : undefined,
+          enabled.has("session_send") ? "session_send to give it work" : undefined,
+        );
+      case "stalled":
+        return `A task is parked and nothing moves until the owner retries it in cloudpid. ${again} once they have.`;
+      case "timeout":
+        return `${again} to keep waiting${result.interrupted === true ? ` ${INTERRUPTED_NOTE}` : ""}.`;
+    }
+  },
+});
+
 const sessionTranscript = defineTool({
   name: "session_transcript",
   title: "Read a Session's transcript",
@@ -265,7 +333,8 @@ const sessionTranscript = defineTool({
 const sessionStart = defineTool({
   name: "session_start",
   title: "Start a Session",
-  description: `Start a new Session in an Environment with a first message, which begins its first Run at once. Omit environment only for work tied to no Repo. The Session gets a new Workspace (a branch of its own, unless you name one) and runs in the background. Send request_id so a retry after a connection error does not start a second Session. At most ${String(MAX_MCP_RUNNING)} Sessions started over MCP run at once.`,
+  description: (enabled) =>
+    `Start a new Session in an Environment with a first message, which begins its first Run at once. Omit environment only for work tied to no Repo. The Session gets a new Workspace (a branch of its own, unless you name one) and runs in the background.${followWith(enabled)} Send request_id so a retry after a connection error does not start a second Session. At most ${String(MAX_MCP_RUNNING)} Sessions started over MCP run at once.`,
   annotations: WRITE,
   input: SessionStartInput,
   output: SessionStartResult,
@@ -286,8 +355,8 @@ const sessionStart = defineTool({
 const sessionSend = defineTool({
   name: "session_send",
   title: "Send a message to a Session",
-  description:
-    "Send a message to an existing Session as the owner would. when_busy says what to do while a Run is going: queue (default) starts another Run after it, steer joins the running Run at its next step, reject fails with session_busy. An idle Session starts a Run. Send request_id so a retry does not send twice. A Session the owner archived or that is still importing refuses messages.",
+  description: (enabled) =>
+    `Send a message to an existing Session as the owner would. when_busy says what to do while a Run is going: queue (default) starts another Run after it, steer joins the running Run at its next step, reject fails with session_busy. An idle Session starts a Run.${followWith(enabled)} Send request_id so a retry does not send twice. A Session the owner archived or that is still importing refuses messages.`,
   annotations: WRITE,
   input: SessionSendInput,
   output: SessionSendResult,
@@ -325,6 +394,7 @@ export const TOOLS: ReadonlyArray<Tool> = [
   environmentsList,
   sessionsList,
   sessionGet,
+  sessionWait,
   sessionTranscript,
   sessionStart,
   sessionSend,

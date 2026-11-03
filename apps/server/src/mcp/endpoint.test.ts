@@ -1,5 +1,5 @@
 // docs/architecture/mcp-endpoint.md → The handler, Access and identity: what `/mcp` hands `McpServer`.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off
 import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentRecord,
@@ -116,7 +116,16 @@ describe("the request McpServer gets", () => {
 
     expect(readTarget(targets[0])?.auth).toBe("service_token");
     expect(readTarget(targets[0])?.describe()).toMatchObject({
-      operations: ["environments", "sessions", "session", "transcript", "start", "send", "stop"],
+      operations: [
+        "environments",
+        "sessions",
+        "session",
+        "transcript",
+        "start",
+        "send",
+        "stop",
+        "wait",
+      ],
     });
   });
 });
@@ -128,12 +137,15 @@ interface Asked {
   readonly created: Array<CreateInput>;
   readonly submitted: Array<SubmitRequest>;
   readonly upkeep: Array<string>;
+  readonly waited: Array<{ readonly after?: string; readonly deadline: number }>;
+  readonly statuses: Array<{ readonly after?: string } | undefined>;
 }
 
 type CreateInput = Parameters<RegistryStub["createSession"]>[0];
 
 type RegistryStub = {
   readonly listEnvironments: () => Effect.Effect<ReadonlyArray<EnvironmentRecord>>;
+  readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
   readonly createSession: (input: {
     readonly workspace: object;
     readonly marks?: object;
@@ -145,11 +157,17 @@ type RegistryStub = {
 };
 
 /** A Registry and a Session over fakes that note what they are asked; `refusal` is what `createSession` answers instead of a Session. */
-const startEndpoint = (refusal?: {
-  readonly refused: "too-many-running";
-  readonly limit: number;
-}) => {
-  const asked: Asked = { created: [], submitted: [], upkeep: [] };
+const startEndpoint = (
+  refusal?: {
+    readonly refused: "too-many-running";
+    readonly limit: number;
+  },
+  waiting: (request: {
+    readonly after?: string;
+    readonly deadline: number;
+  }) => Effect.Effect<object> = () => Effect.succeed({ ok: true, value: {} }),
+) => {
+  const asked: Asked = { created: [], submitted: [], upkeep: [], waited: [], statuses: [] };
 
   const record: SessionRecord = {
     id: SESSION,
@@ -166,6 +184,7 @@ const startEndpoint = (refusal?: {
   const registry: RegistryStub = {
     listEnvironments: () =>
       Effect.succeed([{ id: DEFAULT_ENVIRONMENT, name: "Default", repos: [], createdAt: 1 }]),
+    getSession: () => Effect.succeed(record),
     createSession: (input) => {
       asked.created.push(input);
 
@@ -179,8 +198,16 @@ const startEndpoint = (refusal?: {
 
       return Effect.succeed({ ok: true, value: { delivery: "started", cursor: "c1" } });
     },
-    status: () =>
-      Effect.succeed({ ok: true, value: { status: "running", waiting: [], cursor: "c2" } }),
+    status: (request?: { readonly after?: string }) => {
+      asked.statuses.push(request);
+
+      return Effect.succeed({ ok: true, value: { status: "running", waiting: [], cursor: "c2" } });
+    },
+    waitForChange: (request: { readonly after?: string; readonly deadline: number }) => {
+      asked.waited.push(request);
+
+      return waiting(request);
+    },
   };
 
   const upkeep = (kind: string) => (environment: string) =>
@@ -274,6 +301,88 @@ describe("starting a Session through the target", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "too_many_running" } });
     expect(asked.submitted).toEqual([]);
     expect(asked.upkeep).toEqual([]);
+  });
+});
+
+/** The target's `wait`, which the test calls as `McpServer` would over RPC. */
+type Wait = {
+  readonly wait: (request: {
+    readonly session_id: string;
+    readonly after?: string;
+    readonly timeout_s?: number;
+  }) => Promise<object>;
+};
+
+const waitThrough = async (endpoint: McpEndpoint, after: string | undefined) => {
+  const targets: Array<Served["target"]> = [];
+
+  const serving: McpEndpoint = {
+    ...endpoint,
+    server: {
+      serve: (_request, target) => {
+        targets.push(target);
+
+        return Promise.resolve(new Response(null, { status: 202 }));
+      },
+    },
+  };
+
+  await call(serving, mcpRequest(), { kind: "owner" });
+
+  // SAFETY: the route's target is its own class, whose `wait` is the one `Wait` names.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see above.
+  const target = targets[0] as unknown as Wait;
+
+  return target.wait(
+    after === undefined
+      ? { session_id: SESSION, timeout_s: 30 }
+      : { session_id: SESSION, after, timeout_s: 30 },
+  );
+};
+
+describe("waiting on a Session through the target", () => {
+  it("hands the Session the cursor held and a deadline, and answers what it ended with", async () => {
+    const ended = {
+      status: "idle",
+      ended_by: "run_ended",
+      waiting: [],
+      activity: { entries: 1, tool_calls: 0, latest: [] },
+      cursor: "c-end",
+    };
+
+    const { endpoint, asked } = startEndpoint(undefined, () =>
+      Effect.succeed({ ok: true, value: ended }),
+    );
+
+    const result = await waitThrough(endpoint, "c-held");
+
+    expect(asked.waited).toHaveLength(1);
+    expect(asked.waited[0]?.after).toBe("c-held");
+    expect(asked.waited[0]?.deadline).toBeGreaterThan(Date.now());
+    expect(result).toEqual({ ok: true, value: { session_id: SESSION, ...ended } });
+    expect(asked.statuses).toEqual([]);
+  });
+
+  it("answers an interrupted wait with the cursor held when the Session's RPC is cut", async () => {
+    const { endpoint, asked } = startEndpoint(undefined, () => Effect.die("the object was reset"));
+
+    const result = await waitThrough(endpoint, "c-held");
+
+    // One read of the status, told the cursor, answers it.
+    expect(asked.statuses).toEqual([{ after: "c-held" }]);
+    expect(result).toMatchObject({
+      ok: true,
+      value: { ended_by: "timeout", interrupted: true, status: "running", cursor: "c-held" },
+    });
+  });
+
+  it("reads the status without a cursor when the wait had none", async () => {
+    const { endpoint, asked } = startEndpoint(undefined, () => Effect.die("the object was reset"));
+
+    const result = await waitThrough(endpoint, undefined);
+
+    expect(asked.statuses).toEqual([undefined]);
+    expect(result).toMatchObject({ ok: true, value: { interrupted: true, cursor: "c2" } });
   });
 });
 

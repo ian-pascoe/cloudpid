@@ -1,5 +1,6 @@
 // docs/architecture/mcp-endpoint.md → Tools: the read tools' arguments, and the operation each is served by.
 // @effect-diagnostics preferEffectArray:off preferTypedSchemaDecoder:off
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
@@ -13,6 +14,8 @@ import {
   SessionStartInput,
   SessionStopInput,
   SessionTranscriptInput,
+  SessionWaitInput,
+  SessionWaitResult,
 } from "./mcp-tools.ts";
 
 const ID = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
@@ -110,6 +113,35 @@ describe("session_send's and session_stop's arguments", () => {
 });
 
 describe("the operations", () => {
+  it("take session_wait's cursor, and a timeout of 0 to 300 seconds, fractions too", () => {
+    expect(accepts(SessionWaitInput, { session_id: ID })).toBe(true);
+    expect(accepts(SessionWaitInput, { session_id: ID, after: "c", timeout_s: 0 })).toBe(true);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 300 })).toBe(true);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 301 })).toBe(false);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: -1 })).toBe(false);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 1.5 })).toBe(true);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 300.5 })).toBe(false);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: "30" })).toBe(false);
+    expect(accepts(SessionWaitInput, { after: "c" })).toBe(false);
+  });
+
+  it("read a wait that ended for a reason this version does not know as a timeout, and a request kind it does not know as unknown", () => {
+    const decoded = Schema.decodeUnknownExit(SessionWaitResult)({
+      session_id: ID,
+      status: "paused",
+      ended_by: "owner_gone",
+      waiting: [
+        { kind: "poll", request_id: "r", agent_id: "root", summary: "s", since: 1, url: "/u" },
+      ],
+      activity: { entries: 0, tool_calls: 0, latest: [] },
+      cursor: "c",
+    });
+
+    expect(Exit.isSuccess(decoded) && decoded.value.ended_by).toBe("timeout");
+    expect(Exit.isSuccess(decoded) && decoded.value.status).toBe("unknown");
+    expect(Exit.isSuccess(decoded) && decoded.value.waiting[0]?.kind).toBe("unknown");
+  });
+
   it("name the `api` operation of each tool, the four read ones first", () => {
     expect(MCP_TOOL_OPERATIONS.environments_list).toBe("environments");
     expect(MCP_TOOL_OPERATIONS.sessions_list).toBe("sessions");

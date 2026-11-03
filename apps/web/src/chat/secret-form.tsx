@@ -5,7 +5,7 @@ import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Predicate from "effect/Predicate";
 import * as Atom from "effect/reactivity/Atom";
 import { KeyRound } from "lucide-react";
-import type { FormEvent } from "react";
+import type { ComponentProps, FormEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import {
   answerSecretsAtom,
@@ -14,6 +14,7 @@ import {
   sessionStatusAtom,
 } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
+import { requestCardId } from "./request-anchor.ts";
 import { chosenKeep, defaultKeep, KEEP_CHOICES, KEEP_FIELD, keepNote } from "./secret-keep.ts";
 
 /** Values shorter than this are redacted only as written, so redacting them may also hide unrelated output. */
@@ -79,6 +80,7 @@ const SecretForm = ({
 
   return (
     <form
+      id={requestCardId(request.id)}
       onSubmit={submit}
       aria-label="Secrets requested"
       className="mx-auto mb-3 w-full max-w-3xl rounded-lg border bg-card px-4 py-3 shadow-sm"
@@ -163,6 +165,13 @@ const SecretForm = ({
   );
 };
 
+/** The form for one Secret request with its own state; the list keys it by request, so each starts empty. */
+export const SecretCard = (props: ComponentProps<typeof SecretForm>) => (
+  <FormState.Provider>
+    <SecretForm {...props} />
+  </FormState.Provider>
+);
+
 /** The masked forms for the Secret requests waiting for the owner in the Session shown, oldest first. */
 export const SecretRequests = () => {
   const sessionId = useShownSessionId();
@@ -174,15 +183,14 @@ export const SecretRequests = () => {
 
   return Arr.map(requests, (request) => (
     // Keyed by request, so each form starts empty.
-    <FormState.Provider key={request.id}>
-      <SecretForm
-        request={request}
-        lifetimeMinutes={lifetimeMinutes}
-        disabled={disabled}
-        onAnswer={(id, values, keep) => {
-          answer(keep === undefined ? { request: id, values } : { request: id, values, keep });
-        }}
-      />
-    </FormState.Provider>
+    <SecretCard
+      key={request.id}
+      request={request}
+      lifetimeMinutes={lifetimeMinutes}
+      disabled={disabled}
+      onAnswer={(id, values, keep) => {
+        answer(keep === undefined ? { request: id, values } : { request: id, values, keep });
+      }}
+    />
   ));
 };

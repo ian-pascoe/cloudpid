@@ -10,6 +10,8 @@
 // - `shown=<key>` names the Pane shown when it is not the first `pane`. Without it (or when it names a Pane that is not
 //   open) the first is shown, so the common link, one Pane, has no `shown`.
 // - `panes=hidden`: the Pane area is hidden, its Panes still open. Written only beside an open Pane.
+// - `?request=<request_id>`: the request waiting for the owner that the page scrolls to (the `url` of `session_wait`'s and
+//   `session_get`'s `waiting[]`: docs/architecture/mcp-endpoint.md → Waiting requests). It is read only; the page never writes it.
 // - Anything else in the query is kept as it was, whatever opens or closes a Pane.
 //
 // Opening, closing and switching Panes *replace* the history entry (`replaceSearch`) instead of pushing one. A Pane is
@@ -447,8 +449,21 @@ export const sessionIdAtom = Atom.map(pathAtom, sessionIdOf);
 /** The subagent whose Subagent page is shown, if one is. */
 export const agentIdAtom = Atom.map(pathAtom, agentIdOf);
 
+/**
+ * The request the Session page's query names (`?request=<request_id>`, the link `session_wait` and `session_get` give for a
+ * request waiting for the owner): the page scrolls to its card. Undefined for none, also for an empty `?request=`.
+ */
+export const requestParamOf = (search: string): string | undefined => {
+  const request = new URLSearchParams(search).get("request");
+
+  return request === null || request === "" ? undefined : request;
+};
+
 /** What the Skills section's query names now. */
 export const skillsParamsAtom = Atom.map(searchAtom, skillsParamsOf);
 
 /** What a repo's or a Skill's page names in its query now. */
 export const skillRepoParamsAtom = Atom.map(searchAtom, skillRepoParamsOf);
+
+/** The request the Session page's query names now, if one. */
+export const requestParamAtom = Atom.map(searchAtom, requestParamOf);

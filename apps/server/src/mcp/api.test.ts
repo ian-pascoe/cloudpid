@@ -3,16 +3,23 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off missedPipeableOpportunity:off
 import {
   apiFailure,
+  decodeCursor,
   DEFAULT_ENVIRONMENT,
+  encodeCursor,
   type EnvironmentRecord,
   type SessionRecord,
+  type WaitingRequest,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionRefusal } from "../registry/store.ts";
+import { endedBy } from "../session/mcp-follow.ts";
+import type { FollowState } from "../session/mcp-reads.ts";
 import {
   MCP_CALLS_PERIOD_S,
   identityOf,
+  tooManyRunning,
   mcpApiService,
   type McpApiContext,
   type McpBackend,
@@ -40,6 +47,30 @@ const record = (overrides: Partial<SessionRecord> = {}): SessionRecord => ({
   updatedAt: 1_700_000_100_000,
   archivedAt: null,
   ...overrides,
+});
+
+/** What the Session answers a wait that the Run ended. */
+const ended = {
+  status: "idle" as const,
+  ended_by: "run_ended" as const,
+  outcome: { result: "answered" as const },
+  waiting: [],
+  activity: { entries: 2, tool_calls: 1, latest: ["assistant: done"] },
+  answer: { text: "Done", truncated: false },
+  cursor: "c-ended",
+};
+
+/** The Session as a wait decides from it: idle, with nothing settled, unless `changed` says otherwise. */
+const followState = (changed: Partial<FollowState> = {}): FollowState => ({
+  conversationId: 1,
+  activeBranch: 1,
+  copying: false,
+  idle: true,
+  unsettled: false,
+  stalled: false,
+  newestEntry: 30,
+  agents: {},
+  ...changed,
 });
 
 const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
@@ -89,6 +120,7 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
       value: { delivery: "started" as const, cursor: "c-sent" },
     }),
   stop: () => Effect.succeed({ ok: true as const, value: { status: "idle" as const } }),
+  wait: () => Effect.succeed({ ok: true as const, value: ended }),
   ...overrides,
 });
 
@@ -108,7 +140,7 @@ describe("describe", () => {
     expect(service().describe().version).toBeUndefined();
   });
 
-  it("lists the read operations and the three that start, send and stop, and no others", () => {
+  it("lists the read operations and the four that start, send, stop and wait, and no others", () => {
     expect(service().describe().operations).toEqual([
       "environments",
       "sessions",
@@ -117,6 +149,7 @@ describe("describe", () => {
       "start",
       "send",
       "stop",
+      "wait",
     ]);
   });
 });
@@ -572,15 +605,28 @@ describe("start", () => {
     );
   });
 
-  it("does not name a tool that is not served in a refusal", async () => {
+  it("names the tools that wait for or stop a running Session in the cap's refusal", async () => {
     const cap = await run(
       service({
         createSession: () => Effect.succeed({ refused: "too-many-running", limit: 10 }),
       }).start({ text: "go", via: VIA }),
     );
 
-    expect(!cap.ok && cap.error.message).not.toContain("session_wait");
+    // `wait` is served now, so the refusal may name the tool that waits for one to end.
+    expect(!cap.ok && cap.error.message).toContain("session_wait");
     expect(!cap.ok && cap.error.message).toContain("session_stop");
+  });
+
+  it("words the cap's refusal over the operations served, naming a tool only where it is", () => {
+    const served = ["session", "wait", "start", "stop"];
+
+    expect(tooManyRunning(10, served)).toBe(
+      "10 Sessions started over MCP are running: wait for one with session_wait or check them with session_get, or stop one with session_stop, then start again.",
+    );
+    expect(tooManyRunning(10, ["session", "start", "stop"])).not.toContain("session_wait");
+    expect(tooManyRunning(10, ["start", "stop"])).toBe(
+      "10 Sessions started over MCP are running: stop one with session_stop, then start again.",
+    );
   });
 
   it("says the Session is running when it cannot yet say", async () => {
@@ -836,6 +882,267 @@ describe("stop", () => {
     );
 
     expect(result).toEqual({ ok: true, value: { status: "running", stopping: true } });
+  });
+});
+
+describe("wait", () => {
+  const waiting = {
+    kind: "approval" as const,
+    request_id: "r1",
+    agent_id: "root",
+    summary: "Run: npm test",
+    since: 5,
+    url: `/sessions/${ID}?request=r1`,
+  };
+
+  it("waits on the Session from the cursor held, until a deadline the timeout says, and names the Session", async () => {
+    const wait = vi.fn(backend().wait);
+    const api = service({ wait });
+    const before = Date.now();
+
+    const result = await run(api.wait({ session_id: ID, after: "c0", timeout_s: 120 }));
+
+    expect(result).toEqual({ ok: true, value: { session_id: ID, ...ended } });
+
+    const [id, request] = wait.mock.calls[0] ?? [];
+
+    expect(id).toBe(ID);
+    expect(request?.after).toBe("c0");
+    expect(request?.deadline).toBeGreaterThanOrEqual(before + 120_000);
+    expect(request?.deadline).toBeLessThanOrEqual(Date.now() + 120_000);
+  });
+
+  it("waits 45 s when it is not told, never more than 300 s, and not at all for none", async () => {
+    const wait = vi.fn(backend().wait);
+    const api = service({ wait });
+
+    await run(api.wait({ session_id: ID }));
+    await run(api.wait({ session_id: ID, timeout_s: 9_999 }));
+    await run(api.wait({ session_id: ID, timeout_s: -5 }));
+
+    const [def, max, none] = wait.mock.calls.map(([, request]) => request.deadline - Date.now());
+
+    expect(def).toBeGreaterThan(44_000);
+    expect(def).toBeLessThanOrEqual(45_000);
+    expect(max).toBeGreaterThan(299_000);
+    expect(max).toBeLessThanOrEqual(300_000);
+    expect(none).toBeLessThanOrEqual(0);
+    expect(wait.mock.calls[0]?.[1]).not.toHaveProperty("after");
+  });
+
+  it("gives each waiting request's page as an absolute url, the Session's own being relative", async () => {
+    const result = await run(
+      service({
+        wait: () =>
+          Effect.succeed({
+            ok: true as const,
+            value: {
+              ...ended,
+              status: "waiting_for_owner" as const,
+              ended_by: "owner_needed" as const,
+              waiting: [waiting],
+            },
+          }),
+      }).wait({ session_id: ID, after: "c0" }),
+    );
+
+    expect(result.ok && result.value.waiting[0]?.url).toBe(`${ORIGIN}/sessions/${ID}?request=r1`);
+  });
+
+  it("never reaches a Session for an unknown or malformed id", async () => {
+    const wait = vi.fn(backend().wait);
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), wait }).wait({ session_id: ID }),
+    );
+
+    const malformed = await run(service({ wait }).wait({ session_id: "nope" }));
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(wait).not.toHaveBeenCalled();
+  });
+
+  it("passes the Session's own refusals on as they are: the cap of waits, and a cursor that is not its own", async () => {
+    for (const code of ["too_many_waits", "invalid_cursor"] as const) {
+      const result = await run(
+        service({ wait: () => Effect.succeed(apiFailure(code, "No.")) }).wait({ session_id: ID }),
+      );
+
+      expect(result).toMatchObject({ ok: false, error: { code } });
+    }
+  });
+
+  describe("when the Session's RPC is cut", () => {
+    it("reads the status once and answers timeout, interrupted, with the cursor that was passed in", async () => {
+      const status = vi.fn(backend().status);
+
+      const result = await run(
+        service({ wait: () => Effect.die("connection lost"), status }).wait({
+          session_id: ID,
+          after: "c-held",
+          timeout_s: 60,
+        }),
+      );
+
+      expect(status).toHaveBeenCalledTimes(1);
+      expect(status).toHaveBeenCalledWith(ID, "c-held");
+      expect(result).toEqual({
+        ok: true,
+        value: {
+          session_id: ID,
+          status: "waiting_for_owner",
+          ended_by: "timeout",
+          interrupted: true,
+          waiting: [
+            {
+              kind: "approval",
+              request_id: "r1",
+              agent_id: "root",
+              summary: "Which one?",
+              since: 1,
+              url: `${ORIGIN}/sessions/${ID}?request=r1`,
+            },
+          ],
+          activity: { entries: 0, tool_calls: 0, latest: [] },
+          cursor: "c-held",
+        },
+      });
+    });
+
+    it("hands back the status's cursor with its marks cleared when the wait had none to keep, and keeps an import's flag", async () => {
+      const result = await run(
+        service({
+          wait: () => Effect.die("evicted"),
+          status: () =>
+            Effect.succeed({
+              ok: true as const,
+              value: {
+                status: "importing" as const,
+                waiting: [],
+                cursor: encodeCursor({ c: 2, e: 40, w: 9, s: 7, i: true }),
+              },
+            }),
+        }).wait({ session_id: ID }),
+      );
+
+      expect(result.ok && Option.getOrUndefined(decodeCursor(result.value.cursor))).toEqual({
+        c: 2,
+        e: 0,
+        w: 0,
+        s: 0,
+        i: true,
+      });
+      expect(result).toMatchObject({ ok: true, value: { interrupted: true } });
+    });
+
+    it("still reports a Run that ended, or a request that appeared, while the RPC was cut, from the cursor it hands back", async () => {
+      const held = encodeCursor({ c: 1, e: 10, w: 3, s: 5 });
+
+      const cut = (after: string | undefined) =>
+        run(
+          service({
+            wait: () => Effect.die("evicted"),
+            status: () =>
+              Effect.succeed({
+                ok: true as const,
+                value: {
+                  status: "waiting_for_owner" as const,
+                  waiting: [],
+                  cursor: encodeCursor({ c: 1, e: 30, w: 8, s: 6 }),
+                },
+              }),
+          }).wait(after === undefined ? { session_id: ID } : { session_id: ID, after }),
+        );
+
+      const rule = (cursor: string, changed: Partial<FollowState>, waiting: WaitingRequest[]) =>
+        endedBy(
+          { state: followState(changed), waiting },
+          Option.getOrUndefined(decodeCursor(cursor)),
+        );
+
+      const request = (since: number): WaitingRequest => ({
+        kind: "approval",
+        request_id: "r",
+        agent_id: "root",
+        summary: "s",
+        since,
+        url: "/u",
+      });
+
+      for (const after of [held, undefined]) {
+        const result = await cut(after);
+
+        expect(result.ok).toBe(true);
+
+        const { cursor } = result.ok ? result.value : { cursor: "" };
+
+        // With a cursor passed in, it is the one handed back; without, one that has seen nothing.
+        if (after !== undefined) expect(cursor).toBe(after);
+
+        // A Run that ended after the passed cursor's mark (or at all, for none), and then a request that appeared.
+        expect(rule(cursor, { newestSettled: { id: 6, status: "done" } }, [])).toBe("run_ended");
+        expect(rule(cursor, {}, [request(4)])).toBe("owner_needed");
+        // And nothing that the cursor already marked as seen.
+        expect(rule(cursor, { newestSettled: { id: 5, status: "done" } }, [request(3)])).toBe(
+          after === undefined ? "run_ended" : undefined,
+        );
+      }
+    });
+
+    it("says what the status says of the branch and of text it withheld", async () => {
+      const result = await run(
+        service({
+          wait: () => Effect.die("evicted"),
+          status: () =>
+            Effect.succeed({
+              ok: true as const,
+              value: {
+                status: "running" as const,
+                waiting: [],
+                cursor: "c9",
+                branch_changed: true,
+                text_withheld: "secrets_unavailable" as const,
+              },
+            }),
+        }).wait({ session_id: ID, after: "c-held" }),
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          status: "running",
+          interrupted: true,
+          branch_changed: true,
+          text_withheld: "secrets_unavailable",
+          cursor: "c-held",
+        },
+      });
+    });
+
+    it("is unavailable only when the status cannot be read either", async () => {
+      const result = await run(
+        service({ wait: () => Effect.die("cut"), status: () => Effect.die("cut") }).wait({
+          session_id: ID,
+          after: "c-held",
+        }),
+      );
+
+      expect(result).toMatchObject({ ok: false, error: { code: "unavailable", retryable: true } });
+    });
+
+    it("is not an interrupted wait when the Session answers a failure as a value", async () => {
+      const status = vi.fn(backend().status);
+
+      const result = await run(
+        service({ wait: () => Effect.succeed(apiFailure("unavailable", "Busy.")), status }).wait({
+          session_id: ID,
+        }),
+      );
+
+      expect(result).toMatchObject({ ok: false, error: { code: "unavailable" } });
+      expect(status).not.toHaveBeenCalled();
+    });
   });
 });
 
