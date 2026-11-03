@@ -19,6 +19,8 @@ export * from "./live-view.ts";
 
 export * from "./mcp-api.ts";
 
+export * from "./mcp-elicitation.ts";
+
 export * from "./mcp-repo-files.ts";
 
 export * from "./mcp-status.ts";

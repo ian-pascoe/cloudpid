@@ -14,6 +14,7 @@ import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
+import { ElicitationAction, ElicitationContent, McpElicitationRequest } from "./mcp-elicitation.ts";
 
 /**
  * The text the client sends to keep the socket alive, and the server's answer. The object answers it without waking,
@@ -164,6 +165,21 @@ export const ApprovalAnswer = Schema.Struct({
   request: Schema.String,
   approve: Schema.Boolean,
   reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_APPROVAL_REASON))),
+});
+
+/**
+ * The owner's answer to MCP elicitation request `request` (`mcp_elicitation_requests`): `accept` sends `content`, the
+ * form's values, which the Session checks against the form again (and against the Session's Secrets) and passes straight
+ * to the server, keeping nothing; `decline` and `cancel` send none. Answered with `null`; fails when no such request
+ * waits (answered, ended or withdrawn), and, for a bad `content`, with the fields to fix.
+ * (`docs/architecture/mcp-server-requests.md` → Elicitation requests).
+ */
+export const McpElicitationAnswer = Schema.Struct({
+  type: Schema.Literal("mcp_elicitation_answer"),
+  id: CommandId,
+  request: Schema.String,
+  action: ElicitationAction,
+  content: Schema.optionalKey(ElicitationContent),
 });
 
 /**
@@ -578,6 +594,7 @@ export const ClientMessage = Schema.Union([
   Configure,
   SecretAnswer,
   ApprovalAnswer,
+  McpElicitationAnswer,
   AnnotationSave,
   AnnotationDelete,
   ViewedSet,
@@ -743,6 +760,17 @@ export type ApprovalRequest = typeof ApprovalRequest.Type;
 export const ApprovalRequests = Schema.Struct({
   type: Schema.Literal("approval_requests"),
   requests: Schema.Array(ApprovalRequest),
+});
+
+/**
+ * The questions MCP servers wait on the owner to answer (`docs/architecture/mcp-server-requests.md` → Elicitation
+ * requests), oldest first. A client shows a card for each outside the chat, and answers with `mcp_elicitation_answer`.
+ * Sent after `hello` on every connect (an empty list too) and in full to every client whenever they change. A Legacy
+ * server's question lives only as long as its call waits (ADR-0037): it does not outlive an eviction or a restart.
+ */
+export const McpElicitationRequests = Schema.Struct({
+  type: Schema.Literal("mcp_elicitation_requests"),
+  requests: Schema.Array(McpElicitationRequest),
 });
 
 /**
@@ -1288,6 +1316,7 @@ export const ServerMessage = Schema.Union([
   ErrorMessage,
   SecretRequests,
   ApprovalRequests,
+  McpElicitationRequests,
   AnnotationsMessage,
   ViewedMessage,
   BrowserHandoffRequests,

@@ -111,6 +111,43 @@ export class Verdicts {
   }
 }
 
+/**
+ * The header the core puts on a `tools/call` that may be asked questions: a token naming the call. The tap removes it
+ * before the request goes on, so no server sees it, and ties each server request on that call's response stream to the
+ * token (`Ties`).
+ */
+export const CALL_HEADER = "x-cloudpid-call";
+
+/**
+ * Which call each server request on a POST response stream belongs to (`mcp-server-requests.md` → Questions, Legacy:
+ * "the core's `fetch` tap ties a question to the call whose POST stream carried it"). A question on any other stream,
+ * the GET stream above all, has no tie, and nowhere to go.
+ */
+export class Ties {
+  private readonly calls = new Map<string | number, string>();
+
+  /** Server request `id` arrived on the stream of the call `token` names. */
+  tie(id: string | number, token: string) {
+    this.calls.set(id, token);
+  }
+
+  /** The token of the call that carried server request `id`, once. */
+  take(id: string | number) {
+    const token = this.calls.get(id);
+
+    this.calls.delete(id);
+
+    return token;
+  }
+
+  /** The call `token` names is over: its ties no one took are let go. */
+  release(token: string) {
+    for (const [id, tied] of this.calls) {
+      if (tied === token) this.calls.delete(id);
+    }
+  }
+}
+
 /** What the tap needs besides the injected `fetch`: the clock (Effect's, through the connection's context). */
 export interface TapClock {
   readonly now: () => number;
@@ -224,7 +261,12 @@ const drain = (body: ReadableStream<Uint8Array> | null) => body?.cancel().catch(
  * ends or breaks without it, or runs over the limit, the stream ends with the verdict instead. With no resumption yet
  * (D15; #542), a break is a cut and the limit spans the whole stream; both change when resumption lands.
  */
-const watchStream = (body: ReadableStream<Uint8Array>, request: Outgoing, verdicts: Verdicts) => {
+const watchStream = (
+  body: ReadableStream<Uint8Array>,
+  request: Outgoing,
+  verdicts: Verdicts,
+  tie?: (id: string | number) => void,
+) => {
   const limit = request.policy.limit;
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -248,6 +290,16 @@ const watchStream = (body: ReadableStream<Uint8Array>, request: Outgoing, verdic
       Option.map(decodeMessage(data), (message) => {
         if (message.id === request.id && message.method === undefined) {
           answered = true;
+        }
+
+        // A question on this call's stream is tied to the call, before the SDK is given the event that carries it.
+        if (
+          tie !== undefined &&
+          message.method === "elicitation/create" &&
+          message.id !== undefined &&
+          message.id !== null
+        ) {
+          tie(message.id);
         }
       });
     }
@@ -392,12 +444,27 @@ export interface TapObserver {
   readonly retried: () => void;
 }
 
+/** `init` without the core's call header, and the token it carried. */
+const withoutCallHeader = (init: RequestInit | undefined) => {
+  if (init?.headers === undefined) return { init, token: undefined };
+
+  const headers = new Headers(init.headers);
+  const token = headers.get(CALL_HEADER) ?? undefined;
+
+  if (token === undefined) return { init, token };
+
+  headers.delete(CALL_HEADER);
+
+  return { init: { ...init, headers }, token };
+};
+
 /** The tap over `fetch` for one connection. */
 export const tapFetch = (
   fetch: FetchLike,
   clock: TapClock,
   verdicts: Verdicts,
   observer?: TapObserver,
+  ties?: Ties,
 ): FetchLike => {
   /** Fails `request` with `error`: thrown on the probe, answered as a JSON-RPC error otherwise. */
   const fail = (request: Outgoing, error: McpError, response: Response) => {
@@ -434,7 +501,8 @@ export const tapFetch = (
     }
   };
 
-  return async (input, init) => {
+  return async (input, given) => {
+    const { init, token } = withoutCallHeader(given);
     const request = outgoing(init);
     let response = await send(input, init, request);
 
@@ -497,7 +565,15 @@ export const tapFetch = (
 
     switch (mediaType(response)) {
       case "text/event-stream":
-        return new Response(watchStream(response.body, request, verdicts), response);
+        return new Response(
+          watchStream(
+            response.body,
+            request,
+            verdicts,
+            token === undefined || ties === undefined ? undefined : (id) => ties.tie(id, token),
+          ),
+          response,
+        );
       case "application/json": {
         let body: Uint8Array | undefined;
 

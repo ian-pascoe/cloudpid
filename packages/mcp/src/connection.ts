@@ -18,6 +18,7 @@ import {
   type CallToolResult,
   Client,
   type ConnectOptions,
+  type ElicitRequestParams,
   type ClientCapabilities,
   isCallToolResult,
   type DiscoverResult,
@@ -31,11 +32,15 @@ import {
   PROTOCOL_VERSION_META_KEY,
   type PriorDiscovery,
   type Prompt,
+  ProtocolError,
+  ProtocolErrorCode,
   type ProtocolEra,
   type Resource,
   type ResourceTemplateType,
   type RequestOptions,
   type Result,
+  SdkError,
+  SdkErrorCode,
   type ServerCapabilities,
   StreamableHTTPClientTransport,
   type StreamableHTTPClientTransportOptions,
@@ -46,6 +51,7 @@ import * as Clock from "effect/Clock";
 import type * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
@@ -54,7 +60,7 @@ import type { Mutable } from "effect/Types";
 import { authChallenge, classify, type Failure, signInRequired } from "./failures.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
 import { MCP_LOG_LEVEL } from "./log.ts";
-import { type TapObserver, tapFetch, Verdicts } from "./tap.ts";
+import { CALL_HEADER, type TapObserver, tapFetch, Ties, Verdicts } from "./tap.ts";
 import {
   openTaskWire,
   type TaskParams,
@@ -67,12 +73,15 @@ import {
   type EraRow,
   EraRowV1,
   MCP_CONNECT_TIMEOUT_MS,
+  MCP_ELICITATION_WAIT_MS,
   MCP_LIST_WALK_TIMEOUT_MS,
   MCP_TASK_TIMEOUT_MS,
   MCP_TASKS_EXTENSION,
   type McpCallContext,
   type McpAuthChallenge,
   type McpError,
+  type McpInputAnswer,
+  type McpInputRequest,
   type McpProgress,
   type McpRoot,
   McpTaskCreated,
@@ -145,6 +154,16 @@ export interface McpDeps {
    * never asked for any.
    */
   readonly roots?: ReadonlyArray<McpRoot>;
+  /**
+   * A Legacy server's question during a `tools/call` whose `ctx.answers` offers its kind (`docs/architecture/
+   * mcp-server-requests.md` → Questions): answered with what the server gets. The call's timeout is paused while it
+   * pends, and its wait is bounded by `ctx.answers.inputWaitMs` (10 minutes for an elicitation), then it reads as a
+   * `cancel`. A question on any other stream or request, or with no `onInput`, is cancelled. With it, a Legacy
+   * connection declares `elicitation` (through `capabilities`) and answers what the server asks.
+   */
+  readonly onInput?: (request: McpInputRequest) => Effect.Effect<McpInputAnswer>;
+  /** The server stopped waiting for question `key` (its own `notifications/cancelled`): the card is withdrawn. */
+  readonly onInputEnded?: (key: string) => void;
 }
 
 /** A `notifications/message` as the server sent it: the level, the logger's name and the data, any JSON. */
@@ -237,6 +256,85 @@ export interface McpTasks {
 export interface CallToolParams {
   readonly tool: Tool;
   readonly arguments?: Readonly<Record<string, Schema.Json>>;
+}
+
+/**
+ * A `tools/call`'s timeout, which a question's wait pauses (`mcp-server-requests.md` → Questions) and a progress notice
+ * starts again from the whole: `signal` aborts with the SDK's own timeout error when it runs out. Its timer is a fiber
+ * on Effect's clock, so a test clock moves it.
+ */
+const pausableDeadline = (ms: number) => deadlineOver(new AbortController(), ms);
+
+const deadlineOver = Effect.fnUntraced(function* (controller: AbortController, ms: number) {
+  let remaining = ms;
+  let startedAt = yield* Clock.currentTimeMillis;
+  let paused = 0;
+  let timer: Fiber.Fiber<void> | undefined;
+
+  const stop = Effect.suspend(() => {
+    const running = timer;
+
+    timer = undefined;
+
+    return running === undefined ? Effect.void : Fiber.interrupt(running);
+  });
+
+  const arm = (delay: number) =>
+    Effect.gen(function* () {
+      startedAt = yield* Clock.currentTimeMillis;
+      timer = yield* Effect.sleep(Duration.millis(delay)).pipe(
+        Effect.andThen(
+          Effect.sync(() =>
+            controller.abort(
+              new SdkError(SdkErrorCode.RequestTimeout, "Request timed out", { timeout: ms }),
+            ),
+          ),
+        ),
+        Effect.forkDetach,
+      );
+    });
+
+  yield* arm(ms);
+
+  return {
+    signal: controller.signal,
+    /** Stops the clock; every `pause` needs its `resume`. */
+    pause: Effect.gen(function* () {
+      paused += 1;
+
+      if (paused === 1) {
+        yield* stop;
+        remaining -= (yield* Clock.currentTimeMillis) - startedAt;
+      }
+    }),
+    resume: Effect.suspend(() => {
+      paused = Math.max(0, paused - 1);
+
+      return paused === 0 && !controller.signal.aborted ? arm(Math.max(1, remaining)) : Effect.void;
+    }),
+    /** Progress: the whole timeout again, from now. */
+    reset: Effect.suspend(() => {
+      remaining = ms;
+
+      return paused === 0 && !controller.signal.aborted
+        ? Effect.andThen(stop, arm(ms))
+        : Effect.void;
+    }),
+    clear: stop,
+  };
+});
+
+/** The most the SDK's own timer may be given: the core's deadline is the one that ends a call. */
+const SDK_TIMER_MAX_MS = 2_147_483_647;
+
+/** What a question is answered with, in the core: the result the server gets, or a refusal that is its error. */
+type QuestionAnswer = McpInputAnswer;
+
+/** The call a question may be tied to: how long its questions may wait, and its clock to pause meanwhile. */
+interface Asking {
+  readonly waitMs: number;
+  readonly pause: Effect.Effect<void>;
+  readonly resume: Effect.Effect<void>;
 }
 
 /** One connection to one MCP server (The MCP core #394 D7). */
@@ -446,6 +544,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const context = yield* Effect.context<never>();
   const connectMs = target.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   const verdicts = new Verdicts();
+  const ties = new Ties();
+  /** The calls that may be asked questions, by the token their request carries. */
+  const asking = new Map<string, Asking>();
+  let callCount = 0;
   let challenge: McpAuthChallenge | undefined;
 
   /**
@@ -483,6 +585,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     },
     verdicts,
     observer,
+    ties,
   );
 
   const failure = (cause: unknown, mayHaveRun = false, tasksDeclared = false) =>
@@ -575,8 +678,81 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       });
     }
 
+    // A connection that declares `elicitation` is asked (Legacy: connection-wide, at `initialize`), so it answers: a
+    // question that belongs to no call that can take it is cancelled, never left unanswered or refused as unknown.
+    if (declaredCapabilities(deps.capabilities, deps.extensions).elicitation !== undefined) {
+      client.setRequestHandler("elicitation/create", (request, ctx) =>
+        Effect.runPromiseWith(context)(
+          askQuestion(request.params, ctx.mcpReq.id, ctx.mcpReq.signal),
+        ).then((answer) => {
+          if (answer.kind === "refused") {
+            throw new ProtocolError(answer.code ?? ProtocolErrorCode.InvalidParams, answer.message);
+          }
+
+          return answer.result;
+        }),
+      );
+    }
+
     return client;
   };
+
+  /** What a question gets when it is not answered: the server may ask again. */
+  const cancelled: QuestionAnswer = { kind: "answered", result: { action: "cancel" } };
+
+  /**
+   * A Legacy server's elicitation: tied by the tap to the `tools/call` whose POST stream carried it, passed to the
+   * call's `onInput` while the call's clock stops, and bound by the call's `inputWaitMs`. One with no such call, or no
+   * `onInput`, is cancelled; one the Session cannot take (`refused`) is the server's `-32602`.
+   */
+  const askQuestion = (params: ElicitRequestParams, id: string | number, ended: AbortSignal) =>
+    Effect.gen(function* () {
+      const token = ties.take(id);
+      const call = token === undefined ? undefined : asking.get(token);
+      const { onInput } = deps;
+
+      if (call === undefined || onInput === undefined) return cancelled;
+
+      const key = String(id);
+
+      const input: McpInputRequest = {
+        key,
+        kind: "elicitation",
+        params: jsonObjectOf(params),
+        mode: "live",
+      };
+
+      const answered = onInput(input).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(call.waitMs),
+          orElse: () => Effect.succeed(cancelled),
+        }),
+        Effect.catchCause(() => Effect.succeed(cancelled)),
+      );
+
+      // The server stopped waiting (its own `notifications/cancelled`): the question is withdrawn.
+      const stopped = Effect.callback<"ended">((resume) => {
+        if (ended.aborted) return resume(Effect.succeed("ended"));
+
+        const onEnd = () => resume(Effect.succeed("ended"));
+
+        ended.addEventListener("abort", onEnd, { once: true });
+
+        return Effect.sync(() => ended.removeEventListener("abort", onEnd));
+      });
+
+      yield* call.pause;
+
+      const outcome = yield* Effect.raceFirst(answered, stopped).pipe(Effect.ensuring(call.resume));
+
+      if (outcome === "ended") {
+        deps.onInputEnded?.(key);
+
+        return cancelled;
+      }
+
+      return outcome;
+    });
 
   /** Whether the server is asked for logs: `onLog` hears them, and the server declares `logging`. */
   const wantsLogs = (capabilities: ServerCapabilities) =>
@@ -655,7 +831,15 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           : deps.eras.set({ v: 1, era: "legacy", version: protocolVersion, probedAt: now });
         yield* transport.sessionId === undefined
           ? deps.sessions.drop
-          : deps.sessions.set(sessionRowOf(client, transport.sessionId, protocolVersion, now));
+          : deps.sessions.set(
+              sessionRowOf(
+                client,
+                transport.sessionId,
+                protocolVersion,
+                now,
+                declaredCapabilities(deps.capabilities, deps.extensions),
+              ),
+            );
 
         // The level belongs to the session the server just opened, so only an `initialize` sets it, and only one whose
         // session is kept pays for it: a server with no session is initialized by every connection and forgets the level
@@ -679,6 +863,12 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       } satisfies Live;
     });
 
+  /** Whether the Legacy session `row` was initialized with what the client declares today. */
+  const declaredToday = (row: SessionRow) =>
+    row.declared !== undefined &&
+    JSON.stringify(row.declared) ===
+      JSON.stringify(jsonObjectOf(declaredCapabilities(deps.capabilities, deps.extensions)));
+
   /** Opens from the stored rows, falling back to a probe when a row no longer holds. */
   const openFromRows = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
@@ -692,7 +882,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       );
     }
 
-    if (sessionRow !== undefined) {
+    // A server keeps what it was told at `initialize` for the life of the session: one initialized with other
+    // capabilities than today's (questions added, a sampling key changed, or a row from before they were recorded) is
+    // initialized again, with nothing else about the connection changed.
+    if (sessionRow !== undefined && declaredToday(sessionRow)) {
       return yield* open({ kind: "session", row: sessionRow });
     }
 
@@ -1224,8 +1417,15 @@ const sessionLost = (live: Live, failed: Failure) =>
   live.era === "legacy" && live.sessionId !== undefined && failed.status === 404;
 
 /** `value`, an SDK result, as the JSON object it was decoded from. */
-const jsonObjectOf = (value: DiscoverResult | Implementation | ServerCapabilities | undefined) =>
-  Option.getOrElse(toJsonObject(JSON.stringify(value ?? {})), () => ({}));
+const jsonObjectOf = (
+  value:
+    | DiscoverResult
+    | Implementation
+    | ServerCapabilities
+    | ClientCapabilities
+    | ElicitRequestParams
+    | undefined,
+) => Option.getOrElse(toJsonObject(JSON.stringify(value ?? {})), () => ({}));
 
 /** Keeps a Modern server's era row, unless its `server/discover` result is over 64 KiB (D3). */
 const keepModernEra = (eras: RowStore, version: string, discover: DiscoverResult, now: number) => {
@@ -1241,6 +1441,7 @@ const sessionRowOf = (
   sessionId: string,
   protocolVersion: string,
   now: number,
+  declared: ClientCapabilities,
 ): SessionRow => {
   const instructions = client.getInstructions();
 
@@ -1251,6 +1452,7 @@ const sessionRowOf = (
     serverInfo: jsonObjectOf(client.getServerVersion()),
     capabilities: jsonObjectOf(client.getServerCapabilities()),
     initializedAt: now,
+    declared: jsonObjectOf(declared),
   };
 
   return instructions === undefined ? row : { ...row, instructions };

@@ -13,10 +13,13 @@ import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import { McpInputAnswer, McpInputRequest } from "./elicitation.ts";
 import { hostAnswerReader, McpHostFailure } from "./host.ts";
 import { JsonObject } from "./json.ts";
 import { McpLogEntry } from "./log.ts";
 import { McpAuthChallenge } from "./sign-in.ts";
+
+export * from "./elicitation.ts";
 
 export * from "./host.ts";
 
@@ -32,14 +35,29 @@ export const McpCallOrigin = Schema.Literals(["agent", "owner", "app", "host"]);
 export type McpCallOrigin = typeof McpCallOrigin.Type;
 
 /**
- * Who a request is made for: what the client declares on it (`capabilities(ctx)`) and, in later slices, which
- * questions it may ask, follow from it.
+ * What a caller can answer (`docs/architecture/mcp-server-requests.md` → Questions): the kinds of question the call's
+ * `onInput` takes, and how long a Legacy question may wait for the owner (`inputWaitMs`, the largest of the kinds
+ * offered). The core declares to the server only what is offered here, and a callback's presence is the other half of
+ * the version-skew gate (`docs/architecture/mcp.md` → Deploys: `ctx.answers`).
+ */
+export const McpAnswers = Schema.Struct({
+  elicitation: Schema.optionalKey(Schema.Boolean),
+  sampling: Schema.optionalKey(Schema.Boolean),
+  inputWaitMs: Schema.optionalKey(Schema.Finite),
+});
+
+export type McpAnswers = typeof McpAnswers.Type;
+
+/**
+ * Who a request is made for: what the client declares on it (`capabilities(ctx)`) and which questions it may ask
+ * (`answers`) follow from it.
  */
 export const McpCallContext = Schema.Struct({
   origin: McpCallOrigin,
   conversation: Schema.optionalKey(Schema.String),
   workspace: Schema.optionalKey(Schema.String),
   allowTask: Schema.optionalKey(Schema.Boolean),
+  answers: Schema.optionalKey(McpAnswers),
 });
 
 export type McpCallContext = typeof McpCallContext.Type;
@@ -138,7 +156,7 @@ export type EraRow = typeof EraRowV1.Type;
 /**
  * The Legacy session row (`mcp_sessions`), format 1: what the core needs to go on with a Legacy server's session
  * without a new `initialize` (The MCP core #394 D5). The resumed SDK client knows none of it, so the core serves the
- * server's capabilities and instructions from here.
+ * server's capabilities and instructions from here. `declared` only gains: an older row has none.
  */
 export const SessionRowV1 = Schema.Struct({
   v: Schema.Literal(1),
@@ -148,6 +166,12 @@ export const SessionRowV1 = Schema.Struct({
   capabilities: Schema.Record(Schema.String, Schema.Json),
   instructions: Schema.optionalKey(Schema.String),
   initializedAt: Schema.Finite,
+  /**
+   * What the client declared at `initialize` (`mcp-server-requests.md` → Questions): a session whose declaration is not
+   * today's (or has none, as rows from before questions did not) is initialized again at its next use, since a server
+   * keeps what it was told for the life of the session.
+   */
+  declared: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
 });
 
 export type SessionRow = typeof SessionRowV1.Type;
@@ -760,7 +784,7 @@ export const MCP_PROGRESS_PER_SECOND = 10;
 
 /**
  * The callbacks a call carries, passed as RPC stubs that live as long as the caller's invocation (`docs/architecture/
- * mcp.md` → RPC edges). Later slices add `onInput`. There is no `onLog`: a server's logs come back in
+ * mcp.md` → RPC edges). There is no `onLog`: a server's logs come back in
  * the result (`logs`), so a discovery, which passes no hooks, brings them too (`docs/architecture/mcp-connections.md` →
  * Telemetry).
  */
@@ -781,6 +805,14 @@ export interface McpEngineHooks {
    * hook that fails or is slow fails nothing: the notice is dropped.
    */
   readonly onProgress?: (progress: McpProgress) => void | Promise<void>;
+  /**
+   * A question a Legacy server asks while a `tools/call` with `ctx.answers` waits: resolves with the answer the server
+   * gets, or rejects when the caller cannot answer (which reads as a `cancel`). The timeout of the call is paused while
+   * it is pending. Absent for a call whose caller answers nothing: every question is then cancelled.
+   */
+  readonly onInput?: (
+    request: typeof McpInputRequest.Encoded,
+  ) => Promise<typeof McpInputAnswer.Encoded>;
 }
 
 /** `McpEngine`'s arguments as they cross RPC, encoded; the engine decodes each. */
@@ -826,6 +858,8 @@ export const McpHostRequestContext = Schema.Struct({
    * (`docs/architecture/mcp-server-requests.md` → MCP tasks, Declaration).
    */
   allowTask: Schema.optionalKey(Schema.Boolean),
+  /** What the caller can answer; with the request's `onInput` hook, it says the call may be asked questions. */
+  answers: Schema.optionalKey(McpAnswers),
 });
 
 export type McpHostRequestContext = typeof McpHostRequestContext.Type;
@@ -920,6 +954,14 @@ export interface McpHostRequestHooks {
   readonly untilAborted?: () => Promise<void>;
   /** The request's progress, at most `MCP_PROGRESS_PER_SECOND` a second. */
   readonly onProgress?: (progress: McpProgress) => void | Promise<void>;
+  /**
+   * A question the server asks while the request waits (`ctx.answers` says which kinds): resolves with the answer the
+   * server gets, or rejects when the caller cannot answer. The host passes it on to the engine, never keeping a
+   * question or an answer (`docs/architecture/mcp-server-requests.md` → Questions).
+   */
+  readonly onInput?: (
+    request: typeof McpInputRequest.Encoded,
+  ) => Promise<typeof McpInputAnswer.Encoded>;
 }
 
 /** The request completed: the server's result (a `tools/call`'s, `isError` included) and how it fits the output schema. */
