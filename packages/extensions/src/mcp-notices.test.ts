@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
@@ -431,6 +432,172 @@ describe("a set change under a subagent", () => {
     ).toBe(true);
     // The root was told by the start that read the new set, once.
     expect(await session.notices()).toHaveLength(1);
+  });
+});
+
+describe("a busy conversation when an install lands", () => {
+  it("carries the notice in every request that is offered the new server's tool", async () => {
+    // A server that lists a tool as direct beside one that scripts call: the request's tools show when it is installed.
+    const lifted: FakeMcpServer = {
+      name: "linear",
+      exposure: "codemode",
+      toolExposure: { issues: "direct" },
+      tools: [{ name: "issues" }, { name: "triage" }],
+    };
+
+    const host = fakeMcpHost([DOCS]);
+    const slow = gate();
+    let requests = 0;
+    let finished = false;
+    let running = false;
+
+    const session = await open(async (request) => {
+      if (request.text === "Work") running = true;
+
+      if (!running) return answer("ok");
+
+      requests += 1;
+      // Each request follows a tool call, so the Run crosses a boundary every few milliseconds.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      if (!finished) return call(["read", {}]);
+
+      running = false;
+
+      return answer("Done.");
+    });
+
+    const mcp = session.tools(host);
+    const sink = mcpNotices(session.harness);
+    let armed = false;
+
+    // The notices take a while to write once armed: the Run goes on meanwhile.
+    mcp.bindNotices({
+      check: async (input) => {
+        if (armed) await slow.promise;
+
+        return sink.check(input);
+      },
+      conversations: sink.conversations,
+    });
+
+    await session.start(mcp);
+    await session.prompt("one");
+
+    const work = await session.root.submit({ type: "input", content: "Work" }, context);
+
+    await session.until(async () => requests > 2, "the Run to be busy");
+    host.set([DOCS, lifted]);
+    armed = true;
+    await Effect.runPromise(mcp.requestStart(startOf()));
+
+    // A settings read installs the build: no request start of the owner's, and the Run is busy. Its notice is written
+    // before the build is installed, so a request that is offered the tool never lacks it.
+    const installed = session.install(mcp);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    slow.resolve();
+    await installed;
+    await session.until(async () => requests > 8, "the Run to see the install");
+
+    finished = true;
+    await work.wait(context);
+
+    const run = session.requests.filter(
+      (request) => request.text !== "one" && request.text !== "ok",
+    );
+
+    const offered = session.requests.filter((request) =>
+      request.tools.includes("mcp__linear__issues"),
+    );
+
+    const told = (request: (typeof session.requests)[number]) =>
+      request.messages.some(
+        (message) =>
+          message.role === "user" && JSON.stringify(message.content).includes("mcp__linear"),
+      );
+
+    expect(run.length).toBeGreaterThan(1);
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered.every(told)).toBe(true);
+    expect(await session.notices()).toHaveLength(1);
+  });
+});
+
+describe("a Stop that interrupts the broadcast", () => {
+  it("leaves every conversation still told, exactly once", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+    const sink = mcpNotices(session.harness);
+    const entered = gate();
+    const opened = gate();
+    let waiting: ConversationId | undefined;
+    let checks = 0;
+
+    mcp.bindNotices({
+      check: async (input) => {
+        checks += 1;
+
+        // The first conversation of the broadcast waits in its check while the Stop arrives.
+        const first = input.conversations.find((each) => each === waiting);
+
+        if (first !== undefined) {
+          waiting = undefined;
+          entered.resolve();
+          await opened.promise;
+        }
+
+        return sink.check(input);
+      },
+      conversations: sink.conversations,
+    });
+
+    const others = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        session.harness.createConversation(
+          {
+            ownership: { kind: "ownerless" },
+            agent: { model: { provider: "faux", modelId: "faux-1" } },
+          },
+          context,
+        ),
+      ),
+    );
+
+    await session.start(mcp);
+    await session.prompt("one");
+
+    for (const other of others) {
+      await (await other.submit({ type: "input", content: "hello" }, context)).wait(context);
+    }
+
+    host.set([DOCS, LINEAR]);
+    await Effect.runPromise(mcp.requestStart(startOf()));
+    // The build is installed without its announcement: the owner's request start is what broadcasts.
+    Option.map(mcp.reinstall([]), ({ mcp: extension }) => session.registry.install(extension));
+    waiting = others[0]!.id;
+
+    const start = Effect.runFork(mcp.notify(ROOT_CONVERSATION_ID));
+
+    await entered.promise;
+
+    const stopped = Effect.runPromise(start.pipe(Fiber.interrupt));
+
+    opened.resolve();
+    await stopped;
+
+    expect(await session.notices()).toHaveLength(1);
+
+    for (const other of others) expect(await session.notices(other.id)).toHaveLength(1);
+
+    // The broadcast ran to its end: the next request finds nothing due, and asks no conversation again.
+    const asked = checks;
+
+    await Effect.runPromise(mcp.notify(ROOT_CONVERSATION_ID));
+    expect(checks).toBe(asked);
+
+    for (const other of others) expect(await session.notices(other.id)).toHaveLength(1);
   });
 });
 
