@@ -13,6 +13,7 @@
 // `discovery-auth.ts`); with no token to call with, the call is not sent. The logs the server sent come back in the
 // result, and are kept as a discovery's are (`recordLogs`).
 // @effect-diagnostics missingPipeableSignature:off -- the host's method, not a combinator.
+import { signsInOnItsOwn } from "@cloudpid/config";
 import {
   Cut,
   HostFailed,
@@ -116,7 +117,8 @@ export const request = (
     }
 
     // A server that wants a sign-in is not sent the call: the owner signs in first.
-    if (state === "sign_in" || state === "rejected") {
+    // (A server that signs in on its own has no such state to wait in: the Registry is asked below.)
+    if ((state === "sign_in" || state === "rejected") && !signsInOnItsOwn(server.server)) {
       return callFailed(
         SignInRequired.make({
           message: `MCP server ${name} needs you signed in`,
@@ -254,7 +256,14 @@ export const request = (
       ),
     );
 
-    if (result.kind === "failed") return callFailed(result.error);
+    if (result.kind === "failed") {
+      // A client grant's refused token is not a sign-in the agent could ask for: the call is unreachable with why.
+      const refusal = access.refusal?.(result);
+
+      return callFailed(
+        refusal === undefined ? result.error : Unreachable.make({ message: refusal }),
+      );
+    }
 
     return result.structuredOutput === undefined
       ? McpHostCompleted.make({ result: result.result })

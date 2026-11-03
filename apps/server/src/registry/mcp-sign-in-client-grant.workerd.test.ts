@@ -5,7 +5,8 @@
 // reaches a span, a log, a row or an answer. workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so
 // this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off newPromise:off globalTimers:off globalDate:off
-import { openKeptVault } from "@cloudpid/extensions/secrets/core";
+import type { McpSignInKey } from "@cloudpid/config";
+import { type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { type OAuthFetch } from "@cloudpid/mcp/oauth";
 import { McpAccessTokenAnswer } from "@cloudpid/mcp/types";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
@@ -17,7 +18,7 @@ import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
-import { mcpClientGrant } from "./mcp-client-grant.ts";
+import { mcpClientGrant } from "./mcp-sign-in-client-grant.ts";
 import { startMcpSignIn, type FlowDeps } from "./mcp-sign-in-flow.ts";
 import {
   mcpAccessToken,
@@ -25,7 +26,8 @@ import {
   signInAskNotApplicable,
   signInTarget,
 } from "./mcp-sign-in-registry.ts";
-import { MCP_OAUTH_PURPOSE, openTokens } from "./mcp-sign-in-seal.ts";
+import { environmentsUsing } from "./mcp-sign-in-flow.ts";
+import { MCP_OAUTH_PURPOSE, openTokens, sealTokens } from "./mcp-sign-in-seal.ts";
 import { openMcpSignIns } from "./mcp-sign-ins.ts";
 import { writeSettings } from "./settings.ts";
 import type { TestRegistry } from "./store.fixture.ts";
@@ -48,6 +50,9 @@ const STAGE = {
   local: false,
   documentEnabled: true,
 };
+
+/** What a test does inside the token endpoint's answer, while a fetch is out. */
+let hook: () => void = () => undefined;
 
 /** A token fetched at `NOW` with a one-hour lifetime is in its last minute from here (a second for what the fetch took). */
 const EXPIRING = NOW + 3_600_000 - 60_000 + 1000;
@@ -132,6 +137,8 @@ const network = (
       return Response.json(metadata(asMetadata));
     }
 
+    if (route === `POST ${AS}/revoke`) return new Response(null, { status: 200 });
+
     if (route === `POST ${AS}/token`) {
       const answer = await tokens(call, tokenCalls().length - 1);
 
@@ -209,6 +216,7 @@ const run = <A>(
       return body({
         store,
         signIns,
+        vault,
         net,
         spans,
         logged,
@@ -241,12 +249,13 @@ const run = <A>(
 type Harness = {
   readonly store: ReturnType<typeof openRegistryStore>;
   readonly signIns: ReturnType<typeof openMcpSignIns>;
+  readonly vault: KeptVault;
   readonly net: ReturnType<typeof network>;
   readonly spans: Array<Tracer.NativeSpan>;
   readonly logged: Array<string>;
   readonly deps: FlowDeps;
   readonly setGlobal: (value: Schema.Json) => void;
-  readonly keyOf: () => { readonly hash: string };
+  readonly keyOf: () => McpSignInKey;
   readonly ask: (input?: { stale?: string }, now?: number) => Promise<McpAccessTokenAnswer>;
   readonly observed: <T>(effect: Effect.Effect<T>) => Promise<T>;
   readonly tokensOf: () => Promise<{ access_token: string; refresh_token?: string }>;
@@ -830,6 +839,274 @@ describe("when the entry changes", () => {
 
         expect(await ask({}, NOW + 1000)).toEqual({ status: "required", reason: "Not signed in" });
         expect(net.calls).toHaveLength(0);
+      },
+    ));
+
+  it("deletes the client grant's row when the entry signs in with a code now, and raises the revision", () =>
+    run(
+      () => issued(FIRST),
+      async ({ setGlobal, ask, signIns, keyOf }) => {
+        setGlobal(GRANT);
+        okOf(await ask());
+
+        const before = signIns.revision();
+        const { hash } = keyOf();
+
+        setGlobal({ url: SERVER_URL });
+        await ask({}, NOW + 1000);
+
+        expect(signIns.get(hash)).toBeNull();
+        expect(signIns.revision()).toBeGreaterThan(before);
+      },
+    ));
+
+  it("makes the row's secret reference follow the entry at the next fetch, and keeps the token until then", () =>
+    run(
+      (_call, index) => issued(index === 0 ? FIRST : SECOND),
+      async ({ setGlobal, ask, signIns, keyOf }) => {
+        setGlobal(GRANT);
+        okOf(await ask());
+
+        setGlobal(withOauth({ clientSecret: "${OTHER_SECRET}" }));
+        expect(okOf(await ask({}, NOW + 1000)).token).toBe(FIRST);
+        expect(signIns.get(keyOf().hash)?.client?.secretRef).toEqual({
+          scope: "secret",
+          name: "CLIENT_SECRET",
+        });
+
+        expect(okOf(await ask({}, EXPIRING)).token).toBe(SECOND);
+        expect(signIns.get(keyOf().hash)?.client?.secretRef).toEqual({
+          scope: "secret",
+          name: "OTHER_SECRET",
+        });
+      },
+      { secrets: { OTHER_SECRET: "other-secret-value-1" } },
+    ));
+
+  it("holds a setup problem for the first backoff, so the authorization server is not discovered on every ask", () =>
+    run(
+      () => issued(FIRST),
+      async ({ setGlobal, ask, net }) => {
+        setGlobal({
+          url: SERVER_URL,
+          oauth: {
+            grantType: "client_credentials",
+            clientId: CLIENT_ID,
+            privateKey: "${CLIENT_KEY}",
+            issuer: AS,
+          },
+        });
+
+        const discoveries = () => net.calls.filter((call) => call.method === "GET").length;
+
+        expect(failedWith(await ask({}, NOW))).toMatch(/PKCS#8/);
+
+        const first = discoveries();
+
+        expect(first).toBeGreaterThan(0);
+
+        // Within the hold, the same answer and no request; after it, the setup is looked at again.
+        expect(failedWith(await ask({}, NOW + 5_000))).toMatch(/PKCS#8/);
+        expect(discoveries()).toBe(first);
+        expect(failedWith(await ask({}, NOW + 11_000))).toMatch(/PKCS#8/);
+        expect(discoveries()).toBeGreaterThan(first);
+      },
+      {
+        secrets: {
+          CLIENT_KEY: "-----BEGIN RSA PRIVATE KEY-----\nBODY\n-----END RSA PRIVATE KEY-----",
+        },
+      },
+    ));
+});
+
+/** An owner's sign-in of `docs`' key, as an authorization-code flow left it: configured client, with a refresh token. */
+const ownerSignIn = async (h: Harness) => {
+  const key = h.keyOf();
+
+  const sealed = await Effect.runPromise(
+    sealTokens(h.vault, key.hash, {
+      access_token: "owner-access-token-1",
+      refresh_token: "owner-refresh-token-1",
+    }),
+  );
+
+  if (sealed.status !== "sealed") throw new Error("too large");
+
+  h.signIns.put(
+    {
+      key,
+      status: "ok",
+      issuer: AS,
+      metadata: JSON.stringify(metadata({ revocation_endpoint: `${AS}/revoke` })),
+      discovery: "{}",
+      resource: SERVER_URL,
+      client: {
+        id: CLIENT_ID,
+        kind: "configured",
+        secretRef: { scope: "secret", name: "CLIENT_SECRET" },
+        registration: null,
+      },
+      scope: "read",
+      expiresAt: NOW + 3_600_000,
+      wantedScope: null,
+      stepUpCount: 0,
+      sealed: sealed.sealed,
+    },
+    NOW,
+  );
+};
+
+describe("switching from a code sign-in to a client grant", () => {
+  it("revokes the owner's refresh token, then their access token, drops the row, and fetches the first token", () =>
+    run(
+      () => issued(FIRST),
+      async (h) => {
+        // The key does not depend on the grant type: the owner's row stands under the client grant's key.
+        h.setGlobal(GRANT);
+        await ownerSignIn(h);
+
+        const owner = h.signIns.get(h.keyOf().hash)?.grantId;
+
+        expect(okOf(await h.ask()).token).toBe(FIRST);
+
+        const revocations = h.net.calls.filter((call) => call.url === `${AS}/revoke`);
+
+        expect(revocations.map((call) => call.form.get("token"))).toEqual([
+          "owner-refresh-token-1",
+          "owner-access-token-1",
+        ]);
+        expect(revocations.map((call) => call.form.get("token_type_hint"))).toEqual([
+          "refresh_token",
+          "access_token",
+        ]);
+
+        const row = h.signIns.get(h.keyOf().hash);
+
+        expect(row?.grantId).not.toBe(owner);
+        expect(row?.client?.kind).toBe("client_grant");
+        expect(await h.tokensOf()).toEqual({ access_token: FIRST });
+        expect(h.dump()).not.toContain("owner-refresh-token-1");
+      },
+      { asMetadata: { revocation_endpoint: `${AS}/revoke` } },
+    ));
+
+  it("still drops the row and goes on when the server has no revocation endpoint or refuses", () =>
+    run(
+      () => issued(FIRST),
+      async (h) => {
+        h.setGlobal(GRANT);
+        await ownerSignIn(h);
+
+        expect(okOf(await h.ask()).token).toBe(FIRST);
+        expect(h.signIns.get(h.keyOf().hash)?.client?.kind).toBe("client_grant");
+      },
+    ));
+});
+
+describe("a fetch the entry or another sign-in overtook", () => {
+  it("writes nothing and says failed when the entry stopped signing in on its own while the token was out", () =>
+    run(
+      () => {
+        hook();
+
+        return issued(FIRST);
+      },
+      async ({ setGlobal, ask, signIns, keyOf }) => {
+        hook = () => undefined;
+        setGlobal(GRANT);
+
+        const { hash } = keyOf();
+
+        hook = () => setGlobal({ url: SERVER_URL });
+
+        expect(failedWith(await ask())).toMatch(/entry changed/);
+        expect(signIns.get(hash)).toBeNull();
+      },
+    ));
+
+  it("writes nothing and hands over the row's own token when another fetch stored one meanwhile", () =>
+    run(
+      () => {
+        hook();
+
+        return issued(FIRST);
+      },
+      async ({ setGlobal, ask, signIns, keyOf, vault }) => {
+        hook = () => undefined;
+        setGlobal(GRANT);
+
+        const other = await Effect.runPromise(
+          sealTokens(vault, keyOf().hash, { access_token: "other-flight-token-1" }),
+        );
+
+        if (other.status !== "sealed") throw new Error("too large");
+
+        hook = () => {
+          signIns.put(
+            {
+              key: keyOf(),
+              status: "ok",
+              issuer: AS,
+              metadata: JSON.stringify(metadata()),
+              discovery: JSON.stringify({
+                authorizationServerUrl: AS,
+                grant: { issuer: AS },
+              }),
+              resource: SERVER_URL,
+              client: { id: CLIENT_ID, kind: "client_grant", secretRef: null, registration: null },
+              scope: null,
+              expiresAt: NOW + 3_600_000,
+              wantedScope: null,
+              stepUpCount: 0,
+              sealed: other.sealed,
+            },
+            NOW,
+          );
+        };
+
+        const answer = okOf(await ask());
+
+        expect(answer.token).toBe("other-flight-token-1");
+        expect(signIns.get(keyOf().hash)?.sealed).toEqual(other.sealed);
+      },
+    ));
+
+  it("does not write a token over a row that was removed while a renewal was out", () =>
+    run(
+      () => {
+        hook();
+
+        return issued(SECOND);
+      },
+      async ({ setGlobal, ask, signIns, keyOf }) => {
+        hook = () => undefined;
+        setGlobal(GRANT);
+        okOf(await ask());
+        hook = () => {
+          signIns.delete(keyOf().hash, NOW + 10);
+        };
+
+        expect(failedWith(await ask({}, EXPIRING))).toMatch(/sign-in changed/);
+        expect(signIns.get(keyOf().hash)).toBeNull();
+      },
+    ));
+});
+
+describe("which Environments use a sign-in", () => {
+  it("counts a client grant's entries for a client grant's row, and an owner's for an owner's", () =>
+    run(
+      () => issued(FIRST),
+      async ({ setGlobal, store, keyOf }) => {
+        setGlobal(GRANT);
+
+        const { hash } = keyOf();
+
+        expect(environmentsUsing(store, hash, "client_grant").length).toBeGreaterThan(0);
+        expect(environmentsUsing(store, hash, "owner")).toEqual([]);
+
+        setGlobal({ url: SERVER_URL });
+        expect(environmentsUsing(store, hash, "client_grant")).toEqual([]);
+        expect(environmentsUsing(store, hash, "owner").length).toBeGreaterThan(0);
       },
     ));
 });

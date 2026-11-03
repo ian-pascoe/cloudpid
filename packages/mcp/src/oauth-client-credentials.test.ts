@@ -10,6 +10,7 @@ import {
   clientAssertionClaims,
   importSigningKey,
   isKeyProblem,
+  pemSecrets,
   randomJti,
   requestClientCredentials,
   secretAuthMethod,
@@ -451,6 +452,14 @@ describe("the token request with a key", () => {
   });
 });
 
+describe("pemSecrets", () => {
+  it("is the block as written and its body without armor or whitespace", () => {
+    expect(
+      pemSecrets("-----BEGIN PRIVATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----"),
+    ).toEqual(["-----BEGIN PRIVATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----", "AAAABBBB"]);
+  });
+});
+
 describe("what a request comes to", () => {
   it("is refused with the OAuth code, the status and a description scrubbed of the secret", async () => {
     const { fetch } = recording(
@@ -511,6 +520,33 @@ describe("what a request comes to", () => {
 
     expect(JSON.stringify(viaBasic)).not.toContain(btoa(`${CLIENT_ID}:${SECRET}`));
     expect(viaBasic).toMatchObject({ message: "header [REDACTED]" });
+  });
+
+  it("scrubs the form-encoded secret client_secret_post sent, as the server may echo the form", async () => {
+    const odd = "p@ss word/+=&é";
+    const encoded = new URLSearchParams({ x: odd }).toString().slice(2);
+
+    expect(encoded).not.toBe(odd);
+
+    const { fetch } = recording(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: "invalid_request",
+            error_description: `form client_secret=${encoded} and ${odd}`,
+          }),
+          { status: 400 },
+        ),
+    );
+
+    const outcome = await requestClientCredentials({
+      metadata: metadata({ token_endpoint_auth_methods_supported: ["client_secret_post"] }),
+      auth: { kind: "secret", clientId: CLIENT_ID, clientSecret: odd },
+      fetch,
+      now: NOW,
+    });
+
+    expect(outcome).toMatchObject({ message: "form client_secret=[REDACTED] and [REDACTED]" });
   });
 
   it("is refused by status when the body is not an OAuth error, a 5xx as server_error", async () => {

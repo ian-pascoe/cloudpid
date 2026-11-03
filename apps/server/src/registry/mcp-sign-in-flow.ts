@@ -161,12 +161,21 @@ const serversOf = (
     ? resolvedMcpServers(mcpLayersOf(store, {}))
     : environmentResolvedServers(store, environment);
 
-/** Whether `resolved` is an HTTP server that signs in under the key `hash`, with `clientId` when one is given. */
-const usesSignIn = (resolved: McpResolvedServer, hash: string, clientId?: string): boolean => {
+/**
+ * Whether `resolved` is an HTTP server that signs in under the key `hash` in the way `kind` says (an owner's sign-in, or
+ * a client grant's, which the same key may hold the row of under another kind of entry), with `clientId` when one is
+ * given. A row of the other kind than the entry's is used by nobody: the entry's next token replaces it.
+ */
+const usesSignIn = (
+  resolved: McpResolvedServer,
+  hash: string,
+  kind: "owner" | "client_grant",
+  clientId?: string,
+): boolean => {
   const target = signInTargetOf(resolved);
 
   return (
-    target.status === "target" &&
+    target.status === (kind === "client_grant" ? "client_grant" : "target") &&
     target.key.hash === hash &&
     (clientId === undefined ||
       (resolved.server.type === "http" && resolved.server.oauth?.clientId === clientId))
@@ -178,14 +187,20 @@ const bindingNamedBy =
   (store: FlowStore) =>
   (keyHash: string, clientId: string): boolean =>
     Arr.some([MCP_SIGN_IN_GLOBAL, ...Arr.map(store.listEnvironments(), ({ id }) => id)], (id) =>
-      Arr.some(serversOf(store, id) ?? [], (resolved) => usesSignIn(resolved, keyHash, clientId)),
+      Arr.some(serversOf(store, id) ?? [], (resolved) =>
+        usesSignIn(resolved, keyHash, "owner", clientId),
+      ),
     );
 
 /** The Environments whose set holds a server that uses the sign-in `hash`. */
-const environmentsUsing = (store: FlowStore, hash: string): ReadonlyArray<McpSignInEnvironment> =>
+export const environmentsUsing = (
+  store: FlowStore,
+  hash: string,
+  kind: "owner" | "client_grant",
+): ReadonlyArray<McpSignInEnvironment> =>
   Arr.map(
     Arr.filter(store.listEnvironments(), ({ id }) =>
-      Arr.some(serversOf(store, id) ?? [], (resolved) => usesSignIn(resolved, hash)),
+      Arr.some(serversOf(store, id) ?? [], (resolved) => usesSignIn(resolved, hash, kind)),
     ),
     ({ id, name }) => ({ id, name }),
   );
@@ -1059,7 +1074,7 @@ const saveSignIn = (
     return {
       status: "signed_in",
       server: context.server,
-      environments: environmentsUsing(deps.store, context.key.hash),
+      environments: environmentsUsing(deps.store, context.key.hash, "owner"),
       resolved: Arr.map(resolved, ({ session, request }) => ({ session, request })),
       revision: deps.signIns.revision(),
       retry: { environment: pending.environment, server: context.server },

@@ -16,7 +16,7 @@ import {
   signsInOnItsOwn,
 } from "@cloudpid/config";
 import type { KeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
-import { stepUpScope } from "@cloudpid/mcp/oauth";
+import { MAX_SIGN_IN_ERROR_LENGTH, stepUpScope } from "@cloudpid/mcp/oauth";
 import { scopesOf } from "@cloudpid/mcp/types";
 import type {
   McpAccessTokenAnswer,
@@ -38,7 +38,7 @@ import { openTokens, type McpTokens } from "./mcp-sign-in-seal.ts";
 export const REFRESH_MARGIN_MS = 60_000;
 
 /** An error kept on a row, and so shown, is cut to this many characters. */
-export const MAX_SIGN_IN_ERROR_LENGTH = 300;
+export { MAX_SIGN_IN_ERROR_LENGTH };
 
 /** The sign-in a server of an Environment's set uses, or why it has none. */
 export type SignInTarget =
@@ -178,7 +178,7 @@ export type ClientGrantRequest = {
 };
 
 /**
- * What a client grant answers: the token to use, or `failed` with why (`mcp-client-grant.ts`). It gets a token on first
+ * What a client grant answers: the token to use, or `failed` with why (`mcp-sign-in-client-grant.ts`). It gets a token on first
  * use and again at `exp − 60 s` or after a 401; there is no refresh token and no owner.
  */
 export type ClientGrant = (
@@ -251,8 +251,11 @@ const answerFor = (
     return Effect.succeed({ status: "required", reason: row?.lastError ?? "Not signed in" });
   }
 
-  // The token of a client grant, under a key whose entry now signs in with a code: not a sign-in of this entry's.
+  // The token of a client grant, under a key whose entry now signs in with a code: not a sign-in of this entry's. It is
+  // dropped (its access token is short-lived and has no refresh token to revoke), and the owner signs in.
   if (row.client?.kind === "client_grant") {
+    deps.signIns.delete(key.hash, now);
+
     return Effect.succeed({ status: "required", reason: "Not signed in" });
   }
 

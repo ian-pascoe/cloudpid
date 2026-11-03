@@ -195,7 +195,7 @@ import {
 } from "@cloudpid/mcp/types";
 import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
 import { mcpAccessToken, reportMcpAuth } from "./mcp-sign-in-registry.ts";
-import { mcpClientGrant } from "./mcp-client-grant.ts";
+import { mcpClientGrant } from "./mcp-sign-in-client-grant.ts";
 import { mcpTokenRefresh } from "./mcp-sign-in-refresh.ts";
 import {
   completeMcpSignIn,

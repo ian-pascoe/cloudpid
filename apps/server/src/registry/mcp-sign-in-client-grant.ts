@@ -2,7 +2,7 @@
 // seam `mcpAccessToken` calls for an HTTP entry whose `oauth.grantType` is `client_credentials`. The Registry gets the
 // token itself, with no owner step, and seals it in the sign-in row (kind `client_grant`, no refresh token). It asks for a
 // new one at `exp − 60 s`, and once when the server refused the token after its first use (a 401), through the same
-// single-flight and the same in-memory backoff as a refresh (`mcp-sign-in-refresh.ts`).
+// single-flight and the same in-memory backoff as a refresh (`mcp-sign-in-backoff.ts`).
 //
 // - **Failures are the server's `failed`, never `sign_in`.** There is nobody to sign in, so every failure (a secret that is
 //   not set, a key that cannot sign, an authorization server that refuses or does not answer, a token the server then
@@ -18,35 +18,52 @@
 // - **What the row holds.** The first token writes the sign-in (a new grant id, kind `client_grant`, the entry's client
 //   id and `${NAME}` reference, the issuer, the metadata, the discovery and the resource); a renewal keeps the grant id, so
 //   an MCP task's follower can tell "not reachable under the current sign-in" from "expired". A changed client id, pin
-//   or `oauth.scope` writes a new sign-in.
+//   or `oauth.scope` writes a new sign-in, and the `${NAME}` reference follows the entry on every fetch.
+// - **The row is checked before each write**, as a refresh's is: when a sign-in replaced it, or removed it, or the entry
+//   no longer signs in on its own, while the request was out, nothing is written and the answer is the row's own token
+//   (or `failed` with why).
+// - **A switch of kind drops the old row.** An entry that turns from a code sign-in to a client grant has its owner
+//   tokens revoked (RFC 7009, best effort: the refresh token, then the access token) and the row deleted before the first
+//   token is fetched; the other way round, `mcpAccessToken` deletes the client grant's row (→ `mcp-sign-in-registry.ts`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
 import {
+  byteLength,
   discoverOAuthServerInfo,
   type IssuerPin,
   isPinned,
   issuerPinProblem,
   MAX_METADATA_BYTES,
+  pemSecrets,
   requestClientCredentials,
+  revokeTokens,
   type ClientCredentialsAuth,
   type ClientCredentialsOutcome,
   scrubbed,
   secretAuthMethod,
   selectResource,
-  byteLength,
   type AuthorizationServerMetadata,
 } from "@cloudpid/mcp/oauth";
 import type { McpAccessTokenAnswer } from "@cloudpid/mcp/types";
 import * as Clock from "effect/Clock";
-import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { type KeptVault, type SealedValue } from "@cloudpid/extensions/secrets/core";
+import type { McpResolvedServer } from "@cloudpid/config";
+import type { KeptVault, SealedValue } from "@cloudpid/extensions/secrets/core";
+import {
+  inMemoryBackoffs,
+  outcomeOf,
+  reasonOf,
+  retryOnce,
+  RETRY_MS,
+  sameSealed,
+  singleFlight,
+} from "./mcp-sign-in-backoff.ts";
 import {
   attempt,
+  clientInformation,
   type FlowDeps,
   hostOf,
   metadataOf,
@@ -60,25 +77,18 @@ import {
   MAX_SIGN_IN_ERROR_LENGTH,
   okAnswer,
   REFRESH_MARGIN_MS,
+  signInTarget,
 } from "./mcp-sign-in-registry.ts";
 import { type McpTokens, openTokens, sealTokens } from "./mcp-sign-in-seal.ts";
 import type { McpSignInRow, McpSignIns } from "./mcp-sign-ins.ts";
-import { type OauthSecret, resolveOauthValue } from "./mcp-values.ts";
-
-/** The pause before the one retry of a transient failure. */
-export const CLIENT_GRANT_RETRY_MS = 1_000;
-
-/** The first backoff after a failed fetch; it doubles, up to {@link MAX_CLIENT_GRANT_BACKOFF_MS}. */
-export const CLIENT_GRANT_BACKOFF_MS = 10_000;
-
-export const MAX_CLIENT_GRANT_BACKOFF_MS = 5 * 60_000;
+import { type OauthSecret, type OauthSecretField, resolveOauthValue } from "./mcp-values.ts";
 
 /** What a client grant needs: the flow's stores, vault, network and `${NAME}` sources, and the pause before a retry. */
 export type ClientGrantDeps = Pick<
   FlowDeps,
   "store" | "signIns" | "vault" | "fetch" | "sources"
 > & {
-  /** Defaults to {@link CLIENT_GRANT_RETRY_MS}; a test shortens it. */
+  /** Defaults to `RETRY_MS`; a test shortens it. */
   readonly retryMs?: number | undefined;
 };
 
@@ -114,10 +124,14 @@ type GrantEntry = {
   readonly issuer: string | undefined;
   readonly authServerMetadataUrl: string | undefined;
   readonly configuredScope: string | null;
+  /** How the client proves itself: with `oauth.privateKey` when the entry has one, else `oauth.clientSecret`. */
+  readonly credential: OauthSecretField;
+  /** `oauth.keyId`, the `kid` of an assertion. */
+  readonly keyId: string | undefined;
 };
 
-const entryOf = (request: ClientGrantRequest): GrantEntry | undefined => {
-  const { server } = request.resolved;
+const entryOf = (resolved: McpResolvedServer): GrantEntry | undefined => {
+  const { server } = resolved;
 
   if (server.type !== "http" || server.oauth?.clientId === undefined) return undefined;
 
@@ -127,16 +141,10 @@ const entryOf = (request: ClientGrantRequest): GrantEntry | undefined => {
     issuer: server.oauth.issuer,
     authServerMetadataUrl: server.oauth.authServerMetadataUrl,
     configuredScope: mergeScopes(server.oauth.scope),
+    credential: server.oauth.privateKey === undefined ? "clientSecret" : "privateKey",
+    keyId: server.oauth.keyId,
   };
 };
-
-/** The delay of the backoff after the `failures`th failed fetch (1-based). */
-const backoffMs = (failures: number): number =>
-  Math.min(CLIENT_GRANT_BACKOFF_MS * 2 ** (failures - 1), MAX_CLIENT_GRANT_BACKOFF_MS);
-
-const outcomeOf = (outcome: string) => Effect.annotateCurrentSpan({ "mcp.outcome": outcome });
-
-const sameSealed = Schema.toEquivalence(Schema.NullOr(Schema.Unknown));
 
 /** Whether the outcome of a request may pass: a network failure, a 408, a 429, a 5xx, or the server saying so. */
 const isTransient = (outcome: ClientCredentialsOutcome): boolean =>
@@ -148,20 +156,9 @@ const isTransient = (outcome: ClientCredentialsOutcome): boolean =>
       outcome.code === "server_error" ||
       outcome.code === "temporarily_unavailable"));
 
-/** The values a request sends that no text of ours may repeat: the secret, and the key as it was written and as its body. */
-const secretsOf = (secret: string): ReadonlyArray<string> => [
-  secret,
-  secret.replaceAll(/-----(BEGIN|END) [A-Z ]+-----|\s+/g, ""),
-];
-
 /** The grant over `deps`: single-flight per sign-in, with its backoff and the tokens' remembered refusals in memory. */
 export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
-  const flights = new Map<string, Deferred.Deferred<McpAccessTokenAnswer>>();
-
-  const backoffs = new Map<
-    string,
-    { readonly failures: number; readonly retryAt: number; readonly reason: string }
-  >();
+  const backoffs = inMemoryBackoffs();
 
   const afterRefusal = new Map<string, SealedValue>();
 
@@ -201,9 +198,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
     now: number,
   ): McpAccessTokenAnswer => {
     const { hash } = request.key;
-    const failures = (backoffs.get(hash)?.failures ?? 0) + 1;
-
-    backoffs.set(hash, { failures, retryAt: now + backoffMs(failures), reason: told(reason) });
+    backoffs.failed(hash, now, told(reason));
 
     return failedAnswer(request, standing, trigger, reason, now);
   };
@@ -343,35 +338,98 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
   const sendWithRetry = (
     send: (at: number) => Promise<ClientCredentialsOutcome>,
   ): Effect.Effect<ClientCredentialsOutcome> =>
-    Effect.gen(function* () {
-      const first = yield* Effect.flatMap(Clock.currentTimeMillis, (at) =>
-        Effect.promise(() => send(at)),
-      );
-
-      if (!isTransient(first)) return first;
-
-      yield* Effect.sleep(Duration.millis(deps.retryMs ?? CLIENT_GRANT_RETRY_MS));
-
-      // A new assertion, made at the time of this request.
-      return yield* Effect.flatMap(Clock.currentTimeMillis, (at) => Effect.promise(() => send(at)));
-    });
+    // A new assertion each time, made at the time of the request.
+    retryOnce(
+      Effect.flatMap(Clock.currentTimeMillis, (at) => Effect.promise(() => send(at))),
+      (outcome) => !isTransient(outcome),
+      deps.retryMs ?? RETRY_MS,
+    );
 
   /** The text an outcome that was not a token tells the owner. */
-  const reasonOf = (
+  const reasonFor = (
     outcome: Exclude<ClientCredentialsOutcome, { readonly kind: "issued" }>,
   ): string => {
-    if (outcome.kind === "problem" || outcome.kind === "failed") return outcome.message;
+    if (outcome.kind === "problem") return outcome.message;
 
-    if (outcome.code === "invalid_client" || outcome.code === "unauthorized_client") {
+    if (
+      outcome.kind === "refused" &&
+      (outcome.code === "invalid_client" || outcome.code === "unauthorized_client")
+    ) {
       return `The authorization server does not accept the entry's client id or credentials (${outcome.code}): check its oauth settings`;
     }
 
-    if (outcome.code === "server_error" && outcome.message.startsWith("HTTP ")) {
-      return `The authorization server answered ${outcome.message}`;
-    }
-
-    return outcome.message === outcome.code ? outcome.code : `${outcome.code} (${outcome.message})`;
+    return reasonOf(outcome);
   };
+
+  /**
+   * An owner's sign-in under a key whose entry now signs in on its own: its tokens are revoked (RFC 7009, the refresh token
+   * then the access token; best effort, a failure is only noted on the span) and the row deleted, so the client grant's
+   * first token does not overwrite them unseen. The row is deleted only if it is still the one that was read.
+   */
+  const retireOwnerSignIn = (
+    request: ClientGrantRequest,
+    vault: KeptVault,
+    row: McpSignInRow,
+    now: number,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const { hash } = request.key;
+      const { client, sealed } = row;
+      const metadata = row.metadata === null ? Option.none() : metadataOf(row.metadata);
+
+      const opened =
+        sealed === null ? undefined : yield* openTokens(vault, hash, sealed).pipe(Effect.result);
+
+      if (opened !== undefined && Result.isSuccess(opened) && Option.isSome(metadata)) {
+        yield* Effect.annotateCurrentSpan({ "mcp.issuer_host": hostOf(metadata.value.issuer) });
+
+        // The client as it signed in; a confidential one whose secret is gone revokes as a public client, which the
+        // server may refuse.
+        const info =
+          client === null
+            ? undefined
+            : yield* clientInformation(deps, vault, request.environment, {
+                server: request.server,
+                client,
+              }).pipe(Effect.orElseSucceed(() => ({ client_id: client.id })));
+
+        const revoked =
+          info === undefined
+            ? undefined
+            : yield* Effect.promise(() =>
+                revokeTokens({
+                  metadata: metadata.value,
+                  client: info,
+                  refreshToken: opened.success.refresh_token,
+                  accessToken: opened.success.access_token,
+                  fetch: deps.fetch,
+                }),
+              );
+
+        yield* outcomeOf(
+          revoked === undefined
+            ? "no_revocation_endpoint"
+            : revoked.every((each) => each.status === "revoked")
+              ? "revoked"
+              : "revocation_failed",
+        );
+      } else {
+        yield* outcomeOf("not_revoked");
+      }
+
+      // Nothing is awaited between this check and the delete.
+      if (sameSealed(deps.signIns.get(hash)?.sealed ?? null, sealed))
+        deps.signIns.delete(hash, now);
+    }).pipe(
+      Effect.withSpan("mcp.oauth.revoke", {
+        attributes: {
+          "mcp.server": request.key.name,
+          "mcp.source_kind": request.key.source.startsWith("repo:") ? "repo" : "owner",
+          "mcp.client_kind": row.client?.kind ?? "none",
+          "mcp.trigger": "switch",
+        },
+      }),
+    );
 
   /** What a request comes to: the row's token while it serves, else a fetch (the only part that has a span). */
   const run = (
@@ -382,7 +440,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
       const { key } = request;
       const { hash } = key;
 
-      const entry = entryOf(request);
+      const entry = entryOf(request.resolved);
 
       if (entry === undefined) {
         return { status: "failed", reason: "The entry has no client id" };
@@ -393,6 +451,16 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
       if (Result.isFailure(vault)) {
         return { status: "unavailable", reason: told(vault.failure.message) };
       }
+
+      // A row of the other kind (an owner's sign-in the entry has turned its back on) is revoked and dropped first.
+      const owned = deps.signIns.get(hash);
+
+      if (owned !== null && owned.sealed !== null && owned.client?.kind !== "client_grant") {
+        yield* retireOwnerSignIn(request, vault.success, owned, startedAt);
+      }
+
+      // The row this fetch is about: what it is checked against again just before it writes.
+      const baseline = deps.signIns.get(hash);
 
       const standing = yield* standingOf(request, entry, vault.success);
 
@@ -424,9 +492,65 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
         entry,
         vault: vault.success,
         standing,
+        baseline,
         trigger,
         startedAt,
       });
+    });
+
+  /** What changed under a fetch since it began, if anything: the entry, or the row it would write over. */
+  const changedMeanwhile = (
+    request: ClientGrantRequest,
+    entry: GrantEntry,
+    baseline: McpSignInRow | null,
+  ): "entry" | "row" | undefined => {
+    const target = signInTarget(deps.store, request.environment, request.server);
+
+    if (
+      target.status !== "client_grant" ||
+      JSON.stringify(entryOf(target.resolved)) !== JSON.stringify(entry)
+    ) {
+      return "entry";
+    }
+
+    const current = deps.signIns.get(request.key.hash);
+
+    return sameSealed(current?.sealed ?? null, baseline?.sealed ?? null) &&
+      (baseline === null || current?.grantId === baseline.grantId)
+      ? undefined
+      : "row";
+  };
+
+  /** The answer for a fetch whose write was not made, because `changed`: the row's own token, or `failed` with why. */
+  const answerChanged = (
+    request: ClientGrantRequest,
+    vault: KeptVault,
+    changed: "entry" | "row",
+    now: number,
+  ): Effect.Effect<McpAccessTokenAnswer> =>
+    Effect.gen(function* () {
+      yield* outcomeOf("replaced");
+
+      const { hash } = request.key;
+      const current = deps.signIns.get(hash);
+
+      if (changed === "row" && current?.sealed != null && current.client?.kind === "client_grant") {
+        const opened = yield* openTokens(vault, hash, current.sealed).pipe(Effect.result);
+
+        if (Result.isSuccess(opened)) {
+          deps.signIns.touch(hash, now);
+
+          return okAnswer(current, opened.success, request.key);
+        }
+      }
+
+      return {
+        status: "failed",
+        reason:
+          changed === "entry"
+            ? "The entry changed while its token was being fetched"
+            : "The sign-in changed while its token was being fetched",
+      } satisfies McpAccessTokenAnswer;
     });
 
   /** One fetch of a token, for the reason `trigger` says; `standing` is the row's token of this entry, when it has one. */
@@ -435,11 +559,12 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
     readonly entry: GrantEntry;
     readonly vault: KeptVault;
     readonly standing: Standing | undefined;
+    readonly baseline: McpSignInRow | null;
     readonly trigger: Trigger;
     readonly startedAt: number;
   }): Effect.Effect<McpAccessTokenAnswer> =>
     Effect.gen(function* () {
-      const { request, entry, standing, trigger, startedAt } = input;
+      const { request, entry, standing, baseline, trigger, startedAt } = input;
       const { key } = request;
       const { hash } = key;
 
@@ -450,20 +575,22 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
         "mcp.trigger": trigger,
       });
 
-      const held = backoffs.get(hash);
+      const held = backoffs.held(hash);
 
       if (held !== undefined && startedAt < held.retryAt) {
         yield* outcomeOf("backoff");
 
-        return failedAnswer(request, standing, trigger, held.reason, startedAt);
+        return failedAnswer(
+          request,
+          standing,
+          trigger,
+          held.reason ?? "The last fetch failed",
+          startedAt,
+        );
       }
 
       // The client's credentials, read now from the entry's `${NAME}`: held in this fetch's memory and nowhere else.
-      const field =
-        request.resolved.server.type === "http" &&
-        request.resolved.server.oauth?.privateKey !== undefined
-          ? "privateKey"
-          : "clientSecret";
+      const field = entry.credential;
 
       const sources = yield* deps
         .sources(request.environment, request.resolved.resolvesSecrets)
@@ -493,7 +620,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
         );
       }
 
-      const secrets = secretsOf(credential.value);
+      const secrets = pemSecrets(credential.value);
       const clean = (text: string) => scrubbed(text, secrets, MAX_SIGN_IN_ERROR_LENGTH);
 
       // The authorization server: the row's record while its token still stands (a renewal in the last minute, or after
@@ -518,11 +645,12 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
 
       const { metadata, resource, scope } = discovered.success;
 
-      yield* Effect.annotateCurrentSpan({
-        "mcp.issuer_host": hostOf(metadata.issuer),
-        "mcp.auth_method":
-          field === "privateKey" ? "private_key_jwt" : (secretAuthMethod(metadata) ?? "none"),
-      });
+      // No `mcp.auth_method` when the server lists no way to send a secret: nothing is sent, and the outcome is `problem`.
+      const method = field === "privateKey" ? "private_key_jwt" : secretAuthMethod(metadata);
+
+      yield* Effect.annotateCurrentSpan({ "mcp.issuer_host": hostOf(metadata.issuer) });
+
+      if (method !== undefined) yield* Effect.annotateCurrentSpan({ "mcp.auth_method": method });
 
       const auth: ClientCredentialsAuth =
         field === "privateKey"
@@ -530,10 +658,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
               kind: "key",
               clientId: entry.clientId,
               privateKey: credential.value,
-              keyId:
-                request.resolved.server.type === "http"
-                  ? request.resolved.server.oauth?.keyId
-                  : undefined,
+              keyId: entry.keyId,
             }
           : { kind: "secret", clientId: entry.clientId, clientSecret: credential.value };
 
@@ -556,10 +681,13 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
           });
         }
 
-        const reason = clean(reasonOf(outcome));
+        const reason = clean(reasonFor(outcome));
 
-        // A setup that cannot work (a key that cannot sign, a method the server does not list) is not told again until
-        // the entry changes: no request was made, so there is nothing to back off from.
+        // A setup that cannot work (a key that cannot sign, a method the server does not list) made no request, so there is
+        // nothing to back off from; but each ask would discover the authorization server anew, so it is held for the
+        // first backoff, which a fixed entry waits out at most.
+        if (outcome.kind === "problem") backoffs.hold(hash, now, told(reason));
+
         return outcome.kind === "problem"
           ? failedAnswer(request, standing, trigger, reason, now)
           : backedOff(request, standing, trigger, reason, now);
@@ -615,6 +743,12 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
         );
       }
 
+      // The request was out for a while: a sign-in that replaced or removed the row, or an entry that stopped signing in on
+      // its own or changed, means this token is not this row's to write. Nothing is awaited between the check and the write.
+      const changed = changedMeanwhile(request, entry, baseline);
+
+      if (changed !== undefined) return yield* answerChanged(request, input.vault, changed, now);
+
       if (standing === undefined) {
         const put = deps.signIns.put(
           {
@@ -649,6 +783,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
           sealed: sealed.success.sealed,
           expiresAt,
           scope: recordedScope,
+          secretRef: credential.ref,
         };
 
         // Discovered anew with this token: what the row records is updated with it.
@@ -664,7 +799,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
         deps.signIns.replaceTokens(hash, renewed, now);
       }
 
-      backoffs.delete(hash);
+      backoffs.clear(hash);
 
       // The token that replaced one the server refused is remembered as such; any other forgets it.
       if (trigger === "401") afterRefusal.set(hash, sealed.success.sealed);
@@ -681,24 +816,5 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
       return okAnswer(written, { access_token: outcome.accessToken }, key);
     }).pipe(Effect.withSpan("mcp.oauth.client_credentials"));
 
-  return (request, now) =>
-    Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const { hash } = request.key;
-        const flight = flights.get(hash);
-
-        if (flight !== undefined) return yield* restore(Deferred.await(flight));
-
-        const own = Deferred.makeUnsafe<McpAccessTokenAnswer>();
-
-        flights.set(hash, own);
-
-        const exit = yield* Effect.exit(run(request, now));
-
-        flights.delete(hash);
-        yield* Deferred.done(own, exit);
-
-        return yield* exit;
-      }),
-    );
+  return singleFlight(run);
 };

@@ -2,8 +2,24 @@
  * The small HTTP helpers the OAuth additions share (`docs/architecture/mcp-sign-in.md` → Code): the fetch type, a body
  * read to a limit, and HTTP Basic client authentication. Re-exported by `./oauth`; no SDK import.
  */
-// @effect-diagnostics missingPipeableSignature:off asyncFunction:off
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off
 const encoder = new TextEncoder();
+
+/** An error kept on a row, or an owner-facing reason, is cut to this many characters. */
+export const MAX_SIGN_IN_ERROR_LENGTH = 300;
+
+/** `text` with each of `secrets` (four characters or more) replaced, then cut to `limit` characters. */
+export const scrubbed = (text: string, secrets: ReadonlyArray<string>, limit: number): string => {
+  let result = text;
+
+  for (const secret of secrets) {
+    if (secret.length >= 4) result = result.split(secret).join("[REDACTED]");
+  }
+
+  const points = Array.from(result);
+
+  return points.length <= limit ? result : points.slice(0, limit).join("");
+};
 
 /** How an OAuth request is sent: `guardedFetch` in the Worker, a fake in a test. */
 export type OAuthFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;

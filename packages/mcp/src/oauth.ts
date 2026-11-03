@@ -9,7 +9,7 @@
  * (`node:http`) and `authorizeMcp`, which cloudpid never uses (`authorizeMcp` drops the client and the tokens on
  * `invalid_client`). The additions pi-mcp lacks live here, and go to pi as an issue first (The MCP core #394 D6): RFC 7009
  * revocation, `client_secret_expires_at` and the issuer pin, and the size bounds the Registry holds sign-ins to.
- * The `client_credentials` grant and `private_key_jwt` are in `./oauth-client-credentials.ts`, re-exported here.
+ * The `client_credentials` grant is in `./oauth-client-credentials.ts` and the `private_key_jwt` assertion in `./client-assertion.ts`, re-exported here.
  */
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off -- plain functions over values and Promises, as `fetch` is.
 import * as Option from "effect/Option";
@@ -17,7 +17,9 @@ import * as Schema from "effect/Schema";
 import type { AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
 import { basicAuthorization, boundedText, type OAuthFetch } from "./oauth-http.ts";
 
-export { boundedText, type OAuthFetch } from "./oauth-http.ts";
+export { boundedText, MAX_SIGN_IN_ERROR_LENGTH, type OAuthFetch, scrubbed } from "./oauth-http.ts";
+
+export * from "./client-assertion.ts";
 
 export * from "./oauth-client-credentials.ts";
 

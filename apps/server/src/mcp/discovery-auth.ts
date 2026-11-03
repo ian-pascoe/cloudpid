@@ -147,7 +147,7 @@ const blockedClientGrant = (
     : { state: "failed", message: access.reason };
 
 /** What the server's refusal of a client grant's token says, for the status: the HTTP answer, and its error code. */
-const refusalOfClientGrant = (result: McpEngineDiscoverResult): string | undefined => {
+const refusalOfClientGrant = (result: EngineAnswer): string | undefined => {
   if (result.kind !== "failed") return undefined;
 
   if (Predicate.isTagged(result.error, "SignInRequired")) {
@@ -373,6 +373,12 @@ export type RequestAccess =
   | {
       readonly kind: "open";
       readonly auth?: (stale: boolean) => Effect.Effect<string | undefined>;
+      /**
+       * For a server that signs in on its own: why the server's refusal of the token (a 401 after the hook's one
+       * renewal, or a 403 for more scope) fails the call, as a failure no sign-in answers; undefined for any other
+       * answer.
+       */
+      readonly refusal?: (result: McpEngineRequestResult) => string | undefined;
       readonly answered: (
         result: McpEngineRequestResult,
       ) => Effect.Effect<void, never, McpRegistryPort>;
@@ -393,6 +399,20 @@ export const requestAccess = (environment: string, view: ServerView, target: Mcp
 
     if (hasOwnAuthorization(target)) {
       return { kind: "open", answered: () => Effect.void } satisfies RequestAccess;
+    }
+
+    // A server that signs in on its own never calls without a token, and no answer is a sign-in the owner could give.
+    if (signsInOnItsOwn(view.server.server)) {
+      const own = yield* tokens.access(asked);
+
+      return own.kind !== "token"
+        ? ({ kind: "blocked", ...blockedClientGrant(own) } satisfies RequestAccess)
+        : ({
+            kind: "open",
+            auth: engineAuth(tokens, asked),
+            answered: () => Effect.void,
+            refusal: refusalOfClientGrant,
+          } satisfies RequestAccess);
     }
 
     const access = yield* tokens.access(asked);
