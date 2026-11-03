@@ -1,6 +1,12 @@
 // The Registry operations (`docs/architecture/client-and-protocol.md`): listing and creating Sessions, Environments and
 // Workspaces. They hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import { Settings, SettingsError, ContainerOverrides, ContainerSettings } from "@cloudpid/config";
+import {
+  ContainerOverrides,
+  ContainerSettings,
+  McpSettingsProblem,
+  Settings,
+  SettingsError,
+} from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -335,24 +341,6 @@ export type EnvironmentBuildState = typeof EnvironmentBuildState.Type;
 export const OverridingEnvironment = Schema.Struct({ id: Schema.String, name: Schema.String });
 
 export type OverridingEnvironment = typeof OverridingEnvironment.Type;
-
-/**
- * An MCP server's entry, or a key of it, that a lenient read left out (`@cloudpid/config` → `McpSettingsProblem`): the
- * Settings page shows it on that server's row, where the `problem` text only lists it.
- */
-export const McpSettingsProblem = Schema.Struct({
-  /** The layer whose saved document holds it: `global` or `environment`. */
-  source: Schema.String,
-  /** The server's name. */
-  name: Schema.String,
-  /** The keys below the entry that are at fault: none when the entry as a whole is. */
-  keys: Schema.Array(Schema.String),
-  message: Schema.String,
-  /** The Override fields whose Reset clears it (an adjustment key held over the entry bound): none otherwise. */
-  reset: Schema.Array(Schema.String),
-});
-
-export type McpSettingsProblem = typeof McpSettingsProblem.Type;
 
 /**
  * The Global Settings in force, and the overrides saved over the defaults (`docs/architecture/overview.md` → Settings).

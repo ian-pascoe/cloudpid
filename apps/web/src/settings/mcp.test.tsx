@@ -4,14 +4,19 @@
 // queries a page reads are settled first, so the markup shows what they answered. The changes the owner's actions make
 // are run against the same fake, which records what it was asked to save.
 
-import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, type Settings } from "@cloudpid/config";
+import {
+  DEFAULT_CONTAINER_SETTINGS,
+  DEFAULT_SETTINGS,
+  type McpSettingsProblem,
+  resolveLeniently,
+  type Settings,
+} from "@cloudpid/config";
 import {
   type EnvironmentRecord,
   type EnvironmentSecretRecord,
   McpNoEnvironment,
   McpServersList,
   type McpServerView,
-  type McpSettingsProblem,
   McpUnavailable,
   type OverridingEnvironment,
 } from "@cloudpid/protocol";
@@ -145,7 +150,8 @@ const handlersFor = (held: Held = {}): Partial<RegistryHandlers> => {
       const state = {
         environment,
         settings,
-        global: settings,
+        // Global as the Registry resolves its document: the servers a row of this Environment may adjust.
+        global: { ...settings, mcp: resolveLeniently(GLOBAL_DOCUMENT).settings.mcp },
         overrides: WORK_OVERRIDES,
         instructions: "",
       };
@@ -773,6 +779,35 @@ describe("the form of an Add", () => {
   );
 });
 
+describe("the tool exposure editor of a Global server at an Environment", () => {
+  it.effect("saves a server Global still has", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        panel: { kind: "tools", name: "files", rows: [] },
+      });
+
+      expect(textOf(markup)).toContain("Tool exposure of files");
+      expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Save tool exposure/);
+      expect(textOf(markup)).not.toContain("is not one of Global's servers");
+    }),
+  );
+
+  it.effect(
+    "refuses to save when the server is no longer one of Global's in this environment",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          panel: { kind: "tools", name: "vanished", rows: [] },
+        });
+
+        expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Save tool exposure/);
+        expect(textOf(markup)).toContain(
+          "vanished is not one of Global's servers in this environment any more",
+        );
+      }),
+  );
+});
+
 describe("the import", () => {
   const text = JSON.stringify({
     autoEnableCodemode: true,
@@ -1071,6 +1106,48 @@ describe("what the owner's actions write", () => {
         },
       });
     }),
+  );
+
+  it.effect(
+    "a switch on a Global server that Global has removed since the row was shown fails, and adds no orphan adjustment",
+    () =>
+      Effect.gen(function* () {
+        const saved: Array<unknown> = [];
+        const change = mcpRowChanges(rowAt("work", "files")).enabled(true);
+
+        const layer = fakeRegistryLayer({
+          ...handlersFor(),
+          getSettingsOverrides: ({ environment }) =>
+            Effect.succeed({
+              environment,
+              settings: DEFAULT_SETTINGS,
+              global: DEFAULT_SETTINGS,
+              overrides: WORK_OVERRIDES,
+              instructions: "",
+            }),
+          updateSettingsOverrides: (payload) =>
+            Effect.sync(() => {
+              saved.push(payload);
+
+              return {
+                environment: payload.environment,
+                settings: DEFAULT_SETTINGS,
+                global: DEFAULT_SETTINGS,
+                overrides: {},
+                instructions: "",
+              };
+            }),
+        });
+
+        const failure = yield* writeMcpChange("work", change).pipe(
+          Effect.provide(layer),
+          Effect.flip,
+        );
+
+        expect(change).toMatchObject({ kind: "enabled", name: "files", target: "adjustment" });
+        expect(failure.message).toContain("files");
+        expect(saved).toEqual([]);
+      }),
   );
 
   it.effect("a change to a server Global no longer has fails, saving nothing", () =>

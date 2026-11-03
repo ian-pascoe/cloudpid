@@ -45,13 +45,16 @@ export type SettingsState = {
   readonly overrides: SettingsOverrides;
   /** Why the saved overrides were not used, when they no longer resolve: the settings are then the defaults. */
   readonly problem?: string;
-  /** The part of `problem` that lies in an MCP server's entry, structured; left out with none. */
+  /**
+   * The part of `problem` that lies in an MCP server's entry, structured: always given by this Registry (empty for none),
+   * so that a page can tell none from an older Registry that does not say.
+   */
   readonly mcpProblems?: ReadonlyArray<McpSettingsProblem>;
 };
 
 const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 
-const defaults: SettingsState = { settings: DEFAULT_SETTINGS, overrides: {} };
+const defaults: SettingsState = { settings: DEFAULT_SETTINGS, overrides: {}, mcpProblems: [] };
 
 /**
  * The settings in force. Saved overrides that no longer resolve (a model a release dropped, a setting it renamed) cost
@@ -70,13 +73,14 @@ export const readSettings = (documents: DocumentStore): SettingsState => {
   }
 
   const { settings, dropped, mcpProblems } = resolveLeniently(saved.value);
-  const state = { settings, overrides: overridesFrom(settings) };
+  const state = { settings, overrides: overridesFrom(settings), mcpProblems };
 
   if (dropped.length === 0) return state;
 
-  const problem = `These saved overrides no longer apply and are ignored:\n${Arr.join(dropped, "\n")}`;
-
-  return mcpProblems.length === 0 ? { ...state, problem } : { ...state, problem, mcpProblems };
+  return {
+    ...state,
+    problem: `These saved overrides no longer apply and are ignored:\n${Arr.join(dropped, "\n")}`,
+  };
 };
 
 /**
@@ -145,13 +149,14 @@ const overridesState = (
   );
 
   const instructions = store.getEnvironmentInstructions(environment)?.text ?? "";
-  const state = { environment, settings, global, overrides, instructions };
+  const state = { environment, settings, global, overrides, instructions, mcpProblems };
 
   if (dropped.length === 0) return state;
 
-  const problem = `These saved Overrides no longer apply and are ignored, so their fields inherit Global:\n${Arr.join(dropped, "\n")}`;
-
-  return mcpProblems.length === 0 ? { ...state, problem } : { ...state, problem, mcpProblems };
+  return {
+    ...state,
+    problem: `These saved Overrides no longer apply and are ignored, so their fields inherit Global:\n${Arr.join(dropped, "\n")}`,
+  };
 };
 
 /**

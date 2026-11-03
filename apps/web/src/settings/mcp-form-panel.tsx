@@ -37,7 +37,12 @@ import {
   MCP_SAMPLING_LABELS,
   toolExposureOfRows,
 } from "./mcp-form.ts";
-import type { McpReferenceNames, McpRow, McpScopeView } from "./mcp-model.ts";
+import {
+  isFollowedRow,
+  type McpReferenceNames,
+  type McpRow,
+  type McpScopeView,
+} from "./mcp-model.ts";
 import { MessageList, OptionSelect, ReferencesNotice } from "./mcp-parts.tsx";
 import { type McpReferencesState, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
 import { CODE_AREA, Field, noteId } from "./parts.tsx";
@@ -308,8 +313,8 @@ const Checks = ({
   check: McpFormCheck;
 }) => (
   <>
-    <MessageList tone="problem" id={id} messages={problems} />
-    <MessageList tone="warning" messages={Arr.map(check.warnings, ({ message }) => message)} />
+    <MessageList tone="problem" id={id} messages={problems} live />
+    <MessageList tone="warning" messages={Arr.map(check.warnings, ({ message }) => message)} live />
     <MessageList tone="hint" messages={check.hints} small />
   </>
 );
@@ -737,13 +742,14 @@ export const McpToolsPanel = ({
 }) => {
   const [, setPanel] = useAtom(mcpPanelAtom(scope));
   const [saved, save] = useAtom(saveMcpAtom(scope));
+  const gone = row === null || !isFollowedRow(row);
   const busy = saved.waiting;
   const listId = `mcp-tools-${scope}`;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (!busy)
+    if (!busy && !gone)
       save({
         kind: "toolExposure",
         name: draft.name,
@@ -772,9 +778,15 @@ export const McpToolsPanel = ({
           setPanel({ ...draft, rows });
         }}
       />
+      {gone && (
+        <p role="alert" className="text-sm text-destructive">
+          {draft.name} is not one of Global's servers in this environment any more, so there is
+          nothing to adjust: close this and look at the list again.
+        </p>
+      )}
       <DialogProblem problem={settledFailureOf(saved)} />
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" disabled={busy}>
+        <Button type="submit" disabled={busy || gone}>
           {busy ? "Saving…" : "Save tool exposure"}
         </Button>
         <Button

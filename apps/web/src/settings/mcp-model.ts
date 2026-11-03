@@ -16,17 +16,18 @@ import {
   type McpProblemSource,
   type McpRepoLayer,
   type McpServerEntry,
+  type McpSettingsProblem,
   type McpShadowed,
   type McpSource,
   matchesToolPattern,
   mcpServersOf,
+  readMcpProblemSource,
   resolveMcpServerSet,
 } from "@cloudpid/config";
 import {
   mcpStateIsProblem,
   type McpServersView,
   type McpServerView,
-  type McpSettingsProblem,
   type OverridingEnvironment,
   readMcpServerState,
 } from "@cloudpid/protocol";
@@ -266,22 +267,23 @@ const LAYER_NAMES: Readonly<Record<McpProblemSource, string>> = {
 
 /**
  * The problems of entries a lenient read left out, as the Registry says them (`McpSettingsProblem`), each in its layer.
- * A problem in the document that was read is forgotten by that layer's next save; a Global server left out of an
- * Environment's view (its twin name is the Environment's own) is Global's, and says its own words.
+ * A problem in the document that was read is forgotten by that layer's next save; one in another known layer (a Global
+ * server left out of an Environment's view, its twin name being the Environment's own) is that layer's, and says its own
+ * words; one in a layer a later build adds is shown as that layer names itself, never as Global's.
  */
 const savedProblemLines = (
   found: ReadonlyArray<McpSettingsProblem>,
   read: McpProblemSource,
 ): ReadonlyArray<McpProblemLine> =>
   Arr.map(found, (problem) => {
-    const source = problem.source === "environment" ? "environment" : "global";
+    const layer = readMcpProblemSource(problem.source);
     const where = Arr.join(problem.keys, ".");
 
     return {
       name: problem.name,
-      source: LAYER_NAMES[source],
+      source: layer === undefined ? problem.source : LAYER_NAMES[layer],
       message:
-        source === read
+        layer === read
           ? `${FORGOTTEN}${where === "" ? "" : `${where}: `}${problem.message}`
           : problem.message,
       reset: problem.reset,

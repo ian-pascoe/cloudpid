@@ -27,26 +27,30 @@ const TONES: Readonly<
 
 /**
  * A list of messages of one `tone`, which a control names in its `aria-describedby` through `id`. Nothing for none.
- * `small` is the row's smaller text.
+ * `small` is the row's smaller text. A plain list keeps its list role and is not announced when the page loads; `live`
+ * makes it an alert (a problem) or a status (a warning), for messages that appear as the owner acts, as a form's checks
+ * do while it is edited.
  */
 export const MessageList = ({
   tone,
   messages,
   id,
   small = false,
+  live = false,
   action,
 }: {
   tone: MessageTone;
   messages: ReadonlyArray<string>;
   id?: string | undefined;
   small?: boolean;
+  live?: boolean;
   /** The control that acts on message `index` (a problem's Reset), if it has one. */
   action?: ((index: number) => ReactNode) | undefined;
 }) =>
   messages.length === 0 ? null : (
     <ul
       id={id}
-      role={TONES[tone].role}
+      role={live ? TONES[tone].role : undefined}
       className={cn("flex flex-col gap-0.5", small ? "text-xs" : "text-sm", TONES[tone].className)}
     >
       {messages.map((message, index) => (

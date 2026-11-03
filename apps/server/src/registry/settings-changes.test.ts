@@ -277,6 +277,7 @@ describe("an Agent change to the Settings", () => {
     expect(registry.saved()).toEqual({
       settings: expect.objectContaining({ thinkingLevel: "low" }),
       overrides: { model: "anthropic/claude-haiku-5-5", thinkingLevel: "low" },
+      mcpProblems: [],
     });
   });
 

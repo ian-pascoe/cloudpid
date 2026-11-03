@@ -151,11 +151,14 @@ const serversPatch = (servers: Schema.JsonObject): Schema.JsonObject => ({ mcp: 
  * The patch that makes `change` of an Environment's servers, over its Overrides `overrides` as saved now: a Global
  * server's switch, Exposure and tool exposure set the adjustment key (never a copy of Global's entry), those of the
  * Environment's own server the key inside its entry; an entry is one Override, replacing whatever the Environment held
- * under the name. Fails with why the change does not apply to what the Registry holds now.
+ * under the name. `globalServers` are the names of the Global servers now: an adjustment of one that is no longer there
+ * would be an orphan the Registry accepts, so it fails. Fails with why the change does not apply to what the Registry
+ * holds now.
  */
 export const mcpOverridesPatch = (
   overrides: Schema.Json,
   change: McpChange,
+  globalServers: ReadonlyArray<string>,
 ): Result.Result<McpOverridesPatch, string> => {
   const servers = mcpServersIn(overrides);
 
@@ -169,8 +172,14 @@ export const mcpOverridesPatch = (
 
       // The row showed an own entry and it is gone (or an adjustment and an own entry is there now): writing the key
       // would adjust Global's server of the same name, or an entry the owner never saw, so it writes nothing.
-      if ((own !== undefined) !== (change.target === "own"))
+      if ((own !== undefined) !== (change.target === "own")) {
         return Result.fail(NOT_THERE(change.name));
+      }
+
+      // An adjustment needs the Global server it adjusts: gone since the row was shown, it would be an orphan.
+      if (own === undefined && !Arr.contains(globalServers, change.name)) {
+        return Result.fail(NOT_THERE(change.name));
+      }
 
       return Result.succeed({
         set: serversPatch({

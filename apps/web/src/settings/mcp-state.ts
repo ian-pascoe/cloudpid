@@ -179,7 +179,7 @@ export const writeMcpChange = (scope: string, change: McpChange) =>
     }
 
     const state = yield* readSettingsOverrides(scope);
-    const patch = mcpOverridesPatch(state.overrides, change);
+    const patch = mcpOverridesPatch(state.overrides, change, Record.keys(state.global.mcp.servers));
 
     if (Result.isFailure(patch)) {
       return yield* SettingsError.make({ message: patch.failure });

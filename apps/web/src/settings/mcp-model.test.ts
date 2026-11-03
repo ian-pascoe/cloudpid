@@ -221,6 +221,43 @@ describe("the rows at an Environment", () => {
     ]);
   });
 
+  it("read the text only where the Registry gives no structured problems: an empty list is none", () => {
+    const text =
+      "These saved Overrides no longer apply:\nmcp.servers.linear.exposure: from the text";
+
+    const input = {
+      scope: "work",
+      global: GLOBAL_DOCUMENT,
+      globalProblem: undefined,
+      overrides: OVERRIDES,
+      overridesProblem: text,
+      offered: OFFERED,
+      overriddenIn: {},
+    };
+
+    expect(row(mcpScopeView({ ...input, overridesMcpProblems: [] }), "linear").problems).toEqual(
+      [],
+    );
+    expect(row(mcpScopeView(input), "linear").problems).toHaveLength(1);
+  });
+
+  it("show a problem in a layer a later build adds as that layer names itself, never as Global's", () => {
+    const view = mcpScopeView({
+      scope: "work",
+      global: GLOBAL_DOCUMENT,
+      globalProblem: undefined,
+      overridesProblem: undefined,
+      overridesMcpProblems: [
+        { source: "repo", name: "linear", keys: [], message: "is skipped", reset: [] },
+      ],
+      overrides: OVERRIDES,
+      offered: OFFERED,
+      overriddenIn: {},
+    });
+
+    expect(row(view, "linear").problems.map(mcpProblemText)).toEqual(["repo: is skipped"]);
+  });
+
   it("show an adjustment held over the entry bound on its server's row with its Reset, as the Registry reads it", () => {
     const global: Schema.Json = {
       mcp: {
@@ -676,6 +713,9 @@ describe("the import", () => {
 });
 
 describe("what a change writes", () => {
+  /** The names of the Global servers the Registry holds when the owner acts. */
+  const GLOBAL_SERVERS = ["linear", "files", "search"];
+
   const entry = { command: "x" };
 
   it("sets a key of Global's entry, leaving the rest of the document as it was", () => {
@@ -733,12 +773,14 @@ describe("what a change writes", () => {
       mcpOverridesPatch(
         {},
         { kind: "enabled", name: "linear", target: "adjustment", enabled: false },
+        GLOBAL_SERVERS,
       ),
     ).toEqual(Result.succeed({ set: { mcp: { servers: { linear: { enabled: false } } } } }));
     expect(
       mcpOverridesPatch(
         { mcp: { servers: { linear: { exposure: "hidden" } } } },
         { kind: "exposure", name: "linear", target: "adjustment", exposure: "direct" },
+        GLOBAL_SERVERS,
       ),
     ).toEqual(Result.succeed({ set: { mcp: { servers: { linear: { exposure: "direct" } } } } }));
     expect(
@@ -750,6 +792,7 @@ describe("what a change writes", () => {
           target: "adjustment",
           toolExposure: { "delete_*": "hidden" },
         },
+        GLOBAL_SERVERS,
       ),
     ).toEqual(
       Result.succeed({
@@ -763,6 +806,7 @@ describe("what a change writes", () => {
       mcpOverridesPatch(
         { mcp: { servers: { notes: { command: "notes-mcp", args: ["a"] } } } },
         { kind: "enabled", name: "notes", target: "own", enabled: false },
+        GLOBAL_SERVERS,
       ),
     ).toEqual(
       Result.succeed({
@@ -775,6 +819,7 @@ describe("what a change writes", () => {
     const gone = mcpOverridesPatch(
       { mcp: { servers: { other: { command: "x" } } } },
       { kind: "enabled", name: "notes", target: "own", enabled: false },
+      GLOBAL_SERVERS,
     );
 
     expect(Result.isFailure(gone)).toBe(true);
@@ -787,9 +832,21 @@ describe("what a change writes", () => {
         mcpOverridesPatch(
           { mcp: { servers: { linear: { url: "https://own.example.com" } } } },
           { kind: "enabled", name: "linear", target: "adjustment", enabled: false },
+          GLOBAL_SERVERS,
         ),
       ),
     ).toBe(true);
+  });
+
+  it("writes nothing when the Global server an adjustment is of is gone since the row was shown", () => {
+    const orphan = mcpOverridesPatch(
+      {},
+      { kind: "enabled", name: "vanished", target: "adjustment", enabled: false },
+      GLOBAL_SERVERS,
+    );
+
+    expect(Result.isFailure(orphan)).toBe(true);
+    expect(Result.isFailure(orphan) && orphan.failure).toContain("vanished");
   });
 
   it("fails an own switch at Global for an entry it no longer holds, and for an adjustment target", () => {
@@ -805,15 +862,19 @@ describe("what a change writes", () => {
 
   it("resets adjustment keys by their Override field", () => {
     expect(
-      mcpOverridesPatch({}, { kind: "reset", fields: ["mcp.servers.linear.enabled"] }),
+      mcpOverridesPatch(
+        {},
+        { kind: "reset", fields: ["mcp.servers.linear.enabled"] },
+        GLOBAL_SERVERS,
+      ),
     ).toEqual(Result.succeed({ reset: ["mcp.servers.linear.enabled"] }));
   });
 
   it("writes an Environment's own entry as one Override, and takes it away by resetting it", () => {
-    expect(mcpOverridesPatch({}, { kind: "put", name: "notes", entry })).toEqual(
+    expect(mcpOverridesPatch({}, { kind: "put", name: "notes", entry }, GLOBAL_SERVERS)).toEqual(
       Result.succeed({ set: { mcp: { servers: { notes: entry } } } }),
     );
-    expect(mcpOverridesPatch({}, { kind: "remove", name: "notes" })).toEqual(
+    expect(mcpOverridesPatch({}, { kind: "remove", name: "notes" }, GLOBAL_SERVERS)).toEqual(
       Result.succeed({ reset: ["mcp.servers.notes"] }),
     );
   });

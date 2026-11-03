@@ -780,18 +780,26 @@ export const withMcpLayerRead = (
 /** Which layer's saved document a problem is in. */
 export type McpProblemSource = "global" | "environment";
 
+/** The layer a problem's `source` names, or undefined for one a later build adds: a reader shows such a one as it is. */
+export const readMcpProblemSource = (source: string): McpProblemSource | undefined =>
+  source === "global" || source === "environment" ? source : undefined;
+
 /**
- * An MCP entry (or a key of one) that a lenient read left out, for the Settings page to show on its row: the server's
- * name, the keys below the entry (none for the entry as a whole), what is wrong, and the Override fields whose Reset
- * clears it (an adjustment key held over the entry bound).
+ * An MCP entry (or a key of one) that a lenient read left out, for the Settings page to show on its row: the layer it is
+ * in (`McpProblemSource`, a string on the wire so that a later layer is not a decode failure: `readMcpProblemSource`),
+ * the server's name, the keys below the entry (none for the entry as a whole), what is wrong, and the Override fields
+ * whose Reset clears it (an adjustment key held over the entry bound). The Registry's `getSettings` and
+ * `getSettingsOverrides` carry it as `mcpProblems`.
  */
-export type McpSettingsProblem = {
-  readonly source: McpProblemSource;
-  readonly name: string;
-  readonly keys: ReadonlyArray<string>;
-  readonly message: string;
-  readonly reset: ReadonlyArray<string>;
-};
+export const McpSettingsProblem = Schema.Struct({
+  source: Schema.String,
+  name: Schema.String,
+  keys: Schema.Array(Schema.String),
+  message: Schema.String,
+  reset: Schema.Array(Schema.String),
+});
+
+export type McpSettingsProblem = typeof McpSettingsProblem.Type;
 
 /** The problems of `problems` that lie in `mcp.servers.<name>`, as the page reads them, with `source` the layer they are in. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a mapping of plain problems, not a combinator.

@@ -28,7 +28,11 @@ const saved = (store: DocumentStore, overrides: Schema.Json) => {
 
 describe("reading the settings", () => {
   it("gives the defaults and no overrides before anything is saved", () => {
-    expect(readSettings(documents())).toEqual({ settings: DEFAULT_SETTINGS, overrides: {} });
+    expect(readSettings(documents())).toEqual({
+      settings: DEFAULT_SETTINGS,
+      overrides: {},
+      mcpProblems: [],
+    });
   });
 
   it("gives the saved overrides over the defaults", () => {
@@ -66,7 +70,7 @@ describe("reading the settings", () => {
     expect(state.problem).toContain("roles.xlarge.model");
   });
 
-  it("says an MCP entry it left out structured too, for the page's row of the server, and only then", () => {
+  it("says an MCP entry it left out structured too, for the page's row of the server, and an empty list when none", () => {
     const store = documents({
       [SETTINGS_DOCUMENT]:
         '{"mcp":{"servers":{"linear":{"command":"x","auth":"y"},"good":{"command":"z"}}}}',
@@ -79,9 +83,10 @@ describe("reading the settings", () => {
       { source: "global", name: "linear", keys: ["auth"], message: expect.any(String), reset: [] },
     ]);
     expect(state.problem).toContain("mcp.servers.linear.auth");
+    // With nothing left out it still says so, so that a page tells none from an older Registry that does not say.
     expect(
-      readSettings(documents({ [SETTINGS_DOCUMENT]: '{"thinkingLevel":"low"}' })),
-    ).not.toHaveProperty("mcpProblems");
+      readSettings(documents({ [SETTINGS_DOCUMENT]: '{"thinkingLevel":"low"}' })).mcpProblems,
+    ).toEqual([]);
   });
 
   it("saves the survivors, and nothing of what was dropped, when the form saves them back", () => {
@@ -96,6 +101,7 @@ describe("reading the settings", () => {
     expect(readSettings(store)).toEqual({
       settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
       overrides: { thinkingLevel: "low" },
+      mcpProblems: [],
     });
   });
 
