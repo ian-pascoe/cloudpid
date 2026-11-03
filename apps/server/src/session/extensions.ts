@@ -21,7 +21,7 @@ import {
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { Instructions, type InstructionsSettings } from "@cloudpid/extensions/instructions";
-import { emptyMcpExtension } from "@cloudpid/extensions/mcp";
+import { emptyMcpExtension, type McpHostClient } from "@cloudpid/extensions/mcp";
 import { ResultBounds } from "@cloudpid/extensions/result-bounds";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
@@ -29,6 +29,7 @@ import {
   type SettingsReload,
   SettingsTools,
 } from "@cloudpid/extensions/settings";
+import { type SettingsMcpAccess, SettingsMcpTools } from "@cloudpid/extensions/settings-mcp";
 import { Skills } from "@cloudpid/extensions/skills";
 import { SkillSearchTools } from "@cloudpid/extensions/skill-search-tool";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
@@ -66,7 +67,9 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * a Secret (`Secrets`) or the GitHub App's key (`DeployCredentials`), and keep each change for the Run's Notification
  * (`AgentChangeLog`), the root conversation's only (`docs/architecture/agent-changes.md`); the `settings_*` tools, which read
  * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
- * after a change (`SettingsReload`); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
+ * after a change (`SettingsReload`); the `settings_mcp_*` tools, which read the Registry's MCP servers (`SettingsMcpAccess`)
+ * and their inventory in the Environment's `McpHost` (`McpHostClient`) (`docs/architecture/mcp-configuration.md` → The agent's
+ * changes); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
  * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `settings_instructions_set`,
  * `environment_container_size_limit_set`, `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
  * (`docs/architecture/agent-changes.md` → Approval); `mcp`, the Environment's MCP tools, which the Session builds at each
@@ -96,6 +99,8 @@ export const sessionExtensions: Effect.Effect<
   | DeployCredentials
   | AgentChangeLog
   | SettingsAccess
+  | SettingsMcpAccess
+  | McpHostClient
   | SettingsReload
   | Approvals
   | EnvironmentRemoval
@@ -118,6 +123,8 @@ export const sessionExtensions: Effect.Effect<
   ContainerTools,
   EnvironmentTools,
   SettingsTools,
+  // The MCP servers' own settings tools: `settings_mcp_*`, over the Registry and the Environment's `McpHost`.
+  SettingsMcpTools,
   ApprovalTools,
   // The MCP tools, none until the first request start builds them from the Environment's `McpHost` (`./mcp-host.ts`).
   Effect.succeed(emptyMcpExtension),

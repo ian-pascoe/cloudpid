@@ -129,6 +129,10 @@ export const SettingsGetOutput = Schema.Struct({
         "At an Environment, its own Instructions, which add to Global's and win where they disagree; null at Global",
     }),
   }).annotate({ description: "The user's Instructions, which every conversation is shown" }),
+  mcp_servers: Schema.NullOr(Schema.Finite).annotate({
+    description:
+      "How many MCP servers there are at the Scope (at Global, its own entries; at an Environment, its whole set: Global's, its own and its Repos'), which settings_mcp_list shows; null when the Registry did not say",
+  }),
   problem: Schema.NullOr(Schema.String).annotate({
     description:
       "Why some saved overrides were left out, when a later release no longer accepts them; null for none",

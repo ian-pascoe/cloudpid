@@ -8,7 +8,11 @@ import {
   HostUnsupported,
   type JsonObject,
   MCP_HOST_FEATURES,
+  type McpApply,
+  type McpApplyResult,
+  McpApplied,
   McpHostCompleted,
+  McpReloaded,
   type McpHostRequest,
   type McpHostRequestHooks,
   type McpHostRequestResult,
@@ -49,19 +53,53 @@ export type FakeMcpServer = {
   readonly instructions?: string;
   /** More keys of the entry, as a definition spells them (`headers`, `oauth`, ...). */
   readonly entry?: JsonObject;
+  /** The protocol version `initialize` negotiated. */
+  readonly protocolVersion?: string;
+  /** What the host last failed with. */
+  readonly error?: string;
+  /** Problems found at discovery. */
+  readonly problems?: ReadonlyArray<{ tool?: string; prompt?: string; problem: string }>;
+  /** The prompts it offers, by name. */
+  readonly prompts?: ReadonlyArray<string>;
+  /** Where it was discovered (a stdio server's Workspace). */
+  readonly discoveredIn?: string;
 };
 
 /** What the fake was asked, in order. */
 export type FakeMcpCall =
   | { readonly method: "requestStart"; readonly input: McpRequestStart }
   | { readonly method: "servers"; readonly input: McpServersRequest }
+  | { readonly method: "apply"; readonly input: McpApply }
   | { readonly method: "request"; readonly input: McpHostRequest };
+
+/**
+ * How the fake answers an `apply`: by default a `set` is taken (`Applied`, changed), a `reload` reaches the servers it names
+ * (every one of the fake's when it names none) as `Reloaded`, and any other kind is `HostUnsupported`.
+ */
+export type FakeMcpApplyAnswer = (
+  input: McpApply,
+  servers: ReadonlyArray<string>,
+) => McpApplyResult;
 
 /** How the fake answers a request: by default, the tool's name and its arguments as text. */
 export type FakeMcpAnswer = (
   input: McpHostRequest,
   hooks: McpHostRequestHooks,
 ) => Promise<McpHostRequestResult | HostLost>;
+
+const applied: FakeMcpApplyAnswer = (input, servers) => {
+  switch (input.kind) {
+    case "set":
+      return McpApplied.make({ hash: input.hash, changed: true });
+    case "reload":
+      return McpReloaded.make({ servers: input.servers ?? servers });
+    default:
+      return HostUnsupported.make({
+        message: `The fake does not know apply ${input.kind}`,
+        op: input.kind,
+      });
+  }
+};
 
 const echo: FakeMcpAnswer = (input) =>
   Promise.resolve(
@@ -124,6 +162,25 @@ const inventoryOf = (
 
     if (discovered) inventory.discoveredAt = 1;
 
+    if (discovered && server.protocolVersion !== undefined) {
+      inventory.protocolVersion = server.protocolVersion;
+    }
+
+    if (server.error !== undefined) inventory.error = server.error;
+
+    if (server.problems !== undefined) inventory.problems = server.problems;
+
+    if (discovered && server.discoveredIn !== undefined)
+      inventory.discoveredIn = server.discoveredIn;
+
+    if (discovered && server.prompts !== undefined) {
+      inventory.counts = { tools: tools.length, prompts: server.prompts.length };
+
+      if (parts.includes("prompts")) {
+        inventory.prompts = Arr.map(server.prompts, (name) => ({ name }));
+      }
+    }
+
     if (discovered && server.instructions !== undefined && parts.includes("instructions")) {
       inventory.instructions = server.instructions;
     }
@@ -151,6 +208,7 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
   let features: ReadonlyArray<string> = MCP_HOST_FEATURES;
   let failing = false;
   let answer = echo;
+  let applyAnswer = applied;
   const calls: Array<FakeMcpCall> = [];
 
   const failed = HostFailed.make({ message: "The fake host fails" });
@@ -184,8 +242,24 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
           : {
               version: versionOf(servers),
               promptsVersion: "",
-              servers: inventoryOf(servers, input.parts),
+              servers: inventoryOf(
+                input.names === undefined
+                  ? servers
+                  : Arr.filter(servers, (server) => input.names?.includes(server.name) === true),
+                input.parts,
+              ),
             };
+      }),
+    apply: (input) =>
+      Effect.sync(() => {
+        calls.push({ method: "apply", input });
+
+        return failing
+          ? failed
+          : applyAnswer(
+              input,
+              Arr.map(servers, (server) => server.name),
+            );
       }),
     request: (input, hooks) =>
       Effect.suspend(() => {
@@ -215,6 +289,9 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
     },
     answer: (next: FakeMcpAnswer) => {
       answer = next;
+    },
+    applyAnswer: (next: FakeMcpApplyAnswer) => {
+      applyAnswer = next;
     },
   };
 };

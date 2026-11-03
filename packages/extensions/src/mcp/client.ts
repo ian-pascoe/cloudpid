@@ -1,6 +1,8 @@
 // `McpHostClient`, the Environment's `McpHost` as a Session reaches it (`docs/architecture/mcp-connections.md` → RPC, The
 // Session side). Its live adapter is `apps/server/src/session/mcp-host.ts`; its in-memory fake is `../mcp.testing.ts`.
 import type {
+  McpApply,
+  McpApplyResult,
   McpHostRequest,
   McpHostRequestHooks,
   McpHostRequestResult,
@@ -23,13 +25,20 @@ export type HostLost = typeof HostLost.Type;
 
 /**
  * `McpHost` as a Session calls it. Never fails: a host that answers with something this build cannot read, or whose
- * `requestStart` or `servers` call fails, is `HostFailed` (`readMcpRequestStartResult`, `readMcpServersResult`,
- * `readMcpHostRequestResult`), and a `request` whose RPC breaks is `HostLost`. What failed is logged, never told the
+ * `requestStart`, `servers` or `apply` call fails, is `HostFailed` (`readMcpRequestStartResult`, `readMcpServersResult`,
+ * `readMcpApplyResult`, `readMcpHostRequestResult`), and a `request` whose RPC breaks is `HostLost`. What failed is logged, never told the
  * model.
  */
 export type McpHostClientService = {
   readonly requestStart: (input: McpRequestStart) => Effect.Effect<McpRequestStartResult>;
   readonly servers: (input: McpServersRequest) => Effect.Effect<McpServersResult>;
+  /**
+   * The pushes (`apply`): the set the Registry computed, and `{ kind: "reload" }`. The Session carries the pushes of its own
+   * changes to the MCP set (`settings_mcp_*`: `docs/architecture/mcp-configuration.md` → From the Registry to the host), since
+   * the Registry never calls out. A host that does not know the kind answers `HostUnsupported`, and one that cannot be reached
+   * or whose answer cannot be read `HostFailed` (`readMcpApplyResult`).
+   */
+  readonly apply: (input: McpApply) => Effect.Effect<McpApplyResult>;
   /** A request with its hooks; the effect lasts as long as the request, so the hooks' stubs do too. */
   readonly request: (
     input: McpHostRequest,

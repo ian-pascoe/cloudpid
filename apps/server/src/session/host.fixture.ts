@@ -520,6 +520,7 @@ type McpHostPromises = {
 const promisedMcpHost = (host: McpHostPromises): McpHostStub<Cause.UnknownError> => ({
   requestStart: (input) => Effect.tryPromise(() => host.requestStart(input)),
   servers: (input) => Effect.tryPromise(() => host.servers(input)),
+  apply: (input) => Effect.tryPromise(() => host.apply(input)),
   request: (input, hooks) => Effect.tryPromise(() => host.request(input, hooks)),
 });
 
@@ -2226,6 +2227,8 @@ export class TestSession extends DurableObject {
             (await registry().getSettingsOverrides(environment)) as SettingsOverridesState | null,
         ),
       getEnvironment: ({ id }) => Effect.promise(() => registry().getEnvironment(id)),
+      // The test Registry holds no MCP servers.
+      mcpServerNames: () => Effect.succeed(null),
       sessionSettings: ({ session }) => Effect.promise(() => registry().sessionSettings(session)),
       changeSettings: ({ environment, changes, author }) =>
         Effect.promise(

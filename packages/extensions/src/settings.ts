@@ -89,6 +89,8 @@ export type SettingsView =
       >;
       /** Why some saved overrides were left out, when a later release no longer accepts them. */
       readonly problem?: string | undefined;
+      /** How many MCP servers Global's own entries are; undefined when the Registry did not say. */
+      readonly mcpServers?: number | undefined;
     }
   | {
       readonly scope: string;
@@ -101,6 +103,8 @@ export type SettingsView =
       readonly problem?: string | undefined;
       /** The Environment's own Instructions, empty for none: no Override, shown after Global's (ADR-0027). */
       readonly instructions: string;
+      /** How many MCP servers its whole set has (Global's, its own and its Repos'); undefined when the Registry did not say. */
+      readonly mcpServers?: number | undefined;
     };
 
 /** The Global Settings' view. */
@@ -457,6 +461,7 @@ export const describeSettings = (view: SettingsView, own: string | null): string
           ),
       )}. A Limit: settings_subagent_workspaces_set changes it once the user approves, at either Scope.`,
       `Extension options: ${options.length === 0 ? "none" : `\n${Arr.join(options, "\n")}`}`,
+      `MCP servers: ${view.mcpServers === undefined ? "not known" : view.mcpServers} at this Scope; settings_mcp_list shows them`,
       instructionsLine,
       isGlobalView(view)
         ? "settings_reset puts a field back to its default at Global, or removes an Environment's Override of it; for a Limit it waits for the user's Approval."
@@ -554,6 +559,7 @@ export const settingsOutput = (view: SettingsView, own: string | null) => {
       ...options,
     ],
     instructions,
+    mcp_servers: view.mcpServers ?? null,
     problem: view.problem ?? null,
   });
 };
@@ -1217,6 +1223,13 @@ export const SettingsTools: Effect.Effect<
     replay: "unsafe",
     execute: ({ scope, extension, key, value, reason }, api) =>
       Effect.gen(function* () {
+        if (extension === "mcp") {
+          return yield* SettingsAccessError.make({
+            message:
+              "mcp is not an extension whose options are set here: MCP servers are kept under their own settings root, extensions.mcp is read by nothing, and the mcp extension is not switched off this way. The settings_mcp tools show and change the MCP servers (settings_mcp_list shows them).",
+          });
+        }
+
         if (extension === "subagents" && key === "maxSubagentDepth") {
           return yield* SettingsAccessError.make({
             message:

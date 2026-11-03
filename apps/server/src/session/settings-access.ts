@@ -11,12 +11,18 @@ import {
   type SettingsView,
 } from "@cloudpid/extensions/settings";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import type { RegistryMethods } from "../registry/Registry.ts";
 
 /** What the Session's Settings read and change in the Registry. */
 export type SettingsRegistry = Pick<
   RegistryMethods,
-  "getSettings" | "getSettingsOverrides" | "getEnvironment" | "sessionSettings" | "changeSettings"
+  | "getSettings"
+  | "getSettingsOverrides"
+  | "getEnvironment"
+  | "sessionSettings"
+  | "changeSettings"
+  | "mcpServerNames"
 >;
 
 export type SessionSettingsAccessOptions = {
@@ -44,13 +50,17 @@ export const sessionSettingsAccess = ({
             overrides,
             overriddenIn,
             problem,
+            // Global's own entries, which `settings` holds as they resolve.
+            mcpServers: Record.size(settings.mcp.servers),
           })),
         )
       : Effect.all([
           Effect.suspend(() => registry.getSettingsOverrides({ environment: scope })),
           Effect.suspend(() => registry.getEnvironment({ id: scope })),
+          // The Environment's whole set, its Repos' servers included: not known to a Registry from before it was asked.
+          Effect.suspend(() => registry.mcpServerNames({ environment: scope })),
         ]).pipe(
-          Effect.flatMap(([state, environment]) =>
+          Effect.flatMap(([state, environment, names]) =>
             state === null || environment === null
               ? Effect.fail(noEnvironment(scope))
               : Effect.succeed<SettingsView>({
@@ -61,6 +71,7 @@ export const sessionSettingsAccess = ({
                   global: state.global,
                   problem: state.problem,
                   instructions: state.instructions,
+                  mcpServers: names?.length,
                 }),
           ),
         ),
