@@ -65,15 +65,25 @@ export type EngineScript = {
   readonly reject?: string;
 };
 
-/** One scripted request: as `EngineScript`, with the engine's answer to a request. */
+/**
+ * One scripted request: as `EngineScript`, with the engine's answer to a request, and the `auth(stale)` asks the engine
+ * makes first, in order, as its connection does (`[false]` for a token, `[false, true]` for a 401 and its retry).
+ */
 export type RequestScript = {
   readonly result: typeof McpEngineRequestResult.Encoded;
   readonly hold?: boolean;
   readonly reject?: string;
+  readonly auth?: ReadonlyArray<boolean>;
 };
 
-/** A request the engine was given: the target, the rows passed as `prior`, the request, and the hooks' names. */
-export type EngineRequest = EngineCall & { readonly request: McpEngineRequestEncoded };
+/**
+ * A request the engine was given: the target, the rows passed as `prior`, the request, the hooks' names, and the
+ * tokens its `auth` asks were answered with.
+ */
+export type EngineRequest = EngineCall & {
+  readonly request: McpEngineRequestEncoded;
+  readonly tokens: ReadonlyArray<string | undefined>;
+};
 
 /** A discovery the engine was asked for: the target as it crossed, the rows passed as `prior`, and the hooks' names. */
 export type EngineCall = {
@@ -193,12 +203,16 @@ export class TestMcpHost extends DurableObject {
     request: async (target, prior, request, hooks) => {
       if (this.#real !== undefined) return this.#real.request(target, prior, request, hooks);
 
+      const tokens: Array<string | undefined> = [];
+
       // @effect-diagnostics-next-line preferEffectRecord:off -- the hooks' names as they crossed, whatever they are.
-      this.#requests.push({ target, prior, request, hooks: Object.keys(hooks) });
+      this.#requests.push({ target, prior, request, hooks: Object.keys(hooks), tokens });
 
       const script = this.#requestScripts.get(target.url)?.shift();
 
       if (script === undefined) throw new Error(`No request scripted for ${target.url}`);
+
+      for (const stale of script.auth ?? []) tokens.push(await hooks.auth?.(stale));
 
       if (script.hold === true) await this.#holdUntilReleased(target.url);
 

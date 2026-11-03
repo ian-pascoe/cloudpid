@@ -5,6 +5,7 @@
 // The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.
 /* oxlint-disable anti-slop-effect/no-manual-tagged-construction */
 import type {
+  McpAccessTokenAnswer,
   McpApplySet,
   McpEngineDiscoverResult,
   McpEngineRequestResult,
@@ -93,11 +94,18 @@ const call = (server: string, tool: string): typeof McpHostRequest.Encoded => ({
   },
 });
 
-/** A host whose set is `entries`, each discovered with `tools`. */
-const discovered = async (tools: ReadonlyArray<string>, ...entries: ReadonlyArray<McpSetEntry>) => {
+/** A host whose set is `entries`, each discovered with `tools`, its Registry answering `tokens` for each in turn. */
+const discovered = async (
+  tools: ReadonlyArray<string>,
+  ...entries: ReadonlyArray<McpSetEntry & { readonly tokens?: ReadonlyArray<McpAccessTokenAnswer> }>
+) => {
   const host = freshHost();
 
-  await host.apply(setOf(...entries));
+  await host.apply(setOf(...entries.map(({ tokens: _tokens, ...each }) => each)));
+
+  for (const each of entries) {
+    if (each.tokens !== undefined) await host.scriptToken(each.name, each.tokens);
+  }
 
   for (const each of entries) await host.scriptEngine(urlOf(each.name), [found(tools)]);
 
@@ -248,5 +256,114 @@ describe("a request", () => {
 
     await host.release(urlOf("slow"));
     await Promise.all(holding);
+  });
+});
+
+const TOKEN = "access-token-0001-secret";
+const NEXT = "access-token-0002-secret";
+
+/** The Registry's answer with `token` for `sentry`. */
+const granted = (token: string): McpAccessTokenAnswer => ({
+  status: "ok",
+  token,
+  resource: urlOf("sentry"),
+  signIn: "grant-1",
+});
+
+/** A call the server failed with `error`, as the engine sends it. */
+const failedCall = (error: Readonly<Record<string, Schema.Json>>) =>
+  // SAFETY: a failure as it crosses the edge, encoded.
+  ({ kind: "failed", error, state: {} }) as typeof McpEngineRequestResult.Encoded;
+
+const unauthorized = failedCall({ _tag: "SignInRequired", message: "401", rejected: false });
+
+/** `sentry` in a host's set, discovered, with its Registry answering `tokens` in turn (the last for good). */
+const signedIn = (tokens: ReadonlyArray<McpAccessTokenAnswer>) =>
+  discovered(["search"], { ...entry("sentry"), tokens });
+
+describe("a request to a server with a sign-in", () => {
+  it("carries the sign-in's token through the engine's auth hook, never in the target", async () => {
+    const host = await signedIn([granted(TOKEN)]);
+
+    await host.scriptRequest(urlOf("sentry"), [{ result: completed("found"), auth: [false] }]);
+
+    expect(await tagOf(host, call("sentry", "search"))).toBe("Completed");
+
+    const [sent] = await host.engineRequests();
+
+    expect(sent?.hooks).toContain("auth");
+    expect(sent?.tokens).toEqual([TOKEN]);
+    expect(sent?.target.headers?.["Authorization"]).toBeUndefined();
+    expect(await host.reports()).toEqual([]);
+  });
+
+  it("asks again with the refused token as stale after a 401, and reports rejected when the fresh one is refused too", async () => {
+    const host = await signedIn([granted(TOKEN), granted(NEXT)]);
+
+    await host.scriptRequest(urlOf("sentry"), [
+      { result: completed("found"), auth: [false, true] },
+      { result: unauthorized, auth: [false, true] },
+    ]);
+
+    // The first 401 is answered with a refreshed token, and the retry works: nothing to report.
+    expect(await tagOf(host, call("sentry", "search"))).toBe("Completed");
+    expect((await host.engineRequests())[0]?.tokens).toEqual([TOKEN, NEXT]);
+    expect((await host.tokenAsks()).at(-1)).toMatchObject({ server: "sentry", stale: TOKEN });
+    expect(await host.reports()).toEqual([]);
+
+    // Refused after its refresh too: the sign-in is `rejected`, once.
+    expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "SignInRequired" },
+    });
+    expect(await host.reports()).toEqual([
+      expect.objectContaining({ server: "sentry", event: "rejected" }),
+    ]);
+  });
+
+  it("calls with no token when the Registry has none, and reports needs_sign_in on a 401", async () => {
+    const host = await signedIn([{ status: "required", reason: "Not signed in" }]);
+
+    await host.scriptRequest(urlOf("sentry"), [{ result: unauthorized }]);
+
+    expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "SignInRequired" },
+    });
+    expect((await host.engineRequests())[0]?.hooks).not.toContain("auth");
+    expect(await host.reports()).toEqual([
+      expect.objectContaining({ server: "sentry", event: "needs_sign_in" }),
+    ]);
+  });
+
+  it("is not sent when no token stands, and reports a 403 for more scope as a step-up", async () => {
+    const host = await signedIn([
+      { status: "required", reason: "Not signed in" },
+      { status: "step_up", reason: "More scope", scope: "admin" },
+      granted(TOKEN),
+    ]);
+
+    // The discovery went without a token; the call finds a step-up the owner has not done.
+    expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "SignInRequired" },
+    });
+    expect(await host.engineRequests()).toEqual([]);
+
+    await host.scriptRequest(urlOf("sentry"), [
+      {
+        result: failedCall({ _tag: "StepUpRequired", message: "403", scope: "admin" }),
+        auth: [false],
+      },
+    ]);
+
+    expect(await tagOf(host, call("sentry", "search"))).toBe("CallFailed");
+    expect(await host.reports()).toEqual([
+      expect.objectContaining({
+        server: "sentry",
+        event: "step_up",
+        challenge: { scope: "admin" },
+      }),
+    ]);
   });
 });

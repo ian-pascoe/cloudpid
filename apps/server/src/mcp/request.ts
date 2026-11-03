@@ -8,8 +8,10 @@
 // a slot counts toward the call's timeout: a call still waiting when its timeout passes is answered `Cut` that did not
 // run, never sent, and one sent gives the engine what is left of it. The caller's abort ends a wait at once; once sent,
 // the engine cuts the server request itself. Its target is a discovery's (`targetOf`): the `${NAME}` values resolved, and
-// the Secret ones listed for the engine to scrub (`redact`). The logs the server sent come back in the result, and are
-// kept as a discovery's are (`recordLogs`).
+// the Secret ones listed for the engine to scrub (`redact`). A server with a sign-in gets its token through the engine's
+// `auth(stale)` hook, and what it answered is reported to the Registry as a discovery's is (`requestAccess`, in
+// `discovery-auth.ts`); with no token to call with, the call is not sent. The logs the server sent come back in the
+// result, and are kept as a discovery's are (`recordLogs`).
 // @effect-diagnostics missingPipeableSignature:off -- the host's method, not a combinator.
 import {
   Cut,
@@ -17,6 +19,7 @@ import {
   HostUnsupported,
   McpHostCallFailed,
   McpHostCompleted,
+  type McpEngineHooks,
   type McpEngineRequest,
   type McpHostRequest,
   type McpHostRequestHooks,
@@ -35,6 +38,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
+import { requestAccess } from "./discovery-auth.ts";
 import { targetOf, writeOrHalt, type McpDiscoveryServices } from "./discovery.ts";
 import { McpEngineClient } from "./engine.ts";
 import { McpLoadCaps } from "./limits.ts";
@@ -141,6 +145,26 @@ export const request = (
       return callFailed(Unreachable.make({ message: target.failure.message }));
     }
 
+    const access = yield* requestAccess(environment, view.value, target.success);
+
+    // No token to call with: not sent, as a discovery would not connect.
+    if (access.kind === "blocked") {
+      return callFailed(
+        access.state === "sign_in" || access.state === "rejected"
+          ? SignInRequired.make({
+              message: `MCP server ${name} needs you signed in: ${access.message}`,
+              rejected: access.state === "rejected",
+            })
+          : Unreachable.make({ message: access.message }),
+      );
+    }
+
+    const run = Effect.runPromiseWith(yield* Effect.context<never>());
+    const { auth } = access;
+
+    const engineHooks: McpEngineHooks =
+      auth === undefined ? hooks : { ...hooks, auth: (stale) => run(auth(stale)) };
+
     /** Whether the engine was given the call: an abort before it was cannot have run anything. */
     let sent = false;
 
@@ -170,7 +194,7 @@ export const request = (
         { ...target.success, timeoutMs: Math.max(1, timeoutMs - waited) },
         store.prior(server.conn),
         sending,
-        hooks,
+        engineHooks,
       );
     });
 
@@ -218,6 +242,9 @@ export const request = (
 
     // The rows the call changed are kept as a discovery's are; a write the storage refuses never fails the result.
     yield* writeOrHalt(() => store.applyEngineState(server.conn, result.state, now));
+
+    // What the server answered of its sign-in, told the Registry on a change; a report never fails the call.
+    yield* access.answered(result);
 
     // What the server said during the call: kept in its ring, `warning` and above also a span event. A write the
     // storage refuses loses the logs, never the result.
