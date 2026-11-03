@@ -36,6 +36,8 @@ import {
   type BranchSummaryRequest,
   type TreePoint,
   type ConversationId,
+  type ElicitationAction,
+  type ElicitationContent,
   type ServerMessage,
   type SecretKeep,
   type SessionView,
@@ -285,6 +287,17 @@ export interface SessionClient {
     request: string,
     approve: boolean,
     reason?: string,
+  ) => Effect.Effect<void>;
+  /**
+   * Answer MCP elicitation request `request` (`docs/architecture/mcp-server-requests.md` → Elicitation requests):
+   * `accept` sends `content`, the form's values, which go to the server and are kept nowhere; `decline` and `cancel` send
+   * none. The Session's next `mcp_elicitation_requests` closes the card; a refusal (a value that does not fit, the request
+   * ended) shows as `failure`.
+   */
+  readonly answerMcpElicitation: (
+    request: string,
+    action: ElicitationAction,
+    content?: ElicitationContent,
   ) => Effect.Effect<void>;
   /**
    * Abort the root conversation's work and withdraw its queued input, or a subagent's when `conversationId` names
@@ -652,6 +665,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "secretRequests"
         | "secretLifetimeMinutes"
         | "approvalRequests"
+        | "mcpElicitationRequests"
         | "annotations"
         | "viewed"
         | "browserHandoffRequests"
@@ -849,6 +863,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ...current,
       secretRequests: [],
       approvalRequests: [],
+      mcpElicitationRequests: [],
       browserHandoffRequests: null,
       ownerTabDrivers: [],
     };
@@ -982,6 +997,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "approval_requests":
         update({ approvalRequests: message.requests });
+
+        return;
+      case "mcp_elicitation_requests":
+        update({ mcpElicitationRequests: message.requests });
 
         return;
       case "annotations":
@@ -1615,6 +1634,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         // Only a Decline carries the owner's reason to the agent.
         if (!approve && reason !== undefined && reason.trim() !== "") answer.reason = reason.trim();
+
+        send(answer);
+      }),
+    answerMcpElicitation: (request, action, content) =>
+      step(() => {
+        const answer: Types.Mutable<Extract<ClientMessage, { type: "mcp_elicitation_answer" }>> = {
+          type: "mcp_elicitation_answer",
+          id: nextCommandId(),
+          request,
+          action,
+        };
+
+        if (action === "accept" && content !== undefined) answer.content = content;
 
         send(answer);
       }),

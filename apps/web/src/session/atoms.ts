@@ -5,6 +5,8 @@ import {
   sessionSocketPath,
   type AnnotationDraft,
   type BrowserHandoffRequest,
+  type ElicitationAction,
+  type ElicitationContent,
   type SecretKeep,
   type TodoTask,
   type WhenBusy,
@@ -87,6 +89,7 @@ export const secretLifetimeMinutesAtom = slice((state) => state.secretLifetimeMi
 
 /** The Agent changes waiting for the owner's Approval. */
 export const approvalRequestsAtom = slice((state) => state.approvalRequests);
+export const mcpElicitationRequestsAtom = slice((state) => state.mcpElicitationRequests);
 
 /** The Session's draft Annotations, oldest first. */
 export const annotationsAtom = slice((state) => state.annotations);
@@ -366,6 +369,24 @@ export const answerApprovalAtom = Atom.family((sessionId: string) =>
       get
         .result(sessionClientAtom(sessionId))
         .pipe(Effect.flatMap((client) => client.answerApproval(request, approve, reason))),
+    { concurrent: true },
+  ),
+);
+
+/** The owner's answer to an MCP server's question: Submit with its values, Decline, or a quiet Cancel. */
+export interface McpElicitationAnswerInput {
+  readonly request: string;
+  readonly action: ElicitationAction;
+  readonly content?: ElicitationContent;
+}
+
+/** Answer one of Session `sessionId`'s MCP elicitation requests; the result is a refusal's message, if there is one. */
+export const answerMcpElicitationAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    ({ request, action, content }: McpElicitationAnswerInput, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.answerMcpElicitation(request, action, content))),
     { concurrent: true },
   ),
 );

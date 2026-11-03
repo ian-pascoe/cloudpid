@@ -1,5 +1,6 @@
 import { ApprovalRequests } from "./approval-card.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
+import { McpElicitationRequests } from "./mcp-elicitation-card.tsx";
 import { useRequestInView } from "./request-anchor.ts";
 import { SecretRequests } from "./secret-form.tsx";
 
@@ -8,7 +9,7 @@ export const WAITING_REQUESTS_CLASS =
   "flex max-h-(--waiting-height) flex-col overflow-y-auto *:shrink-0 overscroll-contain px-4 not-empty:pt-1 [--waiting-height:60dvh] short:[--waiting-height:72dvh]";
 
 /**
- * What waits for the owner above the composer: Browser Handoffs, Secret forms and Approval cards. The area is bounded and
+ * What waits for the owner above the composer: Browser Handoffs, Secret forms, Approval cards and MCP servers' questions. The area is bounded and
  * scrolls on its own, so the thread and the composer stay usable when several are waiting. A link with `?request=<id>`
  * (from the MCP endpoint: `docs/architecture/mcp-endpoint.md` → Waiting requests) scrolls to that request's card.
  */
@@ -20,6 +21,7 @@ export const WaitingRequests = () => {
       <BrowserHandoffRequests />
       <SecretRequests />
       <ApprovalRequests />
+      <McpElicitationRequests />
     </div>
   );
 };
