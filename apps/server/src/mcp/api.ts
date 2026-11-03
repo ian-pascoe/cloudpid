@@ -14,8 +14,10 @@ import {
   apiOk,
   branchProblem,
   type ConfigureRequest,
+  decodeCursor,
   DEFAULT_ENVIRONMENT,
   DEFAULT_MCP_WAIT_MS,
+  encodeCursor,
   type EnvironmentRecord,
   type EnvironmentsResult,
   MAX_MCP_INPUT_BYTES,
@@ -296,6 +298,16 @@ const absoluteUrls = (
     url: request.url.startsWith("/") ? `${origin}${request.url}` : request.url,
   }));
 
+/**
+ * `cursor` with what it says its caller has seen cleared (the newest waiting request, the newest settled input, the
+ * entries): the same conversation, nothing seen. A wait from it ends with whatever the Session already holds.
+ */
+const unseen = (cursor: string): string => {
+  const state = Option.getOrUndefined(decodeCursor(cursor));
+
+  return state === undefined ? cursor : encodeCursor({ ...state, e: 0, w: 0, s: 0 });
+};
+
 /** The Environments' names by id. */
 const namesOf = (environments: ReadonlyArray<EnvironmentRecord>) =>
   new Map(Arr.map(environments, (environment) => [environment.id, environment.name] as const));
@@ -326,11 +338,29 @@ const madeButNotStarted = (
   });
 };
 
+/**
+ * The running cap's refusal. It names a tool only where `served` (the operations `describe()` lists) has its operation,
+ * as the tools' own descriptions are worded over the served tools: `session_wait` waits for one to end, `session_get`
+ * checks them.
+ */
+export const tooManyRunning = (limit: number, served: ReadonlyArray<string>): string => {
+  const check = Arr.join(
+    [
+      ...(served.includes("wait") ? ["wait for one with session_wait"] : []),
+      ...(served.includes("session") ? ["check them with session_get"] : []),
+    ],
+    " or ",
+  );
+
+  return `${String(limit)} Sessions started over MCP are running: ${check === "" ? "" : `${check}, or `}stop one with session_stop, then start again.`;
+};
+
 /** Why a start was refused, as the endpoint says it. */
 const refusedStart = (
   refusal: SessionRefusal,
   environment: string,
   branch: string | undefined,
+  served: ReadonlyArray<string>,
 ): ApiResult<never> => {
   switch (refusal.refused) {
     case "no-environment":
@@ -345,11 +375,10 @@ const refusedStart = (
         { details: { workspace: refusal.workspace } },
       );
     case "too-many-running":
-      return apiFailure(
-        "too_many_running",
-        `${String(refusal.limit)} Sessions started over MCP are running: wait for one with session_wait or check them with session_get, or stop one with session_stop, then start again.`,
-        { retryable: true, details: { limit: refusal.limit } },
-      );
+      return apiFailure("too_many_running", tooManyRunning(refusal.limit, served), {
+        retryable: true,
+        details: { limit: refusal.limit },
+      });
     case "no-workspace":
       return apiFailure("unavailable", "The Workspace is gone: try again.");
   }
@@ -362,10 +391,12 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
   /**
    * What a wait whose RPC was cut answers (`docs/architecture/mcp-endpoint.md` → Following a Run): `timeout`, `interrupted`,
    * the Session's status read once, and **the cursor that was passed in**, so the caller waits again from where it was
-   * (with none passed, the status's own: a Run still going ends a wait from it). Only a status that cannot be read
-   * either is `unavailable`.
+   * and a Run that ended, or a request that appeared, while the RPC was cut is still reported by that wait. With none
+   * passed, the status's cursor with its marks cleared (`unseen`): it follows the same conversation but has seen
+   * nothing, so the re-wait may end at once with what is already there (the last Run, the requests waiting) and never
+   * misses what changed during the cut. Only a status that cannot be read either is `unavailable`.
    */
-  const interrupted = (id: string, after: string | undefined) =>
+  const interruptedOutcome = (id: string, after: string | undefined) =>
     backend.status(id, after).pipe(
       Effect.catchCause(() => Effect.succeed(unreachable)),
       Effect.map((report): ApiResult<WaitOutcome> => {
@@ -379,7 +410,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
           interrupted: true,
           waiting,
           activity: { entries: 0, tool_calls: 0, latest: [] },
-          cursor: after ?? cursor,
+          cursor: after ?? unseen(cursor),
         };
 
         if (branch_changed === true) outcome.branch_changed = true;
@@ -607,7 +638,8 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
             maxRunning: MAX_MCP_RUNNING,
           });
 
-          if ("refused" in created) return refusedStart(created, resolved.value, request.branch);
+          if ("refused" in created)
+            return refusedStart(created, resolved.value, request.branch, MCP_API_OPERATIONS_SERVED);
 
           const id = created.id;
           const url = `${context.origin}/sessions/${id}`;
@@ -722,18 +754,18 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
           // The Registry first: a made-up id never reaches a Session object (and so never makes one).
           if ((yield* backend.session(id)) === null) return notFound(id);
 
-          const seconds = Math.min(
+          const waitMs = Math.min(
             MAX_MCP_WAIT_MS,
             Math.max(0, (request.timeout_s ?? DEFAULT_MCP_WAIT_MS / 1000) * 1000),
           );
 
-          const deadline = (yield* Clock.currentTimeMillis) + seconds;
+          const deadline = (yield* Clock.currentTimeMillis) + waitMs;
 
           const waited = yield* backend
             .wait(id, after === undefined ? { deadline } : { after, deadline })
             // The RPC was cut on the Session's side (a deploy or an eviction cut it, or it could not be reached): the
             // Run goes on, so the wait says so and hands the caller's cursor back instead of failing.
-            .pipe(Effect.catchCause(() => interrupted(id, after)));
+            .pipe(Effect.catchCause(() => interruptedOutcome(id, after)));
 
           return waited.ok
             ? apiOk<WaitResult>({

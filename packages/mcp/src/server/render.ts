@@ -184,6 +184,9 @@ export const renderSession = (result: SessionGetResult): string => {
   return Arr.join(lines, "\n");
 };
 
+/** What a wait whose connection to the Session was cut says of it, in the text and in the `next` sentence. */
+export const INTERRUPTED_NOTE = "(the connection to the Session was cut; the Run is not affected)";
+
 const ENDED_BY = {
   run_ended: "the Run ended",
   owner_needed: "a request is waiting for the owner",
@@ -194,7 +197,7 @@ const ENDED_BY = {
 
 export const renderWait = (result: SessionWaitResult): string => {
   const lines: Array<string> = [
-    `Wait on Session ${result.session_id}: ${ENDED_BY[result.ended_by]}${result.interrupted === true ? " (the connection to the Session was cut; the Run is not affected)" : ""}`,
+    `Wait on Session ${result.session_id}: ${ENDED_BY[result.ended_by]}${result.interrupted === true ? ` ${INTERRUPTED_NOTE}` : ""}`,
     `status ${result.status}`,
   ];
 

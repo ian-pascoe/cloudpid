@@ -380,13 +380,12 @@ interface CallContext {
  * across `api`. `progress` is the seconds elapsed, kept increasing as the protocol asks. Returns what stops it. A client
  * that did not ask for progress gets none, and finishes on the SSE keep-alives alone.
  */
-const reportProgress = (spec: Tool, ctx: ServerContext): (() => void) => {
+const reportProgress = (spec: Tool, ctx: ServerContext, started: number): (() => void) => {
   const token = ctx.mcpReq._meta?.progressToken;
 
   if (spec.progress === undefined || token === undefined) return () => undefined;
 
   const say = spec.progress;
-  const started = Date.now();
   let last = -1;
 
   const send = () => {
@@ -454,8 +453,8 @@ const callTool = (
     }
 
     let answered: Wire;
-    const stopProgress = reportProgress(spec, ctx);
     const started = Date.now();
+    const stopProgress = reportProgress(spec, ctx, started);
 
     try {
       answered = await spec.call(api, args, caller);

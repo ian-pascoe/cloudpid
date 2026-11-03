@@ -645,16 +645,25 @@ describe("session_wait", () => {
     expect(result.structuredContent.next).toContain("session_transcript");
   });
 
-  it("refuses a timeout over 300 s or under 0 before calling the api", async () => {
+  it("refuses a timeout over 300 s or under 0 before calling the api, and takes a fraction of a second", async () => {
     const wait = vi.fn(() => Promise.resolve(apiOk(ended)));
 
-    for (const timeout_s of [301, -1, 1.5]) {
+    for (const timeout_s of [301, -1, 300.5]) {
       const result = await call("session_wait", { session_id: ID, timeout_s }, waiting({ wait }));
 
       expect(result.isError).toBe(true);
     }
 
     expect(wait).not.toHaveBeenCalled();
+
+    const fraction = await call(
+      "session_wait",
+      { session_id: ID, timeout_s: 1.5 },
+      waiting({ wait }),
+    );
+
+    expect(fraction.isError).toBeUndefined();
+    expect(wait).toHaveBeenCalledWith({ session_id: ID, timeout_s: 1.5 });
   });
 
   it.each([

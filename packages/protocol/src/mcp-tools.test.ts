@@ -113,13 +113,15 @@ describe("session_send's and session_stop's arguments", () => {
 });
 
 describe("the operations", () => {
-  it("take session_wait's cursor, and a timeout of 0 to 300 whole seconds", () => {
+  it("take session_wait's cursor, and a timeout of 0 to 300 seconds, fractions too", () => {
     expect(accepts(SessionWaitInput, { session_id: ID })).toBe(true);
     expect(accepts(SessionWaitInput, { session_id: ID, after: "c", timeout_s: 0 })).toBe(true);
     expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 300 })).toBe(true);
     expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 301 })).toBe(false);
     expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: -1 })).toBe(false);
-    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 1.5 })).toBe(false);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 1.5 })).toBe(true);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: 300.5 })).toBe(false);
+    expect(accepts(SessionWaitInput, { session_id: ID, timeout_s: "30" })).toBe(false);
     expect(accepts(SessionWaitInput, { after: "c" })).toBe(false);
   });
 

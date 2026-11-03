@@ -5,6 +5,7 @@ import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { ExternalLink, Hand, MonitorPlay } from "lucide-react";
+import type { ComponentProps } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { mintLiveViewAtom } from "../live-view/handoff-atoms.ts";
 import { timeOfDay } from "../lib/time.ts";
@@ -103,6 +104,13 @@ const BrowserHandoffPrompt = ({
   );
 };
 
+/** The prompt for one Browser Handoff with its own state; the list keys it by request. */
+export const BrowserHandoffCard = (props: ComponentProps<typeof BrowserHandoffPrompt>) => (
+  <HostedFailure.Provider>
+    <BrowserHandoffPrompt {...props} />
+  </HostedFailure.Provider>
+);
+
 /** The Browser Handoffs waiting for the owner in the Session shown, oldest first. */
 export const BrowserHandoffRequests = () => {
   const sessionId = useShownSessionId();
@@ -110,8 +118,10 @@ export const BrowserHandoffRequests = () => {
   const graph = useAtomValue(taskGraphAtom(sessionId));
 
   return Arr.map(requests, (request) => (
-    <HostedFailure.Provider key={request.id}>
-      <BrowserHandoffPrompt request={request} agent={agentLabel(graph, request.conversationId)} />
-    </HostedFailure.Provider>
+    <BrowserHandoffCard
+      key={request.id}
+      request={request}
+      agent={agentLabel(graph, request.conversationId)}
+    />
   ));
 };

@@ -34,6 +34,7 @@ import type * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
+  INTERRUPTED_NOTE,
   renderEnvironments,
   renderSend,
   renderSession,
@@ -306,7 +307,7 @@ const sessionWait = defineTool({
       case "stalled":
         return `A task is parked and nothing moves until the owner retries it in cloudpid. ${again} once they have.`;
       case "timeout":
-        return `${again} to keep waiting${result.interrupted === true ? " (the connection to the Session was cut; the Run is not affected)" : ""}.`;
+        return `${again} to keep waiting${result.interrupted === true ? ` ${INTERRUPTED_NOTE}` : ""}.`;
     }
   },
 });

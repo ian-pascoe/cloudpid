@@ -100,9 +100,11 @@ export const SessionWaitInput = Schema.Struct({
     }),
   ),
   timeout_s: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_MCP_WAIT_MS / 1000 })).annotate({
-      description: `The most seconds to wait (0-${MAX_MCP_WAIT_MS / 1000}, default ${DEFAULT_MCP_WAIT_MS / 1000}); the wait returns sooner when the Run ends. When it times out, call it again with the cursor it gave.`,
-    }),
+    Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: MAX_MCP_WAIT_MS / 1000 })).annotate(
+      {
+        description: `The most seconds to wait (0-${MAX_MCP_WAIT_MS / 1000}, default ${DEFAULT_MCP_WAIT_MS / 1000}); the wait returns sooner when the Run ends. When it times out, call it again with the cursor it gave.`,
+      },
+    ),
   ),
 });
 
