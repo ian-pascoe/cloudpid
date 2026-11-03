@@ -662,6 +662,11 @@ export const McpEngineRequest = Schema.Union([
   Schema.Struct({
     op: Schema.Literal("resources/read"),
     uri: Schema.String,
+    /**
+     * An App's read of its `ui://` resource, which `MCP_APP_READ_BYTES` bounds; every other read has the 16 MiB every read
+     * has, a `ui://` one the agent makes included. An engine from before the key bounds a `ui://` read by its URI.
+     */
+    app: Schema.optionalKey(Schema.Boolean),
     ctx: McpCallContext,
   }),
   /**

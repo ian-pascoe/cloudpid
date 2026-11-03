@@ -422,6 +422,8 @@ describe("a read", () => {
       request: { op: "resources/read", ctx: { answers } },
       hooks: expect.arrayContaining(["onInput"]),
     });
+    // The agent's read is no App's, whatever its URI: it has the 16 MiB every read has.
+    expect(readSent?.request).not.toHaveProperty("app");
     expect(listSent?.request).not.toHaveProperty("ctx.answers");
   });
 

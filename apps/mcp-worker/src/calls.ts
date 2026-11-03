@@ -644,7 +644,11 @@ const runRead = Effect.fnUntraced(function* (
   req: ResourceRead,
   env: CallEnvironment,
 ) {
-  const { value, kind: _kind, ...meta } = yield* connection.readResource(req.uri, req.ctx);
+  const {
+    value,
+    kind: _kind,
+    ...meta
+  } = yield* connection.readResource(req.uri, req.ctx, { app: req.app === true });
 
   return {
     kind: "complete",

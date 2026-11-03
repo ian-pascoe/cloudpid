@@ -81,14 +81,15 @@ const POLICIES = new Map<string, Policy>([
   ["tasks/cancel", { ...OTHER, mayHaveRun: true }],
 ]);
 
-/** A read of a `ui://` resource: an App's HTML, which `MCP_APP_READ_BYTES` bounds, and not a large read. */
+/** An App's read of its `ui://` resource: its HTML, which `MCP_APP_READ_BYTES` bounds, and not a large read. */
 const APP_READ: Policy = { ...LARGE_READ, limit: MCP_APP_READ_BYTES };
 
-/** `method`'s policy, for a read of `uri` if it is one. */
-const policyOf = (method: string, uri: string | undefined) =>
-  method === "resources/read" && uri?.startsWith("ui://") === true
-    ? APP_READ
-    : (POLICIES.get(method) ?? OTHER);
+/**
+ * `method`'s policy; `app` says the request is an App's read of its HTML (`APP_READ_HEADER`). Who reads decides, not the
+ * URI: an agent's read of a `ui://` resource has the 16 MiB every read has.
+ */
+const policyOf = (method: string, app: boolean) =>
+  method === "resources/read" && app ? APP_READ : (POLICIES.get(method) ?? OTHER);
 
 const MAX_RETRY_AFTER_MS = 10_000;
 
@@ -127,6 +128,12 @@ export class Verdicts {
  * token (`Ties`).
  */
 export const CALL_HEADER = "x-cloudpid-call";
+
+/**
+ * The header the core puts on an App's read of its `ui://` resource (`readResource`'s `app`), which `MCP_APP_READ_BYTES`
+ * bounds. Removed by the tap like `CALL_HEADER`.
+ */
+export const APP_READ_HEADER = "x-cloudpid-app-read";
 
 /**
  * Which call each server request on a POST response stream belongs to (`mcp-server-requests.md` → Questions, Legacy:
@@ -173,13 +180,9 @@ const decodeMessage = Schema.decodeUnknownOption(
     Schema.Struct({
       id: Schema.optionalKey(JsonRpcId),
       method: Schema.optionalKey(Schema.String),
-      params: Schema.optionalKey(Schema.Unknown),
     }),
   ),
 );
-
-/** The `uri` a request's `params` name, if they are an object that has one: `params` of another shape name none. */
-const decodeUri = Schema.decodeUnknownOption(Schema.Struct({ uri: Schema.String }));
 
 /** A JSON-RPC request the SDK is sending: one with an id and a method, and what the tap does with it. */
 interface Outgoing {
@@ -188,20 +191,13 @@ interface Outgoing {
   readonly policy: Policy;
 }
 
-const outgoing = (init: RequestInit | undefined): Outgoing | undefined =>
+const outgoing = (init: RequestInit | undefined, app: boolean): Outgoing | undefined =>
   Option.match(decodeMessage(init?.body), {
     onNone: () => undefined,
-    onSome: ({ id, method, params }) =>
+    onSome: ({ id, method }) =>
       id === undefined || id === null || method === undefined
         ? undefined
-        : {
-            id,
-            method,
-            policy: policyOf(
-              method,
-              Option.getOrUndefined(Option.map(decodeUri(params), ({ uri }) => uri)),
-            ),
-          },
+        : { id, method, policy: policyOf(method, app) },
   });
 
 const JsonRpcAnswer = Schema.Struct({
@@ -465,18 +461,20 @@ export interface TapObserver {
   readonly retried: () => void;
 }
 
-/** `init` without the core's call header, and the token it carried. */
-const withoutCallHeader = (init: RequestInit | undefined) => {
-  if (init?.headers === undefined) return { init, token: undefined };
+/** `init` without the core's own headers, the token the call header carried, and whether the request is an App's read. */
+const withoutCoreHeaders = (init: RequestInit | undefined) => {
+  if (init?.headers === undefined) return { init, token: undefined, app: false };
 
   const headers = new Headers(init.headers);
   const token = headers.get(CALL_HEADER) ?? undefined;
+  const app = headers.has(APP_READ_HEADER);
 
-  if (token === undefined) return { init, token };
+  if (token === undefined && !app) return { init, token, app };
 
   headers.delete(CALL_HEADER);
+  headers.delete(APP_READ_HEADER);
 
-  return { init: { ...init, headers }, token };
+  return { init: { ...init, headers }, token, app };
 };
 
 /** The tap over `fetch` for one connection. */
@@ -523,8 +521,8 @@ export const tapFetch = (
   };
 
   return async (input, given) => {
-    const { init, token } = withoutCallHeader(given);
-    const request = outgoing(init);
+    const { init, token, app } = withoutCoreHeaders(given);
+    const request = outgoing(init, app);
     let response = await send(input, init, request);
 
     observer?.response(response.status);

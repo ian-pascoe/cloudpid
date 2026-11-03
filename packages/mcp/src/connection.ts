@@ -62,7 +62,7 @@ import { type PausableDeadline, pausableDeadline } from "./deadline.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
 import { contentsSha256 } from "./read-hash.ts";
 import { MCP_LOG_LEVEL } from "./log.ts";
-import { CALL_HEADER, type TapObserver, tapFetch, Ties, Verdicts } from "./tap.ts";
+import { APP_READ_HEADER, CALL_HEADER, type TapObserver, tapFetch, Ties, Verdicts } from "./tap.ts";
 import {
   openTaskWire,
   type TaskParams,
@@ -331,7 +331,16 @@ export interface McpConnection {
   readonly readResource: (
     uri: string,
     ctx: McpCallContext,
+    options?: ReadOptions,
   ) => Effect.Effect<ReadComplete, McpError>;
+}
+
+/**
+ * What a read depends on besides its URI: `app` says it is an App's read of its HTML, which `MCP_APP_READ_BYTES` bounds;
+ * any other read, a `ui://` one the agent makes included, has the 16 MiB every read has.
+ */
+export interface ReadOptions {
+  readonly app?: boolean;
 }
 
 const CONNECT_TIMEOUT_MS = MCP_CONNECT_TIMEOUT_MS;
@@ -1043,10 +1052,6 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const advertisesTasks = () => live.capabilities.extensions?.[MCP_TASKS_EXTENSION] !== undefined;
 
   /**
-   * Calls a tool. Whether the call is offered a task is decided at each attempt, on the era and capabilities the server
-   * has then: a call sent again after an era drop to a server that is Legacy now declares nothing.
-   */
-  /**
    * `run` with the clock and the questions of a call, when the call can have them: a Legacy request whose caller can
    * answer elicitations is tied to its questions by a header the tap strips, and has a clock of its own that a
    * question's wait can stop (`own`). Every other request keeps the SDK's timeout, as before. What was set up is let go
@@ -1095,6 +1100,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       );
     });
 
+  /**
+   * Calls a tool. Whether the call is offered a task is decided at each attempt, on the era and capabilities the server
+   * has then: a call sent again after an era drop to a server that is Legacy now declares nothing.
+   */
   const callTool = (
     params: CallToolParams,
     ctx: McpCallContext,
@@ -1132,6 +1141,30 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         }) satisfies Complete<CallToolResult>,
     );
 
+  /** The abort signal and timeout of a request: the SDK's own, or, with a clock of its own (`own`), the deadline's. */
+  const timingOf = (own: Own | undefined, signal: AbortSignal, timeoutMs: number) => ({
+    signal: own === undefined ? signal : AbortSignal.any([signal, own.deadline.signal]),
+    // The deadline's is the one that ends a request with a clock of its own: the SDK's own timer is given the most it takes.
+    timeout: own === undefined ? timeoutMs : SDK_TIMER_MAX_MS,
+  });
+
+  /**
+   * Sends with the headers a request has: the call header when it has a clock of its own (each attempt, a request sent
+   * again after the server dropped its session or the era, then has the whole timeout), and `more`. `send` gets none
+   * when there are none.
+   */
+  const sendWith = <A>(
+    own: Own | undefined,
+    more: Readonly<Record<string, string>> | undefined,
+    send: (headers: Record<string, string> | undefined) => Promise<A>,
+  ): Promise<A> => {
+    if (own === undefined) return send(more === undefined ? undefined : { ...more });
+
+    return Effect.runPromiseWith(context)(own.deadline.reset).then(() =>
+      send({ ...more, [CALL_HEADER]: own.token }),
+    );
+  };
+
   const callOnClient = (
     client: Client,
     params: CallToolParams,
@@ -1153,9 +1186,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     const timeoutMs = target.timeoutMs ?? CALL_TIMEOUT_MS;
 
     const options: CallToolRequestOptions = {
-      signal: own === undefined ? signal : AbortSignal.any([signal, own.deadline.signal]),
-      // The deadline's is the one that ends a call with a clock of its own: the SDK's own timer is given the most it takes.
-      timeout: own === undefined ? timeoutMs : SDK_TIMER_MAX_MS,
+      ...timingOf(own, signal, timeoutMs),
       // Without `outputSchema`, so the SDK checks no `structuredContent`: the engine does (D17). With the
       // definition given, the SDK rethrows a `-32020` header mismatch rather than refreshing `tools/list`: the
       // refresh and one retry (D14) belong to the catalog's owner, the engine, so it surfaces as `ServerError`.
@@ -1177,13 +1208,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
             };
     }
 
-    if (own === undefined) return client.callTool(call, options);
-
-    options.headers = { [CALL_HEADER]: own.token };
-
-    // Each attempt (a request sent again after the server dropped its session or the era) has the whole timeout.
-    return Effect.runPromiseWith(context)(own.deadline.reset).then(() =>
-      client.callTool(call, options),
+    return sendWith(own, undefined, (headers) =>
+      client.callTool(call, headers === undefined ? options : { ...options, headers }),
     );
   };
 
@@ -1376,30 +1402,24 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   /** A read's own bound: the page timeout, or the entry's `timeout` when that is lower (#394 D15). */
   const readTimeoutMs = () => Math.min(target.timeoutMs ?? PAGE_TIMEOUT_MS, PAGE_TIMEOUT_MS);
 
-  const readResource = (uri: string, ctx: McpCallContext) =>
+  const readResource = (uri: string, ctx: McpCallContext, options: ReadOptions = {}) =>
     Effect.gen(function* () {
       const meta = metaFor(ctx);
       const params = meta === undefined ? { uri } : { uri, _meta: meta };
       const timeoutMs = readTimeoutMs();
+      const more = options.app === true ? { [APP_READ_HEADER]: "1" } : undefined;
 
       const value = yield* withAsking(ctx, timeoutMs, (own) =>
-        request(
-          (client, signal) =>
-            own === undefined
-              ? client.request({ method: "resources/read", params }, { signal, timeout: timeoutMs })
-              : // The deadline's is the one that ends a read with a clock of its own, as a call's (`callOnClient`).
-                Effect.runPromiseWith(context)(own.deadline.reset).then(() =>
-                  client.request(
-                    { method: "resources/read", params },
-                    {
-                      signal: AbortSignal.any([signal, own.deadline.signal]),
-                      timeout: SDK_TIMER_MAX_MS,
-                      headers: { [CALL_HEADER]: own.token },
-                    },
-                  ),
-                ),
-          false,
-        ),
+        request((client, signal) => {
+          const timing = timingOf(own, signal, timeoutMs);
+
+          return sendWith(own, more, (headers) =>
+            client.request(
+              { method: "resources/read", params },
+              headers === undefined ? timing : { ...timing, headers },
+            ),
+          );
+        }, false),
       );
 
       const fetchedAt = yield* Clock.currentTimeMillis;

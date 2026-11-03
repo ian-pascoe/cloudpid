@@ -249,7 +249,7 @@ describe("an App tool's call", () => {
     expect(await requestsOf(host, "tools/call")).toHaveLength(2);
     expect(await requestsOf(host, "resources/read")).toEqual([
       expect.objectContaining({
-        request: { op: "resources/read", uri: URI, ctx: expect.anything() },
+        request: { op: "resources/read", uri: URI, app: true, ctx: expect.anything() },
       }),
     ]);
 

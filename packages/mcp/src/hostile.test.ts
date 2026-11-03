@@ -175,8 +175,8 @@ describe.each(bases)("a hostile %s server", (_name, base) => {
     expect(called).toEqual(failedWith(TooLarge, { limit: 16 * MiB }));
   });
 
-  it("limits a read of a ui:// resource to 12 MiB, and any other read to 16", async () => {
-    const readOf = (uri: string, bytes: number) =>
+  it("limits an App's read of its ui:// resource to 12 MiB, and every other read, an agent's of a ui:// one too, to 16", async () => {
+    const readOf = (uri: string, bytes: number, app = false) =>
       run(
         Effect.gen(function* () {
           const server = answering(base(), "resources/read", (rpc) =>
@@ -194,16 +194,21 @@ describe.each(bases)("a hostile %s server", (_name, base) => {
 
           const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
 
-          return yield* connection.readResource(uri, AGENT).pipe(
+          return yield* connection.readResource(uri, AGENT, { app }).pipe(
             Effect.map(() => ({ read: true })),
             Effect.catch((error) => Effect.succeed({ failed: error })),
           );
         }),
       );
 
-    expect(await readOf("ui://docs/app", 11 * MiB)).toEqual({ read: true });
-    expect(await readOf("ui://docs/app", 13 * MiB)).toEqual(
+    expect(await readOf("ui://docs/app", 11 * MiB, true)).toEqual({ read: true });
+    expect(await readOf("ui://docs/app", 13 * MiB, true)).toEqual(
       failedWith(TooLarge, { limit: 12 * MiB }),
+    );
+    // Who reads decides, not the URI: the agent's read of a ui:// resource has the 16 MiB every read has.
+    expect(await readOf("ui://docs/app", 13 * MiB)).toEqual({ read: true });
+    expect(await readOf("ui://docs/app", 17 * MiB)).toEqual(
+      failedWith(TooLarge, { limit: 16 * MiB }),
     );
     expect(await readOf("file:///big.txt", 13 * MiB)).toEqual({ read: true });
     // An agent's read counts its bytes as they arrive, and stops at 16 MiB.
