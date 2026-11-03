@@ -168,8 +168,12 @@ const runCall = Effect.fnUntraced(function* <A, R>(
 
         yield* annotateWire(input.target, wire?.(), call.bytes(), logs.length);
 
+        // The rows the host will keep hold what the server said of itself (`serverInfo`, `instructions`), which it may have
+        // made of a header it was sent: they are scrubbed in their string values as the result is.
+        const state = scrubValues(call.state(), call.tokens);
+
         if (Result.isSuccess(outcome)) {
-          return { outcome, state: call.state(), logs };
+          return { outcome, state, logs };
         }
 
         // A stream made before the call failed is never returned, so its lease goes back now.
@@ -177,7 +181,7 @@ const runCall = Effect.fnUntraced(function* <A, R>(
 
         return {
           outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
-          state: call.state(),
+          state,
           logs,
         };
       }),

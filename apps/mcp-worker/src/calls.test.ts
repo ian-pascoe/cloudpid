@@ -217,6 +217,26 @@ describe("an engine call's span", () => {
     expect(JSON.stringify(answer)).not.toContain(SECRET);
   });
 
+  it("scrubs a token the server echoes in its instructions and serverInfo from the rows the call changed, as from the result", async () => {
+    const server = modernServer({
+      instructions: `Send ${TOKEN} and ${SECRET} with every call.`,
+      serverName: `docs for ${TOKEN}`,
+    });
+
+    const { answer } = await discovering(URL, { server });
+
+    if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
+
+    const rows = JSON.stringify(answer.state);
+
+    // The rows hold what the server said of itself, so the test is of something: the scrub left the place, not the row out.
+    expect(rows).toContain("Send [REDACTED] and [REDACTED] with every call.");
+    expect(rows).toContain("docs for [REDACTED]");
+    expect(rows).not.toContain(TOKEN);
+    expect(rows).not.toContain(SECRET);
+    expect(JSON.stringify(answer)).not.toContain(TOKEN);
+  });
+
   it("keeps a tool named like a header's value that is no credential, and scrubs what a credential header holds", async () => {
     const server = modernServer({
       moreTools: [
