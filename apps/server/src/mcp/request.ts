@@ -20,10 +20,10 @@
 //   (`resources.ts`).
 // - **`prompts/get`** (#463): the owner's pick of a prompt of a server whose inventory lists it, a read through the engine
 //   with the checks of a call, bounded at 30 s (or the entry's lower `timeout`).
-// - **`resume`** (#480): a `tools/call` answered `InputRequired` (only to a caller with `ctx.answers.defer`), sent again
-//   with the answers to its deferred questions. It carries the tool, the `conn` the server asked on (another one now is
-//   `ServerChanged`, nothing sent) and the `ResumeState`, which the host passes on unread and never keeps; it is answered
-//   as a `tools/call` is (`docs/architecture/mcp-server-requests.md` → Questions).
+// - **`resume`** (#480): a `tools/call` answered `InputRequired` (only to a caller with `ctx.answers.defer`), sent
+//   again with the answers to its deferred questions. It carries the tool, the `conn` the server asked on (another one
+//   now is `ServerChanged`, nothing sent) and the `ResumeState`, which the host passes on unread and never keeps; it is
+//   answered as a `tools/call` is (`docs/architecture/mcp-server-requests.md` → Questions).
 // - **`ui/html`** (#466): App HTML for a View that mounts. By `hash` it is the host's own storage, which needs only a
 //   server of the set. By `uri` it is a read through the engine, joined with the one in flight, with the checks of a call.
 //

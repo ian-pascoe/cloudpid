@@ -245,9 +245,10 @@ export interface TaskStarted {
 }
 
 /**
- * A Modern `tools/call` whose server asked questions the caller deferred (`input_required`; ADR-0037): only a call whose
- * `ctx.answers.defer` is set is ever answered so. `requests` are the deferred questions, as `onInput` was handed them;
- * `resume` is the `ResumeState` that `resume` sends the call again from, with their answers. The core keeps nothing.
+ * A Modern `tools/call` whose server asked questions the caller deferred (`input_required`; ADR-0037): only a call
+ * whose `ctx.answers.defer` is set is ever answered so. `requests` are the deferred questions, as `onInput` was handed
+ * them; `resume` is the `ResumeState` that `resume` sends the call again from, with their answers. The core keeps
+ * nothing.
  */
 export interface InputRequired {
   readonly kind: "input_required";
@@ -1184,9 +1185,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     });
 
   /**
-   * Sends a tool's call once, or with `retry` the answers to a round of questions. Whether the call is offered a task is
-   * decided at each attempt, on the era and capabilities the server has then: a call sent again after an era drop to a
-   * server that is Legacy now declares nothing, and a retry to one is refused before it is sent.
+   * Sends a tool's call once, or with `retry` the answers to a round of questions. Whether the call is offered a task
+   * is decided at each attempt, on the era and capabilities the server has then: a call sent again after an era drop to
+   * a server that is Legacy now declares nothing, and a retry to one is refused before it is sent.
    */
   const sendCall = (
     params: CallToolParams,
@@ -1228,9 +1229,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     });
 
   /**
-   * Answers one question of a Modern round, by `key`: Roots from the connection's own, an elicitation through the call's
-   * `onInput` when the call offers it (else `cancel`, as for a question with nowhere to go). Anything else was never
-   * offered, and fails the call locally: the server is told nothing (`InputResponse` has no error form).
+   * Answers one question of a Modern round, by `key`: Roots from the connection's own, an elicitation through the
+   * call's `onInput` when the call offers it (else `cancel`, as for a question with nowhere to go). Anything else was
+   * never offered, and fails the call locally: the server is told nothing (`InputResponse` has no error form).
    */
   const answerOne = (
     key: string,
@@ -1712,8 +1713,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const readTimeoutMs = () => Math.min(target.timeoutMs ?? PAGE_TIMEOUT_MS, PAGE_TIMEOUT_MS);
 
   /**
-   * Reads `uri` once, or with `retry` the answers to a round of questions: its result, or (Modern) a round of questions,
-   * which the read's own rounds answer (`readResource`).
+   * Reads `uri` once, or with `retry` the answers to a round of questions: its result, or (Modern) a round of
+   * questions, which the read's own rounds answer (`readResource`).
    */
   const readOnce = (
     params: ReadParams,
@@ -1741,10 +1742,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   };
 
   /**
-   * Reads a resource. A Modern server may answer with a round of questions (`input_required`), which the read answers at
-   * once, as a call's rounds are answered (Roots by the core, an elicitation through `onInput`), and sends again with
-   * every answer and the server's `requestState`, at most `MCP_INPUT_ROUNDS` rounds. A read is never kept for later: a
-   * question the caller would defer is a `cancel`. A read after questions is not cacheable.
+   * Reads a resource. A Modern server may answer with a round of questions (`input_required`), which the read answers
+   * at once, as a call's rounds are answered (Roots by the core, an elicitation through `onInput`), and sends again
+   * with every answer and the server's `requestState`, at most `MCP_INPUT_ROUNDS` rounds. A read is never kept for
+   * later: a question the caller would defer is a `cancel`. A read after questions is not cacheable.
    */
   const readResource = (uri: string, ctx: McpCallContext, options: ReadOptions = {}) =>
     Effect.gen(function* () {

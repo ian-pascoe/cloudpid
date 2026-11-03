@@ -1,9 +1,9 @@
 /**
- * A Modern server's questions (`docs/architecture/mcp-server-requests.md` → Questions; ADR-0037): a `tools/call` the server
- * answers `input_required` is answered by the core's own rounds. When `onInput` answers everything at once, the core sends
- * the call again itself (a new id, `requestState` byte for byte, at most 10 rounds, the result not cacheable); when the
- * caller defers a question, the call ends as `input_required` with a `ResumeState`, and `resume` sends it again with the
- * answers, never a partial round.
+ * A Modern server's questions (`docs/architecture/mcp-server-requests.md` → Questions; ADR-0037): a `tools/call` the
+ * server answers `input_required` is answered by the core's own rounds. When `onInput` answers everything at once, the
+ * core sends the call again itself (a new id, `requestState` byte for byte, at most 10 rounds, the result not
+ * cacheable); when the caller defers a question, the call ends as `input_required` with a `ResumeState`, and `resume`
+ * sends it again with the answers, never a partial round.
  */
 // @effect-diagnostics asyncFunction:off preferEffectArray:off schemaSync:off
 import * as Effect from "effect/Effect";

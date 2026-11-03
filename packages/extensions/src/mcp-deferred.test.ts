@@ -1,8 +1,8 @@
 // A call of an MCP tool whose Modern server asks the owner for input (`docs/architecture/mcp-server-requests.md` →
 // Questions, The waiting-question record, Elicitation requests): the form is kept for later, the call's round ends as
-// `input_required`, the round is stored whole with its `ResumeState`, and once the owner answers, one resume is sent with
-// the answer, which was sealed while it waited and never kept in the clear. Stop, a replaced Session's storage, and a
-// round an earlier instance left behind. A scripted model on a Harness, and an in-memory host.
+// `input_required`, the round is stored whole with its `ResumeState`, and once the owner answers, one resume is sent
+// with the answer, which was sealed while it waited and never kept in the clear. Stop, a replaced Session's storage,
+// and a round an earlier instance left behind. A scripted model on a Harness, and an in-memory host.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
 import {

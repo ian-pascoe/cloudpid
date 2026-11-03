@@ -138,8 +138,9 @@ export const ROOTS_TOOL = {
  * The fakes' tool that asks the client a form (`elicitation/create`) during the call, and answers with what it got: the
  * `action` and `content` as JSON text, or, when the client refused the request, `isError` with the error's message. On
  * Modern it asks in `input_required` rounds instead (`rounds`, default 1, of `forms` forms each, default 1, keyed `q1`,
- * `q2`, … and with `roots`, a `roots/list` too), each with a `requestState` of `round-<n>`, and answers the last round's
- * responses as JSON text; every answer it gets is recorded in `asked`, with the round and the state it came back with.
+ * `q2`, … and with `roots`, a `roots/list` too), each with a `requestState` of `round-<n>`, and answers the last
+ * round's responses as JSON text; every answer it gets is recorded in `asked`, with the round and the state it came
+ * back with.
  */
 export const ASK_TOOL = {
   name: "ask",
@@ -199,8 +200,9 @@ export interface FakeResource {
   /** What `resources/read` answers; a function makes it at each read, so a test of many large pages holds one at a time. */
   readonly contents: ReadonlyArray<FakeContent> | (() => ReadonlyArray<FakeContent>);
   /**
-   * A form the server asks before it answers (a Legacy server on the read's own stream, a Modern one as `input_required`
-   * with the `requestState` `read-1`): the read's one text content is then the answer as JSON, in place of `contents`.
+   * A form the server asks before it answers (a Legacy server on the read's own stream, a Modern one as
+   * `input_required` with the `requestState` `read-1`): the read's one text content is then the answer as JSON, in
+   * place of `contents`.
    */
   readonly asks?: { readonly message: string };
 }

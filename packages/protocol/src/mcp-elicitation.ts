@@ -112,9 +112,10 @@ export const McpElicitationSource = Schema.Struct({
 export type McpElicitationSource = typeof McpElicitationSource.Type;
 
 /**
- * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is the
- * moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's clock;
- * a question with `waits: "owner"` has none, and its `deadline` is only for a client from before `waits` (a far one).
+ * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is
+ * the moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's
+ * clock; a question with `waits: "owner"` has none, and its `deadline` is only for a client from before `waits` (a far
+ * one).
  */
 export const McpElicitationRequest = Schema.Struct({
   /** What the answer names: unique within the Session. */

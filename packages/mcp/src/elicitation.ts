@@ -69,8 +69,8 @@ export type McpElicitResult = typeof McpElicitResult.Type;
  * `refused` is a question cloudpid cannot take (Legacy: a malformed form, the server getting a JSON-RPC error with
  * `code`, `-32602` unless it says otherwise; Modern: the call ends locally, the server told nothing). `defer` keeps a
  * `deferrable` question for later: the core answers the round's other questions, keeps them in the call's
- * `ResumeState`, and returns `input_required` (only to a call whose `ctx.answers.defer` is set; for any other, and for a
- * `live` question, it reads as `cancel`). A new member only gains: the engine reads an answer it does not know as
+ * `ResumeState`, and returns `input_required` (only to a call whose `ctx.answers.defer` is set; for any other, and for
+ * a `live` question, it reads as `cancel`). A new member only gains: the engine reads an answer it does not know as
  * `refused`.
  */
 export const McpInputAnswer = Schema.Union([

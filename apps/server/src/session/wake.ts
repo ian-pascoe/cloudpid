@@ -31,8 +31,8 @@ export const wakeAt = (
 
 /**
  * What the object does whenever it settles with no work live: clears the Secret requests, Browser Handoffs, Approval
- * requests, Sign-in requests and MCP servers' deferred questions a call abandoned, and closes the browser if it fell idle past its keep-alive. Only now is it known that no
- * live run still drives the browser or waits for an answer.
+ * requests, Sign-in requests and MCP servers' deferred questions a call abandoned, and closes the browser if it fell
+ * idle past its keep-alive. Only now is it known that no live run still drives the browser or waits for an answer.
  */
 export const onIdle = (
   secrets: Pick<SecretsService, "dropAbandoned">,

@@ -4,16 +4,16 @@
 // mcp-in-a-session.md` → The `mcp` extension, Calls and results, Resource tools): the part a `tools/call` and a resource
 // list or read share, so they end alike.
 //
-// The request is awaited for its whole length with its `untilAborted` and `onProgress` hooks, so the stubs outlive it. Stop
-// aborts the call's context, which resolves `untilAborted`, and the host cancels. The Session waits at most the server's
-// `timeout` and `MCP_CALL_SLACK_MS` from the request's start or its last progress notice (progress resets the engine's
-// timeout too); past that, or when the RPC breaks, the request reads as `host_lost`. A stdio server runs in the Container
-// of the Workspace of the conversation that asks, which is marked used first. A Legacy server's question waits for the
-// owner while the clock stands still. A Modern server's questions, on a tool's call to a host that resumes, are kept for
-// later (`docs/architecture/mcp-server-requests.md` → The waiting-question record): the call's round ends as
-// `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running; once the owner
-// has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again for a round so
-// marked, and settles any other call it finds sent as one that may have run.
+// The request is awaited for its whole length with its `untilAborted` and `onProgress` hooks, so the stubs outlive it.
+// Stop aborts the call's context, which resolves `untilAborted`, and the host cancels. The Session waits at most the
+// server's `timeout` and `MCP_CALL_SLACK_MS` from the request's start or its last progress notice (progress resets the
+// engine's timeout too); past that, or when the RPC breaks, the request reads as `host_lost`. A stdio server runs in
+// the Container of the Workspace of the conversation that asks, which is marked used first. A Legacy server's question
+// waits for the owner while the clock stands still. A Modern server's questions, on a tool's call to a host that
+// resumes, are kept for later (`docs/architecture/mcp-server-requests.md` → The waiting-question record): the call's
+// round ends as `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running;
+// once the owner has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again
+// for a round so marked, and settles any other call it finds sent as one that may have run.
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
@@ -286,7 +286,8 @@ export const send = async <A>(
   const failed = (result: ToolExecutionResult<JsonValue>): Sent<A> => ({ ok: false, result });
   const { questions } = options;
 
-  // A Modern server's questions are kept for later on a tool's call, when the host resumes and the Session can keep them.
+  // A Modern server's questions are kept for later on a tool's call, when the host resumes and the Session can keep
+  // them.
   const deferring =
     remember && exchange.defers === true && questions !== undefined && questions.defers;
 

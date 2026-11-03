@@ -1,8 +1,8 @@
 // A test Session DO on a Workspace whose scripts call an MCP tool (`docs/architecture/mcp-server-requests.md` → The
-// waiting-question record: `codemode`): the `mcp` extension over a fake host, which answers the `ask` tool of the server
-// `docs` as a Modern server does (its question kept for later: `InputRequired`, then the resume's result) or as a Legacy
-// one does (its question asked live, and the call held open), as `mcpEra` says. What the fake was sent is counted in the
-// object's storage, so the counts outlive an eviction.
+// waiting-question record: `codemode`): the `mcp` extension over a fake host, which answers the `ask` tool of the
+// server `docs` as a Modern server does (its question kept for later: `InputRequired`, then the resume's result) or as
+// a Legacy one does (its question asked live, and the call held open), as `mcpEra` says. What the fake was sent is
+// counted in the object's storage, so the counts outlive an eviction.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
 import type { Harness } from "@cloudpid/effect-durable";
 import type { Approvals } from "@cloudpid/extensions/approvals";

@@ -594,9 +594,9 @@ interface Answering {
 }
 
 /**
- * What a `tools/call` (or its `resume`) answers: its failure, the task it started, the questions its caller deferred, or
- * its result with its `structuredContent` checked. What the server says of a task or a question is scrubbed as a result
- * is; the `ResumeState` goes back as the core made it, the server's `requestState` byte for byte.
+ * What a `tools/call` (or its `resume`) answers: its failure, the task it started, the questions its caller deferred,
+ * or its result with its `structuredContent` checked. What the server says of a task or a question is scrubbed as a
+ * result is; the `ResumeState` goes back as the core made it, the server's `requestState` byte for byte.
  */
 const callAnswer = Effect.fnUntraced(function* (
   sent: Result.Result<Effect.Success<ReturnType<McpConnection["callTool"]>>, McpError>,

@@ -1,8 +1,8 @@
 /**
  * A Modern server's questions through the engine (`docs/architecture/mcp-server-requests.md` → Questions; ADR-0037): a
- * call whose caller offers elicitation declares the form in the request's `_meta`; one whose caller defers its questions
- * (`ctx.answers.defer`) is answered `input_required` with the `ResumeState`, and `op: "resume"` sends it again with the
- * answers. A caller that keeps no questions never gets `input_required`: a deferral reads as a `cancel`.
+ * call whose caller offers elicitation declares the form in the request's `_meta`; one whose caller defers its
+ * questions (`ctx.answers.defer`) is answered `input_required` with the `ResumeState`, and `op: "resume"` sends it
+ * again with the answers. A caller that keeps no questions never gets `input_required`: a deferral reads as a `cancel`.
  */
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off strictEffectProvide:off schemaSync:off
 import { ASK_TOOL, fetchTo, modernServer, type FakeServer } from "@cloudpid/mcp/testing";

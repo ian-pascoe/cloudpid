@@ -2,9 +2,10 @@
 // MCP servers ask the owner during a call, shown on every client's card over the Session socket and pushed to the owner
 // once as a call starts waiting. A Legacy server's live in memory, as long as their call waits; a Modern server's are
 // kept in the storage between the call's rounds, an accepted form's content sealed (AES-GCM, under a key derived from
-// `SECRETS_ENCRYPTION_KEY` for the purpose `mcp-elicitation`, bound to the Session and the question) until its resume is
-// built. The storage never holds an answered value in the clear. The tools that ask are built outside the Session's runtime (`./mcp-host.ts`), so the
-// service is made synchronously, and the Secrets it checks answers against are bound when the runtime builds its layer.
+// `SECRETS_ENCRYPTION_KEY` for the purpose `mcp-elicitation`, bound to the Session and the question) until its resume
+// is built. The storage never holds an answered value in the clear. The tools that ask are built outside the Session's
+// runtime (`./mcp-host.ts`), so the service is made synchronously, and the Secrets it checks answers against are bound
+// when the runtime builds its layer.
 import { credentialCheck, DeployCredentials } from "@cloudpid/extensions/environment";
 import {
   createMcpQuestions,

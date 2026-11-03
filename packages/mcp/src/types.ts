@@ -47,9 +47,10 @@ export const McpAnswers = Schema.Struct({
   elicitation: Schema.optionalKey(Schema.Boolean),
   inputWaitMs: Schema.optionalKey(Schema.Finite),
   /**
-   * The caller keeps a Modern server's questions for later (`onInput` may answer `defer`), so the request may be answered
-   * `input_required` with a `ResumeState`, and `resume` sends it again with the answers. Without it no request is ever
-   * answered `input_required`, and a `defer` reads as `cancel` (`docs/architecture/mcp-server-requests.md` → Questions).
+   * The caller keeps a Modern server's questions for later (`onInput` may answer `defer`), so the request may be
+   * answered `input_required` with a `ResumeState`, and `resume` sends it again with the answers. Without it no request
+   * is ever answered `input_required`, and a `defer` reads as `cancel` (`docs/architecture/mcp-server-requests.md` →
+   * Questions).
    */
   defer: Schema.optionalKey(Schema.Boolean),
 });
@@ -843,9 +844,9 @@ export const McpEngineTaskState = Schema.Struct({
 export type McpEngineTaskState = typeof McpEngineTaskState.Type;
 
 /**
- * A Modern `tools/call` (or its `resume`) whose server asked questions the caller deferred, returned only to a call whose
- * `ctx.answers.defer` is set: the deferred `requests`, scrubbed of the call's tokens, and the `ResumeState` a `resume`
- * goes on from, as the core made it (`docs/architecture/mcp-server-requests.md` → Questions).
+ * A Modern `tools/call` (or its `resume`) whose server asked questions the caller deferred, returned only to a call
+ * whose `ctx.answers.defer` is set: the deferred `requests`, scrubbed of the call's tokens, and the `ResumeState` a
+ * `resume` goes on from, as the core made it (`docs/architecture/mcp-server-requests.md` → Questions).
  */
 export const McpEngineInputRequired = Schema.Struct({
   kind: Schema.Literal("input_required"),
@@ -1043,7 +1044,8 @@ export type McpHostTaskCancel = typeof McpHostTaskCancel.Type;
  * `request({ op: "resume" })`: a `tools/call` answered `InputRequired`, sent again with the answers to the questions it
  * deferred, by key (`docs/architecture/mcp-server-requests.md` → Questions). `tool` is the server's own name for the
  * tool, `conn` the server's connection key when it asked (another one now is `ServerChanged`, nothing sent), and
- * `resume` the `ResumeState` the `InputRequired` carried, as it came. Answered as a `tools/call` is, with the same `ctx`.
+ * `resume` the `ResumeState` the `InputRequired` carried, as it came. Answered as a `tools/call` is, with the same
+ * `ctx`.
  */
 export const McpHostResume = Schema.Struct({
   op: Schema.Literal("resume"),
@@ -1295,8 +1297,8 @@ export type McpHostTaskState = typeof McpHostTaskState.Type;
 /**
  * A `tools/call` (or its `resume`) whose server asked questions the caller deferred, returned only to a call whose
  * `ctx.answers.defer` is set: the questions, and the `ResumeState` a `resume` sends with their answers, opaque to the
- * caller, who keeps it. `conn` and `identity` are the server's as it asked, for the caller's record; `signIn` and `spawn`
- * as a task's (`docs/architecture/mcp-server-requests.md` → The waiting-question record).
+ * caller, who keeps it. `conn` and `identity` are the server's as it asked, for the caller's record; `signIn` and
+ * `spawn` as a task's (`docs/architecture/mcp-server-requests.md` → The waiting-question record).
  */
 export const McpHostInputRequired = Schema.TaggedStruct("InputRequired", {
   requests: Schema.Array(McpInputRequest),
