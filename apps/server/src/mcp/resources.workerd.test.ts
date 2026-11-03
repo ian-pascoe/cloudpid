@@ -478,3 +478,42 @@ describe("a request for resources the host refuses", () => {
     expect(answer._tag).toBe("NotAllowed");
   });
 });
+
+describe("a host whose storage refuses an operation under a resource request", () => {
+  /** Whether a server new to the set is discovered: background work goes on only until a storage operation fails. */
+  const discoversLater = async (host: Host) => {
+    const before = (await host.engineCalls()).length;
+
+    await host.accept();
+    await host.apply(setOf(entry("docs"), entry("later")));
+    await host.scriptEngine(urlOf("later"), [found()]);
+    await host.requestStart({
+      caller: { session: "s-1", conversation: "1", workspace: "ws:w-1" },
+      waitFor: ["later"],
+      waitMs: 300,
+    });
+
+    return (await host.engineCalls()).length > before;
+  };
+
+  it("answers HostFailed at a read it cannot make, and stops background work", async () => {
+    const host = await hostWith();
+
+    await script(host, page(["a"], { ttlMs: 1000 }));
+    await host.refuse(["prior"]);
+
+    expect((await host.request(list(), {}))._tag).toBe("HostFailed");
+    expect(await discoversLater(host)).toBe(false);
+  });
+
+  it("stops background work at a write its engine round could not keep", async () => {
+    const host = await hostWith();
+
+    await script(host, page(["a"], { ttlMs: 1000 }));
+    await host.refuse(["applyEngineState"]);
+
+    await host.request(list(), {});
+
+    expect(await discoversLater(host)).toBe(false);
+  });
+});
