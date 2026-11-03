@@ -126,20 +126,17 @@ export const resolve = (
 
     // A task is the server's under the `conn` it was started on, and a question the server's under the one it was asked
     // on: another one is another server, and nothing is sent (`mcp-server-requests.md` → How a wait ends).
-    if (task !== undefined && task.params.conn !== server.conn) {
-      return Result.fail(
-        ServerChanged.make({
-          message: `MCP server ${name} changed since the task was started`,
-          conn: server.conn,
-          identity: server.identity,
-        }),
-      );
-    }
+    const asked =
+      task !== undefined
+        ? { conn: task.params.conn, since: "the task was started" }
+        : call?.op === "resume"
+          ? { conn: call.params.conn, since: "it asked" }
+          : undefined;
 
-    if (call?.op === "resume" && call.params.conn !== server.conn) {
+    if (asked !== undefined && asked.conn !== server.conn) {
       return Result.fail(
         ServerChanged.make({
-          message: `MCP server ${name} changed since it asked`,
+          message: `MCP server ${name} changed since ${asked.since}`,
           conn: server.conn,
           identity: server.identity,
         }),

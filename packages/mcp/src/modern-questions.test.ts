@@ -311,7 +311,8 @@ describe("A Modern server's questions", () => {
     const later = deps(server, () => ACCEPTED, [], { roots: ROOTS });
     const partial = await resume(later, deferred.resume, {});
 
-    expect(partial).toEqual(failedWith(ProtocolViolation));
+    // The caller's fault, not the server's: nothing was sent.
+    expect(partial).toEqual(failedWith(Unsupported));
     expect(calls(server)).toHaveLength(1);
 
     const resumed = valueOf(await resume(later, deferred.resume, { q2: { action: "decline" } }));
@@ -393,5 +394,54 @@ describe("A Modern server's questions", () => {
 
     expect(outcome).toEqual(failedWith(Unsupported, { message: MCP_RESUME_STATE_EXPIRED }));
     expect(calls(server)).toHaveLength(0);
+  });
+
+  it("answers a read's questions at once, deferring none, and reads again with the answers, not cacheable", async () => {
+    const asked: Array<Schema.Json> = [];
+
+    const server = modernServer({
+      asked,
+      resources: [
+        { uri: "file:///notes", name: "notes", contents: [], asks: { message: "Go on?" } },
+      ],
+    });
+
+    const seen: Array<McpInputRequest> = [];
+
+    // The caller would keep it for later, but a read has no resume: its deferral is a `cancel`.
+    const deferring = deps(server, () => ({ kind: "defer" }), seen);
+
+    const outcome = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, deferring);
+
+        return yield* settled(connection.readResource("file:///notes", DEFERRING));
+      }),
+    );
+
+    expect(seen).toEqual([expect.objectContaining({ key: "q1", kind: "elicitation" })]);
+    expect(asked).toEqual([{ round: 1, state: "read-1", responses: { q1: { action: "cancel" } } }]);
+    expect(outcome).toMatchObject({
+      value: {
+        kind: "complete",
+        cacheable: false,
+        value: { contents: [{ text: JSON.stringify({ action: "cancel" }) }] },
+      },
+    });
+
+    // Answered at once, the answer goes with the second read.
+    const answering = deps(server, () => ACCEPTED);
+
+    const read = await run(
+      Effect.gen(function* () {
+        const connection = yield* connect(TARGET, answering);
+
+        return yield* settled(connection.readResource("file:///notes", ANSWERING));
+      }),
+    );
+
+    expect(read).toMatchObject({
+      value: { value: { contents: [{ text: JSON.stringify(ACCEPTED.result) }] } },
+    });
   });
 });

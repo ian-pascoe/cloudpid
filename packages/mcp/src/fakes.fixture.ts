@@ -199,8 +199,8 @@ export interface FakeResource {
   /** What `resources/read` answers; a function makes it at each read, so a test of many large pages holds one at a time. */
   readonly contents: ReadonlyArray<FakeContent> | (() => ReadonlyArray<FakeContent>);
   /**
-   * A form the server asks (a Legacy server, on the read's own stream) before it answers: the read's one text content is
-   * then the answer as JSON, in place of `contents`.
+   * A form the server asks before it answers (a Legacy server on the read's own stream, a Modern one as `input_required`
+   * with the `requestState` `read-1`): the read's one text content is then the answer as JSON, in place of `contents`.
    */
   readonly asks?: { readonly message: string };
 }
@@ -379,6 +379,36 @@ const fakeMcp = (
       const found = resources.find((each) => each.uri === request.params.uri);
 
       if (found === undefined) throw new Error(`No resource ${request.params.uri}`);
+
+      // A Modern server asks in its answer: `input_required` first, then the read answered with the round's responses.
+      if (found.asks !== undefined && modern) {
+        const responses = ctx.mcpReq.inputResponses;
+
+        if (responses === undefined) {
+          return inputRequired({
+            inputRequests: {
+              q1: inputRequired.elicit({
+                message: found.asks.message,
+                requestedSchema: { type: "object", properties: {} },
+              }),
+            },
+            requestState: "read-1",
+          });
+        }
+
+        // SAFETY: the client's answers are JSON.
+        options.asked?.push({
+          round: 1,
+          state: ctx.mcpReq.requestState<string>() ?? "",
+          responses: { ...responses } as Json,
+        });
+
+        return {
+          contents: [
+            { uri: found.uri, mimeType: "application/json", text: JSON.stringify(responses["q1"]) },
+          ],
+        };
+      }
 
       if (found.asks !== undefined) {
         const answer = await ctx.mcpReq.send({

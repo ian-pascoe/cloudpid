@@ -294,7 +294,12 @@ const STRING_FORMATS: ReadonlyMap<string, TextField["kind"]> = new Map([
 
 /** A schema outside the subset: why, and nothing more. */
 class Malformed {
-  constructor(readonly reason: string) {}
+  // Not a parameter property: the package runs under Node's type stripping, which takes none.
+  readonly reason: string;
+
+  constructor(reason: string) {
+    this.reason = reason;
+  }
 }
 
 /** A property that fails the subset throws this; the normalizer returns its reason. */

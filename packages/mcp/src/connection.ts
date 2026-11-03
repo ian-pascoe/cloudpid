@@ -435,6 +435,13 @@ interface Asked {
   readonly requestState?: string;
 }
 
+/** A `resources/read`'s params: the URI, and the request's `_meta`. */
+type ReadParams = { readonly uri: string; readonly _meta?: RequestMeta };
+
+/** `ctx` with no deferral: a request with no resume (a read) answers what it would defer with `cancel`. */
+const noDeferral = (ctx: McpCallContext): McpCallContext =>
+  ctx.answers?.defer === undefined ? ctx : { ...ctx, answers: Struct.omit(ctx.answers, ["defer"]) };
+
 /** What a `tools/call` attempt came to: an outcome, or a round of questions to answer. */
 type CallAnswer = Outcome<CallToolResult> | Asked;
 
@@ -1270,6 +1277,22 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       return { key, answer: { ...answer.result } } satisfies RoundAnswer;
     });
 
+  /** Answers every question of a Modern round (`answerOne`): those answered at once, and those the caller deferred. */
+  const answerRound = (asked: Asked, ctx: McpCallContext) =>
+    Effect.gen(function* () {
+      const answered: Record<string, JsonObject> = {};
+      const deferred: Array<McpInputRequest> = [];
+
+      for (const [key, entry] of Record.toEntries(asked.inputRequests)) {
+        const one = yield* answerOne(key, entry, ctx);
+
+        if ("defer" in one) deferred.push(one.defer);
+        else answered[key] = one.answer;
+      }
+
+      return { answered, deferred };
+    });
+
   /**
    * Runs a Modern call's rounds of questions from `answer`: each round's questions are answered (Roots by the core, the
    * rest through `onInput`), then the call is sent again with every answer and the server's `requestState`, on a new
@@ -1294,16 +1317,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           });
         }
 
-        const { inputRequests, requestState } = answer;
-        const answered: Record<string, JsonObject> = {};
-        const deferred: Array<McpInputRequest> = [];
-
-        for (const [key, entry] of Record.toEntries(inputRequests)) {
-          const one = yield* answerOne(key, entry, ctx);
-
-          if ("defer" in one) deferred.push(one.defer);
-          else answered[key] = one.answer;
-        }
+        const { requestState } = answer;
+        const { answered, deferred } = yield* answerRound(answer, ctx);
 
         if (deferred.length > 0) {
           const state: Mutable<ResumeStateV1> = {
@@ -1367,9 +1382,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       const state = decoded.value;
       const missing = Arr.filter(state.deferred, (key) => answers[key] === undefined);
 
-      // A partial round is never sent (`docs/architecture/mcp-server-requests.md` → Several at once on Modern).
+      // A partial round is never sent (`docs/architecture/mcp-server-requests.md` → Several at once on Modern). The
+      // caller's fault, not the server's: nothing was sent, so nothing ran.
       if (missing.length > 0) {
-        return yield* ProtocolViolation.make({
+        return yield* Unsupported.make({
           message: `The resume answers too few questions: ${Arr.join(missing, ", ")} unanswered`,
         });
       }
@@ -1695,36 +1711,84 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   /** A read's own bound: the page timeout, or the entry's `timeout` when that is lower (#394 D15). */
   const readTimeoutMs = () => Math.min(target.timeoutMs ?? PAGE_TIMEOUT_MS, PAGE_TIMEOUT_MS);
 
+  /**
+   * Reads `uri` once, or with `retry` the answers to a round of questions: its result, or (Modern) a round of questions,
+   * which the read's own rounds answer (`readResource`).
+   */
+  const readOnce = (
+    params: ReadParams,
+    ctx: McpCallContext,
+    more: Readonly<Record<string, string>> | undefined,
+    retry?: Retry,
+  ) => {
+    const timeoutMs = readTimeoutMs();
+
+    return withAsking(ctx, timeoutMs, (own) =>
+      request((client, signal) => {
+        const timing: Mutable<RequestOptions> = timingOf(own, signal, timeoutMs);
+
+        // A Modern server's questions come back to the core, which answers them itself: never the SDK's own loop.
+        if (live.era === "modern") timing.allowInputRequired = true;
+
+        return sendWith(own, more, (headers) =>
+          client.request(
+            { method: "resources/read", params: { ...params, ...retry } },
+            headers === undefined ? timing : { ...timing, headers },
+          ),
+        );
+      }, false),
+    );
+  };
+
+  /**
+   * Reads a resource. A Modern server may answer with a round of questions (`input_required`), which the read answers at
+   * once, as a call's rounds are answered (Roots by the core, an elicitation through `onInput`), and sends again with
+   * every answer and the server's `requestState`, at most `MCP_INPUT_ROUNDS` rounds. A read is never kept for later: a
+   * question the caller would defer is a `cancel`. A read after questions is not cacheable.
+   */
   const readResource = (uri: string, ctx: McpCallContext, options: ReadOptions = {}) =>
     Effect.gen(function* () {
       const meta = metaFor(ctx);
-      const params = meta === undefined ? { uri } : { uri, _meta: meta };
-      const timeoutMs = readTimeoutMs();
+      const params: ReadParams = meta === undefined ? { uri } : { uri, _meta: meta };
       const more = options.app === true ? { [APP_READ_HEADER]: "1" } : undefined;
+      // A read has no resume: its caller's deferrals are cancels.
+      const asking = noDeferral(ctx);
 
-      const value = yield* withAsking(ctx, timeoutMs, (own) =>
-        request((client, signal) => {
-          const timing = timingOf(own, signal, timeoutMs);
+      let value: ReadResourceResult | Result = yield* readOnce(params, asking, more);
+      let round = 1;
 
-          return sendWith(own, more, (headers) =>
-            client.request(
-              { method: "resources/read", params },
-              headers === undefined ? timing : { ...timing, headers },
-            ),
-          );
-        }, false),
-      );
+      while (value["resultType"] === "input_required") {
+        if (round > MCP_INPUT_ROUNDS) {
+          return yield* ProtocolViolation.make({
+            message: `The server asked questions for more than ${MCP_INPUT_ROUNDS} rounds`,
+          });
+        }
 
+        const asked = yield* askedOf(value);
+
+        if (asked.kind !== "asked") return yield* notMcp("its questions are malformed");
+
+        const { answered } = yield* answerRound(asked, asking);
+        const retry: Mutable<Retry> = { inputResponses: answered };
+
+        if (asked.requestState !== undefined) retry.requestState = asked.requestState;
+
+        value = yield* readOnce(params, asking, more, retry);
+        round += 1;
+      }
+
+      // SAFETY: anything but `input_required` is the result the SDK validated as a `ReadResourceResult`.
+      const read = value as ReadResourceResult;
       const fetchedAt = yield* Clock.currentTimeMillis;
-      const sha256 = yield* Effect.promise(() => contentsSha256(value.contents));
+      const sha256 = yield* Effect.promise(() => contentsSha256(read.contents));
 
       return {
         kind: "complete",
-        value,
-        cacheable: true,
+        value: read,
+        cacheable: round === 1,
         fetchedAt,
         sha256,
-        ...Option.getOrUndefined(decodeCacheHints(value)),
+        ...Option.getOrUndefined(decodeCacheHints(read)),
       } satisfies ReadComplete;
     });
 

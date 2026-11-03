@@ -30,10 +30,6 @@
           "auth/iss-normalized",
           "auth/metadata-issuer-mismatch"
         ]
-      },
-      {
-        "reason": "The core answers `input_required` rounds and resumes them since #480, but the scenario client does not drive this scenario yet (it calls none of its tools)",
-        "entries": ["sep-2322-client-request-state"]
       }
     ],
     "server": [

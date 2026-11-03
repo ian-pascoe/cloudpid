@@ -1219,7 +1219,8 @@ export const isMcpHostRequestOp = (op: string) => MCP_HOST_REQUEST_OPS.includes(
 /** A `tasks/*` request: one that follows an MCP task. */
 export const isMcpHostTaskRequest = (
   call: McpHostRequest,
-): call is McpHostTaskGet | McpHostTaskUpdate | McpHostTaskCancel => call.op.startsWith("tasks/");
+): call is McpHostTaskGet | McpHostTaskUpdate | McpHostTaskCancel =>
+  call.op === "tasks/get" || call.op === "tasks/update" || call.op === "tasks/cancel";
 
 /** What a failure for an MCP task the request did not ask for says, in the core and at the host. */
 export const MCP_UNASKED_TASK_MESSAGE = "The server started an MCP task that was not asked for";
