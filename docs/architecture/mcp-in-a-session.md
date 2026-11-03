@@ -485,6 +485,26 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
 - **A stale list** (older than `ttlMs`; 10 min for Legacy) is served to a catalog read and refreshed in the background, for HTTP servers and running stdio processes only.
 - **Nothing reaches the conversation** when prompts change.
 
+### As built (#463, first half)
+
+[#463](https://github.com/ian-pascoe/cloudpid/issues/463) lands in two changes. The first is everything up to the server and the extension; the second is the web composer.
+
+**Built here** (Session, host, core and engine; no migration):
+
+- **The get:** the core's `getPrompt`, the engine's `prompts/get` op and `McpHost.request({ op: "prompts/get" })` ([_As built — `prompts/get`_](mcp-connections.md)). `sessionMcp` gains `prompts: { session, catalog, get }` (`apps/server/src/session/mcp-host.ts`): `get` sends the owner's request in the conversation's Workspace (its Subagent Workspace for a stdio server, else the Session's), waits at most 40 s (the host's 30 s and slack), reads a streamed result under the decode slot (`readStreamed`), and maps a failure to a code, every refusal naming the server: `SignInRequired` → `MCP_SIGN_IN_REQUIRED`; `TooLarge` → `MCP_PROMPT_TOO_LARGE`; a `-32602` (`ServerError` or `NotFound`) → `MCP_PROMPT_ARGUMENTS` (the server's message, at most 300 characters, redacted); anything else (a server off, unreachable, a timeout, a task-shaped or unreadable answer, a host that does not know the op) → `MCP_PROMPT_FAILED`.
+- **The catalog:** `catalog` adds `prompts` and `mcpServers` when there are any (`mcp-prompt-catalog.ts`), from `McpHost.servers({ parts: ["prompts"] })`, so nothing reads a server and no Container starts. `completions` is `false` until completion lands; the field is the seam.
+- **Submit:** `submit.mcpPrompt { server, name, arguments? }` is prepared with the rest of the message (`mcpPromptDraft`, `host.ts`): the Session checks the prompt is offered, the arguments (`promptArgumentsProblem`), takes the held Secrets out of what it keeps, gets the prompt once and makes the message (`mcp-prompt.ts`), in the order the section above gives, with the pages after the typed text and before the owner's own images. A resent `requestId` that was admitted does not get it again. A refusal is an `error` with `code` and `server` (`ErrorMessage`, `SessionError`), and nothing is placed: the owner's text and chip are intact for the client to give back. A typed `/mcp__<name>` that was not picked is refused (`MCP_PROMPT_FAILED`). A message that the guard refuses is `MCP_PROMPT_TOO_LARGE`. A Review cannot carry a prompt.
+- **The message:** the block's prose is cleaned, redacted and defanged of structural tags (not escaped, so a prompt's Markdown reads as written); embedded resources are escaped in `<mcp_resources>`. An embedded text over `MCP_PROMPT_INLINE_TEXT_BYTES` (128 KiB) goes to a file, until Attached resources have a guard to share. The entry's `mcpPrompt.parts` carry no text (the block is in the message), so the 1.9 MB guard counts the content once. Files (images past the budget, audio, a large or binary resource) are written by the Session to `/workspace/.cloudpid/uploads/<session>/` through the lookup environment, which does not wake the Container.
+- **The transcript projection** (`projectEntry`) shows the typed text without the block or the inline prompt images, and carries `mcpPrompt` (with the block as `text`) on the message for the client's disclosure.
+- **Freshness:** `promptsVersion` moves with the prompts alone and `version` does not, so a prompts-only change does not install `mcp` again (`packages/extensions/src/mcp.test.ts`).
+
+**Left for the web change and later:**
+
+- The `/` menu rows, `ArgumentForm`, the chip, `Navigated.mcpPrompt` (Branch restoring the chip), the transcript's chip line and disclosure, `/export`, and the draft composer's catalog (through the Registry's `draftCatalog`).
+- Completion (`mcp_complete`, `mcp_completion`).
+- A server's Sampling or Elicitation request during a get (the request carries no `ctx.answers`, so the core declares nothing a server could ask a question with) and `mcpPrompt.sampling` / `mcpPrompt.elicitation`; the lane row "Getting <title> from <server>…".
+- Refreshing the list on `list_changed`, `ttlMs` and an unknown name (`Freshness`): the catalog is the host's inventory as discovery left it.
+
 ## Roots
 
 - **Who gets roots:** they are declared only on bridge connections, that is to stdio servers.
