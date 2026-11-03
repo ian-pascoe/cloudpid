@@ -48,8 +48,11 @@ export const MAX_GET_TOOLS = 500;
 export const MAX_GET_INSTRUCTIONS_BYTES = 4 * 1024;
 
 /**
- * What each growable part of a value weighs at most, stored (`docs/architecture/agent-capabilities.md` → Bounds): a value
- * with several such parts gives each less than `MAX_PART_BYTES`, so that together they stay under 1 MiB.
+ * What each growable part of a value weighs at most, stored (`docs/architecture/agent-capabilities.md` → Bounds). Each
+ * tool's parts add up to well under 1 MiB: `settings_mcp_list` at most 432 KiB (servers, problems, repos, orphans,
+ * warnings), `settings_mcp_reload` at most 176 KiB, and `settings_mcp_get` at most about 520 KiB (tools, prompts,
+ * unmatched keys, warnings, the layers, and its one server's own lists, about 80 KiB, with the entry in force, 16 KiB,
+ * and the two owner layers, 32 KiB, which the entry limit keeps).
  */
 export const BOUNDS = {
   /** `settings_mcp_list`'s servers; its other parts (below) add 192 KiB at most. */
@@ -58,8 +61,9 @@ export const BOUNDS = {
   repos: 64 * 1024,
   orphans: 32 * 1024,
   warnings: 16 * 1024,
-  /** `settings_mcp_get`'s tools; with the prompts, keys and one server (below) they stay under 512 KiB. */
+  /** `settings_mcp_get`'s tools, and below them its prompts, unmatched keys and the Repos' layers of the server. */
   tools: 192 * 1024,
+  layers: 128 * 1024,
   prompts: 32 * 1024,
   unmatched: 16 * 1024,
   /** One server's own lists (reads, what it shadows, problems, and the Environments named at Global), each. */
@@ -449,6 +453,18 @@ export const getOutput = (
 
   const warnings = boundItems(view.warnings, BOUNDS.warnings);
 
+  // Each Repo that defines the name: up to a file's worth of entries (16 KiB each), so by bytes.
+  const layerRepos = boundItems(
+    Arr.map(layers.repos, (repo) => ({
+      source: sourceOutput(repo.source),
+      name: repo.name,
+      kind: repo.kind,
+      value: repo.value,
+      shadowed: repo.shadowed,
+    })),
+    BOUNDS.layers,
+  );
+
   const instructions =
     row?.instructions === undefined
       ? null
@@ -468,13 +484,8 @@ export const getOutput = (
     layers: {
       global: layers.global,
       environment: layers.environment,
-      repos: Arr.map(layers.repos, (repo) => ({
-        source: sourceOutput(repo.source),
-        name: repo.name,
-        kind: repo.kind,
-        value: repo.value,
-        shadowed: repo.shadowed,
-      })),
+      repos: layerRepos.items,
+      repos_truncated: layerRepos.truncated,
     },
     tool_count: tools.length,
     tools: listed.items,

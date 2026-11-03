@@ -336,6 +336,7 @@ export const SettingsMcpGetOutput = Schema.Struct({
         shadowed: Schema.Boolean.annotate({ description: "An owner's entry of the name hides it" }),
       }),
     ),
+    repos_truncated: Schema.Boolean.annotate({ description: "layers.repos was cut" }),
   }),
   tool_count: Schema.Finite,
   tools: Schema.Array(ToolOutput),

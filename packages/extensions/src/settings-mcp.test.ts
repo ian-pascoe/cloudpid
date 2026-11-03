@@ -192,7 +192,11 @@ const fakeAccess = (
                 ...view,
                 servers: Arr.filter(view.servers, (each) => each.server.name === name),
                 layers: Arr.some(view.servers, (each) => each.server.name === name)
-                  ? { global: null, environment: { kind: "entry", value: {} }, repos: [] }
+                  ? (view.layers ?? {
+                      global: null,
+                      environment: { kind: "entry", value: {} },
+                      repos: [],
+                    })
                   : null,
               },
         );
@@ -812,7 +816,7 @@ describe("the bounds of a value (docs/architecture/agent-capabilities.md → Bou
     expect(text(result)).toContain("Cut to fit:");
   });
 
-  it("cuts the tools, prompts, unmatched keys and warnings of settings_mcp_get by stored bytes, under 1 MiB", async () => {
+  it("cuts the tools, prompts, unmatched keys, warnings and Repo layers of settings_mcp_get by stored bytes, under 1 MiB", async () => {
     const many = Arr.makeBy(500, (index) => ({ name: `tool_${index}`, title: LONG.repeat(4) }));
     const hidden: McpExposure = "hidden";
 
@@ -820,8 +824,25 @@ describe("the bounds of a value (docs/architecture/agent-capabilities.md → Bou
       Arr.makeBy(200, (index) => [`gone_${index}_${LONG}`, hidden] as const),
     );
 
+    // Sixty Repos that each define the server with a large entry (16 KiB, the entry limit).
+    const entry: Schema.Json = {
+      url: "https://files.example/mcp",
+      description: "y".repeat(16 * 1024),
+    };
+
     const view = viewOf([served(resolved("files", { toolExposure: keys }))], {
       warnings: Arr.makeBy(2000, () => LONG),
+      layers: {
+        global: null,
+        environment: null,
+        repos: Arr.makeBy(60, (index) => ({
+          kind: "entry" as const,
+          value: entry,
+          source: { ...repoSource, directory: `repo-${index}` },
+          name: "files",
+          shadowed: true,
+        })),
+      },
     });
 
     const access = fakeAccess({ views: { [ENV]: view } });
@@ -848,6 +869,7 @@ describe("the bounds of a value (docs/architecture/agent-capabilities.md → Bou
       prompts_truncated: true,
       unmatched_tool_exposure_truncated: true,
       warnings_truncated: true,
+      layers: { repos_truncated: true },
     });
     expect(listed).toBeGreaterThan(0);
     expect(listed).toBeLessThan(500);
@@ -1076,7 +1098,7 @@ describe("settings_mcp_get", () => {
     );
   });
 
-  it("gives no inventory at Global or at another Environment", async () => {
+  it("gives no inventory at Global, and never asks a host", async () => {
     const access = fakeAccess({
       views: {
         "*": viewOf([served(resolved("files", {}, { kind: "global" }))], {
