@@ -3,11 +3,11 @@
 // returned unread. The Session reads it here, one result over `DECODE_SLOT_OVER` at a time per isolate, since a large
 // result is read, decoded and parsed in memory: a few of them at once would not fit the object's 128 MB. The slot is held
 // until the caller has cut the result to what the model or a script gets (`readStreamed`'s `use`), not only while it is
-// read, and a read that stalls ends at its idle deadline, a wait for the slot at Stop.
+// read, and a read that stalls ends at its idle deadline, and a wait for the slot at Stop or at its own, shorter than the engine's, deadline.
 // @effect-diagnostics asyncFunction:off newPromise:off missingPipeableSignature:off globalTimers:off -- a stream is read with Promises.
+import { MCP_STREAM_HOLD_MS, MiB } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import type * as Schema from "effect/Schema";
-import { MiB } from "./ended.ts";
 
 /** A result of more bytes than this takes the isolate's one decode slot (`mcp-connections.md` → The engine). */
 export const DECODE_SLOT_OVER = 4 * MiB;
@@ -18,12 +18,21 @@ export const DECODE_SLOT_OVER = 4 * MiB;
  */
 export const MAX_STREAMED_BYTES = 32 * MiB;
 
+/**
+ * The longest a result's stream waits for the decode slot, in ms: 15 s under what the engine holds a stream unread
+ * (`MCP_STREAM_HOLD_MS`, which it counts from the result's return), so a waiter gives up and says so before the engine
+ * errors its stream and the wait would read as a break. The read that follows renews the engine's hold with each pull.
+ */
+export const MCP_STREAM_SLOT_WAIT_MS = MCP_STREAM_HOLD_MS - 15_000;
+
 /** What reading a result's stream came to. */
 export type Streamed =
   | { readonly kind: "value"; readonly value: Schema.Json }
   | { readonly kind: "too_large" }
   /** The stream broke, or was never read in time: the engine or the RPC was lost. */
   | { readonly kind: "lost" }
+  /** The wait for the slot passed `MCP_STREAM_SLOT_WAIT_MS`, so the engine would have let the stream go. */
+  | { readonly kind: "waited" }
   /** What was read is not JSON. */
   | { readonly kind: "unreadable" }
   | { readonly kind: "aborted" };
@@ -32,32 +41,38 @@ export type Streamed =
 let queue: Promise<void> = Promise.resolve();
 
 /**
- * Runs `work` when every holder before it is done, or answers `undefined` as soon as `signal` aborts while it waits:
- * Stop does not wait for the holder. A waiter that gave up still stands between the one before it and the one after, so
- * the one after waits for the same holder.
+ * Runs `work` when every holder before it is done, or says why it did not: `signal` aborted (Stop does not wait for the
+ * holder) or `waitMs` passed while it waited. A waiter that gave up still stands between the one before it and the one
+ * after, so the one after waits for the same holder.
  */
 const alone = async <A>(
   work: () => Promise<A>,
   signal: AbortSignal | undefined,
-): Promise<A | undefined> => {
+  waitMs: number,
+): Promise<{ readonly kind: "ran"; readonly ran: A } | { readonly kind: "aborted" | "waited" }> => {
   const before = queue;
   const mine = Promise.withResolvers<void>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   queue = before.then(() => mine.promise);
 
   try {
-    const aborted = new Promise<"aborted">((resolve) => {
+    const given = new Promise<"aborted" | "waited">((resolve) => {
       if (signal?.aborted === true) return resolve("aborted");
 
       signal?.addEventListener("abort", () => resolve("aborted"), { once: true });
+      timer = setTimeout(() => resolve("waited"), waitMs);
     });
 
-    if ((await Promise.race([before.then(() => "turn" as const), aborted])) === "aborted") {
-      return undefined;
-    }
+    const turn = await Promise.race([before.then(() => "turn" as const), given]);
 
-    return await work();
+    if (turn !== "turn") return { kind: turn };
+
+    clearTimeout(timer);
+
+    return { kind: "ran", ran: await work() };
   } finally {
+    clearTimeout(timer);
     mine.resolve();
   }
 };
@@ -68,6 +83,8 @@ export type StreamLimits = {
   readonly signal?: AbortSignal | undefined;
   /** The longest the stream may be quiet before it is given up on as lost, in ms. */
   readonly idleMs: number;
+  /** The longest it waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
+  readonly waitMs?: number;
 };
 
 /** The text of `body`, read to its end, or why it was not. */
@@ -172,12 +189,12 @@ export const readStreamed = <A>(
 
   if (bytes <= DECODE_SLOT_OVER) return read();
 
-  return alone(read, limits.signal).then((done) => {
-    if (done !== undefined) return done;
+  return alone(read, limits.signal, limits.waitMs ?? MCP_STREAM_SLOT_WAIT_MS).then((done) => {
+    if (done.kind === "ran") return done.ran;
 
-    // Stopped while it waited for the slot: the stream is let go unread.
+    // Stopped, or too long in line: the stream is let go unread.
     void body.cancel().catch(() => undefined);
 
-    return use({ kind: "aborted" });
+    return use({ kind: done.kind });
   });
 };

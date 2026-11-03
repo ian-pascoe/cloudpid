@@ -51,12 +51,13 @@ import {
   failureResult,
   hostLostResult,
   interruptedResult,
+  type McpResultContext,
   resultFor,
   streamFailure,
 } from "./result.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
-import { readStreamed } from "./stream.ts";
+import { readStreamed, type StreamLimits } from "./stream.ts";
 
 export const extensionName = "mcp";
 
@@ -145,6 +146,8 @@ export type McpToolOptions = {
   readonly slackMs?: number;
   /** How long a result's stream may be quiet, `MCP_STREAM_IDLE_MS` unless a test shortens it. */
   readonly streamIdleMs?: number;
+  /** How long a result's stream waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
+  readonly streamWaitMs?: number;
 };
 
 /** A promise that resolves when any of `signals` aborts, and never without one. */
@@ -265,27 +268,30 @@ const toolFor = (
       if (!Predicate.isTagged(result, "Completed")) return failureResult(result, base);
 
       // A script's call gets its value whole and no spill.
-      const spill = (await isNested(api, context)) ? undefined : spillTo(api.env, context);
+      const call: McpResultContext = (await isNested(api, context))
+        ? { kind: "script", details: base }
+        : { kind: "model", details: base, spill: spillTo(api.env, context) };
 
-      const finish = (value: Schema.Json) =>
-        resultFor(value, result.structuredOutput, { details: base, spill });
+      const finish = (value: Schema.Json) => resultFor(value, result.structuredOutput, call);
 
       if (result.result.kind !== "stream") return finish(result.result.value);
 
+      const limits: Mutable<StreamLimits> = {
+        signal: context.abortSignal,
+        idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+      };
+
+      if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+
       // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
       // model or the script gets before the decode slot is given up.
-      return readStreamed(
-        result.result.body,
-        result.result.bytes,
-        { signal: context.abortSignal, idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS },
-        async (streamed) => {
-          if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
+      return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
+        if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
 
-          return streamed.kind === "value"
-            ? finish(streamed.value)
-            : streamFailure(streamed.kind, base);
-        },
-      );
+        return streamed.kind === "value"
+          ? finish(streamed.value)
+          : streamFailure(streamed.kind, base);
+      });
     },
   };
 };

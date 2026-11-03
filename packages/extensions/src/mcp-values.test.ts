@@ -2,7 +2,7 @@
 // results): the output schema relocated under `structuredContent`, text cut largest-first to the nested bound, the
 // head of a result's text and what is bounded in `details`, and the one decode slot of an isolate.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off
-import type { JsonObject } from "@cloudpid/mcp/types";
+import { type JsonObject, MCP_STREAM_HOLD_MS } from "@cloudpid/mcp/types";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
@@ -11,8 +11,8 @@ import { headWithin, MAX_TEXT_BYTES, MAX_TEXT_LINES } from "./mcp/head.ts";
 import { resultFor } from "./mcp/result.ts";
 import { scriptSchemaOf } from "./mcp/schema.ts";
 import type { Spilled } from "./mcp/spill.ts";
-import { DECODE_SLOT_OVER, readStreamed } from "./mcp/stream.ts";
-import { scriptValueOf } from "./mcp/value.ts";
+import { DECODE_SLOT_OVER, MCP_STREAM_SLOT_WAIT_MS, readStreamed } from "./mcp/stream.ts";
+import { modelValueOf, scriptValueOf } from "./mcp/value.ts";
 import { storedBytes } from "./stored-bytes.ts";
 
 const Content = Schema.Array(
@@ -172,6 +172,31 @@ describe("the script's value", () => {
   });
 });
 
+describe("the value of a result with a large structuredContent", () => {
+  it("is measured once: no block is dropped or cut when structuredContent alone is over the budget", () => {
+    const value = scriptValueOf(
+      {
+        content: [
+          { type: "image", data: "I".repeat(500), mimeType: "image/png" },
+          { type: "text", text: "t".repeat(500) },
+        ],
+        structuredContent: { rows: "r".repeat(5000) },
+      },
+      2000,
+    );
+
+    expect(value).toEqual({
+      content: [],
+      structuredContent: { rows: "r".repeat(5000) },
+      truncated: true,
+    });
+  });
+
+  it("is nothing of the result for a model's call, which pi-durable only checks against the schema", () => {
+    expect(modelValueOf()).toEqual({ content: [] });
+  });
+});
+
 describe("the head of a result's text", () => {
   it("is nothing for a text within 2000 lines and 50 KiB, a trailing newline not a line more", () => {
     expect(headWithin("short")).toBeUndefined();
@@ -182,12 +207,14 @@ describe("the head of a result's text", () => {
   it("keeps the first 2000 lines of a longer text, and never half a line past the bytes", () => {
     const lines = headWithin("line\n".repeat(MAX_TEXT_LINES + 5));
 
-    expect(lines?.split("\n")).toHaveLength(MAX_TEXT_LINES);
+    // Whole lines, each with its newline, as pi-durable's own cut leaves them.
+    expect(lines?.split("\n")).toHaveLength(MAX_TEXT_LINES + 1);
+    expect(lines?.endsWith("\n")).toBe(true);
 
     const bytes = headWithin(`${"b".repeat(100)}\n`.repeat(1000));
 
     expect(new TextEncoder().encode(bytes).length).toBeLessThanOrEqual(MAX_TEXT_BYTES);
-    expect(bytes?.endsWith("b".repeat(100))).toBe(true);
+    expect(bytes?.endsWith(`${"b".repeat(100)}\n`)).toBe(true);
   });
 
   it("cuts a first line over the bytes by characters, whole multi-byte ones", () => {
@@ -202,6 +229,7 @@ describe("the head of a result's text", () => {
     const spilled: Array<string | Uint8Array> = [];
 
     const result = await resultFor({ content: [{ type: "text", text }] }, undefined, {
+      kind: "model",
       details: { server: "s", tool: "t" },
       spill: async (data): Promise<Spilled> => {
         spilled.push(data);
@@ -215,6 +243,79 @@ describe("the head of a result's text", () => {
     expect(block?.type === "text" ? block.text.length : -1).toBeLessThanOrEqual(MAX_TEXT_BYTES);
     expect(spilled).toEqual([text]);
     expect(result.details).toMatchObject({ full_output_path: "/tmp/mcp-1.txt" });
+  });
+});
+
+/** A spill that keeps what it is given, and where it says it went. */
+const keeping = () => {
+  const spilled: Array<string | Uint8Array> = [];
+
+  return {
+    spilled,
+    spill: async (data: string | Uint8Array): Promise<Spilled> => {
+      spilled.push(data);
+
+      return { path: `/tmp/mcp-${spilled.length}` };
+    },
+  };
+};
+
+describe("the text of a result over the limits", () => {
+  it("joins the server's text as pi-durable does, cuts it in place of the first block, and keeps images and notes", async () => {
+    const kept = keeping();
+
+    const result = await resultFor(
+      {
+        content: [
+          { type: "text", text: `${"a".repeat(30_000)}\n` },
+          { type: "image", data: "aGk=", mimeType: "image/png" },
+          { type: "text", text: `${"b".repeat(30_000)}\n` },
+          { type: "resource_link", uri: "file:///x.txt", name: "x" },
+          {
+            type: "resource",
+            resource: { uri: "file:///y.pdf", mimeType: "application/pdf", blob: "JVBERi0=" },
+          },
+        ],
+      },
+      undefined,
+      { kind: "model", details: { server: "s", tool: "t" }, spill: kept.spill },
+    );
+
+    const output = result.output ?? [];
+
+    // The head where the first text was, the image after it, then the link and the saved file: the second text is in the head.
+    expect(output.map((block) => block.type)).toEqual(["text", "image", "text", "text"]);
+    expect(output[0]?.type === "text" ? output[0].text.startsWith("aaa") : false).toBe(true);
+    expect(output[2]?.type === "text" ? output[2].text : "").toMatch(
+      /^\[Resource file:\/\/\/x\.txt/,
+    );
+    expect(output[3]?.type === "text" ? output[3].text : "").toMatch(/saved to \/tmp\/mcp-1\]$/);
+    // The whole, joined with nothing between the blocks, is what the spill has.
+    expect(kept.spilled[1]).toBe(`${"a".repeat(30_000)}\n${"b".repeat(30_000)}\n`);
+    expect(result.diagnostics).toContainEqual({
+      severity: "warn",
+      code: "truncated",
+      message: expect.stringMatching(
+        /^Output truncated to its beginning: \d+ lines, \d+ bytes dropped$/,
+      ),
+    });
+  });
+
+  it("is cut for a script's call too, with the same warning, and nothing is spilled", async () => {
+    const result = await resultFor(
+      { content: [{ type: "text", text: "line\n".repeat(MAX_TEXT_LINES + 10) }] },
+      undefined,
+      { kind: "script", details: { server: "s", tool: "t" } },
+    );
+
+    expect(result.diagnostics).toEqual([
+      {
+        severity: "warn",
+        code: "truncated",
+        message: "Output truncated to its beginning: 10 lines, 50 bytes dropped",
+      },
+    ]);
+    expect(result.details).not.toHaveProperty("full_output_path");
   });
 });
 
@@ -345,6 +446,26 @@ describe("reading a result's stream", () => {
 
     expect(await readOf(body, 1000, undefined, 30)).toEqual({ kind: "lost" });
     expect(seen.cancelled).toBe(true);
+  });
+
+  it("gives up a wait for the slot at its own deadline, before the engine lets the stream go, and lets it go", async () => {
+    const holder = silent();
+    const waiting = silent();
+
+    const holding = readOf(holder.body, DECODE_SLOT_OVER + 1, undefined, 400);
+
+    const waited = readStreamed(
+      waiting.body,
+      DECODE_SLOT_OVER + 1,
+      { idleMs: 5000, waitMs: 40 },
+      async (read) => read,
+    );
+
+    expect(await waited).toEqual({ kind: "waited" });
+    expect(waiting.seen.cancelled).toBe(true);
+    expect(holder.seen.cancelled).toBe(false);
+    expect(await holding).toEqual({ kind: "lost" });
+    expect(MCP_STREAM_SLOT_WAIT_MS).toBeLessThan(MCP_STREAM_HOLD_MS);
   });
 
   it("gives the slot up when the result is used, not when it is read", async () => {

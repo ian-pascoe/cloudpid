@@ -4,7 +4,6 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off -- conversions of plain values.
 import {
   isJsonObject,
-  mayHaveRun,
   type McpHostCompleted,
   type McpHostRequestResult,
   type McpStructuredOutput,
@@ -12,25 +11,25 @@ import {
 import type { JsonValue } from "@earendil-works/chord";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ToolDiagnostic, ToolExecutionResult } from "@earendil-works/pi-durable";
+import { utf8ByteLength } from "@earendil-works/chord/output";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { type ModelContent, modelContent } from "./blocks.ts";
+import { type ModelContent, modelContent, type Piece } from "./blocks.ts";
 import type { McpDetails } from "./details.ts";
 import {
+  describeError,
   type Ended,
-  engineLostEnd,
-  RESULT_LIMIT_BYTES,
-  tooLargeEnd,
-  unreadableEnd,
+  type StreamFailure,
+  streamEnd,
+  unreadableMessage,
 } from "./ended.ts";
-import { headWithin } from "./head.ts";
-import { type Spill, refusingSpill } from "./spill.ts";
-import { MODEL_VALUE_BUDGET, SCRIPT_VALUE_BUDGET, scriptValueOf } from "./value.ts";
+import { headWithin, lineCountOf } from "./head.ts";
+import { refusingSpill, type Spill } from "./spill.ts";
+import { modelValueOf, scriptValueOf } from "./value.ts";
 
 /** `value` as the `JsonValue` a result carries: the two describe the same values, `Schema.Json`'s arrays only read-only. */
 // SAFETY: a `Schema.Json` is JSON; its arrays are only read-only where `JsonValue`'s are mutable.
@@ -44,13 +43,15 @@ const CallToolValue = Schema.Struct({
 
 const decodeCallTool = Schema.decodeUnknownOption(CallToolValue);
 
-/** What a call of one result needs besides the result. */
-export type McpResultContext = {
-  /** The details the call starts from: its tool's `server`, `tool`, `title`, `hints` and `meta`. */
-  readonly details: McpDetails;
-  /** Writes a Result Spill; none for a script's call (`codemode`), which gets its value whole and no spill. */
-  readonly spill: Spill | undefined;
-};
+/**
+ * What a call of one result needs besides the result: the details it starts from (its tool's `server`, `tool`, `title`,
+ * `hints` and `meta`), and whose call it is. A model's call may spill; a script's (`codemode`) gets its value whole and
+ * no spill.
+ */
+export type McpResultContext = { readonly details: McpDetails } & (
+  | { readonly kind: "model"; readonly spill: Spill }
+  | { readonly kind: "script" }
+);
 
 /** A call that ended without a result: its message, as an error the model reads. */
 export const failedWith = (
@@ -64,13 +65,6 @@ export const failedWith = (
 
 const textOf = (text: string): TextContent => ({ type: "text", text });
 
-/** The text blocks of `content` as one text, in order. */
-const textsOf = (content: ReadonlyArray<ModelContent>): string =>
-  Arr.join(
-    Arr.flatMap(content, (block) => (block.type === "text" ? [block.text] : [])),
-    "\n",
-  );
-
 /** pi's message for a failed call that says nothing. */
 const failedLine = (details: McpDetails): string =>
   `MCP tool ${details.server}/${details.tool} returned an error`;
@@ -79,13 +73,52 @@ const failedLine = (details: McpDetails): string =>
 const invalidMessage = (structured: Extract<McpStructuredOutput, { valid: false }>): string =>
   `The server's structuredContent does not match the tool's outputSchema, so it was dropped: ${Arr.join(Arr.take(structured.errors, 3), "; ").slice(0, 400)}`;
 
+/** Whether `piece` is a block of the server's own text, which the limits cut. */
+const isServerText = (piece: Piece): boolean => piece.content.type === "text" && !piece.note;
+
+/**
+ * What the model is given for `pieces` over the limits: the server's text, joined as pi-durable joins it (with nothing
+ * between blocks), cut to its head at the place of its first block; images and notes stay where they were. `undefined`
+ * when the text is within the limits. `dropped` is what pi-durable's own cut reports, so the model is told as it is of
+ * any tool's output.
+ */
+const bounded = (pieces: ReadonlyArray<Piece>) => {
+  const whole = Arr.join(
+    Arr.flatMap(pieces, (piece) =>
+      isServerText(piece) && piece.content.type === "text" ? [piece.content.text] : [],
+    ),
+    "",
+  );
+
+  const head = headWithin(whole);
+
+  if (head === undefined) return undefined;
+
+  const first = Arr.findFirstIndex(pieces, isServerText);
+
+  return {
+    whole,
+    output: Arr.flatMap(pieces, (piece, index): ReadonlyArray<ModelContent> => {
+      if (!isServerText(piece)) return [piece.content];
+
+      return Option.contains(first, index) ? [textOf(head)] : [];
+    }),
+    warning: {
+      severity: "warn",
+      code: "truncated",
+      message: `Output truncated to its beginning: ${lineCountOf(whole) - lineCountOf(head)} lines, ${utf8ByteLength(whole) - utf8ByteLength(head)} bytes dropped`,
+    } satisfies ToolDiagnostic,
+  };
+};
+
 /**
  * A `tools/call` result as the model and scripts get it. The model gets the content as text and images, or the
- * `structuredContent` as JSON when there is none; text over the limits (`./head.ts`) is cut to its head here, so what
- * goes on to pi-durable and its hooks is never the whole of a large result, and goes whole to a Result Spill; binary data
- * goes to one too. A script gets the whole result as its value (`./value.ts`) and no spill. The engine's check of
- * `structuredContent` against the tool's `outputSchema` (`structured`) decides whether the value is given: when it is
- * invalid there is none, so a script's call fails with `invalid_structured_output` and the model's keeps its text.
+ * `structuredContent` as JSON when there is none; text over the limits (`./head.ts`) is cut to its head here, as
+ * `bash`'s output is, with the same `truncated` warning, so what goes on to pi-durable and its hooks is never the whole
+ * of a large result, and goes whole to a Result Spill; binary data goes to one too. A script gets the whole result as
+ * its value (`./value.ts`) and no spill. The engine's check of `structuredContent` against the tool's `outputSchema`
+ * (`structured`) decides whether the value is given: when it is invalid there is none, so a script's call fails with
+ * `invalid_structured_output` and the model's keeps its text.
  */
 export const resultFor = async (
   value: Schema.Json,
@@ -94,41 +127,47 @@ export const resultFor = async (
 ): Promise<ToolExecutionResult<JsonValue>> => {
   const decoded = decodeCallTool(value);
 
-  if (Option.isNone(decoded) || !isJsonObject(value))
-    return failedWith(unreadableEnd.message, call.details);
+  if (Option.isNone(decoded) || !isJsonObject(value)) {
+    return failedWith(unreadableMessage, call.details);
+  }
 
   const { content, isError = false } = decoded.value;
   const { structuredContent } = value;
-  const nested = call.spill === undefined;
-  const mapped = await modelContent(content, call.spill ?? refusingSpill);
+  const script = call.kind === "script";
+  const mapped = await modelContent(content, call.kind === "model" ? call.spill : refusingSpill);
   const details: Mutable<McpDetails> = { ...call.details };
   const diagnostics: Array<ToolDiagnostic> = [];
 
   // No content: the structuredContent as JSON, since servers should mirror it as text and do not always.
-  const base: ReadonlyArray<ModelContent> =
+  const base: ReadonlyArray<Piece> =
     content.length > 0 || structuredContent === undefined
       ? mapped
-      : [textOf(JSON.stringify(structuredContent))];
+      : [{ content: textOf(JSON.stringify(structuredContent)), note: false }];
 
-  const hasText = Arr.some(base, (block) => block.type === "text" && block.text !== "");
+  const hasText = Arr.some(
+    base,
+    ({ content: block }) => block.type === "text" && block.text !== "",
+  );
 
-  const shown: ReadonlyArray<ModelContent> =
+  const shown: ReadonlyArray<Piece> =
     isError && !hasText
-      ? [...Arr.filter(base, (block) => block.type === "image"), textOf(failedLine(call.details))]
+      ? [
+          ...Arr.filter(base, ({ content: block }) => block.type === "image"),
+          { content: textOf(failedLine(call.details)), note: true },
+        ]
       : base.length > 0
         ? base
-        : [textOf("")];
+        : [{ content: textOf(""), note: true }];
 
-  const whole = textsOf(shown);
-  const head = headWithin(whole);
-  let output: ReadonlyArray<ModelContent> = shown;
+  const cut = bounded(shown);
+  let output: ReadonlyArray<ModelContent> = Arr.map(shown, (piece) => piece.content);
 
-  if (head !== undefined) {
-    // The text as its head in one block; the images follow.
-    output = [textOf(head), ...Arr.filter(shown, (block) => block.type === "image")];
+  if (cut !== undefined) {
+    output = cut.output;
+    diagnostics.push(cut.warning);
 
-    if (call.spill !== undefined) {
-      const saved = await call.spill(whole, ".txt");
+    if (call.kind === "model") {
+      const saved = await call.spill(cut.whole, ".txt");
 
       if ("path" in saved) {
         details.full_output_path = saved.path;
@@ -155,7 +194,7 @@ export const resultFor = async (
     details.error = "invalid_structured_output";
 
     // A script's call fails with the error, saying why; pi-durable reports a model's call, which keeps its text and loses the value.
-    if (nested) {
+    if (script) {
       result.isError = true;
       diagnostics.push({
         severity: "error",
@@ -164,36 +203,13 @@ export const resultFor = async (
       });
     }
   } else {
-    result.structuredOutput = jsonOf(
-      scriptValueOf(value, nested ? SCRIPT_VALUE_BUDGET : MODEL_VALUE_BUDGET),
-    );
+    result.structuredOutput = jsonOf(script ? scriptValueOf(value) : modelValueOf());
   }
 
   if (diagnostics.length > 0) result.diagnostics = diagnostics;
 
   return result;
 };
-
-/** What a call that ended without a result says, and what `details` records of how. */
-const describeError = (error: Parameters<typeof mayHaveRun>[0]): Ended =>
-  Match.value(error).pipe(
-    Match.tag("Cut", (cut): Ended => {
-      const message = cut.mayHaveRun
-        ? `The call was cut before its answer arrived; it may or may not have run. ${cut.message}`
-        : cut.message;
-
-      return cut.lost === "engine" ? { message, cut: engineLostEnd.cut } : { message };
-    }),
-    Match.tag("TooLarge", (large) => tooLargeEnd(large.limit)),
-    Match.tag("TimedOut", (timed): Ended => ({
-      message: `The call timed out: ${timed.message}. It may or may not have run.`,
-    })),
-    Match.orElse((other): Ended => ({
-      message: mayHaveRun(other, "tools/call")
-        ? `${other.message} It may or may not have run.`
-        : other.message,
-    })),
-  );
 
 /** `details` of a call that `ended` without a result, and what the model reads. */
 const endedWith = (ended: Ended, details: McpDetails): ToolExecutionResult<JsonValue> => {
@@ -239,15 +255,8 @@ export const interruptedResult = (
     details,
   );
 
-/** How each way a result's stream failed ended. */
-const STREAM_ENDS = {
-  too_large: tooLargeEnd(RESULT_LIMIT_BYTES),
-  lost: engineLostEnd,
-  unreadable: unreadableEnd,
-} as const satisfies Record<"too_large" | "lost" | "unreadable", Ended>;
-
 /** What the model reads of a result whose stream could not be read: the same ends as the engine's, by the same words. */
 export const streamFailure = (
-  kind: keyof typeof STREAM_ENDS,
+  kind: StreamFailure,
   details: McpDetails,
-): ToolExecutionResult<JsonValue> => endedWith(STREAM_ENDS[kind], details);
+): ToolExecutionResult<JsonValue> => endedWith(streamEnd(kind), details);

@@ -47,6 +47,17 @@ const decodeBlock = Schema.decodeUnknownOption(ContentBlock);
 /** What the model is given of a result: text and images. */
 export type ModelContent = TextContent | ImageContent;
 
+/**
+ * One piece of what the model is given: a block of the server's own text or an image, or a `note`, a line this build
+ * writes about a block it cannot show (a link, a placeholder, where a file was saved). Text over the limits is cut in
+ * the server's text only; a note is never cut away.
+ */
+export type Piece = { readonly content: ModelContent; readonly note: boolean };
+
+const serverText = (text: string): Piece => ({ content: textOf(text), note: false });
+
+const noteOf = (line: TextContent): Piece => ({ content: line, note: true });
+
 /** The image types every provider takes; any other image is saved to a file instead. */
 const IMAGE_TYPES: ReadonlySet<string> = new Set([
   "image/png",
@@ -149,39 +160,56 @@ const kindOf = (raw: Schema.Json): string =>
   isJsonObject(raw) && Predicate.isString(raw["type"]) ? raw["type"] : "unknown";
 
 /** One block as the model gets it. */
-const blockFor = async (raw: Schema.Json, spill: Spill): Promise<ReadonlyArray<ModelContent>> => {
+const blockFor = async (raw: Schema.Json, spill: Spill): Promise<ReadonlyArray<Piece>> => {
   const decoded = decodeBlock(raw);
 
   // A block of a type this build does not know, or one that is malformed, is a line.
-  if (Option.isNone(decoded)) return [textOf(`[${oneLine(kindOf(raw), 64)} content omitted]`)];
+  if (Option.isNone(decoded)) {
+    return [noteOf(textOf(`[${oneLine(kindOf(raw), 64)} content omitted]`))];
+  }
 
   const block = decoded.value;
 
   switch (block.type) {
     case "text":
-      return [textOf(block.text)];
+      return [serverText(block.text)];
     case "image":
       return IMAGE_TYPES.has(typeOf(block.mimeType))
-        ? [{ type: "image", data: block.data, mimeType: block.mimeType }]
-        : [await saved("Image", undefined, block.mimeType, block.data, spill)];
+        ? [{ content: { type: "image", data: block.data, mimeType: block.mimeType }, note: false }]
+        : [noteOf(await saved("Image", undefined, block.mimeType, block.data, spill))];
     case "audio":
       return [
-        textOf(
-          block.mimeType === undefined
-            ? "[audio content omitted]"
-            : `[audio content (${oneLine(block.mimeType, FIELD_LIMIT)}) omitted]`,
+        noteOf(
+          textOf(
+            block.mimeType === undefined
+              ? "[audio content omitted]"
+              : `[audio content (${oneLine(block.mimeType, FIELD_LIMIT)}) omitted]`,
+          ),
         ),
       ];
     case "resource_link":
-      return [textOf(linkLine(block))];
+      return [noteOf(textOf(linkLine(block)))];
     case "resource": {
       const { resource } = block;
 
-      if ("text" in resource) return [textOf(resource.text)];
+      if ("text" in resource) return [serverText(resource.text)];
 
       return IMAGE_TYPES.has(typeOf(resource.mimeType ?? ""))
-        ? [{ type: "image", data: resource.blob, mimeType: resource.mimeType ?? "image/png" }]
-        : [await saved("Binary resource", resource.uri, resource.mimeType, resource.blob, spill)];
+        ? [
+            {
+              content: {
+                type: "image",
+                data: resource.blob,
+                mimeType: resource.mimeType ?? "image/png",
+              },
+              note: false,
+            },
+          ]
+        : [
+            noteOf(
+              await saved("Binary resource", resource.uri, resource.mimeType, resource.blob, spill),
+            ),
+          ];
     }
   }
 };
@@ -190,5 +218,5 @@ const blockFor = async (raw: Schema.Json, spill: Spill): Promise<ReadonlyArray<M
 export const modelContent = async (
   blocks: ReadonlyArray<Schema.Json>,
   spill: Spill,
-): Promise<ReadonlyArray<ModelContent>> =>
+): Promise<ReadonlyArray<Piece>> =>
   Arr.flatten(await Promise.all(Arr.map(blocks, (block) => blockFor(block, spill))));

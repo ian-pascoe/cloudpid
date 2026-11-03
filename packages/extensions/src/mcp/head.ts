@@ -38,9 +38,20 @@ const byteLimitAt = (text: string): { readonly chars: number; readonly fits: boo
     : { chars: encoder.encodeInto(text, new Uint8Array(MAX_TEXT_BYTES)).read, fits: false };
 };
 
+/** How many lines `text` has: a trailing newline ends the last line, and starts no other. */
+export const lineCountOf = (text: string): number => {
+  if (text === "") return 0;
+
+  let newlines = 0;
+
+  for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) newlines++;
+
+  return newlines + (text.endsWith("\n") ? 0 : 1);
+};
+
 /**
- * The head of `text` within the limits (2000 lines, 50 KiB), without a partial line unless its first line is over the
- * bytes; `undefined` when `text` is within them.
+ * The head of `text` within the limits (2000 lines, 50 KiB), as pi-durable's own cut of a tool's output keeps it: whole
+ * lines, each with its newline, unless its first line is over the bytes; `undefined` when `text` is within them.
  */
 export const headWithin = (text: string): string | undefined => {
   const lineEnd = lineLimitAt(text);
@@ -48,12 +59,13 @@ export const headWithin = (text: string): string | undefined => {
 
   if (lineEnd < 0 && bytes.fits) return undefined;
 
-  const byLines = lineEnd < 0 ? text.length : lineEnd;
+  // The newline that ends the last line kept stays, as pi-durable's own cut leaves it.
+  const byLines = lineEnd < 0 ? text.length : lineEnd + 1;
 
   if (bytes.fits || byLines <= bytes.chars) return text.slice(0, byLines);
 
   const cut = text.slice(0, bytes.chars);
   const lastLine = cut.lastIndexOf("\n");
 
-  return lastLine > 0 ? cut.slice(0, lastLine) : cut;
+  return lastLine >= 0 ? cut.slice(0, lastLine + 1) : cut;
 };

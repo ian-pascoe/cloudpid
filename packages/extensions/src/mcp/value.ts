@@ -23,10 +23,11 @@ const HEADROOM_BYTES = 4 * 1024;
 export const SCRIPT_VALUE_BUDGET = MAX_NESTED_STRUCTURED_OUTPUT_BYTES - HEADROOM_BYTES;
 
 /**
- * The weight of the value a model's call gives: the model never sees it, and pi-durable only checks it against the
- * tool's schema, so it keeps a little of the text and a large result does not weigh twice in memory.
+ * The value a model's call gives pi-durable: nothing of the result. The model never sees it and pi-durable only checks
+ * it against the tool's schema, whose `structuredContent` and `isError` are optional, so it is the least that fits, and
+ * a large result is not measured, cut or held twice for it.
  */
-export const MODEL_VALUE_BUDGET = 4 * 1024;
+export const modelValueOf = (): JsonObject => ({ content: [] });
 
 /** A string of a content block a cut may shorten: where it lives, what it holds now, and whether it is binary data. */
 type Cell = {
@@ -127,6 +128,15 @@ export const scriptValueOf = (
   const content: ReadonlyArray<Schema.Json> = Array.isArray(result["content"])
     ? result["content"]
     : [];
+
+  // Whatever else is cut, `structuredContent` alone over the budget leaves no value that fits, and `ResultBounds` refuses
+  // it: nothing is measured again to cut what cannot help.
+  if (
+    result["structuredContent"] !== undefined &&
+    storedBytes(result["structuredContent"]) > budget
+  ) {
+    return valueWith(result, [], true);
+  }
 
   const all = Arr.flatMap(content, (block, index) => cellsOf(index, block));
 

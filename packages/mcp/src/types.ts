@@ -407,6 +407,18 @@ export const McpEngineEra = Schema.Literals(MCP_ENGINE_ERAS);
 
 export type McpEngineEra = typeof McpEngineEra.Type;
 
+/** A mebibyte, the unit of the core's byte limits. */
+export const MiB = 1024 * 1024;
+
+/** The most a `tools/call` result or a large read may weigh (#394 D16); a larger answer is `TooLarge`. */
+export const MCP_LARGE_RESULT_BYTES = 16 * MiB;
+
+/**
+ * How long the engine lets a result's stream go unread before it errors the stream and lets its bytes go (each pull
+ * renews it): the Session's waits for a stream stay under it (`docs/architecture/mcp-connections.md` → Memory).
+ */
+export const MCP_STREAM_HOLD_MS = 60_000;
+
 /** The core's bound on a probe or an `initialize` (#394 D15). */
 export const MCP_CONNECT_TIMEOUT_MS = 15_000;
 

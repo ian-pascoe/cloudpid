@@ -177,6 +177,10 @@ describe("the text and images the model gets", () => {
     expect(isError).toBe(false);
     expect(shown.startsWith("line 0\nline 1\n")).toBe(true);
     expect(shown.length).toBeLessThan(text.length);
+    // The model is told what was cut, in pi-durable's words for any tool's output.
+    expect(linesOf(content).join("\n")).toContain(
+      `Output truncated to its beginning: 3000 lines, ${String(text.length - shown.length)} bytes dropped`,
+    );
     expect(await readFile(spillOf(await detailOf(session)), "utf8")).toBe(text);
   });
 
@@ -528,6 +532,45 @@ describe("a result over 1 MiB", () => {
     ]);
     expect(await detailsOf(session)).toEqual([expect.objectContaining({ cut: "engine_lost" })]);
     expect(quiet.locked).toBe(true);
+  });
+
+  it("is dropped, as a cut the tool ran in, when it waits for the slot past the deadline that is under the engine's", async () => {
+    const { session } = await calling(
+      async () => {
+        // The first holds the slot, quiet; the second waits for it.
+        const quiet = new ReadableStream<Uint8Array>({
+          pull: () => new Promise<void>(() => undefined),
+        });
+
+        return McpHostCompleted.make({
+          result: { kind: "stream", body: quiet, bytes: 5 * 1024 * 1024 },
+        });
+      },
+      {},
+      2,
+      { streamIdleMs: 400, streamWaitMs: 40 },
+    );
+
+    const texts = (await results(session)).map(([isError, content]) => [
+      isError,
+      linesOf(content)[0],
+    ]);
+
+    expect(texts).toHaveLength(2);
+    expect(texts).toContainEqual([
+      true,
+      expect.stringMatching(
+        /dropped unread: the Session was reading other large results.* The tool ran\.$/,
+      ),
+    ]);
+    expect(texts).toContainEqual([
+      true,
+      expect.stringMatching(/was lost on its way from the MCP engine/),
+    ]);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({ cut: "engine_lost" }),
+      expect.objectContaining({ cut: "engine_lost" }),
+    ]);
   });
 
   it("is lost, as the engine's end of the call, when its stream breaks, and unreadable when it is not JSON", async () => {
