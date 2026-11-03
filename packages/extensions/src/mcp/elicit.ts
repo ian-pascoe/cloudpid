@@ -175,7 +175,12 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
         notes,
       }),
       call.signal === undefined ? undefined : { signal: call.signal },
-    ).finally(call.resume);
+    )
+      .catch(
+        // Stop interrupted the wait (the question is withdrawn): nobody answers, the server may ask again.
+        (): McpQuestionOutcome => ({ action: "cancel", by: "cloudpid", reason: "Run stopped" }),
+      )
+      .finally(call.resume);
 
     if (outcome.action === "accept") {
       note("accept", "owner", [...answeredFields(form, outcome.content)]);
