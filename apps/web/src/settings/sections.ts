@@ -19,6 +19,7 @@ import {
   History,
   KeyRound,
   type LucideIcon,
+  Plug,
   ScrollText,
   SlidersHorizontal,
   Sparkles,
@@ -39,6 +40,7 @@ export type SectionSlug =
   | "instructions"
   | "models"
   | "tools"
+  | "mcp"
   | "limits"
   | "container"
   | "setup"
@@ -68,6 +70,7 @@ const SECTIONS: Readonly<Record<SectionSlug, SectionLook>> = {
   instructions: named("Instructions", ScrollText),
   models: named("Models", Brain),
   tools: named("Tools", Wrench),
+  mcp: named("MCP servers", Plug),
   limits: named("Limits", Gauge),
   container: named("Container", Box),
   setup: named("Setup", SquareTerminal),
@@ -87,6 +90,7 @@ const GLOBAL_SECTIONS: readonly SectionSlug[] = [
   "instructions",
   "models",
   "tools",
+  "mcp",
   "limits",
   "container",
   "setup",

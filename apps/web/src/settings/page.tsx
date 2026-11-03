@@ -20,6 +20,7 @@ import { SettingsBreadcrumb } from "./breadcrumb.tsx";
 import { ContainerSection, SetupSection } from "./container.tsx";
 import { EnvironmentListSection, EnvironmentSection } from "./environments.tsx";
 import { InstructionsSection } from "./instructions.tsx";
+import { McpSection } from "./mcp.tsx";
 import { NotificationsSection } from "./notifications.tsx";
 import { Pending } from "./parts.tsx";
 import { SettingsScope } from "./scope.tsx";
@@ -77,6 +78,8 @@ const SharedSection = ({ slug, scope }: { slug: SectionSlug; scope: string }) =>
       return <ModelsSection scope={scope} />;
     case "tools":
       return <ToolsSection scope={scope} />;
+    case "mcp":
+      return <McpSection scope={scope} />;
     case "limits":
       return <LimitsSection scope={scope} />;
     case "container":
