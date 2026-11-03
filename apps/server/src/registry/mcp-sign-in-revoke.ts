@@ -41,8 +41,8 @@ export type RevokeUser = { readonly environment: string; readonly server: string
  * The client as it signed in, and whether it had to be asked as a public client for want of its secret:
  *  - a registered (DCR) client has its secret in the registration;
  *  - a configured client reads its secret from the entry as it is now, and, with no entry left (the sign-in is unused),
- *    from the Secret or Variable the row recorded (`secretRef`), read at Global (an Environment's own copy of the name may
- *    differ, and is not looked at);
+ *    from the Secret or Variable the row recorded (`secretRef`), read in the Environment it resolved in (Global's for a row
+ *    from before that was recorded); a literal secret (a Repo's file) is not recorded, so it is asked as a public client;
  *  - a document client has none.
  * A secret that cannot be resolved is a public client, which the server may refuse.
  */
@@ -62,10 +62,10 @@ const informationOf = (
     if (client.kind === "configured" && user === undefined) {
       const ref = client.secretRef;
 
-      if (ref === null) return { info: { client_id: client.id }, asPublic: false };
+      if (ref === null) return publicClient;
 
       const sources = yield* deps
-        .sources(MCP_SIGN_IN_GLOBAL, ref.scope === "secret")
+        .sources(ref.environment ?? MCP_SIGN_IN_GLOBAL, ref.scope === "secret")
         .pipe(Effect.result);
 
       const value = Result.isFailure(sources)
@@ -156,7 +156,7 @@ export const revokeOwnerRow = (
         note: told(
           `The authorization server did not revoke its ${refused}${
             asPublic
-              ? "; the client's secret could not be read, so it was asked as a public client"
+              ? "; it was asked as a public client (no secret of the client's could be read), which the server may refuse"
               : ""
           }`,
         ),

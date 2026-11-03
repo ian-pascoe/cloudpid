@@ -13,6 +13,7 @@ import type { McpResolvedServer } from "@cloudpid/config";
 import { MCP_SIGN_IN_GLOBAL, type McpSignInEnvironment } from "@cloudpid/mcp/types";
 import {
   type McpLapsedStart,
+  type McpRevocationView,
   McpNoSignIn,
   McpSignedOut,
   McpSignInsListing,
@@ -25,20 +26,18 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import { outcomeOf } from "./mcp-sign-in-backoff.ts";
+import { outcomeOf, sameSealed } from "./mcp-sign-in-backoff.ts";
 import { decodeContext, type FlowDeps, hostOf, serversOf, usesSignIn } from "./mcp-sign-in-flow.ts";
 import { type SignInUse, signInTargetOf, signInUseOf, told } from "./mcp-sign-in-registry.ts";
-import { notRevoked, revokeOwnerRow } from "./mcp-sign-in-revoke.ts";
-import type { McpSignInRecord } from "./mcp-sign-ins.ts";
-
-type Kind = SignInUse;
+import { notRevoked, type Revoked, revokeOwnerRow } from "./mcp-sign-in-revoke.ts";
+import { LAPSED_START_RETENTION_MS, type McpSignInRecord } from "./mcp-sign-ins.ts";
 
 /** Who uses a sign-in, by the kind of entry (a row's own kind is the one that counts for it). */
 type Users = {
   readonly owner: ReadonlyArray<McpSignInEnvironment>;
   readonly client_grant: ReadonlyArray<McpSignInEnvironment>;
   /** Global's own layers use it (a start at Global), whichever Environment follows them. */
-  readonly global: Record<Kind, boolean>;
+  readonly global: Record<SignInUse, boolean>;
 };
 
 /** Every sign-in's users, in one pass over the sets (Global's and each Environment's). */
@@ -48,7 +47,7 @@ const usersOfAll = (deps: FlowDeps): ReadonlyMap<string, Users> => {
     {
       owner: Array<McpSignInEnvironment>;
       client_grant: Array<McpSignInEnvironment>;
-      global: Record<Kind, boolean>;
+      global: Record<SignInUse, boolean>;
     }
   >();
 
@@ -66,7 +65,7 @@ const usersOfAll = (deps: FlowDeps): ReadonlyMap<string, Users> => {
 
   const visit = (
     servers: ReadonlyArray<McpResolvedServer> | null,
-    use: (hash: string, kind: Kind) => void,
+    use: (hash: string, kind: SignInUse) => void,
   ) => {
     for (const resolved of servers ?? []) {
       const used = signInUseOf(signInTargetOf(resolved));
@@ -102,7 +101,7 @@ const NO_USERS: Users = {
 };
 
 /** The kind of entry a sign-in row is used as: a client grant's row by entries that sign in on their own, any other by the owner's. */
-const kindOf = (record: McpSignInRecord): Kind =>
+const kindOf = (record: McpSignInRecord): SignInUse =>
   record.client?.kind === "client_grant" ? "client_grant" : "owner";
 
 const viewOf = (record: McpSignInRecord, users: Users): McpSignInView => {
@@ -141,6 +140,7 @@ const lapsedStarts = (deps: FlowDeps, now: number): ReadonlyArray<McpLapsedStart
     const context = decodeContext(pending.client);
 
     return pending.expiresAt <= now &&
+      pending.expiresAt > now - LAPSED_START_RETENTION_MS &&
       !pending.awaitingConfirmation &&
       Option.exists(context, ({ client }) => client.kind === "document")
       ? Result.succeed({
@@ -172,7 +172,7 @@ export const listMcpSignIns = (deps: FlowDeps, now: number): Effect.Effect<McpSi
   });
 
 /**
- * The entry that uses sign-in `hash` as an owner's (an Environment's first, else Global's own), for the secret of a
+ * The entry that uses sign-in `hash` as an owner's (Global's own first, else the first Environment's), for the secret of a
  * configured client to be read from the entry as it is now.
  */
 const userOf = (
@@ -193,11 +193,33 @@ const userOf = (
   return undefined;
 };
 
+const RACED: McpRevocationView = {
+  status: "failed",
+  note: "A refresh landed during sign-out; its new tokens may still stand",
+};
+
+/**
+ * What the two passes of a sign-out that a refresh overtook come to: the first revocation's, unless the second (of the new
+ * tokens) did not revoke them, which is then told, with what the server said.
+ */
+const mergedRevocation = (first: Revoked, second: Revoked): McpRevocationView => {
+  if (second.outcome === "revoked" || second.outcome === "no_revocation_endpoint")
+    return first.view;
+
+  return {
+    status: "failed",
+    note: told(
+      `A refresh landed during sign-out, and its new tokens were not revoked: ${second.view.note ?? "the server refused"}`,
+    ),
+  };
+};
+
 /**
  * Sign out of the sign-in `hash` (→ Sign-out): the server's revocation, then the delete. A client grant that an entry still
  * uses has nothing to sign out of (`NotApplicable`: its host's `failed` state is its error and the Registry mends it by
  * retrying); an unused one is only deleted, its short-lived token not revoked. A sign-in made while the revocation was in
- * flight is kept (`Changed`), as a refresh's write is guarded.
+ * flight is kept (`Changed`), as a refresh's write is guarded; a refresh that rotated the tokens meanwhile has its new tokens
+ * revoked in a second pass, and the row is deleted whatever that came to, the answer telling what stands.
  */
 export const signOutMcpSignIn = (
   deps: FlowDeps,
@@ -235,10 +257,38 @@ export const signOutMcpSignIn = (
 
     yield* outcomeOf(revoked.outcome);
 
-    // Nothing is awaited between this check and the delete. A refresh keeps the grant (`grantId`) and replaces the tokens,
-    // and dropping them keeps it too: only a sign-in made in the meantime is another grant, and it is kept.
-    const current = deps.signIns.get(hash);
+    // A refresh keeps the grant (`grantId`) and replaces the tokens, and dropping them keeps it too: only a sign-in made in
+    // the meantime is another grant, and it is kept.
+    let current = deps.signIns.get(hash);
+    let revocation = revoked.view;
 
+    // A refresh that landed during the revocation rotated the tokens: the ones revoked are not the ones the row holds, so
+    // the new ones are revoked too, once. (Tokens dropped meanwhile are nothing to revoke.)
+    if (
+      kind === "owner" &&
+      current !== null &&
+      current.grantId === row.grantId &&
+      current.sealed !== null &&
+      !sameSealed(current.sealed, row.sealed)
+    ) {
+      const rotated = current;
+      const again = yield* revokeOwnerRow(deps, rotated, userOf(deps, hash));
+
+      revocation = mergedRevocation(revoked, again);
+      current = deps.signIns.get(hash);
+
+      // Tokens that rotated yet again were not revoked: it is said, and the sign-out still goes through (the owner asked
+      // for it), unless it is a new grant.
+      if (
+        current !== null &&
+        current.grantId === row.grantId &&
+        !sameSealed(current.sealed, rotated.sealed)
+      ) {
+        revocation = RACED;
+      }
+    }
+
+    // Nothing is awaited between the last read and the delete.
     if (current === null) return McpNoSignIn.make({});
 
     if (current.grantId !== row.grantId) {
@@ -254,7 +304,7 @@ export const signOutMcpSignIn = (
       server: row.key.name,
       revision: deps.signIns.revision(),
       issuerHost: row.issuer === null ? null : hostOf(row.issuer),
-      revocation: revoked.view,
+      revocation,
       environments,
     });
   }).pipe(Effect.withSpan("mcp.oauth.revoke"));

@@ -2,6 +2,7 @@
 // escape and what they never hold.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { MCP_SIGN_IN_FAILURES, type McpSignInFailure } from "@cloudpid/mcp/types";
+import { SIGN_IN_CHANNEL } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   CALLBACK_SCRIPT,
@@ -16,7 +17,6 @@ import {
   startProblemPage,
   startPromptPage,
 } from "./sign-in-pages.ts";
-import { SIGN_IN_CHANNEL } from "@cloudpid/protocol";
 
 const sha256Source = async (text: string): Promise<string> => {
   const digest = new Uint8Array(

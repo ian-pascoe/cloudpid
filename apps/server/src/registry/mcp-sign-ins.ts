@@ -513,7 +513,8 @@ export type McpSignIns = {
 
   /**
    * Keep `pending` as the key's one pending row (a newer start replaces it), at most 20, the oldest dropped and the
-   * ones that expired more than a week ago swept (an expired document start is kept for Settings: a lapsed start). Refused when its metadata or client is over 64 KiB.
+   * ones that expired more than a week ago swept (an expired document start is kept for Settings: a lapsed start).
+   * Refused when its metadata or client is over 64 KiB.
    */
   readonly putPending: (pending: McpPendingSignIn) => { readonly status: "put" } | McpStoreRefusal;
   /** Take the pending row of a `state`'s hash, deleting it first (a code is used once). */

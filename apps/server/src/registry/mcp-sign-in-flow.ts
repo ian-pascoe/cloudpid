@@ -387,7 +387,10 @@ const chooseClient = (
         client: {
           id: oauth.clientId,
           kind: "configured",
-          secretRef: secret.status === "ok" ? secret.ref : null,
+          secretRef:
+            secret.status === "ok" && secret.ref !== null
+              ? { ...secret.ref, environment: input.environment }
+              : null,
           registration: null,
         },
         redirectUri: plainCallback,

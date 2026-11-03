@@ -1168,7 +1168,7 @@ describe("completing a sign-in", () => {
         expect(row?.client).toEqual({
           id: "owner-app",
           kind: "configured",
-          secretRef: { scope: "secret", name: "APP_SECRET" },
+          secretRef: { scope: "secret", name: "APP_SECRET", environment: "default" },
           registration: null,
         });
         // A reference, never a copy.

@@ -53,6 +53,9 @@ type Call = {
 /** What a test does inside the revocation endpoint's answer, while a revocation is out. */
 let onRevoke: () => void = () => undefined;
 
+/** The status the revocation endpoint answers with from now on, when a test changes it mid-way (200 for none). */
+let revokeRefusal = 0;
+
 const metadata = (over: Record<string, Schema.Json> = {}) => ({
   issuer: AS,
   authorization_endpoint: `${AS}/authorize`,
@@ -81,6 +84,7 @@ const run = <A>(
   runInDurableObject(
     env.REGISTRIES.get(env.REGISTRIES.newUniqueId()),
     async (_: TestRegistry, state) => {
+      revokeRefusal = 0;
       const store = openRegistryStore(state.storage);
       const signIns = openMcpSignIns(state.storage, store);
       const vault = await Effect.runPromise(openKeptVault(MASTER, MCP_OAUTH_PURPOSE));
@@ -133,14 +137,13 @@ const run = <A>(
         }
 
         if (route === `POST ${AS}/revoke`) {
+          const refused = revokeRefusal === 0 ? (options.revokeStatus ?? 200) : revokeRefusal;
+
           onRevoke();
 
-          return (options.revokeStatus ?? 200) === 200
+          return refused === 200
             ? new Response(null, { status: 200 })
-            : Response.json(
-                { error: "unsupported_token_type" },
-                { status: options.revokeStatus ?? 400 },
-              );
+            : Response.json({ error: "unsupported_token_type" }, { status: refused });
         }
 
         return new Response("not found", { status: 404 });
@@ -550,8 +553,8 @@ describe("Sign out", () => {
       expect(signIns.get(hash)).not.toBeNull();
     }));
 
-  it("keeps the sign-in when a refresh landed while it was being revoked: the grant is the same", () =>
-    run(async ({ setGlobal, signIn, signOut, signIns, keyHash, vault }) => {
+  it("revokes the tokens a refresh rotated while it was being revoked, then signs out: the grant is the same", () =>
+    run(async ({ setGlobal, signIn, signOut, signIns, keyHash, vault, calls }) => {
       setGlobal(SENTRY);
       await signIn();
 
@@ -577,7 +580,50 @@ describe("Sign out", () => {
 
       const answer = await signOut(hash);
 
-      expect(answer._tag).toBe("SignedOut");
+      expect(answer).toMatchObject({ _tag: "SignedOut", revocation: { status: "revoked" } });
+      expect(signIns.get(hash)).toBeNull();
+      expect(revocations(calls).map(({ form }) => form.get("token"))).toEqual([
+        REFRESH,
+        ACCESS,
+        "rotated-refresh",
+        "rotated-access",
+      ]);
+    }));
+
+  it("says so when the tokens a refresh rotated were refused their revocation, and still signs out", () =>
+    run(async ({ setGlobal, signIn, signOut, signIns, keyHash, vault }) => {
+      setGlobal(SENTRY);
+      await signIn();
+
+      const hash = keyHash("sentry");
+
+      const sealed = await Effect.runPromise(
+        sealTokens(vault, hash, {
+          access_token: "rotated-access",
+          refresh_token: "rotated-refresh",
+        }),
+      );
+
+      if (sealed.status !== "sealed") throw new Error("not sealed");
+
+      onRevoke = () => {
+        signIns.replaceTokens(
+          hash,
+          { sealed: sealed.sealed, expiresAt: NOW + 7_200_000, scope: null },
+          NOW + 2900,
+        );
+        // The first pass is answered (its access token goes next); the second is refused.
+        onRevoke = () => {
+          revokeRefusal = 400;
+          onRevoke = () => undefined;
+        };
+      };
+
+      const answer = await signOut(hash);
+
+      expect(answer).toMatchObject({ _tag: "SignedOut", revocation: { status: "failed" } });
+      expect(JSON.stringify(answer)).toContain("A refresh landed during sign-out");
+      expect(JSON.stringify(answer)).not.toContain("rotated-refresh");
       expect(signIns.get(hash)).toBeNull();
     }));
 
