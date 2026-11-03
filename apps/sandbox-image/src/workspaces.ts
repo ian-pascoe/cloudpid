@@ -28,6 +28,11 @@ export type WorkspaceClones = {
    * alone.
    */
   readonly spare?: string | undefined;
+  /**
+   * The ref the uncommitted Changes to apply wait at, when it is not `carryRef(branch)`: a Session import's own
+   * (`importCarryRef`), so only the Workspace of that import applies them.
+   */
+  readonly carry?: string | undefined;
 };
 
 /**
@@ -89,7 +94,7 @@ nohooks() { git -c core.hooksPath=/dev/null "$@"; }
 # (carryWorkspaceScript), applied to the work tree at <dir>, then taken off the remote. Left there when they do not
 # apply, for the owner to take by hand.
 apply_carry() {
-  carry="${carryRef("$branch")}"
+  carry=${clones.carry === undefined ? `"${carryRef("$branch")}"` : shellQuote(clones.carry)}
   found=$(git -C "$1" ls-remote origin "$carry") || return 1
   [ -n "$found" ] || return 0
   nohooks -C "$1" fetch --quiet origin "$carry" || return 1
@@ -234,6 +239,13 @@ ${startScriptRunIfThere(`${root}/${name}`, timeoutSeconds)}`;
 
 /** Where a Fork or Clone's uncommitted Changes wait on a Repo's remote for the new Workspace on `branch`. */
 export const carryRef = (branch: string): string => `refs/cloudpid/carry/${branch}`;
+
+/**
+ * Where a Session import's uncommitted Changes wait on the Repo's remote: a ref of the import's own (its Session's id),
+ * which only that Session's Workspace applies (`WorkspaceClones.carry`), so Changes left by an import that was cancelled
+ * or expired are never applied to another Workspace made on the same branch.
+ */
+export const importCarryRef = (session: string): string => `refs/cloudpid/import/${session}`;
 
 /**
  * The bash script a source Workspace's Container runs for a Fork or Clone in a new Workspace on `branch` (GLOSSARY.md →

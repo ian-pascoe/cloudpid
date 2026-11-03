@@ -9,6 +9,12 @@ import {
   DEFAULT_TRANSCRIPT_CHARS,
   DEFAULT_MCP_WAIT_MS,
   EnvironmentsResult,
+  ImportAppendResult,
+  ImportBeginResult,
+  ImportCancelResult,
+  ImportFinishResult,
+  MAX_MCP_IMPORT_BYTES,
+  MAX_MCP_SLICE_BYTES,
   MAX_MCP_WAIT_MS,
   MAX_SESSIONS_PAGE,
   MAX_TRANSCRIPT_CHARS,
@@ -16,6 +22,7 @@ import {
   type McpToolName,
   McpWhenBusy,
   MIN_TRANSCRIPT_CHARS,
+  PI_SESSION_FORMAT,
   SessionDetail,
   StartResult,
   StopResult,
@@ -222,6 +229,86 @@ export const SessionStopInput = Schema.Struct({
 
 export type SessionStopInput = typeof SessionStopInput.Type;
 
+// Session import: the tools a program drives (`/cloudpid`), never a model.
+
+const ImportId = Schema.String.annotate({
+  description: "The import_id session_import_begin returned.",
+});
+
+export const SessionImportBeginInput = Schema.Struct({
+  environment: Schema.String.annotate({
+    description:
+      "The Environment to import into: its id or its name, from environments_list. Its Repo for the local cwd must be one of its Repos.",
+  }),
+  format: Schema.String.annotate({
+    description: `The file's format: only ${PI_SESSION_FORMAT} (pi's own session file: its header line and the active branch's entry lines, as pi wrote them).`,
+  }),
+  size_bytes: Schema.Int.annotate({
+    description: `The file's size in UTF-8 bytes (at most ${String(MAX_MCP_IMPORT_BYTES)}).`,
+  }),
+  title: Schema.optionalKey(
+    Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(MAX_TITLE_LENGTH)).annotate({
+      description:
+        "The Session's title (pi's session name); left out, cloudpid names it when the import ends.",
+    }),
+  ),
+  branch: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        "The branch the Session's new Workspace works on (the local branch, pushed first); refused as branch_taken if another Workspace is on it.",
+    }),
+  ),
+  base: Schema.optionalKey(
+    Schema.String.annotate({ description: "The branch a new branch starts from." }),
+  ),
+  model: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        "The local model as provider/id. Used if the owner has it, else the Environment's default, with a warning when the import finishes.",
+    }),
+  ),
+  thinking: Schema.optionalKey(
+    Schema.Literals(THINKING_LEVELS).annotate({
+      description: "The local thinking level, clamped to what the model supports.",
+    }),
+  ),
+  text: Schema.optionalKey(
+    Schema.String.check(Schema.isNonEmpty()).annotate({
+      description:
+        "The instruction: sent to the Session after the import notice once the import ends, as from the Local agent. Left out, the Session waits for the owner.",
+    }),
+  ),
+  request_id: Schema.optionalKey(RequestId),
+});
+
+export type SessionImportBeginInput = typeof SessionImportBeginInput.Type;
+
+export const SessionImportAppendInput = Schema.Struct({
+  import_id: ImportId,
+  offset: Schema.Int.annotate({
+    description:
+      "The UTF-8 byte offset of data in the file. It must equal the received count the last call gave; otherwise the answer is offset_mismatch with received, and the next slice starts there.",
+  }),
+  data: Schema.String.annotate({
+    description: `The next slice of the file, cut at any character boundary, at most ${String(MAX_MCP_SLICE_BYTES)} UTF-8 bytes. Sending a slice again is harmless.`,
+  }),
+});
+
+export type SessionImportAppendInput = typeof SessionImportAppendInput.Type;
+
+export const SessionImportFinishInput = Schema.Struct({
+  import_id: ImportId,
+  sha256: Schema.String.annotate({
+    description: "The lowercase hex SHA-256 of the whole file, as the slices put it together.",
+  }),
+});
+
+export type SessionImportFinishInput = typeof SessionImportFinishInput.Type;
+
+export const SessionImportCancelInput = Schema.Struct({ import_id: ImportId });
+
+export type SessionImportCancelInput = typeof SessionImportCancelInput.Type;
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Results: what `structuredContent` carries, each with `next`, one sentence naming the next tool and cursor.
 
@@ -266,3 +353,19 @@ export type SessionSendResult = typeof SessionSendResult.Type;
 export const SessionStopResult = Schema.Struct({ ...StopResult.fields, next });
 
 export type SessionStopResult = typeof SessionStopResult.Type;
+
+export const SessionImportBeginResult = Schema.Struct({ ...ImportBeginResult.fields, next });
+
+export type SessionImportBeginResult = typeof SessionImportBeginResult.Type;
+
+export const SessionImportAppendResult = Schema.Struct({ ...ImportAppendResult.fields, next });
+
+export type SessionImportAppendResult = typeof SessionImportAppendResult.Type;
+
+export const SessionImportFinishResult = Schema.Struct({ ...ImportFinishResult.fields, next });
+
+export type SessionImportFinishResult = typeof SessionImportFinishResult.Type;
+
+export const SessionImportCancelResult = Schema.Struct({ ...ImportCancelResult.fields, next });
+
+export type SessionImportCancelResult = typeof SessionImportCancelResult.Type;

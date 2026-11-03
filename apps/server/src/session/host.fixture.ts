@@ -40,6 +40,9 @@ import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/ex
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
 import type {
+  StageImportAppend,
+  StageImportBegin,
+  StageImportFinish,
   Annotation,
   AnnotationDraft,
   Catalog,
@@ -136,6 +139,7 @@ import {
 import type { NavigateRequest } from "./branches.ts";
 import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
+import { type RemovalRegistry, removals } from "../registry/removal.ts";
 import { onIdle, wakeAt } from "./wake.ts";
 import {
   annotationsMessage,
@@ -153,6 +157,14 @@ import {
 } from "./annotations.ts";
 import { SessionReviews, sessionReviewsLayer, type SessionReviewsService } from "./reviews.ts";
 import { SessionMcp, type SessionMcpService, sessionMcpLayer } from "./mcp.ts";
+import {
+  SessionImport,
+  type SessionImportService,
+  importWakeAt,
+  sessionImportLayer,
+} from "./import.ts";
+import { type ImportStaging, importStaging } from "./import-staging.ts";
+import { translatePiSession } from "./import-translate.ts";
 import {
   type ChangesSource,
   SessionChanges,
@@ -474,6 +486,8 @@ const respond = (text: string) => {
 declare global {
   /** See `constructions`. */
   var testSessionConstructions: Map<string, number> | undefined;
+  /** See `destroyedWorkspaces`. */
+  var testDestroyedWorkspaces: Map<string, string[]> | undefined;
 }
 
 /**
@@ -481,6 +495,12 @@ declare global {
  * the tests share, so a test can read it without waking an object.
  */
 export const constructions = (globalThis.testSessionConstructions ??= new Map<string, number>());
+
+/** The Workspace objects an import's deletion destroyed, by the Session's object id (kept as `constructions` is). */
+export const destroyedWorkspaces = (globalThis.testDestroyedWorkspaces ??= new Map<
+  string,
+  string[]
+>());
 
 /** Text submitted to the root conversation, as the tests write it. */
 type TestPrompt = { readonly requestId: string; readonly text: string };
@@ -685,6 +705,8 @@ export class TestSession extends DurableObject {
   #viewed!: ViewedStoreService;
   #reviews!: SessionReviewsService;
   #mcp!: SessionMcpService;
+  #imports!: SessionImportService;
+  #staging!: ImportStaging;
   #runtime!: ManagedRuntime.ManagedRuntime<
     | SessionHost
     | SessionSockets
@@ -695,7 +717,8 @@ export class TestSession extends DurableObject {
     | AnnotationStore
     | ViewedStore
     | SessionReviews
-    | SessionMcp,
+    | SessionMcp
+    | SessionImport,
     unknown
   >;
   /** Resolves when this instance's model request starts and hangs. */
@@ -726,9 +749,41 @@ export class TestSession extends DurableObject {
       storage: ctx.storage.kv,
     });
 
+    this.#staging = importStaging(ctx.storage);
+
     void ctx.blockConcurrencyWhile(async () => {
       this.#runtime = ManagedRuntime.make(
-        sessionSocketsLayer(ctx).pipe(
+        sessionImportLayer({
+          staging: this.#staging,
+          // A test reads how often the Session asked to be deleted: the deletion itself is the Session DO's.
+          discard: this.#discardImport(),
+          // A test holds the Registry's answer back (`importEndedGate`) or makes it fail (`importEndedFails`).
+          ended: Effect.gen(function* () {
+            while (ctx.storage.kv.get<boolean>("import-ended-gate") === true) {
+              yield* Effect.sleep("10 millis");
+            }
+
+            const failing = ctx.storage.kv.get<number>("import-ended-fails") ?? 0;
+
+            if (failing > 0) {
+              ctx.storage.kv.put("import-ended-fails", failing - 1);
+
+              return yield* Effect.die(new Error("The Registry could not be told."));
+            }
+
+            ctx.storage.kv.put("import-ended", true);
+          }),
+          finishWaitMs: () => ctx.storage.kv.get<number>("import-finish-wait") ?? 30_000,
+          // A test makes the translation fail, as a crash of the object does: the attempt is counted before it runs.
+          translate: (lines, facts) => {
+            if (ctx.storage.kv.get<boolean>("import-translate-fails") === true) {
+              throw new Error("The translation failed.");
+            }
+
+            return translatePiSession(lines, facts);
+          },
+        }).pipe(
+          Layer.provideMerge(sessionSocketsLayer(ctx)),
           Layer.provideMerge(sessionReviewsLayer(ctx.storage.kv)),
           // The MCP endpoint's calls; a short poll, and a short stop, so a test sees a wake-up or a stop that is slow.
           Layer.provideMerge(
@@ -773,7 +828,9 @@ export class TestSession extends DurableObject {
               reportTimeout:
                 ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
               // As the Session DO's: a held Secret's expiry, or the browser's idle close.
-              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => wakeAt(held, browser)),
+              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) =>
+                wakeAt(held, browser, importWakeAt(this.#staging)),
+              ),
               // And what it does when it settles: the abandoned requests dropped, an idle browser closed.
               onIdle: Effect.flatMap(
                 Effect.all([
@@ -970,6 +1027,7 @@ export class TestSession extends DurableObject {
       this.#viewed = Context.get(context, ViewedStore);
       this.#reviews = Context.get(context, SessionReviews);
       this.#mcp = Context.get(context, SessionMcp);
+      this.#imports = Context.get(context, SessionImport);
     });
   }
 
@@ -1001,6 +1059,63 @@ export class TestSession extends DurableObject {
   /** `SessionMethods.configure`. */
   mcpConfigure(request: ConfigureRequest) {
     return Effect.runPromise(this.#mcp.configure(request));
+  }
+
+  /** `SessionMethods.stageImportBegin`. */
+  stageBegin(request: StageImportBegin) {
+    return Effect.runPromise(this.#imports.begin(request));
+  }
+
+  /** `SessionMethods.stageImportAppend`. */
+  stageAppend(request: StageImportAppend) {
+    return Effect.runPromise(this.#imports.append(request));
+  }
+
+  /** `SessionMethods.stageImportFinish`. */
+  stageFinish(request: StageImportFinish) {
+    return Effect.runPromise(this.#imports.finish(request));
+  }
+
+  /** `SessionMethods.stageImportCancel`. */
+  stageCancel() {
+    return Effect.runPromise(this.#imports.cancel);
+  }
+
+  /** The import's record as kept, and how often the Session asked to be deleted. */
+  importState() {
+    return {
+      record: this.#staging.record(),
+      received: this.#staging.received(),
+      discards: this.ctx.storage.kv.get<number>("import-discards") ?? 0,
+      endedFailsLeft: this.ctx.storage.kv.get<number>("import-ended-fails") ?? 0,
+    };
+  }
+
+  /** How long finish waits for the translation, in milliseconds (read at each finish). */
+  importFinishWait(ms: number): void {
+    this.ctx.storage.kv.put("import-finish-wait", ms);
+  }
+
+  /** Make every translation fail (or not), as one that crashes the object does. */
+  importTranslationFails(fails: boolean): void {
+    this.ctx.storage.kv.put("import-translate-fails", fails);
+  }
+
+  /** The next `times` times the Registry is told the import ended, the call fails. */
+  importEndedFails(times: number): void {
+    this.ctx.storage.kv.put("import-ended-fails", times);
+  }
+
+  /** While `blocked`, the call that tells the Registry the import ended does not answer. */
+  importEndedGate(blocked: boolean): void {
+    this.ctx.storage.kv.put("import-ended-gate", blocked);
+  }
+
+  /** The import's expiry has passed, as an hour with no slice makes it. */
+  expireImport(): void {
+    const record = this.#staging.record();
+
+    if (record !== undefined) this.#staging.save({ ...record, expiresAt: 1 });
   }
 
   /** The Viewed boxes as the Session keeps them. */
@@ -1240,6 +1355,68 @@ export class TestSession extends DurableObject {
 
   override async webSocketClose(socket: WebSocket): Promise<void> {
     await Effect.runPromise(this.#sockets.drop(socket));
+  }
+
+  /**
+   * What an expired import does here: it counts the ask, and when a test gave the Session its Registry
+   * (`importRegistry`), deletes as the Session DO does: the Registry's record and the Workspace, then its own storage.
+   */
+  #discardImport(): Effect.Effect<void> {
+    const { ctx } = this;
+
+    return Effect.suspend(() => {
+      const asked = ctx.storage.kv.get<number>("import-discards") ?? 0;
+
+      const registered = ctx.storage.kv.get<{ session: string; registry: string }>(
+        "import-registry",
+      );
+
+      if (registered === undefined) {
+        ctx.storage.kv.put("import-discards", asked + 1);
+
+        return Effect.void;
+      }
+
+      const registry = this.env.REGISTRIES.getByName(registered.registry);
+      const key = ctx.id.toString();
+
+      // SAFETY: `removeOwnSession` calls only these five methods of the Registry, here over its test object.
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+      const methods = {
+        getSession: ({ id }: { id: string }) => Effect.promise(() => registry.getSession(id)),
+        listSubagentWorkspaces: ({ session }: { session: string }) =>
+          Effect.promise(() => registry.listSubagentWorkspaces(session)),
+        deleteSession: ({ id }: { id: string }) => Effect.promise(() => registry.deleteSession(id)),
+        listSessions: () => Effect.promise(() => registry.listSessions()),
+        deleteWorkspace: ({ id }: { id: string }) =>
+          Effect.promise(() => registry.deleteWorkspace(id)),
+      } as unknown as RemovalRegistry;
+
+      const removal = removals(methods, {
+        workspaces: {
+          destroy: (object) =>
+            Promise.resolve().then(() => {
+              destroyedWorkspaces.set(key, [...(destroyedWorkspaces.get(key) ?? []), object]);
+            }),
+        },
+        sessions: { destroy: () => Effect.void },
+      });
+
+      return removal
+        .removeOwnSession(
+          registered.session,
+          destroySession({
+            state: ctx,
+            closeBrowser: Effect.succeed(false),
+          }).pipe(Effect.provideService(SessionHost, this.#host)),
+        )
+        .pipe(Effect.orDie);
+    });
+  }
+
+  /** Make this Session the import of Registry Session `session` in the test Registry `registry`, for `discard`. */
+  importRegistry(session: string, registry: string): void {
+    this.ctx.storage.kv.put("import-registry", { session, registry });
   }
 
   /** Delete the Session's own state, as the Session DO's `destroy` does. */
@@ -1764,8 +1941,15 @@ export class TestSession extends DurableObject {
 
   override async alarm(): Promise<void> {
     await this.#runtime.runPromise(
-      Effect.flatMap(Effect.service(Secrets), (held) => held.sweep).pipe(
-        Effect.andThen(this.#host.alarm),
+      // As the Session DO's alarm: a Session that deleted itself runs nothing more.
+      this.#imports.sweep.pipe(
+        Effect.flatMap((deleted) =>
+          deleted
+            ? Effect.void
+            : Effect.flatMap(Effect.service(Secrets), (held) => held.sweep).pipe(
+                Effect.andThen(this.#host.alarm),
+              ),
+        ),
       ),
     );
   }

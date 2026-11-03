@@ -144,6 +144,11 @@ export const SessionRecord = Schema.Struct({
   updatedAt: Schema.Finite,
   /** When the owner archived the Session (out of the Session list, read-only until unarchived), or null. */
   archivedAt: Schema.NullOr(Schema.Finite),
+  /**
+   * True while a Session import still fills the Session (`docs/architecture/mcp-endpoint.md` → Session import): it takes
+   * no message until the import ends. Absent otherwise, so a client that does not know it reads the whole list.
+   */
+  importing: Schema.optionalKey(Schema.Literal(true)),
   /** The Session it is a Fork or Clone of; absent for a Session started afresh. */
   origin: Schema.optionalKey(SessionOrigin),
   /**

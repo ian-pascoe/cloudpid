@@ -125,6 +125,10 @@ describe("the request McpServer gets", () => {
         "send",
         "stop",
         "wait",
+        "importBegin",
+        "importAppend",
+        "importFinish",
+        "importCancel",
       ],
     });
   });

@@ -561,6 +561,80 @@ describe("the Registry store", () => {
     ).toMatchObject({ id: "s-6" });
   });
 
+  describe("the open imports of an identity", () => {
+    const imported = (auth: "oauth" | "service_token") => ({ kind: "import" as const, auth });
+
+    const begin = (
+      registry: ReturnType<typeof fresh>,
+      id: string,
+      auth: "oauth" | "service_token" = "oauth",
+      requestId?: string,
+    ) =>
+      registry.createSession(
+        {
+          id,
+          title: null,
+          workspace: newWorkspace(id.replace(/\D/g, "").padStart(8, "0")),
+          marks: imported(auth),
+          maxOpenImports: { limit: 2, auth },
+          requestId,
+        },
+        1_000,
+      );
+
+    it("marks an import Session importing, and refuses a begin past the cap of its identity", async () => {
+      const registry = fresh();
+
+      expect(await begin(registry, "s-1")).toMatchObject({ id: "s-1", importing: true });
+      await begin(registry, "s-2");
+
+      expect(await begin(registry, "s-3")).toEqual({ refused: "too-many-imports", limit: 2 });
+      expect(await sessionIds(registry)).toEqual(["s-2", "s-1"]);
+
+      // Another identity has its own two.
+      expect(await begin(registry, "s-4", "service_token")).toMatchObject({ id: "s-4" });
+    });
+
+    it("frees a place when an import ends or its Session is deleted, and counts nothing but imports", async () => {
+      const registry = fresh();
+
+      await begin(registry, "s-1");
+      await begin(registry, "s-2");
+      await registry.endSessionImport("s-1");
+
+      expect(await registry.getSession("s-1")).not.toHaveProperty("importing");
+      expect(await begin(registry, "s-3")).toMatchObject({ id: "s-3" });
+      expect(await begin(registry, "s-5")).toEqual({ refused: "too-many-imports", limit: 2 });
+
+      await registry.deleteSession("s-2");
+
+      expect(await begin(registry, "s-5")).toMatchObject({ id: "s-5" });
+
+      // A started Session is no import, whatever its cap.
+      expect(
+        await registry.createSession(
+          {
+            id: "s-6",
+            title: null,
+            workspace: newWorkspace("00000006"),
+            marks: { kind: "mcp", auth: "oauth" },
+            maxOpenImports: { limit: 2, auth: "oauth" },
+          },
+          1_000,
+        ),
+      ).not.toHaveProperty("refused");
+    });
+
+    it("answers a repeated request id with its Session even at the cap", async () => {
+      const registry = fresh();
+      const first = await begin(registry, "s-1", "oauth", "req-1");
+
+      await begin(registry, "s-2");
+
+      expect(await begin(registry, "s-3", "oauth", "req-1")).toEqual({ ...first, repeated: true });
+    });
+  });
+
   describe("the running cap of the MCP endpoint", () => {
     const mcp = { kind: "mcp" as const, auth: "oauth" as const };
     const minute = 60 * 1_000;

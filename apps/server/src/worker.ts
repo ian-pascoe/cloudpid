@@ -388,6 +388,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const mcpRoute = serveMcpRoute({
       registries,
       sessions,
+      objects: { workspaces, sessions: sessionObjects },
       spares,
       builds,
       background: (effect) => execution.waitUntil(effect),

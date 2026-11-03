@@ -1440,6 +1440,7 @@ const fakeRegistries = () => {
               },
             });
       }),
+    endSessionImport: () => Effect.void,
   } satisfies RegistryMethods;
 
   // SAFETY: the endpoint only calls `getByName` on the namespace, and the result only through the methods above.

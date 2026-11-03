@@ -351,7 +351,14 @@ export type RegistryMethods = {
      * endpoint's running cap, counted here so concurrent starts cannot pass it together (a `requestId` that finds its Session is answered first).
      */
     readonly maxRunning?: number | undefined;
+    /**
+     * For an import: refused (`too-many-imports`) while `limit` imports with the same `auth` are still importing; counted
+     * here with the insert, so concurrent begins cannot pass it together.
+     */
+    readonly maxOpenImports?: { readonly limit: number; readonly auth: string } | undefined;
   }) => Effect.Effect<CreatedSession | SessionRefusal>;
+  /** The Session DO reports that its import ended: it is no longer `importing`. A Session that is not registered is ignored. */
+  readonly endSessionImport: (input: { readonly id: string }) => Effect.Effect<void>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
   /** Every Session, newest first. */
@@ -1160,7 +1167,15 @@ export const RegistryLive = Registry.make(
           );
 
         return {
-          createSession: ({ title, workspace, origin, marks, requestId, maxRunning }) =>
+          createSession: ({
+            title,
+            workspace,
+            origin,
+            marks,
+            requestId,
+            maxRunning,
+            maxOpenImports,
+          }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
@@ -1175,6 +1190,7 @@ export const RegistryLive = Registry.make(
                     marks: marks ?? null,
                     requestId,
                     maxRunning,
+                    maxOpenImports,
                   },
                   now,
                 );
@@ -1202,10 +1218,12 @@ export const RegistryLive = Registry.make(
                   marks: marks ?? null,
                   requestId,
                   maxRunning,
+                  maxOpenImports,
                 },
                 now,
               );
             }),
+          endSessionImport: ({ id }) => Effect.sync(() => store.endSessionImport(id)),
           getSession: ({ id }) => Effect.sync(() => store.getSession(id)),
           listSessions: () => Effect.sync(() => store.listSessions()),
           sessions: (query) => Effect.sync(() => pageSessions(store.listSessions(), query)),

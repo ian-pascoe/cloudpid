@@ -13,7 +13,8 @@ import { environmentsAtom } from "./environments-state.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import type { SettingsView } from "./router.ts";
 import { generalForm, modelsForm } from "./settings/forms.ts";
-import { Sidebar, type SettingsShown } from "./sidebar.tsx";
+import type { SessionRecord } from "@cloudpid/protocol";
+import { Sidebar, SessionLink, type SettingsShown } from "./sidebar.tsx";
 import { sidebarCollapsedAtom } from "./sidebar-state.ts";
 
 const WORK = { id: "work", name: "Work", repos: [], createdAt: 1 };
@@ -163,4 +164,41 @@ describe("the sidebar on the Settings page", () => {
       ]);
     }),
   );
+});
+
+describe("a Session in the list", () => {
+  const session = {
+    id: "0190f0a8-1b2c-7d3e-8f40-123456789abc",
+    title: "Imported work",
+    titleSource: "owner" as const,
+    environment: "work",
+    workspace: "abcd1234",
+    status: "idle" as const,
+    createdAt: 1,
+    updatedAt: 1,
+    archivedAt: null,
+  };
+
+  const row = (record: SessionRecord) => {
+    const registry = fakeRegistry();
+
+    const markup = renderToStaticMarkup(
+      <RegistryContext.Provider value={registry}>
+        <SessionLink session={record} active={false} />
+      </RegistryContext.Provider>,
+    );
+
+    registry.dispose();
+
+    return markup;
+  };
+
+  it("says Importing while an import still fills it, over its status", () => {
+    expect(row({ ...session, importing: true })).toContain("Importing");
+    expect(row({ ...session, importing: true, status: "running" })).not.toContain("Running");
+  });
+
+  it("shows no such mark once the import ended", () => {
+    expect(row(session)).not.toContain("Importing");
+  });
 });

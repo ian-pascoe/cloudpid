@@ -20,7 +20,18 @@ import {
   encodeCursor,
   type EnvironmentRecord,
   type EnvironmentsResult,
+  type ImportAppendRequest,
+  type ImportAppendResult,
+  type ImportBeginRequest,
+  type ImportBeginResult,
+  type ImportCancelRequest,
+  type ImportCancelResult,
+  type ImportFinishRequest,
+  type ImportFinishResult,
+  MAX_MCP_IMPORT_BYTES,
   MAX_MCP_INPUT_BYTES,
+  MAX_MCP_OPEN_IMPORTS,
+  MAX_MCP_SLICE_BYTES,
   MAX_MCP_RUNNING,
   MAX_MCP_WAIT_MS,
   MCP_API_LIMITS,
@@ -30,6 +41,7 @@ import {
   type McpSessionOrigin,
   type McpSessionSummary,
   ownBranchProblem,
+  PI_SESSION_FORMAT,
   type SendRequest,
   type SessionDetail,
   type SessionRecord,
@@ -37,6 +49,12 @@ import {
   type SessionsQuery,
   type SessionStatusReport,
   type SessionVia,
+  type StageImportAppend,
+  type StageImportBegin,
+  type StageImportFinish,
+  type StagedCancel,
+  type StagedFinish,
+  type StagedImport,
   type StartRequest,
   type StartResult,
   type StopRequest,
@@ -55,6 +73,8 @@ import {
   whenBusyOf,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
+import { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
+import { importCarryRef } from "@cloudpid/sandbox-image/workspaces";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -63,7 +83,7 @@ import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { Caller } from "../access.ts";
-import type { SessionsResult } from "../registry/session-page.ts";
+import { type SessionsResult, shownStatus } from "../registry/session-page.ts";
 import type { CreatedSession, SessionRefusal } from "../registry/store.ts";
 
 /** The operations this version of `Server` has: `McpServer` serves a tool only when its operation is listed. */
@@ -76,6 +96,10 @@ export const MCP_API_OPERATIONS_SERVED = [
   "send",
   "stop",
   "wait",
+  "importBegin",
+  "importAppend",
+  "importFinish",
+  "importCancel",
 ] as const;
 
 /** The period of `MCP_CALLS`, in seconds: what a caller over the rate is told to wait at most. */
@@ -118,6 +142,8 @@ export interface McpBackend {
     readonly marks: MarkedOrigin;
     readonly requestId?: string | undefined;
     readonly maxRunning: number;
+    /** For an import: how many the caller may have open, by how it got in (`auth`). */
+    readonly maxOpenImports?: { readonly limit: number; readonly auth: McpAuth } | undefined;
   }) => Effect.Effect<CreatedSession | SessionRefusal>;
   /** The Session object's `configure()`. */
   readonly configure: (id: string, request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
@@ -125,6 +151,28 @@ export interface McpBackend {
   readonly submit: (id: string, request: SubmitRequest) => Effect.Effect<ApiResult<SubmitResult>>;
   /** The Session object's `stop()`. */
   readonly stop: (id: string, request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
+  /** The Session object's `stageImportBegin()`: the Session starts importing. */
+  readonly stageImportBegin: (
+    id: string,
+    request: StageImportBegin,
+  ) => Effect.Effect<ApiResult<StagedImport>>;
+  /** The Session object's `stageImportAppend()`. */
+  readonly stageImportAppend: (
+    id: string,
+    request: StageImportAppend,
+  ) => Effect.Effect<ApiResult<StagedImport>>;
+  /** The Session object's `stageImportFinish()`: translates, and waits for it up to 30 s. */
+  readonly stageImportFinish: (
+    id: string,
+    request: StageImportFinish,
+  ) => Effect.Effect<ApiResult<StagedFinish>>;
+  /** The Session object's `stageImportCancel()`. */
+  readonly stageImportCancel: (id: string) => Effect.Effect<ApiResult<StagedCancel>>;
+  /**
+   * Delete a Session as the owner's delete does (`registry/removal.ts`): its object, its record, and its Workspace when no
+   * other Session is in it. A failure is a defect, which the operation reads as `unavailable`.
+   */
+  readonly deleteSession: (id: string) => Effect.Effect<void>;
 }
 
 /** What one request adds: where the owner's pages are, who is calling, and the rate limit. */
@@ -156,6 +204,18 @@ export interface McpApiService {
   readonly send: (request: SendRequest) => Effect.Effect<ApiResult<SubmitResult>>;
   readonly stop: (request: StopSessionRequest) => Effect.Effect<ApiResult<StopResult>>;
   readonly wait: (request: WaitSessionRequest) => Effect.Effect<ApiResult<WaitResult>>;
+  readonly importBegin: (
+    request: ImportBeginRequest,
+  ) => Effect.Effect<ApiResult<ImportBeginResult>>;
+  readonly importAppend: (
+    request: ImportAppendRequest,
+  ) => Effect.Effect<ApiResult<ImportAppendResult>>;
+  readonly importFinish: (
+    request: ImportFinishRequest,
+  ) => Effect.Effect<ApiResult<ImportFinishResult>>;
+  readonly importCancel: (
+    request: ImportCancelRequest,
+  ) => Effect.Effect<ApiResult<ImportCancelResult>>;
   /** Counts a call; present when the caller is over its rate. */
   readonly limited: Effect.Effect<{ readonly retryAfterS: number } | undefined>;
   readonly auth: McpAuth;
@@ -221,7 +281,7 @@ const summaryOf = (
       id: record.environment,
       name: environments.get(record.environment) ?? record.environment,
     },
-    status: record.status,
+    status: shownStatus(record),
     updated_at: new Date(record.updatedAt).toISOString(),
     archived: record.archivedAt !== null,
     url: `${origin}/sessions/${record.id}`,
@@ -379,14 +439,62 @@ const refusedStart = (
         retryable: true,
         details: { limit: refusal.limit },
       });
+    case "too-many-imports":
+      return apiFailure(
+        "too_many_running",
+        `${String(refusal.limit)} session imports are open: finish or cancel one (session_import_cancel), or wait for one to expire, then begin again.`,
+        { retryable: true, details: { limit: refusal.limit } },
+      );
     case "no-workspace":
       return apiFailure("unavailable", "The Workspace is gone: try again.");
   }
 };
 
+/** An epoch time as ISO 8601 text. */
+const isoOf = (epochMs: number): string => new Date(epochMs).toISOString();
+
+/** What the Session is told of an import it begins: the size, who sent it, the Workspace's branch and Repos, and what was asked. */
+const importOf = (
+  request: ImportBeginRequest,
+  workspace: WorkspaceRecord,
+  caller: Caller,
+  auth: McpAuth,
+): StageImportBegin => {
+  const begin: Types.Mutable<StageImportBegin> = {
+    size_bytes: request.size_bytes,
+    via: sessionViaOf(request.via, caller, auth),
+    workspace: {
+      branch: workspace.branch,
+      repos: Arr.map(workspace.repos, (name) => ({
+        name,
+        directory: `${WORKSPACE_ROOT}/${name}`,
+      })),
+    },
+  };
+
+  if (request.model !== undefined) begin.model = request.model;
+
+  if (request.thinking !== undefined) begin.thinking = request.thinking;
+
+  if (request.text !== undefined) begin.text = request.text;
+
+  return begin;
+};
+
+/** The failure for an import tool called with an id that is no import of the Registry's: made up, deleted, or another Session. */
+const notAnImport = (id: string) =>
+  apiFailure(
+    "not_found",
+    `No Session import ${id}: it was cancelled or expired and is deleted, or the id is not one session_import_begin gave.`,
+  );
+
 /** The service's operations over `backend` for one request. */
 export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpApiService => {
   const identity = identityOf(context.caller);
+
+  /** Whether `id` is a Session the Registry lists as an import: the import tools never reach another Session's object. */
+  const isImport = (id: string) =>
+    Effect.map(backend.session(id), (record) => record?.marks?.kind === "import");
 
   /**
    * What a wait whose RPC was cut answers (`docs/architecture/mcp-endpoint.md` → Following a Run): `timeout`, `interrupted`,
@@ -774,6 +882,216 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
                 waiting: absoluteUrls(waited.value.waiting, context.origin),
               })
             : waited;
+        }),
+      ),
+
+    importBegin: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          if (request.format !== PI_SESSION_FORMAT) {
+            return apiFailure(
+              "unsupported_format",
+              `format ${request.format} is not one this server reads: send ${PI_SESSION_FORMAT}, the pi session file as it is on disk.`,
+            );
+          }
+
+          if (request.size_bytes < 0) {
+            return apiFailure("invalid_argument", "size_bytes must be the file's size in bytes.");
+          }
+
+          if (request.size_bytes > MAX_MCP_IMPORT_BYTES) {
+            return apiFailure(
+              "import_too_large",
+              `The file is over ${String(MAX_MCP_IMPORT_BYTES)} bytes: import_too_large.`,
+            );
+          }
+
+          if (request.text !== undefined && !withinInput(request.text)) return tooLarge;
+
+          if (request.branch !== undefined) {
+            const problem = ownBranchProblem(request.branch);
+
+            if (problem !== undefined) return apiFailure("invalid_argument", `branch: ${problem}.`);
+          }
+
+          if (request.base !== undefined) {
+            const problem = branchProblem(request.base);
+
+            if (problem !== undefined) return apiFailure("invalid_argument", `base: ${problem}.`);
+          }
+
+          const title =
+            request.title === undefined
+              ? undefined
+              : Option.getOrUndefined(decodeTitle(request.title));
+
+          if (request.title !== undefined && title === undefined) {
+            return apiFailure("invalid_argument", "title must not be empty.");
+          }
+
+          const environments = yield* backend.environments;
+          const resolved = resolveEnvironment(request.environment, environments);
+
+          if (!resolved.ok) return resolved;
+
+          const marks: Types.Mutable<MarkedOrigin> = { kind: "import", auth: identity.auth };
+
+          if (request.via.client !== undefined) marks.client = request.via.client;
+
+          const created = yield* backend.createSession({
+            environment: resolved.value,
+            title,
+            branch: request.branch,
+            base: request.base,
+            marks,
+            requestId: request.request_id,
+            maxRunning: MAX_MCP_RUNNING,
+            maxOpenImports: { limit: MAX_MCP_OPEN_IMPORTS, auth: identity.auth },
+          });
+
+          if ("refused" in created) {
+            if (created.refused !== "branch-taken") {
+              return refusedStart(
+                created,
+                resolved.value,
+                request.branch,
+                MCP_API_OPERATIONS_SERVED,
+              );
+            }
+
+            const held = yield* backend.allSessions;
+
+            return apiFailure(
+              "branch_taken",
+              `Another Workspace is already on branch ${request.branch ?? ""}: remove it in cloudpid, or import onto another branch.`,
+              {
+                details: {
+                  workspace: created.workspace,
+                  sessions: Arr.map(
+                    Arr.filter(held, (record) => record.workspace === created.workspace),
+                    (record) => ({
+                      id: record.id,
+                      url: `${context.origin}/sessions/${record.id}`,
+                      title: record.title,
+                      status: record.status,
+                    }),
+                  ),
+                },
+              },
+            );
+          }
+
+          // A `request_id` finds the Session an earlier call made, whatever the call was: one that was no import is
+          // none of this begin's to use, and is left as it is.
+          if (created.marks?.kind !== "import") {
+            return apiFailure(
+              "invalid_argument",
+              "request_id was used by another call that did not begin a session import: use a new request_id.",
+            );
+          }
+
+          const id = created.id;
+          const workspace = yield* backend.workspace(created.workspace);
+
+          // The Registry made the Session: one that cannot be told it is an import is deleted again, so no importing
+          // Session is left that nothing will finish (a repeat of a begin that did not get this far finds none).
+          const begun =
+            workspace === null
+              ? unreachable
+              : yield* backend
+                  .stageImportBegin(id, importOf(request, workspace, context.caller, identity.auth))
+                  .pipe(Effect.catchCause(() => Effect.succeed(unreachable)));
+
+          if (workspace === null || !begun.ok) {
+            if (created.repeated !== true) yield* Effect.ignoreCause(backend.deleteSession(id));
+
+            return begun.ok ? unreachable : begun;
+          }
+
+          return apiOk<ImportBeginResult>({
+            import_id: id,
+            session_id: id,
+            url: `${context.origin}/sessions/${id}`,
+            received: begun.value.received,
+            max_slice_bytes: MAX_MCP_SLICE_BYTES,
+            expires_at: isoOf(begun.value.expires_at),
+            carry_ref: importCarryRef(id),
+          });
+        }),
+      ),
+
+    importAppend: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          const id = request.import_id;
+
+          if (!SESSION_ID.test(id)) return invalidId;
+
+          if (!(yield* isImport(id))) return notAnImport(id);
+
+          const staged = yield* backend.stageImportAppend(id, {
+            offset: request.offset,
+            data: request.data,
+          });
+
+          return staged.ok
+            ? apiOk<ImportAppendResult>({ received: staged.value.received })
+            : staged;
+        }),
+      ),
+
+    importFinish: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          const id = request.import_id;
+
+          if (!SESSION_ID.test(id)) return invalidId;
+
+          if (!(yield* isImport(id))) return notAnImport(id);
+
+          const finished = yield* backend.stageImportFinish(id, { sha256: request.sha256 });
+
+          if (!finished.ok) return finished;
+
+          const { status, cursor, summary, warnings } = finished.value;
+
+          const result: Types.Mutable<ImportFinishResult> = {
+            session_id: id,
+            status,
+            url: `${context.origin}/sessions/${id}`,
+            cursor,
+            warnings,
+          };
+
+          if (summary !== undefined) result.summary = summary;
+
+          return apiOk(result);
+        }),
+      ),
+
+    importCancel: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          const id = request.import_id;
+
+          if (!SESSION_ID.test(id)) return invalidId;
+
+          const known = yield* backend.session(id);
+
+          // Cancelling is idempotent: a Session that is gone was cancelled, or expired, and deleted.
+          if (known === null) return apiOk<ImportCancelResult>({ cancelled: true });
+
+          // Never a Session that is not an import: this tool deletes what it is given.
+          if (known.marks?.kind !== "import") return notAnImport(id);
+
+          const staged = yield* backend.stageImportCancel(id);
+
+          // A Session that already took the cancel (or expired) is still listed: its deletion goes on.
+          if (!staged.ok && staged.error.code !== "not_found") return staged;
+
+          yield* backend.deleteSession(id);
+
+          return apiOk<ImportCancelResult>({ cancelled: true });
         }),
       ),
 

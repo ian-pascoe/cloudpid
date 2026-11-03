@@ -68,6 +68,22 @@ export const apiTarget = async (
       return this.#run(this.#service.wait(request));
     }
 
+    importBegin(request: Parameters<McpApi["importBegin"]>[0]) {
+      return this.#run(this.#service.importBegin(request));
+    }
+
+    importAppend(request: Parameters<McpApi["importAppend"]>[0]) {
+      return this.#run(this.#service.importAppend(request));
+    }
+
+    importFinish(request: Parameters<McpApi["importFinish"]>[0]) {
+      return this.#run(this.#service.importFinish(request));
+    }
+
+    importCancel(request: Parameters<McpApi["importCancel"]>[0]) {
+      return this.#run(this.#service.importCancel(request));
+    }
+
     /** Over RPC `await api.limited`: counts the call, and is present only when the caller is over its rate. */
     get limited() {
       return this.#run(this.#service.limited);

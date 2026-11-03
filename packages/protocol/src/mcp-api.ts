@@ -25,6 +25,9 @@ export const MAX_MCP_IMPORT_BYTES = 64 * 1024 * 1024;
  */
 export const MAX_MCP_RUNNING = 10;
 
+/** How many Session imports one identity may have open (begun and not ended, cancelled or expired) at once. */
+export const MAX_MCP_OPEN_IMPORTS = 2;
+
 /** The longest `session_wait` may wait, in milliseconds. */
 export const MAX_MCP_WAIT_MS = 300_000;
 
@@ -273,7 +276,7 @@ export const MCP_API_LIMITS: ApiDescription["limits"] = {
   maxWaitMs: MAX_MCP_WAIT_MS,
 };
 
-/** Every operation `McpApi` has had since this contract; the import ones come with `stageImport*`. */
+/** Every operation `McpApi` has had since this contract; the import ones came with the Session's `stageImport*`. */
 export const MCP_API_OPERATIONS = [
   "environments",
   "sessions",
@@ -283,6 +286,10 @@ export const MCP_API_OPERATIONS = [
   "wait",
   "transcript",
   "stop",
+  "importBegin",
+  "importAppend",
+  "importFinish",
+  "importCancel",
 ] as const;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -645,7 +652,7 @@ export const McpSessionSummary = Schema.Struct({
   session_id: Schema.String,
   title: Schema.NullOr(Schema.String),
   environment: Schema.Struct({ id: Schema.String, name: Schema.String }),
-  status: open(Schema.Literals(["running", "idle", "unknown"]), "unknown"),
+  status: open(Schema.Literals(["running", "idle", "importing", "unknown"]), "unknown"),
   origin: Schema.optionalKey(McpSessionOrigin),
   updated_at: Schema.String,
   archived: Schema.Boolean,
@@ -758,10 +765,153 @@ export const StartResult = Schema.Struct({
 
 export type StartResult = typeof StartResult.Type;
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Session import (`docs/architecture/mcp-endpoint.md` → Session import)
+
+/** How long an import with no append lives, in milliseconds (`import_expired`): an hour. */
+export const IMPORT_EXPIRY_MS = 60 * 60 * 1000;
+
+/** How long `session_import_finish` waits for the translation inline, in milliseconds, before it answers `importing`. */
+export const IMPORT_FINISH_WAIT_MS = 30_000;
+
+/** `session_import_begin`'s arguments, as `McpApi.importBegin` takes them (the environment is an id or an exact name). */
+export const ImportBeginRequest = Schema.Struct({
+  environment: Schema.String,
+  /** Anything but {@link PI_SESSION_FORMAT} is `unsupported_format`: a string here, so the refusal is ours and not the SDK's. */
+  format: Schema.String,
+  size_bytes: Schema.Int,
+  title: Schema.optionalKey(Schema.String),
+  branch: Schema.optionalKey(Schema.String),
+  base: Schema.optionalKey(Schema.String),
+  /** pi's `provider/id`; a model the owner has not is replaced at finish, with a warning. */
+  model: Schema.optionalKey(Schema.String),
+  thinking: Schema.optionalKey(Schema.String),
+  /** The instruction: submitted after the import notice once the import ends. */
+  text: Schema.optionalKey(Schema.String),
+  request_id: Schema.optionalKey(Schema.String),
+  via: Via,
+});
+
+export type ImportBeginRequest = typeof ImportBeginRequest.Type;
+
+export const ImportBeginResult = Schema.Struct({
+  /** The id every other import tool takes: the Session's own. */
+  import_id: Schema.String,
+  session_id: Schema.String,
+  url: Schema.String,
+  /** The bytes the import holds already: 0 for a new one, more for a `request_id` that found its import. */
+  received: Schema.Int,
+  max_slice_bytes: Schema.Int,
+  /** ISO 8601: when the import expires if nothing is appended. */
+  expires_at: Schema.String,
+  /** Where the Local agent pushes the cwd's Repo's uncommitted Changes: the server's to name, so its scheme can change. */
+  carry_ref: Schema.String,
+});
+
+export type ImportBeginResult = typeof ImportBeginResult.Type;
+
+export const ImportAppendRequest = Schema.Struct({
+  import_id: Schema.String,
+  /** The UTF-8 byte offset of `data` in the file: it must equal `received`. */
+  offset: Schema.Int,
+  data: Schema.String,
+});
+
+export type ImportAppendRequest = typeof ImportAppendRequest.Type;
+
+export const ImportAppendResult = Schema.Struct({ received: Schema.Int });
+
+export type ImportAppendResult = typeof ImportAppendResult.Type;
+
+export const ImportFinishRequest = Schema.Struct({
+  import_id: Schema.String,
+  /** The lowercase hex SHA-256 of the whole file. */
+  sha256: Schema.String,
+});
+
+export type ImportFinishRequest = typeof ImportFinishRequest.Type;
+
+/** What the translation cut, dropped (by kind: `custom:<type>` for extension state) and closed. */
+export const ImportSummary = Schema.Struct({
+  cut: Schema.Int,
+  dropped: Schema.Record(Schema.String, Schema.Int),
+  closed: Schema.Int,
+});
+
+export type ImportSummary = typeof ImportSummary.Type;
+
+export const ImportFinishResult = Schema.Struct({
+  session_id: Schema.String,
+  /** `importing` while the translation still runs: `session_wait` from the cursor reports `import_ended`. */
+  status: McpSessionStatus,
+  url: Schema.String,
+  cursor: Schema.String,
+  summary: Schema.optionalKey(ImportSummary),
+  /** Redacted: the model fallback, `context_over_window`. */
+  warnings: Schema.Array(Schema.String),
+});
+
+export type ImportFinishResult = typeof ImportFinishResult.Type;
+
+export const ImportCancelRequest = Schema.Struct({ import_id: Schema.String });
+
+export type ImportCancelRequest = typeof ImportCancelRequest.Type;
+
+export const ImportCancelResult = Schema.Struct({ cancelled: Schema.Literal(true) });
+
+export type ImportCancelResult = typeof ImportCancelResult.Type;
+
+/** The Repos of a new import's Workspace as its import notice names them: the name, and where it is cloned. */
+export const ImportRepo = Schema.Struct({ name: Schema.String, directory: Schema.String });
+
+export type ImportRepo = typeof ImportRepo.Type;
+
+/** `stageImportBegin`'s argument: what the Session keeps with the import until it ends. */
+export const StageImportBegin = Schema.Struct({
+  size_bytes: Schema.Int,
+  model: Schema.optionalKey(Schema.String),
+  thinking: Schema.optionalKey(Schema.String),
+  text: Schema.optionalKey(Schema.String),
+  /** Who is importing, as the instruction's input is marked. */
+  via: SessionVia,
+  /** What the import notice says of the Workspace. */
+  workspace: Schema.Struct({ branch: Schema.String, repos: Schema.Array(ImportRepo) }),
+});
+
+export type StageImportBegin = typeof StageImportBegin.Type;
+
+/** What `stageImportBegin` and `stageImportAppend` answer: how much the Session holds, and when the import expires (epoch ms). */
+export const StagedImport = Schema.Struct({ received: Schema.Int, expires_at: Schema.Finite });
+
+export type StagedImport = typeof StagedImport.Type;
+
+export const StageImportAppend = Schema.Struct({ offset: Schema.Int, data: Schema.String });
+
+export type StageImportAppend = typeof StageImportAppend.Type;
+
+export const StageImportFinish = Schema.Struct({ sha256: Schema.String });
+
+export type StageImportFinish = typeof StageImportFinish.Type;
+
+/** What `stageImportFinish` answers: `ImportFinishResult` without the Session's id and URL, which are the caller's. */
+export const StagedFinish = Schema.Struct({
+  status: McpSessionStatus,
+  cursor: Schema.String,
+  summary: Schema.optionalKey(ImportSummary),
+  warnings: Schema.Array(Schema.String),
+});
+
+export type StagedFinish = typeof StagedFinish.Type;
+
+/** What `stageImportCancel` answers: the import is discarded, and the caller deletes the Session. */
+export const StagedCancel = Schema.Struct({ cancelled: Schema.Literal(true) });
+
+export type StagedCancel = typeof StagedCancel.Type;
+
 /**
  * What `McpServer` calls: an `RpcTarget` the main Worker builds per request over the Registry and the Sessions
- * (`apps/server/src/mcp/api.ts`). Failures travel as values; nothing streams. The import operations join it with
- * `stageImport*`: an operation not listed by `describe()` answers `unsupported`.
+ * (`apps/server/src/mcp/api.ts`). Failures travel as values; nothing streams. An operation `describe()` does not list
+ * (an older `Server`'s import ones) answers `unsupported`.
  */
 export interface McpApi {
   describe(): ApiDescription;
@@ -780,6 +930,10 @@ export interface McpApi {
   ): Promise<ApiResult<TranscriptPage & { readonly session_id: string }>>;
   send(request: SendRequest): Promise<ApiResult<SubmitResult>>;
   stop(request: StopSessionRequest): Promise<ApiResult<StopResult>>;
+  importBegin(request: ImportBeginRequest): Promise<ApiResult<ImportBeginResult>>;
+  importAppend(request: ImportAppendRequest): Promise<ApiResult<ImportAppendResult>>;
+  importFinish(request: ImportFinishRequest): Promise<ApiResult<ImportFinishResult>>;
+  importCancel(request: ImportCancelRequest): Promise<ApiResult<ImportCancelResult>>;
   /**
    * Present when the caller is over its rate; `McpServer` answers `rate_limited` with it. A getter of the `RpcTarget`,
    * read once per `tools/call` (and counted then): over RPC it is awaited, so an older `Server` that has none reads as

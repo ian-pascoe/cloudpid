@@ -374,6 +374,7 @@ export const serveRegistryRpc = <R = never>(
     const {
       deleteSession,
       removeWorkspace,
+      removeIfEmpty,
       removeSubagentWorkspace,
       deleteEnvironment,
       inWorkspace,
@@ -418,32 +419,6 @@ export const serveRegistryRpc = <R = never>(
       registry
         .getWorkspace({ id })
         .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(`No workspace "${id}"`)));
-
-    /**
-     * Remove Workspace `id` once its last Session is deleted: its object (files, Container, settings), then its record.
-     * The Session is gone whatever happens here, so a failure is logged and leaves the Workspace listed, for the owner to
-     * remove; a Session started in it meanwhile keeps the record, and its object is made again as it first works there.
-     */
-    const removeIfEmpty = (id: string) =>
-      Effect.gen(function* () {
-        const left = yield* registry.listSessions();
-
-        if (Arr.some(left, (session) => session.workspace === id)) return;
-
-        yield* inWorkspace("Could not delete the workspace's files", () =>
-          workspaces.destroy(workspaceObjectName(id)),
-        );
-
-        if ((yield* registry.deleteWorkspace({ id })) === "in-use") {
-          yield* Effect.logWarning(
-            `Workspace ${id} got a Session while it was removed, and is kept`,
-          );
-        }
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning(`Could not remove workspace ${id} with its last session`, error),
-        ),
-      );
 
     /** The Environment a naming gave, or why there is none. */
     const named = (naming: EnvironmentNaming, name: string, id?: string) => {
@@ -631,6 +606,8 @@ export const serveRegistryRpc = <R = never>(
           return failed(
             `${String(refusal.limit)} sessions started over MCP are running: wait for one`,
           );
+        case "too-many-imports":
+          return failed(`${String(refusal.limit)} session imports are open: wait for one to end`);
       }
     };
 

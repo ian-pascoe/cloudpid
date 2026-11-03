@@ -129,6 +129,7 @@ import {
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { contextUsageOf } from "./context-usage.ts";
+import type { ImportDefaults } from "./import-model.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
 import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure } from "./errors.ts";
@@ -147,7 +148,7 @@ import { type NavigateRequest, sessionBranches } from "./branches.ts";
 import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
 import { admissionLines } from "./admission.ts";
-import { isFilling, sessionForks, STILL_FILLING } from "./fork-host.ts";
+import { fillingRefusal, sessionForks } from "./fork-host.ts";
 import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -527,6 +528,27 @@ export type SessionHostService = {
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents the plan carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
+  /**
+   * Start a Session import in this new Session: the root conversation is made, and the Session shows `importing` and takes
+   * no message and no move until `importFinish`.
+   */
+  readonly importBegin: Effect.Effect<void, SessionError>;
+  /** Append a Session import's translated entries to the root conversation, in one transaction (`importTranslated`). */
+  readonly importTranslated: (
+    entries: ReadonlyArray<EntryRecord>,
+  ) => Effect.Effect<void, SessionError>;
+  /**
+   * Run the Session's title task once, as after its first answer: the Session is named if it is not, from its first
+   * message and answer. For an import that came with no title. Never fails.
+   */
+  readonly nameSession: Effect.Effect<void>;
+  /** How full the active branch's Context Window is; null when its model's window is not known. Never fails. */
+  readonly contextUsage: Effect.Effect<ContextUsage | null>;
+  /**
+   * What a Session import chooses its model against: the catalog, and the agent a new Session of the Environment starts with
+   * (the default in force, as the settings last read).
+   */
+  readonly importDefaults: Effect.Effect<ImportDefaults>;
   /** Take messages again once a Fork or Clone in a new Workspace carried this Session's files. */
   readonly releaseFork: Effect.Effect<void>;
   /**
@@ -937,7 +959,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     wanted,
     onUsage: recordUsage,
     pendingCompactions,
-    refusal: () => (isFilling(kv) ? STILL_FILLING : undefined),
+    refusal: () => fillingRefusal(kv),
     preparing: (conversation) => admission.isPreparing(conversation),
     beforeAbort,
     inArrivalOrder,
@@ -2851,6 +2873,25 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     importStart: forks.importStart,
     importEntries: forks.importEntries,
     importFinish: forks.importFinish,
+    importBegin: forks.importBegin,
+    importTranslated: forks.importTranslated,
+    nameSession: titles.run,
+    contextUsage: readContextUsage,
+    // The settings are read again first, as `configure` does: the default is the one in force now. A read that fails
+    // leaves the last one.
+    importDefaults: refreshSettings.pipe(
+      Effect.ignore,
+      Effect.andThen(
+        Effect.sync(() => {
+          const { agent } = settings.current();
+
+          return {
+            catalog: models,
+            agent: { model: agent.model, thinkingLevel: agent.thinkingLevel },
+          } satisfies ImportDefaults;
+        }),
+      ),
+    ),
     releaseFork: forks.releaseFork,
     configure: (change) =>
       refreshSettings.pipe(
