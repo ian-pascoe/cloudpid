@@ -145,7 +145,10 @@ export const hostServicesOver = (store: McpHostStoreService) =>
       accessToken: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
       reportAuth: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
     },
-    engine: mcpEngineClient({ discover: async (target) => unscripted(target.url) }),
+    engine: mcpEngineClient({
+      discover: async (target) => unscripted(target.url),
+      request: () => Promise.reject(new Error("Nothing scripted")),
+    }),
   });
 
 export class TestMcpHost extends DurableObject {

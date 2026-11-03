@@ -10,10 +10,9 @@
  * (`docs/architecture/mcp-connections.md` → The engine), and the host's own RPC (`./host.ts`).
  */
 import * as Match from "effect/Match";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { HostFailed, McpHostFailure, OtherHostFailureFromWire } from "./host.ts";
+import { hostAnswerReader, McpHostFailure } from "./host.ts";
 import { JsonObject } from "./json.ts";
 import { McpLogEntry } from "./log.ts";
 import { McpAuthChallenge } from "./sign-in.ts";
@@ -583,7 +582,7 @@ export interface McpEngineMethods {
 // `HostFailed` (`readMcpHostRequestResult`).
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** Who a request is for, and how long it may take: the call's id, its origin, and where it comes from. */
+/** Who a request is for: the call's id, its origin, the Session and conversation it comes from, and its Workspace. */
 export const McpHostRequestContext = Schema.Struct({
   callId: Schema.optionalKey(Schema.String),
   origin: McpCallOrigin,
@@ -660,24 +659,12 @@ export const McpHostRequestResult = Schema.Union([
 
 export type McpHostRequestResult = typeof McpHostRequestResult.Type;
 
-const McpHostRequestResultWire = Schema.Union([
-  ...McpHostRequestResult.members,
-  OtherHostFailureFromWire,
-]);
-
-const decodeHostRequestResult = Schema.decodeUnknownOption(McpHostRequestResultWire);
-
 /**
  * `answer`, a `request` answer as it crossed the edge, as a result this build knows: a failure under a tag it does not
  * know, or anything that is no result, is `HostFailed`.
  */
-export const readMcpHostRequestResult = (
+export const readMcpHostRequestResult: (
   answer: typeof McpHostRequestResult.Encoded,
-): McpHostRequestResult =>
-  Option.getOrElse(decodeHostRequestResult(answer), () =>
-    HostFailed.make({
-      message: "The MCP host answered the request with something that is no result",
-    }),
-  );
+) => McpHostRequestResult = hostAnswerReader(McpHostRequestResult, "the request");
 
 export * from "./sign-in.ts";

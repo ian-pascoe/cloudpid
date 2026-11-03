@@ -656,9 +656,9 @@ export const mcpHostMethods = (
     Effect.flatMap(runtime.contextEffect, (context) => Effect.provideContext(effect, context));
 
   return {
-    requestStart: (request) => provided(requestStart(environment, request)),
-    servers: (request) => provided(servers(environment, request)),
-    serverLog: (request) => provided(serverLog(request)),
+    requestStart: (input) => provided(requestStart(environment, input)),
+    servers: (input) => provided(servers(environment, input)),
+    serverLog: (input) => provided(serverLog(input)),
     request: (input, hooks) => provided(request(environment, input, hooks ?? {})),
     apply: (input) =>
       environment === undefined

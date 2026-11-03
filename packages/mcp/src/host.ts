@@ -226,7 +226,7 @@ export const McpApplyResult = Schema.Union([
 export type McpApplyResult = typeof McpApplyResult.Type;
 
 /** A failure under a tag this build does not know, as it crosses the edge: its tag, and a message if it has one. */
-export const OtherHostFailureFromWire = Schema.Struct({
+const OtherHostFailureFromWire = Schema.Struct({
   _tag: Schema.String,
   message: Schema.optionalKey(Schema.String),
 }).pipe(
@@ -257,16 +257,37 @@ export const McpApplyResultWire = Schema.Union([
 
 export type McpApplyResultWire = typeof McpApplyResultWire.Type;
 
-const decodeApplyResult = Schema.decodeUnknownOption(McpApplyResultWire);
-
 /**
- * `answer`, an `apply` answer as it crossed the edge, as a result this build knows. Anything that is no result at all
- * reads as `HostFailed` too.
+ * The reader of one host method's answers as they cross the edge, into a result this build knows: a failure under a tag
+ * it does not know is `HostFailed` (`OtherHostFailureFromWire`), and so is anything that is no result at all, never a
+ * decode error (`docs/architecture/mcp.md` → Deploys). `what` names the method in the message.
  */
-export const readMcpApplyResult = (answer: Schema.Json): McpApplyResult =>
-  Option.getOrElse(decodeApplyResult(answer), () =>
-    HostFailed.make({ message: "The MCP host answered with something that is no result" }),
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a reader built from a schema, not a combinator.
+export const hostAnswerReader = <
+  const Members extends ReadonlyArray<Schema.Codec<unknown, unknown>>,
+>(
+  result: Schema.Union<Members>,
+  what: string,
+) => {
+  const decode = Schema.decodeUnknownOption(
+    Schema.Union([...result.members, OtherHostFailureFromWire]),
   );
+
+  return (
+    answer: Schema.Json | Schema.Union<Members>["Encoded"],
+  ): Schema.Union<Members>["Type"] | HostFailed =>
+    Option.getOrElse(decode(answer), () =>
+      HostFailed.make({
+        message: `The MCP host answered ${what} with something that is no result`,
+      }),
+    );
+};
+
+/** `answer`, an `apply` answer as it crossed the edge, as a result this build knows. */
+export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostAnswerReader(
+  McpApplyResult,
+  "apply",
+);
 
 /**
  * The features the host lists at `requestStart`: a Session uses one only once it is listed (`mcp.md` → Deploys).
@@ -274,6 +295,9 @@ export const readMcpApplyResult = (answer: Schema.Json): McpApplyResult =>
  * - `inventory`: `requestStart` answers the MCP inventory's versions and servers and takes `known`, `waitFor` and
  *   `waitMs`, and the host answers `servers` and `apply({ kind: "reload" })`.
  * - `call`: the host answers `request({ op: "tools/call" })`, with its `untilAborted` and `onProgress` hooks.
+ *
+ * The Session side's own list, `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`), names those of these its MCP tools
+ * need; a feature added here reaches the Session only once that list names it.
  */
 export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
 
@@ -381,28 +405,12 @@ export const McpRequestStartResult = Schema.Union([McpRequestStartAnswer, HostFa
 export type McpRequestStartResult = typeof McpRequestStartResult.Type;
 
 /**
- * `McpRequestStartResult` as it crosses the edge: a failure under a tag this build does not know reads as
- * `HostFailed`, never as a decode error (`docs/architecture/mcp.md` → Deploys).
- */
-const McpRequestStartResultWire = Schema.Union([
-  ...McpRequestStartResult.members,
-  OtherHostFailureFromWire,
-]);
-
-const decodeRequestStart = Schema.decodeUnknownOption(McpRequestStartResultWire);
-
-/**
  * `answer`, a `requestStart` answer as it crossed the edge, as a result this build knows: one it cannot read, or a
  * failure it does not know, is `HostFailed`, never an empty inventory that would read as no servers.
  */
-export const readMcpRequestStartResult = (
+export const readMcpRequestStartResult: (
   answer: typeof McpRequestStartResult.Encoded,
-): McpRequestStartResult =>
-  Option.getOrElse(decodeRequestStart(answer), () =>
-    HostFailed.make({
-      message: "The MCP host answered requestStart with something that is no result",
-    }),
-  );
+) => McpRequestStartResult = hostAnswerReader(McpRequestStartResult, "requestStart");
 
 /**
  * `servers`' arguments (`docs/architecture/mcp-connections.md` → RPC): the servers by name (every one when absent),
@@ -484,15 +492,9 @@ export const McpServersResult = Schema.Union([McpServersAnswer, HostFailed]);
 
 export type McpServersResult = typeof McpServersResult.Type;
 
-const McpServersResultWire = Schema.Union([...McpServersResult.members, OtherHostFailureFromWire]);
-
-const decodeServers = Schema.decodeUnknownOption(McpServersResultWire);
-
 /** `answer`, a `servers` answer as it crossed the edge, as a result this build knows; anything else is `HostFailed`. */
-export const readMcpServersResult = (answer: typeof McpServersResult.Encoded): McpServersResult =>
-  Option.getOrElse(decodeServers(answer), () =>
-    HostFailed.make({ message: "The MCP host answered servers with something that is no result" }),
-  );
+export const readMcpServersResult: (answer: typeof McpServersResult.Encoded) => McpServersResult =
+  hostAnswerReader(McpServersResult, "servers");
 
 /**
  * `serverLog`'s arguments (`docs/architecture/mcp-connections.md` → Telemetry): the server by name, and the Workspace

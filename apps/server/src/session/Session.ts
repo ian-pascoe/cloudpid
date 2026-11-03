@@ -79,7 +79,7 @@ import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
-import { mcpHostClient, mcpRequestStart } from "./mcp-host.ts";
+import { mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import {
@@ -473,12 +473,11 @@ export const SessionLive = Session.make(
         // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
         const images = worker[IMAGES_BINDING] as ImagesBinding;
 
-        // The MCP tools of the Session's Environment, built at each request start from its `McpHost` (`./mcp-host.ts`).
-        // A Workspace is marked used before any host call that may reach its stdio bridge, so the host reads its
-        // `no_workspace` as destroyed only when it is.
-        const requestStart = mcpRequestStart({
+        // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
+        const mcpTools = sessionMcp({
           session: name,
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
+          kv,
           workspace: Effect.tryPromise(() => placement()).pipe(
             Effect.map(({ workspace: id, object }) => (id === null ? null : object)),
             Effect.catchCause((cause) =>
@@ -489,11 +488,7 @@ export const SessionLive = Session.make(
             ),
           ),
           ready: (object) =>
-            Effect.tryPromise(() => workspaces.getByName(object).noteSessionActivity()).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Marking the Workspace used before an MCP call failed", cause),
-              ),
-            ),
+            Effect.tryPromise(() => workspaces.getByName(object).noteSessionActivity()),
           codemode: (namespaces) => codemodeWith(sandbox, namespaces),
         });
 
@@ -831,7 +826,7 @@ export const SessionLive = Session.make(
                   Effect.provideServiceEffect(InstructionsSettings, instructionsSettings),
                 ),
                 reload: reloadSessionExtensions,
-                requestStart,
+                mcp: mcpTools,
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,

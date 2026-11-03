@@ -82,13 +82,9 @@ const decodeRequested = Schema.decodeUnknownEffect(McpEngineRequestResult);
 
 const unreachable = (message: string) => McpEngineUnreachable.make({ message });
 
-/** An engine with no `request`: an older binding, or a fake that scripts discoveries only. */
-const noRequest: McpEngineMethods["request"] = () =>
-  Promise.reject(new Error("This engine takes no requests"));
-
 /** The engine over `engine`, the `MCP_ENGINE` binding's stub or a fake that answers as one. */
 export const mcpEngineClient = (
-  engine: Pick<McpEngineMethods, "discover"> & Partial<Pick<McpEngineMethods, "request">>,
+  engine: Pick<McpEngineMethods, "discover" | "request">,
 ): McpEngineClientService => ({
   request: (target, prior, request, hooks) =>
     Effect.gen(function* () {
@@ -96,10 +92,8 @@ export const mcpEngineClient = (
         Effect.mapError(() => unreachable("The request could not be encoded")),
       );
 
-      const send = engine.request ?? noRequest;
-
       const answer = yield* Effect.tryPromise({
-        try: () => send(encoded[0], prior, encoded[1], hooks),
+        try: () => engine.request(encoded[0], prior, encoded[1], hooks),
         catch: (error) =>
           unreachable(
             `The MCP engine could not be reached: ${error instanceof Error ? error.message : "no answer"}`,

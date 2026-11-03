@@ -20,7 +20,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import type { Mutable } from "effect/Types";
-import type { McpHostClientService } from "./mcp.ts";
+import type { HostLost, McpHostClientService } from "./mcp.ts";
 
 /** One server of the fake inventory: its name, its tools as the server lists them, and its entry's Exposure keys. */
 export type FakeMcpServer = {
@@ -37,6 +37,8 @@ export type FakeMcpServer = {
   readonly state?: string;
   /** The entry's `description`. */
   readonly description?: string;
+  /** The entry's `timeout`, in seconds. */
+  readonly timeout?: number;
   /** What the server says of itself at `initialize`. */
   readonly instructions?: string;
 };
@@ -51,7 +53,7 @@ export type FakeMcpCall =
 export type FakeMcpAnswer = (
   input: McpHostRequest,
   hooks: McpHostRequestHooks,
-) => Promise<McpHostRequestResult>;
+) => Promise<McpHostRequestResult | HostLost>;
 
 const echo: FakeMcpAnswer = (input) =>
   Promise.resolve(
@@ -103,6 +105,10 @@ const inventoryOf = (
 
     if (server.description !== undefined) {
       inventory.server = { ...inventory.server, description: server.description };
+    }
+
+    if (server.timeout !== undefined) {
+      inventory.server = { ...inventory.server, timeout: server.timeout };
     }
 
     if (discovered) inventory.discoveredAt = 1;

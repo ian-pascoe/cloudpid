@@ -6,7 +6,9 @@
 // it does (#409 answer 2), and they go on to the engine as they came. It takes a request slot on its server (8) and on
 // the host (32), then a slot of the engine queue as a call, served before background work (`limits.ts`); a call that
 // waits for a slot counts the wait toward nothing of the server's. The caller's abort ends a wait at once; once sent,
-// the engine cuts the server request itself.
+// the engine cuts the server request itself. Its target is a discovery's (`targetOf`): the `${NAME}` values resolved, and
+// the Secret ones listed for the engine to scrub (`redact`). The logs the server sent come back in the result, and are
+// kept as a discovery's are (`recordLogs`).
 // @effect-diagnostics missingPipeableSignature:off -- the host's method, not a combinator.
 import {
   Cut,
@@ -35,6 +37,7 @@ import type { Mutable } from "effect/Types";
 import { targetOf, writeOrHalt, type McpDiscoveryServices } from "./discovery.ts";
 import { McpEngineClient } from "./engine.ts";
 import { McpLoadCaps } from "./limits.ts";
+import { recordLogs } from "./logs.ts";
 import { viewServers } from "./server-state.ts";
 import { McpHostStore } from "./store.ts";
 
@@ -186,6 +189,14 @@ export const request = (
 
     // The rows the call changed are kept as a discovery's are; a write the storage refuses never fails the result.
     yield* writeOrHalt(() => store.applyEngineState(server.conn, result.state, now));
+
+    // What the server said during the call: kept in its ring, `warning` and above also a span event. A write the
+    // storage refuses loses the logs, never the result.
+    yield* recordLogs(server.conn, result.logs).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("The call's MCP server logs were not kept", cause),
+      ),
+    );
 
     if (result.kind === "failed") return callFailed(result.error);
 

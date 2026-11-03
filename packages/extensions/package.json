@@ -38,8 +38,7 @@
     "./result-bounds": "./src/result-bounds.ts",
     "./bash-routing": "./src/bash-routing.ts",
     "./tool-search": "./src/tool-search.ts",
-    "./mcp": "./src/mcp.ts",
-    "./mcp.testing": "./src/mcp.testing.ts"
+    "./mcp": "./src/mcp.ts"
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs",

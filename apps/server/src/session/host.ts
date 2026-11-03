@@ -98,7 +98,6 @@ import * as DateTime from "effect/DateTime";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -271,6 +270,29 @@ export type SessionStorage = DurableObjectSqliteStorage & {
   deleteAlarm(): Promise<void>;
 };
 
+/** The Session's MCP tools, as the Session host runs them (`SessionHostOptions.mcp`). */
+export type SessionHostMcp<R> = {
+  /**
+   * A message's request start, in its prepare step, outside the Session's locks, once the settings are read: the host
+   * calls that find what the MCP tools of conversation `conversationId` are built from. `window` is its Context Window
+   * (its head marker's entry). A Stop that withdraws the message interrupts it.
+   */
+  readonly start: (
+    conversationId: ConversationId,
+    window: string,
+    values: SessionSettingsValues,
+  ) => Effect.Effect<void, never, R>;
+  /**
+   * The extensions to install over those of the same name for what the MCP tools are built from now (`mcp`, `codemode`
+   * and `tool-search`), none when that is what is installed. Run under the install lock: at the object's start before
+   * anything resumes, after each request start, and after each settings read that installs again.
+   */
+  readonly reinstall: (
+    installed: readonly Extension[],
+    values: SessionSettingsValues,
+  ) => readonly Extension[];
+};
+
 export type SessionHostOptions<R = never> = {
   /** The object's `ctx.storage`. */
   readonly storage: SessionStorage;
@@ -311,19 +333,11 @@ export type SessionHostOptions<R = never> = {
       ) => readonly Extension[])
     | undefined;
   /**
-   * The MCP request start (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension): run in each message's prepare
-   * step, outside the Session's locks, once the settings are read, for the conversation the message goes to. Given the
-   * extensions installed and the settings, it returns the ones to install over those of the same name (none when the
-   * MCP tools did not change), which the request the message starts runs with. Starts run one at a time, so an older
-   * build is never installed over a newer one, and to their end even when the message is withdrawn.
+   * The Session's MCP tools (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension). Every install of the
+   * extensions that follow the settings or the MCP inventory (`reload`, `reinstall`) runs under one lock, built there
+   * from the extensions installed and the settings in force then, so an older build never lands over a newer one.
    */
-  readonly requestStart?:
-    | ((
-        conversationId: ConversationId,
-        installed: readonly Extension[],
-        values: SessionSettingsValues,
-      ) => Effect.Effect<readonly Extension[], never, R>)
-    | undefined;
+  readonly mcp?: SessionHostMcp<R> | undefined;
   /**
    * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
    * this is undefined too.
@@ -774,6 +788,23 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
+  /**
+   * Every install after the start runs here, one at a time and to its end: what it installs is built under the lock from
+   * the extensions installed and the settings in force then, so an older build never lands over a newer one.
+   */
+  const installing = Semaphore.withPermit(yield* Semaphore.make(1));
+
+  /** Install again what the MCP tools are built from now, if it is not what is installed. */
+  const reinstallMcp = Effect.suspend(() =>
+    options.mcp === undefined
+      ? Effect.void
+      : installOver(options.mcp.reinstall(installed, settings.current())),
+  );
+
+  // What the MCP tools were last built from, before anything resumes: a resumed Run or call finds the tools, and the
+  // declarations, that its Context Window was shown.
+  yield* reinstallMcp;
+
   /** The settings the extensions were last built for. */
   let built = settings.current();
 
@@ -797,38 +828,50 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           for (const listener of usageListeners) listener();
         }
 
-        if (options.reload === undefined) return;
+        const { reload } = options;
 
-        yield* installOver(options.reload(installed, values, previous));
+        yield* Effect.suspend(() =>
+          reload === undefined ? Effect.void : installOver(reload(installed, values, previous)),
+        ).pipe(Effect.andThen(reinstallMcp), installing, Effect.uninterruptible);
       }),
     ),
   );
 
-  const mcpInLine = Semaphore.withPermit(yield* Semaphore.make(1));
+  /** The Context Window conversation `conversationId` is in: its head marker's entry, or `start` before any. */
+  const windowOf = (conversationId: ConversationId) =>
+    attempt("context", async () => {
+      const conversation = await harness.harness.conversation(conversationId, context);
+      const view = await conversation?.context(context);
+
+      return String(view?.head?.id ?? "start");
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("The conversation's Context Window is unknown", error).pipe(
+          Effect.as("unknown"),
+        ),
+      ),
+    );
 
   /**
-   * A message's request start, in its prepare step: the settings read, then the MCP request start, whose extensions are
-   * installed before the message is placed.
+   * A message's request start, in its prepare step: the settings read, then the MCP request start, whose build is
+   * installed before the message is placed. Starts of different conversations run side by side; their installs take the
+   * install lock in turn, each installing the newest build.
    */
   const startRequest = (conversationId: ConversationId) => {
-    const { requestStart } = options;
+    const { mcp } = options;
 
     return refreshSettings.pipe(
       Effect.andThen(
-        requestStart === undefined
+        mcp === undefined
           ? Effect.void
-          : Effect.suspend(() =>
-              Effect.provideContext(
-                requestStart(conversationId, installed, settings.current()),
-                services,
+          : windowOf(conversationId).pipe(
+              Effect.flatMap((window) =>
+                Effect.provideContext(
+                  mcp.start(conversationId, window, settings.current()),
+                  services,
+                ),
               ),
-            ).pipe(
-              Effect.flatMap(installOver),
-              mcpInLine,
-              // In the Session's scope: a Stop that withdraws the message never cuts it between what the MCP tools
-              // were built from and their install.
-              Effect.forkIn(scope),
-              Effect.flatMap(Fiber.join),
+              Effect.andThen(reinstallMcp.pipe(installing, Effect.uninterruptible)),
             ),
       ),
     );
@@ -1395,8 +1438,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const admitDraft = (
     conversationId: ConversationId | undefined,
     draft: InputSubmissionDraft,
-    named: boolean,
-    started = false,
+    { named, started = false }: { readonly named: boolean; readonly started?: boolean },
   ): Effect.Effect<Submission, SessionError> =>
     Effect.gen(function* () {
       yield* unlessForking;
@@ -1982,7 +2024,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         (conversationId, draft) =>
           guard(conversationId, draft).pipe(
-            Effect.andThen(admitDraft(conversationId, draft, true, true)),
+            Effect.andThen(admitDraft(conversationId, draft, { named: true, started: true })),
           ),
         requestId,
       );
@@ -2094,9 +2136,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
           Effect.andThen(Effect.all([Clock.currentTimeMillis, Random.nextInt])),
           Effect.flatMap(([now, random]) =>
-            admitDraft(conversation.id, ownerRollover(focus, `${now}-${random}`), false).pipe(
-              inArrivalOrder,
-            ),
+            admitDraft(conversation.id, ownerRollover(focus, `${now}-${random}`), {
+              named: false,
+            }).pipe(inArrivalOrder),
           ),
           Effect.as({ notice: "Asked the agent to roll over." } satisfies CommandOutcome),
         );

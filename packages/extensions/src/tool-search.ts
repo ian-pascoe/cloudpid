@@ -22,7 +22,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";
-import { matchesToolPattern } from "@cloudpid/config";
+import { isMcpToolName, matchesToolPattern } from "@cloudpid/config";
 
 export const extensionName = "tool-search";
 
@@ -80,13 +80,6 @@ const byFamily = (names: ReadonlyArray<string>): string => {
   return Arr.join(lines, "\n");
 };
 
-/**
- * Whether `name` is an MCP tool's (`mcp__<server>__<tool>`): the `mcp` extension sets its deferral from the offered set
- * itself, by its Exposure, so this extension neither wraps nor names it (`docs/architecture/mcp-in-a-session.md` →
- * Exposure).
- */
-export const isMcpToolName = (name: string): boolean => name.startsWith("mcp__");
-
 /** Whether the options offer tool `name`. */
 export const isOffered = (options: ToolSearchOptions, name: string): boolean =>
   Arr.contains(ALWAYS_OFFERED, name) ||
@@ -121,6 +114,8 @@ const deferredTools = section("deferred_tools", (input) => {
         // each server's tools are reached instead.
         Arr.filter(
           [...agent.tools, ...agent.deferred],
+          // An MCP tool's deferral is the `mcp` extension's, by its Exposure (`docs/architecture/mcp-in-a-session.md` →
+          // Exposure).
           (tool) => tool.deferred === true && !isMcpToolName(tool.name),
         ),
         (tool) => tool.name,

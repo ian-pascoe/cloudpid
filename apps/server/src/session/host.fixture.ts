@@ -66,7 +66,6 @@ import type {
   WorkspaceChanges,
 } from "@cloudpid/protocol";
 import { emptyMcpExtension } from "@cloudpid/extensions/mcp";
-import type { McpHostRequestResult } from "@cloudpid/mcp/types";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -105,7 +104,7 @@ import type * as Types from "effect/Types";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
 import { mcpHostName } from "../mcp/name.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { mcpHostClient, mcpRequestStart } from "./mcp-host.ts";
+import { mcpHostClient, promisedMcpHost, sessionMcp } from "./mcp-host.ts";
 import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
@@ -497,7 +496,7 @@ export class TestSession extends DurableObject {
    * starts with `instructions-`, the `owner_instructions` section over the Instructions the Session last read; and, for
    * one whose name starts with `tool-search-`, `tool_search` over the Registry's offered tools, which is installed
    * again when they change; and, for one whose name starts with `mcp-`, an empty `mcp` extension and `tool_search`,
-   * which its request starts install again (`hostRequestStart`).
+   * which its request starts install again (`hostMcp`).
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
@@ -617,34 +616,26 @@ export class TestSession extends DurableObject {
   }
 
   /**
-   * The request start of a Session with MCP tools (`#hasMcpTools`): as the Session DO's, over the test Worker's `McpHost`
-   * objects, with the Workspace `ws:test`, whose marks before a host call are counted, and a stand-in `codemode`
-   * that keeps the namespaces it is built with.
+   * The MCP tools of a Session with them (`#hasMcpTools`): as the Session DO's, over the test Worker's `McpHost` objects,
+   * with the Workspace `ws:test`, whose marks before a host call are counted (`failWorkspace` makes them fail), and a
+   * stand-in `codemode` that keeps the namespaces it is built with.
    */
-  protected hostRequestStart(): SessionHostOptions["requestStart"] {
+  protected hostMcp(): SessionHostOptions["mcp"] {
     if (!this.#hasMcpTools()) return undefined;
 
     const { kv } = this.ctx.storage;
     const hosts = this.env.MCP_HOSTS;
 
-    return mcpRequestStart({
+    return sessionMcp({
       session: this.ctx.id.name,
       host: (environment) =>
-        mcpHostClient(() => {
-          const host = hosts.getByName(mcpHostName(environment));
-
-          return {
-            requestStart: (input) => Effect.tryPromise(() => host.requestStart(input)),
-            servers: (input) => Effect.tryPromise(() => host.servers(input)),
-            request: (input, hooks) =>
-              Effect.tryPromise((): Promise<typeof McpHostRequestResult.Encoded> =>
-                host.request(input, hooks),
-              ),
-          };
-        }),
+        mcpHostClient(() => promisedMcpHost(hosts.getByName(mcpHostName(environment)))),
+      kv,
       workspace: Effect.succeed("ws:test"),
       ready: () =>
-        Effect.sync(() => {
+        Effect.tryPromise(async () => {
+          if (kv.get<boolean>("mcp-ready-fails") === true) throw new Error("The Workspace is down");
+
           kv.put("mcp-ready", (kv.get<number>("mcp-ready") ?? 0) + 1);
         }),
       codemode: (namespaces) => {
@@ -741,7 +732,7 @@ export class TestSession extends DurableObject {
               onSettled: (newest) =>
                 Effect.flatMap(Effect.service(SessionRuns), (runs) => runs.settled(newest)),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
-              requestStart: this.hostRequestStart(),
+              mcp: this.hostMcp(),
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
               // The Workspace's side of the hold cap: the activity noted is counted, and the held stops are what a
@@ -1633,6 +1624,34 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("mcp", { environment, servers });
   }
 
+  /** Offer `offered` in the Settings of a Session with MCP tools, and read them again as a settings change does. */
+  mcpOffered(offered: ReadonlyArray<string>): Promise<void> {
+    this.ctx.storage.kv.put("mcp-global", { tools: { offered } });
+
+    return Effect.runPromise(this.#host.sync);
+  }
+
+  /** Make marking the Workspace used fail, or succeed again. */
+  mcpWorkspaceFails(fails: boolean): void {
+    this.ctx.storage.kv.put("mcp-ready-fails", fails);
+  }
+
+  /** The tool declarations each request offered the model, as JSON, oldest first. */
+  requestDeclarations(): readonly string[] {
+    return this.ctx.storage.kv.get<string[]>("request-declarations") ?? [];
+  }
+
+  /** How many system messages each request's transcript carried, oldest first: one more is a changed prompt. */
+  requestSystemMessages(): readonly number[] {
+    return (this.ctx.storage.kv.get<string[]>("request-messages") ?? []).map(
+      (messages) =>
+        // SAFETY: the messages as the fixture's model stored them, JSON of pi-ai messages.
+        (JSON.parse(messages) as ReadonlyArray<{ readonly role: string }>).filter(
+          (message) => message.role === "system",
+        ).length,
+    );
+  }
+
   /** How many times the Session marked its Workspace used before an MCP host call. */
   mcpReady(): number {
     return this.ctx.storage.kv.get<number>("mcp-ready") ?? 0;
@@ -1947,7 +1966,7 @@ export class TestSession extends DurableObject {
       return mcp === undefined
         ? { global: {}, overrides: {} }
         : {
-            global: {},
+            global: kv.get<Schema.Json>("mcp-global") ?? {},
             overrides: {},
             environment: mcp.environment,
             mcp: { servers: mcp.servers },
@@ -2099,6 +2118,11 @@ export class TestSession extends DurableObject {
       kv.put("request-tools", [
         ...(kv.get<string[][]>("request-tools") ?? []),
         getCurrentTools(request.messages).map((tool) => tool.name),
+      ]);
+
+      kv.put("request-declarations", [
+        ...(kv.get<string[]>("request-declarations") ?? []),
+        JSON.stringify(getCurrentTools(request.messages)),
       ]);
 
       // The owner's messages as this request carried them: what the model is told, part by part.

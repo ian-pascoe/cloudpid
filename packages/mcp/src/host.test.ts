@@ -57,7 +57,7 @@ describe("readMcpApplyResult", () => {
       }),
     );
     expect(read('"nope"')).toEqual(
-      HostFailed.make({ message: "The MCP host answered with something that is no result" }),
+      HostFailed.make({ message: "The MCP host answered apply with something that is no result" }),
     );
   });
 });
