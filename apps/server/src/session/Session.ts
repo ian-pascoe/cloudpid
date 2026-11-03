@@ -52,6 +52,7 @@ import { runChanges } from "./agent-changes.ts";
 import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
+import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
@@ -541,8 +542,17 @@ export const SessionLive = Session.make(
         // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
         const images = worker[IMAGES_BINDING] as ImagesBinding;
 
+        // What MCP servers ask the owner during a call: shown on the sockets, pushed, never kept (`./mcp-questions.ts`).
+        const mcpQuestions = sessionMcpQuestions({
+          storage: kv,
+          sockets: state.raw,
+          notify: notifyOwner,
+          credentials: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
+        });
+
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
         const mcpTools = sessionMcp({
+          questions: mcpQuestions.service,
           session: name,
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
           kv,
@@ -917,6 +927,8 @@ export const SessionLive = Session.make(
                 ),
               }),
             ),
+            // The MCP servers' questions, checked against the Secrets, which are built below.
+            Layer.provideMerge(mcpQuestions.layer),
             Layer.provideMerge(sessionSecrets),
             Layer.provideMerge(sessionChanges),
             Layer.provideMerge(sessionComparisons),

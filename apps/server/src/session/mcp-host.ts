@@ -15,6 +15,7 @@ import {
   HostLost,
   makeMcpTools,
   type McpHostClientService,
+  type McpQuestionsService,
   type McpToolsService,
   type McpToolsStore,
 } from "@cloudpid/extensions/mcp";
@@ -155,6 +156,8 @@ export type SessionMcpOptions = {
   readonly ready: (workspace: string) => Effect.Effect<void, Cause.UnknownError>;
   /** `codemode` with `namespaces`, to install over the one installed. */
   readonly codemode: (namespaces: ReadonlyArray<CodemodeNamespace>) => Extension;
+  /** The Session's MCP questions: with them, a Legacy server's elicitation form is shown to the owner. */
+  readonly questions?: McpQuestionsService;
 };
 
 /** The Session host's MCP tools (`SessionHostOptions.mcp`), with one `McpTools` for the Session's Environment. */
@@ -189,6 +192,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
       kvMcpToolsStore(options.kv, environment),
       {
         ready: (workspace) => Effect.runPromise(readied(workspace)),
+        ...(options.questions === undefined ? {} : { questions: options.questions }),
       },
     );
 

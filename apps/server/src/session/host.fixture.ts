@@ -120,6 +120,7 @@ import { isWithdrawn } from "./errors.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
+import { sessionMcpQuestions } from "./mcp-questions.ts";
 import {
   instructionsSettings,
   reloadSessionExtensions,
@@ -984,6 +985,13 @@ export class TestSession extends DurableObject {
               sockets: ctx,
               notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
             }),
+          ),
+          Layer.provideMerge(
+            sessionMcpQuestions({
+              storage: ctx.storage.kv,
+              sockets: ctx,
+              credentials: [],
+            }).layer,
           ),
           Layer.provideMerge(
             sessionSecretsLayer({

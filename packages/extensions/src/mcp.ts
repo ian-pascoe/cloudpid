@@ -47,6 +47,22 @@ export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client
 export { mayBeDirect } from "./mcp/exposure.ts";
 
 export {
+  createMcpQuestions,
+  MCP_QUESTION_RECORDS,
+  MCP_QUESTION_RENOTIFY_MS,
+  McpQuestions,
+  mcpQuestionsLayer,
+  McpQuestionsError,
+  type McpQuestionAsk,
+  type McpQuestionOutcome,
+  type McpQuestionRecord,
+  type McpQuestionsOptions,
+  type McpQuestionsService,
+  type McpQuestionShown,
+  type McpQuestionStorage,
+} from "./mcp/questions.ts";
+
+export {
   emptyMcpExtension,
   extensionName,
   MCP_CALL_SLACK_MS,

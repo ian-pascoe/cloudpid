@@ -26,13 +26,18 @@ export type PushEvent =
   | { readonly kind: "failed"; readonly reason?: string | undefined }
   /**
    * The agent waits for the owner: to enter the Secrets `names`, or, with `approval`, to approve the change it names
-   * (`docs/architecture/agent-changes.md` → Approval).
+   * (`docs/architecture/agent-changes.md` → Approval), or, with `mcp`, to answer the question an MCP server asks during
+   * its call (`docs/architecture/mcp-server-requests.md` → The waiting-question record, Notifications): never the
+   * question itself.
    */
   | {
       readonly kind: "input";
       readonly names: ReadonlyArray<string>;
       readonly reason?: string | undefined;
       readonly approval?: string | undefined;
+      readonly mcp?:
+        | { readonly server: string; readonly kind: "elicitation" | "sampling" }
+        | undefined;
     };
 
 /** The longest `PushNotice.url` that is sent: with the rest of a push it must fit one 4096-octet message. */

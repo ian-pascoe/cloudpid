@@ -22,6 +22,7 @@ import {
   type OwnerTabLinks,
   type OwnerTabListing,
   type ClientMessage,
+  type McpElicitationRequest,
   type ServerMessage,
   ServerMessageJson,
   cleanPage,
@@ -34,6 +35,7 @@ import {
   type SecretsError,
 } from "@cloudpid/extensions/secrets";
 import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/extensions/approvals";
+import { McpQuestions, type McpQuestionsError } from "@cloudpid/extensions/mcp";
 import {
   BrowserError,
   type BrowserHandoffRequest,
@@ -179,6 +181,11 @@ export const ownerTabDriversMessage = (drivers: ReadonlyArray<OwnerTabDriver>): 
   type: "owner_tab_drivers",
   drivers,
 });
+
+/** The `mcp_elicitation_requests` message for `requests`, which every client is sent. */
+export const mcpElicitationRequests = (
+  requests: ReadonlyArray<McpElicitationRequest>,
+): ServerMessage => ({ type: "mcp_elicitation_requests", requests });
 
 /**
  * The `approval_requests` message for `requests`, which every client is sent: each request as the card shows it, without
@@ -351,6 +358,7 @@ export const sessionSocketsLayer = (
   | BrowserPane
   | OwnerTabDrivers
   | Approvals
+  | McpQuestions
   | AnnotationStore
   | ViewedStore
   | SessionReviews
@@ -370,6 +378,7 @@ export const sessionSocketsLayer = (
       const browserPane = yield* BrowserPane;
       const drivers = yield* OwnerTabDrivers;
       const approvals = yield* Approvals;
+      const mcpQuestions = yield* McpQuestions;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
       const watching = new Map<WebSocket, FiberMap.FiberMap<WatchKey>>();
@@ -603,7 +612,7 @@ export const sessionSocketsLayer = (
         | OwnerTabLinks
         | OwnerTabListing
         | null,
-        SessionError | SecretsError | BrowserError | ApprovalsError
+        SessionError | SecretsError | BrowserError | ApprovalsError | McpQuestionsError
       > => {
         switch (message.type) {
           case "tree":
@@ -806,6 +815,15 @@ export const sessionSocketsLayer = (
                 reason: message.reason,
               })
               .pipe(Effect.as(null));
+          case "mcp_elicitation_answer":
+            return mcpQuestions
+              .answer(
+                message.request,
+                message.action === "accept"
+                  ? { action: "accept", content: message.content ?? {} }
+                  : { action: message.action },
+              )
+              .pipe(Effect.as(null));
           case "annotation_save":
             return reviews.save(message.annotation).pipe(Effect.as(null));
           case "annotation_delete":
@@ -934,6 +952,10 @@ export const sessionSocketsLayer = (
 
         // Approval requests wait with no deadline; sent when none waits too, so a client clears the cards it held.
         yield* send(server, approvalRequests(yield* approvals.pending));
+
+        // MCP servers' questions live only as long as their calls wait; sent when none waits too, so a client clears the
+        // cards it held.
+        yield* send(server, mcpElicitationRequests(yield* mcpQuestions.pending));
 
         // The draft Annotations, an empty list too, so a client that reconnects drops the drafts deleted meanwhile.
         yield* send(server, annotationsMessage(yield* annotations.list));

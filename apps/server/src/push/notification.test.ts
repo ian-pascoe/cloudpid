@@ -60,6 +60,18 @@ describe("describeEvent", () => {
     });
   });
 
+  it("says an MCP server needs the owner's input without saying what it asks, tagged by the server", () => {
+    expect(
+      describeEvent(
+        { kind: "input", names: [], mcp: { server: "github", kind: "elicitation" } },
+        session,
+      ),
+    ).toMatchObject({
+      body: "github needs your input",
+      tag: "0190f3a0-1111-7000-8000-000000000001:mcp-input:github",
+    });
+  });
+
   it("carries a notice a caller words, to the page it names", () => {
     expect(
       describeEvent(

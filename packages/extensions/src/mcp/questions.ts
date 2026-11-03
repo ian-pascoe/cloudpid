@@ -20,6 +20,7 @@ import {
   MCP_ELICITATIONS_PER_CALL,
   validateElicitation,
 } from "@cloudpid/mcp/types";
+import { holdsPlaceholder } from "../secrets/references.ts";
 import type {
   ElicitationContent,
   ElicitationForm,
@@ -185,7 +186,10 @@ export type McpQuestionsOptions = {
   readonly notify?: ((who: { readonly server: string }) => Effect.Effect<void>) | undefined;
   /** What a Secret the Session holds is replaced by in what the owner is shown. */
   readonly redact: (shown: McpQuestionShown) => Effect.Effect<McpQuestionShown>;
-  /** Whether a string the owner entered holds a Secret, a deploy-time credential or a Secret Reference's placeholder. */
+  /**
+   * Whether a string the owner entered holds a Secret the Session holds or a deploy-time credential, in any encoding
+   * redaction knows; a Secret Reference's placeholder is refused here whatever this says.
+   */
   readonly holdsSecret: (text: string) => Effect.Effect<boolean>;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
@@ -454,7 +458,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       }
 
       for (const [name, text] of stringsOf(checked.success)) {
-        if (yield* options.holdsSecret(text)) {
+        if (holdsPlaceholder(text) || (yield* options.holdsSecret(text))) {
           return yield* McpQuestionsError.make({ message: `${name}: matches one of your Secrets` });
         }
       }
