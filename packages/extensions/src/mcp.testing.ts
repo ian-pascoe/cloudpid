@@ -15,6 +15,7 @@ import {
   McpReloaded,
   type McpHostRequest,
   type McpHostRequestHooks,
+  type McpHostResourceRequest,
   type McpHostRequestResult,
   type McpRequestStart,
   type McpServerInventory,
@@ -70,7 +71,10 @@ export type FakeMcpCall =
   | { readonly method: "requestStart"; readonly input: McpRequestStart }
   | { readonly method: "servers"; readonly input: McpServersRequest }
   | { readonly method: "apply"; readonly input: McpApply }
-  | { readonly method: "request"; readonly input: McpHostRequest };
+  | {
+      readonly method: "request";
+      readonly input: McpHostRequest | McpHostResourceRequest;
+    };
 
 /**
  * How the fake answers an `apply`: by default a `set` is taken (`Applied`, changed), a `reload` reaches the servers it names
@@ -83,7 +87,7 @@ export type FakeMcpApplyAnswer = (
 
 /** How the fake answers a request: by default, the tool's name and its arguments as text. */
 export type FakeMcpAnswer = (
-  input: McpHostRequest,
+  input: McpHostRequest | McpHostResourceRequest,
   hooks: McpHostRequestHooks,
 ) => Promise<McpHostRequestResult | HostLost>;
 

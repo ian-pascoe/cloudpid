@@ -705,8 +705,11 @@ describe("a Stop that interrupts the broadcast", () => {
 });
 
 describe("the section's intro", () => {
-  it("names only tools the build registers: this build has no resource tools and no mcp_sign_in_ask", async () => {
+  it("names only tools the build registers: a host without `resources` has no resource tools, and none has mcp_sign_in_ask", async () => {
     const host = fakeMcpHost([DOCS, { ...DOCS, name: "files", resources: true }]);
+
+    host.features(["inventory", "call"]);
+
     const session = await open(() => answer("ok"));
     const mcp = session.tools(host);
 
@@ -719,6 +722,22 @@ describe("the section's intro", () => {
     expect(first?.system).toContain("tools.mcp__<server>__<tool>(args)");
     expect(first?.system).not.toContain("list_mcp_resources");
     expect(first?.system).not.toContain("read_mcp_resource");
+    expect(first?.system).not.toContain("mcp_sign_in_ask");
+  });
+
+  it("names the resource tools when the host lists `resources` and a server has resources", async () => {
+    const host = fakeMcpHost([DOCS, { ...DOCS, name: "files", resources: true }]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+
+    await session.start(mcp);
+    await session.prompt("one");
+
+    const [first] = session.requests;
+
+    expect(first?.system).toContain(
+      "list_mcp_resources, list_mcp_resource_templates and read_mcp_resource take its name",
+    );
     expect(first?.system).not.toContain("mcp_sign_in_ask");
   });
 });

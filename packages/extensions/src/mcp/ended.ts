@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off -- readers of plain values, not combinators.
+// @effect-diagnostics missingPipeableSignature:off -- maps and readers of plain values, not combinators.
 // How a call of an MCP tool ends without a result, as the model reads it and `details` records it
 // (`docs/architecture/mcp-in-a-session.md` → Calls and results): the one map, for the engine's answers (`describeError`,
 // used by `./result.ts`) and for a result stream the Session could not read (`streamEnd`, from `./stream.ts`'s outcomes),
@@ -15,68 +15,90 @@ export type Ended = {
   readonly error?: McpDetails["error"];
 };
 
+/**
+ * What an end is about: a tool's call, which may have run when it ended without an answer, or a resource request (a list
+ * or a read), which only asks and so is never said to have run.
+ */
+export type Subject = "tool" | "resource";
+
 /** A result over `limit` bytes, dropped: the tool may have run. */
-const tooLargeEnd = (limit: number): Ended => ({
-  message: `The tool's result was over ${limit / MiB} MiB and was dropped; the tool may have run.`,
+const tooLargeEnd = (limit: number, subject: Subject): Ended => ({
+  message:
+    subject === "tool"
+      ? `The tool's result was over ${limit / MiB} MiB and was dropped; the tool may have run.`
+      : `The resource's answer was over ${limit / MiB} MiB and was dropped.`,
   error: "too_large",
 });
 
 /** A result lost between the MCP engine and the Session: the tool may have run. */
-const engineLostEnd: Ended = {
-  message: "The tool's result was lost on its way from the MCP engine; the tool may have run.",
+const engineLostEnd = (subject: Subject): Ended => ({
+  message:
+    subject === "tool"
+      ? "The tool's result was lost on its way from the MCP engine; the tool may have run."
+      : "The resource's answer was lost on its way from the MCP engine.",
   cut: "engine_lost",
-};
+});
 
 /**
  * A result the engine let go of before the Session could read it, the Session being busy with other large results for
  * as long as the engine holds a stream unread. The tool ran, and its result was dropped.
  */
-const waitedEnd: Ended = {
+const waitedEnd = (subject: Subject): Ended => ({
   message:
-    "The tool's result was dropped unread: the Session was reading other large results, and the MCP engine lets a result go after 60 s. The tool ran.",
+    subject === "tool"
+      ? "The tool's result was dropped unread: the Session was reading other large results, and the MCP engine lets a result go after 60 s. The tool ran."
+      : "The resource's answer was dropped unread: the Session was reading other large results, and the MCP engine lets a result go after 60 s.",
   cut: "engine_lost",
-};
+});
 
 /** A result the Session cannot read. */
 const unreadableEnd: Ended = {
   message: "The server answered with a result this build cannot read",
 };
 
-/** How each way a result's stream failed ended. */
-const STREAM_ENDS = {
-  too_large: tooLargeEnd(MCP_LARGE_RESULT_BYTES),
-  lost: engineLostEnd,
-  waited: waitedEnd,
-  unreadable: unreadableEnd,
-} as const satisfies Record<string, Ended>;
-
 /** The ways a result's stream failed. */
-export type StreamFailure = keyof typeof STREAM_ENDS;
+export type StreamFailure = "too_large" | "lost" | "waited" | "unreadable";
 
 /** How a stream that could not be read ended. */
-export const streamEnd = (kind: StreamFailure): Ended => STREAM_ENDS[kind];
+export const streamEnd = (kind: StreamFailure, subject: Subject = "tool"): Ended => {
+  switch (kind) {
+    case "too_large":
+      return tooLargeEnd(MCP_LARGE_RESULT_BYTES, subject);
+    case "lost":
+      return engineLostEnd(subject);
+    case "waited":
+      return waitedEnd(subject);
+    case "unreadable":
+      return unreadableEnd;
+  }
+};
 
 /** The words for a result the Session cannot read, for a result that is not a `tools/call` result at all. */
 export const unreadableMessage: string = unreadableEnd.message;
 
 /** What a call that ended without a result says, and what `details` records of how. */
-export const describeError = (error: McpErrorWire): Ended =>
+export const describeError = (error: McpErrorWire, subject: Subject = "tool"): Ended =>
   Match.value(error).pipe(
     Match.tag("Cut", (cut): Ended => {
-      const message = cut.mayHaveRun
-        ? `The call was cut before its answer arrived; it may or may not have run. ${cut.message}`
-        : cut.message;
+      const message =
+        cut.mayHaveRun && subject === "tool"
+          ? `The call was cut before its answer arrived; it may or may not have run. ${cut.message}`
+          : cut.message;
 
-      return cut.lost === "engine" ? { message, cut: engineLostEnd.cut } : { message };
+      return cut.lost === "engine" ? { message, cut: engineLostEnd(subject).cut } : { message };
     }),
-    Match.tag("TooLarge", (large) => tooLargeEnd(large.limit)),
+    Match.tag("TooLarge", (large) => tooLargeEnd(large.limit, subject)),
     Match.tag("TimedOut", (timed): Ended => ({
-      message: `The call timed out: ${timed.message}. It may or may not have run.`,
+      message:
+        subject === "tool"
+          ? `The call timed out: ${timed.message}. It may or may not have run.`
+          : `The request timed out: ${timed.message}.`,
     })),
     Match.orElse((other): Ended => ({
-      message: mayHaveRun(other, "tools/call")
-        ? `${other.message} It may or may not have run.`
-        : other.message,
+      message:
+        subject === "tool" && mayHaveRun(other, "tools/call")
+          ? `${other.message} It may or may not have run.`
+          : other.message,
     })),
   );
 

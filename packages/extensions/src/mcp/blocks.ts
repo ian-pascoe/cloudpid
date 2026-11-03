@@ -1,12 +1,17 @@
-// What the model gets for the content blocks of a `tools/call` result (`docs/architecture/mcp-in-a-session.md` → Calls
-// and results): text, images, a line for a block it cannot be shown, and a Result Spill for binary data.
+// What the model gets for the content blocks of a `tools/call` result and the contents of a resource read
+// (`docs/architecture/mcp-in-a-session.md` → Calls and results, Resource links and embedded resources): text, images, a
+// line for a block it cannot be shown, and a Result Spill for binary data. A link or an embedded resource also leaves a
+// reference (`Piece.ref`), which `details.resources` keeps.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off -- conversions of plain values.
 import { isJsonObject } from "@cloudpid/mcp/types";
+import { utf8ByteLength } from "@earendil-works/chord/output";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import type { Mutable } from "effect/Types";
+import { MAX_REF_URI, type McpResourceRef } from "./details.ts";
 import type { Spill } from "./spill.ts";
 
 /** A content block of a `tools/call` result of a type this build knows, as far as the Session reads it. */
@@ -52,11 +57,60 @@ export type ModelContent = TextContent | ImageContent;
  * writes about a block it cannot show (a link, a placeholder, where a file was saved). Text over the limits is cut in
  * the server's text only; a note is never cut away.
  */
-export type Piece = { readonly content: ModelContent; readonly note: boolean };
+export type Piece = {
+  readonly content: ModelContent;
+  readonly note: boolean;
+  /** The resource the piece is a link to or holds, when it is one. */
+  readonly ref?: McpResourceRef;
+};
+
+/** What reading a block depends on besides the block. */
+export type ModelOptions = {
+  /**
+   * The name the resource tools take for the server the blocks came from (`mcp__` left off), when they reach it: a link
+   * then says how to read it. Absent when they do not, so the model is never pointed at a tool that cannot.
+   */
+  readonly readServer?: string | undefined;
+};
+
+/** The reference of a resource, none for a URI past `MAX_REF_URI`. */
+export const refOf = (
+  uri: string,
+  kind: McpResourceRef["kind"],
+  part: number,
+  facts: {
+    readonly mimeType?: string | undefined;
+    readonly size?: number | undefined;
+    readonly path?: string | undefined;
+  } = {},
+): McpResourceRef | undefined => {
+  if (uri.length > MAX_REF_URI) return undefined;
+
+  const ref: Mutable<McpResourceRef> = { uri, kind, part };
+
+  if (facts.mimeType !== undefined) ref.mimeType = facts.mimeType;
+
+  if (facts.size !== undefined) ref.size = facts.size;
+
+  if (facts.path !== undefined) ref.path = facts.path;
+
+  return ref;
+};
+
+/** `ref` as a piece's key, which is left off when there is none. */
+const withRef = (piece: Piece, ref: McpResourceRef | undefined): Piece =>
+  ref === undefined ? piece : { ...piece, ref };
 
 const serverText = (text: string): Piece => ({ content: textOf(text), note: false });
 
 const noteOf = (line: TextContent): Piece => ({ content: line, note: true });
+
+/** How many bytes `base64` decodes to, without decoding it. */
+export const base64Bytes = (base64: string): number => {
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+};
 
 /** The image types every provider takes; any other image is saved to a file instead. */
 const IMAGE_TYPES: ReadonlySet<string> = new Set([
@@ -72,13 +126,13 @@ const URI_LIMIT = 2048;
 const FIELD_LIMIT = 500;
 
 /** `text` on one line, cut to `limit` characters. */
-const oneLine = (text: string, limit: number): string => {
+export const oneLine = (text: string, limit: number): string => {
   const line = text.replaceAll(/\s+/g, " ").trim();
 
   return line.length > limit ? `${line.slice(0, limit)}…` : line;
 };
 
-const textOf = (text: string): TextContent => ({ type: "text", text });
+export const textOf = (text: string): TextContent => ({ type: "text", text });
 
 /** `bytes` as a size: `512B`, `3.4KB`, `1.5MB`. */
 const sizeOf = (bytes: number): string => {
@@ -90,7 +144,7 @@ const sizeOf = (bytes: number): string => {
 };
 
 /** `base64`'s bytes; it throws for text that is not base64. */
-const bytesOf = (base64: string): Uint8Array => {
+export const bytesOf = (base64: string): Uint8Array => {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
 
@@ -100,7 +154,7 @@ const bytesOf = (base64: string): Uint8Array => {
 };
 
 /** The extension a saved file gets: the one `uri`'s path ends in, else `.bin`. */
-const suffixOf = (uri: string | undefined): string =>
+export const suffixOf = (uri: string | undefined): string =>
   (uri === undefined ? undefined : /\.[A-Za-z0-9]{1,8}$/.exec(uri.split(/[?#]/)[0] ?? "")?.[0]) ??
   ".bin";
 
@@ -114,7 +168,7 @@ const saved = async (
   mimeType: string | undefined,
   base64: string,
   spill: Spill,
-): Promise<TextContent> => {
+): Promise<{ readonly line: TextContent; readonly path?: string; readonly size?: number }> => {
   const label = `${what}${uri === undefined ? "" : ` ${oneLine(uri, URI_LIMIT)}`} (${oneLine(mimeType ?? "unknown type", FIELD_LIMIT)}`;
 
   let bytes: Uint8Array;
@@ -122,23 +176,31 @@ const saved = async (
   try {
     bytes = bytesOf(base64);
   } catch {
-    return textOf(`[${label}) could not be read: its data is not base64]`);
+    return { line: textOf(`[${label}) could not be read: its data is not base64]`) };
   }
 
   const where = await spill(bytes, suffixOf(uri));
 
-  return textOf(
-    "path" in where
-      ? `[${label}, ${sizeOf(bytes.length)}) saved to ${where.path}]`
-      : `[${label}, ${sizeOf(bytes.length)}) could not be saved: ${where.reason}]`,
-  );
+  return "path" in where
+    ? {
+        line: textOf(`[${label}, ${sizeOf(bytes.length)}) saved to ${where.path}]`),
+        path: where.path,
+        size: bytes.length,
+      }
+    : {
+        line: textOf(`[${label}, ${sizeOf(bytes.length)}) could not be saved: ${where.reason}]`),
+        size: bytes.length,
+      };
 };
 
 /**
- * `[Resource <uri> "<title>" (<mimeType>, <size>): <description>]`, pi's line for a link. Its clause about reading it
- * with `read_mcp_resource` comes with the resource tools (#471), which a server's link names only when they reach it.
+ * `[Resource <uri> "<title>" (<mimeType>, <size>): <description>. Read it with read_mcp_resource (server "<name>")]`,
+ * pi's line for a link, with its clause about reading it only when the resource tools reach the server (`readServer`).
  */
-const linkLine = (block: Extract<ContentBlock, { type: "resource_link" }>): string => {
+const linkLine = (
+  block: Extract<ContentBlock, { type: "resource_link" }>,
+  readServer: string | undefined,
+): string => {
   const title = oneLine(block.title ?? block.name ?? block.uri, FIELD_LIMIT);
 
   const facts = Arr.join(
@@ -152,7 +214,12 @@ const linkLine = (block: Extract<ContentBlock, { type: "resource_link" }>): stri
   const description =
     block.description === undefined ? "" : `: ${oneLine(block.description, FIELD_LIMIT)}`;
 
-  return `[Resource ${oneLine(block.uri, URI_LIMIT)} "${title}"${facts === "" ? "" : ` (${facts})`}${description}]`;
+  const how =
+    readServer === undefined
+      ? ""
+      : `. Read it with read_mcp_resource (server "${oneLine(readServer, FIELD_LIMIT)}")`;
+
+  return `[Resource ${oneLine(block.uri, URI_LIMIT)} "${title}"${facts === "" ? "" : ` (${facts})`}${description}${how}]`;
 };
 
 /** The type a block of a kind this build does not know says it is. */
@@ -160,7 +227,12 @@ const kindOf = (raw: Schema.Json): string =>
   isJsonObject(raw) && Predicate.isString(raw["type"]) ? raw["type"] : "unknown";
 
 /** One block as the model gets it. */
-const blockFor = async (raw: Schema.Json, spill: Spill): Promise<ReadonlyArray<Piece>> => {
+const blockFor = async (
+  raw: Schema.Json,
+  spill: Spill,
+  options: ModelOptions,
+  part: number,
+): Promise<ReadonlyArray<Piece>> => {
   const decoded = decodeBlock(raw);
 
   // A block of a type this build does not know, or one that is malformed, is a line.
@@ -176,7 +248,7 @@ const blockFor = async (raw: Schema.Json, spill: Spill): Promise<ReadonlyArray<P
     case "image":
       return IMAGE_TYPES.has(typeOf(block.mimeType))
         ? [{ content: { type: "image", data: block.data, mimeType: block.mimeType }, note: false }]
-        : [noteOf(await saved("Image", undefined, block.mimeType, block.data, spill))];
+        : [noteOf((await saved("Image", undefined, block.mimeType, block.data, spill)).line)];
     case "audio":
       return [
         noteOf(
@@ -188,14 +260,30 @@ const blockFor = async (raw: Schema.Json, spill: Spill): Promise<ReadonlyArray<P
         ),
       ];
     case "resource_link":
-      return [noteOf(textOf(linkLine(block)))];
+      return [
+        withRef(
+          noteOf(textOf(linkLine(block, options.readServer))),
+          refOf(block.uri, "link", part, { mimeType: block.mimeType, size: block.size }),
+        ),
+      ];
     case "resource": {
       const { resource } = block;
 
-      if ("text" in resource) return [serverText(resource.text)];
+      if ("text" in resource) {
+        return [
+          withRef(
+            serverText(resource.text),
+            refOf(resource.uri, "text", part, {
+              mimeType: resource.mimeType,
+              size: utf8ByteLength(resource.text),
+            }),
+          ),
+        ];
+      }
 
-      return IMAGE_TYPES.has(typeOf(resource.mimeType ?? ""))
-        ? [
+      if (IMAGE_TYPES.has(typeOf(resource.mimeType ?? ""))) {
+        return [
+          withRef(
             {
               content: {
                 type: "image",
@@ -204,19 +292,47 @@ const blockFor = async (raw: Schema.Json, spill: Spill): Promise<ReadonlyArray<P
               },
               note: false,
             },
-          ]
-        : [
-            noteOf(
-              await saved("Binary resource", resource.uri, resource.mimeType, resource.blob, spill),
-            ),
-          ];
+            refOf(resource.uri, "image", part, {
+              mimeType: resource.mimeType,
+              size: base64Bytes(resource.blob),
+            }),
+          ),
+        ];
+      }
+
+      const where = await saved(
+        "Binary resource",
+        resource.uri,
+        resource.mimeType,
+        resource.blob,
+        spill,
+      );
+
+      return [
+        withRef(
+          noteOf(where.line),
+          refOf(resource.uri, "spill", part, {
+            mimeType: resource.mimeType,
+            size: where.size,
+            path: where.path,
+          }),
+        ),
+      ];
     }
   }
 };
+
+/** What the model gets for each of `blocks`, in order: the pieces of each block, whose references name its index as `part`. */
+export const modelBlocks = (
+  blocks: ReadonlyArray<Schema.Json>,
+  spill: Spill,
+  options: ModelOptions = {},
+): Promise<ReadonlyArray<ReadonlyArray<Piece>>> =>
+  Promise.all(Arr.map(blocks, (block, index) => blockFor(block, spill, options, index)));
 
 /** What the model gets for `blocks`, in order. */
 export const modelContent = async (
   blocks: ReadonlyArray<Schema.Json>,
   spill: Spill,
-): Promise<ReadonlyArray<Piece>> =>
-  Arr.flatten(await Promise.all(Arr.map(blocks, (block) => blockFor(block, spill))));
+  options: ModelOptions = {},
+): Promise<ReadonlyArray<Piece>> => Arr.flatten(await modelBlocks(blocks, spill, options));

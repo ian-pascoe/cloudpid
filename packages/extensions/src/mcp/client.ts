@@ -6,6 +6,7 @@ import type {
   McpHostRequest,
   McpHostRequestHooks,
   McpHostRequestResult,
+  McpHostResourceRequest,
   McpRequestStart,
   McpRequestStartResult,
   McpServersRequest,
@@ -41,7 +42,7 @@ export type McpHostClientService = {
   readonly apply: (input: McpApply) => Effect.Effect<McpApplyResult>;
   /** A request with its hooks; the effect lasts as long as the request, so the hooks' stubs do too. */
   readonly request: (
-    input: McpHostRequest,
+    input: McpHostRequest | McpHostResourceRequest,
     hooks: McpHostRequestHooks,
   ) => Effect.Effect<McpHostRequestResult | HostLost>;
 };

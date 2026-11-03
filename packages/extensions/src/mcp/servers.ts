@@ -12,7 +12,13 @@
 // - **The notice** carries the whole new listing, not the lines that changed: a conversation keeps only the hash of the
 //   listing it was last shown, which cannot say what differs, and one list that replaces the last is never misread.
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
-import { mcpServerNamespace, mcpToolNames, resolveExposure, sha256Hex } from "@cloudpid/config";
+import {
+  MCP_RESOURCE_TOOL_NAMES,
+  mcpServerNamespace,
+  mcpToolNames,
+  resolveExposure,
+  sha256Hex,
+} from "@cloudpid/config";
 import { frozenSection } from "@cloudpid/effect-durable";
 import {
   type ConversationId,
@@ -59,11 +65,7 @@ const hashOf = (text: string): string => sha256Hex(text).slice(0, 32);
 export const EMPTY_LISTING: McpListing = { text: "", hash: hashOf("") };
 
 /** The three resource tools: the intro names them only when the `mcp` extension registers them. */
-export const MCP_RESOURCE_TOOLS: ReadonlyArray<string> = [
-  "list_mcp_resources",
-  "list_mcp_resource_templates",
-  "read_mcp_resource",
-];
+export const MCP_RESOURCE_TOOLS: ReadonlyArray<string> = MCP_RESOURCE_TOOL_NAMES;
 
 /** Which tools the intro may name: those the build registers. Each sentence about one is added in `mcpServersIntro`. */
 export type McpIntroFeatures = { readonly resourceTools: boolean; readonly signIn: boolean };

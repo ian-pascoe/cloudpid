@@ -41,6 +41,28 @@ export type McpElicitationDetail = {
   readonly fields: Array<string>;
 };
 
+/** The most resources a call's `details` names. */
+export const MAX_RESOURCE_REFS = 20;
+
+/** The longest URI a reference keeps, in characters: a longer one is left out, since half of a URI names nothing. */
+export const MAX_REF_URI = 2048;
+
+/**
+ * A resource a call's result names or holds, as `details.resources` records it for the web (`docs/architecture/
+ * mcp-in-a-session.md` → Resource links and embedded resources): a `link` the server pointed to, an embedded or read
+ * `text` or `image` the model was shown, or a `spill` saved to the Workspace (`path`). `part` is the index of the
+ * content block (or of the read's contents) it came from. Never the resource's contents.
+ */
+export type McpResourceRef = {
+  readonly uri: string;
+  readonly mimeType?: string;
+  /** Bytes, when known. */
+  readonly size?: number;
+  readonly kind: "text" | "image" | "spill" | "link";
+  readonly part?: number;
+  readonly path?: string;
+};
+
 /**
  * What an MCP tool's call keeps in `details`. `error` and `cut` say how a call that has no result ended: `cut` that the
  * Session's end (`host_lost`) or the host's end (`engine_lost`) of the call was lost, so it may have run.
@@ -64,6 +86,8 @@ export type McpDetails = {
   readonly sign_in?: { readonly status: string; readonly scope?: string };
   /** How an `mcp_sign_in_ask` call ended: `signed_in`, `declined`, `withdrawn`, `not_applicable`, `step_up_failed`, `unavailable`. */
   readonly sign_in_request?: string;
+  /** The resources the result names or holds, at most `MAX_RESOURCE_REFS`; absent when it has none. */
+  readonly resources?: Array<McpResourceRef>;
 };
 
 /** How much `meta` the card keeps of a tool's `_meta` (stored); keys past it are left out. */

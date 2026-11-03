@@ -298,6 +298,40 @@ describe("secrets", () => {
     expect(await session.transcript()).not.toContain(VALUE);
   });
 
+  it("blocks a resource tool's call that references a Secret as it does an MCP tool's", async () => {
+    const sent: string[] = [];
+
+    const session = await openSecretsHarness([
+      defineExtension({
+        name: "mcp",
+        tools: [
+          defineTool({
+            name: "read_mcp_resource",
+            description: "Read a resource",
+            parameters: Type.Object({ server: Type.String(), uri: Type.String() }),
+            execute: async ({ uri }) => {
+              sent.push(uri);
+
+              return { output: [{ type: "text", text: "read" }] };
+            },
+          }),
+        ],
+      }),
+    ]);
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt(
+      "Go",
+      call("read_mcp_resource", { server: "docs", uri: `https://x/${ref("API_KEY")}` }),
+    );
+
+    const held = await session.lastResult();
+
+    expect(held?.isError).toBe(true);
+    expect(held?.text).toContain(`${ref("API_KEY")} cannot be sent to an MCP server`);
+    expect(sent).toEqual([]);
+  });
+
   it("writes an escaped reference as literal text", async () => {
     const session = await openSecretsHarness();
 

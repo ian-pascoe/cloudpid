@@ -1,0 +1,387 @@
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off newPromise:off -- builders over plain values, and
+// pi-durable's Promise-based tool seam.
+// One request from a tool of the `mcp` extension to the host and the wait for its answer (`docs/architecture/
+// mcp-in-a-session.md` → The `mcp` extension, Calls and results, Resource tools): the part a `tools/call` and a resource
+// list or read share, so they end alike.
+//
+// The request is awaited for its whole length with its `untilAborted` and `onProgress` hooks, so the stubs outlive it. Stop
+// aborts the call's context, which resolves `untilAborted`, and the host cancels. The Session waits at most the server's
+// `timeout` and `MCP_CALL_SLACK_MS` from the request's start or its last progress notice (progress resets the engine's
+// timeout too); past that, or when the RPC breaks, the request reads as `host_lost`. A stdio server runs in the Container
+// of the Workspace of the conversation that asks, which is marked used first. A Legacy server's question waits for the
+// owner while the clock stands still.
+import {
+  MCP_CONNECT_TIMEOUT_MS,
+  MCP_ELICITATION_WAIT_MS,
+  type McpAnswers,
+  type McpHostCompleted,
+  type McpHostRequest,
+  type McpHostRequestContext,
+  type McpHostRequestHooks,
+  type McpHostResourceRequest,
+  pausableDeadline,
+} from "@cloudpid/mcp/types";
+import type { Context, JsonValue } from "@earendil-works/chord";
+import type {
+  PromptSection,
+  ToolExecutionApi,
+  ToolExecutionResult,
+  ToolRegistration,
+  ToolTaskInput,
+} from "@earendil-works/pi-durable";
+import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
+import type * as Schema from "effect/Schema";
+import type { Mutable } from "effect/Types";
+import { agentOf, conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
+import type { McpHostClientService } from "./client.ts";
+import type { McpDetails, McpElicitationDetail } from "./details.ts";
+import { elicitingHooks, withElicitation } from "./elicit.ts";
+import type { Subject } from "./ended.ts";
+import {
+  failedWith,
+  failureResult,
+  hostLostResult,
+  interruptedResult,
+  streamFailure,
+} from "./result.ts";
+import type { McpQuestionsService } from "./questions.ts";
+import type { McpSignInsService } from "./sign-in.ts";
+import { readStreamed, type StreamLimits } from "./stream.ts";
+import type { McpBuildServer } from "./tools.ts";
+
+/** A server's `timeout` when its entry has none, in seconds (`DEFAULT_MCP_TIMEOUT`). */
+const DEFAULT_TIMEOUT_S = 60;
+
+/**
+ * How long past a call's timeout the Session waits for the host's answer before it reads the call as lost: 60 s, the
+ * connects a call may make before it is sent (three when the server's era is in doubt, each up to
+ * `MCP_CONNECT_TIMEOUT_MS`) and 15 s more for the RPCs, so the host answers first whenever it can.
+ */
+export const MCP_CALL_SLACK_MS = 3 * MCP_CONNECT_TIMEOUT_MS + 15_000;
+
+/** The longest a result's stream may be quiet while the Session reads it before it is read as lost, in ms. */
+export const MCP_STREAM_IDLE_MS = 30_000;
+
+/** How the tools wait: the slack past a call's timeout, `MCP_CALL_SLACK_MS` unless a test shortens it. */
+export type McpToolOptions = {
+  readonly slackMs?: number;
+  /** How long a result's stream may be quiet, `MCP_STREAM_IDLE_MS` unless a test shortens it. */
+  readonly streamIdleMs?: number;
+  /** How long a result's stream waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
+  readonly streamWaitMs?: number;
+  /**
+   * A call to Workspace `workspace` (`ws:<id>`) that marks it used (`noteSessionActivity`), awaited before a call to a
+   * stdio server, which may start that Workspace's Container; false when it did not answer, and the call is then not sent.
+   * Absent: nothing is awaited.
+   */
+  readonly ready?: ((workspace: string) => Promise<boolean>) | undefined;
+  /**
+   * The Session's MCP questions. With them, a call says it can answer a Legacy server's elicitation form
+   * (`ctx.answers`), which waits for the owner (`docs/architecture/mcp-server-requests.md` → Elicitation requests);
+   * without them, every question a server asks is cancelled.
+   */
+  readonly questions?: McpQuestionsService;
+  /**
+   * The Session's Sign-in requests, and the Environment they are for: with both, the build registers `mcp_sign_in_ask` when
+   * its set has a server that can need a sign-in (`docs/architecture/mcp-sign-in.md` → Sign-in requests).
+   */
+  readonly signIns?: McpSignInsService | undefined;
+  readonly environment?: string | undefined;
+  /** How long a signed-in server is waited for to connect, `MCP_SIGN_IN_CONNECT_WAIT_MS` unless a test shortens it. */
+  readonly connectWaitMs?: number | undefined;
+  /** The extension's system prompt sections: the `mcp_servers` section (`./servers.ts`). */
+  readonly sections?: ReadonlyArray<PromptSection>;
+};
+
+/** Who the Session's calls are made for: the Session and its Workspace (`ws:<id>`). */
+export type McpCallOrigin = {
+  readonly session?: string | undefined;
+  readonly workspace?: string | undefined;
+};
+
+/**
+ * What a call says it can answer when the Session has questions to show: a Legacy server's elicitation form, for as long
+ * as the owner has to answer it and a little more, so the Session's own end of the wait comes first.
+ */
+const ELICITATION_ANSWERS: McpAnswers = {
+  elicitation: true,
+  inputWaitMs: MCP_ELICITATION_WAIT_MS + 15_000,
+};
+
+/** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
+const SENT = "mcp.sent";
+
+/** How long the Session waits for a request to `server` since its start or its last progress, in ms. */
+const waitOf = (server: McpBuildServer, slackMs: number): number => {
+  const { timeout } = server.server;
+
+  return (
+    (Predicate.isNumber(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_S) * 1000 + slackMs
+  );
+};
+
+/** A promise that resolves when any of `signals` aborts, and never without one. */
+const abortedBy = (signals: ReadonlyArray<AbortSignal>) =>
+  new Promise<void>((resolve) => {
+    for (const signal of signals) {
+      if (signal.aborted) return resolve();
+
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    }
+  });
+
+/** Whether the call is a script's (`codemode`): a nested call of the task `api` runs. */
+export const isNested = async (api: ToolExecutionApi, context: Context): Promise<boolean> => {
+  const task = await api.getTask(api.taskId, context).catch(() => undefined);
+  // SAFETY: a tool call's task is a `pi.tool` task, whose input is a `ToolTaskInput`.
+  const input = task?.input as ToolTaskInput | undefined;
+
+  return input?.kind === "nested";
+};
+
+/**
+ * The Workspace the calling conversation works in (`ws:<id>`): its own Subagent Workspace, or its nearest ancestor's, else
+ * `fallback`, the Session's. A read that fails is the Session's too.
+ */
+const workspaceOfCall = async (
+  api: Parameters<ToolRegistration["execute"]>[1],
+  context: Parameters<ToolRegistration["execute"]>[2],
+  fallback: string | undefined,
+): Promise<string | undefined> => {
+  try {
+    const state = await api.snapshot(SubagentsDoc, context);
+
+    return (
+      (state === undefined
+        ? undefined
+        : conversationWorkspace(state, api.conversationId)?.object) ?? fallback
+    );
+  } catch {
+    return fallback;
+  }
+};
+
+/** Whether the calling conversation is a subagent's: it reports a needed sign-in to its parent, since only the root asks. */
+const isSubagentCall = async (
+  api: Parameters<ToolRegistration["execute"]>[1],
+  context: Parameters<ToolRegistration["execute"]>[2],
+): Promise<boolean> => {
+  try {
+    const state = await api.snapshot(SubagentsDoc, context);
+    const agent = state === undefined ? undefined : agentOf(state, api.conversationId);
+
+    return agent !== undefined && agent !== "root";
+  } catch {
+    return false;
+  }
+};
+
+/** The context of a request: who asks, for which call, and what the call can answer. */
+export const contextOf = (
+  origin: McpCallOrigin,
+  call: { readonly callId: string; readonly conversation: string },
+  answers?: McpAnswers,
+): McpHostRequestContext => {
+  const ctx: Mutable<McpHostRequestContext> = {
+    origin: "agent",
+    callId: call.callId,
+    conversation: call.conversation,
+  };
+
+  if (origin.session !== undefined) ctx.session = origin.session;
+
+  if (origin.workspace !== undefined) ctx.workspace = origin.workspace;
+
+  if (answers !== undefined) ctx.answers = answers;
+
+  return ctx;
+};
+
+/** What a request is sent for: the tool that sends it, its server and what a result starts from. */
+export type Exchange = {
+  readonly client: McpHostClientService;
+  readonly origin: McpCallOrigin;
+  readonly server: McpBuildServer;
+  readonly options: McpToolOptions;
+  /** The model-facing name of the tool that sends. */
+  readonly tool: string;
+  /** What `details` starts from; every end of the request keeps it. */
+  readonly details: McpDetails;
+  /** A tool's call, which may have run when it was cut, or a resource's request, which never has. */
+  readonly subject: Subject;
+  /**
+   * Whether the request is written to the `mcp.sent` marker before it leaves, so a rerun after a restart that finds it
+   * never sends it again: for a call that may have changed something, not for a read.
+   */
+  readonly remember: boolean;
+};
+
+/** What a successful request makes of its value: whose it is, a model's or a script's, tells whether it may spill. */
+export type OnValue<A> = (
+  value: Schema.Json,
+  completed: McpHostCompleted,
+  kind: "model" | "script",
+) => Promise<A>;
+
+/** What a request came to: what `onValue` made of its value and the questions asked, or the result that says why not. */
+export type Sent<A> =
+  | { readonly ok: true; readonly value: A; readonly asked: Array<McpElicitationDetail> }
+  | { readonly ok: false; readonly result: ToolExecutionResult<JsonValue> };
+
+/**
+ * Sends the request `build` makes (given the Workspace the request is made from and what it can answer) and awaits the
+ * host's answer, and what `onValue` makes of its value. Every other end is a result with `exchange.details`: the
+ * request was not sent, was stopped, failed, was lost, or its stream could not be read. A question the server asked is
+ * noted in that result's `details`, and given with the value (`asked`) for the caller to note in its own.
+ */
+export const send = async <A>(
+  exchange: Exchange,
+  api: ToolExecutionApi,
+  context: Context,
+  build: (
+    workspace: string | undefined,
+    answers: McpAnswers | undefined,
+  ) => McpHostRequest | McpHostResourceRequest,
+  onValue: OnValue<A>,
+): Promise<Sent<A>> => {
+  const { client, origin, server, options, tool, subject, remember } = exchange;
+  const base = exchange.details;
+  const noun = subject === "tool" ? "call" : "request";
+  const failed = (result: ToolExecutionResult<JsonValue>): Sent<A> => ({ ok: false, result });
+
+  // A rerun after a restart: the request was sent once, so the call may have run, and is never sent again.
+  if (remember && (await api.memo<boolean>(SENT, context)) !== undefined) {
+    return failed(interruptedResult(tool, base));
+  }
+
+  // An HTTP server is called from the Session's Workspace, as it always was. A stdio server runs in the Container of the
+  // Workspace that calls it: a conversation in a Subagent Workspace calls for it, not for the Session's, and the
+  // Workspace is marked used before the call that may start the Container.
+  let workspace = origin.workspace;
+
+  if (server.server.type === "stdio") {
+    workspace = await workspaceOfCall(api, context, origin.workspace);
+
+    const ready = workspace !== undefined && (await (options.ready?.(workspace) ?? true));
+
+    if (!ready) {
+      return failed(
+        failedWith(
+          `The Workspace this server runs in did not answer; the ${noun} was not sent`,
+          base,
+        ),
+      );
+    }
+  }
+
+  const wait = waitOf(server, options.slackMs ?? MCP_CALL_SLACK_MS);
+
+  const lost = await Effect.runPromise(
+    pausableDeadline(wait, () => new Error("The Session gave up on the host")),
+  );
+
+  const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
+
+  const { questions } = options;
+
+  // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it.
+  const asking =
+    questions === undefined
+      ? undefined
+      : elicitingHooks({
+          questions,
+          server: server.name,
+          tool,
+          callId: api.callId,
+          conversationId: api.conversationId,
+          signal: context.abortSignal,
+          source: server.source,
+          pause: lost.pause,
+          resume: lost.resume,
+        });
+
+  const hooks: Mutable<McpHostRequestHooks> = {
+    // Stop, or the Session giving up on the host: either way the host cancels the request.
+    untilAborted: () => abortedBy([...stopped, lost.signal]),
+    // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
+    // output text, and gone from the settled call's `details`.
+    onProgress: (progress) =>
+      Effect.runPromise(lost.reset).then(() =>
+        api.details({ ...base, progress }, context).catch(() => undefined),
+      ),
+  };
+
+  if (asking !== undefined) {
+    hooks.onInput = asking.onInput;
+    hooks.onInputEnded = asking.onInputEnded;
+  }
+
+  const request = build(workspace, questions === undefined ? undefined : ELICITATION_ANSWERS);
+
+  // Durable before the request leaves, so a restart finds the call sent.
+  if (remember) await api.memo(SENT, true, context);
+
+  const finished = async (): Promise<Sent<A>> => {
+    const result = await Promise.race([
+      Effect.runPromise(client.request(request, hooks)),
+      abortedBy([lost.signal]).then(() => undefined),
+    ]).finally(() => Effect.runPromise(lost.clear));
+
+    if (result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")) {
+      return failed(hostLostResult(base, subject));
+    }
+
+    if (!Predicate.isTagged(result, "Completed")) {
+      return failed(
+        failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),
+      );
+    }
+
+    // A script's call gets its value whole and no spill.
+    const kind = (await isNested(api, context)) ? "script" : "model";
+
+    const done = async (value: Schema.Json): Promise<Sent<A>> => ({
+      ok: true,
+      value: await onValue(value, result, kind),
+      asked: [],
+    });
+
+    if (result.result.kind !== "stream") return done(result.result.value);
+
+    const limits: Mutable<StreamLimits> = {
+      signal: context.abortSignal,
+      idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+    };
+
+    if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+
+    // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
+    // model or the script gets before the decode slot is given up.
+    return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
+      if (streamed.kind === "aborted") return failed(failedWith(`The ${noun} was stopped`, base));
+
+      return streamed.kind === "value"
+        ? done(streamed.value)
+        : failed(streamFailure(streamed.kind, base, subject));
+    });
+  };
+
+  try {
+    const sent = await finished();
+
+    // The call is over: a question it still waits on is withdrawn first, so `details` tells of it too.
+    if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
+
+    await asking?.idle();
+
+    const asked = asking?.asked ?? [];
+
+    return sent.ok
+      ? { ok: true, value: sent.value, asked }
+      : { ok: false, result: withElicitation(sent.result, asked) };
+  } finally {
+    // However it ended, nothing is left waiting (a second settle is a no-op).
+    if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
+  }
+};
