@@ -198,11 +198,15 @@ export const openSubagentHarness = async (
   options: Partial<SubagentOptions> = {},
   /** Extensions installed beside the subagents and the stand-in coding tools. */
   extensions: readonly Extension[] = [],
-  /** The Session's Subagent Workspaces; without them `workspace: "new"` is refused. */
-  workspaces?: SubagentWorkspaceHost,
-  /** The environment each conversation's tools get; none by default. */
-  env?: HarnessOptions["env"],
+  wiring: {
+    /** The Session's Subagent Workspaces; without them `workspace: "new"` is refused. */
+    readonly workspaces?: SubagentWorkspaceHost;
+    /** The environment each conversation's tools get; none by default. */
+    readonly env?: HarnessOptions["env"];
+  } = {},
 ) => {
+  const { workspaces, env } = wiring;
+
   const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-small" }] });
   const models = createModels();
   const registry = createRegistry();

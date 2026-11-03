@@ -40,24 +40,22 @@ import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
+import { baseDetails } from "./details.ts";
 import { exposureKeys, flagsOf, reachesModel } from "./exposure.ts";
 import {
   failedWith,
   failureResult,
   hostLostResult,
   interruptedResult,
-  type McpDetails,
-  metaWithinBound,
   resultFor,
   streamFailure,
 } from "./result.ts";
 import { scriptSchemaOf } from "./schema.ts";
-import { refusingSpill, spillTo } from "./spill.ts";
+import { spillTo } from "./spill.ts";
 import { readStreamed } from "./stream.ts";
 
 export const extensionName = "mcp";
@@ -71,6 +69,9 @@ const DEFAULT_TIMEOUT_S = 60;
  * `MCP_CONNECT_TIMEOUT_MS`) and 15 s more for the RPCs, so the host answers first whenever it can.
  */
 export const MCP_CALL_SLACK_MS = 3 * MCP_CONNECT_TIMEOUT_MS + 15_000;
+
+/** The longest a result's stream may be quiet while the Session reads it before it is read as lost, in ms. */
+export const MCP_STREAM_IDLE_MS = 30_000;
 
 /**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
@@ -118,38 +119,6 @@ const parametersOf = (tool: ToolDeclaration): TSchema => {
   ) as TSchema;
 };
 
-/** The hints of a tool's annotations that are booleans; the rest of an annotation is not read. */
-const HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const;
-
-/**
- * What every call of `tool` of `server` starts its `details` from: the tool's `title` (its own, else its annotations'),
- * the hints of its annotations, and its `_meta` (`docs/architecture/mcp-in-a-session.md` → Calls and results).
- */
-const baseDetails = (server: string, tool: ToolDeclaration): McpDetails => {
-  const { annotations } = tool;
-  const hints = isJsonObject(annotations) ? annotations : {};
-
-  const title = tool.title ?? (Predicate.isString(hints["title"]) ? hints["title"] : undefined);
-
-  const given = Arr.flatMap(HINTS, (hint) => {
-    const value = hints[hint];
-
-    return Predicate.isBoolean(value) ? [[hint, value] as const] : [];
-  });
-
-  const base: Mutable<McpDetails> = { server, tool: tool.name };
-
-  if (title !== undefined) base.title = title;
-
-  if (given.length > 0) base.hints = Record.fromEntries(given);
-
-  const meta = metaWithinBound(tool._meta);
-
-  if (meta !== undefined) base.meta = meta;
-
-  return base;
-};
-
 /** Whether the call is a script's (`codemode`): a nested call of the task `api` runs. */
 const isNested = async (api: ToolExecutionApi, context: Context): Promise<boolean> => {
   const task = await api.getTask(api.taskId, context).catch(() => undefined);
@@ -174,6 +143,8 @@ const waitOf = (server: McpBuildServer, slackMs: number): number => {
 /** How the tools wait: the slack past a call's timeout, `MCP_CALL_SLACK_MS` unless a test shortens it. */
 export type McpToolOptions = {
   readonly slackMs?: number;
+  /** How long a result's stream may be quiet, `MCP_STREAM_IDLE_MS` unless a test shortens it. */
+  readonly streamIdleMs?: number;
 };
 
 /** A promise that resolves when any of `signals` aborts, and never without one. */
@@ -293,29 +264,28 @@ const toolFor = (
 
       if (!Predicate.isTagged(result, "Completed")) return failureResult(result, base);
 
-      const nested = await isNested(api, context);
-      const spill = nested ? refusingSpill : spillTo(api.env, context);
+      // A script's call gets its value whole and no spill.
+      const spill = (await isNested(api, context)) ? undefined : spillTo(api.env, context);
 
-      if (result.result.kind === "stream") {
-        // Over 1 MiB: the engine's bytes, which the host returned unread, are read here.
-        const streamed = await readStreamed(
-          result.result.body,
-          result.result.bytes,
-          context.abortSignal,
-        );
+      const finish = (value: Schema.Json) =>
+        resultFor(value, result.structuredOutput, { details: base, spill });
 
-        if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
+      if (result.result.kind !== "stream") return finish(result.result.value);
 
-        if (streamed.kind !== "value") return streamFailure(streamed.kind, base);
+      // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
+      // model or the script gets before the decode slot is given up.
+      return readStreamed(
+        result.result.body,
+        result.result.bytes,
+        { signal: context.abortSignal, idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS },
+        async (streamed) => {
+          if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
 
-        return resultFor(streamed.value, result.structuredOutput, { details: base, spill, nested });
-      }
-
-      return resultFor(result.result.value, result.structuredOutput, {
-        details: base,
-        spill,
-        nested,
-      });
+          return streamed.kind === "value"
+            ? finish(streamed.value)
+            : streamFailure(streamed.kind, base);
+        },
+      );
     },
   };
 };

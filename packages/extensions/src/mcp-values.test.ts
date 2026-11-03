@@ -1,12 +1,16 @@
 // The script's schema and value, and the stream of a large result (`docs/architecture/mcp-in-a-session.md` → Calls and
-// results): the output schema relocated under `structuredContent`, text cut largest-first to the nested bound, and the
-// one decode slot of an isolate.
+// results): the output schema relocated under `structuredContent`, text cut largest-first to the nested bound, the
+// head of a result's text and what is bounded in `details`, and the one decode slot of an isolate.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off
 import type { JsonObject } from "@cloudpid/mcp/types";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { boundedMeta, MAX_META_BYTES } from "./mcp/details.ts";
+import { headWithin, MAX_TEXT_BYTES, MAX_TEXT_LINES } from "./mcp/head.ts";
+import { resultFor } from "./mcp/result.ts";
 import { scriptSchemaOf } from "./mcp/schema.ts";
+import type { Spilled } from "./mcp/spill.ts";
 import { DECODE_SLOT_OVER, readStreamed } from "./mcp/stream.ts";
 import { scriptValueOf } from "./mcp/value.ts";
 import { storedBytes } from "./stored-bytes.ts";
@@ -123,12 +127,13 @@ describe("the script's value", () => {
     expect(original.content[0]?.text).toBe("a".repeat(6000));
   });
 
-  it("cuts binary data only once no text is left, and never structuredContent", () => {
+  it("never cuts binary data: a block that does not fit is replaced whole by a line, before any text is cut", () => {
     const value = scriptValueOf(
       {
         content: [
           { type: "text", text: "t".repeat(500) },
           { type: "image", data: "I".repeat(5000), mimeType: "image/png" },
+          { type: "image", data: "J".repeat(200), mimeType: "image/png" },
         ],
         structuredContent: { keep: "k".repeat(1000) },
       },
@@ -137,12 +142,108 @@ describe("the script's value", () => {
 
     const content = contentOf(value);
 
-    // The text goes first, all of it; then the data.
-    expect(content[0]?.text).toBe("\n[cut to fit]");
-    expect(content[1]?.data?.length).toBeLessThan(5000);
+    // The large image is a line; the text and the small image, which fit, are whole.
+    expect(content[0]?.text).toBe("t".repeat(500));
+    expect(content[1]?.text).toBe("[image content omitted: too large for a script's value]");
+    expect(content[1]?.data).toBeUndefined();
+    expect(content[2]?.data).toBe("J".repeat(200));
     expect(storedBytes(value)).toBeLessThanOrEqual(3000);
     expect(value["structuredContent"]).toEqual({ keep: "k".repeat(1000) });
     expect(value["truncated"]).toBe(true);
+  });
+
+  it("drops a block of binary data longer than the whole budget at once, and cuts the text only as far as it must", () => {
+    const value = scriptValueOf(
+      {
+        content: [
+          { type: "resource", resource: { uri: "u", blob: "B".repeat(9000) } },
+          { type: "text", text: "t".repeat(4000) },
+        ],
+      },
+      3000,
+    );
+
+    const content = contentOf(value);
+
+    expect(content[0]?.text).toBe("[resource content omitted: too large for a script's value]");
+    expect(content[1]?.text?.length).toBeLessThan(4000);
+    expect(content[1]?.text?.startsWith("ttt")).toBe(true);
+    expect(storedBytes(value)).toBeLessThanOrEqual(3000);
+  });
+});
+
+describe("the head of a result's text", () => {
+  it("is nothing for a text within 2000 lines and 50 KiB, a trailing newline not a line more", () => {
+    expect(headWithin("short")).toBeUndefined();
+    expect(headWithin("x".repeat(MAX_TEXT_BYTES))).toBeUndefined();
+    expect(headWithin(`${"l\n".repeat(MAX_TEXT_LINES - 1)}l\n`)).toBeUndefined();
+  });
+
+  it("keeps the first 2000 lines of a longer text, and never half a line past the bytes", () => {
+    const lines = headWithin("line\n".repeat(MAX_TEXT_LINES + 5));
+
+    expect(lines?.split("\n")).toHaveLength(MAX_TEXT_LINES);
+
+    const bytes = headWithin(`${"b".repeat(100)}\n`.repeat(1000));
+
+    expect(new TextEncoder().encode(bytes).length).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+    expect(bytes?.endsWith("b".repeat(100))).toBe(true);
+  });
+
+  it("cuts a first line over the bytes by characters, whole multi-byte ones", () => {
+    const head = headWithin("é".repeat(MAX_TEXT_BYTES));
+
+    expect(new TextEncoder().encode(head).length).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+    expect(head).toBe("é".repeat(MAX_TEXT_BYTES / 2));
+  });
+
+  it("is all that a 16 MiB result hands on: the whole text goes to the spill, and the head to the call's result", async () => {
+    const text = "0123456789abcdef\n".repeat(1024 * 1024 - 1024);
+    const spilled: Array<string | Uint8Array> = [];
+
+    const result = await resultFor({ content: [{ type: "text", text }] }, undefined, {
+      details: { server: "s", tool: "t" },
+      spill: async (data): Promise<Spilled> => {
+        spilled.push(data);
+
+        return { path: "/tmp/mcp-1.txt" };
+      },
+    });
+
+    const [block] = result.output ?? [];
+
+    expect(block?.type === "text" ? block.text.length : -1).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+    expect(spilled).toEqual([text]);
+    expect(result.details).toMatchObject({ full_output_path: "/tmp/mcp-1.txt" });
+  });
+});
+
+describe("the _meta that details keep", () => {
+  it("is all of it within its bound", () => {
+    expect(boundedMeta({ a: 1, ui: { resourceUri: "ui://x/y" } })).toEqual({
+      a: 1,
+      ui: { resourceUri: "ui://x/y" },
+    });
+  });
+
+  it("keeps ui whole past the bound, with the other keys that fit, smallest first, and drops the rest", () => {
+    const meta = {
+      big: "b".repeat(MAX_META_BYTES),
+      ui: { resourceUri: "ui://x/y", visibility: ["app"] },
+      small: "s",
+      medium: "m".repeat(1000),
+    };
+
+    expect(boundedMeta(meta)).toEqual({
+      ui: { resourceUri: "ui://x/y", visibility: ["app"] },
+      small: "s",
+      medium: "m".repeat(1000),
+    });
+  });
+
+  it("is nothing for what is not an object", () => {
+    expect(boundedMeta(undefined)).toBeUndefined();
+    expect(boundedMeta("text")).toBeUndefined();
   });
 });
 
@@ -177,6 +278,14 @@ const streamed = (json: string, label: string, order: Array<string>) => {
   };
 };
 
+/** What reading `body` comes to, with `use` the identity; a stream quiet for `idleMs` is lost. */
+const readOf = (
+  body: ReadableStream<Uint8Array>,
+  bytes: number,
+  signal?: AbortSignal,
+  idleMs = 5000,
+) => readStreamed(body, bytes, { signal, idleMs }, async (read) => read);
+
 describe("reading a result's stream", () => {
   it("reads one result over 4 MiB at a time per isolate, and smaller ones at once", async () => {
     const big = JSON.stringify({ content: [{ type: "text", text: "z".repeat(DECODE_SLOT_OVER) }] });
@@ -187,9 +296,9 @@ describe("reading a result's stream", () => {
     const small = streamed('{"content":[]}', "small", order);
 
     const answers = await Promise.all([
-      readStreamed(first.body, first.bytes, undefined),
-      readStreamed(second.body, second.bytes, undefined),
-      readStreamed(small.body, small.bytes, undefined),
+      readOf(first.body, first.bytes),
+      readOf(second.body, second.bytes),
+      readOf(small.body, small.bytes),
     ]);
 
     // The second big one starts only once the first has ended; the small one waits for neither.
@@ -209,11 +318,84 @@ describe("reading a result's stream", () => {
       },
     });
 
-    const reading = readStreamed(body, 1000, controller.signal);
+    const reading = readOf(body, 1000, controller.signal);
 
     controller.abort();
 
     expect(await reading).toEqual({ kind: "aborted" });
     expect(cancelled).toBe(true);
+  });
+
+  /** A stream that sends nothing and ends only when cancelled. */
+  const silent = () => {
+    const seen = { cancelled: false };
+
+    const body = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => undefined),
+      cancel: () => {
+        seen.cancelled = true;
+      },
+    });
+
+    return { body, seen };
+  };
+
+  it("reads a stream that goes quiet as lost at its idle deadline, and lets it go", async () => {
+    const { body, seen } = silent();
+
+    expect(await readOf(body, 1000, undefined, 30)).toEqual({ kind: "lost" });
+    expect(seen.cancelled).toBe(true);
+  });
+
+  it("gives the slot up when the result is used, not when it is read", async () => {
+    const big = JSON.stringify({ content: [{ type: "text", text: "z".repeat(DECODE_SLOT_OVER) }] });
+    const order: Array<string> = [];
+    const first = streamed(big, "first", order);
+    const second = streamed(big, "second", order);
+    const used = Promise.withResolvers<void>();
+
+    const firstRead = readStreamed(first.body, first.bytes, { idleMs: 5000 }, async () => {
+      order.push("first:use");
+      await used.promise;
+      order.push("first:used");
+    });
+
+    const secondRead = readOf(second.body, second.bytes);
+
+    // The first is read and in use; the second has not started to read.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(order).toContain("first:use");
+    expect(order).not.toContain("second:start");
+
+    used.resolve();
+    await Promise.all([firstRead, secondRead]);
+
+    expect(order.indexOf("second:start")).toBeGreaterThan(order.indexOf("first:used"));
+  });
+
+  it("ends a wait for the slot at Stop at once, without waiting for the holder, and keeps the line in order", async () => {
+    const order: Array<string> = [];
+    const holder = silent();
+    const stopped = new AbortController();
+    const waiting = silent();
+    const last = streamed(JSON.stringify({ content: [] }), "last", order);
+
+    const holding = readOf(holder.body, DECODE_SLOT_OVER + 1, undefined, 400);
+    const stopping = readOf(waiting.body, DECODE_SLOT_OVER + 1, stopped.signal);
+    const behind = readOf(last.body, DECODE_SLOT_OVER + 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    stopped.abort();
+
+    // The waiter answers while the holder is still reading, and lets its stream go.
+    expect(await stopping).toEqual({ kind: "aborted" });
+    expect(waiting.seen.cancelled).toBe(true);
+    expect(holder.seen.cancelled).toBe(false);
+    // The one behind it still waits for the holder.
+    expect(order).toEqual([]);
+
+    expect(await holding).toEqual({ kind: "lost" });
+    expect(await behind).toMatchObject({ kind: "value" });
+    expect(order[0]).toBe("last:start");
   });
 });

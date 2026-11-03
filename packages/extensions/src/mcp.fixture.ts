@@ -74,7 +74,7 @@ export const codemodeWith = (namespaces: ReadonlyArray<CodemodeNamespace>) =>
 /** A Harness with `tool_search` and `codemode`, whose MCP tools the test installs as the Session's reinstall does. */
 export const open = async (
   script: Parameters<typeof openSubagentHarness>[0],
-  env?: Parameters<typeof openSubagentHarness>[4],
+  env?: NonNullable<Parameters<typeof openSubagentHarness>[3]>["env"],
 ) => {
   const session = await openSubagentHarness(
     script,
@@ -85,8 +85,7 @@ export const open = async (
       ),
       codemodeWith([]),
     ],
-    undefined,
-    env,
+    env === undefined ? {} : { env },
   );
 
   /** What a reinstall of `tools` gives, installed with `codemode` and `tool-search` together, as the Session does. */

@@ -1,7 +1,8 @@
 // The value a script gets for a call of an MCP tool (`docs/architecture/mcp-in-a-session.md` → Calls and results, The
 // script value): the `tools/call` result as the server sent it, without `_meta`, with the text in `content` cut
 // largest-first to fit a nested call's value (`MAX_NESTED_STRUCTURED_OUTPUT_BYTES`, one row of storage), and
-// `truncated: true` when anything was cut.
+// `truncated: true` when anything was cut. Binary data (an image's `data`, a blob) is never cut, since half of a base64
+// string is no image: a block that does not fit is replaced whole by a line that says so.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain walks over JSON.
 import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
@@ -20,6 +21,12 @@ const HEADROOM_BYTES = 4 * 1024;
 
 /** The weight a script's value may have: the nested bound less its headroom. */
 export const SCRIPT_VALUE_BUDGET = MAX_NESTED_STRUCTURED_OUTPUT_BYTES - HEADROOM_BYTES;
+
+/**
+ * The weight of the value a model's call gives: the model never sees it, and pi-durable only checks it against the
+ * tool's schema, so it keeps a little of the text and a large result does not weigh twice in memory.
+ */
+export const MODEL_VALUE_BUDGET = 4 * 1024;
 
 /** A string of a content block a cut may shorten: where it lives, what it holds now, and whether it is binary data. */
 type Cell = {
@@ -61,12 +68,21 @@ const cellsOf = (index: number, block: Schema.Json): ReadonlyArray<Cell> => {
   return [...own, ...embedded];
 };
 
-/** `content` with the cells' texts put back. */
+/** What replaces a binary block that does not fit. */
+const omitted = (block: Schema.Json): Schema.Json => ({
+  type: "text",
+  text: `[${isJsonObject(block) && Predicate.isString(block["type"]) ? block["type"] : "binary"} content omitted: too large for a script's value]`,
+});
+
+/** `content` with the cells' texts put back, and the blocks in `dropped` replaced by a line. */
 const withCells = (
   content: ReadonlyArray<Schema.Json>,
   cells: ReadonlyArray<Cell>,
+  dropped: ReadonlySet<number>,
 ): ReadonlyArray<Schema.Json> =>
   Arr.map(content, (block, index) => {
+    if (dropped.has(index)) return omitted(block);
+
     const mine = cells.filter((cell) => cell.block === index);
 
     if (mine.length === 0 || !isJsonObject(block)) return block;
@@ -100,8 +116,9 @@ const valueWith = (result: JsonObject, content: ReadonlyArray<Schema.Json>, trun
 /**
  * The value a script gets from `result` (a `tools/call` result as the server sent it): its `content`,
  * `structuredContent` and `isError`, with `_meta` dropped, and the text cut to `budget` stored bytes when it weighs more.
- * Text is cut largest-first, binary data (an image, a blob) only once no text is left. `structuredContent` is never
- * cut: a value whose `structuredContent` alone is over the budget stays so, and `ResultBounds` refuses it.
+ * Text is cut largest-first; binary data is never cut: when the blocks of an image or a blob alone would not fit, the
+ * largest are replaced whole by a line, before any text is cut. `structuredContent` is never cut: a value whose
+ * `structuredContent` alone is over the budget stays so, and `ResultBounds` refuses it.
  */
 export const scriptValueOf = (
   result: JsonObject,
@@ -111,38 +128,64 @@ export const scriptValueOf = (
     ? result["content"]
     : [];
 
-  // A string longer than the whole budget is cut to its characters first, which keeps what follows cheap.
-  const cells = Arr.map(
-    Arr.flatMap(content, (block, index) => cellsOf(index, block)),
-    (cell) => (cell.text.length > budget ? { ...cell, text: cell.text.slice(0, budget) } : cell),
+  const all = Arr.flatMap(content, (block, index) => cellsOf(index, block));
+
+  // A text longer than the whole budget is cut to its characters first, which keeps what follows cheap.
+  let current = Arr.map(all, (cell) =>
+    !cell.binary && cell.text.length > budget
+      ? { ...cell, text: cell.text.slice(0, budget) }
+      : cell,
   );
 
-  let cut = Arr.some(
-    Arr.flatMap(content, (block, index) => cellsOf(index, block)),
-    (cell) => cell.text.length > budget,
+  let cut = Arr.some(all, (cell) => !cell.binary && cell.text.length > budget);
+
+  // A block of binary data longer than the whole budget never fits.
+  const dropped = new Set<number>(
+    Arr.flatMap(all, (cell) => (cell.binary && cell.text.length > budget ? [cell.block] : [])),
   );
 
-  let current = cells;
-  let size = storedBytes(valueWith(result, withCells(content, current), cut));
+  const sizeOf = (cells: ReadonlyArray<Cell>) =>
+    storedBytes(valueWith(result, withCells(content, cells, dropped), cut || dropped.size > 0));
 
-  // The flag that says text was cut weighs too: a value over the budget is measured with it.
+  // What the value weighs with no text at all: more than the budget means binary data has to go, the largest block first.
+  const blank = () => Arr.map(current, (cell) => (cell.binary ? cell : { ...cell, text: "" }));
+
+  for (;;) {
+    if (sizeOf(blank()) <= budget) break;
+
+    const left = Arr.filter(current, (cell) => cell.binary && !dropped.has(cell.block));
+
+    const largest = Arr.head(
+      Arr.sort(left, Order.flip(Order.mapInput(Order.Number, (cell: Cell) => cell.text.length))),
+    );
+
+    if (Option.isNone(largest)) break;
+
+    dropped.add(largest.value.block);
+  }
+
+  cut ||= dropped.size > 0;
+
+  let size = sizeOf(current);
+
+  // The flag that says something was cut weighs too: a value over the budget is measured with it.
   if (size > budget && !cut) {
     cut = true;
-    size = storedBytes(valueWith(result, withCells(content, current), cut));
+    size = sizeOf(current);
   }
 
   const spent = new Set<number>();
 
   while (size > budget) {
     const open = Arr.flatMap(current, (cell, position): ReadonlyArray<Choice> =>
-      spent.has(position) || cell.text === "" ? [] : [{ cell, position }],
+      spent.has(position) || cell.binary || dropped.has(cell.block) || cell.text === ""
+        ? []
+        : [{ cell, position }],
     );
-
-    const text = Arr.filter(open, ({ cell }) => !cell.binary);
 
     const largest = Arr.head(
       Arr.sort(
-        text.length > 0 ? text : open,
+        open,
         Order.flip(Order.mapInput(Order.Number, ({ cell }: Choice) => cell.text.length)),
       ),
     );
@@ -161,5 +204,5 @@ export const scriptValueOf = (
     cut = true;
   }
 
-  return valueWith(result, withCells(content, current), cut);
+  return valueWith(result, withCells(content, current, dropped), cut);
 };

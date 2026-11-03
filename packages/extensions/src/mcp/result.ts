@@ -7,7 +7,6 @@ import {
   mayHaveRun,
   type McpHostCompleted,
   type McpHostRequestResult,
-  type McpProgress,
   type McpStructuredOutput,
 } from "@cloudpid/mcp/types";
 import type { JsonValue } from "@earendil-works/chord";
@@ -20,48 +19,22 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { storedBytes } from "../stored-bytes.ts";
 import { type ModelContent, modelContent } from "./blocks.ts";
-import type { Spill } from "./spill.ts";
-import { scriptValueOf } from "./value.ts";
+import type { McpDetails } from "./details.ts";
+import {
+  type Ended,
+  engineLostEnd,
+  RESULT_LIMIT_BYTES,
+  tooLargeEnd,
+  unreadableEnd,
+} from "./ended.ts";
+import { headWithin } from "./head.ts";
+import { type Spill, refusingSpill } from "./spill.ts";
+import { MODEL_VALUE_BUDGET, SCRIPT_VALUE_BUDGET, scriptValueOf } from "./value.ts";
 
 /** `value` as the `JsonValue` a result carries: the two describe the same values, `Schema.Json`'s arrays only read-only. */
 // SAFETY: a `Schema.Json` is JSON; its arrays are only read-only where `JsonValue`'s are mutable.
 const jsonOf = (value: Schema.Json): JsonValue => value as JsonValue;
-
-/** The four hints of a tool's annotations, which the card shows as badges; they are untrusted and gate nothing. */
-export type McpHints = {
-  readonly readOnlyHint?: boolean;
-  readonly destructiveHint?: boolean;
-  readonly idempotentHint?: boolean;
-  readonly openWorldHint?: boolean;
-};
-
-/**
- * What an MCP tool's call keeps in `details`. `error` and `cut` say how a call that has no result ended: `cut` that the
- * Session's end (`host_lost`) or the host's end (`engine_lost`) of the call was lost, so it may have run.
- */
-export type McpDetails = {
-  readonly server: string;
-  readonly tool: string;
-  readonly title?: string;
-  readonly hints?: McpHints;
-  readonly meta?: { readonly [key: string]: JsonValue };
-  readonly full_output_path?: string;
-  readonly progress?: McpProgress;
-  readonly error?: "too_large" | "invalid_structured_output";
-  readonly cut?: "host_lost" | "engine_lost";
-};
-
-/** How much `meta` the card keeps of a tool's `_meta` (stored); a larger one is left out. */
-export const MAX_META_BYTES = 16 * 1024;
-
-/** The most text the model is given of one result before pi-durable cuts it: its default limits, which it does not export. */
-const MAX_TEXT_BYTES = 50 * 1024;
-
-const MAX_TEXT_LINES = 2000;
-
-const MiB = 1024 * 1024;
 
 /** A `tools/call` result as far as the Session reads it; `structuredContent` is read as the server sent it. */
 const CallToolValue = Schema.Struct({
@@ -75,10 +48,8 @@ const decodeCallTool = Schema.decodeUnknownOption(CallToolValue);
 export type McpResultContext = {
   /** The details the call starts from: its tool's `server`, `tool`, `title`, `hints` and `meta`. */
   readonly details: McpDetails;
-  /** Writes a Result Spill; for a script's call, which holds the whole value, one that saves nothing. */
-  readonly spill: Spill;
-  /** Whether the call is a script's (`codemode`): it gets its value, and no spill. */
-  readonly nested: boolean;
+  /** Writes a Result Spill; none for a script's call (`codemode`), which gets its value whole and no spill. */
+  readonly spill: Spill | undefined;
 };
 
 /** A call that ended without a result: its message, as an error the model reads. */
@@ -93,20 +64,12 @@ export const failedWith = (
 
 const textOf = (text: string): TextContent => ({ type: "text", text });
 
-/** Whether the model-facing `text` is more than a result may show: over pi-durable's byte or line limit. */
-const overLimits = (text: string): boolean =>
-  new TextEncoder().encode(text).length > MAX_TEXT_BYTES ||
-  text.split("\n").length > MAX_TEXT_LINES;
-
-/** The text blocks of `content` as one, before the images, when together they are over what a result may show. */
-const joinedOverLimits = (content: ReadonlyArray<ModelContent>) => {
-  const joined = Arr.join(
+/** The text blocks of `content` as one text, in order. */
+const textsOf = (content: ReadonlyArray<ModelContent>): string =>
+  Arr.join(
     Arr.flatMap(content, (block) => (block.type === "text" ? [block.text] : [])),
     "\n",
   );
-
-  return overLimits(joined) ? Option.some(joined) : Option.none();
-};
 
 /** pi's message for a failed call that says nothing. */
 const failedLine = (details: McpDetails): string =>
@@ -118,9 +81,10 @@ const invalidMessage = (structured: Extract<McpStructuredOutput, { valid: false 
 
 /**
  * A `tools/call` result as the model and scripts get it. The model gets the content as text and images, or the
- * `structuredContent` as JSON when there is none; text over pi-durable's limits keeps its head and goes whole to a Result
- * Spill, and binary data goes to one too. A script gets the whole result as its value (`./value.ts`). The engine's check
- * of `structuredContent` against the tool's `outputSchema` (`structured`) decides whether the value is given: when it is
+ * `structuredContent` as JSON when there is none; text over the limits (`./head.ts`) is cut to its head here, so what
+ * goes on to pi-durable and its hooks is never the whole of a large result, and goes whole to a Result Spill; binary data
+ * goes to one too. A script gets the whole result as its value (`./value.ts`) and no spill. The engine's check of
+ * `structuredContent` against the tool's `outputSchema` (`structured`) decides whether the value is given: when it is
  * invalid there is none, so a script's call fails with `invalid_structured_output` and the model's keeps its text.
  */
 export const resultFor = async (
@@ -130,13 +94,13 @@ export const resultFor = async (
 ): Promise<ToolExecutionResult<JsonValue>> => {
   const decoded = decodeCallTool(value);
 
-  if (Option.isNone(decoded) || !isJsonObject(value)) {
-    return failedWith("The server answered with a result this build cannot read", call.details);
-  }
+  if (Option.isNone(decoded) || !isJsonObject(value))
+    return failedWith(unreadableEnd.message, call.details);
 
   const { content, isError = false } = decoded.value;
   const { structuredContent } = value;
-  const mapped = await modelContent(content, call.spill);
+  const nested = call.spill === undefined;
+  const mapped = await modelContent(content, call.spill ?? refusingSpill);
   const details: Mutable<McpDetails> = { ...call.details };
   const diagnostics: Array<ToolDiagnostic> = [];
 
@@ -155,28 +119,31 @@ export const resultFor = async (
         ? base
         : [textOf("")];
 
-  const over = call.nested ? Option.none() : joinedOverLimits(shown);
+  const whole = textsOf(shown);
+  const head = headWithin(whole);
   let output: ReadonlyArray<ModelContent> = shown;
 
-  if (Option.isSome(over)) {
-    const saved = await call.spill(over.value, ".txt");
+  if (head !== undefined) {
+    // The text as its head in one block; the images follow.
+    output = [textOf(head), ...Arr.filter(shown, (block) => block.type === "image")];
 
-    // The text as one block, so pi-durable keeps its head; the images follow.
-    output = [textOf(over.value), ...Arr.filter(shown, (block) => block.type === "image")];
+    if (call.spill !== undefined) {
+      const saved = await call.spill(whole, ".txt");
 
-    if ("path" in saved) {
-      details.full_output_path = saved.path;
-      diagnostics.push({
-        severity: "info",
-        code: "full_output",
-        message: `Full output: ${saved.path}`,
-      });
-    } else {
-      diagnostics.push({
-        severity: "warn",
-        code: "full_output",
-        message: `Could not save the full output: ${saved.reason}`,
-      });
+      if ("path" in saved) {
+        details.full_output_path = saved.path;
+        diagnostics.push({
+          severity: "info",
+          code: "full_output",
+          message: `Full output: ${saved.path}`,
+        });
+      } else {
+        diagnostics.push({
+          severity: "warn",
+          code: "full_output",
+          message: `Could not save the full output: ${saved.reason}`,
+        });
+      }
     }
   }
 
@@ -186,14 +153,20 @@ export const resultFor = async (
 
   if (structured?.valid === false) {
     details.error = "invalid_structured_output";
-    diagnostics.push({
-      // A script's call fails with it; the model's call keeps its text and is only told.
-      severity: call.nested ? "error" : "warn",
-      code: "invalid_structured_output",
-      message: invalidMessage(structured),
-    });
+
+    // A script's call fails with the error, saying why; pi-durable reports a model's call, which keeps its text and loses the value.
+    if (nested) {
+      result.isError = true;
+      diagnostics.push({
+        severity: "error",
+        code: "invalid_structured_output",
+        message: invalidMessage(structured),
+      });
+    }
   } else {
-    result.structuredOutput = jsonOf(scriptValueOf(value));
+    result.structuredOutput = jsonOf(
+      scriptValueOf(value, nested ? SCRIPT_VALUE_BUDGET : MODEL_VALUE_BUDGET),
+    );
   }
 
   if (diagnostics.length > 0) result.diagnostics = diagnostics;
@@ -202,59 +175,55 @@ export const resultFor = async (
 };
 
 /** What a call that ended without a result says, and what `details` records of how. */
-const describeError = (error: Parameters<typeof mayHaveRun>[0]) =>
+const describeError = (error: Parameters<typeof mayHaveRun>[0]): Ended =>
   Match.value(error).pipe(
-    Match.tag("Cut", (cut) => ({
-      message: cut.mayHaveRun
+    Match.tag("Cut", (cut): Ended => {
+      const message = cut.mayHaveRun
         ? `The call was cut before its answer arrived; it may or may not have run. ${cut.message}`
-        : cut.message,
-      cut: cut.lost === "engine" ? ("engine_lost" as const) : undefined,
-      error: undefined,
-    })),
-    Match.tag("TooLarge", (large) => ({
-      message: `The tool's result was over ${large.limit / MiB} MiB and was dropped; the tool may have run.`,
-      cut: undefined,
-      error: "too_large" as const,
-    })),
-    Match.tag("TimedOut", (timed) => ({
+        : cut.message;
+
+      return cut.lost === "engine" ? { message, cut: engineLostEnd.cut } : { message };
+    }),
+    Match.tag("TooLarge", (large) => tooLargeEnd(large.limit)),
+    Match.tag("TimedOut", (timed): Ended => ({
       message: `The call timed out: ${timed.message}. It may or may not have run.`,
-      cut: undefined,
-      error: undefined,
     })),
-    Match.orElse((other) => ({
+    Match.orElse((other): Ended => ({
       message: mayHaveRun(other, "tools/call")
         ? `${other.message} It may or may not have run.`
         : other.message,
-      cut: undefined,
-      error: undefined,
     })),
   );
+
+/** `details` of a call that `ended` without a result, and what the model reads. */
+const endedWith = (ended: Ended, details: McpDetails): ToolExecutionResult<JsonValue> => {
+  const kept: Mutable<McpDetails> = { ...details };
+
+  if (ended.cut !== undefined) kept.cut = ended.cut;
+
+  if (ended.error !== undefined) kept.error = ended.error;
+
+  return failedWith(ended.message, kept);
+};
 
 /** What the model reads for a request that ended without a result, with `details` saying how it ended. */
 export const failureResult = (
   result: Exclude<McpHostRequestResult, McpHostCompleted>,
   details: McpDetails,
-): ToolExecutionResult<JsonValue> => {
-  if (!Predicate.isTagged(result, "CallFailed")) return failedWith(result.message, details);
-
-  const { message, cut, error } = describeError(result.error);
-  const ended: Mutable<McpDetails> = { ...details };
-
-  if (cut !== undefined) ended.cut = cut;
-
-  if (error !== undefined) ended.error = error;
-
-  return failedWith(message, ended);
-};
+): ToolExecutionResult<JsonValue> =>
+  Predicate.isTagged(result, "CallFailed")
+    ? endedWith(describeError(result.error), details)
+    : failedWith(result.message, details);
 
 /** What the model reads when the Session's end of a call was lost: it may have run (`details.cut: "host_lost"`). */
 export const hostLostResult = (details: McpDetails): ToolExecutionResult<JsonValue> =>
-  failedWith(
-    "The MCP host was lost before the call's answer arrived; it may or may not have run.",
+  endedWith(
     {
-      ...details,
+      message:
+        "The MCP host was lost before the call's answer arrived; it may or may not have run.",
       cut: "host_lost",
     },
+    details,
   );
 
 /**
@@ -270,35 +239,15 @@ export const interruptedResult = (
     details,
   );
 
-/** What the model reads of a result whose stream could not be read. */
-export const streamFailure = (
-  kind: "too_large" | "lost" | "unreadable",
-  details: McpDetails,
-): ToolExecutionResult<JsonValue> => {
-  switch (kind) {
-    case "too_large":
-      return failedWith(
-        "The tool's result was over 16 MiB and was dropped; the tool may have run.",
-        {
-          ...details,
-          error: "too_large",
-        },
-      );
-    case "lost":
-      return failedWith(
-        "The tool's result was lost on its way from the MCP engine; the tool may have run.",
-        { ...details, cut: "engine_lost" },
-      );
-    case "unreadable":
-      return failedWith("The server answered with a result this build cannot read", details);
-  }
-};
+/** How each way a result's stream failed ended. */
+const STREAM_ENDS = {
+  too_large: tooLargeEnd(RESULT_LIMIT_BYTES),
+  lost: engineLostEnd,
+  unreadable: unreadableEnd,
+} as const satisfies Record<"too_large" | "lost" | "unreadable", Ended>;
 
-/** How much of `meta` a card keeps: all of it within `MAX_META_BYTES`, else none. */
-export const metaWithinBound = (
-  meta: Schema.Json | undefined,
-): { readonly [key: string]: JsonValue } | undefined =>
-  // SAFETY: a JSON object, whose values `JsonValue` describes.
-  isJsonObject(meta) && storedBytes(meta) <= MAX_META_BYTES
-    ? (meta as { readonly [key: string]: JsonValue })
-    : undefined;
+/** What the model reads of a result whose stream could not be read: the same ends as the engine's, by the same words. */
+export const streamFailure = (
+  kind: keyof typeof STREAM_ENDS,
+  details: McpDetails,
+): ToolExecutionResult<JsonValue> => endedWith(STREAM_ENDS[kind], details);

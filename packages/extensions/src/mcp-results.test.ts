@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { DOCS, detailsOf, open, results, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools, mcpExtension } from "./mcp.ts";
+import type { McpToolOptions } from "./mcp/tools.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { answer, call, context } from "./subagents/harness.fixture.ts";
 
@@ -68,10 +69,15 @@ const completed = (value: JsonObject, structuredOutput?: McpStructuredOutput) =>
     : McpHostCompleted.make({ result: { kind: "inline", value }, structuredOutput });
 
 /** The model calls `search` `count` times; the host answers with `reply`, and the Session has a file system. */
-const calling = async (reply: Reply, tool: Partial<Tool> = {}, count = 1) => {
+const calling = async (
+  reply: Reply,
+  tool: Partial<Tool> = {},
+  count = 1,
+  options: McpToolOptions = {},
+) => {
   const directory = await mkdtemp(join(tmpdir(), "mcp-results-"));
   const host = fakeMcpHost([server(tool)]);
-  const tools = makeMcpTools(host.client);
+  const tools = makeMcpTools(host.client, undefined, options);
 
   host.answer(reply);
 
@@ -354,16 +360,16 @@ describe("the value a script gets", () => {
       reply,
     );
 
-    expect(only(await printed(nested.session))[1]).toContain(
-      "does not match the tool's outputSchema",
-    );
+    const failed = only(await printed(nested.session))[1];
+
+    expect(failed).toContain("does not match the tool's outputSchema");
+    // pi-durable adds nothing of its own to what the call says.
+    expect(failed).not.toContain("returned no structuredOutput");
 
     const model = await calling(reply);
 
-    // The model keeps its text; the value is dropped, and details say why.
-    expect(await results(model.session)).toEqual([
-      [false, expect.arrayContaining([{ type: "text", text: "count: two" }])],
-    ]);
+    // The model keeps its text and is told nothing else: the value is dropped and logged, and details say why.
+    expect(await results(model.session)).toEqual([[false, [{ type: "text", text: "count: two" }]]]);
     expect(await detailsOf(model.session)).toEqual([
       expect.objectContaining({ error: "invalid_structured_output" }),
     ]);
@@ -496,6 +502,32 @@ describe("a result over 1 MiB", () => {
     expect(isError).toBe(false);
     expect(seen.truncated).toBe(true);
     expect(seen.big).toBeLessThan(1536 * 1024);
+  });
+
+  it("is lost, as the engine's end of the call, when its stream goes quiet past the idle deadline", async () => {
+    const quiet = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => undefined),
+    });
+
+    const { session } = await calling(
+      async () =>
+        McpHostCompleted.make({ result: { kind: "stream", body: quiet, bytes: 2_000_000 } }),
+      {},
+      1,
+      { streamIdleMs: 50 },
+    );
+
+    expect(only(await results(session))).toEqual([
+      true,
+      [
+        {
+          type: "text",
+          text: "The tool's result was lost on its way from the MCP engine; the tool may have run.",
+        },
+      ],
+    ]);
+    expect(await detailsOf(session)).toEqual([expect.objectContaining({ cut: "engine_lost" })]);
+    expect(quiet.locked).toBe(true);
   });
 
   it("is lost, as the engine's end of the call, when its stream breaks, and unreadable when it is not JSON", async () => {

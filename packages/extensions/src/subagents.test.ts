@@ -569,7 +569,7 @@ describe("subagents", () => {
         },
         {},
         [],
-        workspaces.host,
+        { workspaces: workspaces.host },
       );
 
       await session.prompt("Delegate it");
@@ -1020,7 +1020,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
@@ -1075,7 +1075,7 @@ describe("Subagent Workspaces", () => {
           : answer("Noted."),
       {},
       [],
-      host,
+      { workspaces: host },
     );
 
     // Another spawn takes agent-1's ID while its Workspace is made.
@@ -1122,7 +1122,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
@@ -1178,7 +1178,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
@@ -1212,7 +1212,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
@@ -1254,7 +1254,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
@@ -1304,7 +1304,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     // The spare's clone was never switched to the child's branch, and the other Repo was never cloned.
@@ -1359,7 +1359,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
@@ -1385,7 +1385,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
@@ -1440,7 +1440,7 @@ describe("Subagent Workspaces", () => {
       },
       {},
       [],
-      workspaces.host,
+      { workspaces: workspaces.host },
     );
 
     await session.prompt("Delegate it");
