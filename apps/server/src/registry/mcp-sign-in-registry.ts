@@ -118,14 +118,22 @@ const sameScopeSet = (left: string, right: string): boolean => {
   return a.size === b.size && [...a].every((scope) => b.has(scope));
 };
 
-/** What a refresh answers: the token to use, or why there is none. The seam #454 fills. */
-export type Refresh = (
-  row: McpSignInRow,
-  tokens: McpTokens,
-  trigger: "expiry" | "401",
-) => Effect.Effect<McpAccessTokenAnswer>;
+/** What a refresh is asked: the sign-in, its open tokens, and why the access token is wanted anew. */
+export type RefreshRequest = {
+  readonly environment: string;
+  /** The server's name as the host spells it, to find the entry a configured client's secret is read from. */
+  readonly server: string;
+  readonly key: McpSignInKey;
+  readonly row: McpSignInRow;
+  readonly tokens: McpTokens;
+  /** `expiry`: the token is in its last minute; `401`: the server just refused it. */
+  readonly trigger: "expiry" | "401";
+};
 
-/** Until a refresh is built, a token past its time is not served and nothing reaches an authorization server. */
+/** What a refresh answers: the token to use, or why there is none (`mcp-sign-in-refresh.ts`). */
+export type Refresh = (request: RefreshRequest, now: number) => Effect.Effect<McpAccessTokenAnswer>;
+
+/** Without a refresh, a token past its time is not served and nothing reaches an authorization server. */
 const NO_REFRESH: Refresh = () =>
   Effect.succeed({
     status: "unavailable",
@@ -224,14 +232,24 @@ const answerFor = (
           return Effect.succeed<McpAccessTokenAnswer>({ status: "required", reason });
         }
 
-        return (deps.refresh ?? NO_REFRESH)(row, held, expiring ? "expiry" : "401");
+        return (deps.refresh ?? NO_REFRESH)(
+          {
+            environment: input.environment,
+            server: input.server,
+            key,
+            row,
+            tokens: held,
+            trigger: expiring ? "expiry" : "401",
+          },
+          now,
+        );
       },
     }),
   );
 };
 
 /** The `ok` answer for `row`'s `tokens`. */
-const okAnswer = (
+export const okAnswer = (
   row: McpSignInRow,
   tokens: McpTokens,
   key: McpSignInKey,

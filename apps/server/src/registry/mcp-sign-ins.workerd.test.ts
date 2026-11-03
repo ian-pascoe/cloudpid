@@ -511,7 +511,7 @@ describe("mcpAccessToken", () => {
 
       const refreshes: Array<string> = [];
 
-      const refresh: Refresh = (_row, tokens, trigger) => {
+      const refresh: Refresh = ({ tokens, trigger }) => {
         refreshes.push(`${trigger}:${tokens.refresh_token ?? ""}`);
 
         return Effect.succeed({ status: "refresh_failing", reason: "try again shortly" });
@@ -536,7 +536,7 @@ describe("mcpAccessToken", () => {
       expect(refreshes).toEqual([`expiry:${REFRESH}`, `401:${REFRESH}`]);
     }));
 
-  it("serves no token past its time before a refresh is built, and none with no refresh token to ask with", () =>
+  it("serves no token past its time when nothing refreshes it, and none with no refresh token to ask with", () =>
     fresh(async ({ setGlobal, signInWith, ask }) => {
       setGlobal({ sentry: SENTRY, linear: { url: "https://mcp.linear.app/mcp" } });
       await signInWith("sentry", { expiresAt: NOW + 1000 });
@@ -748,7 +748,7 @@ describe("reportMcpAuth", () => {
 
       const refreshes: Array<string> = [];
 
-      const refresh: Refresh = (_row, _tokens, trigger) => {
+      const refresh: Refresh = ({ trigger }) => {
         refreshes.push(trigger);
 
         return Effect.succeed({ status: "refresh_failing", reason: "try again shortly" });

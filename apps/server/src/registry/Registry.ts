@@ -195,6 +195,7 @@ import {
 } from "@cloudpid/mcp/types";
 import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
 import { mcpAccessToken, reportMcpAuth } from "./mcp-sign-in-registry.ts";
+import { mcpTokenRefresh } from "./mcp-sign-in-refresh.ts";
 import {
   completeMcpSignIn,
   confirmMcpSignIn,
@@ -1102,6 +1103,9 @@ export const RegistryLive = Registry.make(
             }),
         };
 
+        // Refreshing is single-flight per sign-in and keeps its backoff for as long as this object lives.
+        const mcpRefresh = mcpTokenRefresh(signInFlow);
+
         /** The Secrets `environment` uses, opened, for the Session DOs and the Builds: a vault that fails says why. */
         const opened = (environment: string) =>
           usedSecrets(store, vault, environment).pipe(
@@ -1833,7 +1837,11 @@ export const RegistryLive = Registry.make(
           mcpAccessToken: (input) =>
             Clock.currentTimeMillis.pipe(
               Effect.flatMap((now) =>
-                mcpAccessToken({ store, signIns: mcpSignIns, vault: mcpVault }, input, now),
+                mcpAccessToken(
+                  { store, signIns: mcpSignIns, vault: mcpVault, refresh: mcpRefresh },
+                  input,
+                  now,
+                ),
               ),
             ),
           reportMcpAuth: (report) =>
