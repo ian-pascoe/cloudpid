@@ -1028,7 +1028,6 @@ export const McpHostPromptGet = Schema.Struct({
 
 export type McpHostPromptGet = typeof McpHostPromptGet.Type;
 
-
 /** `request({ op: "resources/read" })`: read the resource `params.uri` of server `server`, whether or not any list names it. */
 export const McpHostResourceRead = Schema.Struct({
   op: Schema.Literal("resources/read"),
