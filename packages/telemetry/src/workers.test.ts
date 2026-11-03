@@ -6,7 +6,7 @@ import * as Exit from "effect/Exit";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
 import { effectTelemetry } from "./adapter.ts";
-import { workersTracer, type WorkersSpan, type WorkersTracing } from "./workers.ts";
+import { currentTraceId, workersTracer, type WorkersSpan, type WorkersTracing } from "./workers.ts";
 
 /** A recorded native span: what the Workers runtime would hold of one. */
 type Recorded = {
@@ -21,7 +21,7 @@ type Recorded = {
  * A stand-in for `tracing` from `cloudflare:workers`: a span is a child of whichever span is active in the current
  * async context, and `startActiveSpan` makes its span active for the callback only, as the runtime does.
  */
-const fakeTracing = (options: { readonly traced?: boolean } = {}) => {
+const fakeTracing = (options: { readonly traced?: boolean; readonly traceId?: string } = {}) => {
   const active = new AsyncLocalStorage<Recorded>();
   const recorded: Recorded[] = [];
 
@@ -40,6 +40,12 @@ const fakeTracing = (options: { readonly traced?: boolean } = {}) => {
           span.ended = true;
         },
       };
+
+      if (options.traceId !== undefined) {
+        const { traceId } = options;
+
+        native.spanContext = () => ({ traceId });
+      }
 
       return active.run(span, () => callback(native));
     },
@@ -215,5 +221,32 @@ describe("workersTracer", () => {
 
     expect(keys.filter((key) => key.startsWith("event."))).toEqual([]);
     expect(JSON.stringify(keys)).not.toContain("secret-ish");
+  });
+});
+
+describe("currentTraceId", () => {
+  it("is the runtime's trace ID, from any span of the tracer under the active one", async () => {
+    const { tracing } = fakeTracing({ traceId: "native-trace-1" });
+
+    const id = await Effect.runPromise(
+      Effect.withSpan(Effect.withSpan(currentTraceId, "inner"), "outer").pipe(
+        Effect.provideService(Tracer.Tracer, workersTracer(tracing)),
+      ),
+    );
+
+    expect(id).toBe("native-trace-1");
+  });
+
+  it("is Effect's own where the runtime gives none, and none outside any span", async () => {
+    const { tracing } = fakeTracing();
+
+    const id = await Effect.runPromise(
+      Effect.withSpan(currentTraceId, "outer").pipe(
+        Effect.provideService(Tracer.Tracer, workersTracer(tracing)),
+      ),
+    );
+
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(await Effect.runPromise(currentTraceId)).toBeUndefined();
   });
 });

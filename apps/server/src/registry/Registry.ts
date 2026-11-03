@@ -32,6 +32,7 @@ import type {
 import { pageSessions, type SessionsResult } from "./session-page.ts";
 import {
   mcpHandedUnreadable,
+  mcpServerNamesOf,
   mcpServerSetAnswer,
   mcpServerValuesAnswer,
   type McpValuesInput,
@@ -850,6 +851,13 @@ export type RegistryMethods = {
    * kept by the Registry. For the `McpHost` DO only.
    */
   readonly mcpServerValues: (input: McpValuesInput) => Effect.Effect<McpServerValuesAnswer>;
+  /**
+   * The names of `environment`'s MCP servers, in the set's order, or null when it is not registered. Read-only: it
+   * notes nothing as handed. For the main Worker's MCP status reads, which wake a host only for an Environment with servers.
+   */
+  readonly mcpServerNames: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<ReadonlyArray<string> | null>;
   /**
    * What the main Worker is to do: the MCP server sets to push (`environment`'s, every Environment's when undefined)
    * when its hash differs from what its host was last handed, an empty set only after a non-empty one, each with a new
@@ -1768,6 +1776,8 @@ export const RegistryLive = Registry.make(
                 Record.fromEntries(Arr.map(kept, ({ name, value }) => [name, value] as const)),
               );
             }),
+          mcpServerNames: ({ environment }) =>
+            Effect.sync(() => mcpServerNamesOf(store, environment)),
           mcpPending: ({ environment }) =>
             checkHanded.pipe(
               Effect.andThen(Clock.currentTimeMillis),

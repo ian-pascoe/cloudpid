@@ -6,12 +6,19 @@
  */
 // @effect-diagnostics globalFetch:off -- the engine reaches remote servers with the Worker's own `fetch`, under the core's tap.
 import type { McpDeps, RowStore } from "@cloudpid/mcp";
-import type { McpEngineHooks, McpEnginePrior, McpEngineState } from "@cloudpid/mcp/types";
+import type {
+  McpEngineHooks,
+  McpEnginePrior,
+  McpEngineState,
+  McpLogEntry,
+} from "@cloudpid/mcp/types";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { ByteBudget, type Lease, meteredFetch } from "./budget.ts";
+import { callLogs } from "./logs.ts";
 
 /** What a call needs from the Worker around it. */
 export interface CallEnvironment {
@@ -33,6 +40,10 @@ export interface CallContext {
   readonly handedOff: () => boolean;
   /** The rows the call changed. */
   readonly state: () => McpEngineState;
+  /** The server logs the call heard, scrubbed and cut, oldest first, at most 50. */
+  readonly logs: () => ReadonlyArray<McpLogEntry>;
+  /** The response bytes the call read from the server. */
+  readonly bytes: () => number;
 }
 
 /** A row store over one in-memory cell, recording whether the call kept or dropped its row. */
@@ -81,24 +92,37 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   prior: McpEnginePrior,
   hooks: McpEngineHooks,
   env: CallEnvironment,
+  secrets: ReadonlyArray<string> = [],
 ) {
   const budget = yield* ByteBudget;
+  const context = yield* Effect.context<never>();
   const lease = budget.lease();
   const eras = rowCell(prior.era);
   const sessions = rowCell(prior.session);
   const tokens = new Set<string>();
+  let bytes = 0;
+
+  const logs = callLogs({
+    now: () => Effect.runSyncWith(context)(Clock.currentTimeMillis),
+    tokens: () => tokens,
+    secrets,
+  });
 
   const base = {
     fetch: meteredFetch(
       (input, init) => fetch(input, init),
       lease,
       hooks.opened === undefined ? undefined : notifier(hooks.opened),
+      (read) => {
+        bytes += read;
+      },
     ),
     eras: eras.store,
     sessions: sessions.store,
     // A remote server is offered no roots, and the questions it may ask come with later slices.
     capabilities: () => ({}),
     clientInfo: { name: "cloudpid", version: env.version },
+    onLog: logs.hear,
   } satisfies McpDeps;
 
   const deps: McpDeps =
@@ -128,6 +152,8 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
       handed = true;
     },
     handedOff: () => handed,
+    logs: logs.entries,
+    bytes: () => bytes,
   } satisfies CallContext;
 });
 
@@ -140,9 +166,10 @@ export const withCall = Effect.fnUntraced(function* <A, E, R>(
   hooks: McpEngineHooks,
   env: CallEnvironment,
   use: (call: CallContext) => Effect.Effect<A, E, R>,
+  secrets: ReadonlyArray<string> = [],
 ) {
   // Opened uninterruptibly with its release attached, so no interruption can leave the lease held.
-  return yield* Effect.acquireUseRelease(openCall(prior, hooks, env), use, (call, exit) =>
+  return yield* Effect.acquireUseRelease(openCall(prior, hooks, env, secrets), use, (call, exit) =>
     Effect.sync(() => {
       if (Exit.isFailure(exit) || !call.handedOff()) {
         call.lease.release();

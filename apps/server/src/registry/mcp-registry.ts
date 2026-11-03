@@ -58,6 +58,20 @@ export const environmentMcpSet = (
 /** The store as one Environment's servers are resolved from it: Global's document and the Environment's Overrides. */
 export type ResolvedServersStore = DocumentStore & Pick<RegistryStore, "getSettingsOverrides">;
 
+/**
+ * The names of `environment`'s MCP servers, in the set's order, or null when it is not registered. Read-only, unlike the
+ * host's pull: it notes nothing as handed. The main Worker asks before it wakes a host for a status read, so an
+ * Environment with no MCP servers never wakes one (`docs/architecture/mcp-connections.md` → The host object).
+ */
+export const mcpServerNamesOf = (
+  store: McpSetStore,
+  environment: string,
+): ReadonlyArray<string> | null => {
+  const known = environmentMcpSet(store, environment);
+
+  return known === null ? null : Arr.map(known.entries, (entry) => entry.name);
+};
+
 /** The servers of `environment`'s set as `resolveMcpServerSet` resolves them, or null when it is not registered. */
 export const environmentResolvedServers = (
   store: ResolvedServersStore,

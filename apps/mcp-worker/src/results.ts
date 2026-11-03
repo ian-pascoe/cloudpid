@@ -41,7 +41,7 @@ const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json));
  * `text` with every token in `tokens` replaced, as it appears inside a JSON string; longest first, so a token that
  * contains another (an old one and its refresh) leaves no remainder.
  */
-const scrubText = (text: string, tokens: ReadonlySet<string>) => {
+export const scrubText = (text: string, tokens: ReadonlySet<string>) => {
   let scrubbed = text;
 
   for (const token of Arr.sort(

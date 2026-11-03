@@ -15,7 +15,7 @@
  *   runs at most once. The fresh tools and their schema problems, compiled as discovery compiles them, go back to the
  *   host for its catalog, whether the second send completed or failed; so do a `tools/list` request's problems.
  */
-import { connect, type ListKind, type McpConnection } from "@cloudpid/mcp";
+import { connect, type ListKind, type McpConnection, type McpConnectionStats } from "@cloudpid/mcp";
 import {
   Cut,
   type McpCallContext,
@@ -34,6 +34,7 @@ import {
   type McpEngineTargetEncoded,
   type McpError,
   type McpErrorWire,
+  type McpLogEntry,
   McpToolDefinition,
   type McpStructuredOutput,
   type McpToolProblem,
@@ -48,6 +49,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
 import { type CallContext, type CallEnvironment, withCall } from "./call-context.ts";
+import { secretsOf } from "./logs.ts";
 import { type Answer, malformed, scrubError, toEngineValue } from "./results.ts";
 import { Validators, type ValidatorsApi } from "./validators.ts";
 
@@ -129,42 +131,113 @@ const runCall = Effect.fnUntraced(function* <A, R>(
     Effect.orElseSucceed(() => ({})),
   );
 
-  return yield* withCall(rows, input.hooks, input.env, (call) =>
-    Effect.gen(function* () {
-      const outcome = yield* Effect.gen(function* () {
-        const server = yield* Schema.decodeEffect(McpEngineTarget)(input.target).pipe(
-          Effect.mapError(() =>
-            Unsupported.make({ message: "This engine cannot reach that kind of server" }),
-          ),
+  return yield* withCall(
+    rows,
+    input.hooks,
+    input.env,
+    (call) =>
+      Effect.gen(function* () {
+        let wire: (() => McpConnectionStats) | undefined;
+
+        const outcome = yield* Effect.gen(function* () {
+          const server = yield* Schema.decodeEffect(McpEngineTarget)(input.target).pipe(
+            Effect.mapError(() =>
+              Unsupported.make({ message: "This engine cannot reach that kind of server" }),
+            ),
+          );
+
+          const connection = yield* connect(server, call.deps);
+
+          wire = connection.stats;
+
+          return yield* work(connection, call);
+        }).pipe(
+          Effect.scoped,
+          Effect.raceFirst(abortedBy(input.hooks, input.mayHaveRun)),
+          Effect.result,
         );
 
-        const connection = yield* connect(server, call.deps);
+        yield* annotateWire(input.target, wire?.(), call);
 
-        return yield* work(connection, call);
-      }).pipe(
-        Effect.scoped,
-        Effect.raceFirst(abortedBy(input.hooks, input.mayHaveRun)),
-        Effect.result,
-      );
+        if (Result.isSuccess(outcome)) {
+          return { outcome, state: call.state(), logs: call.logs() };
+        }
 
-      if (Result.isSuccess(outcome)) {
-        return { outcome, state: call.state() };
-      }
+        // A stream made before the call failed is never returned, so its lease goes back now.
+        call.lease.release();
 
-      // A stream made before the call failed is never returned, so its lease goes back now.
-      call.lease.release();
-
-      return {
-        outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
-        state: call.state(),
-      };
-    }),
+        return {
+          outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
+          state: call.state(),
+          logs: call.logs(),
+        };
+      }),
+    // A server may echo a header it was sent (a Secret's value) into a log; logs are scrubbed of them.
+    secretsOf(input.target.headers),
   );
 });
 
-const failed = (error: McpErrorWire, state: McpEngineState): McpEngineFailed => ({
+/**
+ * The call's span, with what the call did on the wire (`docs/architecture/mcp-connections.md` → Telemetry): counts and
+ * one status, the server's name and its origin (scheme and host), never a path, header, argument, result or token.
+ */
+type WireAttributes = {
+  "mcp.server": string;
+  "mcp.bytes": number;
+  "mcp.logs": number;
+  "mcp.server.origin"?: string;
+  "mcp.http.responses"?: number;
+  "mcp.http.retries"?: number;
+  "mcp.era_drops"?: number;
+  "mcp.reinitializes"?: number;
+  "mcp.http.status"?: number;
+};
+
+const annotateWire = (
+  target: McpEngineTargetEncoded,
+  wire: McpConnectionStats | undefined,
+  call: CallContext,
+) => {
+  const attributes: WireAttributes = {
+    "mcp.server": target.name,
+    "mcp.bytes": call.bytes(),
+    "mcp.logs": call.logs().length,
+  };
+
+  Option.map(originOf(target.url), (origin) => {
+    attributes["mcp.server.origin"] = origin;
+  });
+
+  if (wire !== undefined) {
+    attributes["mcp.http.responses"] = wire.responses;
+    attributes["mcp.http.retries"] = wire.retries;
+    attributes["mcp.era_drops"] = wire.eraDrops;
+    attributes["mcp.reinitializes"] = wire.reinitializes;
+
+    if (wire.lastStatus !== undefined) attributes["mcp.http.status"] = wire.lastStatus;
+  }
+
+  return Effect.annotateCurrentSpan(attributes);
+};
+
+/** The server's origin, scheme and host only: a URL's path and query may carry what a span must not. */
+const originOf = (url: string) =>
+  Option.map(
+    Option.liftThrowable(() => new URL(url))(),
+    ({ protocol, host }) => `${protocol}//${host}`,
+  );
+
+/** `logs` as the result's gain-only field: absent when the call heard none. */
+const logsField = (logs: ReadonlyArray<McpLogEntry>) => (logs.length === 0 ? {} : { logs });
+
+const failed = (
+  error: McpErrorWire,
+  state: McpEngineState,
+  logs: ReadonlyArray<McpLogEntry> = [],
+): McpEngineFailed => ({
   kind: "failed",
   error,
+  ...logsField(logs),
   state,
 });
 
@@ -187,7 +260,7 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
 ) {
   const validators = yield* Validators;
 
-  const { outcome, state } = yield* runCall(
+  const { outcome, state, logs } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: false },
     (connection) =>
       Effect.gen(function* () {
@@ -230,7 +303,9 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
 
   return yield* encodeResult(
     McpEngineDiscoverResult,
-    Result.isSuccess(outcome) ? { ...outcome.success, state } : failed(outcome.failure, state),
+    Result.isSuccess(outcome)
+      ? { ...outcome.success, ...logsField(logs), state }
+      : failed(outcome.failure, state, logs),
   );
 });
 
@@ -390,7 +465,7 @@ export const request = Effect.fn("mcp.engine.request")(function* (
 
   const req = decoded.value;
 
-  const { outcome, state } = yield* runCall(
+  const { outcome, state, logs } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: req.op === "tools/call" },
     (connection, context): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
       req.op === "tools/call"
@@ -398,7 +473,7 @@ export const request = Effect.fn("mcp.engine.request")(function* (
         : runList(connection, context, req, env, validators),
   );
 
-  const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);
+  const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state, logs);
 
-  return yield* encodeResult(McpEngineRequestResult, { ...result, state });
+  return yield* encodeResult(McpEngineRequestResult, { ...result, ...logsField(logs), state });
 });

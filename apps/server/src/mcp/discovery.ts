@@ -12,6 +12,7 @@
 // failure on the host's side (the engine out of reach or silent) is not the server's: it leaves its state as it was,
 // held back for 30 s. No discovery holds its slot past `DISCOVERY_DEADLINE_MS`: it is then given up the same way.
 // @effect-diagnostics missingPipeableSignature:off -- the scheduler's operations, not combinators.
+import { currentTraceId } from "@cloudpid/telemetry";
 import {
   isJsonObject,
   type JsonObject,
@@ -37,6 +38,7 @@ import * as Semaphore from "effect/Semaphore";
 import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
 import { inventoryRows } from "./inventory.ts";
 import { McpLoadCaps } from "./limits.ts";
+import { recordLogs } from "./logs.ts";
 import { McpRegistryPort } from "./registry-port.ts";
 import {
   currentVersions,
@@ -195,6 +197,22 @@ const storeDiscoveryResult = (
 
     store.applyEngineState(conn, result.state, now);
 
+    yield* Effect.annotateCurrentSpan(
+      Match.value(result).pipe(
+        Match.discriminatorsExhaustive("kind")({
+          failed: () => ({ "mcp.outcome": "failed" }),
+          discovered: (discovered) => ({
+            "mcp.outcome": "discovered",
+            "mcp.era": discovered.era,
+            "mcp.protocol_version": discovered.protocolVersion,
+            "mcp.tools": discovered.tools.length,
+            "mcp.prompts": discovered.prompts.length,
+            "mcp.problems": discovered.problems.length,
+          }),
+        }),
+      ),
+    );
+
     Match.value(result).pipe(
       Match.discriminatorsExhaustive("kind")({
         failed: (failure) =>
@@ -207,6 +225,9 @@ const storeDiscoveryResult = (
         },
       }),
     );
+
+    // What the server said during the discovery: kept in its ring, `warning` and above also a span event.
+    yield* recordLogs(conn, result.logs);
   });
 
 /** `status` put back from `connecting` to the state before it; any other status as it is. */
@@ -222,8 +243,12 @@ const statusBefore = (status: StatusRow | undefined): StatusRow | undefined =>
 /** The message a discovery given up past its deadline leaves. */
 const PAST_DEADLINE = "The discovery did not end in time";
 
-/** Discover one server, single-flight per `conn`, within the host's slots. */
-const discoverOne = (environment: string, view: ServerView) =>
+/**
+ * Discover one server, single-flight per `conn`, within the host's slots. `cause` is the ID of the trace of the
+ * invocation that started it, recorded on the span: a discovery goes on after that invocation, and a span can be neither
+ * re-parented nor linked (`docs/architecture/mcp.md` → Testing and tracing).
+ */
+const discoverOne = (environment: string, view: ServerView, cause: string | undefined) =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const engine = yield* McpEngineClient;
@@ -299,8 +324,34 @@ const discoverOne = (environment: string, view: ServerView) =>
     );
   }).pipe(
     Effect.andThen(refreshVersions),
-    Effect.withSpan("mcp.discover", { attributes: { server: view.server.name } }),
+    Effect.tap(() => annotateEnd(view.server.conn)),
+    Effect.withSpan("mcp.discover", { attributes: discoverAttributes(view, cause) }),
   );
+
+type DiscoverAttributes = { server: string; "mcp.cause_trace_id"?: string };
+
+/** What a discovery's span starts with: the server's name, and the trace that caused it, when known. */
+const discoverAttributes = (view: ServerView, cause: string | undefined) => {
+  const attributes: DiscoverAttributes = { server: view.server.name };
+
+  if (cause !== undefined) attributes["mcp.cause_trace_id"] = cause;
+
+  return attributes;
+};
+
+/** The state a discovery left its server in, and its failures in a row: counts and names, never the error's text. */
+const annotateEnd = (conn: string) =>
+  Effect.gen(function* () {
+    const store = yield* McpHostStore;
+    const status = store.statuses().get(conn);
+
+    if (status === undefined) return;
+
+    yield* Effect.annotateCurrentSpan({
+      "mcp.state": status.state,
+      "mcp.failures": status.failures,
+    });
+  });
 
 /**
  * Give up each discovery of this instance that held its slot past its deadline (its server held back 30 s, as for any
@@ -352,6 +403,8 @@ export const startDue = (environment: string, views: ReadonlyArray<ServerView>, 
 
     if (discovery.halted.value) return;
 
+    // Each discovery goes on after this call, so it records the trace that caused it.
+    const cause = yield* currentTraceId;
     const { lastUsedAt } = store.meta();
     const usedRecently = lastUsedAt !== undefined && now - lastUsedAt < RECENT_USE_MS;
 
@@ -370,7 +423,7 @@ export const startDue = (environment: string, views: ReadonlyArray<ServerView>, 
           discovery.fibers,
           conn,
           discovery.slots
-            .withPermits(1)(Effect.andThen(started, discoverOne(environment, view)))
+            .withPermits(1)(Effect.andThen(started, discoverOne(environment, view, cause)))
             .pipe(
               Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
               Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),

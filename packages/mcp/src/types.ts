@@ -13,8 +13,11 @@ import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { JsonObject } from "./json.ts";
+import { McpLogEntry } from "./log.ts";
 
 export * from "./host.ts";
+
+export * from "./log.ts";
 
 export { isJsonObject, JsonObject } from "./json.ts";
 
@@ -305,6 +308,9 @@ export const McpEngineState = Schema.Struct({
 
 export type McpEngineState = typeof McpEngineState.Type;
 
+/** The logs a call received, oldest first, at most `MCP_LOG_RING`. Gain-only on every result: absent when none came. */
+const EngineLogs = { logs: McpLogEntry.pipe(Schema.Array, Schema.optionalKey) };
+
 /**
  * A tool's definition, as the server listed it and the host keeps it in its catalog: a `tools/call` carries it, since
  * its `inputSchema` gives the `Mcp-Param` headers and its `outputSchema` is what the engine checks `structuredContent`
@@ -344,6 +350,7 @@ export const McpEngineFailed = Schema.Struct({
   kind: Schema.Literal("failed"),
   error: McpErrorWire,
   ...RefreshedTools,
+  ...EngineLogs,
   state: McpEngineState,
 });
 
@@ -380,6 +387,7 @@ export const McpEngineDiscovered = Schema.Struct({
   /** The tools list's cache hint (SEP-2549), for the host's TTL. */
   ttlMs: Schema.optionalKey(Schema.Finite),
   fetchedAt: Schema.Finite,
+  ...EngineLogs,
   state: McpEngineState,
 });
 
@@ -455,6 +463,7 @@ export const McpEngineCompleted = Schema.Struct({
    * `problems` alone, the listed tools' schema problems.
    */
   ...RefreshedTools,
+  ...EngineLogs,
   state: McpEngineState,
 });
 
@@ -471,7 +480,9 @@ export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
 
 /**
  * The callbacks a call carries, passed as RPC stubs that live as long as the caller's invocation (`docs/architecture/
- * mcp.md` → RPC edges). Later slices add `onInput`, `onProgress` and `onLog`.
+ * mcp.md` → RPC edges). Later slices add `onInput` and `onProgress`. There is no `onLog`: a server's logs come back in
+ * the result (`logs`), so a discovery, which passes no hooks, brings them too (`docs/architecture/mcp-connections.md` →
+ * Telemetry).
  */
 export interface McpEngineHooks {
   /**

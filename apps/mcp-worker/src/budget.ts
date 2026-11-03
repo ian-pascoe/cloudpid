@@ -306,10 +306,15 @@ export const makeBudget = (options: BudgetOptions = {}): ByteBudgetApi => {
 
 /**
  * `fetch`, metered against `lease`: each chunk of a POST's response is charged before it is passed on, and a
- * `Content-Length` over 4 MiB takes the large slot before reading. `opened` is told when response headers arrive.
+ * `Content-Length` over 4 MiB takes the large slot before reading. `opened` is told when response headers arrive, and `counted` each chunk's bytes as it is read.
  */
 export const meteredFetch =
-  (fetch: typeof globalThis.fetch, lease: Lease, opened?: () => void): typeof globalThis.fetch =>
+  (
+    fetch: typeof globalThis.fetch,
+    lease: Lease,
+    opened?: () => void,
+    counted?: (bytes: number) => void,
+  ): typeof globalThis.fetch =>
   async (input, init) => {
     const response = await fetch(input, init);
 
@@ -337,6 +342,7 @@ export const meteredFetch =
           return;
         }
 
+        counted?.(chunk.value.byteLength);
         await lease.charge(chunk.value.byteLength);
         controller.enqueue(chunk.value);
       },

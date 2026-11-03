@@ -110,6 +110,17 @@ export interface FakeOptions {
   readonly cancelled?: Array<string>;
   /** Further tools listed last, which answer as `echo` does unless something in front of the server answers first. */
   readonly moreTools?: ReadonlyArray<Tool>;
+  /**
+   * Declares `logging`, and sends these as `notifications/message` with every `tools/call` and every first page of `tools/list`, each only where the client's
+   * level lets it through (Legacy: its `logging/setLevel`; Modern: its `_meta` `logLevel`, none without one).
+   */
+  readonly logs?:
+    | ReadonlyArray<{
+        readonly level: "debug" | "info" | "notice" | "warning" | "error";
+        readonly data: unknown;
+        readonly logger?: string;
+      }>
+    | undefined;
 }
 
 /**
@@ -135,11 +146,23 @@ const untilAborted = (signal: AbortSignal, aborted: () => void) =>
 const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions = {}) => {
   const server = new Server(
     { name: "fake", version: "1.0.0" },
-    { capabilities: { tools: { listChanged: true } }, instructions: "Use the echo tool." },
+    {
+      capabilities:
+        options.logs === undefined
+          ? { tools: { listChanged: true } }
+          : { tools: { listChanged: true }, logging: {} },
+      instructions: "Use the echo tool.",
+    },
   );
 
-  server.setRequestHandler("tools/list", async (request) =>
-    request.params?.cursor === "page-2"
+  server.setRequestHandler("tools/list", async (request, ctx) => {
+    if (request.params?.cursor === undefined) {
+      for (const log of options.logs ?? []) {
+        await ctx.mcpReq.log(log.level, log.data, log.logger);
+      }
+    }
+
+    return request.params?.cursor === "page-2"
       ? {
           tools: [
             ...(options.listMore === true
@@ -148,10 +171,14 @@ const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions
             ...(options.moreTools ?? []),
           ],
         }
-      : { tools: [ECHO_TOOL], nextCursor: "page-2" },
-  );
+      : { tools: [ECHO_TOOL], nextCursor: "page-2" };
+  });
   server.setRequestHandler("tools/call", async (request, ctx) => {
     await sends?.(server);
+
+    for (const log of options.logs ?? []) {
+      await ctx.mcpReq.log(log.level, log.data, log.logger);
+    }
 
     switch (request.params.name) {
       case "big": {

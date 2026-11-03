@@ -1,7 +1,7 @@
 // `McpHost`'s storage (`docs/architecture/mcp-connections.md` → Storage): the migrations, and the store over them,
-// made of three parts that change for different reasons: the set and `mcp_meta` (`set-store.ts`), the statuses
-// (`status-store.ts`), and per connection key `conn` the MCP inventory and the rows the engine keeps (`inventory-
-// store.ts`). Here are what spans them: the wipe, and the pruning after a set apply. What the host holds is what the
+// made of four parts that change for different reasons: the set and `mcp_meta` (`set-store.ts`), the statuses
+// (`status-store.ts`), per connection key `conn` the MCP inventory and the rows the engine keeps (`inventory-
+// store.ts`), and the log ring (`log-store.ts`). Here are what spans them: the wipe, and the pruning after a set apply. What the host holds is what the
 // Registry pushed, `${NAME}` unresolved, so no resolved value is ever here; the rest of the tables (watches, App HTML)
 // come with the slices that use them. Migrations only add, and each shipped one has its digest in
 // `migrations.manifest.ts`. `mcp_sessions.spawn` is unused until the stdio bridge (#460) gives spawn ids.
@@ -10,6 +10,7 @@
 import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect-durable/sqlite";
 import * as Context from "effect/Context";
 import { type InventoryStore, inventoryStore } from "./inventory-store.ts";
+import { type LogStore, logStore } from "./log-store.ts";
 import { type SetStore, setStore } from "./set-store.ts";
 import { type StatusStore, statusStore } from "./status-store.ts";
 import { DAY_MS } from "./time.ts";
@@ -91,6 +92,18 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     sql.exec("ALTER TABLE mcp_meta ADD COLUMN last_used_at INTEGER");
     sql.exec("ALTER TABLE mcp_meta ADD COLUMN sign_ins_revision INTEGER");
   },
+  // 4: per connection key, the last 50 server logs (`seq` rises per `conn`, so the ring's order survives pruning).
+  (sql) => {
+    sql.exec(`CREATE TABLE mcp_logs (
+      conn TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      at INTEGER NOT NULL,
+      level TEXT NOT NULL,
+      logger TEXT,
+      data TEXT NOT NULL,
+      PRIMARY KEY (conn, seq)
+    ) STRICT`);
+  },
 ];
 
 /** How long the inventory of a `conn` that left the set is kept, and how many such `conn`s at most. */
@@ -100,7 +113,8 @@ export const LEFT_INVENTORY_LIMIT = 20;
 
 export type McpHostStoreService = SetStore &
   StatusStore &
-  InventoryStore & {
+  InventoryStore &
+  LogStore & {
     /**
      * Wipe the storage: every table's rows, and the tables, which are made again empty, keeping `revision` as the
      * floor of the sets that may fill it again. Rejects when the storage cannot.
@@ -135,6 +149,7 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
     ...setStore(storage),
     ...statusStore(storage),
     ...inventoryStore(storage),
+    ...logStore(storage),
 
     destroy: async (revision) => {
       await storage.deleteAll();
@@ -165,6 +180,8 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
         );
         // An inventory goes with its status: every discovery that stores one writes one first.
         sql.exec("DELETE FROM mcp_inventories WHERE conn NOT IN (SELECT conn FROM mcp_status)");
+        // So does a ring: it goes with the status of its `conn`, which the discovery that heard it wrote first.
+        sql.exec("DELETE FROM mcp_logs WHERE conn NOT IN (SELECT conn FROM mcp_status)");
       });
     },
   };

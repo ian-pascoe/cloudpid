@@ -28,7 +28,7 @@ declare global {
 }
 
 /** A target on a fake of `kind`, fresh for `key`. */
-const target = (kind: "modern" | "legacy" | "stateful" | "headers", key: string) => ({
+const target = (kind: "modern" | "legacy" | "stateful" | "headers" | "logging", key: string) => ({
   kind: "http" as const,
   conn: `conn-${key}`,
   name: key,
@@ -111,6 +111,52 @@ describe("discover", () => {
     );
 
     expect(discovered).toMatchObject({ kind: "discovered", era: "modern" });
+  });
+});
+
+describe("server logs", () => {
+  const logging = (key: string) => ({
+    ...target("logging", key),
+    headers: { authorization: "Bearer sk-echoed-secret-0123456789" },
+  });
+
+  it("come back in a discovery that passed no hooks: warning and above, cut to 2 KiB, scrubbed", async () => {
+    const discovered = Schema.decodeSync(McpEngineDiscoverResult)(
+      await env.MCP_ENGINE.discover(logging("logs-discover"), {}, {}),
+    );
+
+    if (discovered.kind !== "discovered") throw new Error(JSON.stringify(discovered));
+
+    expect(discovered.logs?.map((log) => [log.level, log.logger])).toEqual([
+      ["warning", "auth"],
+      ["error", undefined],
+    ]);
+    expect(discovered.logs?.[0]?.data).toBe("rejected [REDACTED]");
+    expect(discovered.logs?.[1]?.data).toHaveLength(2048);
+    expect(JSON.stringify(discovered)).not.toContain("sk-echoed-secret");
+  });
+
+  it("come back with a call's result", async () => {
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        logging("logs-call"),
+        {},
+        { op: "tools/call", tool: ECHO, arguments: { text: "hi" }, ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(result.kind).toBe("complete");
+    expect(result.logs?.map((log) => log.level)).toEqual(["warning", "error"]);
+    expect(JSON.stringify(result)).not.toContain("sk-echoed-secret");
+  });
+
+  it("are absent when the server declares no logging", async () => {
+    const discovered = Schema.decodeSync(McpEngineDiscoverResult)(
+      await env.MCP_ENGINE.discover(target("modern", "logs-none"), {}, {}),
+    );
+
+    expect(discovered).not.toHaveProperty("logs");
   });
 });
 
