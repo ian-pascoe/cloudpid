@@ -224,7 +224,7 @@ const readApp = (
     const send = (request: McpEngineRequest) =>
       sendToEngine({ resolved, reached, request, hooks, mayHaveRun: false, priority });
 
-    const answer = yield* send({ op: "resources/read", uri, ctx: callCtx });
+    const answer = yield* send({ op: "resources/read", uri, app: true, ctx: callCtx });
 
     if (Result.isFailure(answer)) return Result.fail(answer.failure);
 

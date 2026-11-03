@@ -1,13 +1,13 @@
 // The `mcp_servers` section's listing, intro and notice (`docs/architecture/mcp-in-a-session.md` → The prompt cache and
 // the `mcp_servers` section): which servers it lists, how each line reads, its caps and its states.
 // @effect-diagnostics preferEffectArray:off
+import { MCP_RESOURCE_TOOL_NAMES } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_LISTING,
   type McpIntroFeatures,
   introFeaturesOf,
   listingHashOfSection,
-  MCP_RESOURCE_TOOLS,
   MAX_SECTION_LENGTH,
   MAX_SUMMARY_LENGTH,
   mcpListing,
@@ -250,7 +250,7 @@ describe("the mcp_servers section and its notice", () => {
       resourceTools: false,
       signIn: true,
     });
-    expect(introFeaturesOf([...MCP_RESOURCE_TOOLS, MCP_SIGN_IN_TOOL])).toEqual(ALL);
+    expect(introFeaturesOf([...MCP_RESOURCE_TOOL_NAMES, MCP_SIGN_IN_TOOL])).toEqual(ALL);
   });
 
   it("is wrapped in its tag, and the hash of its listing is the listing's, whichever intro it has", () => {

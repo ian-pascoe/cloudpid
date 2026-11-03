@@ -46,6 +46,7 @@ import type * as Types from "effect/Types";
 import { authorizedDiscovery, type DiscoveryAccess } from "./discovery-auth.ts";
 import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
 import { inventoryRows } from "./inventory.ts";
+import { McpListCache } from "./list-cache.ts";
 import { McpLoadCaps } from "./limits.ts";
 import { recordLogs } from "./logs.ts";
 import { McpRegistryPort } from "./registry-port.ts";
@@ -116,6 +117,7 @@ export type McpDiscoveryServices =
   | McpRegistryPort
   | McpDiscovery
   | McpLoadCaps
+  | McpListCache
   | McpProcessEnded
   | McpTokens;
 

@@ -59,7 +59,11 @@ const until = async (check: () => Promise<boolean>) => {
   }
 };
 
-const setup = (server = DOCS, waitMs?: number) => {
+const setup = (
+  server = DOCS,
+  waitMs?: number,
+  tool: readonly [string, JsonObject] = ["mcp__docs_site__search", {}],
+) => {
   const host = fakeMcpHost([server]);
   const { storage, dump } = memoryStorage();
   const told: string[] = [];
@@ -92,9 +96,7 @@ const setup = (server = DOCS, waitMs?: number) => {
     await Effect.runPromise(questions.answer(request?.id ?? id, reply));
   };
 
-  const session = open((request) =>
-    request.text === "go" ? call(["mcp__docs_site__search", {}]) : answer("ok"),
-  );
+  const session = open((request) => (request.text === "go" ? call(tool) : answer("ok")));
 
   return { host, tools, questions, dump, told, session, answerWhenAsked };
 };
@@ -150,6 +152,60 @@ describe("a Legacy server's elicitation", () => {
     ]);
     expect(dump()).not.toContain(SENTINEL);
     expect(JSON.stringify(await session.entries())).not.toContain(SENTINEL);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+  });
+
+  it("is asked too of a read of a resource, which the owner answers as for a call (`read_mcp_resource`)", async () => {
+    const files = { name: "files", exposure: "direct", resources: true, tools: [] };
+
+    const {
+      host,
+      tools,
+      questions,
+      told,
+      session: opening,
+      answerWhenAsked,
+    } = setup(files, undefined, ["read_mcp_resource", { server: "files", uri: "file:///a.txt" }]);
+
+    const seen: Answer[] = [];
+
+    host.answer(async (_input, hooks) => {
+      const reply = await hooks.onInput?.(ask(NAME_FORM));
+
+      if (reply !== undefined) seen.push(reply);
+
+      return McpHostCompleted.make({
+        result: { kind: "inline", value: { contents: [{ uri: "file:///a.txt", text: "read" }] } },
+      });
+    });
+
+    const session = await opening;
+
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await answerWhenAsked({ action: "accept", content: { name: SENTINEL } });
+    await submitted.wait(context);
+
+    const sent = host.calls.flatMap((each) => (each.method === "request" ? [each.input] : []));
+
+    expect(sent).toEqual([expect.objectContaining({ op: "resources/read", server: "files" })]);
+    expect(sent[0]?.ctx.answers).toMatchObject({ elicitation: true });
+    expect(seen).toEqual([
+      { kind: "answered", result: { action: "accept", content: { name: SENTINEL } } },
+    ]);
+    expect(told).toEqual(["files"]);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        server: "files",
+        tool: "read_mcp_resource",
+        elicitation: [
+          { server: "files", mode: "form", action: "accept", by: "owner", fields: ["name"] },
+        ],
+      }),
+    ]);
+    expect(await session.texts("toolResult")).toEqual(["read"]);
     expect(await Effect.runPromise(questions.pending)).toEqual([]);
   });
 

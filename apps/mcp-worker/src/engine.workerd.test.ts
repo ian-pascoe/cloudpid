@@ -39,6 +39,7 @@ const target = (
     | "headers"
     | "logging"
     | "apps"
+    | "resources"
     | "unauthorized"
     | "forbidden",
   key: string,
@@ -171,6 +172,96 @@ describe("a resources/read request", () => {
     );
 
     expect(result.kind === "failed" && Predicate.isTagged(result.error, "ServerError")).toBe(true);
+  });
+});
+
+describe("a resource list page request", () => {
+  const redact = ["sk-echoed-secret-0123456789"];
+
+  it("answers one page with the server's own result shape, its cursor and its cache hints, scrubbed", async () => {
+    const server = { ...target("resources", "page-resources"), redact };
+
+    const first = decodeRequest(
+      await env.MCP_ENGINE.request(
+        server,
+        {},
+        { op: "resources/list_page", ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(first).toMatchObject({
+      kind: "complete",
+      ttlMs: 60_000,
+      result: {
+        kind: "inline",
+        value: { resources: [{ uri: "file:///notes.md" }], nextCursor: "1" },
+      },
+    });
+
+    const second = decodeRequest(
+      await env.MCP_ENGINE.request(
+        server,
+        {},
+        { op: "resources/list_page", cursor: "1", ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(second).toMatchObject({
+      kind: "complete",
+      result: {
+        kind: "inline",
+        value: { resources: [{ uri: "file:///logo.png", description: "for [REDACTED]" }] },
+      },
+    });
+    expect(JSON.stringify(second)).not.toContain("nextCursor");
+    expect((await seen(server)).methods.filter((m) => m === "resources/list")).toHaveLength(2);
+  });
+
+  it("answers a page of resource templates", async () => {
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        target("resources", "page-templates"),
+        {},
+        { op: "resources/templates/list_page", ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      kind: "complete",
+      result: {
+        kind: "inline",
+        value: { resourceTemplates: [{ uriTemplate: "file:///{path}", name: "files" }] },
+      },
+    });
+  });
+
+  it("answers a read with the SHA-256 of its contents", async () => {
+    const server = { ...target("resources", "read-sha"), redact };
+
+    const read = async () =>
+      decodeRequest(
+        await env.MCP_ENGINE.request(
+          server,
+          {},
+          { op: "resources/read", uri: "file:///notes.md", ctx: AGENT },
+          patient(),
+        ),
+      );
+
+    const first = await read();
+    const again = await read();
+
+    expect(first).toMatchObject({
+      kind: "complete",
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      result: { value: { contents: [{ text: "key [REDACTED]" }] } },
+    });
+    expect(again.kind === "complete" && again.sha256).toBe(
+      first.kind === "complete" && first.sha256,
+    );
   });
 });
 

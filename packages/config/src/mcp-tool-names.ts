@@ -20,6 +20,29 @@ export const MCP_TOOL_NAME_PREFIX = "mcp__";
 export const isMcpToolName = (name: string): boolean => name.startsWith(MCP_TOOL_NAME_PREFIX);
 
 /**
+ * The three resource tools the `mcp` extension registers when a server has resources (`docs/architecture/
+ * mcp-in-a-session.md` → Resource tools): snake_case like every tool, and not `mcp__`-prefixed since they are not any
+ * one server's.
+ */
+export const MCP_RESOURCE_TOOL_NAMES = [
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+] as const;
+
+const RESOURCE_TOOL_NAME_SET: ReadonlySet<string> = new Set(MCP_RESOURCE_TOOL_NAMES);
+
+/** Whether `name` is one of the resource tools. */
+export const isMcpResourceToolName = (name: string): boolean => RESOURCE_TOOL_NAME_SET.has(name);
+
+/**
+ * Whether the `mcp` extension owns the tool `name`: an MCP tool or a resource tool. Its Exposure, not the settings'
+ * deferral, decides how it is offered, and a call of it never resolves a Secret Reference.
+ */
+export const isMcpExtensionToolName = (name: string): boolean =>
+  isMcpToolName(name) || isMcpResourceToolName(name);
+
+/**
  * `mcp__<server>`, server `server`'s part of its tools' names: its `codemode` namespace, and with `__` the start of each
  * of its tools' names (`mcpToolPrefix`).
  */

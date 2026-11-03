@@ -12,10 +12,11 @@
 // placeholders, injects the environment variables into its commands, and redacts its streamed output inside
 // `execute`, where nothing it sees is stored. Tools whose arguments become conversation content (code mode scripts,
 // subagent tasks, notes, handoffs) are not wrapped: their references stay references, and the calls they lead to
-// resolve their own. Nor do the `mcp__` tools resolve any (`docs/architecture/mcp-in-a-session.md` → Calls and
-// results): a server is somewhere the Secret must not go through the model's arguments, so the hook blocks a call
-// that references one and points to the server's `headers` or `env`, where `${NAME}` is resolved by the host.
-import { isMcpToolName } from "@cloudpid/config";
+// resolve their own. Nor do the `mcp__` tools and the resource tools (`read_mcp_resource` and the two lists) resolve any
+// (`docs/architecture/mcp-in-a-session.md` → Calls and results, Resource tools): a server is somewhere the Secret must
+// not go through the model's arguments, so the hook blocks a call that references one and points to the server's
+// `headers` or `env`, where `${NAME}` is resolved by the host.
+import { isMcpExtensionToolName } from "@cloudpid/config";
 import { defineEffectTool, effectHook, effectSection } from "@cloudpid/effect-durable";
 import { SecretKeep } from "@cloudpid/protocol";
 import type { JsonValue as DetailsJson } from "@earendil-works/chord";
@@ -621,7 +622,7 @@ export const secretsExtension = (
 
           if (references.size === 0) return undefined;
 
-          if (isMcpToolName(call.name)) return { block: mcpReferenceBlock(references) };
+          if (isMcpExtensionToolName(call.name)) return { block: mcpReferenceBlock(references) };
 
           const resolved = yield* resolveAll(secrets, references);
 

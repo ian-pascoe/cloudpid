@@ -463,6 +463,10 @@ type ToolCall = McpEngineRequest & { readonly op: "tools/call" };
 
 type ResourceRead = McpEngineRequest & { readonly op: "resources/read" };
 
+type ResourcePage = McpEngineRequest & {
+  readonly op: "resources/list_page" | "resources/templates/list_page";
+};
+
 /** The server's tools, listed again after a `-32020`, and their schema problems. */
 interface Refreshed {
   readonly tools: ReadonlyArray<McpToolDefinition>;
@@ -640,7 +644,11 @@ const runRead = Effect.fnUntraced(function* (
   req: ResourceRead,
   env: CallEnvironment,
 ) {
-  const { value, kind: _kind, ...meta } = yield* connection.readResource(req.uri, req.ctx);
+  const {
+    value,
+    kind: _kind,
+    ...meta
+  } = yield* connection.readResource(req.uri, req.ctx, { app: req.app === true });
 
   return {
     kind: "complete",
@@ -649,11 +657,46 @@ const runRead = Effect.fnUntraced(function* (
   } satisfies Completed;
 });
 
+/**
+ * Runs one page of `resources/list` or `resources/templates/list`: the server's own result shape, `{ resources |
+ * resourceTemplates, nextCursor? }`, its strings scrubbed of the call's tokens on the way out.
+ */
+const runResourcePage = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: ResourcePage,
+  env: CallEnvironment,
+) {
+  const templates = req.op === "resources/templates/list_page";
+
+  const {
+    value,
+    kind: _kind,
+    ...meta
+  } = yield* connection.listPage(
+    templates ? "resources/templates" : "resources",
+    req.cursor,
+    req.ctx,
+  );
+
+  const items = [...value.items];
+  const listed = templates ? { resourceTemplates: items } : { resources: items };
+
+  const page =
+    value.nextCursor === undefined ? listed : { ...listed, nextCursor: value.nextCursor };
+
+  return {
+    kind: "complete",
+    ...meta,
+    result: yield* toEngineValue(page, call, env),
+  } satisfies Completed;
+});
+
 /** Walks a list to its end; a `tools/list` also brings its tools' schema problems. */
 const runList = Effect.fnUntraced(function* (
   connection: McpConnection,
   call: CallContext,
-  req: Exclude<McpEngineRequest, ToolCall | TaskOp | ResourceRead>,
+  req: Exclude<McpEngineRequest, ToolCall | TaskOp | ResourceRead | ResourcePage>,
   env: CallEnvironment,
   validators: ValidatorsApi,
 ) {
@@ -698,8 +741,8 @@ const runList = Effect.fnUntraced(function* (
 });
 
 /**
- * Runs one request: a `tools/call`, a `tasks/*` request on the MCP task wire, a `resources/read`, or a list walked to its
- * end. An `op` this engine does not know is `Unsupported`.
+ * Runs one request: a `tools/call`, a `tasks/*` request on the MCP task wire, a `resources/read`, one page of a resource
+ * list, or a list walked to its end. An `op` this engine does not know is `Unsupported`.
  */
 export const request = Effect.fn("mcp.engine.request")(function* (
   target: McpEngineTargetEncoded,
@@ -736,8 +779,10 @@ export const request = Effect.fn("mcp.engine.request")(function* (
 
       if (isTaskRequest(req)) return runTaskOp(connection, context, req, env, validators);
 
-      return req.op === "resources/read"
-        ? runRead(connection, context, req, env)
+      if (req.op === "resources/read") return runRead(connection, context, req, env);
+
+      return req.op === "resources/list_page" || req.op === "resources/templates/list_page"
+        ? runResourcePage(connection, context, req, env)
         : runList(connection, context, req, env, validators);
     },
   );

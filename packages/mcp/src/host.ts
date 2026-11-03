@@ -299,11 +299,20 @@ export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostA
  *   on a `tools/call` (`mcp-server-requests.md` → MCP tasks).
  * - `app_html`: a `tools/call` of an App tool answers the `htmlHash` of its App, and the host answers
  *   `request({ op: "ui/html" })` (`docs/architecture/mcp-apps.md` → Declaring and reading Apps).
+ * - `resources`: the host answers `request({ op: "resources/list" | "resources/templates/list" | "resources/read" })`
+ *   (`docs/architecture/mcp-in-a-session.md` → Resource tools).
  *
- * The Session side's own list, `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`), names those of these its MCP tools
- * need; a feature added here reaches the Session only once that list names it.
+ * The Session side names those of these its MCP tools use: `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`) the ones
+ * they cannot be built without, `MCP_OPTIONAL_TOOL_FEATURES` the ones it does without when the host lacks them (`resources`).
+ * A feature added here reaches the Session only once one of those lists names it.
  */
-export const MCP_HOST_FEATURES: ReadonlyArray<string> = ["inventory", "call", "tasks", "app_html"];
+export const MCP_HOST_FEATURES: ReadonlyArray<string> = [
+  "inventory",
+  "call",
+  "tasks",
+  "app_html",
+  "resources",
+];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
 export const McpCaller = Schema.Struct({

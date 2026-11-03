@@ -19,13 +19,14 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { type ModelContent, modelContent, type Piece } from "./blocks.ts";
-import type { McpDetails } from "./details.ts";
+import { MAX_RESOURCE_REFS, type McpDetails, type McpResourceRef } from "./details.ts";
 import {
   describeError,
   type Ended,
   signInEnd,
   type StreamFailure,
   streamEnd,
+  type Subject,
   unreadableMessage,
 } from "./ended.ts";
 import { headWithin, lineCountOf } from "./head.ts";
@@ -49,10 +50,11 @@ const decodeCallTool = Schema.decodeUnknownOption(CallToolValue);
  * `hints` and `meta`), and whose call it is. A model's call may spill; a script's (`codemode`) gets its value whole and
  * no spill.
  */
-export type McpResultContext = { readonly details: McpDetails } & (
-  | { readonly kind: "model"; readonly spill: Spill }
-  | { readonly kind: "script" }
-);
+export type McpResultContext = {
+  readonly details: McpDetails;
+  /** The server's name for the resource tools when they reach it: a link's line says how to read it (`./blocks.ts`). */
+  readonly readServer?: string | undefined;
+} & ({ readonly kind: "model"; readonly spill: Spill } | { readonly kind: "script" });
 
 /** A call that ended without a result: its message, as an error the model reads. */
 export const failedWith = (
@@ -112,6 +114,56 @@ const bounded = (pieces: ReadonlyArray<Piece>) => {
   };
 };
 
+/** The references of `pieces`, at most `MAX_RESOURCE_REFS`, in order; none when there is no resource. */
+export const refsOf = (pieces: ReadonlyArray<Piece>): Array<McpResourceRef> =>
+  Arr.take(
+    Arr.flatMap(pieces, (piece) => (piece.ref === undefined ? [] : [piece.ref])),
+    MAX_RESOURCE_REFS,
+  );
+
+/**
+ * What the model is given for `shown`: all of it within the limits (`./head.ts`), else the server's text cut to its head
+ * with pi-durable's `truncated` warning, and, for a model's call, the whole text in a Result Spill (`fullOutputPath`).
+ */
+export const withinLimits = async (
+  shown: ReadonlyArray<Piece>,
+  call: McpResultContext,
+): Promise<{
+  readonly output: ReadonlyArray<ModelContent>;
+  readonly diagnostics: ReadonlyArray<ToolDiagnostic>;
+  readonly fullOutputPath?: string;
+}> => {
+  const cut = bounded(shown);
+
+  if (cut === undefined) {
+    return { output: Arr.map(shown, (piece) => piece.content), diagnostics: [] };
+  }
+
+  const diagnostics: Array<ToolDiagnostic> = [cut.warning];
+
+  if (call.kind !== "model") return { output: cut.output, diagnostics };
+
+  const saved = await call.spill(cut.whole, ".txt");
+
+  if ("path" in saved) {
+    diagnostics.push({
+      severity: "info",
+      code: "full_output",
+      message: `Full output: ${saved.path}`,
+    });
+
+    return { output: cut.output, diagnostics, fullOutputPath: saved.path };
+  }
+
+  diagnostics.push({
+    severity: "warn",
+    code: "full_output",
+    message: `Could not save the full output: ${saved.reason}`,
+  });
+
+  return { output: cut.output, diagnostics };
+};
+
 /**
  * A `tools/call` result as the model and scripts get it. The model gets the content as text and images, or the
  * `structuredContent` as JSON when there is none; text over the limits (`./head.ts`) is cut to its head here, as
@@ -135,9 +187,12 @@ export const resultFor = async (
   const { content, isError = false } = decoded.value;
   const { structuredContent } = value;
   const script = call.kind === "script";
-  const mapped = await modelContent(content, call.kind === "model" ? call.spill : refusingSpill);
+
+  const mapped = await modelContent(content, call.kind === "model" ? call.spill : refusingSpill, {
+    readServer: call.readServer,
+  });
+
   const details: Mutable<McpDetails> = { ...call.details };
-  const diagnostics: Array<ToolDiagnostic> = [];
 
   // No content: the structuredContent as JSON, since servers should mirror it as text and do not always.
   const base: ReadonlyArray<Piece> =
@@ -160,32 +215,13 @@ export const resultFor = async (
         ? base
         : [{ content: textOf(""), note: true }];
 
-  const cut = bounded(shown);
-  let output: ReadonlyArray<ModelContent> = Arr.map(shown, (piece) => piece.content);
+  const { output, diagnostics: cutDiagnostics, fullOutputPath } = await withinLimits(shown, call);
+  const diagnostics: Array<ToolDiagnostic> = [...cutDiagnostics];
+  const refs = refsOf(base);
 
-  if (cut !== undefined) {
-    output = cut.output;
-    diagnostics.push(cut.warning);
+  if (fullOutputPath !== undefined) details.full_output_path = fullOutputPath;
 
-    if (call.kind === "model") {
-      const saved = await call.spill(cut.whole, ".txt");
-
-      if ("path" in saved) {
-        details.full_output_path = saved.path;
-        diagnostics.push({
-          severity: "info",
-          code: "full_output",
-          message: `Full output: ${saved.path}`,
-        });
-      } else {
-        diagnostics.push({
-          severity: "warn",
-          code: "full_output",
-          message: `Could not save the full output: ${saved.reason}`,
-        });
-      }
-    }
-  }
+  if (refs.length > 0) details.resources = refs;
 
   const result: Mutable<ToolExecutionResult<JsonValue>> = { output: [...output], details };
 
@@ -212,6 +248,50 @@ export const resultFor = async (
   return result;
 };
 
+/**
+ * What a model's call of a tool of ours (a resource tool) gives: `shown` within the limits, cut to its head with the whole
+ * in a Result Spill, `details` with the spill and the references of `shown`, and the least `structuredOutput` that fits
+ * the tool's schema, since the model reads the output and pi-durable only checks the value.
+ */
+export const modelResultOf = async (
+  shown: ReadonlyArray<Piece>,
+  call: Extract<McpResultContext, { readonly kind: "model" }>,
+  structuredOutput: JsonValue,
+): Promise<ToolExecutionResult<JsonValue>> => {
+  const limited = await withinLimits(shown, call);
+  const details: Mutable<McpDetails> = { ...call.details };
+  const refs = refsOf(shown);
+
+  if (limited.fullOutputPath !== undefined) details.full_output_path = limited.fullOutputPath;
+
+  if (refs.length > 0) details.resources = refs;
+
+  const result: Mutable<ToolExecutionResult<JsonValue>> = {
+    output: [...limited.output],
+    details,
+    structuredOutput,
+  };
+
+  if (limited.diagnostics.length > 0) result.diagnostics = [...limited.diagnostics];
+
+  return result;
+};
+
+/** What a script's call of a tool of ours gives: its `value` whole, and a line for the output nobody reads. */
+export const scriptResultOf = (
+  line: string,
+  details: McpDetails,
+  value: JsonValue,
+  refs: ReadonlyArray<McpResourceRef> = [],
+): ToolExecutionResult<JsonValue> => {
+  const kept: Mutable<McpDetails> = { ...details };
+  const some = Arr.take(refs, MAX_RESOURCE_REFS);
+
+  if (some.length > 0) kept.resources = some;
+
+  return { output: [textOf(line)], details: kept, structuredOutput: value };
+};
+
 /** `details` of a call that `ended` without a result, and what the model reads. */
 const endedWith = (ended: Ended, details: McpDetails): ToolExecutionResult<JsonValue> => {
   const kept: Mutable<McpDetails> = { ...details };
@@ -229,12 +309,13 @@ const endedWith = (ended: Ended, details: McpDetails): ToolExecutionResult<JsonV
 export const failureResult = (
   result: Exclude<McpHostRequestResult, McpHostCompleted>,
   details: McpDetails,
+  subject: Subject = "tool",
   options: { readonly subagent?: boolean } = {},
 ): ToolExecutionResult<JsonValue> =>
   Predicate.isTagged(result, "CallFailed")
     ? endedWith(
         signInEnd(result.error, details.server, options.subagent === true) ??
-          describeError(result.error),
+          describeError(result.error, subject),
         details,
       )
     : isTaskAnswer(result)
@@ -252,11 +333,16 @@ const isTaskAnswer = (result: McpHostRequestResult) =>
   Predicate.isTagged(result, "TaskAck");
 
 /** What the model reads when the Session's end of a call was lost: it may have run (`details.cut: "host_lost"`). */
-export const hostLostResult = (details: McpDetails): ToolExecutionResult<JsonValue> =>
+export const hostLostResult = (
+  details: McpDetails,
+  subject: Subject = "tool",
+): ToolExecutionResult<JsonValue> =>
   endedWith(
     {
       message:
-        "The MCP host was lost before the call's answer arrived; it may or may not have run.",
+        subject === "tool"
+          ? "The MCP host was lost before the call's answer arrived; it may or may not have run."
+          : "The MCP host was lost before the answer arrived.",
       cut: "host_lost",
     },
     details,
@@ -279,4 +365,5 @@ export const interruptedResult = (
 export const streamFailure = (
   kind: StreamFailure,
   details: McpDetails,
-): ToolExecutionResult<JsonValue> => endedWith(streamEnd(kind), details);
+  subject: Subject = "tool",
+): ToolExecutionResult<JsonValue> => endedWith(streamEnd(kind, subject), details);

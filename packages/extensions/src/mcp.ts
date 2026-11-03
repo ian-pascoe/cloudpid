@@ -1,5 +1,6 @@
 // The `mcp` extension (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension, Exposure; ADR-0030): one Session
-// extension built from the Environment's MCP inventory, whose tools each call `McpHost.request({ op: "tools/call" })`.
+// extension built from the Environment's MCP inventory, whose tools each call `McpHost.request({ op: "tools/call" })`, and
+// whose resource tools (`./mcp/resources.ts`) list and read resources through the same `request`.
 // The Session reaches the host only through `McpHostClient` (`./mcp/client.ts`), whose live adapter is
 // `apps/server/src/session/mcp-host.ts` and whose in-memory fake is `./mcp.testing.ts`. The tools themselves are
 // `./mcp/tools.ts`, their Exposure `./mcp/exposure.ts`, and what the model gets for a call `./mcp/result.ts`.
@@ -14,7 +15,8 @@
 // - **`reinstall`**, under the Session's one install lock: the `mcp` extension and the servers as `codemode` namespaces
 //   to install (with `tool-search`) when what they are built from, with the offered tools, changed since the last
 //   install; none otherwise. It builds nothing until the host lists the features the tools use (`MCP_TOOL_FEATURES`), so
-//   an older host means no MCP tools, never a failure. The build is pure, so building over unchanged tools gives
+//   an older host means no MCP tools, never a failure; the resource tools also need `resources`
+//   (`MCP_OPTIONAL_TOOL_FEATURES`), and a host without it gets the other tools only. The build is pure, so building over unchanged tools gives
 //   byte-identical declarations.
 //
 // **The `mcp_servers` section and its notices** (`./mcp/servers.ts`, `./mcp/notices.ts`): every build carries the section,
@@ -56,6 +58,7 @@ import {
   mcpServersSectionOf,
 } from "./mcp/servers.ts";
 import { signsIn } from "./mcp/sign-in-tool.ts";
+import { MCP_RESOURCE_FEATURE } from "./mcp/resources.ts";
 import { McpBuildServer, mcpExtension, mcpNamespaces, type McpToolOptions } from "./mcp/tools.ts";
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
@@ -116,6 +119,12 @@ export {
  * host's own list is `MCP_HOST_FEATURES` (`@cloudpid/mcp/types`); a feature it adds reaches the tools once named here.
  */
 export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
+
+/**
+ * The features the tools may use when the host lists them, and do without when it does not: the resource tools need
+ * `resources` (`./mcp/resources.ts`), and a host without it gets every other tool as before, none of these.
+ */
+export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [MCP_RESOURCE_FEATURE];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
 export const MCP_WAIT_MS = 10_000;
@@ -468,9 +477,14 @@ export const makeMcpTools = (
 
     if (opening) store.openWindow(conversation, input.window);
 
-    const features = Arr.filter(MCP_TOOL_FEATURES, (each) => started.features.includes(each));
+    const required = Arr.filter(MCP_TOOL_FEATURES, (each) => started.features.includes(each));
 
-    if (features.length < MCP_TOOL_FEATURES.length) return keep(++taken, undefined);
+    if (required.length < MCP_TOOL_FEATURES.length) return keep(++taken, undefined);
+
+    const features = [
+      ...required,
+      ...Arr.filter(MCP_OPTIONAL_TOOL_FEATURES, (each) => started.features.includes(each)),
+    ];
 
     const origin: Mutable<McpInventory["origin"]> = {};
 
@@ -571,7 +585,7 @@ export const makeMcpTools = (
           }
         : {
             mcp: mcpExtension(
-              { servers: latest.servers, offered },
+              { servers: latest.servers, offered, features: latest.features },
               client,
               latest.origin,
               sectionOptions,

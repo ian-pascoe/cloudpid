@@ -66,6 +66,7 @@ import {
 import { McpEngineClient, type McpEngineClientService } from "./engine.ts";
 import { serverHashes } from "./inventory.ts";
 import { McpAppReads } from "./app-reads.ts";
+import { McpListCache } from "./list-cache.ts";
 import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
 import { request } from "./request.ts";
@@ -102,6 +103,7 @@ export const mcpHostLayer = (deps: {
     McpTokens.layer.pipe(Layer.provide(Layer.succeed(McpRegistryPort, deps.registry))),
     McpDiscovery.layer,
     McpLoadCaps.layer,
+    McpListCache.layer,
     McpAppReads.layer,
     deps.processEnded === undefined
       ? McpProcessEnded.none

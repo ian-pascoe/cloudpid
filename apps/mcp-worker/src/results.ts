@@ -30,7 +30,8 @@ export type Answer =
       { readonly kind: "complete" }
     >["value"]
   | Effect.Success<ReturnType<McpConnection["readResource"]>>["value"]
-  | ReadonlyArray<ListItems[ListKind]>;
+  | ReadonlyArray<ListItems[ListKind]>
+  | { readonly [key: string]: ReadonlyArray<ListItems[ListKind]> | string };
 
 /** A server's answer the engine cannot read: the server is not speaking MCP. */
 export const malformed = (what: string) =>

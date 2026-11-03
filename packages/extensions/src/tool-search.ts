@@ -22,7 +22,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";
-import { isMcpToolName, matchesToolPattern } from "@cloudpid/config";
+import { isMcpExtensionToolName, matchesToolPattern } from "@cloudpid/config";
 import { MCP_SIGN_IN_TOOL } from "./mcp/sign-in.ts";
 
 export const extensionName = "tool-search";
@@ -118,7 +118,9 @@ const deferredTools = section("deferred_tools", (input) => {
           // An MCP tool's deferral is the `mcp` extension's, by its Exposure (`docs/architecture/mcp-in-a-session.md` →
           // Exposure).
           (tool) =>
-            tool.deferred === true && !isMcpToolName(tool.name) && tool.name !== MCP_SIGN_IN_TOOL,
+            tool.deferred === true &&
+            !isMcpExtensionToolName(tool.name) &&
+            tool.name !== MCP_SIGN_IN_TOOL,
         ),
         (tool) => tool.name,
       ),
@@ -151,7 +153,9 @@ export const toolSearchExtension = (
       Arr.filter(
         Arr.dedupe(toolNames),
         (name) =>
-          !Arr.contains(ALWAYS_OFFERED, name) && !isMcpToolName(name) && name !== MCP_SIGN_IN_TOOL,
+          !Arr.contains(ALWAYS_OFFERED, name) &&
+          !isMcpExtensionToolName(name) &&
+          name !== MCP_SIGN_IN_TOOL,
       ),
       (name) => ({
         tool: name,
