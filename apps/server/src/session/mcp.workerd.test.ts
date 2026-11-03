@@ -307,6 +307,9 @@ describe("waitForChange", () => {
     expect(status.status).toBe("waiting_for_owner");
     expect(status.waiting).toEqual(needed.waiting);
 
+    // A caller that read the request through session_get holds a cursor that has seen it too.
+    expect(okValue(await wait(stub, status.cursor, 300)).ended_by).toBe("timeout");
+
     await stub.mcpStop({ via });
   });
 

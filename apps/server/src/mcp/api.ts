@@ -2,8 +2,8 @@
 // builds per `/mcp` request and passes to `McpServer`, over the Registry and the Sessions it already has. It owns
 // authorization (the guard has run), validation, the Registry and Session calls, cursors and rendering; `McpServer` owns
 // the SDK, the schemas and the text. The caller's identity is closed over it and is never an argument. Failures travel
-// as values (`ApiResult`); nothing streams. The read operations and `start`, `send` and `stop` are here; an operation `describe()` does not list
-// answers `unsupported`, which is also how `McpServer` knows to leave its tool out.
+// as values (`ApiResult`); nothing streams. The read operations, `start`, `send`, `stop` and `wait` are here; an operation
+// `describe()` does not list answers `unsupported`, which is also how `McpServer` knows to leave its tool out.
 // @effect-diagnostics globalDate:off preferEffectArray:off missingPipeableSignature:off -- epoch times said as ISO text; short native lists.
 import { isModelId, SUPPORTED_MODELS, ThinkingLevel, THINKING_LEVELS } from "@cloudpid/config";
 import {
@@ -15,10 +15,12 @@ import {
   branchProblem,
   type ConfigureRequest,
   DEFAULT_ENVIRONMENT,
+  DEFAULT_MCP_WAIT_MS,
   type EnvironmentRecord,
   type EnvironmentsResult,
   MAX_MCP_INPUT_BYTES,
   MAX_MCP_RUNNING,
+  MAX_MCP_WAIT_MS,
   MCP_API_LIMITS,
   type MarkedOrigin,
   SESSION_ID,
@@ -43,10 +45,16 @@ import {
   type TranscriptPage,
   type TranscriptRequest,
   type Via,
+  type WaitingRequest,
+  type WaitOutcome,
+  type WaitRequest,
+  type WaitResult,
+  type WaitSessionRequest,
   whenBusyOf,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
@@ -65,6 +73,7 @@ export const MCP_API_OPERATIONS_SERVED = [
   "start",
   "send",
   "stop",
+  "wait",
 ] as const;
 
 /** The period of `MCP_CALLS`, in seconds: what a caller over the rate is told to wait at most. */
@@ -83,8 +92,13 @@ export interface McpBackend {
   readonly workspace: (id: string) => Effect.Effect<WorkspaceRecord | null>;
   /** The Global Settings' default model. */
   readonly defaultModel: Effect.Effect<string>;
-  /** The Session object's `status()`. */
-  readonly status: (id: string) => Effect.Effect<ApiResult<SessionStatusReport>>;
+  /** The Session object's `status()`; `after` is the cursor the caller holds, which `branch_changed` is told against. */
+  readonly status: (id: string, after?: string) => Effect.Effect<ApiResult<SessionStatusReport>>;
+  /**
+   * The Session object's `waitForChange()`: the RPC stays open until the wait ends, at `request.deadline` at the latest. An
+   * RPC that is cut (a deploy, an eviction) is a defect, which `wait` reads as an interrupted wait.
+   */
+  readonly wait: (id: string, request: WaitRequest) => Effect.Effect<ApiResult<WaitOutcome>>;
   /** The Session object's `transcriptPage()`. */
   readonly transcript: (
     id: string,
@@ -139,6 +153,7 @@ export interface McpApiService {
   readonly start: (request: StartRequest) => Effect.Effect<ApiResult<StartResult>>;
   readonly send: (request: SendRequest) => Effect.Effect<ApiResult<SubmitResult>>;
   readonly stop: (request: StopSessionRequest) => Effect.Effect<ApiResult<StopResult>>;
+  readonly wait: (request: WaitSessionRequest) => Effect.Effect<ApiResult<WaitResult>>;
   /** Counts a call; present when the caller is over its rate. */
   readonly limited: Effect.Effect<{ readonly retryAfterS: number } | undefined>;
   readonly auth: McpAuth;
@@ -271,6 +286,16 @@ const sessionViaOf = (via: Via, caller: Caller, auth: McpAuth): SessionVia => {
   return marked;
 };
 
+/** The waiting requests with their `url` (the Session's own, `/sessions/<id>?request=<id>`) made absolute at `origin`. */
+const absoluteUrls = (
+  waiting: ReadonlyArray<WaitingRequest>,
+  origin: string,
+): ReadonlyArray<WaitingRequest> =>
+  Arr.map(waiting, (request) => ({
+    ...request,
+    url: request.url.startsWith("/") ? `${origin}${request.url}` : request.url,
+  }));
+
 /** The Environments' names by id. */
 const namesOf = (environments: ReadonlyArray<EnvironmentRecord>) =>
   new Map(Arr.map(environments, (environment) => [environment.id, environment.name] as const));
@@ -322,7 +347,7 @@ const refusedStart = (
     case "too-many-running":
       return apiFailure(
         "too_many_running",
-        `${String(refusal.limit)} Sessions started over MCP are running: check them with session_get, or stop one with session_stop, then start again.`,
+        `${String(refusal.limit)} Sessions started over MCP are running: wait for one with session_wait or check them with session_get, or stop one with session_stop, then start again.`,
         { retryable: true, details: { limit: refusal.limit } },
       );
     case "no-workspace":
@@ -333,6 +358,37 @@ const refusedStart = (
 /** The service's operations over `backend` for one request. */
 export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpApiService => {
   const identity = identityOf(context.caller);
+
+  /**
+   * What a wait whose RPC was cut answers (`docs/architecture/mcp-endpoint.md` → Following a Run): `timeout`, `interrupted`,
+   * the Session's status read once, and **the cursor that was passed in**, so the caller waits again from where it was
+   * (with none passed, the status's own: a Run still going ends a wait from it). Only a status that cannot be read
+   * either is `unavailable`.
+   */
+  const interrupted = (id: string, after: string | undefined) =>
+    backend.status(id, after).pipe(
+      Effect.catchCause(() => Effect.succeed(unreachable)),
+      Effect.map((report): ApiResult<WaitOutcome> => {
+        if (!report.ok) return report;
+
+        const { status, waiting, cursor, branch_changed, text_withheld } = report.value;
+
+        const outcome: Types.Mutable<WaitOutcome> = {
+          status,
+          ended_by: "timeout",
+          interrupted: true,
+          waiting,
+          activity: { entries: 0, tool_calls: 0, latest: [] },
+          cursor: after ?? cursor,
+        };
+
+        if (branch_changed === true) outcome.branch_changed = true;
+
+        if (text_withheld !== undefined) outcome.text_withheld = text_withheld;
+
+        return apiOk(outcome);
+      }),
+    );
 
   return {
     describe: () => {
@@ -450,10 +506,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
             ...summary,
             ...report.value,
             // The Session's own account of what each waits for, as a page the owner can open.
-            waiting: Arr.map(report.value.waiting, (request) => ({
-              ...request,
-              url: request.url.startsWith("/") ? `${context.origin}${request.url}` : request.url,
-            })),
+            waiting: absoluteUrls(report.value.waiting, context.origin),
             agents: Arr.map(record.agents ?? [], (agent) => ({
               agent_id: agent.id,
               parent: agent.parent,
@@ -656,6 +709,39 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
           if (request.subagents !== undefined) stopping.subagents = request.subagents;
 
           return yield* backend.stop(request.session_id, stopping);
+        }),
+      ),
+
+    wait: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          const { session_id: id, after } = request;
+
+          if (!SESSION_ID.test(id)) return invalidId;
+
+          // The Registry first: a made-up id never reaches a Session object (and so never makes one).
+          if ((yield* backend.session(id)) === null) return notFound(id);
+
+          const seconds = Math.min(
+            MAX_MCP_WAIT_MS,
+            Math.max(0, (request.timeout_s ?? DEFAULT_MCP_WAIT_MS / 1000) * 1000),
+          );
+
+          const deadline = (yield* Clock.currentTimeMillis) + seconds;
+
+          const waited = yield* backend
+            .wait(id, after === undefined ? { deadline } : { after, deadline })
+            // The RPC was cut on the Session's side (a deploy or an eviction cut it, or it could not be reached): the
+            // Run goes on, so the wait says so and hands the caller's cursor back instead of failing.
+            .pipe(Effect.catchCause(() => interrupted(id, after)));
+
+          return waited.ok
+            ? apiOk<WaitResult>({
+                session_id: id,
+                ...waited.value,
+                waiting: absoluteUrls(waited.value.waiting, context.origin),
+              })
+            : waited;
         }),
       ),
 

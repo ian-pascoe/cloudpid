@@ -7,7 +7,9 @@ import * as Schema from "effect/Schema";
 import {
   DEFAULT_SESSIONS_PAGE,
   DEFAULT_TRANSCRIPT_CHARS,
+  DEFAULT_MCP_WAIT_MS,
   EnvironmentsResult,
+  MAX_MCP_WAIT_MS,
   MAX_SESSIONS_PAGE,
   MAX_TRANSCRIPT_CHARS,
   McpSessionSummary,
@@ -20,6 +22,7 @@ import {
   SubmitResult,
   TranscriptDetail,
   TranscriptPage,
+  WaitResult,
 } from "./mcp-api.ts";
 import { MAX_TITLE_LENGTH } from "./registry.ts";
 
@@ -87,6 +90,23 @@ export type SessionsListInput = typeof SessionsListInput.Type;
 export const SessionGetInput = Schema.Struct({ session_id: SessionId });
 
 export type SessionGetInput = typeof SessionGetInput.Type;
+
+export const SessionWaitInput = Schema.Struct({
+  session_id: SessionId,
+  after: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        "A cursor from session_start, session_send, session_get or the previous session_wait: wait for what happens after it, and pass back the cursor each result gives. Without it the wait returns at once unless a Run is going and nothing waits for the owner.",
+    }),
+  ),
+  timeout_s: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_MCP_WAIT_MS / 1000 })).annotate({
+      description: `The most seconds to wait (0-${MAX_MCP_WAIT_MS / 1000}, default ${DEFAULT_MCP_WAIT_MS / 1000}); the wait returns sooner when the Run ends. When it times out, call it again with the cursor it gave.`,
+    }),
+  ),
+});
+
+export type SessionWaitInput = typeof SessionWaitInput.Type;
 
 export const SessionTranscriptInput = Schema.Struct({
   session_id: SessionId,
@@ -220,6 +240,10 @@ export type SessionsListResult = typeof SessionsListResult.Type;
 export const SessionGetResult = SessionDetail;
 
 export type SessionGetResult = typeof SessionGetResult.Type;
+
+export const SessionWaitResult = WaitResult;
+
+export type SessionWaitResult = typeof SessionWaitResult.Type;
 
 export const SessionTranscriptResult = Schema.Struct({
   session_id: Schema.String,

@@ -718,6 +718,15 @@ export const StopSessionRequest = Schema.Struct({
 
 export type StopSessionRequest = typeof StopSessionRequest.Type;
 
+/** `session_wait`'s arguments, as `McpApi.wait` takes them: the cursor held, and how long to wait, in seconds. */
+export const WaitSessionRequest = Schema.Struct({
+  session_id: Schema.String,
+  after: Schema.optionalKey(Schema.String),
+  timeout_s: Schema.optionalKey(Schema.Finite),
+});
+
+export type WaitSessionRequest = typeof WaitSessionRequest.Type;
+
 /** `session_start`'s arguments, as `McpApi.start` takes them (the environment is an id or an exact name). */
 export const StartRequest = Schema.Struct({
   environment: Schema.optionalKey(Schema.String),
@@ -765,11 +774,7 @@ export interface McpApi {
   >;
   session(id: string): Promise<ApiResult<SessionDetail>>;
   start(request: StartRequest): Promise<ApiResult<StartResult>>;
-  wait(request: {
-    readonly session_id: string;
-    readonly after?: string;
-    readonly timeout_s?: number;
-  }): Promise<ApiResult<WaitResult>>;
+  wait(request: WaitSessionRequest): Promise<ApiResult<WaitResult>>;
   transcript(
     request: TranscriptRequest & { readonly session_id: string },
   ): Promise<ApiResult<TranscriptPage & { readonly session_id: string }>>;

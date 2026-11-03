@@ -85,7 +85,13 @@ const backendOf = (
       Effect.map(({ settings }) => settings.model),
       Effect.orDie,
     ),
-    status: (id) => endpoint.sessions.getByName(id).status().pipe(Effect.orDie),
+    status: (id, after) =>
+      endpoint.sessions
+        .getByName(id)
+        .status(after === undefined ? undefined : { after })
+        .pipe(Effect.orDie),
+    wait: (id, request) =>
+      endpoint.sessions.getByName(id).waitForChange(request).pipe(Effect.orDie),
     transcript: (id, request) =>
       endpoint.sessions.getByName(id).transcriptPage(request).pipe(Effect.orDie),
     createSession: ({ environment, title, branch, base, marks, requestId, maxRunning }) =>

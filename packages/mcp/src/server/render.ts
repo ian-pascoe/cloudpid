@@ -18,6 +18,7 @@ import type {
   SessionStartResult,
   SessionStopResult,
   SessionTranscriptResult,
+  SessionWaitResult,
 } from "@cloudpid/protocol/mcp-tools";
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
@@ -177,6 +178,55 @@ export const renderSession = (result: SessionGetResult): string => {
 
   if (result.branch_changed === true)
     lines.push("The owner moved the active branch since the cursor.");
+
+  lines.push(`cursor ${result.cursor}`);
+
+  return Arr.join(lines, "\n");
+};
+
+const ENDED_BY = {
+  run_ended: "the Run ended",
+  owner_needed: "a request is waiting for the owner",
+  import_ended: "the import ended",
+  stalled: "the Run is stalled: a task is parked",
+  timeout: "the wait ended with nothing new",
+} as const;
+
+export const renderWait = (result: SessionWaitResult): string => {
+  const lines: Array<string> = [
+    `Wait on Session ${result.session_id}: ${ENDED_BY[result.ended_by]}${result.interrupted === true ? " (the connection to the Session was cut; the Run is not affected)" : ""}`,
+    `status ${result.status}`,
+  ];
+
+  if (result.outcome !== undefined) {
+    const { result: how, reason, message } = result.outcome;
+
+    lines.push(
+      `Run ${how}${reason === undefined ? "" : ` (${reason})`}${message === undefined ? "" : `: ${message}`}`,
+    );
+  }
+
+  if (result.error !== undefined) lines.push(`error: ${result.error}`);
+
+  if (result.waiting.length > 0) {
+    lines.push("waiting for the owner:", ...Arr.map(result.waiting, waitingLine));
+  }
+
+  const { entries, tool_calls: calls, latest } = result.activity;
+
+  lines.push(`activity since the cursor: ${entries} entries, ${calls} tool calls`);
+
+  if (latest.length > 0) lines.push(...Arr.map(latest, (line) => `  ${line}`));
+
+  if (result.answer !== undefined) {
+    lines.push(`answer${result.answer.truncated ? " (cut)" : ""}:`, result.answer.text);
+  }
+
+  if (result.text_withheld !== undefined) lines.push(`text withheld: ${result.text_withheld}`);
+
+  if (result.branch_changed === true) {
+    lines.push("The owner moved the active branch since the cursor.");
+  }
 
   lines.push(`cursor ${result.cursor}`);
 

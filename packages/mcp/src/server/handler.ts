@@ -7,7 +7,7 @@
  * Registry and the Sessions only through `api`, and knows nothing of Workers: `apps/mcp-worker`'s `McpServer` entrypoint
  * wraps it, and the conformance run serves it over `node:http`. Only this package imports the SDK.
  */
-// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off missedPipeableOpportunity:off -- Promise seams (fetch, RPC) over short native lists.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off missedPipeableOpportunity:off globalDate:off globalTimers:off -- Promise seams (fetch, RPC) over short native lists, and the timer of a call that waits.
 import {
   type ApiError,
   ApiDescription,
@@ -21,6 +21,7 @@ import {
   isLegacyRequest,
   McpServer,
   readRequestBody,
+  type ServerContext,
   type StandardSchemaWithJSON,
   validateHostHeader,
   validateOriginHeader,
@@ -44,6 +45,13 @@ export const MAX_STRUCTURED_BYTES = 64 * 1024;
 
 /** SSE keep-alive comments every 15 s, so a 300 s wait with no progress token still finishes on keep-alives alone. */
 export const KEEP_ALIVE_MS = 15_000;
+
+/**
+ * How often a call that waits sends `notifications/progress` while it is open (`docs/architecture/mcp-endpoint.md` →
+ * Following a Run). Each one re-arms the client's request timeout (pi's; Claude Code's 5-minute idle timer), which is what lets
+ * a 300 s wait finish.
+ */
+export const PROGRESS_MS = 10_000;
 
 /** How long `describe()` is kept per isolate. */
 export const DESCRIBE_TTL_MS = 60_000;
@@ -366,8 +374,55 @@ interface CallContext {
   readonly observe: McpObserver;
 }
 
+/**
+ * Reports progress while a tool that waits is open, when the client sent a `progressToken` (pi and Claude Code both do): once
+ * at the start and then every `PROGRESS_MS`, from this timer and not from anything the Session says, since nothing streams
+ * across `api`. `progress` is the seconds elapsed, kept increasing as the protocol asks. Returns what stops it. A client
+ * that did not ask for progress gets none, and finishes on the SSE keep-alives alone.
+ */
+const reportProgress = (spec: Tool, ctx: ServerContext): (() => void) => {
+  const token = ctx.mcpReq._meta?.progressToken;
+
+  if (spec.progress === undefined || token === undefined) return () => undefined;
+
+  const say = spec.progress;
+  const started = Date.now();
+  let last = -1;
+
+  const send = () => {
+    const elapsed = Math.max(last + 1, Math.round((Date.now() - started) / 1000));
+
+    last = elapsed;
+
+    // A stream the client has closed refuses the notification: the wait's own end follows, so this is not reported.
+    ctx.mcpReq
+      .notify({
+        method: "notifications/progress",
+        params: { progressToken: token, progress: elapsed, message: say(elapsed) },
+      })
+      .catch(() => undefined);
+  };
+
+  send();
+
+  const timer = setInterval(send, PROGRESS_MS);
+
+  const stop = () => {
+    clearInterval(timer);
+  };
+
+  ctx.mcpReq.signal.addEventListener("abort", stop, { once: true });
+
+  return stop;
+};
+
 /** One `tools/call`, through its span: the rate limit, the `api` call, and the envelope of text and `structuredContent`. */
-const callTool = (spec: Tool, args: Wire, context: CallContext): Promise<CallToolResult> => {
+const callTool = (
+  spec: Tool,
+  args: Wire,
+  context: CallContext,
+  ctx: ServerContext,
+): Promise<CallToolResult> => {
   const { api, caller, enabled, observe } = context;
   const session = sessionOf(args);
 
@@ -399,11 +454,15 @@ const callTool = (spec: Tool, args: Wire, context: CallContext): Promise<CallToo
     }
 
     let answered: Wire;
+    const stopProgress = reportProgress(spec, ctx);
+    const started = Date.now();
 
     try {
       answered = await spec.call(api, args, caller);
     } catch (error) {
       return fail(rpcFailure(error instanceof Error ? error.message : String(error)));
+    } finally {
+      stopProgress();
     }
 
     const decoded = spec.read(answered);
@@ -417,6 +476,10 @@ const callTool = (spec: Tool, args: Wire, context: CallContext): Promise<CallToo
     const result = decoded.value;
 
     if (!result.ok) return fail(result.error);
+
+    // A wait records how it ended and how long it waited (`docs/architecture/mcp-endpoint.md` → Telemetry and testing).
+    if (spec.span !== undefined)
+      record({ ...spec.span(result.value), waited_ms: Date.now() - started });
 
     const made = success(spec, result.value, enabled);
 
@@ -443,13 +506,13 @@ const makeServer = (version: string, context: CallContext): McpServer => {
       spec.name,
       {
         title: spec.title,
-        description: spec.description,
+        description: spec.describe(context.enabled),
         inputSchema: standard(spec.input),
         outputSchema: standard(spec.output),
         annotations: spec.annotations,
       },
       // SAFETY: the SDK parsed `args` from a JSON body and validated them against the tool's input schema.
-      (args) => callTool(spec, args as Wire, context),
+      (args, ctx) => callTool(spec, args as Wire, context, ctx),
     );
   }
 

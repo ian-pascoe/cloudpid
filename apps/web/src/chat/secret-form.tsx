@@ -14,6 +14,7 @@ import {
   sessionStatusAtom,
 } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
+import { requestCardId } from "./request-anchor.ts";
 import { chosenKeep, defaultKeep, KEEP_CHOICES, KEEP_FIELD, keepNote } from "./secret-keep.ts";
 
 /** Values shorter than this are redacted only as written, so redacting them may also hide unrelated output. */
@@ -79,6 +80,7 @@ const SecretForm = ({
 
   return (
     <form
+      id={requestCardId(request.id)}
       onSubmit={submit}
       aria-label="Secrets requested"
       className="mx-auto mb-3 w-full max-w-3xl rounded-lg border bg-card px-4 py-3 shadow-sm"

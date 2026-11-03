@@ -13,6 +13,7 @@ import { panesAtom } from "../panes-state.ts";
 import { agentLabel } from "../session/agents.ts";
 import { browserHandoffRequestsAtom, taskGraphAtom } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
+import { requestCardId } from "./request-anchor.ts";
 
 /** Why the last "Open in Cloudflare" of one card failed, or null. */
 const HostedFailure = ScopedAtom.make(() => Atom.make<string | null>(null));
@@ -59,6 +60,7 @@ const BrowserHandoffPrompt = ({
 
   return (
     <section
+      id={requestCardId(request.id)}
       aria-label="Browser handoff"
       className="mx-auto mb-3 w-full max-w-3xl rounded-lg border bg-card px-4 py-3 shadow-sm"
     >

@@ -7,6 +7,7 @@ import { ShieldCheck } from "lucide-react";
 import { Button } from "../components/ui/button.tsx";
 import { answerApprovalAtom, approvalRequestsAtom, sessionStatusAtom } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
+import { requestCardId } from "./request-anchor.ts";
 
 /** One card's state: the reason typed for a Decline, and whether the card was answered. */
 const CardState = ScopedAtom.make(() =>
@@ -43,6 +44,7 @@ const ApprovalCardBody = ({ request, disabled, onAnswer }: CardProps) => {
 
   return (
     <section
+      id={requestCardId(request.id)}
       aria-label="Approval requested"
       className="mx-auto mb-3 flex only:min-h-0 only:shrink short:only:shrink-0 max-h-[calc(var(--waiting-height,60dvh)-0.75rem)] w-full max-w-3xl flex-col gap-3 rounded-lg border bg-card px-4 py-3 shadow-sm short:gap-2 short:py-2"
     >

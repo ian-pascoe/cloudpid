@@ -1,5 +1,5 @@
 // docs/architecture/mcp-endpoint.md → The handler, Tools, Limits and errors, Telemetry and testing: `serveMcp` on a fake `api`.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off preferEffectRecord:off newPromise:off
 import { apiFailure, apiOk, MAX_MCP_RUNNING, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
@@ -33,6 +33,8 @@ const summary = {
 const OPERATIONS = ["environments", "sessions", "session", "transcript"];
 
 const WRITE_OPERATIONS = [...OPERATIONS, "start", "send", "stop"];
+
+const ALL_OPERATIONS = [...WRITE_OPERATIONS, "wait"];
 
 const CURSOR = "cur-1";
 
@@ -75,6 +77,7 @@ const fakeApi = (overrides: Partial<McpServerApi> = {}): McpServerApi => ({
   start: () => Promise.resolve(apiFailure("unsupported", "No.")),
   send: () => Promise.resolve(apiFailure("unsupported", "No.")),
   stop: () => Promise.resolve(apiFailure("unsupported", "No.")),
+  wait: () => Promise.resolve(apiFailure("unsupported", "No.")),
   auth: "service_token",
   ...overrides,
 });
@@ -582,6 +585,324 @@ describe("the write tools", () => {
   });
 });
 
+describe("session_wait", () => {
+  const ended = {
+    session_id: ID,
+    status: "idle" as const,
+    ended_by: "run_ended" as const,
+    outcome: { result: "answered" as const },
+    waiting: [],
+    activity: { entries: 3, tool_calls: 1, latest: ["assistant: done"] },
+    answer: { text: "All done", truncated: false },
+    cursor: "cur-2",
+  };
+
+  const waiting = (overrides: Partial<McpServerApi> = {}) =>
+    fakeApi({ describe: describing(ALL_OPERATIONS), ...overrides });
+
+  it("is listed, read-only, after session_get, once the Server lists the wait operation", async () => {
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), waiting()));
+    const tools = result?.tools ?? [];
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "environments_list",
+      "sessions_list",
+      "session_get",
+      "session_wait",
+      "session_transcript",
+      "session_start",
+      "session_send",
+      "session_stop",
+    ]);
+    expect(tools.find((tool) => tool.name === "session_wait")?.annotations).toMatchObject({
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+  });
+
+  it("is left out while the Server does not list it, as are the words that name it", async () => {
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), fakeApi()));
+
+    expect((result?.tools ?? []).map((tool) => tool.name)).not.toContain("session_wait");
+  });
+
+  it("passes the cursor and timeout to the api, and answers the Run's end with its text and a next sentence", async () => {
+    const wait = vi.fn(() => Promise.resolve(apiOk(ended)));
+
+    const result = await call(
+      "session_wait",
+      { session_id: ID, after: CURSOR, timeout_s: 120 },
+      waiting({ wait }),
+    );
+
+    expect(wait).toHaveBeenCalledWith({ session_id: ID, after: CURSOR, timeout_s: 120 });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toContain("the Run ended");
+    expect(result.content[0]?.text).toContain("All done");
+    expect(result.content[0]?.text).toContain("cursor cur-2");
+    expect(result.content[0]?.text.endsWith(result.structuredContent.next ?? "")).toBe(true);
+    expect(result.structuredContent.next).toContain("session_transcript");
+  });
+
+  it("refuses a timeout over 300 s or under 0 before calling the api", async () => {
+    const wait = vi.fn(() => Promise.resolve(apiOk(ended)));
+
+    for (const timeout_s of [301, -1, 1.5]) {
+      const result = await call("session_wait", { session_id: ID, timeout_s }, waiting({ wait }));
+
+      expect(result.isError).toBe(true);
+    }
+
+    expect(wait).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["owner_needed", "cloudpid", /you cannot/],
+    ["stalled", "parked", /parked/],
+    ["timeout", "keep waiting", /session_wait again/],
+    ["import_ended", "session_get", /session_get/],
+  ] as const)(
+    "says what to do after %s, with the cursor to wait from",
+    async (ended_by, _word, pattern) => {
+      const result = await call(
+        "session_wait",
+        { session_id: ID },
+        waiting({ wait: () => Promise.resolve(apiOk({ ...ended, ended_by, cursor: "cur-9" })) }),
+      );
+
+      expect(result.structuredContent.next).toMatch(pattern);
+
+      if (ended_by === "timeout" || ended_by === "owner_needed" || ended_by === "stalled") {
+        expect(result.structuredContent.next).toContain('after="cur-9"');
+      }
+    },
+  );
+
+  it("says an interrupted wait kept the cursor and did not touch the Run", async () => {
+    const result = await call(
+      "session_wait",
+      { session_id: ID },
+      waiting({
+        wait: () =>
+          Promise.resolve(
+            apiOk({ ...ended, ended_by: "timeout" as const, interrupted: true, cursor: CURSOR }),
+          ),
+      }),
+    );
+
+    expect(result.structuredContent).toMatchObject({ interrupted: true, cursor: CURSOR });
+    expect(result.content[0]?.text).toContain("connection to the Session was cut");
+    expect(result.structuredContent.next).toContain('after="cur-1"');
+  });
+
+  it("shows the waiting requests it ended for, with the page the owner answers them at", async () => {
+    const result = await call(
+      "session_wait",
+      { session_id: ID },
+      waiting({
+        wait: () =>
+          Promise.resolve(
+            apiOk({
+              ...ended,
+              status: "waiting_for_owner" as const,
+              ended_by: "owner_needed" as const,
+              waiting: [
+                {
+                  kind: "approval" as const,
+                  request_id: "req-1",
+                  agent_id: "root",
+                  summary: "Run: npm test",
+                  since: 1,
+                  url: `https://cloudpid.test/sessions/${ID}?request=req-1`,
+                },
+              ],
+            }),
+          ),
+      }),
+    );
+
+    expect(result.content[0]?.text).toContain(`${ID}?request=req-1`);
+    expect(result.structuredContent).toMatchObject({ waiting: [{ request_id: "req-1" }] });
+  });
+
+  it("points the other tools' texts at session_wait only while it is served", async () => {
+    const withWait = waiting({
+      start: () =>
+        Promise.resolve(
+          apiOk({
+            session_id: ID,
+            title: null,
+            url: "u",
+            status: "running" as const,
+            cursor: CURSOR,
+            environment: { id: "default", name: "Default", repos: [] },
+          }),
+        ),
+    });
+
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), withWait));
+
+    for (const name of ["session_start", "session_send"]) {
+      const listed = (result?.tools ?? []).find((tool) => tool.name === name);
+
+      expect(JSON.stringify(listed)).toContain("session_wait");
+    }
+
+    const started = await call("session_start", { text: "go" }, withWait);
+
+    expect(started.structuredContent.next).toContain(`session_wait with session_id="${ID}"`);
+    expect(started.structuredContent.next).toContain(`after="${CURSOR}"`);
+
+    const init = await messageOf(
+      await serve(
+        post(
+          rpc("initialize", {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "t", version: "1" },
+          }),
+        ),
+        withWait,
+      ),
+    );
+
+    expect(init.result?.instructions).toContain("loop session_wait");
+    expect(init.result?.instructions?.length).toBeLessThanOrEqual(1500);
+  });
+
+  describe("while it waits", () => {
+    /** The messages of a stream that these cases read. */
+    interface Frame {
+      readonly method?: string;
+      readonly params?: {
+        readonly progress: number;
+        readonly progressToken: string;
+        readonly message: string;
+      };
+    }
+
+    // SAFETY: the endpoint's own JSON-RPC messages, read as far as `Frame` says.
+    const frameOf = (line: string): Frame => JSON.parse(line.slice(5)) as Frame;
+
+    /** The SSE events of a response, as the data of each message and the comments between them. */
+    const framesOf = (text: string) => ({
+      messages: text
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map(frameOf),
+      keepAlives: text.split("\n").filter((line) => line.startsWith(": keepalive")).length,
+    });
+
+    const open = async (meta: Schema.Json | undefined) => {
+      let finish: () => void = () => undefined;
+
+      const api = waiting({
+        wait: () =>
+          new Promise((resolve) => {
+            finish = () => {
+              resolve(apiOk(ended));
+            };
+          }),
+      });
+
+      const call_ = { name: "session_wait", arguments: { session_id: ID, timeout_s: 300 } };
+
+      const response = await serve(
+        post(rpc("tools/call", meta === undefined ? call_ : { ...call_, _meta: meta })),
+        api,
+      );
+
+      return { text: response.text(), finish: () => finish() };
+    };
+
+    it("sends progress at the start and every 10 s, and keep-alive comments every 15 s", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const { text, finish } = await open({ progressToken: "p1" });
+
+        await vi.advanceTimersByTimeAsync(31_000);
+        finish();
+
+        const { messages, keepAlives } = framesOf(await text);
+        const progress = messages.filter((message) => message.method === "notifications/progress");
+
+        expect(progress.map((message) => message.params?.progress)).toEqual([0, 10, 20, 30]);
+        expect(progress.every((message) => message.params?.progressToken === "p1")).toBe(true);
+        expect(progress[3]?.params?.message).toBe("Waiting for the Run · 30s");
+        expect(keepAlives).toBe(2);
+        expect(messages.at(-1)).toMatchObject({
+          result: { structuredContent: { cursor: "cur-2" } },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("says minutes once a wait runs past one", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const { text, finish } = await open({ progressToken: 7 });
+
+        await vi.advanceTimersByTimeAsync(130_000);
+        finish();
+
+        const { messages } = framesOf(await text);
+        const progress = messages.filter((message) => message.method === "notifications/progress");
+
+        expect(progress.at(-1)?.params?.message).toBe("Waiting for the Run · 2m10s");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("sends no progress without a progressToken, and finishes on the keep-alives alone", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const { text, finish } = await open(undefined);
+
+        await vi.advanceTimersByTimeAsync(305_000);
+        finish();
+
+        const { messages, keepAlives } = framesOf(await text);
+
+        expect(messages.filter((message) => message.method === "notifications/progress")).toEqual(
+          [],
+        );
+        expect(keepAlives).toBe(20);
+        expect(messages.at(-1)).toMatchObject({
+          result: { structuredContent: { cursor: "cur-2" } },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops sending progress once the wait has answered", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const { text, finish } = await open({ progressToken: "p1" });
+
+        await vi.advanceTimersByTimeAsync(11_000);
+        finish();
+
+        const { messages } = framesOf(await text);
+
+        expect(vi.getTimerCount()).toBe(0);
+        expect(
+          messages.filter((message) => message.method === "notifications/progress"),
+        ).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+});
+
 describe("the tool gate", () => {
   it("keeps describe() for its TTL, then asks again", async () => {
     let now = 0;
@@ -829,6 +1150,54 @@ describe("the telemetry", () => {
     expect(calls[0]?.["bytes_sent"]).toEqual(expect.any(Number));
     expect(requests).toEqual([{ method: "tools/list", era: "legacy" }]);
   });
+
+  it("records how a wait ended and how long it waited, and nothing of its text", async () => {
+    const calls: Array<Attributes> = [];
+
+    const observe: McpObserver = {
+      request: () => undefined,
+      call: async (attributes, run) => {
+        const record = { ...attributes };
+
+        calls.push(record);
+
+        return run((more) => void Object.assign(record, more));
+      },
+    };
+
+    await call(
+      "session_wait",
+      { session_id: ID, after: CURSOR },
+      fakeApi({
+        describe: describing(ALL_OPERATIONS),
+        wait: () =>
+          Promise.resolve(
+            apiOk({
+              session_id: ID,
+              status: "waiting_for_owner" as const,
+              ended_by: "owner_needed" as const,
+              interrupted: true,
+              waiting: [],
+              activity: { entries: 0, tool_calls: 0, latest: ["secret words"] },
+              answer: { text: "secret words", truncated: false },
+              cursor: "cur-2",
+            }),
+          ),
+      }),
+      observe,
+    );
+
+    expect(calls[0]).toMatchObject({
+      tool: "session_wait",
+      session_id: ID,
+      outcome: "ok",
+      ended_by: "owner_needed",
+      interrupted: true,
+      waited_ms: expect.any(Number),
+    });
+    expect(JSON.stringify(calls)).not.toContain("secret words");
+    expect(JSON.stringify(calls)).not.toContain(CURSOR);
+  });
 });
 
 describe("the Modern lane", () => {
@@ -874,6 +1243,67 @@ describe("the Modern lane", () => {
 
     expect(message.result?.structuredContent?.environments?.[0]?.id).toBe("default");
     expect(observed[0]).toMatchObject({ era: "modern", "client.name": "modern-client" });
+  });
+
+  it("reports a wait's progress and keep-alives on its stream, as the Legacy lane does", async () => {
+    vi.useFakeTimers();
+
+    try {
+      let finish: () => void = () => undefined;
+
+      const api = fakeApi({
+        describe: describing(ALL_OPERATIONS),
+        wait: () =>
+          new Promise((resolve) => {
+            finish = () => {
+              resolve(
+                apiOk({
+                  session_id: ID,
+                  status: "idle" as const,
+                  ended_by: "timeout" as const,
+                  waiting: [],
+                  activity: { entries: 0, tool_calls: 0, latest: [] },
+                  cursor: "cur-2",
+                }),
+              );
+            };
+          }),
+      });
+
+      const response = await serve(
+        post(
+          rpc("tools/call", {
+            name: "session_wait",
+            arguments: { session_id: ID, timeout_s: 300 },
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": { name: "modern-client", version: "2" },
+              "io.modelcontextprotocol/clientCapabilities": {},
+              progressToken: 1,
+            },
+          }),
+          {
+            "mcp-protocol-version": "2026-07-28",
+            "mcp-method": "tools/call",
+            "mcp-name": "session_wait",
+          },
+        ),
+        api,
+      );
+
+      const text = response.text();
+
+      await vi.advanceTimersByTimeAsync(21_000);
+      finish();
+
+      const body = await text;
+
+      expect(body.match(/notifications\/progress/g)).toHaveLength(3);
+      expect(body.match(/: keepalive/g)).toHaveLength(1);
+      expect(body).toContain('"progressToken":1');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
