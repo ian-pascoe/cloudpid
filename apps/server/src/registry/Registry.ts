@@ -70,7 +70,7 @@ import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { buildMovedRepos, MCP_FIRST_LOOK_WAIT, mcpRepoFileViews } from "./mcp-repo-files.ts";
 import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
-import { type McpFieldChange, mcpChangeCheck } from "./mcp-change-check.ts";
+import { mcpChangeCheck } from "./mcp-change-check.ts";
 import { mcpReloadReport, mcpReloadSnapshot, mcpSettingsView } from "./mcp-settings-view.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
@@ -81,6 +81,7 @@ import {
 } from "./skill-updates.ts";
 import {
   SETTINGS_SCOPE,
+  type McpFieldChange,
   type McpSignInsListing,
   type McpSignOutView,
   type SettingsOverridesState,

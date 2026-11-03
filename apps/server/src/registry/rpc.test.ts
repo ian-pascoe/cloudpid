@@ -3,6 +3,7 @@
 import {
   DEFAULT_CONTAINER_SETTINGS,
   DEFAULT_SETTINGS,
+  parseMcpField,
   resolveContainerOverridesLeniently,
   SettingsError,
 } from "@cloudpid/config";
@@ -989,6 +990,7 @@ const fakeRegistries = () => {
         if (
           fieldRepo(found.value.field) !== null ||
           fieldSkill(found.value.field) !== null ||
+          parseMcpField(found.value.field) !== null ||
           found.value.field === "spareWorkspace"
         ) {
           const repoRevert: AgentChange = {
@@ -3475,6 +3477,30 @@ it("keeps the spare Workspace current after a revert of the Spare Workspace sett
 
   expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
   expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("hands the Environment's MCP host its set after a revert of an MCP server's key, and builds nothing", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "settings_mcp_disable",
+    field: "mcp.servers.linear.enabled",
+    before: true,
+    after: false,
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  expect(fake.mcpSyncs).toEqual([]);
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT]);
+  expect(fake.calls).not.toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
 });
 
 it("leaves the spare Workspace alone after a revert of a variable", async () => {

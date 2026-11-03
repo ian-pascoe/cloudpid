@@ -15,11 +15,10 @@ import {
   sortedJson,
   withOverrideFields,
 } from "@cloudpid/config";
-import type { SettingsMcpChangeCheck, SettingsMcpReach } from "@cloudpid/protocol";
+import type { McpFieldChange, SettingsMcpChangeCheck, SettingsMcpReach } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import type * as Schema from "effect/Schema";
 import type { McpSetStore } from "./mcp-registry.ts";
 import { mcpRepoLayers } from "./mcp-repo-files.ts";
 import {
@@ -28,13 +27,6 @@ import {
   readSettingsOverrides,
   type SettingsStore,
 } from "./settings.ts";
-
-/** One field of a server given a new value, or reset (Global: back to its default; an Environment: inheriting again). */
-export type McpFieldChange = {
-  readonly field: string;
-  readonly value: Schema.Json | null;
-  readonly reset?: true | undefined;
-};
 
 const serverOf = (
   servers: ReadonlyArray<McpResolvedServer>,

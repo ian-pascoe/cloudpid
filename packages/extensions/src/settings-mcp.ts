@@ -1,10 +1,10 @@
 // The `settings_mcp` extension (`docs/architecture/mcp-configuration.md` → The agent's changes; `docs/architecture/agent-changes.md`
 // → MCP server changes): the agent's tools for the MCP servers of either Scope, as deferred tools of the root conversation
 // only (`settings_` is in `PARENT_ONLY_TOOL_PREFIXES`), in an extension of their own and not in `mcp`, which is rebuilt
-// whenever the inventory changes. Here are its three read-only tools: `settings_mcp_list`, `settings_mcp_get` and
-// `settings_mcp_reload`. The seven that change servers (`add`, `update`, `remove`, `enable`, `disable`, `exposure_set` and
-// `tool_exposure_set`) join this extension, and are not built yet. The values are in `./settings-mcp-values.ts`, their
-// words in `./settings-mcp-words.ts`.
+// whenever the inventory changes. Here are its read-only tools, `settings_mcp_list`, `settings_mcp_get` and
+// `settings_mcp_reload`, and the ordinary changes of `./settings-mcp-changes.ts`: `disable`, `exposure_set` and
+// `tool_exposure_set`. The ones that wait for the owner's Approval (`add`, `update`, `remove`, `enable`) join this extension,
+// and are not built yet. The values are in `./settings-mcp-values.ts`, their words in `./settings-mcp-words.ts`.
 //
 // What the tools read has two sources, neither of which connects to a server or starts a Container. The Registry
 // (`SettingsMcpAccess`) gives the configuration: the Scope's servers as the owner's set resolves them, where each key comes
@@ -61,8 +61,6 @@ import { describeGet, describeList, describeReload, scopeWords } from "./setting
 
 export { pushMcpSet, SettingsMcpAccess, type SettingsMcpAccessService };
 
-export type { McpFieldChange } from "./settings-mcp-access.ts";
-
 export { MAX_GET_INSTRUCTIONS_BYTES, MAX_GET_TOOLS } from "./settings-mcp-values.ts";
 
 export const extensionName = "settings_mcp";
@@ -103,7 +101,8 @@ const NEVER_RESOLVED =
 
 /**
  * The `settings_mcp` extension: its read-only tools over the Session's `SettingsMcpAccess` (the Registry's MCP read) and
- * the Environments' hosts it reaches (`SettingsMcpAccess.host`).
+ * the Environments' hosts it reaches (`SettingsMcpAccess.host`), and the changing tools that narrow what is reachable
+ * (`McpChangeTools`, over the Settings' change machinery).
  */
 export const SettingsMcpTools: Effect.Effect<
   Extension,

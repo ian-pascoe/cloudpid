@@ -278,6 +278,53 @@ describe("the agent's change of a key at an Environment", () => {
       expect(store.getSettingsOverrides(STAGING)).toEqual({});
     }));
 
+  it("records the value in force of a key a Repo's server holds, and still resets on revert", () =>
+    inRegistry(({ store, changeAt, revertAt }) => {
+      store.addRepo(STAGING, { name: "app", url: "https://github.com/acme/app" });
+
+      store.putMcpRepoFile({
+        environment: STAGING,
+        repo: "app",
+        slug: "acme/app",
+        state: "read",
+        blob: "b1",
+        text: JSON.stringify({
+          mcpServers: { docs: { url: "https://docs.example/mcp", exposure: "direct" } },
+        }),
+        size: null,
+        readAt: 1,
+        lookedAt: 1,
+        error: null,
+        failingSince: null,
+      });
+
+      const [made] = changed(
+        changeAt(STAGING, [{ field: field("exposure", "docs"), value: "hidden" }]),
+      ).changes;
+
+      // The Settings do not see the Repo's file: the record still says what was in force, not "not set".
+      expect(made).toMatchObject({ before: "direct", after: "hidden", beforeInherited: true });
+      expect(revertAt(STAGING, made?.id ?? 0).status).toBe("reverted");
+      expect(store.getSettingsOverrides(STAGING)).toEqual({});
+    }));
+
+  it("refuses the revert of an adjustment once the Environment holds an entry of its own for the server", () =>
+    inRegistry(({ setGlobal, changeAt, revertAt, setOverrides }) => {
+      setGlobal({ mcp: { servers: { files: FILES } } });
+
+      const [made] = changed(
+        changeAt(STAGING, [{ field: field("enabled"), value: false }]),
+      ).changes;
+
+      // The key is the same value, and is still not inherited, but it is in another layer now.
+      setOverrides(STAGING, { mcp: { servers: { files: { ...FILES, enabled: false } } } });
+
+      expect(revertAt(STAGING, made?.id ?? 0)).toMatchObject({
+        status: "changed-since",
+        field: field("enabled"),
+      });
+    }));
+
   it("answers changed-since for a key that is not as the agent saw it", () =>
     inRegistry(({ setGlobal, changeAt }) => {
       setGlobal({ mcp: { servers: { files: FILES } } });

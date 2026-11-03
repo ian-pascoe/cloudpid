@@ -5,6 +5,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- builders over plain values.
 import type { McpApplySet, McpServersRequest, McpSetRevision } from "@cloudpid/mcp/types";
 import type {
+  McpFieldChange,
   SettingsMcpChangeCheck,
   SettingsMcpReload,
   SettingsMcpView,
@@ -13,18 +14,10 @@ import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./mcp/client.ts";
 import { GLOBAL_SETTINGS_SCOPE, type SettingsAccessError } from "./settings.ts";
 import { type Inventory, notRead } from "./settings-mcp-values.ts";
-
-/** One field of a server given a new value, or reset (Global: back to its default; an Environment: inheriting again). */
-export type McpFieldChange = {
-  readonly field: string;
-  readonly value: Schema.Json | null;
-  readonly reset?: true | undefined;
-};
 
 /**
  * The Registry's MCP read, the Environments' hosts and the pushes of a changed set, as the Session reaches them. `view` and

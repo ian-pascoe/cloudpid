@@ -52,6 +52,19 @@ export const MCP_ROOT = "mcp";
 /** The keys an MCP server adjustment holds; every other key is part of the MCP server definition. */
 export const MCP_ADJUSTMENT_KEYS = ["enabled", "exposure", "toolExposure"] as const;
 
+export type McpAdjustmentKey = (typeof MCP_ADJUSTMENT_KEYS)[number];
+
+/** How a key is named in words (an Agent change's title, a result): `on/off`, `exposure`, `tool exposure`. */
+export const MCP_KEY_LABELS: Readonly<Record<McpAdjustmentKey, string>> = {
+  enabled: "on/off",
+  exposure: "exposure",
+  toolExposure: "tool exposure",
+};
+
+/** The field `mcp.servers.<name>.<key>` of one key of an MCP server. */
+export const mcpKeyField = (name: string, key: McpAdjustmentKey): string =>
+  `${MCP_ROOT}.servers.${name}.${key}`;
+
 /** The keys of the MCP server definition: every key but those of an adjustment (`auth` is none, it is refused). */
 export const MCP_DEFINITION_KEYS = [
   "type",
@@ -587,6 +600,26 @@ export const mcpFieldPath = (parts: ReadonlyArray<string>): ReadonlyArray<string
   if (name.length > MCP_LIMITS.name || !MCP_NAME.test(name) || rest.length > 0) return undefined;
 
   return key === undefined || Arr.contains(MCP_ADJUSTMENT_KEYS, key) ? parts : undefined;
+};
+
+/**
+ * The server and key a settings field names (`mcp.servers.<name>`, with a `key` null, or `mcp.servers.<name>.<key>` of
+ * an adjustment's keys), or null for a field that is no MCP server's. The one parser of such a field.
+ */
+export const parseMcpField = (
+  field: string,
+): { readonly name: string; readonly key: McpAdjustmentKey | null } | null => {
+  const parts = field.split(".");
+
+  if (parts[0] !== MCP_ROOT || mcpFieldPath(parts) === undefined) return null;
+
+  const [, , name = "", key] = parts;
+
+  if (key === undefined) return { name, key: null };
+
+  const found = Arr.findFirst(MCP_ADJUSTMENT_KEYS, (each) => each === key);
+
+  return Option.isSome(found) ? { name, key: found.value } : null;
 };
 
 /** The `mcp.servers` of a document of settings or of Overrides, as written; none where it has none. */

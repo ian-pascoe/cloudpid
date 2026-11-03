@@ -11,12 +11,16 @@
 import {
   DEFAULT_SETTINGS,
   INSTRUCTIONS_ROOT,
+  isMcpFullEntry,
+  isJsonObject,
   type OverrideFieldChange,
   overrideFieldPath,
   overrideInherited,
   overrideValue,
   overridesWithFields,
+  parseMcpField,
   resetsOverride,
+  resolveMcpServerSet,
   settingsFieldPath,
   settingsFieldValue,
   withOverrideFields,
@@ -28,7 +32,9 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
+import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import {
+  mcpLayersOf,
   type DocumentStore,
   putEnvironmentInstructions,
   putSettingsOverrides,
@@ -260,6 +266,33 @@ const asOverrideChange = (change: SettingsFieldChange): OverrideFieldChange =>
 const sameOverride = Option.makeEquivalence(Schema.toEquivalence(Schema.Json));
 
 /**
+ * The value of `field` that Environment `environment` has in force when its Overrides are `overrides`: for an MCP server's key
+ * that the Environment inherits, what the resolver gives, which is the server's own layer's (Global's, or a Repo's file's, that
+ * the Settings do not see), or the default; for any other field, `stored`, the settings' own value.
+ */
+const valueInForce = (
+  store: SettingsStore & McpRepoFilesStore,
+  environment: string,
+  overrides: Schema.Json,
+  field: string,
+  stored: Schema.Json | null,
+): Schema.Json | null => {
+  const parsed = parseMcpField(field);
+
+  if (parsed === null || parsed.key === null) return stored;
+
+  const { key, name } = parsed;
+  const layers = mcpLayersOf(store, overrides, mcpRepoLayers(store, environment));
+
+  const found = Arr.findFirst(
+    resolveMcpServerSet(layers.global, layers.overrides, layers.repos).servers,
+    (each) => each.name === name,
+  );
+
+  return Option.isNone(found) ? stored : found.value.server[key];
+};
+
+/**
  * Apply the agent's `changes` to Environment `environment`'s Overrides, as the owner's `updateSettingsOverrides` does,
  * and record each field whose Override changed as an Agent change by `author` under the Environment's id: an Override
  * set, even to the Global value, or one reset. `before` and `after` are the field's values in force, with whether it was
@@ -268,7 +301,7 @@ const sameOverride = Option.makeEquivalence(Schema.toEquivalence(Schema.Json));
  */
 export const changeSettingsOverrides = (
   storage: SettingsStorage,
-  store: SettingsStore,
+  store: SettingsStore & McpRepoFilesStore,
   changes: AgentChanges,
   {
     environment,
@@ -341,8 +374,11 @@ export const changeSettingsOverrides = (
 
     if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure.message };
 
-    const recorded = Arr.map(differing, ({ field, before, beforeInherited }) =>
-      changes.record({
+    const recorded = Arr.map(differing, ({ field, before, beforeInherited }) => {
+      const afterInherited = overrideInherited(saved.success.overrides, field);
+      const after = settingsFieldValue(saved.success.settings, field);
+
+      return changes.record({
         scope: environment,
         at: now,
         actor: "agent",
@@ -351,14 +387,18 @@ export const changeSettingsOverrides = (
         tool: author.tool,
         reason: author.reason,
         field,
-        before,
-        after: settingsFieldValue(saved.success.settings, field),
+        before: beforeInherited
+          ? valueInForce(store, environment, known.overrides, field, before)
+          : before,
+        after: afterInherited
+          ? valueInForce(store, environment, saved.success.overrides, field, after)
+          : after,
         reverts: null,
         approved: author.approved,
         beforeInherited,
-        afterInherited: overrideInherited(saved.success.overrides, field),
-      }),
-    );
+        afterInherited,
+      });
+    });
 
     return known.problem === undefined
       ? { status: "changed", changes: recorded, state: saved.success }
@@ -469,6 +509,21 @@ export const revertEnvironmentInstructionsChange = (
 export const isOverrideField = (field: string): boolean => overrideFieldPath(field) !== undefined;
 
 /**
+ * Whether `change`, to an MCP server's key that the Environment inherited before it (an adjustment was written), has since
+ * been overtaken by an entry of the Environment's own for that server: the key is then in a different layer, and neither
+ * its value before nor the reset the revert makes puts back what the change found.
+ */
+const replacedByOwnEntry = (overrides: Schema.Json, change: AgentChange): boolean => {
+  const parsed = parseMcpField(change.field);
+
+  if (parsed === null || parsed.key === null || change.beforeInherited !== true) return false;
+
+  const entry = overrideValue(overrides, `mcp.servers.${parsed.name}`);
+
+  return Option.isSome(entry) && isJsonObject(entry.value) && isMcpFullEntry(entry.value);
+};
+
+/**
  * The owner's revert of `change`, an Agent change of Environment `environment`'s Overrides, inside the caller's
  * transaction: the field set back to its `before` value, or reset when it was inherited before, and recorded as the
  * owner's change. Refused, saying what the field is now, when it no longer is as the change left it (its value, and
@@ -490,7 +545,8 @@ export const revertSettingsOverrideChange = (
 
   if (
     inherited !== (change.afterInherited ?? false) ||
-    (!inherited && !sameJson(value, change.after))
+    (!inherited && !sameJson(value, change.after)) ||
+    replacedByOwnEntry(known.overrides, change)
   ) {
     return { status: "changed-since", field: change.field, current: value };
   }

@@ -17,7 +17,7 @@ import { changeDiff, skillFileDiffs } from "./line-diff.ts";
 import { SessionLink } from "./sidebar.tsx";
 import { failureOf } from "./registry.ts";
 import { changeByline, changeFieldText, fieldValueText, revertible } from "./environments.ts";
-import { inheritedNote } from "./mcp-change.ts";
+import { inheritedLabel, inheritedLines } from "./mcp-change.ts";
 import { skillChangeFilesAtom, skillChangeKey } from "./skills-state.ts";
 
 /**
@@ -66,10 +66,7 @@ const ChangeValue = ({
   inherited: boolean | undefined;
 }) => (
   <div className="flex min-w-0 flex-col gap-0.5">
-    <span className="text-xs text-muted-foreground">
-      {label}
-      {inheritedNote(field, inherited) !== null && ` · ${inheritedNote(field, inherited)}`}
-    </span>
+    <span className="text-xs text-muted-foreground">{inheritedLabel(label, field, inherited)}</span>
     <pre
       className={cn(
         "max-h-40 overflow-auto rounded bg-muted px-2 py-1 font-mono text-xs break-all whitespace-pre-wrap",
@@ -172,23 +169,11 @@ export const AgentChangeRow = ({
         </div>
       ) : (
         <>
-          {Arr.map(
-            Arr.getSomes([
-              Option.map(
-                Option.fromNullishOr(inheritedNote(change.field, change.beforeInherited)),
-                (note) => `Before: ${note}`,
-              ),
-              Option.map(
-                Option.fromNullishOr(inheritedNote(change.field, change.afterInherited)),
-                (note) => `After: ${note}`,
-              ),
-            ]),
-            (note) => (
-              <p key={note} className="text-xs text-muted-foreground">
-                {note}
-              </p>
-            ),
-          )}
+          {Arr.map(inheritedLines(change), (note) => (
+            <p key={note} className="text-xs text-muted-foreground">
+              {note}
+            </p>
+          ))}
           <ChangeDiff rows={diff} />
         </>
       )}

@@ -18,6 +18,7 @@ import {
   MCP_ROOT,
   MCP_ADJUSTMENT_KEYS,
   mcpFieldPath,
+  parseMcpField,
   type McpSettingsProblem,
   mcpServersOf,
   mcpSettingsProblems,
@@ -137,10 +138,9 @@ export const resetsOverride = (field: string, value: Schema.Json | null): boolea
 
 /** Whether `field` is one of an MCP server's keys an adjustment may hold: `mcp.servers.<name>.enabled|exposure|toolExposure`. */
 const isMcpKeyField = (field: string): boolean => {
-  const parts = field.split(".");
-  const [root, , , key] = parts;
+  const parsed = parseMcpField(field);
 
-  return root === MCP_ROOT && parts.length === 4 && Arr.contains(MCP_ADJUSTMENT_KEYS, key);
+  return parsed !== null && parsed.key !== null;
 };
 
 /**

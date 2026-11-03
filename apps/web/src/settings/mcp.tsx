@@ -25,6 +25,7 @@ import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
 import { Plus, RefreshCw, Trash2, Upload } from "lucide-react";
 import type { FormEvent } from "react";
@@ -185,17 +186,22 @@ const AdjustmentMarks = ({
   );
 };
 
+/** The agent's changes the Scope lists: Global's are the Settings', an Environment's its own. */
+const scopeChangesAtom = Atom.family((scope: string) =>
+  scope === GLOBAL_SCOPE ? settingsChangesAtom : agentChangesAtom(scope),
+);
+
 /** "Changed by the agent · 5 min ago", linking to the change in the Agent changes section; nothing while there is none. */
-const AgentChangedLine = ({
-  scope,
-  name,
-  changes,
-}: {
-  scope: string;
-  name: string;
-  changes: ReadonlyArray<AgentChange>;
-}) => {
-  const change = latestAgentChange(changes, name);
+const AgentChangedLine = ({ scope, name }: { scope: string; name: string }) => {
+  const loaded = useAtomValue(scopeChangesAtom(scope));
+
+  const change = latestAgentChange(
+    loaded.pipe(
+      AsyncResult.value,
+      Option.getOrElse((): ReadonlyArray<AgentChange> => []),
+    ),
+    name,
+  );
 
   if (change === null) return null;
 
@@ -206,38 +212,6 @@ const AgentChangedLine = ({
     >
       Changed by the agent · {relativeTime(change.at, Date.now())}
     </InAppLink>
-  );
-};
-
-/** An Environment's row's mark, from the Environment's Agent changes. */
-const EnvironmentAgentChanged = ({ scope, name }: { scope: string; name: string }) => {
-  const loaded = useAtomValue(agentChangesAtom(scope));
-
-  return (
-    <AgentChangedLine
-      scope={scope}
-      name={name}
-      changes={loaded.pipe(
-        AsyncResult.value,
-        Option.getOrElse((): ReadonlyArray<AgentChange> => []),
-      )}
-    />
-  );
-};
-
-/** A Global row's mark, from the Settings' Agent changes. */
-const GlobalAgentChanged = ({ name }: { name: string }) => {
-  const loaded = useAtomValue(settingsChangesAtom);
-
-  return (
-    <AgentChangedLine
-      scope={GLOBAL_SCOPE}
-      name={name}
-      changes={loaded.pipe(
-        AsyncResult.value,
-        Option.getOrElse((): ReadonlyArray<AgentChange> => []),
-      )}
-    />
   );
 };
 
@@ -305,11 +279,7 @@ const McpRowView = ({
         {chip !== undefined && !(signIn?.chip != null && isSignInState(chip)) && (
           <StatusChip chip={chip} />
         )}
-        {atGlobal ? (
-          <GlobalAgentChanged name={row.name} />
-        ) : (
-          <EnvironmentAgentChanged scope={scope} name={row.name} />
-        )}
+        <AgentChangedLine scope={scope} name={row.name} />
       </div>
       <p className="font-mono text-xs break-all text-muted-foreground">{targetOf(row)}</p>
       {signIn !== null && <SignInNotes id={noteId(`mcp-row-sign-in-${row.name}`)} line={signIn} />}

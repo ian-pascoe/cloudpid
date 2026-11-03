@@ -712,7 +712,7 @@ export const ApprovalTools: Effect.Effect<
         `Resetting a Limit (${Arr.join(
           Arr.map(SETTINGS_LIMITS, (limit) => limit.field),
           ", ",
-        )}) waits for the user's Approval at either Scope, as the Limit tools do: ${APPROVAL} Any other field is reset at once. An MCP server's field (mcp.servers.<name>.enabled, .exposure or .toolExposure) is reset only at an Environment, and only where it is an adjustment of a server Global or a Repo defines (settings_mcp_list shows the fields it holds); it is refused at "*", for a key of the Environment's own entry (use the enable, disable and exposure tools) and for mcp.servers.<name> itself (settings_mcp_remove). A reset that would make a switched-off server or a hidden tool reachable again needs the user's Approval and is refused.`,
+        )}) waits for the user's Approval at either Scope, as the Limit tools do: ${APPROVAL} Any other field is reset at once. An MCP server's field (mcp.servers.<name>.enabled, .exposure or .toolExposure) is reset only at an Environment, and only where it is an adjustment of a server Global or a Repo defines (settings_mcp_list shows the fields it holds); it is refused at "*", for a key of the Environment's own entry (use settings_mcp_disable or the exposure tools) and for mcp.servers.<name> itself (removing a server is made by the user on the Settings page for now). A reset that would make a switched-off server or a hidden tool reachable again needs the user's Approval and is refused.`,
         CHANGE_NOTE,
       ],
       "\n\n",

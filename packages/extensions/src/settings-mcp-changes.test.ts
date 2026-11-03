@@ -54,7 +54,7 @@ import {
   McpChangeTools,
   McpChanges,
   nextToolKeys,
-  SETTINGS_MCP_CHANGE_TOOLS,
+  refuseWidening,
 } from "./settings-mcp-changes.ts";
 
 const DEFAULT = "default";
@@ -402,25 +402,21 @@ describe("the changing tools' properties", () => {
   it("are three: disable runs alone and is not replayed, the exposure tools run alone and are replayed safely", async () => {
     const { tool } = await setup();
 
-    expect(SETTINGS_MCP_CHANGE_TOOLS).toEqual([
+    const names = [
       "settings_mcp_disable",
       "settings_mcp_exposure_set",
       "settings_mcp_tool_exposure_set",
-    ]);
+    ];
 
-    expect(Arr.map(SETTINGS_MCP_CHANGE_TOOLS, (name) => tool(name).executionMode)).toEqual([
+    expect(Arr.map(names, (name) => tool(name).executionMode)).toEqual([
       "sequential",
       "sequential",
       "sequential",
     ]);
 
-    expect(Arr.map(SETTINGS_MCP_CHANGE_TOOLS, (name) => tool(name).replay)).toEqual([
-      "unsafe",
-      "safe",
-      "safe",
-    ]);
+    expect(Arr.map(names, (name) => tool(name).replay)).toEqual(["unsafe", "safe", "safe"]);
 
-    for (const name of SETTINGS_MCP_CHANGE_TOOLS) {
+    for (const name of names) {
       expect(tool(name).parameters).toMatchObject({
         required: expect.arrayContaining(["scope", "name", "reason"]),
       });
@@ -690,6 +686,25 @@ describe("settings_mcp_exposure_set", () => {
 
     expect(text(result)).toContain("mcp__files__*");
     expect(text(result)).toContain("lifts a matching tool to direct");
+  });
+});
+
+describe("refuseWidening", () => {
+  it("words a widening kind it does not know as a plain widening, since the kinds cross the RPC", async () => {
+    const check = {
+      environments: [
+        {
+          environment: { id: "default", name: "Default" },
+          reached: true,
+          // A kind a later Registry adds.
+          widening: [JSON.parse('{"kind":"from_a_later_registry"}')],
+        },
+      ],
+    };
+
+    const refused = await Effect.runPromise(refuseWidening(check, "this change").pipe(Effect.flip));
+
+    expect(refused.message).toContain("it makes something reachable that was not");
   });
 });
 
@@ -989,6 +1004,12 @@ describe("settings_reset of an MCP field", () => {
     expect(world.environments[DEFAULT]?.overrides).toEqual({});
     expect(recorded[0]).toMatchObject({ before: "direct", after: null, afterInherited: true });
     expect(done.text).toContain("it was direct (set here), and is codemode (inherited) now");
+    // Whether the change reaches this Session, and when, as the other tools say it.
+    expect(done.text).toContain('It reaches Environment "Default" (default).');
+    expect(done.text).toContain("This Session's Environment is one of them");
+    expect(done.text).toContain(
+      "The new set was handed to the MCP host of each Environment it reaches",
+    );
     expect(events).toContain("pushes default");
   });
 
@@ -1003,16 +1024,16 @@ describe("settings_reset of an MCP field", () => {
     expect(recorded).toEqual([]);
   });
 
-  it("refuses a whole server, pointing to settings_mcp_remove", async () => {
+  it("refuses a whole server, pointing to the Settings page", async () => {
     const { changes } = await setup({ global: { mcp: { servers: { files: FILES } } } });
 
     const done = await reset(changes, DEFAULT, "mcp.servers.files");
 
     expect(done.ok).toBe(false);
-    expect(done.text).toContain("settings_mcp_remove");
+    expect(done.text).toContain("Settings page");
   });
 
-  it("refuses a key of the Environment's own entry, pointing to the enable, disable and exposure tools", async () => {
+  it("refuses a key of the Environment's own entry, pointing to the disable and exposure tools", async () => {
     const { changes, recorded } = await setup({
       overrides: { [DEFAULT]: { mcp: { servers: { files: { ...FILES, enabled: false } } } } },
     });

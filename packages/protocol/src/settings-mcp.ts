@@ -142,6 +142,13 @@ export type SettingsMcpView = {
   readonly definedIn?: ReadonlyArray<SettingsMcpEnvironment> | undefined;
 };
 
+/** One field of a server given a new value, or reset (Global: back to its default; an Environment: inheriting again). */
+export type McpFieldChange = {
+  readonly field: string;
+  readonly value: Schema.Json | null;
+  readonly reset?: true | undefined;
+};
+
 /**
  * What `mcpChangeCheck` finds of one Environment's set for a change to a server's keys: whether the entry in force of the
  * server changes there (`reached`: an Environment whose own entry or adjustment overrides the key is not), and what

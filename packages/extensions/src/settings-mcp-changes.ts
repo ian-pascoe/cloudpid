@@ -17,18 +17,23 @@
 import {
   isMcpToolName,
   MCP_EXPOSURES,
+  MCP_KEY_LABELS,
+  type McpAdjustmentKey,
   type McpExposure,
   type McpWidening,
   matchesToolPattern,
+  mcpKeyField,
   mcpToolNames,
   mcpToolPrefix,
   overrideInherited,
+  parseMcpField,
   resolveExposure,
   settingsFieldValue,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type {
   AgentChange,
+  McpFieldChange,
   SettingsMcpChangeCheck,
   SettingsMcpServer,
   SettingsMcpView,
@@ -43,7 +48,6 @@ import * as Schema from "effect/Schema";
 import { MAX_CHANGE_REASON } from "./environment.ts";
 import { ChangeOutput, outputSchema } from "./outputs.ts";
 import {
-  type McpFieldChange,
   pushMcpSet,
   readInventory,
   SettingsMcpAccess,
@@ -78,13 +82,6 @@ const ExposureValue = Schema.Literals(MCP_EXPOSURES).annotate({
     "codemode (the tools are called from a script, the default), deferred (found with tool_search), direct (offered to the model by name) or hidden (unreachable)",
 });
 
-/** The keys of a server that are changed here: those an adjustment may hold. */
-type Key = "enabled" | "exposure" | "toolExposure";
-
-const KEYS: ReadonlyArray<Key> = ["enabled", "exposure", "toolExposure"];
-
-const fieldOf = (name: string, key: Key): string => `mcp.servers.${name}.${key}`;
-
 const refuse = (message: string) => SettingsAccessError.make({ message });
 
 /** How every refusal begins. */
@@ -106,6 +103,9 @@ const wideningWords = (widening: McpWidening): string => {
           ? "the server's own hidden exposure"
           : `the hidden key ${JSON.stringify(widening.over)}`
       }`;
+    // A kind a later Registry adds crosses the RPC as itself: it is still a widening.
+    default:
+      return "it makes something reachable that was not";
   }
 };
 
@@ -198,11 +198,11 @@ const keyChange = (input: {
   readonly view: SettingsView;
   readonly scope: string;
   readonly server: SettingsMcpServer;
-  readonly key: Key;
+  readonly key: McpAdjustmentKey;
   readonly value: Schema.Json;
   readonly isDefault: boolean;
 }): SettingsFieldChange => {
-  const field = fieldOf(input.server.server.name, input.key);
+  const field = mcpKeyField(input.server.server.name, input.key);
   const stored = settingsFieldValue(input.view.settings, field);
 
   const expected = isGlobalView(input.view)
@@ -222,7 +222,7 @@ const asCheck = (change: SettingsFieldChange): McpFieldChange =>
 type Entry = SettingsMcpServer["server"]["server"];
 
 /** A key's value in force, as a result says it. */
-const keyWords = (key: Key, entry: Entry): string => {
+const keyWords = (key: McpAdjustmentKey, entry: Entry): string => {
   switch (key) {
     case "enabled":
       return entry.enabled ? "on" : "off";
@@ -236,12 +236,6 @@ const keyWords = (key: Key, entry: Entry): string => {
             ", ",
           );
   }
-};
-
-const KEY_LABELS: Readonly<Record<Key, string>> = {
-  enabled: "on/off",
-  exposure: "exposure",
-  toolExposure: "tool exposure",
 };
 
 /** The `toolExposure` keys in order: the first pattern that matches wins. */
@@ -349,19 +343,7 @@ const toolExposureWords = (input: {
       }),
     }));
 
-  const lifted = Arr.filter(
-    input.offered,
-    (pattern) =>
-      pattern.startsWith(mcpToolPrefix(input.server)) ||
-      (pattern.includes("*") && matchesToolPattern(pattern, `${mcpToolPrefix(input.server)}tool`)),
-  );
-
-  const offeredNote =
-    lifted.length === 0
-      ? []
-      : [
-          `tools.offered has ${Arr.join(lifted, ", ")}, which lifts a matching tool to direct whatever its Exposure here is, never a hidden one.`,
-        ];
+  const offered = offeredNote(input.offered, input.server);
 
   if (exposure === null) {
     const decided = Arr.filter(decisions(input.before), (each) => decidedBy(each.decided, tool));
@@ -373,7 +355,7 @@ const toolExposureWords = (input: {
             Arr.map(decided, (each) => each.name),
             ", ",
           )}, which now follow the next key that matches, or the server's exposure (${input.serverExposure}).`,
-      ...offeredNote,
+      ...offered,
     ];
   }
 
@@ -391,7 +373,7 @@ const toolExposureWords = (input: {
           ? ", so it hides nothing yet (a tool that appears under that name will be hidden)"
           : ""
       }.`,
-      ...offeredNote,
+      ...offered,
     ];
   }
 
@@ -431,7 +413,27 @@ const toolExposureWords = (input: {
     );
   }
 
-  return [...lines, ...offeredNote];
+  return [...lines, ...offered];
+};
+
+/** The `tools.offered` patterns that lift one of `server`'s tools to direct, whatever the server's own exposure says. */
+const offeredFor = (offered: ReadonlyArray<string>, server: string): ReadonlyArray<string> =>
+  Arr.filter(
+    offered,
+    (pattern) =>
+      pattern.startsWith(mcpToolPrefix(server)) ||
+      (pattern.includes("*") && matchesToolPattern(pattern, `${mcpToolPrefix(server)}tool`)),
+  );
+
+/** The result's note on those patterns, or nothing when there are none. */
+const offeredNote = (offered: ReadonlyArray<string>, server: string): ReadonlyArray<string> => {
+  const lifting = offeredFor(offered, server);
+
+  return lifting.length === 0
+    ? []
+    : [
+        `tools.offered has ${Arr.join(lifting, ", ")}, which lifts a matching tool to direct whatever its exposure here is, never a hidden one.`,
+      ];
 };
 
 /** The inherited state a change recorded, as a result says it. */
@@ -478,8 +480,9 @@ export const McpChanges = Effect.gen(function* () {
   const afterApplied = (input: {
     readonly scope: string;
     readonly name: string;
-    readonly key: Key;
-    readonly was: SettingsMcpServer;
+    readonly key: McpAdjustmentKey;
+    /** The server as it was; none for an adjustment that had no server to adjust. */
+    readonly was: SettingsMcpServer | undefined;
     readonly check: SettingsMcpChangeCheck;
     readonly changes: ReadonlyArray<AgentChange>;
     readonly lead: string;
@@ -511,7 +514,7 @@ export const McpChanges = Effect.gen(function* () {
 
       const own = yield* access.own.pipe(Effect.orElseSucceed(() => null));
       const reachesOwn = own !== null && Arr.some(reached, (each) => each.id === own);
-      const change = Arr.head(input.changes);
+      const recorded = Option.getOrUndefined(Arr.head(input.changes));
 
       const after = now === undefined ? "unknown" : keyWords(input.key, now.server.server);
 
@@ -527,7 +530,9 @@ export const McpChanges = Effect.gen(function* () {
       return Arr.join(
         [
           input.lead,
-          `- MCP server ${input.name} · ${KEY_LABELS[input.key]}: it was ${keyWords(input.key, input.was.server.server)}${inheritedWords(Option.getOrUndefined(change), "before")}, and is ${after}${inheritedWords(Option.getOrUndefined(change), "after")} now.`,
+          input.was === undefined
+            ? `- The adjustment of ${input.name} had no server to adjust: it is gone.`
+            : `- MCP server ${input.name} · ${MCP_KEY_LABELS[input.key]}: it was ${keyWords(input.key, input.was.server.server)}${inheritedWords(recorded, "before")}, and is ${after}${inheritedWords(recorded, "after")} now.`,
           reach,
           reachesOwn
             ? "This Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request."
@@ -549,7 +554,7 @@ export const McpChanges = Effect.gen(function* () {
     readonly tool: string;
     readonly scope: string;
     readonly located: Located;
-    readonly key: Key;
+    readonly key: McpAdjustmentKey;
     readonly view: SettingsView;
     readonly field: SettingsFieldChange;
     readonly reason: string;
@@ -604,7 +609,7 @@ export const McpChanges = Effect.gen(function* () {
       if (!located.server.server.server.enabled) {
         return unchanged(
           view,
-          fieldOf(input.name, "enabled"),
+          mcpKeyField(input.name, "enabled"),
           `MCP server ${input.name} is switched off ${where(view)} already: nothing was changed or recorded.`,
         );
       }
@@ -644,18 +649,10 @@ export const McpChanges = Effect.gen(function* () {
       if (entry.exposure === input.exposure) {
         return unchanged(
           view,
-          fieldOf(input.name, "exposure"),
+          mcpKeyField(input.name, "exposure"),
           `MCP server ${input.name} has the exposure ${input.exposure} ${where(view)} already: nothing was changed or recorded.`,
         );
       }
-
-      const lifting = Arr.filter(
-        located.view.offered,
-        (pattern) =>
-          pattern.startsWith(mcpToolPrefix(input.name)) ||
-          (pattern.includes("*") &&
-            matchesToolPattern(pattern, `${mcpToolPrefix(input.name)}tool`)),
-      );
 
       return yield* change({
         tool: "settings_mcp_exposure_set",
@@ -674,12 +671,7 @@ export const McpChanges = Effect.gen(function* () {
         reason: input.reason,
         conversation: input.conversation,
         lead: `Set the exposure of MCP server ${input.name} to ${input.exposure} ${where(view)}. A tool named in the server's toolExposure keeps its own exposure.`,
-        extra:
-          lifting.length === 0
-            ? []
-            : [
-                `tools.offered has ${Arr.join(lifting, ", ")}, which lifts a matching tool to direct whatever this exposure is, never a hidden one.`,
-              ],
+        extra: offeredNote(located.view.offered, input.name),
       });
     });
 
@@ -735,7 +727,7 @@ export const McpChanges = Effect.gen(function* () {
 
       if ("problem" in next) return yield* refuse(`${NOTHING}${next.problem}.`);
 
-      const field = fieldOf(input.name, "toolExposure");
+      const field = mcpKeyField(input.name, "toolExposure");
 
       if (sameKeys(before, next.keys)) {
         return unchanged(
@@ -795,18 +787,17 @@ export const McpChanges = Effect.gen(function* () {
     readonly conversation: number;
   }) =>
     Effect.gen(function* () {
-      const [, , name = "", key] = input.field.split(".");
-      const keyName = Arr.findFirst(KEYS, (each) => each === key);
+      const parsed = parseMcpField(input.field);
 
-      if (key === undefined || Option.isNone(keyName)) {
+      if (parsed === null || parsed.key === null) {
         return yield* refuse(
-          `Nothing was asked or saved: settings_reset does not take a whole MCP server (${input.field}). settings_mcp_remove removes an Environment's own server, and asks the user first.`,
+          `Nothing was asked or saved: settings_reset does not take a whole MCP server (${input.field}). Removing an Environment's own server is made by the user on the Settings page for now.`,
         );
       }
 
       if (input.scope === GLOBAL_SETTINGS_SCOPE) {
         return yield* refuse(
-          `Nothing was asked or saved: settings_reset takes no MCP field at "*" (${input.field}): Global holds the servers' own entries, with no lower layer to fall back to. Use settings_mcp_enable, settings_mcp_disable and the exposure tools to change a key, settings_mcp_remove to remove a server.`,
+          `Nothing was asked or saved: settings_reset takes no MCP field at "*" (${input.field}): Global holds the servers' own entries, with no lower layer to fall back to. Use settings_mcp_disable and the exposure tools to change a key; switching a server on or removing it is made by the user on the Settings page for now.`,
         );
       }
 
@@ -814,13 +805,14 @@ export const McpChanges = Effect.gen(function* () {
 
       if (isGlobalView(view)) return yield* refuse("An Environment's id is needed.");
 
+      const { key, name } = parsed;
       const found = yield* access.view({ scope: input.scope, name });
       const server = Arr.head(found.servers);
 
       // A key inside the Environment's own full entry is no adjustment: the entry is the server's, with no lower layer.
       if (Option.isSome(server) && server.value.server.source.kind === "environment") {
         return yield* refuse(
-          `Nothing was asked or saved: ${input.field} is a key of ${view.name}'s own entry for ${name}, not an adjustment, so there is nothing to reset it to. Use settings_mcp_enable, settings_mcp_disable or the exposure tools to change it.`,
+          `Nothing was asked or saved: ${input.field} is a key of ${view.name}'s own entry for ${name}, not an adjustment, so there is nothing to reset it to. Use settings_mcp_disable or the exposure tools to change it.`,
         );
       }
 
@@ -854,27 +846,15 @@ export const McpChanges = Effect.gen(function* () {
         conversation: input.conversation,
         unchanged: `${input.field} inherits already: nothing changed.`,
         changed: ({ changes }) =>
-          Effect.gen(function* () {
-            const pushed = yield* pushMcpSet(access, input.scope);
-
-            const now = yield* access.view({ scope: input.scope, name }).pipe(
-              Effect.map((each) => Option.getOrUndefined(Arr.head(each.servers))),
-              Effect.orElseSucceed(() => undefined),
-            );
-
-            return Arr.join(
-              [
-                `Reset the ${KEY_LABELS[keyName.value]} of MCP server ${name} ${where(view)}: its adjustment is removed, so the key follows the server's own layer again.`,
-                Option.isSome(server)
-                  ? `- MCP server ${name} · ${KEY_LABELS[keyName.value]}: it was ${keyWords(keyName.value, server.value.server.server)}${inheritedWords(changes[0], "before")}, and is ${now === undefined ? "unknown" : keyWords(keyName.value, now.server.server)}${inheritedWords(changes[0], "after")} now.`
-                  : `- The adjustment of ${name} had no server to adjust: it is gone.`,
-                pushed === "failed"
-                  ? "The new set could not be handed to this Environment's MCP host now: it takes it at its next pull."
-                  : "The new set was handed to this Environment's MCP host.",
-                "The change is recorded with your reason; the user can see and revert it on the Settings page.",
-              ],
-              "\n",
-            );
+          afterApplied({
+            scope: input.scope,
+            name,
+            key,
+            was: Option.getOrUndefined(server),
+            check,
+            changes,
+            lead: `Reset the ${MCP_KEY_LABELS[key]} of MCP server ${name} ${where(view)}: its adjustment is removed, so the key follows the server's own layer again.`,
+            extra: [],
           }),
       });
     });
@@ -884,13 +864,6 @@ export const McpChanges = Effect.gen(function* () {
 
 const CHANGE_NOTE =
   "The change is recorded with your reason, and the user can see and revert it on the Settings page. Only changes that narrow what is reachable are made here: one that would switch a server on, take it or a tool out of hidden, or otherwise make something reachable that is not, needs the user's Approval and is refused. A name is the server in force in that Scope's set. At scope \"*\" the key is changed in Global's entry, which reaches every Environment but those whose own entry or adjustment overrides it (the result names them); at an Environment's id the change is that Environment's own, an Override even when it equals Global's (settings_reset removes it). The new set is handed to the MCP hosts the change reaches.";
-
-/** The tools of the extension that change servers without the owner's Approval. */
-export const SETTINGS_MCP_CHANGE_TOOLS = [
-  "settings_mcp_disable",
-  "settings_mcp_exposure_set",
-  "settings_mcp_tool_exposure_set",
-] as const;
 
 /** The three tools, over `McpChanges`. */
 export const McpChangeTools = Effect.gen(function* () {

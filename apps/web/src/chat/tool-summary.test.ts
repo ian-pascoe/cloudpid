@@ -166,7 +166,7 @@ describe("toolSummary", () => {
         name: "linear",
         exposure: "direct",
       }),
-    ).toBe("linear in env-1: direct");
+    ).toBe("linear: direct in env-1");
     expect(
       toolSummary("settings_mcp_tool_exposure_set", {
         scope: "*",
@@ -174,7 +174,7 @@ describe("toolSummary", () => {
         tool: "delete_*",
         exposure: "hidden",
       }),
-    ).toBe("linear at Global · delete_*: hidden");
+    ).toBe("linear · delete_*: hidden at Global");
     expect(
       toolSummary("settings_mcp_tool_exposure_set", {
         scope: "*",
@@ -182,7 +182,7 @@ describe("toolSummary", () => {
         tool: "delete_*",
         exposure: null,
       }),
-    ).toBe("linear at Global · delete_*: removed");
+    ).toBe("linear · delete_*: removed at Global");
     expect(toolSummary("settings_mcp_disable", { scope: "*" })).toBeUndefined();
     expect(toolSummary("settings_compaction_set", { reason: "more room\nplease" })).toBe(
       "more room",

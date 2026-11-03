@@ -4,28 +4,13 @@ import type { AgentChange } from "@cloudpid/protocol";
 import { changeDiff } from "./line-diff.ts";
 import { madeChanges } from "./chat/agent-change.ts";
 import { changeFieldText, changeTitleText, fieldValueText } from "./environments.ts";
-import { inheritedNote, latestAgentChange, mcpChangeField, mcpEntryTexts } from "./mcp-change.ts";
-
-describe("mcpChangeField", () => {
-  it("names the server and key of an MCP field", () => {
-    expect(mcpChangeField("mcp.servers.linear")).toEqual({ name: "linear", key: "entry" });
-    expect(mcpChangeField("mcp.servers.linear.enabled")).toEqual({
-      name: "linear",
-      key: "enabled",
-    });
-    expect(mcpChangeField("mcp.servers.linear.toolExposure")).toEqual({
-      name: "linear",
-      key: "toolExposure",
-    });
-  });
-
-  it("is null for any other field", () => {
-    expect(mcpChangeField("roles.small")).toBeNull();
-    expect(mcpChangeField("mcp.servers.linear.url")).toBeNull();
-    expect(mcpChangeField("mcp.servers.linear.enabled.x")).toBeNull();
-    expect(mcpChangeField("mcp.servers")).toBeNull();
-  });
-});
+import {
+  inheritedLabel,
+  inheritedLines,
+  inheritedNote,
+  latestAgentChange,
+  mcpEntryTexts,
+} from "./mcp-change.ts";
 
 describe("how an MCP change reads", () => {
   it("says the server and the key", () => {
@@ -79,8 +64,22 @@ describe("how an MCP change reads", () => {
 describe("inheritedNote", () => {
   it("is the entry's words for an entry and the plain note for a key", () => {
     expect(inheritedNote("mcp.servers.linear", true)).toBe("Global's entry (inherited)");
-    expect(inheritedNote("mcp.servers.linear.enabled", true)).toBe("Inherited from Global");
+    expect(inheritedNote("mcp.servers.linear.enabled", true)).toBe(
+      "Inherited from the server's own entry",
+    );
     expect(inheritedNote("roles.small", true)).toBe("Inherited from Global");
+  });
+
+  it("labels a value and lists both sides' notes", () => {
+    expect(inheritedLabel("Before", "roles.small", true)).toBe("Before · Inherited from Global");
+    expect(inheritedLabel("After", "roles.small", false)).toBe("After");
+    expect(
+      inheritedLines({
+        field: "mcp.servers.linear",
+        beforeInherited: true,
+        afterInherited: false,
+      }),
+    ).toEqual(["Before: Global's entry (inherited)"]);
   });
 
   it("is null for a value that was not inherited", () => {

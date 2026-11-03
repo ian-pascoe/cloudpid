@@ -1,4 +1,10 @@
-import { isContainerField, SettingsError, SPARE_WORKSPACE_FIELD, textSize } from "@cloudpid/config";
+import {
+  isContainerField,
+  parseMcpField,
+  SettingsError,
+  SPARE_WORKSPACE_FIELD,
+  textSize,
+} from "@cloudpid/config";
 import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
@@ -866,6 +872,12 @@ export const serveRegistryRpc = <R = never>(
                   return secretChanged(environment === GLOBAL_SCOPE ? null : environment).pipe(
                     Effect.as(revert.change),
                   );
+                }
+
+                // An MCP server's key put back changes the Environment's set: its host is handed it, as after the owner's
+                // save (the Global path does the same).
+                if (parseMcpField(revert.change.field) !== null) {
+                  return background(mcp.sync(environment)).pipe(Effect.as(revert.change));
                 }
 
                 // As after the owner's save: the variables are among what a Build is made with. A Repo put back or
