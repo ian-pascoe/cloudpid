@@ -240,6 +240,14 @@ export type SessionMethods = {
   readonly mcpSignInsResolved: (input: {
     readonly requests: ReadonlyArray<string>;
   }) => Effect.Effect<number>;
+  /**
+   * A sign-in attempt failed (carried as `mcpSignInsResolved` is): show `problem` on each of these Sign-in requests that is
+   * open, which stay open. Answers how many changed.
+   */
+  readonly mcpSignInsFailed: (input: {
+    readonly requests: ReadonlyArray<string>;
+    readonly problem: string;
+  }) => Effect.Effect<number>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -1071,6 +1079,8 @@ export const SessionLive = Session.make(
             ),
           mcpSignInsResolved: ({ requests }) =>
             invoked("session.mcp.sign_in_resolved", mcpSignIns.service.resolve(requests)),
+          mcpSignInsFailed: ({ requests, problem }) =>
+            invoked("session.mcp.sign_in_failed", mcpSignIns.service.failed(requests, problem)),
           stageImportBegin: (request) => invoked("session.import.begin", imports.begin(request)),
           stageImportAppend: (request) => invoked("session.import.append", imports.append(request)),
           stageImportFinish: (request) => invoked("session.import.finish", imports.finish(request)),

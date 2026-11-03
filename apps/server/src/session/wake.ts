@@ -39,14 +39,14 @@ export const onIdle = (
   browser: Pick<BrowserSessionService, "closeIfIdle">,
   handoffs: Pick<BrowserHandoffsService, "dropAbandoned">,
   approvals: Pick<ApprovalsService, "dropAbandoned">,
-  signIns?: Pick<McpSignInsService, "dropAbandoned">,
+  signIns: Pick<McpSignInsService, "dropAbandoned">,
 ): Effect.Effect<void> =>
   Effect.all(
     [
       secrets.dropAbandoned,
       handoffs.dropAbandoned,
       approvals.dropAbandoned,
-      signIns === undefined ? Effect.void : signIns.dropAbandoned,
+      signIns.dropAbandoned,
       browser.closeIfIdle,
     ],
     { discard: true },

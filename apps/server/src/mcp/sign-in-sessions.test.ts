@@ -20,6 +20,7 @@ describe("mcpSignInSessions", () => {
     await Effect.runPromise(
       mcpSignInSessions({
         session: (id) => ({
+          mcpSignInsFailed: () => Effect.succeed(0),
           mcpSignInsResolved: ({ requests }) => {
             told.push([id, requests]);
 
@@ -49,6 +50,7 @@ describe("mcpSignInSessions", () => {
     await Effect.runPromise(
       mcpSignInSessions({
         session: (id) => ({
+          mcpSignInsFailed: () => Effect.succeed(0),
           mcpSignInsResolved: ({ requests }) => {
             if (id === "s1") return Effect.die(new Error("no such method"));
 
@@ -70,6 +72,7 @@ describe("mcpSignInSessions", () => {
       Effect.gen(function* () {
         const carried = yield* mcpSignInSessions({
           session: (id) => ({
+            mcpSignInsFailed: () => Effect.succeed(0),
             mcpSignInsResolved: ({ requests }) => {
               if (id === "s1") return Effect.never;
 
@@ -88,5 +91,38 @@ describe("mcpSignInSessions", () => {
     );
 
     expect(reached).toHaveBeenCalledWith("s2");
+  });
+
+  it("tells each Session which of its requests a failed attempt left open, with the problem to show", async () => {
+    const told: Array<[string, ReadonlyArray<string>, string]> = [];
+
+    await Effect.runPromise(
+      mcpSignInSessions({
+        session: (id) => ({
+          mcpSignInsResolved: () => Effect.succeed(0),
+          mcpSignInsFailed: ({ requests, problem }) => {
+            told.push([id, requests, problem]);
+
+            return Effect.succeed(requests.length);
+          },
+        }),
+      }).failed(resolved, "The server refused the code"),
+    );
+
+    expect(told).toEqual([
+      ["s1", ["signin-1", "signin-2"], "The server refused the code"],
+      ["s2", ["signin-4"], "The server refused the code"],
+    ]);
+  });
+
+  it("never fails when a Session cannot be told of a failure", async () => {
+    await Effect.runPromise(
+      mcpSignInSessions({
+        session: () => ({
+          mcpSignInsResolved: () => Effect.succeed(0),
+          mcpSignInsFailed: () => Effect.die(new Error("no such method")),
+        }),
+      }).failed(resolved, "x"),
+    );
   });
 });

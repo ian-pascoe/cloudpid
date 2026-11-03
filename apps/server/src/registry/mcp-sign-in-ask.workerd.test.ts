@@ -6,7 +6,11 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off
 import { type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type { OAuthFetch } from "@cloudpid/mcp/oauth";
-import type { McpSignInAskAnswer, McpSignInCompleteAnswer } from "@cloudpid/mcp/types";
+import type {
+  McpSignInAskAnswer,
+  McpSignInCompleteAnswer,
+  McpSignInCompleteInput,
+} from "@cloudpid/mcp/types";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -75,7 +79,9 @@ type Ask = {
   readonly keyHash: (name: string) => string;
   readonly setGlobal: (value: Schema.Json) => void;
   /** The owner signs in from Settings: start, and the authorization server's callback. */
-  readonly completeFromSettings: () => Promise<McpSignInCompleteAnswer>;
+  readonly completeFromSettings: (
+    over?: Partial<McpSignInCompleteInput>,
+  ) => Promise<McpSignInCompleteAnswer>;
   readonly withdraw: (session: string, request: string) => { readonly removed: boolean };
 };
 
@@ -103,7 +109,7 @@ const run = <A>(body: (ask: Ask) => Promise<A>) =>
         return target.key.hash;
       };
 
-      const completeFromSettings = async () => {
+      const completeFromSettings: Ask["completeFromSettings"] = async (over = {}) => {
         const started = await Effect.runPromise(
           startMcpSignIn(
             deps,
@@ -121,7 +127,7 @@ const run = <A>(body: (ask: Ask) => Promise<A>) =>
         return Effect.runPromise(
           completeMcpSignIn(
             deps,
-            { state: code, path: "/oauth/mcp/callback", code: "code-1", iss: AS },
+            { state: code, path: "/oauth/mcp/callback", code: "code-1", iss: AS, ...over },
             NOW + 1000,
           ),
         );
@@ -299,6 +305,36 @@ describe("a sign-in completed from Settings", () => {
       const answer = await completeFromSettings();
 
       expect("resolved" in answer ? answer.resolved : undefined).toEqual([]);
+    }));
+});
+
+describe("a sign-in attempt that failed", () => {
+  it("leaves every open Sign-in request in place, names them for the carrier, and shows the failure on the next ask", () =>
+    run(async ({ ask, setGlobal, signIns, keyHash, completeFromSettings }) => {
+      setGlobal({ sentry: { url: SERVER_URL } });
+      await ask("s1", "signin-1");
+      await ask("s2", "signin-1");
+
+      const answer = await completeFromSettings({
+        code: undefined,
+        error: "server_error",
+        errorDescription: "The server could not issue a code",
+      });
+
+      expect(answer).toMatchObject({
+        status: "provider_error",
+        message: "The server could not issue a code",
+        waiting: [
+          { session: "s1", request: "signin-1" },
+          { session: "s2", request: "signin-1" },
+        ],
+      });
+      expect(signIns.waiters(keyHash("sentry"), NOW + 2000)).toHaveLength(2);
+      expect(await ask("s1", "signin-1", { now: NOW + 3000 })).toMatchObject({
+        status: "open",
+        first: false,
+        problem: "The server could not issue a code",
+      });
     }));
 });
 

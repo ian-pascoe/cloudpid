@@ -193,6 +193,35 @@ describe("a Sign-in request in a Session", () => {
     owner.close();
   });
 
+  it("shows a failed sign-in attempt on the card and keeps the request open, and a later sign-in still ends it", async () => {
+    const { stub } = await open();
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([LOAD, ASK, "done"]);
+      await instance.submit({ requestId: "turn-1", text: "go" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+    expect(owner.requests()[0]?.problem).toBeUndefined();
+
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.failSignIns(["signin-1"], "The authorization server refused the code"),
+      ),
+    ).toBe(1);
+    await settles(async () =>
+      expect(owner.requests()[0]?.problem).toBe("The authorization server refused the code"),
+    );
+    expect(owner.requests()).toHaveLength(1);
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.resolveSignIns(["signin-1"]),
+    );
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await idle(stub);
+    owner.close();
+  });
+
   it("is one request when the agent's calls ask in parallel, and one sign-in ends every call", async () => {
     const { stub } = await open();
     const owner = await connect(stub);

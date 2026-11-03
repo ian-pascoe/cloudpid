@@ -685,10 +685,11 @@ describe("a request to a server with a sign-in", () => {
       granted(TOKEN),
     ]);
 
-    // The discovery went without a token; the call finds a step-up the owner has not done.
+    // The discovery went without a token; the call finds a step-up the owner has not done: a step-up, with its scope,
+    // which a Session words as "needs the owner to sign in again" and not as a first sign-in.
     expect(await host.request(call("sentry", "search"), {})).toMatchObject({
       _tag: "CallFailed",
-      error: { _tag: "SignInRequired" },
+      error: { _tag: "StepUpRequired", scope: "admin" },
     });
     expect(await host.engineRequests()).toEqual([]);
 
@@ -708,6 +709,31 @@ describe("a request to a server with a sign-in", () => {
       }),
     ]);
   });
+});
+
+describe("a request that is not sent for a sign-in that cannot be used for now", () => {
+  it.each([
+    ["refresh_failing", "Can't refresh the sign-in: The server refused the refresh"],
+    ["unavailable", "The sign-in is not available"],
+  ] as const)(
+    "says the owner's own sign-in is the cause (signIn) when the Registry answers %s",
+    async (status, message) => {
+      // The discovery went without a token (a server never signed in to may need none); the call finds none that serves.
+      const host = await signedIn([
+        { status: "required", reason: "Not signed in" },
+        {
+          status,
+          reason: status === "refresh_failing" ? "The server refused the refresh" : message,
+        },
+      ]);
+
+      expect(await host.request(call("sentry", "search"), {})).toMatchObject({
+        _tag: "CallFailed",
+        error: { _tag: "Unreachable", message, signIn: true },
+      });
+      expect(await host.engineRequests()).toEqual([]);
+    },
+  );
 });
 
 describe("a request to a server that signs in on its own", () => {
@@ -768,6 +794,30 @@ describe("a request to a server that signs in on its own", () => {
       });
       expect(await host.engineRequests()).toEqual([]);
       expect(await host.reports()).toEqual([]);
+    }
+  });
+
+  it("never marks a refresh that fails, or a Registry that is not available, as a sign-in the owner could give", async () => {
+    for (const status of ["refresh_failing", "unavailable"] as const) {
+      const host = await grantHost([
+        {
+          status: "ok",
+          token: TOKEN,
+          resource: urlOf("sentry"),
+          signIn: "grant-1",
+          expiresAt: Date.now(),
+        },
+        noToken(status, "The authorization server did not answer"),
+      ]);
+
+      const answer = await host.request(call("sentry", "search"), {});
+
+      expect(answer).toMatchObject({
+        _tag: "CallFailed",
+        error: { _tag: "Unreachable", message: expect.stringContaining("did not answer") },
+      });
+      // No `signIn`: the Session adds no `details.sign_in` and never says to ask the owner.
+      expect(answer).not.toHaveProperty("error.signIn");
     }
   });
 

@@ -20,6 +20,7 @@ class Probe {
   dropped = 0;
   handoffsDropped = 0;
   approvalsDropped = 0;
+  signInsDropped = 0;
   stored: number | undefined = undefined;
 }
 
@@ -81,7 +82,13 @@ const setup = (nextExpiry?: number) => {
     }),
   };
 
-  return { state, browser, secrets, handoffs, approvals };
+  const signIns = {
+    dropAbandoned: Effect.sync(() => {
+      state.signInsDropped += 1;
+    }),
+  };
+
+  return { state, browser, secrets, handoffs, approvals, signIns };
 };
 
 describe("earliest", () => {
@@ -122,28 +129,30 @@ describe("what wakes an idle Session", () => {
 });
 
 describe("what a Session does when it settles", () => {
-  test("closes the browser once the Session has been idle past its keep-alive, and clears abandoned Secret requests, Browser Handoffs and Approval requests", () =>
+  test("closes the browser once the Session has been idle past its keep-alive, and clears abandoned Secret requests, Browser Handoffs, Approval requests and Sign-in requests", () =>
     Effect.gen(function* () {
-      const { state, browser, secrets, handoffs, approvals } = setup();
+      const { state, browser, secrets, handoffs, approvals, signIns } = setup();
 
       yield* browser.touch;
-      yield* onIdle(secrets, browser, handoffs, approvals);
+      yield* onIdle(secrets, browser, handoffs, approvals, signIns);
 
       expect(state).toMatchObject({
         closes: 0,
         dropped: 1,
         handoffsDropped: 1,
         approvalsDropped: 1,
+        signInsDropped: 1,
       });
 
       yield* TestClock.adjust(BROWSER_IDLE_MS);
-      yield* onIdle(secrets, browser, handoffs, approvals);
+      yield* onIdle(secrets, browser, handoffs, approvals, signIns);
 
       expect(state).toMatchObject({
         closes: 1,
         dropped: 2,
         handoffsDropped: 2,
         approvalsDropped: 2,
+        signInsDropped: 2,
       });
       expect(yield* wakeAt(secrets, browser)).toBeUndefined();
     }));

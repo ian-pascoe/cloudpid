@@ -52,6 +52,14 @@ export type McpSignInChangeCarried = {
 export type McpSignInCarry = {
   /** Pass `change` to the host of each Environment that uses the sign-in. Never fails. */
   readonly carry: (change: McpSignInChangeCarried) => Effect.Effect<void>;
+  /**
+   * A sign-in attempt failed: tell the Sessions whose Sign-in requests wait on its key (`waiting`, which stay open) what
+   * went wrong, to show on the card. Never fails.
+   */
+  readonly failed: (
+    waiting: ReadonlyArray<McpResolvedWaiter>,
+    problem: string,
+  ) => Effect.Effect<void>;
 };
 
 /** Why a host did not take the change, for the log. */
@@ -61,7 +69,10 @@ const failureText = (result: McpApplyResult): string =>
     : result._tag;
 
 /** A carry that reaches no host: for a Worker or a test that has none. */
-export const noSignInCarry: McpSignInCarry = { carry: () => Effect.void };
+export const noSignInCarry: McpSignInCarry = {
+  carry: () => Effect.void,
+  failed: () => Effect.void,
+};
 
 /** The carry over `hosts`, and over `sessions` for the Sign-in requests a change resolved. */
 export const mcpSignInCarry = (
@@ -97,4 +108,5 @@ export const mcpSignInCarry = (
       ),
       (hosts.sessions ?? noSignInSessionCarry).carry(resolved ?? []),
     ),
+  failed: (waiting, problem) => (hosts.sessions ?? noSignInSessionCarry).failed(waiting, problem),
 });

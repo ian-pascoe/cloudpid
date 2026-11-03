@@ -33,6 +33,7 @@ const harness = (registry: Parameters<typeof mcpSignInManage>[0]["registry"]) =>
         Effect.sync(() => {
           carried.push(change);
         }),
+      failed: () => Effect.void,
     },
   });
 

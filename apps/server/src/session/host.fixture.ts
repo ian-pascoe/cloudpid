@@ -954,7 +954,8 @@ export class TestSession extends DurableObject {
                   Effect.service(BrowserHandoffs),
                   Effect.service(Approvals),
                 ]),
-                ([held, handoffs, approvals]) => onIdle(held, browser, handoffs, approvals),
+                ([held, handoffs, approvals]) =>
+                  onIdle(held, browser, handoffs, approvals, this.#mcpSignIns().service),
               ),
             }).pipe(
               Layer.provide(
@@ -1976,6 +1977,11 @@ export class TestSession extends DurableObject {
       asked: kv.get<unknown[]>("signin-asks") ?? [],
       withdrawn: kv.get<unknown[]>("signin-withdrawn") ?? [],
     };
+  }
+
+  /** A failed sign-in attempt carried to this Session (`SessionMethods.mcpSignInsFailed`): how many open requests changed. */
+  failSignIns(requests: ReadonlyArray<string>, problem: string): Promise<number> {
+    return Effect.runPromise(this.#mcpSignIns().service.failed(requests, problem));
   }
 
   /** A completed sign-in carried to this Session (`SessionMethods.mcpSignInsResolved`): how many open requests it ended. */
