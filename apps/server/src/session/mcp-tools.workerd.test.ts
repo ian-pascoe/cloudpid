@@ -954,4 +954,63 @@ describe("an MCP prompt in a Session", () => {
       (await host.engineRequests()).filter((each) => each.request.op === "prompts/get"),
     ).toEqual([]);
   });
+
+  it("is given back by `navigate` and `forkSource` before its message, with its arguments as they were kept", async () => {
+    const { host, stub } = await discovered();
+
+    await host.scriptRequest(DOCS, [
+      gotPrompt([{ role: "user", content: { type: "text", text: "Review PR 7." } }]),
+    ]);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["reviewed"]);
+      await instance.submitMcpPrompt({
+        requestId: "pick",
+        text: "",
+        ref: { ...REVIEW, arguments: { pr: "7" } },
+      });
+    });
+    await idle(stub);
+
+    const [navigated, plan, plain] = await runInDurableObject(
+      stub,
+      async (instance: TestSession) => {
+        const tree = await instance.tree();
+
+        const picked = tree.nodes.find(
+          (each) => each.role === "user" && each.text.includes("Review PR"),
+        );
+
+        const first = tree.nodes.find((each) => each.role === "user" && each.text === "hi");
+        const entryId = picked?.id ?? 0;
+
+        // The Fork first: it leaves the active branch where it is.
+        const forked = await instance.forkInto("prompt-fork", {
+          point: { entryId, position: "before" },
+          quiet: "none",
+        });
+
+        return [
+          await instance.navigate({ entryId, position: "before" }),
+          forked,
+          await instance.navigate({ entryId: first?.id ?? 0, position: "before" }),
+        ] as const;
+      },
+    );
+
+    // No words of the owner's came with it: the text is empty and the chip is what comes back.
+    expect(navigated).toMatchObject({
+      navigated: {
+        text: "",
+        mcpPrompt: { server: "docs", name: "review", title: "Review PR", arguments: { pr: "7" } },
+      },
+    });
+    expect(plan).toMatchObject({
+      text: "",
+      mcpPrompt: { server: "docs", name: "review", arguments: { pr: "7" } },
+    });
+    // A message without a prompt carries no `mcpPrompt` key.
+    expect(plain).toMatchObject({ navigated: { text: "hi" } });
+    expect(plain).not.toHaveProperty("navigated.mcpPrompt");
+  });
 });

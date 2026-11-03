@@ -464,6 +464,91 @@ describe("a prompts/get request", () => {
   });
 });
 
+describe("a prompts/get that finds the inventory stale", () => {
+  /** What the next read of the prompts finds the server to list. */
+  const relisted = (...names: ReadonlyArray<string>) => {
+    const script = found([]);
+
+    return {
+      ...script,
+      // SAFETY: a discovered answer, encoded as the engine sends it.
+      result: {
+        ...script.result,
+        capabilities: { prompts: {} },
+        prompts: names.map((name) => ({ name })),
+      } as typeof McpEngineDiscoverResult.Encoded,
+    };
+  };
+
+  /** The prompts a read of the host's inventory shows for `docs`, and how many discoveries the engine has had. */
+  const listed = async (host: Awaited<ReturnType<typeof discoveredPrompts>>) => {
+    const answer = await host.servers({ parts: ["prompts"], waitMs: 5000 });
+
+    return {
+      discoveries: (await host.engineCalls()).length,
+      prompts: Predicate.isTagged(answer, "HostFailed")
+        ? []
+        : (answer.servers[0]?.prompts ?? []).map((prompt) => prompt["name"]),
+    };
+  };
+
+  it("lists the server again at the next read when the server does not know the prompt", async () => {
+    const host = await discoveredPrompts(["review"], entry("docs"));
+    const before = await listed(host);
+
+    expect(before.prompts).toEqual(["review"]);
+
+    await host.scriptRequest(urlOf("docs"), [
+      {
+        result: {
+          kind: "failed",
+          error: { _tag: "ServerError", message: "Unknown prompt", code: -32602 },
+          state: {},
+        },
+      },
+    ]);
+    await host.scriptEngine(urlOf("docs"), [relisted("renamed")]);
+
+    expect(await tagOf(host, getPrompt("docs", "review", { pr: "1" }))).toBe("CallFailed");
+    // The inventory was fresh a moment ago; it is read again because the server said it has no such prompt.
+    expect(await listed(host)).toEqual({
+      discoveries: before.discoveries + 1,
+      prompts: ["renamed"],
+    });
+  });
+
+  it("lists the server again at the next read when the prompt is not in the inventory", async () => {
+    const host = await discoveredPrompts(["review"], entry("docs"));
+    const before = await listed(host);
+
+    await host.scriptEngine(urlOf("docs"), [relisted("review", "added")]);
+
+    expect(await tagOf(host, getPrompt("docs", "added"))).toBe("NotAllowed");
+    expect(await listed(host)).toEqual({
+      discoveries: before.discoveries + 1,
+      prompts: ["review", "added"],
+    });
+  });
+
+  it("does not list it again for a failure that is not about the name", async () => {
+    const host = await discoveredPrompts(["review"], entry("docs"));
+    const before = await listed(host);
+
+    await host.scriptRequest(urlOf("docs"), [
+      {
+        result: {
+          kind: "failed",
+          error: { _tag: "ServerError", message: "boom", code: -32603 },
+          state: {},
+        },
+      },
+    ]);
+
+    expect(await tagOf(host, getPrompt("docs", "review", { pr: "1" }))).toBe("CallFailed");
+    expect(await listed(host)).toEqual({ discoveries: before.discoveries, prompts: ["review"] });
+  });
+});
+
 describe("an MCP task", () => {
   it("is offered to a call from the agent or an app, to an HTTP server, and to no other caller", async () => {
     const host = await discovered(["search"], entry("docs"));

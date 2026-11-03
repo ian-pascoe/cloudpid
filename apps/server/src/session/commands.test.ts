@@ -153,6 +153,65 @@ describe("exportMarkdown", () => {
   });
 });
 
+describe("exportMarkdown of an MCP prompt", () => {
+  it("writes what the owner typed, the prompt with its arguments, the block it got as a quote, and its resources by URI", () => {
+    const block =
+      '<mcp_prompt server="docs" name="review" title="Review PR">\nReview PR 7.\n\n[image 1]\n</mcp_prompt>';
+
+    const markdown = exportMarkdown(
+      1,
+      [
+        entry({
+          id: 1,
+          kind: "cloudpid.user",
+          data: {
+            display: "focus on tests",
+            skills: [],
+            mcpPrompt: {
+              server: "docs",
+              command: "/mcp__docs__review",
+              name: "review",
+              title: "Review PR",
+              arguments: { pr: "7", focus: "line one\nline two" },
+              parts: [{ role: "user", type: "text" }],
+              resources: [{ uri: "file:///repo/a.ts", kind: "link" }],
+            },
+          },
+          model: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: block },
+                { type: "text", text: "focus on tests" },
+              ],
+              timestamp: 1,
+            },
+          ],
+        }),
+      ],
+      "2026-01-02T00:00:00.000Z",
+    );
+
+    expect(markdown).toBe(
+      [
+        "# Conversation 1",
+        "_Exported 2026-01-02T00:00:00.000Z_",
+        "## Owner",
+        "focus on tests",
+        "MCP prompt: docs/review (pr=7, focus=line one line two)",
+        [
+          '> <mcp_prompt server="docs" name="review" title="Review PR">',
+          "> Review PR 7.",
+          ">",
+          "> [image 1]",
+          "> </mcp_prompt>",
+        ].join("\n"),
+        "Resources:\n- file:///repo/a.ts",
+      ].join("\n\n") + "\n",
+    );
+  });
+});
+
 describe("markdownExport", () => {
   const said = (id: number, text: string) =>
     entry({ id, kind: "pi.user", model: [{ role: "user", content: text, timestamp: id }] });

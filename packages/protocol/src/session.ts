@@ -17,7 +17,7 @@ import { LastRunMessage } from "./last-run.ts";
 import { MAX_MCP_APP_KEY, McpAppsMessage, McpAppToolsMessage } from "./mcp-apps.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import { ElicitationAction, ElicitationContent, McpElicitationRequest } from "./mcp-elicitation.ts";
-import { McpCatalogServer, McpPromptEntry, McpPromptRef } from "./mcp-prompts.ts";
+import { McpCatalogServer, McpPromptData, McpPromptEntry, McpPromptRef } from "./mcp-prompts.ts";
 
 /**
  * The text the client sends to keep the socket alive, and the server's answer. The object answers it without waking,
@@ -727,10 +727,14 @@ export const SessionTree = Schema.Struct({
 
 export type SessionTree = typeof SessionTree.Type;
 
-/** The answer to `navigate`: the active branch now, and the owner's message to put back in the composer, if any. */
+/**
+ * The answer to `navigate`: the active branch now, and the owner's message to put back in the composer, if any, with the
+ * MCP prompt it had (`mcpPrompt`: the composer gets the chip back, its arguments as they were kept, redacted).
+ */
 export const Navigated = Schema.Struct({
   conversationId: ConversationId,
   text: Schema.NullOr(Schema.String),
+  mcpPrompt: Schema.optionalKey(McpPromptData),
 });
 
 export type Navigated = typeof Navigated.Type;
