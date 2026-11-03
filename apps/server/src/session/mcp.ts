@@ -9,6 +9,7 @@ import {
   type ApiResult,
   apiFailure,
   apiOk,
+  type ConfigureRequest,
   type CursorState,
   decodeCursor,
   encodeCursor,
@@ -51,6 +52,7 @@ import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
 import { CONVERSATION_MISSING, isWithdrawn, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
+import { agentChange } from "./sockets.ts";
 import { cursorOf, endedBy, statusOf, type Snapshot, waitingMark } from "./mcp-follow.ts";
 import type { FollowState, SettledInput } from "./mcp-reads.ts";
 
@@ -64,6 +66,8 @@ export type SessionMcpService = {
   readonly transcriptPage: (request: TranscriptRequest) => Effect.Effect<ApiResult<TranscriptPage>>;
   readonly submit: (request: SubmitRequest) => Effect.Effect<ApiResult<SubmitResult>>;
   readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
+  /** Pick the model and thinking level a started Session runs with, as the socket's `configure` does. */
+  readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
 };
 
 export class SessionMcp extends Context.Service<SessionMcp, SessionMcpService>()(
@@ -660,7 +664,12 @@ const sessionMcp = (options: SessionMcpOptions) =>
             );
           }
 
-          if (yield* options.archived) {
+          const earlier =
+            request.requestId === undefined ? undefined : yield* host.admitted(request.requestId);
+
+          // A request id that was admitted before is answered with the first send's result: a repeated start finds its
+          // Session as it was left, even archived since.
+          if (earlier === undefined && (yield* options.archived)) {
             return apiFailure(
               "session_archived",
               "This Session is archived: unarchive it in cloudpid first.",
@@ -670,15 +679,12 @@ const sessionMcp = (options: SessionMcpOptions) =>
           const seam = yield* redactor;
           const before = yield* host.follow();
 
-          if (before.copying) {
+          if (earlier === undefined && before.copying) {
             return apiFailure(
               "session_importing",
               "This Session is still importing: wait for it to finish.",
             );
           }
-
-          const earlier =
-            request.requestId === undefined ? undefined : yield* host.admitted(request.requestId);
 
           if (earlier === undefined && request.whenBusy === "reject" && before.unsettled) {
             return apiFailure(
@@ -735,7 +741,11 @@ const sessionMcp = (options: SessionMcpOptions) =>
             return apiOk<StopResult>({ status: statusOf(yield* snapshot(seam)) });
           }
 
-          yield* host.note(`Stopped from ${request.via.client?.name ?? "a client"} (MCP)`);
+          yield* host.note(
+            request.via.client === undefined
+              ? "Stopped over MCP"
+              : `Stopped from ${request.via.client.name} (MCP)`,
+          );
 
           const stopped = yield* host
             .abort({ subagents: request.subagents === true })
@@ -749,7 +759,17 @@ const sessionMcp = (options: SessionMcpOptions) =>
         }),
       );
 
-    return { status, waitForChange, transcriptPage, submit, stop } satisfies SessionMcpService;
+    const configure: SessionMcpService["configure"] = (request) =>
+      guarded(host.configure(agentChange(request)).pipe(Effect.as(apiOk(null))));
+
+    return {
+      status,
+      waitForChange,
+      transcriptPage,
+      submit,
+      stop,
+      configure,
+    } satisfies SessionMcpService;
   });
 
 /** The Session's `SessionMcp`; build it once per instance, over the host, the Secrets and the waiting requests. */

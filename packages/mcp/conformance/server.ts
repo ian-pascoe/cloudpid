@@ -16,7 +16,7 @@ const ID = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
 /** The Registry's and the Sessions' answers: one Environment, one Session, one transcript entry. */
 const api: McpServerApi = {
   describe: () => ({
-    operations: ["environments", "sessions", "session", "transcript"],
+    operations: ["environments", "sessions", "session", "transcript", "start", "send", "stop"],
     limits: MCP_API_LIMITS,
   }),
   environments: () =>
@@ -74,6 +74,19 @@ const api: McpServerApi = {
         newer: "n1",
       }),
     ),
+  start: () =>
+    Promise.resolve(
+      apiOk({
+        session_id: ID,
+        title: null,
+        url: `http://127.0.0.1/sessions/${ID}`,
+        status: "running" as const,
+        cursor: "c2",
+        environment: { id: "default", name: "Default", repos: ["app"] },
+      }),
+    ),
+  send: () => Promise.resolve(apiOk({ delivery: "started" as const, cursor: "c3" })),
+  stop: () => Promise.resolve(apiOk({ status: "idle" as const })),
   auth: "local",
 };
 

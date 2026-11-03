@@ -47,6 +47,7 @@ import type {
   CommandOutcome,
   CompareResult,
   Comparison,
+  ConfigureRequest,
   ConversationId,
   FileMatches,
   HistoryPage,
@@ -927,6 +928,11 @@ export class TestSession extends DurableObject {
   /** `SessionMethods.stop`. */
   mcpStop(request: StopRequest) {
     return Effect.runPromise(this.#mcp.stop(request));
+  }
+
+  /** `SessionMethods.configure`. */
+  mcpConfigure(request: ConfigureRequest) {
+    return Effect.runPromise(this.#mcp.configure(request));
   }
 
   /** The Viewed boxes as the Session keeps them. */

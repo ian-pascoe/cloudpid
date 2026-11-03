@@ -113,6 +113,8 @@ export type SessionSocketsService = {
    * ended, which its `hello` said was under way.
    */
   readonly greetAgain: Effect.Effect<void>;
+  /** Tell every connected client which of the model and thinking level the Session picked, after a `configure` by other means. */
+  readonly announcePicks: Effect.Effect<void>;
 };
 
 /** WebSocket's "Service Restart": the client connects again at once, as after any close but the Session's deletion. */
@@ -209,8 +211,13 @@ export const viewedMessage = (viewed: ReadonlyArray<ViewedFile>): ServerMessage 
   viewed,
 });
 
-/** The agent change a `configure` asks for: a field it leaves out is left out, as is. */
-const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): AgentChange => {
+/**
+ * The agent change a `configure` asks for: a field it leaves out is left out, as is. The socket's `configure` and the MCP
+ * endpoint's (`SessionMethods.configure`) share it.
+ */
+export const agentChange = (
+  message: Pick<Extract<ClientMessage, { type: "configure" }>, "model" | "thinkingLevel">,
+): AgentChange => {
   const change: Types.Mutable<AgentChange> = {};
 
   if (message.model !== undefined) {
@@ -985,6 +992,6 @@ export const sessionSocketsLayer = (
         { discard: true },
       );
 
-      return { connect, receive, drop, greetAgain } satisfies SessionSocketsService;
+      return { connect, receive, drop, greetAgain, announcePicks } satisfies SessionSocketsService;
     }),
   );

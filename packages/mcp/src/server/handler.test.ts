@@ -1,6 +1,6 @@
 // docs/architecture/mcp-endpoint.md → The handler, Tools, Limits and errors, Telemetry and testing: `serveMcp` on a fake `api`.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off preferEffectRecord:off
-import { apiFailure, apiOk, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
+import { apiFailure, apiOk, MAX_MCP_RUNNING, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import { clientOf } from "./caller.ts";
@@ -31,6 +31,10 @@ const summary = {
 };
 
 const OPERATIONS = ["environments", "sessions", "session", "transcript"];
+
+const WRITE_OPERATIONS = [...OPERATIONS, "start", "send", "stop"];
+
+const CURSOR = "cur-1";
 
 /** `describe()` listing `operations`, and the deploy id when `Server` sends one. */
 const describing =
@@ -68,6 +72,9 @@ const fakeApi = (overrides: Partial<McpServerApi> = {}): McpServerApi => ({
         newer: "n1",
       }),
     ),
+  start: () => Promise.resolve(apiFailure("unsupported", "No.")),
+  send: () => Promise.resolve(apiFailure("unsupported", "No.")),
+  stop: () => Promise.resolve(apiFailure("unsupported", "No.")),
   auth: "service_token",
   ...overrides,
 });
@@ -210,6 +217,51 @@ describe("tools/list", () => {
     }
   });
 
+  it("adds session_start, session_send and session_stop once the deployed Server lists them, with their annotations", async () => {
+    const api = fakeApi({ describe: describing(WRITE_OPERATIONS) });
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
+    const tools = result?.tools ?? [];
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "environments_list",
+      "sessions_list",
+      "session_get",
+      "session_transcript",
+      "session_start",
+      "session_send",
+      "session_stop",
+    ]);
+
+    const annotated = Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
+
+    // W: a write that is not idempotent, open-world; D·idem: destructive and idempotent.
+    expect(annotated["session_start"]).toMatchObject({
+      readOnlyHint: false,
+      idempotentHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
+    expect(annotated["session_send"]).toMatchObject({ readOnlyHint: false, openWorldHint: true });
+    expect(annotated["session_stop"]).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    expect(annotated["sessions_list"]).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+  });
+
+  it("leaves the three out one by one when an older Server lacks their operations", async () => {
+    const api = fakeApi({ describe: describing([...OPERATIONS, "send"]) });
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
+
+    const names = (result?.tools ?? []).map((tool) => tool.name);
+
+    expect(names).toContain("session_send");
+    expect(names).not.toContain("session_start");
+    expect(names).not.toContain("session_stop");
+  });
+
   it("leaves a tool out when the deployed Server does not list its operation", async () => {
     const api = fakeApi({
       describe: describing(["environments", "sessions", "session"]),
@@ -294,11 +346,239 @@ describe("the instructions", () => {
     expect(text).not.toContain("session_get");
   });
 
+  it("name the write tools and request_id only when they are served", () => {
+    const writes = instructionsFor(
+      new Set(["environments_list", "session_start", "session_send", "session_stop"]),
+    );
+
+    expect(writes).toContain("request_id");
+    expect(writes).toContain("session_stop");
+    expect(instructionsFor(new Set(["environments_list"]))).not.toContain("request_id");
+    expect(instructionsFor(new Set(["environments_list", "session_get"]))).not.toContain(
+      "session_stop",
+    );
+  });
+
   it("stay within 1,500 characters with every tool served", () => {
     const all = new Set(TOOLS.map((tool) => tool.name));
 
     expect(instructionsFor(all).length).toBeLessThanOrEqual(1500);
     expect(instructionsFor(all).split("\n")[0]?.length).toBeLessThan(200);
+  });
+});
+
+describe("the write tools", () => {
+  const started = {
+    session_id: ID,
+    title: null,
+    url: `https://cloudpid.test/sessions/${ID}`,
+    status: "running" as const,
+    cursor: CURSOR,
+    environment: { id: "default", name: "Default", repos: ["app"] },
+  };
+
+  const writing = (overrides: Partial<McpServerApi> = {}) =>
+    fakeApi({ describe: describing(WRITE_OPERATIONS), ...overrides });
+
+  it("session_start tells the api who is calling, from the client's name and the era, and names session_wait next only when it is served", async () => {
+    const start = vi.fn(() => Promise.resolve(apiOk(started)));
+
+    const response = await serve(
+      post(
+        rpc("tools/call", {
+          name: "session_start",
+          arguments: { text: "Fix it", environment: "Default", request_id: "r-1" },
+        }),
+        { "x-cloudpid-client": "pi/1.5" },
+      ),
+      writing({ start }),
+    );
+
+    // SAFETY: a `tools/call` that reached the tool answers a result, as `call` reads it.
+    const result = (await messageOf(response)).result as CallResult;
+
+    expect(start).toHaveBeenCalledWith({
+      text: "Fix it",
+      environment: "Default",
+      request_id: "r-1",
+      via: { client: { name: "pi", version: "1.5" }, era: "legacy" },
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ session_id: ID, cursor: CURSOR });
+    expect(result.content[0]?.text).toContain(`Started Session (untitled) [${ID}]`);
+    // `session_wait` is not served by this Server yet, so no sentence names it.
+    expect(result.structuredContent.next).not.toContain("session_wait");
+    expect(result.structuredContent.next).toContain("session_get");
+  });
+
+  it("session_start answers too_many_running and branch_taken as domain failures", async () => {
+    const cap = await call(
+      "session_start",
+      { text: "go" },
+      writing({
+        start: () =>
+          Promise.resolve(
+            apiFailure("too_many_running", "10 Sessions started over MCP are running.", {
+              retryable: true,
+              details: { limit: 10 },
+            }),
+          ),
+      }),
+    );
+
+    expect(cap.isError).toBe(true);
+    expect(cap.structuredContent.error).toMatchObject({
+      code: "too_many_running",
+      retryable: true,
+    });
+    expect(cap.content[0]?.text).toContain("10 Sessions");
+  });
+
+  it("session_send passes when_busy and request_id, and says how it was delivered", async () => {
+    const send = vi.fn(() =>
+      Promise.resolve(apiOk({ delivery: "steered" as const, cursor: CURSOR })),
+    );
+
+    const result = await call(
+      "session_send",
+      { session_id: ID, text: "more", when_busy: "steer", request_id: "r-2" },
+      writing({ send }),
+    );
+
+    expect(send).toHaveBeenCalledWith({
+      session_id: ID,
+      text: "more",
+      when_busy: "steer",
+      request_id: "r-2",
+      via: { era: "legacy" },
+    });
+    expect(result.content[0]?.text).toContain("Steered");
+    expect(result.structuredContent).toMatchObject({ delivery: "steered", cursor: CURSOR });
+  });
+
+  it("session_send answers a Stop's withdrawal as stopped, not retryable, and a busy Run as session_busy", async () => {
+    const stopped = await call(
+      "session_send",
+      { session_id: ID, text: "x" },
+      writing({
+        send: () =>
+          Promise.resolve(
+            apiFailure("stopped", "Stopped before it was sent.", { retryable: false }),
+          ),
+      }),
+    );
+
+    const busy = await call(
+      "session_send",
+      { session_id: ID, text: "x", when_busy: "reject" },
+      writing({ send: () => Promise.resolve(apiFailure("session_busy", "The Run is busy.")) }),
+    );
+
+    expect(stopped.structuredContent.error).toMatchObject({ code: "stopped", retryable: false });
+    expect(busy.structuredContent.error).toMatchObject({ code: "session_busy", retryable: true });
+  });
+
+  it("session_stop passes subagents, and says stopping when the Session had not gone idle", async () => {
+    const stop = vi
+      .fn()
+      .mockResolvedValueOnce(apiOk({ status: "idle" }))
+      .mockResolvedValueOnce(apiOk({ status: "running", stopping: true }));
+
+    const api = writing({ stop });
+
+    const done = await call("session_stop", { session_id: ID }, api);
+    const going = await call("session_stop", { session_id: ID, subagents: true }, api);
+
+    expect(stop).toHaveBeenNthCalledWith(1, { session_id: ID, via: { era: "legacy" } });
+    expect(stop).toHaveBeenNthCalledWith(2, {
+      session_id: ID,
+      subagents: true,
+      via: { era: "legacy" },
+    });
+    expect(done.content[0]?.text).toContain("The Session is idle.");
+    expect(going.content[0]?.text).toContain("Stopping");
+    expect(going.structuredContent).toMatchObject({ status: "running", stopping: true });
+    expect(going.structuredContent.next).toContain("session_get");
+  });
+
+  it("names session_wait nowhere while the Server does not serve it: descriptions, next sentences, instructions", async () => {
+    const api = writing({
+      start: () => Promise.resolve(apiOk(started)),
+      send: () => Promise.resolve(apiOk({ delivery: "started" as const, cursor: CURSOR })),
+      stop: () => Promise.resolve(apiOk({ status: "running" as const, stopping: true })),
+    });
+
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
+
+    for (const tool of result?.tools ?? []) {
+      expect(JSON.stringify(tool)).not.toContain("session_wait");
+    }
+
+    for (const [name, args] of [
+      ["session_start", { text: "go" }],
+      ["session_send", { session_id: ID, text: "go" }],
+      ["session_stop", { session_id: ID }],
+    ] as const) {
+      const called = await call(name, args, api);
+
+      expect(JSON.stringify(called)).not.toContain("session_wait");
+    }
+
+    const init = await messageOf(
+      await serve(
+        post(
+          rpc("initialize", {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "t", version: "1" },
+          }),
+        ),
+        api,
+      ),
+    );
+
+    expect(init.result?.instructions).not.toContain("session_wait");
+  });
+
+  it("says how many Sessions may run at once from the contract's own number", async () => {
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), writing()));
+
+    const start = (result?.tools ?? []).find((tool) => tool.name === "session_start");
+
+    expect(JSON.stringify(start)).toContain(`At most ${String(MAX_MCP_RUNNING)} Sessions`);
+  });
+
+  it("refuses an empty message, a made-up when_busy and a long request_id before calling the api", async () => {
+    const send = vi.fn();
+    const start = vi.fn();
+    const api = writing({ send, start });
+
+    for (const [name, args] of [
+      ["session_start", { text: "" }],
+      ["session_send", { session_id: ID, text: "" }],
+      ["session_send", { session_id: ID, text: "x", when_busy: "now" }],
+      ["session_start", { text: "x", request_id: "r".repeat(300) }],
+    ] as const) {
+      const result = await call(name, args, api);
+
+      expect(result.isError).toBe(true);
+    }
+
+    expect(send).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("answers an api without the operation as unsupported", async () => {
+    const result = await call(
+      "session_start",
+      { text: "go" },
+      writing({
+        start: () =>
+          Promise.reject(new TypeError('The RPC receiver does not implement the method "start".')),
+      }),
+    );
+
+    expect(result.structuredContent.error).toMatchObject({ code: "unsupported" });
   });
 });
 

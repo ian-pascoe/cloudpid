@@ -2,12 +2,14 @@
 // docs/architecture/mcp-endpoint.md → The `api` target, Limits and errors: the service over a fake Registry and Sessions.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off missedPipeableOpportunity:off
 import {
+  apiFailure,
   DEFAULT_ENVIRONMENT,
   type EnvironmentRecord,
   type SessionRecord,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
+import type { SessionRefusal } from "../registry/store.ts";
 import {
   MCP_CALLS_PERIOD_S,
   identityOf,
@@ -78,6 +80,15 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
       },
     }),
   transcript: () => Effect.succeed({ ok: true as const, value: { entries: [], newer: "n1" } }),
+  createSession: ({ environment, title }) =>
+    Effect.succeed(record({ title: title ?? null, environment })),
+  configure: () => Effect.succeed({ ok: true as const, value: null }),
+  submit: () =>
+    Effect.succeed({
+      ok: true as const,
+      value: { delivery: "started" as const, cursor: "c-sent" },
+    }),
+  stop: () => Effect.succeed({ ok: true as const, value: { status: "idle" as const } }),
   ...overrides,
 });
 
@@ -97,12 +108,15 @@ describe("describe", () => {
     expect(service().describe().version).toBeUndefined();
   });
 
-  it("lists the four read operations, and only them", () => {
+  it("lists the read operations and the three that start, send and stop, and no others", () => {
     expect(service().describe().operations).toEqual([
       "environments",
       "sessions",
       "session",
       "transcript",
+      "start",
+      "send",
+      "stop",
     ]);
   });
 });
@@ -317,6 +331,511 @@ describe("transcript", () => {
     expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
     expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
     expect(transcript).not.toHaveBeenCalled();
+  });
+});
+
+const VIA = { client: { name: "claude-code", version: "2.1" }, era: "modern" as const };
+
+describe("start", () => {
+  it("marks the Session and the first input by how the caller got in, without the owner's email", async () => {
+    const createSession = vi.fn(({ environment }: { environment: string }) =>
+      Effect.succeed(record({ environment })),
+    );
+
+    const submit = vi.fn(backend().submit);
+
+    const result = await run(
+      service(
+        { createSession, submit },
+        { caller: { kind: "owner", clientId: "dcr-client-1" } },
+      ).start({ text: "Fix it", via: VIA }),
+    );
+
+    expect(createSession).toHaveBeenCalledWith({
+      environment: DEFAULT_ENVIRONMENT,
+      marks: { kind: "mcp", auth: "oauth", client: VIA.client },
+      maxRunning: 10,
+    });
+    expect(submit).toHaveBeenCalledWith(ID, {
+      input: "Fix it",
+      via: { client: VIA.client, auth: "oauth", era: "modern", clientId: "dcr-client-1" },
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        session_id: ID,
+        title: "Fix the thing",
+        url: `${ORIGIN}/sessions/${ID}`,
+        status: "waiting_for_owner",
+        cursor: "c-sent",
+        environment: { id: DEFAULT_ENVIRONMENT, name: "Default", repos: ["app"] },
+      },
+    });
+    expect(JSON.stringify(createSession.mock.calls)).not.toContain("@");
+  });
+
+  it("marks a service token's and local dev's Sessions as such, and keeps no client id for them", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const submit = vi.fn(backend().submit);
+
+    await run(
+      service(
+        { createSession, submit },
+        { caller: { kind: "service_token", clientId: "id.access" } },
+      ).start({ text: "go", via: { era: "legacy" } }),
+    );
+
+    await run(
+      service({ createSession, submit }, { caller: { kind: "local" } }).start({
+        text: "go",
+        via: { era: "legacy" },
+      }),
+    );
+
+    expect(createSession.mock.calls.map(([input]) => input.marks)).toEqual([
+      { kind: "mcp", auth: "service_token" },
+      { kind: "mcp", auth: "local" },
+    ]);
+    expect(submit.mock.calls.map(([, input]) => input.via)).toEqual([
+      { auth: "service_token", era: "legacy" },
+      { auth: "local", era: "legacy" },
+    ]);
+  });
+
+  it("passes a repeated request_id to the Registry and the Session, which each find the first", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const submit = vi.fn(backend().submit);
+
+    await run(
+      service({ createSession, submit }).start({ text: "go", request_id: "req-1", via: VIA }),
+    );
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ requestId: "req-1" }));
+    expect(submit).toHaveBeenCalledWith(ID, expect.objectContaining({ requestId: "req-1" }));
+  });
+
+  it("takes the Environment by id or name, the default when none is named, and the options it was given", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const api = service({ createSession });
+
+    await run(
+      api.start({
+        environment: " docs ",
+        text: "go",
+        via: VIA,
+        title: "  T  ",
+        branch: "feat/x",
+        base: "dev",
+      }),
+    );
+
+    expect(createSession).toHaveBeenCalledWith({
+      environment: "e2",
+      title: "T",
+      branch: "feat/x",
+      base: "dev",
+      marks: expect.anything(),
+      maxRunning: 10,
+    });
+  });
+
+  it("configures the model and thinking before the first message, and only when asked", async () => {
+    const order: string[] = [];
+
+    const configure = vi.fn(() => {
+      order.push("configure");
+
+      return Effect.succeed({ ok: true as const, value: null });
+    });
+
+    const submit = vi.fn(() => {
+      order.push("submit");
+
+      return backend().submit(ID, {} as never);
+    });
+
+    const api = service({ configure, submit });
+
+    await run(api.start({ text: "go", via: VIA }));
+    expect(configure).not.toHaveBeenCalled();
+
+    await run(
+      api.start({ text: "go", model: "anthropic/claude-opus-5-5", thinking: "high", via: VIA }),
+    );
+
+    expect(configure).toHaveBeenCalledWith(ID, {
+      model: "anthropic/claude-opus-5-5",
+      thinkingLevel: "high",
+    });
+    expect(order).toEqual(["submit", "configure", "submit"]);
+  });
+
+  it("refuses a bad argument before it makes anything", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const api = service({ createSession });
+
+    const bad = await Promise.all([
+      run(api.start({ text: "go", model: "gpt-nope", via: VIA })),
+      run(api.start({ text: "go", thinking: "turbo", via: VIA })),
+      run(api.start({ text: "go", branch: "a..b", via: VIA })),
+      run(api.start({ text: "go", branch: "cloudpid/spare", via: VIA })),
+      run(api.start({ text: "go", base: "", via: VIA })),
+      run(api.start({ text: "go", title: "   ", via: VIA })),
+    ]);
+
+    for (const result of bad) {
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "invalid_argument", retryable: false },
+      });
+    }
+
+    const large = await run(api.start({ text: "é".repeat(1_000_000), via: VIA }));
+    const unknown = await run(api.start({ text: "go", environment: "nope", via: VIA }));
+
+    expect(large).toMatchObject({ ok: false, error: { code: "input_too_large" } });
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("answers the cap, a taken branch and a missing Environment with their codes, and sends nothing", async () => {
+    const submit = vi.fn(backend().submit);
+
+    const refused = (refusal: SessionRefusal) =>
+      run(
+        service({ createSession: () => Effect.succeed(refusal), submit }).start({
+          text: "go",
+          via: VIA,
+        }),
+      );
+
+    expect(await refused({ refused: "too-many-running", limit: 10 })).toMatchObject({
+      ok: false,
+      error: { code: "too_many_running", retryable: true, details: { limit: 10 } },
+    });
+    expect(await refused({ refused: "branch-taken", workspace: "abcd1234" })).toMatchObject({
+      ok: false,
+      error: { code: "branch_taken", retryable: false, details: { workspace: "abcd1234" } },
+    });
+    expect(await refused({ refused: "no-environment" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("names the Session on every failure after it was made, so a retry need not make another", async () => {
+    const stopped = apiFailure("stopped", "Stopped before it was sent.", { retryable: false });
+    const refused = apiFailure("invalid_argument", "The model cannot be picked.");
+
+    const cases = {
+      withdrawn: service({ submit: () => Effect.succeed(stopped) }),
+      down: service({ submit: () => Effect.die("object reset") }),
+      configureRefused: service({ configure: () => Effect.succeed(refused) }),
+      configureDown: service({ configure: () => Effect.die("object reset") }),
+    };
+
+    const results = {
+      withdrawn: await run(cases.withdrawn.start({ text: "go", via: VIA })),
+      down: await run(cases.down.start({ text: "go", request_id: "r-1", via: VIA })),
+      configureRefused: await run(
+        cases.configureRefused.start({ text: "go", model: "anthropic/claude-opus-5-5", via: VIA }),
+      ),
+      configureDown: await run(
+        cases.configureDown.start({ text: "go", thinking: "low", via: VIA }),
+      ),
+    };
+
+    const named = { session_id: ID, url: `${ORIGIN}/sessions/${ID}` };
+
+    expect(results.withdrawn).toMatchObject({
+      ok: false,
+      error: { code: "stopped", retryable: false, details: named },
+    });
+    expect(results.down).toMatchObject({
+      ok: false,
+      error: { code: "unavailable", retryable: true, details: named },
+    });
+    expect(results.configureRefused).toMatchObject({
+      ok: false,
+      error: { code: "invalid_argument", details: named },
+    });
+    expect(results.configureDown).toMatchObject({
+      ok: false,
+      error: { code: "unavailable", retryable: true, details: named },
+    });
+
+    // A retryable failure says how to go on: the same request_id, or session_send when there is none.
+    expect(!results.down.ok && results.down.error.message).toContain("same request_id");
+    expect(!results.configureDown.ok && results.configureDown.error.message).toContain(
+      "session_send",
+    );
+  });
+
+  it("does not name a tool that is not served in a refusal", async () => {
+    const cap = await run(
+      service({
+        createSession: () => Effect.succeed({ refused: "too-many-running", limit: 10 }),
+      }).start({ text: "go", via: VIA }),
+    );
+
+    expect(!cap.ok && cap.error.message).not.toContain("session_wait");
+    expect(!cap.ok && cap.error.message).toContain("session_stop");
+  });
+
+  it("says the Session is running when it cannot yet say", async () => {
+    const result = await run(
+      service({ status: () => Effect.die("waking") }).start({ text: "go", via: VIA }),
+    );
+
+    expect(result.ok && result.value.status).toBe("running");
+  });
+});
+
+/** A Registry and a Session that remember, as the real ones do: one Session per `request_id`, one first message per id. */
+const remembering = () => {
+  const made: Array<string> = [];
+  const sent: Array<string> = [];
+  const configured: Array<string> = [];
+  let cut = false;
+  const sessions = new Map<string, SessionRecord>();
+  const delivered = new Map<string, { delivery: "started"; cursor: string }>();
+
+  const overrides: Partial<McpBackend> = {
+    createSession: ({ requestId, environment }) =>
+      Effect.sync(() => {
+        const earlier = requestId === undefined ? undefined : sessions.get(requestId);
+
+        if (earlier !== undefined) return { ...earlier, repeated: true as const };
+
+        const id = `0190f0a8-1b2c-7d3e-8f40-${String(made.length).padStart(12, "0")}`;
+        const created = record({ id, environment });
+
+        made.push(id);
+
+        if (requestId !== undefined) sessions.set(requestId, created);
+
+        return created;
+      }),
+    configure: (id) =>
+      Effect.sync(() => {
+        configured.push(id);
+
+        return { ok: true as const, value: null };
+      }),
+    submit: (id, request) =>
+      Effect.suspend(() => {
+        const key = `${id}/${request.requestId ?? ""}`;
+        const first = request.requestId === undefined ? undefined : delivered.get(key);
+
+        if (first !== undefined) return Effect.succeed({ ok: true as const, value: first });
+
+        if (cut) return Effect.die("the Session was reset");
+
+        const value = { delivery: "started" as const, cursor: `cursor-${String(sent.length)}` };
+
+        sent.push(request.input);
+
+        if (request.requestId !== undefined) delivered.set(key, value);
+
+        return Effect.succeed({ ok: true as const, value });
+      }),
+  };
+
+  return {
+    overrides,
+    made,
+    sent,
+    configured,
+    cutBeforeSubmit: (on: boolean) => {
+      cut = on;
+    },
+  };
+};
+
+describe("a repeated start", () => {
+  it("makes one Session and sends one first message, and answers the first one's cursor", async () => {
+    const memory = remembering();
+    const api = service(memory.overrides);
+
+    const start = () =>
+      api.start({
+        text: "Fix it",
+        request_id: "req-1",
+        model: "anthropic/claude-opus-5-5",
+        via: VIA,
+      });
+
+    const first = await run(start());
+    const again = await run(start());
+
+    expect(first.ok && again.ok && again.value.session_id).toBe(first.ok && first.value.session_id);
+    expect(first.ok && again.ok && again.value.cursor).toBe(first.ok && first.value.cursor);
+    expect(memory.made).toHaveLength(1);
+    expect(memory.sent).toEqual(["Fix it"]);
+    // The model is picked once: a repeat never configures the Session it finds.
+    expect(memory.configured).toHaveLength(1);
+  });
+
+  it("heals a start cut between making the Session and sending its first message, without a second Session", async () => {
+    const memory = remembering();
+    const api = service(memory.overrides);
+
+    const start = () =>
+      api.start({ text: "Fix it", request_id: "req-1", thinking: "low", via: VIA });
+
+    memory.cutBeforeSubmit(true);
+
+    const cut = await run(start());
+
+    expect(cut).toMatchObject({
+      ok: false,
+      error: { retryable: true, details: { session_id: memory.made[0] } },
+    });
+    expect(memory.sent).toEqual([]);
+
+    memory.cutBeforeSubmit(false);
+
+    const healed = await run(start());
+
+    expect(healed).toMatchObject({ ok: true, value: { session_id: memory.made[0] } });
+    expect(memory.made).toHaveLength(1);
+    expect(memory.sent).toEqual(["Fix it"]);
+    // Only the first start picked the model; the repeat healed the message alone.
+    expect(memory.configured).toHaveLength(1);
+  });
+
+  it("makes another Session for another request_id, and for none", async () => {
+    const memory = remembering();
+    const api = service(memory.overrides);
+
+    await run(api.start({ text: "a", request_id: "req-1", via: VIA }));
+    await run(api.start({ text: "b", request_id: "req-2", via: VIA }));
+    await run(api.start({ text: "c", via: VIA }));
+    await run(api.start({ text: "d", via: VIA }));
+
+    expect(memory.made).toHaveLength(4);
+  });
+});
+
+describe("send", () => {
+  it("sends the text with the caller's mark, and queues unless told otherwise", async () => {
+    const submit = vi.fn(backend().submit);
+    const api = service({ submit }, { caller: { kind: "owner", clientId: "dcr-1" } });
+
+    const result = await run(api.send({ session_id: ID, text: "more", via: VIA }));
+
+    await run(
+      api.send({ session_id: ID, text: "now", when_busy: "steer", request_id: "r", via: VIA }),
+    );
+    await run(api.send({ session_id: ID, text: "or not", when_busy: "reject", via: VIA }));
+
+    expect(result).toEqual({ ok: true, value: { delivery: "started", cursor: "c-sent" } });
+    expect(
+      submit.mock.calls.map(([, input]) => [input.input, input.whenBusy, input.requestId]),
+    ).toEqual([
+      ["more", "followUp", undefined],
+      ["now", "steer", "r"],
+      ["or not", "reject", undefined],
+    ]);
+    expect(submit.mock.calls[0]?.[1].via).toEqual({
+      client: VIA.client,
+      auth: "oauth",
+      era: "modern",
+      clientId: "dcr-1",
+    });
+  });
+
+  it("never reaches a Session for an unknown or malformed id, or text over the limit", async () => {
+    const submit = vi.fn(backend().submit);
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), submit }).send({
+        session_id: ID,
+        text: "x",
+        via: VIA,
+      }),
+    );
+
+    const malformed = await run(
+      service({ submit }).send({ session_id: "nope", text: "x", via: VIA }),
+    );
+
+    const large = await run(
+      service({ submit }).send({ session_id: ID, text: "é".repeat(1_000_000), via: VIA }),
+    );
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(large).toMatchObject({ ok: false, error: { code: "input_too_large" } });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("answers the Session's own refusals as they are: busy, archived, stopped", async () => {
+    for (const code of ["session_busy", "session_archived", "stopped"] as const) {
+      const result = await run(
+        service({ submit: () => Effect.succeed(apiFailure(code, "no")) }).send({
+          session_id: ID,
+          text: "x",
+          via: VIA,
+        }),
+      );
+
+      expect(result).toMatchObject({ ok: false, error: { code } });
+    }
+  });
+
+  it("is unavailable when the Session cannot be reached", async () => {
+    const result = await run(
+      service({ submit: () => Effect.die("reset") }).send({ session_id: ID, text: "x", via: VIA }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "unavailable" } });
+  });
+});
+
+describe("stop", () => {
+  it("stops with the caller's mark, and subagents only when asked", async () => {
+    const stop = vi.fn(backend().stop);
+    const api = service({ stop }, { caller: { kind: "service_token", clientId: "id.access" } });
+
+    const plain = await run(api.stop({ session_id: ID, via: VIA }));
+
+    await run(api.stop({ session_id: ID, subagents: true, via: VIA }));
+
+    expect(plain).toEqual({ ok: true, value: { status: "idle" } });
+    expect(stop.mock.calls).toEqual([
+      [ID, { via: { client: VIA.client, auth: "service_token", era: "modern" } }],
+      [ID, { subagents: true, via: { client: VIA.client, auth: "service_token", era: "modern" } }],
+    ]);
+  });
+
+  it("never reaches a Session for an unknown or malformed id", async () => {
+    const stop = vi.fn(backend().stop);
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), stop }).stop({ session_id: ID, via: VIA }),
+    );
+
+    const malformed = await run(service({ stop }).stop({ session_id: "nope", via: VIA }));
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("says stopping when the Session had not gone idle", async () => {
+    const result = await run(
+      service({
+        stop: () =>
+          Effect.succeed({
+            ok: true as const,
+            value: { status: "running" as const, stopping: true },
+          }),
+      }).stop({ session_id: ID, via: VIA }),
+    );
+
+    expect(result).toEqual({ ok: true, value: { status: "running", stopping: true } });
   });
 });
 

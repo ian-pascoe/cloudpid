@@ -6,8 +6,12 @@ import { describe, expect, it } from "vitest";
 import { McpAuth } from "./mcp-api.ts";
 import {
   MCP_TOOL_OPERATIONS,
+  MAX_REQUEST_ID_CHARS,
   SessionGetInput,
+  SessionSendInput,
   SessionsListInput,
+  SessionStartInput,
+  SessionStopInput,
   SessionTranscriptInput,
 } from "./mcp-tools.ts";
 
@@ -60,12 +64,60 @@ describe("session_get's and session_transcript's arguments", () => {
   });
 });
 
+describe("session_start's arguments", () => {
+  it("need only the first message, and take the rest as `createSession` does", () => {
+    expect(accepts(SessionStartInput, { text: "Fix it" })).toBe(true);
+    expect(
+      accepts(SessionStartInput, {
+        environment: "Docs",
+        text: "Fix it",
+        title: "Fix",
+        branch: "feat/x",
+        base: "main",
+        model: "anthropic/claude-opus-5-5",
+        thinking: "max",
+        request_id: "r-1",
+      }),
+    ).toBe(true);
+    expect(accepts(SessionStartInput, {})).toBe(false);
+    expect(accepts(SessionStartInput, { text: "" })).toBe(false);
+    expect(accepts(SessionStartInput, { text: "x", thinking: "turbo" })).toBe(false);
+    expect(accepts(SessionStartInput, { text: "x", request_id: "" })).toBe(false);
+    expect(
+      accepts(SessionStartInput, { text: "x", request_id: "r".repeat(MAX_REQUEST_ID_CHARS + 1) }),
+    ).toBe(false);
+  });
+});
+
+describe("session_send's and session_stop's arguments", () => {
+  it("take queue, steer or reject, and an optional request id", () => {
+    for (const when_busy of ["queue", "steer", "reject"]) {
+      expect(accepts(SessionSendInput, { session_id: ID, text: "go", when_busy })).toBe(true);
+    }
+
+    expect(accepts(SessionSendInput, { session_id: ID, text: "go", request_id: "r" })).toBe(true);
+    expect(accepts(SessionSendInput, { session_id: ID, text: "go", when_busy: "now" })).toBe(false);
+    expect(accepts(SessionSendInput, { session_id: ID, text: "" })).toBe(false);
+    expect(accepts(SessionSendInput, { text: "go" })).toBe(false);
+  });
+
+  it("stop a Session, and its subagents when asked", () => {
+    expect(accepts(SessionStopInput, { session_id: ID })).toBe(true);
+    expect(accepts(SessionStopInput, { session_id: ID, subagents: true })).toBe(true);
+    expect(accepts(SessionStopInput, { session_id: ID, subagents: "yes" })).toBe(false);
+    expect(accepts(SessionStopInput, {})).toBe(false);
+  });
+});
+
 describe("the operations", () => {
   it("name the `api` operation of each tool, the four read ones first", () => {
     expect(MCP_TOOL_OPERATIONS.environments_list).toBe("environments");
     expect(MCP_TOOL_OPERATIONS.sessions_list).toBe("sessions");
     expect(MCP_TOOL_OPERATIONS.session_get).toBe("session");
     expect(MCP_TOOL_OPERATIONS.session_transcript).toBe("transcript");
+    expect(MCP_TOOL_OPERATIONS.session_start).toBe("start");
+    expect(MCP_TOOL_OPERATIONS.session_send).toBe("send");
+    expect(MCP_TOOL_OPERATIONS.session_stop).toBe("stop");
   });
 });
 

@@ -2,37 +2,59 @@
 // builds per `/mcp` request and passes to `McpServer`, over the Registry and the Sessions it already has. It owns
 // authorization (the guard has run), validation, the Registry and Session calls, cursors and rendering; `McpServer` owns
 // the SDK, the schemas and the text. The caller's identity is closed over it and is never an argument. Failures travel
-// as values (`ApiResult`); nothing streams. The four read operations are here; an operation `describe()` does not list
+// as values (`ApiResult`); nothing streams. The read operations and `start`, `send` and `stop` are here; an operation `describe()` does not list
 // answers `unsupported`, which is also how `McpServer` knows to leave its tool out.
 // @effect-diagnostics globalDate:off preferEffectArray:off missingPipeableSignature:off -- epoch times said as ISO text; short native lists.
-import { SUPPORTED_MODELS } from "@cloudpid/config";
+import { isModelId, SUPPORTED_MODELS, ThinkingLevel, THINKING_LEVELS } from "@cloudpid/config";
 import {
   type ApiDescription,
+  type ApiError,
   type ApiResult,
   apiFailure,
   apiOk,
+  branchProblem,
+  type ConfigureRequest,
   DEFAULT_ENVIRONMENT,
   type EnvironmentRecord,
   type EnvironmentsResult,
+  MAX_MCP_INPUT_BYTES,
+  MAX_MCP_RUNNING,
   MCP_API_LIMITS,
+  type MarkedOrigin,
   SESSION_ID,
   type McpAuth,
   type McpSessionOrigin,
   type McpSessionSummary,
+  ownBranchProblem,
+  type SendRequest,
   type SessionDetail,
   type SessionRecord,
+  SessionTitle,
   type SessionsQuery,
   type SessionStatusReport,
+  type SessionVia,
+  type StartRequest,
+  type StartResult,
+  type StopRequest,
+  type StopSessionRequest,
+  type StopResult,
+  type SubmitRequest,
+  type SubmitResult,
   type TranscriptPage,
   type TranscriptRequest,
+  type Via,
+  whenBusyOf,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
+import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import type { Caller } from "../access.ts";
 import type { SessionsResult } from "../registry/session-page.ts";
+import type { CreatedSession, SessionRefusal } from "../registry/store.ts";
 
 /** The operations this version of `Server` has: `McpServer` serves a tool only when its operation is listed. */
 export const MCP_API_OPERATIONS_SERVED = [
@@ -40,6 +62,9 @@ export const MCP_API_OPERATIONS_SERVED = [
   "sessions",
   "session",
   "transcript",
+  "start",
+  "send",
+  "stop",
 ] as const;
 
 /** The period of `MCP_CALLS`, in seconds: what a caller over the rate is told to wait at most. */
@@ -65,6 +90,25 @@ export interface McpBackend {
     id: string,
     request: TranscriptRequest,
   ) => Effect.Effect<ApiResult<TranscriptPage>>;
+  /**
+   * The Registry's `createSession` in a new Workspace of `environment`, as the endpoint starts one: marked, deduped by
+   * `requestId` for 24 h, and refused past `maxRunning`. The spare and Build upkeep run after it, as for the owner's.
+   */
+  readonly createSession: (input: {
+    readonly environment: string;
+    readonly title?: string | undefined;
+    readonly branch?: string | undefined;
+    readonly base?: string | undefined;
+    readonly marks: MarkedOrigin;
+    readonly requestId?: string | undefined;
+    readonly maxRunning: number;
+  }) => Effect.Effect<CreatedSession | SessionRefusal>;
+  /** The Session object's `configure()`. */
+  readonly configure: (id: string, request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
+  /** The Session object's `submit()`. */
+  readonly submit: (id: string, request: SubmitRequest) => Effect.Effect<ApiResult<SubmitResult>>;
+  /** The Session object's `stop()`. */
+  readonly stop: (id: string, request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
 }
 
 /** What one request adds: where the owner's pages are, who is calling, and the rate limit. */
@@ -92,6 +136,9 @@ export interface McpApiService {
   readonly transcript: (
     request: TranscriptRequest & { readonly session_id: string },
   ) => Effect.Effect<ApiResult<TranscriptPage & { readonly session_id: string }>>;
+  readonly start: (request: StartRequest) => Effect.Effect<ApiResult<StartResult>>;
+  readonly send: (request: SendRequest) => Effect.Effect<ApiResult<SubmitResult>>;
+  readonly stop: (request: StopSessionRequest) => Effect.Effect<ApiResult<StopResult>>;
   /** Counts a call; present when the caller is over its rate. */
   readonly limited: Effect.Effect<{ readonly retryAfterS: number } | undefined>;
   readonly auth: McpAuth;
@@ -196,9 +243,92 @@ const resolveEnvironment = (
       );
 };
 
+const decodeTitle = Schema.decodeUnknownOption(SessionTitle);
+
+const isThinkingLevel = Schema.is(ThinkingLevel);
+
+const tooLarge = apiFailure(
+  "input_too_large",
+  `Input is over ${String(MAX_MCP_INPUT_BYTES)} bytes: send less text, or put it in a file in the Workspace.`,
+);
+
+/** Whether `text` is within the most input a message may carry over the endpoint. */
+const withinInput = (text: string): boolean =>
+  new TextEncoder().encode(text).length <= MAX_MCP_INPUT_BYTES;
+
+/**
+ * What the Session keeps of who sent an input: the client's name and the era from `McpServer`, and from the verified caller,
+ * never from an argument, how it got in (`auth`) and, for the owner, which of their Access grants it came through
+ * (`clientId`, the assertion's `oauth.client_id`). The email is never here.
+ */
+const sessionViaOf = (via: Via, caller: Caller, auth: McpAuth): SessionVia => {
+  const marked: Types.Mutable<SessionVia> = { auth, era: via.era };
+
+  if (via.client !== undefined) marked.client = via.client;
+
+  if (caller.kind === "owner" && caller.clientId !== undefined) marked.clientId = caller.clientId;
+
+  return marked;
+};
+
 /** The Environments' names by id. */
 const namesOf = (environments: ReadonlyArray<EnvironmentRecord>) =>
   new Map(Arr.map(environments, (environment) => [environment.id, environment.name] as const));
+
+const unreachable = apiFailure(
+  "unavailable",
+  "The Session service could not be reached: try again shortly.",
+);
+
+/**
+ * A failure after the Registry made the Session names it (`details.session_id` and `url`), so the caller can use it, or
+ * repeat the start under the same `request_id`, rather than make a second one.
+ */
+const madeButNotStarted = (
+  error: ApiError,
+  session: { readonly id: string; readonly url: string },
+  hasRequestId: boolean,
+): ApiResult<never> => {
+  const hint = !error.retryable
+    ? ""
+    : hasRequestId
+      ? " Repeat session_start with the same request_id to send it."
+      : " Send it with session_send to that session_id.";
+
+  return apiFailure(error.code, `${error.message} The Session was made (${session.url}).${hint}`, {
+    retryable: error.retryable,
+    details: { session_id: session.id, url: session.url },
+  });
+};
+
+/** Why a start was refused, as the endpoint says it. */
+const refusedStart = (
+  refusal: SessionRefusal,
+  environment: string,
+  branch: string | undefined,
+): ApiResult<never> => {
+  switch (refusal.refused) {
+    case "no-environment":
+      return apiFailure(
+        "not_found",
+        `No Environment "${environment}": call environments_list for the ids and names.`,
+      );
+    case "branch-taken":
+      return apiFailure(
+        "branch_taken",
+        `Another Workspace is already on branch ${branch ?? ""}: choose another branch, or leave branch out.`,
+        { details: { workspace: refusal.workspace } },
+      );
+    case "too-many-running":
+      return apiFailure(
+        "too_many_running",
+        `${String(refusal.limit)} Sessions started over MCP are running: check them with session_get, or stop one with session_stop, then start again.`,
+        { retryable: true, details: { limit: refusal.limit } },
+      );
+    case "no-workspace":
+      return apiFailure("unavailable", "The Workspace is gone: try again.");
+  }
+};
 
 /** The service's operations over `backend` for one request. */
 export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpApiService => {
@@ -352,6 +482,180 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
           const page = yield* backend.transcript(id, request);
 
           return page.ok ? apiOk({ ...page.value, session_id: id }) : page;
+        }),
+      ),
+
+    start: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          const { via, text } = request;
+
+          if (!withinInput(text)) return tooLarge;
+
+          if (request.branch !== undefined) {
+            const problem = ownBranchProblem(request.branch);
+
+            if (problem !== undefined) return apiFailure("invalid_argument", `branch: ${problem}.`);
+          }
+
+          if (request.base !== undefined) {
+            const problem = branchProblem(request.base);
+
+            if (problem !== undefined) return apiFailure("invalid_argument", `base: ${problem}.`);
+          }
+
+          const model = request.model;
+
+          if (model !== undefined && !isModelId(model)) {
+            return apiFailure(
+              "invalid_argument",
+              `model must be one of environments_list's models.available: ${Arr.join(SUPPORTED_MODELS, ", ")}.`,
+            );
+          }
+
+          const thinking = request.thinking;
+
+          if (thinking !== undefined && !isThinkingLevel(thinking)) {
+            return apiFailure(
+              "invalid_argument",
+              `thinking must be one of ${Arr.join(THINKING_LEVELS, ", ")}.`,
+            );
+          }
+
+          const title =
+            request.title === undefined
+              ? undefined
+              : Option.getOrUndefined(decodeTitle(request.title));
+
+          if (request.title !== undefined && title === undefined) {
+            return apiFailure("invalid_argument", "title must not be empty.");
+          }
+
+          const environments = yield* backend.environments;
+
+          const resolved =
+            request.environment === undefined
+              ? apiOk(DEFAULT_ENVIRONMENT)
+              : resolveEnvironment(request.environment, environments);
+
+          if (!resolved.ok) return resolved;
+
+          const marks: Types.Mutable<MarkedOrigin> = { kind: "mcp", auth: identity.auth };
+
+          if (via.client !== undefined) marks.client = via.client;
+
+          const created = yield* backend.createSession({
+            environment: resolved.value,
+            title,
+            branch: request.branch,
+            base: request.base,
+            marks,
+            requestId: request.request_id,
+            maxRunning: MAX_MCP_RUNNING,
+          });
+
+          if ("refused" in created) return refusedStart(created, resolved.value, request.branch);
+
+          const id = created.id;
+          const url = `${context.origin}/sessions/${id}`;
+
+          // The Registry made the Session, so every failure from here names it: the caller can use it, or repeat the start.
+          const sendFirst = Effect.gen(function* () {
+            // Only the first start of a `request_id` picks the model: a repeat finds the Session as it was left, and
+            // heals at most the first message (the Session's own dedupe of the same id).
+            if (created.repeated !== true && (model !== undefined || thinking !== undefined)) {
+              const pick: Types.Mutable<ConfigureRequest> = {};
+
+              if (model !== undefined) pick.model = model;
+
+              if (thinking !== undefined) pick.thinkingLevel = thinking;
+
+              const configured = yield* backend.configure(id, pick);
+
+              if (!configured.ok) return configured;
+            }
+
+            const first: Types.Mutable<SubmitRequest> = {
+              input: text,
+              via: sessionViaOf(via, context.caller, identity.auth),
+            };
+
+            if (request.request_id !== undefined) first.requestId = request.request_id;
+
+            return yield* backend.submit(id, first);
+          }).pipe(Effect.catchCause(() => Effect.succeed(unreachable)));
+
+          const sent = yield* sendFirst;
+
+          if (!sent.ok) {
+            return madeButNotStarted(sent.error, { id, url }, request.request_id !== undefined);
+          }
+
+          const environment = Arr.findFirst(
+            environments,
+            ({ id: known }) => known === created.environment,
+          );
+
+          // A Session that cannot say its status yet is running the message just sent.
+          const status = yield* backend.status(id).pipe(Effect.catchCause(() => Effect.void));
+
+          return apiOk<StartResult>({
+            session_id: id,
+            title: created.title,
+            url,
+            status: status?.ok === true ? status.value.status : "running",
+            cursor: sent.value.cursor,
+            environment: {
+              id: created.environment,
+              name: Option.isSome(environment) ? environment.value.name : created.environment,
+              repos: Option.isSome(environment)
+                ? Arr.map(environment.value.repos, (repo) => repo.name)
+                : [],
+            },
+          });
+        }),
+      ),
+
+    send: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          if (!SESSION_ID.test(request.session_id)) return invalidId;
+
+          if (!withinInput(request.text)) return tooLarge;
+
+          // The Registry first: a made-up id never reaches a Session object (and so never makes one).
+          if ((yield* backend.session(request.session_id)) === null) {
+            return notFound(request.session_id);
+          }
+
+          const message: Types.Mutable<SubmitRequest> = {
+            input: request.text,
+            whenBusy: whenBusyOf(request.when_busy ?? "queue"),
+            via: sessionViaOf(request.via, context.caller, identity.auth),
+          };
+
+          if (request.request_id !== undefined) message.requestId = request.request_id;
+
+          return yield* backend.submit(request.session_id, message);
+        }),
+      ),
+
+    stop: (request) =>
+      guarded(
+        Effect.gen(function* () {
+          if (!SESSION_ID.test(request.session_id)) return invalidId;
+
+          if ((yield* backend.session(request.session_id)) === null) {
+            return notFound(request.session_id);
+          }
+
+          const stopping: Types.Mutable<StopRequest> = {
+            via: sessionViaOf(request.via, context.caller, identity.auth),
+          };
+
+          if (request.subagents !== undefined) stopping.subagents = request.subagents;
+
+          return yield* backend.stop(request.session_id, stopping);
         }),
       ),
 

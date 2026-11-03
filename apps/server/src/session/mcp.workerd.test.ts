@@ -167,6 +167,31 @@ describe("submit", () => {
   });
 });
 
+describe("a repeated request id of an archived Session", () => {
+  it("answers the first send's result, and refuses a new input", async () => {
+    const stub = fresh();
+
+    await script(stub, "once");
+
+    const first = await send(stub, { requestId: "req-1" });
+
+    await settled(stub);
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.kv.put("archived", true);
+    });
+
+    const again = await send(stub, { requestId: "req-1" });
+
+    expect(again.delivery).toBe(first.delivery);
+    expect(Option.getOrThrow(decodeCursor(again.cursor)).s).toBe(
+      Option.getOrThrow(decodeCursor(first.cursor)).s,
+    );
+    expect(await stub.mcpSubmit({ input: "new", via, requestId: "req-2" })).toMatchObject({
+      error: { code: "session_archived" },
+    });
+  });
+});
+
 describe("waitForChange", () => {
   it("wakes the moment the Run ends, with its answer", async () => {
     const stub = fresh();
@@ -470,6 +495,48 @@ describe("stop", () => {
       status: "idle",
       outcome: { result: "stopped" },
     });
+  });
+});
+
+describe("stop, from a caller with no name", () => {
+  it("leaves the notice Stopped over MCP", async () => {
+    const stub = fresh();
+
+    await script(stub, "hang");
+    await send(stub);
+    await runInDurableObject(stub, (instance: TestSession) => instance.hanging.promise);
+    await stub.mcpStop({ via: { auth: "service_token" } });
+
+    expect(okValue(await stub.mcpTranscript({})).entries.map((entry) => entry.text)).toContain(
+      "· Stopped over MCP",
+    );
+  });
+});
+
+describe("configure", () => {
+  it("picks the model and thinking level the first Run uses, as a socket's configure does", async () => {
+    const stub = fresh();
+
+    await script(stub, "done");
+    expect(
+      await stub.mcpConfigure({ model: "anthropic/claude-haiku-5-5", thinkingLevel: "low" }),
+    ).toEqual({ ok: true, value: null });
+
+    await send(stub);
+    await settled(stub);
+
+    expect(await stub.requests()).toEqual([{ model: "claude-haiku-5-5", thinking: "low" }]);
+  });
+
+  it("leaves a field it is not given as it is", async () => {
+    const stub = fresh();
+
+    await script(stub, "done");
+    await stub.mcpConfigure({ thinkingLevel: "minimal" });
+    await send(stub);
+    await settled(stub);
+
+    expect((await stub.requests())[0]?.thinking).toBe("minimal");
   });
 });
 

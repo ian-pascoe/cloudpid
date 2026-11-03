@@ -1,5 +1,11 @@
 // docs/architecture/mcp-endpoint.md → The handler, Access and identity: what `/mcp` hands `McpServer`.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off
+import {
+  DEFAULT_ENVIRONMENT,
+  type EnvironmentRecord,
+  type SessionRecord,
+  type SubmitRequest,
+} from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { describe, expect, it } from "vitest";
@@ -110,8 +116,164 @@ describe("the request McpServer gets", () => {
 
     expect(readTarget(targets[0])?.auth).toBe("service_token");
     expect(readTarget(targets[0])?.describe()).toMatchObject({
-      operations: ["environments", "sessions", "session", "transcript"],
+      operations: ["environments", "sessions", "session", "transcript", "start", "send", "stop"],
     });
+  });
+});
+
+const SESSION = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
+
+/** What the fakes note of the calls the route makes for a start. */
+interface Asked {
+  readonly created: Array<CreateInput>;
+  readonly submitted: Array<SubmitRequest>;
+  readonly upkeep: Array<string>;
+}
+
+type CreateInput = Parameters<RegistryStub["createSession"]>[0];
+
+type RegistryStub = {
+  readonly listEnvironments: () => Effect.Effect<ReadonlyArray<EnvironmentRecord>>;
+  readonly createSession: (input: {
+    readonly workspace: object;
+    readonly marks?: object;
+    readonly maxRunning?: number | undefined;
+    readonly requestId?: string | undefined;
+  }) => Effect.Effect<
+    SessionRecord | { readonly refused: "too-many-running"; readonly limit: number }
+  >;
+};
+
+/** A Registry and a Session over fakes that note what they are asked; `refusal` is what `createSession` answers instead of a Session. */
+const startEndpoint = (refusal?: {
+  readonly refused: "too-many-running";
+  readonly limit: number;
+}) => {
+  const asked: Asked = { created: [], submitted: [], upkeep: [] };
+
+  const record: SessionRecord = {
+    id: SESSION,
+    title: null,
+    titleSource: null,
+    environment: DEFAULT_ENVIRONMENT,
+    workspace: "abcd1234",
+    status: "idle",
+    createdAt: 1,
+    updatedAt: 1,
+    archivedAt: null,
+  };
+
+  const registry: RegistryStub = {
+    listEnvironments: () =>
+      Effect.succeed([{ id: DEFAULT_ENVIRONMENT, name: "Default", repos: [], createdAt: 1 }]),
+    createSession: (input) => {
+      asked.created.push(input);
+
+      return Effect.succeed(refusal ?? record);
+    },
+  };
+
+  const session = {
+    submit: (input: SubmitRequest) => {
+      asked.submitted.push(input);
+
+      return Effect.succeed({ ok: true, value: { delivery: "started", cursor: "c1" } });
+    },
+    status: () =>
+      Effect.succeed({ ok: true, value: { status: "running", waiting: [], cursor: "c2" } }),
+  };
+
+  const upkeep = (kind: string) => (environment: string) =>
+    Effect.sync(() => {
+      asked.upkeep.push(`${kind} ${environment}`);
+    });
+
+  const base = endpointOf(() => Promise.resolve(new Response(null, { status: 202 })));
+
+  // SAFETY: the route reads these stubs through the methods above only, as the other cases here read theirs.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see above.
+  const endpoint = {
+    ...base,
+    registries: { getByName: () => registry },
+    sessions: { getByName: () => session },
+    spares: { of: upkeep("spare") },
+    builds: { of: upkeep("build") },
+    background: (effect: Effect.Effect<void>) => effect,
+  } as unknown as McpEndpoint;
+
+  return { endpoint, asked };
+};
+
+/** The target's `start`, which the test calls as `McpServer` would over RPC. */
+type Start = {
+  readonly start: (request: {
+    readonly text: string;
+    readonly request_id: string;
+    readonly via: { readonly client: { readonly name: string }; readonly era: "legacy" };
+  }) => Promise<object>;
+};
+
+const startThrough = async (endpoint: McpEndpoint, caller: Caller) => {
+  const targets: Array<Served["target"]> = [];
+
+  // The route hands the target to `serve`; the test takes it from there.
+  const serving: McpEndpoint = {
+    ...endpoint,
+    server: {
+      serve: (_request, target) => {
+        targets.push(target);
+
+        return Promise.resolve(new Response(null, { status: 202 }));
+      },
+    },
+  };
+
+  await call(serving, mcpRequest(), caller);
+
+  // SAFETY: the route's target is its own class, whose `start` is the one `Start` names.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see above.
+  const target = targets[0] as unknown as Start;
+
+  return target.start({
+    text: "Fix it",
+    request_id: "req-1",
+    via: { client: { name: "pi" }, era: "legacy" },
+  });
+};
+
+describe("starting a Session through the target", () => {
+  it("creates it marked and capped, tells the Session who sent the first message, and keeps the spare and Build coming", async () => {
+    const { endpoint, asked } = startEndpoint();
+
+    const result = await startThrough(endpoint, { kind: "owner", clientId: "dcr-1" });
+
+    expect(asked.created).toEqual([
+      {
+        workspace: { kind: "new", environment: DEFAULT_ENVIRONMENT },
+        marks: { kind: "mcp", auth: "oauth", client: { name: "pi" } },
+        maxRunning: 10,
+        requestId: "req-1",
+      },
+    ]);
+    expect(asked.submitted).toEqual([
+      {
+        input: "Fix it",
+        requestId: "req-1",
+        via: { client: { name: "pi" }, auth: "oauth", era: "legacy", clientId: "dcr-1" },
+      },
+    ]);
+    expect(asked.upkeep).toEqual(["spare default", "build default"]);
+    expect(result).toMatchObject({ ok: true, value: { session_id: SESSION, cursor: "c1" } });
+  });
+
+  it("answers the running cap as too_many_running, and sends and prepares nothing", async () => {
+    const { endpoint, asked } = startEndpoint({ refused: "too-many-running", limit: 10 });
+
+    const result = await startThrough(endpoint, { kind: "local" });
+
+    expect(result).toMatchObject({ ok: false, error: { code: "too_many_running" } });
+    expect(asked.submitted).toEqual([]);
+    expect(asked.upkeep).toEqual([]);
   });
 });
 

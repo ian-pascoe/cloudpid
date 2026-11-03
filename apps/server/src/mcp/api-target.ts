@@ -7,6 +7,7 @@
 import {
   type ApiResult,
   apiFailure,
+  type McpApi,
   type SessionsQuery,
   type TranscriptRequest,
 } from "@cloudpid/protocol";
@@ -60,21 +61,21 @@ export const apiTarget = async (
       return this.#run(this.#service.transcript(request));
     }
 
-    // Not served yet: `describe()` does not list them, and a caller that asks anyway is told so.
-    start() {
-      return unsupported("starting Sessions");
+    start(request: Parameters<McpApi["start"]>[0]) {
+      return this.#run(this.#service.start(request));
     }
 
-    send() {
-      return unsupported("sending messages");
+    send(request: Parameters<McpApi["send"]>[0]) {
+      return this.#run(this.#service.send(request));
     }
 
+    stop(request: Parameters<McpApi["stop"]>[0]) {
+      return this.#run(this.#service.stop(request));
+    }
+
+    // Not served yet: `describe()` does not list it, and a caller that asks anyway is told so.
     wait() {
       return unsupported("waiting for a Run");
-    }
-
-    stop() {
-      return unsupported("stopping Sessions");
     }
 
     /** Over RPC `await api.limited`: counts the call, and is present only when the caller is over its rate. */
