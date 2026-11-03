@@ -175,10 +175,14 @@ export const McpSignInStartInput = Schema.Struct({
 
 export type McpSignInStartInput = typeof McpSignInStartInput.Type;
 
-/** Where an entry's `oauth.clientSecret` resolves: a `{scope, name}` reference, never a copy of the value. */
+/**
+ * Where an entry's `oauth.clientSecret` resolves: a `{scope, name}` reference, never a copy of the value. `environment`
+ * is where it resolved (an Environment's id, or `all` for Global's own); a row from before it has none, and is read at Global.
+ */
 export const McpSignInSecretRef = Schema.Struct({
   scope: Schema.Literals(["secret", "variable"]),
   name: Schema.String,
+  environment: Schema.optional(Schema.String),
 });
 
 export type McpSignInSecretRef = typeof McpSignInSecretRef.Type;

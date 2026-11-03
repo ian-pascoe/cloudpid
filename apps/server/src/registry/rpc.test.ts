@@ -22,6 +22,7 @@ import {
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
   MAX_TITLE_LENGTH,
+  McpUnavailable,
   secretNameProblem,
   secretValueProblem,
   RegistryRpcs,
@@ -1407,6 +1408,8 @@ const fakeRegistries = () => {
     startMcpSignIn: () => Effect.die("The endpoint starts no sign-in"),
     confirmMcpSignIn: () => Effect.die("The endpoint confirms no sign-in"),
     completeMcpSignIn: () => Effect.die("The endpoint completes no sign-in"),
+    listMcpSignIns: () => Effect.die("The endpoint lists no sign-ins"),
+    signOutMcpSignIn: () => Effect.die("The endpoint signs out of no sign-in"),
     // The Session DO makes Agent changes, never the endpoint.
     changeSettings: () => Effect.die("The endpoint makes no Agent change"),
     listSettingsChanges: () => Effect.sync(() => Arr.filter(settingsChanges, listed).toReversed()),
@@ -1543,6 +1546,11 @@ const fakeRegistries = () => {
     mcpSettings,
     mcpHostCalls,
     mcpHostAnswers,
+    /** The sign-ins' reads and sign-out are `mcp/sign-in-manage.test.ts`'s: here they answer nothing. */
+    mcpSignIns: {
+      list: () => Effect.succeed(McpUnavailable.make({ message: "not under test" })),
+      signOut: () => Effect.succeed(McpUnavailable.make({ message: "not under test" })),
+    },
     /** The status reads over the fake Registry and the fake hosts, which record what they were asked. */
     mcpStatus: mcpStatus({
       registry: () => registry,
@@ -1799,6 +1807,7 @@ const worker =
       builds: fake.buildUpkeep,
       mcp: fake.mcp,
       mcpStatus: fake.mcpStatus,
+      mcpSignIns: fake.mcpSignIns,
       lookups: fake.lookups,
       branches: fake.branches,
       skillSearch: fake.skillSearch,

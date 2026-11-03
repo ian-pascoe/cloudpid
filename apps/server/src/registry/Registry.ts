@@ -76,6 +76,8 @@ import {
 } from "./skill-updates.ts";
 import {
   SETTINGS_SCOPE,
+  type McpSignInsListing,
+  type McpSignOutView,
   type SettingsOverridesState,
   type SkillExpectation,
   type SkillInstallation,
@@ -199,6 +201,7 @@ import {
 import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
 import { mcpAccessToken, reportMcpAuth } from "./mcp-sign-in-registry.ts";
 import { mcpClientGrant } from "./mcp-sign-in-client-grant.ts";
+import { listMcpSignIns, signOutMcpSignIn } from "./mcp-sign-in-manage.ts";
 import { mcpTokenRefresh } from "./mcp-sign-in-refresh.ts";
 import {
   completeMcpSignIn,
@@ -989,6 +992,18 @@ export type RegistryMethods = {
   readonly completeMcpSignIn: (
     input: McpSignInCompleteInput,
   ) => Effect.Effect<McpSignInCompleteAnswer>;
+  /**
+   * The owner's MCP sign-ins with who uses each, for Settings (`docs/architecture/mcp-sign-in.md` → Settings); never a token
+   * or a secret. The main Worker adds the stage and answers the client. For the main Worker's `RegistryRpcs` only.
+   */
+  readonly listMcpSignIns: () => Effect.Effect<McpSignInsListing>;
+  /**
+   * Sign out of the sign-in named by its key's `hash` (→ Sign-out): RFC 7009 revocation, best effort, then the row and its
+   * pending start are deleted, keeping the registration and the binding. The Registry never calls out to a host: the
+   * answer names the Environments that used the sign-in and the new revision, which the main Worker carries as
+   * `signed_out`. For the main Worker's `RegistryRpcs` only.
+   */
+  readonly signOutMcpSignIn: (input: { readonly hash: string }) => Effect.Effect<McpSignOutView>;
 };
 
 /** How long a legacy object taken to be wiped is left to its taker before another may take it. */
@@ -1963,6 +1978,12 @@ export const RegistryLive = Registry.make(
           completeMcpSignIn: (input) =>
             Clock.currentTimeMillis.pipe(
               Effect.flatMap((now) => completeMcpSignIn(signInFlow, input, now)),
+            ),
+          listMcpSignIns: () =>
+            Clock.currentTimeMillis.pipe(Effect.flatMap((now) => listMcpSignIns(signInFlow, now))),
+          signOutMcpSignIn: ({ hash }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) => signOutMcpSignIn(signInFlow, hash, now)),
             ),
         } satisfies RegistryMethods;
       }),

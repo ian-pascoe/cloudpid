@@ -18,6 +18,7 @@ import {
   type McpRepoFileView,
   McpRepoFiles,
   McpServersList,
+  McpSignInsListing,
   type McpServerView,
   McpUnavailable,
   type OverridingEnvironment,
@@ -44,6 +45,7 @@ import {
 } from "../registry.testing.ts";
 import { settingsAtom, settingsOverridesAtom } from "../settings.ts";
 import { McpSection } from "./mcp.tsx";
+import { mcpSignInsAtom } from "./mcp-sign-in-state.ts";
 import { emptyMcpFields, mcpCopyForm, newMcpForm, toolsDraftOf } from "./mcp-form.ts";
 import { mcpScopeView } from "./mcp-model.ts";
 import {
@@ -150,6 +152,12 @@ const handlersFor = (held: Held = {}): Partial<RegistryHandlers> => {
         HOME,
       ]),
     mcpRepoFiles: () => Effect.succeed(McpRepoFiles.make({ files: held.repoFiles ?? [] })),
+    // No sign-ins: the sign-in parts of a row are `mcp-sign-in.test.tsx`'s.
+    mcpSignIns: () =>
+      Effect.succeed({
+        ...McpSignInsListing.make({ revision: 0, signIns: [], lapsedStarts: [] }),
+        stage: { local: false, documentEnabled: true },
+      }),
     listEnvironmentSecrets: () => Effect.succeed(held.secrets ?? SECRETS),
     getSettings: () => {
       const state = {
@@ -249,6 +257,7 @@ const render = (
         environmentsAtom,
         settingsAtom,
         environmentSecretsAtom,
+        mcpSignInsAtom,
         ...(scope === "*"
           ? [globalSettingsAtom]
           : [
@@ -1485,16 +1494,16 @@ describe("the form of an Add", () => {
     }),
   );
 
-  it.effect("keeps a server's oauth as it was, naming it under the form", () =>
+  it.effect("keeps the keys it has no field for, naming them under the form", () =>
     Effect.gen(function* () {
       const markup = yield* render("*", {
         panel: newMcpForm("edit", "linear", {
+          type: "http",
           url: "https://mcp.linear.app/mcp",
-          oauth: { clientId: "abc" },
         }),
       });
 
-      expect(textOf(markup)).toContain("Kept as they are, and editable in the JSON tab: oauth.");
+      expect(textOf(markup)).toContain("Kept as they are, and editable in the JSON tab: type.");
     }),
   );
 

@@ -71,6 +71,8 @@ const UNEXPECTED: Handlers = {
   mcpServers: unexpected("mcpServers"),
   mcpServerLog: unexpected("mcpServerLog"),
   mcpReconnect: unexpected("mcpReconnect"),
+  mcpSignIns: unexpected("mcpSignIns"),
+  signOutMcpSignIn: unexpected("signOutMcpSignIn"),
   getSettings: unexpected("getSettings"),
   updateSettings: unexpected("updateSettings"),
   getSettingsOverrides: unexpected("getSettingsOverrides"),

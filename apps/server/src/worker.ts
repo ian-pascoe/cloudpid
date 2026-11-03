@@ -45,6 +45,7 @@ import { skillReposOver } from "./registry/skill-repo.ts";
 import { searchSkillsSh } from "./registry/skill-search.ts";
 import { McpHost, McpHostLive } from "./mcp/McpHost.ts";
 import { mcpPushes } from "./mcp/push.ts";
+import { mcpSignInManage, signInStageView } from "./mcp/sign-in-manage.ts";
 import { mcpStatus } from "./mcp/status.ts";
 import { mcpSignInCarry } from "./mcp/sign-in-carry.ts";
 import { REGISTRY_NAME, Registry, RegistryLive } from "./registry/Registry.ts";
@@ -331,7 +332,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
       host: (name) => mcpHosts.getByName(name),
     });
 
-    // A completed MCP sign-in (and, later, a sign-out or a rebind) goes to the hosts of the Environments that use it.
+    // A completed MCP sign-in, and a sign-out, go to the hosts of the Environments that use it (a rebind completes a
+    // sign-in, so it is carried as one).
     const signInCarry = mcpSignInCarry({ host: (name) => mcpHosts.getByName(name) });
 
     // The draft composer's lookups. The listings of its `@` menu are held per isolate, as a Session holds its own, in a
@@ -370,6 +372,13 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // SAFETY: the deploy sets the sign-in vars as strings (`deployment()`'s env, the label var), and nothing else puts a value under their names.
     const signInEnv = worker as SignInEnv;
     const registry = () => registries.getByName(REGISTRY_NAME);
+
+    // The owner's sign-ins for Settings: the Registry's list with the stage, and a sign-out carried to the hosts.
+    const mcpSignIns = mcpSignInManage({
+      registry,
+      carry: signInCarry,
+      stage: signInStageView(signInEnv),
+    });
 
     // SAFETY: the deploy sets these vars as strings (`guardVars`), and nothing else puts a value under their names.
     const guard = guardedRoutes(
@@ -432,6 +441,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
               builds,
               mcp,
               mcpStatus: mcpStatusReads,
+              mcpSignIns,
               lookups,
               branches,
               skillSearch: searchSkillsSh,

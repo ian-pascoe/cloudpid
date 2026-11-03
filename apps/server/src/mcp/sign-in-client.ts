@@ -9,32 +9,6 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { callbackUrl, clientDocumentUrl } from "./sign-in-origin.ts";
 
-/** The longest `client_name` (`oauth.clientName`: 1–100 characters). */
-const MAX_CLIENT_NAME_LENGTH = 100;
-
-/** The stage a client name is made for: its label (absent on `prod`) and whether it runs under `alchemy dev`. */
-export type StageNaming = {
-  readonly label?: string | undefined;
-  readonly local: boolean;
-};
-
-/** The ` (<label>)` or ` (<label>, local)` a non-prod stage adds to a client name; empty on `prod`. */
-const suffixOf = ({ label, local }: StageNaming): string =>
-  label === undefined ? "" : ` (${label}${local ? ", local" : ""})`;
-
-/**
- * The name cloudpid registers and shows as: `cloudpid` on prod, `cloudpid (<label>)` on other deployed stages and
- * `cloudpid (<label>, local)` under `alchemy dev`. A configured `oauth.clientName` gets the suffix off prod too. The
- * suffix is never cut: past 100 characters the configured part is shortened at a code-point boundary.
- */
-export const clientNameFor = (stage: StageNaming, configured?: string): string => {
-  const suffix = suffixOf(stage);
-  const base = Array.from(configured ?? "cloudpid");
-  const room = Math.max(0, MAX_CLIENT_NAME_LENGTH - Array.from(suffix).length);
-
-  return `${base.slice(0, room).join("")}${suffix}`;
-};
-
 /** The client document (→ The document): the content an authorization server fetches at its first sign-in. */
 export const clientDocument = (input: {
   readonly origin: string;

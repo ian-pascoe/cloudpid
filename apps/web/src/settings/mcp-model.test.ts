@@ -17,6 +17,7 @@ import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import {
   checkMcpEntry,
+  EMPTY_MCP_OAUTH,
   emptyMcpFields,
   entryOfFields,
   entryOfJson,
@@ -450,7 +451,7 @@ describe("the status chips", () => {
     ["not_discovered", "Not checked", false],
     ["a state a later build adds", "Unknown state", true],
   ])("read %s as %s", (state, label, problem) => {
-    expect(mcpStatusChip(server(state))).toEqual({ label, problem });
+    expect(mcpStatusChip(server(state))).toMatchObject({ label, problem });
   });
 
   it("carry a failure's message", () => {
@@ -463,7 +464,7 @@ describe("the status chips", () => {
     expect(
       mcpStatuses(McpServersList.make({ version: "1", servers: [server("connected")] })),
     ).toEqual({
-      chips: { a: { label: "Connected · 12 tools", problem: false } },
+      chips: { a: { state: "connected", label: "Connected · 12 tools", problem: false } },
       unavailable: null,
       tools: { a: ["search"] },
     });
@@ -542,6 +543,80 @@ describe("the form's entry", () => {
     } satisfies Schema.JsonObject;
 
     expect(entryOfFields(fieldsOfEntry("a", written))).toEqual(written);
+  });
+
+  it("writes the oauth fields in the order of the spec, with no default and none the grant type does not use", () => {
+    const http = emptyMcpFields("http");
+
+    expect(
+      entryOfFields({
+        ...http,
+        url: "https://a.example.com/mcp",
+        oauth: {
+          ...EMPTY_MCP_OAUTH,
+          clientId: "abc",
+          clientSecret: "${SECRET}",
+          scope: "read",
+          clientName: "mine",
+          clientRegistration: "dcr",
+          // Typed, then hidden by choosing client credentials: not written.
+          grantType: "client_credentials",
+          keyId: "k1",
+          issuer: "https://auth.example.com",
+        },
+      }),
+    ).toEqual({
+      url: "https://a.example.com/mcp",
+      oauth: {
+        clientId: "abc",
+        clientSecret: "${SECRET}",
+        keyId: "k1",
+        scope: "read",
+        issuer: "https://auth.example.com",
+        grantType: "client_credentials",
+      },
+    });
+    expect(
+      entryOfFields({
+        ...http,
+        url: "https://a.example.com/mcp",
+        oauth: { ...EMPTY_MCP_OAUTH, clientName: "mine", keyId: "k1", clientRegistration: "dcr" },
+      }),
+    ).toEqual({
+      url: "https://a.example.com/mcp",
+      oauth: { clientName: "mine", clientRegistration: "dcr" },
+    });
+    expect(entryOfFields({ ...http, url: "https://a.example.com/mcp" })).toEqual({
+      url: "https://a.example.com/mcp",
+    });
+  });
+
+  it("drops oauth from a stdio server", () => {
+    expect(
+      entryOfFields({ ...stdio, oauth: { ...EMPTY_MCP_OAUTH, clientId: "abc" } }),
+    ).not.toHaveProperty("oauth");
+  });
+
+  it("goes round through the form and back with every oauth field and the keys it ignores", () => {
+    const written = {
+      url: "https://a.example.com/mcp",
+      oauth: {
+        clientId: "abc",
+        clientSecret: "${SECRET}",
+        scope: "read write",
+        clientName: "mine",
+        clientRegistration: "dcr",
+        authServerMetadataUrl: "https://a.example.com/.well-known/oauth-authorization-server",
+        callbackPort: 8080,
+      },
+    } satisfies Schema.JsonObject;
+
+    const fields = fieldsOfEntry("a", written);
+
+    expect(fields.oauth.clientId).toBe("abc");
+    expect(fields.oauth.clientRegistration).toBe("dcr");
+    expect(fields.oauth.kept).toEqual({ callbackPort: 8080 });
+    expect(entryOfFields(fields)).toEqual(written);
   });
 
   it("is read from the JSON tab, or refused with why", () => {

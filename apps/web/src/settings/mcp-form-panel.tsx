@@ -4,9 +4,8 @@
 // (docs/architecture/mcp-configuration.md → The Settings page's "MCP servers" section): stdio (command, args, `cwd`) or HTTP
 // (`url`); `env` and `headers` rows hinting `${NAME}` with the Scope's Secret and Variable names (never a value) and
 // warning of a credential-shaped literal; timeout, description, enabled, Exposure, "Model use" (`sampling`); `toolExposure`
-// as pattern → Exposure rows, suggesting tool names once the server has been discovered; and a raw-JSON tab. The "Sign-in
-// (OAuth)" disclosure's fields and controls are #469's: the form keeps an entry's `oauth` as it was (`McpFields.kept`), and
-// `SIGN_IN_SEAM` marks where the disclosure goes.
+// as pattern → Exposure rows, suggesting tool names once the server has been discovered; a "Sign-in (OAuth)" disclosure
+// (`mcp-sign-in-form.tsx`, at `SIGN_IN_SEAM`) for an HTTP server; and a raw-JSON tab.
 
 import { MCP_SAMPLING, type McpExposure } from "@cloudpid/config";
 import { useAtom } from "@effect/atom-react";
@@ -47,9 +46,10 @@ import {
 import { MessageList, OptionSelect, ReferencesNotice } from "./mcp-parts.tsx";
 import { mcpRepoToolsChange } from "./mcp-write.ts";
 import { type McpReferencesState, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
+import { OauthDisclosure } from "./mcp-sign-in-form.tsx";
 import { CODE_AREA, Field, noteId } from "./parts.tsx";
 
-/** Where the "Sign-in (OAuth)" disclosure goes: its state and controls are #469's. */
+/** Where the "Sign-in (OAuth)" disclosure is: the id of the element that holds it. */
 export const SIGN_IN_SEAM = "sign-in";
 
 /** What each "Model use" answer lets the server do. */
@@ -718,7 +718,26 @@ export const McpFormPanel = ({
                 Kept as they are, and editable in the JSON tab: {Arr.join(keptKeys, ", ")}.
               </p>
             )}
-            <div id={SIGN_IN_SEAM} />
+            <div id={SIGN_IN_SEAM}>
+              {fields.kind === "http" && (
+                <OauthDisclosure
+                  scope={scope}
+                  oauth={fields.oauth}
+                  namesList={namesList}
+                  referenceHint={<NamesHint names={known} />}
+                  ignored={Arr.map(
+                    Arr.filter(
+                      Arr.map(Record.toEntries(fields.oauth.kept), ([key]) => key),
+                      (key) => Arr.contains(["callbackPort", "callbackUrl"], key),
+                    ),
+                    (key) => `oauth.${key}`,
+                  )}
+                  onChange={(next) => {
+                    setFields({ oauth: { ...fields.oauth, ...next } });
+                  }}
+                />
+              )}
+            </div>
           </>
         )}
       </div>

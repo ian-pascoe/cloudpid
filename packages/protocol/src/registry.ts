@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { MarkedOrigin } from "./mcp-api.ts";
 import { McpRepoFilesView } from "./mcp-repo-files.ts";
+import { McpSignInsView, McpSignOutView } from "./mcp-sign-ins.ts";
 import { McpReconnectView, McpServerLogView, McpServersView } from "./mcp-status.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
@@ -1097,6 +1098,20 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("mcpServers", {
     payload: { environment: EnvironmentId },
     success: McpServersView,
+  }),
+  /**
+   * The owner's MCP sign-ins (`docs/architecture/mcp-sign-in.md` → Settings): every one with its state, the Environments
+   * that use it and the stage's names, never a token or a secret. The Settings rows' chips and the Sign-ins list read it.
+   */
+  Rpc.make("mcpSignIns", { success: McpSignInsView }),
+  /**
+   * Sign out of the MCP sign-in named by its key's hash (`McpSignInView.hash`), from a server's row or the Sign-ins list:
+   * the server's own revocation (RFC 7009, best effort) first, then the row and its pending start are deleted, keeping the
+   * registration and the binding, and the hosts that use it close the server's sessions and end its watches.
+   */
+  Rpc.make("signOutMcpSignIn", {
+    payload: { hash: Schema.String },
+    success: McpSignOutView,
   }),
   /**
    * The log ring of one MCP server: its last 50 `notifications/message` entries, oldest first. It reads what the host
