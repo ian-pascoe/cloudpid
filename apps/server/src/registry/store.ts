@@ -937,6 +937,90 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       "CREATE TABLE session_requests (request_id TEXT PRIMARY KEY, session TEXT NOT NULL, at INTEGER NOT NULL)",
     );
   },
+  // 30: the MCP sign-in store (`docs/architecture/mcp-sign-in.md` → MCP sign-ins, Storage; ADR-0034), five tables kept
+  // Global. A sign-in is keyed by (source, normalized name, URL) hashed; its `sealed` tokens, a registration's
+  // `sealed_secret` and a pending row's `sealed_verifier` are AES-GCM under the `mcp-oauth` purpose, each bound to its table
+  // and key (`mcp-sign-in-seal.ts`). Rows with no `sealed` are sign-ins that need one (the status `required`), which hold
+  // the last challenge. A pending row holds only the SHA-256 of its `state`. The columns left JSON are written and read by
+  // the code that owns them (`mcp-sign-ins.ts`).
+  (sql) => {
+    sql.exec(`CREATE TABLE mcp_sign_ins (
+      key_hash TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      issuer TEXT,
+      metadata TEXT,
+      discovery TEXT,
+      resource TEXT,
+      client_id TEXT,
+      client_kind TEXT,
+      client_secret_ref TEXT,
+      registration TEXT,
+      scope TEXT,
+      expires_at INTEGER,
+      wanted_scope TEXT,
+      step_up_count INTEGER NOT NULL DEFAULT 0,
+      challenge TEXT,
+      last_error TEXT,
+      last_error_at INTEGER,
+      created_at INTEGER NOT NULL,
+      refreshed_at INTEGER,
+      used_at INTEGER NOT NULL,
+      sealed TEXT
+    ) STRICT`);
+    sql.exec("CREATE INDEX mcp_sign_ins_by_use ON mcp_sign_ins (used_at)");
+    sql.exec(`CREATE TABLE mcp_client_registrations (
+      key_hash TEXT PRIMARY KEY,
+      issuer TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      client_name TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      client_info TEXT NOT NULL,
+      sealed_secret TEXT,
+      client_secret_expires_at INTEGER,
+      registered_at INTEGER NOT NULL,
+      used_at INTEGER NOT NULL
+    ) STRICT`);
+    sql.exec(`CREATE TABLE mcp_client_bindings (
+      key_hash TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      issuer TEXT NOT NULL,
+      bound_at INTEGER NOT NULL,
+      PRIMARY KEY (key_hash, client_id)
+    ) STRICT`);
+    sql.exec(`CREATE TABLE mcp_pending_sign_ins (
+      key_hash TEXT PRIMARY KEY,
+      state_hash TEXT NOT NULL UNIQUE,
+      environment TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      issuer TEXT NOT NULL,
+      metadata TEXT NOT NULL,
+      client TEXT NOT NULL,
+      sealed_verifier TEXT NOT NULL,
+      scope TEXT,
+      resource TEXT,
+      step_up INTEGER NOT NULL DEFAULT 0,
+      requester TEXT,
+      return_path TEXT,
+      awaiting_confirmation INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    ) STRICT`);
+    sql.exec(`CREATE TABLE mcp_sign_in_waiters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key_hash TEXT NOT NULL,
+      session TEXT NOT NULL,
+      request TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      UNIQUE (session, request)
+    ) STRICT`);
+    sql.exec("CREATE INDEX mcp_sign_in_waiters_by_key ON mcp_sign_in_waiters (key_hash)");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */

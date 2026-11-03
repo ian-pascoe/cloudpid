@@ -7,6 +7,7 @@ import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { MCP_HANDED_DOCUMENT } from "./mcp-registry.ts";
+import { SIGN_INS_REVISION_DOCUMENT } from "./mcp-sign-ins.ts";
 import {
   environmentMcpSet,
   mcpHandedUnreadable,
@@ -89,6 +90,24 @@ describe("the host's pull (mcpServerSet)", () => {
       signInsRevision: 0,
       revision: 2,
     });
+  });
+
+  it("answers the revision of the MCP sign-ins the Registry keeps, 0 before any and for an unreadable one", () => {
+    const registry = store(["a"]);
+
+    const revisionOf = (environment: string) =>
+      mcpServerSetAnswer(registry, { environment }, 1).signInsRevision;
+
+    expect(revisionOf("a")).toBe(0);
+
+    registry.putDocument(SIGN_INS_REVISION_DOCUMENT, "7", 1);
+    expect(revisionOf("a")).toBe(7);
+
+    // Global's: an Environment the Registry does not list is told it too.
+    expect(revisionOf("gone")).toBe(7);
+
+    registry.putDocument(SIGN_INS_REVISION_DOCUMENT, "not a number", 1);
+    expect(revisionOf("a")).toBe(0);
   });
 
   it("takes a host that holds nothing for one that holds the empty set", () => {

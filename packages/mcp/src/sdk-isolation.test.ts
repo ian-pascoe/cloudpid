@@ -48,17 +48,21 @@ const plantedEntry = (entry: string, planted: ReadonlyArray<string>): Plugin => 
       return null;
     }
 
-    return [entry, ...planted].map((source) => `import ${JSON.stringify(source)};`).join("\n");
+    // The entry's namespace is used, so a package marked `sideEffects: false` (pi-mcp) is kept for what the entry exports.
+    return [
+      `import * as entry from ${JSON.stringify(entry)}; globalThis.entry = entry;`,
+      ...planted.map((source) => `import ${JSON.stringify(source)};`),
+    ].join("\n");
   },
 });
 
 /**
- * Every way the bundle of `entry` (with `planted` specifiers imported beside it) reaches the SDK: a module in its
+ * Every module and import the bundle of `entry` (with `planted` specifiers imported beside it) reaches: a module in its
  * graph, an import it left external (rolldown turns an import it cannot resolve into one, silently: it is in
  * `chunk.imports`, not in `moduleIds`, and the Worker would fail at runtime or load it from `node_modules`) or a
  * dynamic import.
  */
-const sdkReferences = async (entry: string, planted: ReadonlyArray<string> = []) => {
+const bundleReferences = async (entry: string, planted: ReadonlyArray<string> = []) => {
   const bundle = await rolldown({
     input: PLANTED_ENTRY,
     platform: "node",
@@ -78,11 +82,15 @@ const sdkReferences = async (entry: string, planted: ReadonlyArray<string> = [])
       ...chunks.flatMap((chunk) => chunk.dynamicImports),
     ]);
 
-    return [...ids].filter((id) => id.replaceAll("\\", "/").includes(SDK_PACKAGES));
+    return [...ids].map((id) => id.replaceAll("\\", "/"));
   } finally {
     await bundle.close();
   }
 };
+
+/** Every way the bundle of `entry` reaches the SDK. */
+const sdkReferences = async (entry: string, planted: ReadonlyArray<string> = []) =>
+  (await bundleReferences(entry, planted)).filter((id) => id.includes(SDK_PACKAGES));
 
 describe("the SDK stays out of the Workers that must not load it", () => {
   const workers = [
@@ -127,5 +135,18 @@ describe("@cloudpid/mcp entries", () => {
 
   it("./oauth loads nothing from the SDK", async () => {
     expect(await sdkReferences(OAUTH)).toEqual([]);
+  });
+
+  // pi-mcp's `oauth` entry also exports a callback server over `node:http`, `McpOAuthProvider` and `authorizeMcp`, which
+  // cloudpid never uses (docs/architecture/mcp-sign-in.md → Tokens reach the host object, Code): `./oauth` names what it
+  // takes, so they stay out of the bundle.
+  it("./oauth leaves pi-mcp's callback server, provider and node:http out", async () => {
+    const references = await bundleReferences(OAUTH);
+
+    expect(references.filter((id) => id.includes("pi-mcp"))).not.toEqual([]);
+    expect(
+      references.filter((id) => /pi-mcp\/dist\/oauth\/(callback|provider)\.js$/.test(id)),
+    ).toEqual([]);
+    expect(references.filter((id) => id === "node:http" || id === "http")).toEqual([]);
   });
 });

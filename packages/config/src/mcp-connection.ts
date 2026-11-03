@@ -183,3 +183,32 @@ export const mcpConnectionKey = (server: McpKeyed): string =>
  */
 export const mcpServerIdentity = (server: McpKeyed): string =>
   sha256Hex(canonicalMcpIdentity(server));
+
+/** An MCP sign-in's key: the three parts, and their SHA-256, which the Registry keys the sign-in's row by. */
+export type McpSignInKey = {
+  /** `owner`, or `repo:<owner/repo>` (`mcpKeySource`). */
+  readonly source: string;
+  /** The normalized name, as the `mcp__<server>` part spells it. */
+  readonly name: string;
+  /** `new URL(url).href` without its fragment. */
+  readonly url: string;
+  /** SHA-256 over the three, as 64 hex digits. */
+  readonly hash: string;
+};
+
+/**
+ * The key of the MCP sign-in an HTTP server uses (`docs/architecture/mcp-sign-in.md` → MCP sign-ins): its source, its
+ * normalized name and its URL without the fragment. Sign-ins are kept Global, so the key names no Environment; `oauth`
+ * and the headers are not in it, so editing them keeps the sign-in. Undefined for a stdio server, which has none.
+ */
+export const mcpSignInKey = ({ name, source, server }: McpKeyed): McpSignInKey | undefined => {
+  if (server.type !== "http") return undefined;
+
+  const key = {
+    source: mcpKeySource(source),
+    name: normalizeMcpName(name),
+    url: urlKey(server.url),
+  };
+
+  return { ...key, hash: sha256Hex(JSON.stringify(key)) };
+};

@@ -7,6 +7,7 @@ import {
   canonicalMcpIdentity,
   mcpConnectionKey,
   mcpServerIdentity,
+  mcpSignInKey,
   sha256Hex,
 } from "./mcp-connection.ts";
 import { type McpRepoLayer, resolveMcpServerSet } from "./mcp-server-set.ts";
@@ -343,5 +344,64 @@ describe("the server identity", () => {
     expect(mcpServerIdentity(keyed("linear", {}, {}, repo("web", { linear: LINEAR })))).not.toBe(
       base,
     );
+  });
+});
+
+describe("the MCP sign-in key", () => {
+  const signIn = (name: string, entry: Schema.Json) => mcpSignInKey(keyed(name, { [name]: entry }));
+
+  it("is the source, the normalized name and the url without its fragment, hashed", () => {
+    const key = signIn("Linear-App", { url: "https://mcp.linear.app/mcp#frag" });
+
+    expect(key).toEqual({
+      source: "owner",
+      name: "linear_app",
+      url: "https://mcp.linear.app/mcp",
+      hash: sha256Hex('{"source":"owner","name":"linear_app","url":"https://mcp.linear.app/mcp"}'),
+    });
+  });
+
+  it("is the href of the url: a host's case and a default port fold, a path's case and a query stay", () => {
+    expect(signIn("a", { url: "https://MCP.Linear.app:443/Mcp?x=1" })?.url).toBe(
+      "https://mcp.linear.app/Mcp?x=1",
+    );
+    expect(signIn("a", { url: "https://mcp.linear.app/mcp" })?.hash).not.toBe(
+      signIn("a", { url: "https://mcp.linear.app/mcp/" })?.hash,
+    );
+  });
+
+  it("keeps the sign-in through edits to the headers and `oauth`, which `conn` does not", () => {
+    expect(
+      signIn("linear", { ...LINEAR, headers: { "X-A": "b" }, oauth: { clientId: "a" } })?.hash,
+    ).toBe(signIn("linear", LINEAR)?.hash);
+  });
+
+  it("is a new sign-in for a new name, url or source: a Repo's never reuses the owner's", () => {
+    const base = signIn("linear", LINEAR)?.hash;
+
+    expect(signIn("other", LINEAR)?.hash).not.toBe(base);
+    expect(signIn("linear", { url: "https://mcp.linear.app/v2" })?.hash).not.toBe(base);
+    expect(mcpSignInKey(keyed("linear", {}, {}, repo("web", { linear: LINEAR })))?.hash).not.toBe(
+      base,
+    );
+    expect(mcpSignInKey(keyed("linear", {}, {}, repo("web", { linear: LINEAR })))?.source).toBe(
+      "repo:acme/web",
+    );
+  });
+
+  it("is shared by every Environment holding one Repo, whichever the directory", () => {
+    const first = mcpSignInKey(
+      keyed("a", {}, {}, { ...repo("web", { a: LINEAR }), slug: "acme/web" }),
+    );
+
+    const second = mcpSignInKey(
+      keyed("a", {}, {}, { ...repo("site", { a: LINEAR }), slug: "acme/web" }),
+    );
+
+    expect(second).toEqual(first);
+  });
+
+  it("is none for a stdio server", () => {
+    expect(signIn("local", LOCAL)).toBeUndefined();
   });
 });

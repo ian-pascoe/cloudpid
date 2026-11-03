@@ -178,6 +178,15 @@ import {
   type WorkspaceRecord,
   type WorkspaceSetup,
 } from "./store.ts";
+import type {
+  McpAccessTokenAnswer,
+  McpAccessTokenInput,
+  McpAuthReport,
+  McpAuthReportAnswer,
+} from "@cloudpid/mcp/types";
+import { mcpAccessToken, reportMcpAuth } from "./mcp-sign-in-registry.ts";
+import { MCP_OAUTH_PURPOSE } from "./mcp-sign-in-seal.ts";
+import { openMcpSignIns } from "./mcp-sign-ins.ts";
 
 /** The Registry is a singleton: every caller addresses the object with this name. */
 export const REGISTRY_NAME = "registry";
@@ -879,6 +888,24 @@ export type RegistryMethods = {
     readonly sessionId: string;
     readonly event: PushEvent;
   }) => Effect.Effect<void>;
+  /**
+   * The host's ask for the access token of `server` in `environment`'s MCP set (`docs/architecture/mcp-sign-in.md` →
+   * Tokens reach the host object): `ok` with the token and the resource it is bound to, or why there is none. The
+   * Registry works out the sign-in from the Environment's own set. Only the Registry holds tokens at rest; the host keeps
+   * the answer in memory only. For the `McpHost` DO only.
+   */
+  readonly mcpAccessToken: (input: McpAccessTokenInput) => Effect.Effect<McpAccessTokenAnswer>;
+  /**
+   * What a host saw of a server's sign-in, on transitions only: `needs_sign_in`, `step_up`, `rejected` or `working`, with
+   * the challenge. The Registry never calls out; the answer lists the Sign-in requests a `working` report resolved. For the
+   * `McpHost` DO only.
+   */
+  readonly reportMcpAuth: (input: McpAuthReport) => Effect.Effect<McpAuthReportAnswer>;
+  /**
+   * The revision of the MCP sign-ins: it rises with a sign-in, sign-out, rebind or drop of tokens. A host compares it at
+   * `windowOpened`, so a push it lost heals (`mcpServerSet` carries it too).
+   */
+  readonly signInsRevision: () => Effect.Effect<number>;
 };
 
 /** How long a legacy object taken to be wiped is left to its taker before another may take it. */
@@ -902,6 +929,7 @@ export const RegistryLive = Registry.make(
         const store = openRegistryStore(state.raw.storage);
         const changes = openAgentChanges(state.raw.storage);
         const skills = openSkills(state.raw.storage);
+        const mcpSignIns = openMcpSignIns(state.raw.storage, store);
         const notify = pushNotifier({ store, vapid: push.vapid });
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
         const skillReader = githubSkillReader(github);
@@ -976,11 +1004,13 @@ export const RegistryLive = Registry.make(
             return merged.hash === held ? undefined : skillSetOf(merged, skills);
           });
 
-        // The kept Secrets' key, derived once, on first use: a malformed master key fails the calls that need it, not
-        // the object. An Environment no Secret reaches never needs it.
-        const vault = yield* Effect.cached(
-          openKeptVault(Redacted.value(secrets.encryptionKey), "registry"),
-        );
+        // A vault for `purpose`, its key derived once, on first use: a malformed master key fails the calls that need it, not
+        // the object.
+        const cachedVault = (purpose: string) =>
+          Effect.cached(openKeptVault(Redacted.value(secrets.encryptionKey), purpose));
+
+        // The kept Secrets', which an Environment no Secret reaches never needs.
+        const vault = yield* cachedVault("registry");
 
         let handedWarned = false;
 
@@ -994,6 +1024,9 @@ export const RegistryLive = Registry.make(
             "The record of what the MCP hosts were handed cannot be read: its revisions start again from 0, and a host holding a later one answers Stale until they pass it",
           );
         });
+
+        // The MCP sign-ins': a malformed key makes token requests answer `unavailable` and leaves the rows unopened.
+        const mcpVault = yield* cachedVault(MCP_OAUTH_PURPOSE);
 
         /** The Secrets `environment` uses, opened, for the Session DOs and the Builds: a vault that fails says why. */
         const opened = (environment: string) =>
@@ -1719,6 +1752,17 @@ export const RegistryLive = Registry.make(
           unsubscribePush: ({ endpoint }) =>
             Effect.sync(() => store.deletePushSubscription(endpoint)),
           notify: ({ sessionId, event }) => notify(sessionId, event),
+          mcpAccessToken: (input) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                mcpAccessToken({ store, signIns: mcpSignIns, vault: mcpVault }, input, now),
+              ),
+            ),
+          reportMcpAuth: (report) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => reportMcpAuth({ store, signIns: mcpSignIns }, report, now)),
+            ),
+          signInsRevision: () => Effect.sync(() => mcpSignIns.revision()),
         } satisfies RegistryMethods;
       }),
     ),
