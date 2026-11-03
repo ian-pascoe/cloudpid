@@ -502,27 +502,22 @@ describe("states and backoff", () => {
 
     const [call] = await host.engineCalls();
 
-    expect(call?.target.headers).toEqual({ Authorization: "Bearer sekrit-value" });
+    expect(call?.target).toMatchObject({ headers: { Authorization: "Bearer sekrit-value" } });
     expect(await stateOf(host, "vault")).toBe("connected");
     expect(await host.dump()).not.toContain("sekrit-value");
   });
 
-  it("never discovers a server switched off or hidden, nor a stdio one before the bridge", async () => {
+  it("never discovers a server switched off or hidden", async () => {
     const host = freshHost();
 
     await host.apply(
-      setOf(
-        entry("off", { enabled: false }),
-        entry("hidden", { exposure: "hidden" }),
-        entry("local", { type: "stdio", command: "npx", url: null }),
-      ),
+      setOf(entry("off", { enabled: false }), entry("hidden", { exposure: "hidden" })),
     );
 
-    const answer = await start(host, { waitFor: ["off", "hidden", "local"] });
+    const answer = await start(host, { waitFor: ["off", "hidden"] });
 
     expect(answer.servers.off?.state).toBe("disabled");
     expect(answer.servers.hidden?.state).toBe("disabled");
-    expect(answer.servers.local?.state).toBe("skipped");
     expect(await calls(host)).toBe(0);
   });
 });
@@ -628,7 +623,7 @@ describe("set diffs and the era cache", () => {
 
     expect(await host.prior("conn-linear")).toEqual({});
     expect(await stateOf(host, "linear")).toBe("connected");
-    expect((await host.engineCalls()).at(-1)?.target.url).toBe(urlOf("moved"));
+    expect((await host.engineCalls()).at(-1)?.target).toMatchObject({ url: urlOf("moved") });
 
     const moved = (await restart(host)).version;
 
@@ -666,7 +661,11 @@ describe("set diffs and the era cache", () => {
     await idle.advance(25 * 60 * MINUTE);
     await idle.apply(setOf(entry("linear"), entry("docs"), entry("late")));
     await pause();
-    expect((await idle.engineCalls()).map((call) => call.target.url)).not.toContain(urlOf("late"));
+    expect(
+      (await idle.engineCalls()).map((call) =>
+        call.target.kind === "http" ? call.target.url : "",
+      ),
+    ).not.toContain(urlOf("late"));
   });
 
   it("passes the era row it keeps as `prior`, and drops it when the engine says so", async () => {

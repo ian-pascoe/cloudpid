@@ -431,17 +431,19 @@ const waitOf = (waitMs: number | undefined, fallback: number) =>
  * The demand-driven part of a read: `connecting` statuses that died with their instance go back, and the servers due
  * a discovery start it.
  */
-const onDemand = (environment: string | undefined, trigger: Trigger) =>
+const onDemand = (environment: string | undefined, trigger: Trigger, workspace?: string) =>
   Effect.gen(function* () {
     yield* reviveStale;
 
-    if (environment !== undefined) yield* startDue(environment, yield* viewServers, trigger);
+    if (environment !== undefined) {
+      yield* startDue(environment, yield* viewServers, trigger, workspace);
+    }
   });
 
 /**
  * `requestStart`: marks the host used and says what the Session needs to build its tools. A Context Window's first
  * request (`windowOpened`) pulls the set first. Servers due a discovery start it (an HTTP server never asked, a TTL
- * passed, a backoff over); a caller with no `known` version (a Session's first request) waits up to `waitMs` (at most
+ * passed, a backoff over; a stdio server not yet discovered, or failed a minute ago, in the caller's Workspace); a caller with no `known` version (a Session's first request) waits up to `waitMs` (at most
  * 10 s) for the servers it names in `waitFor` that have no inventory yet, each wait ending once its discovery ends,
  * whatever it ends in. The answer is the inventory's content-hash versions, the features the host lists, and per
  * server its hashes and state. The Registry is asked only here and never at the host's start: a host that no Session
@@ -461,7 +463,13 @@ export const requestStart = (
 
     yield* writeOrHalt(() => store.setMeta({ lastUsedAt: now }));
 
-    yield* onDemand(environment, "demand");
+    // A stdio server is discovered here, in the caller's Workspace, and only here (it may start the Container).
+    // (A Session with no Workspace says so with an empty one.)
+    yield* onDemand(
+      environment,
+      "demand",
+      request.caller.workspace === "" ? undefined : request.caller.workspace,
+    );
 
     const waitFor = request.waitFor ?? [];
 
@@ -563,8 +571,8 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
 
 /**
  * `servers`: the inventory per server, with the parts asked for. HTTP servers due a discovery start it, and it waits up
- * to `waitMs` (at most 10 s, none by default) for those being discovered. It never starts a Container: stdio servers
- * are not discovered here.
+ * to `waitMs` (at most 10 s, none by default) for those being discovered. It never starts a Container: only a live
+ * caller's `requestStart` and `request` do.
  */
 export const servers = (
   environment: string | undefined,

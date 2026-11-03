@@ -17,6 +17,7 @@ export {
   PROGRESS_TOOL,
   REGION_TOOL,
   type Received,
+  ROOTS_TOOL,
   type RpcBody,
   rpcMethods,
   SHOUT_TOOL,

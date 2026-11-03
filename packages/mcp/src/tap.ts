@@ -28,13 +28,15 @@ import * as Schema from "effect/Schema";
 import {
   Cut,
   MCP_LARGE_RESULT_BYTES,
-  type McpError,
+  McpError,
   MiB,
   ProtocolViolation,
   ServerError,
   TooLarge,
   Unreachable,
 } from "./types.ts";
+
+const isMcpError = Schema.is(McpError);
 
 /** What the tap does with a request, by its method. */
 interface Policy {
@@ -418,7 +420,8 @@ export const tapFetch = (
     try {
       return await fetch(input, init);
     } catch (error) {
-      if (init?.signal?.aborted === true || request === undefined) {
+      // An injected `fetch` that already names the failure (the Container bridge's refusals) is believed, not reworded.
+      if (init?.signal?.aborted === true || request === undefined || isMcpError(error)) {
         throw error;
       }
 

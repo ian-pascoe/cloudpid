@@ -115,7 +115,9 @@ const settled = (host: Host) => host.servers({ parts: [], waitMs: 10_000 });
 
 /** The `Authorization` header of each discovery the engine was asked for, in order. */
 const sent = async (host: Host) =>
-  (await host.engineCalls()).map((call) => call.target.headers?.Authorization);
+  (await host.engineCalls()).map((call) =>
+    call.target.kind === "http" ? call.target.headers?.Authorization : undefined,
+  );
 
 const MINUTE = 60_000;
 
@@ -817,7 +819,10 @@ describe("a server that signs in on its own", () => {
     await settled(host);
 
     const targets = Object.fromEntries(
-      (await host.engineCalls()).map(({ target }) => [target.name, target.extensions]),
+      (await host.engineCalls()).map(({ target }) => [
+        target.name,
+        target.kind === "http" ? target.extensions : undefined,
+      ]),
     );
 
     expect(targets["sentry"]).toEqual({ [EXTENSION]: {} });

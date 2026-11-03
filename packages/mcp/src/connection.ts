@@ -62,6 +62,7 @@ import {
   type McpAuthChallenge,
   type McpError,
   type McpProgress,
+  type McpRoot,
   ProtocolViolation,
   type SessionRow,
   SessionRowV1,
@@ -78,6 +79,12 @@ export interface McpTarget {
   readonly headers?: Readonly<Record<string, string>>;
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
   readonly timeoutMs?: number;
+  /**
+   * How long a probe or an `initialize` may take (default `MCP_CONNECT_TIMEOUT_MS`, 15 s). Through the Container bridge
+   * it is 60 s, since the first request may start the Container and spawn the server
+   * (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions, Timeouts).
+   */
+  readonly connectTimeoutMs?: number;
 }
 
 /** Where one `prior` row (era or Legacy session) is kept. A row may be of any format, so it is read as JSON. */
@@ -113,6 +120,13 @@ export interface McpDeps {
    * resets the call's timeout; without it, the server is asked for none.
    */
   readonly onProgress?: (progress: McpProgress) => void;
+  /**
+   * The Roots the client offers (`docs/architecture/mcp-in-a-session.md` → Roots), given only on a bridge connection. With
+   * it the client declares `roots` and answers `roots/list` from it, on the call's stream in a Legacy exchange and in the
+   * `input_required` round it arrives in on Modern; without it a server is declared no `roots`, so a remote server is
+   * never asked for any.
+   */
+  readonly roots?: ReadonlyArray<McpRoot>;
 }
 
 /** A `notifications/message` as the server sent it: the level, the logger's name and the data, any JSON. */
@@ -335,6 +349,7 @@ type Plan =
 /** Connects to `target`; the connection closes with the scope. */
 export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, deps: McpDeps) {
   const context = yield* Effect.context<never>();
+  const connectMs = target.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   const verdicts = new Verdicts();
   let challenge: McpAuthChallenge | undefined;
 
@@ -440,15 +455,22 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
   const newClient = () => {
     const client = new Client(deps.clientInfo, {
-      capabilities: declaredCapabilities(deps.capabilities, deps.extensions),
+      capabilities: declaredCapabilities(deps.capabilities, deps.extensions, deps.roots),
       supportedProtocolVersions: SUPPORTED_PROTOCOL_VERSIONS,
-      versionNegotiation: { mode: "auto", probe: { timeoutMs: CONNECT_TIMEOUT_MS, maxRetries: 0 } },
+      versionNegotiation: { mode: "auto", probe: { timeoutMs: connectMs, maxRetries: 0 } },
       enforceStrictCapabilities: false,
       jsonSchemaValidator: noValidation,
-      inputRequired: { autoFulfill: false },
+      // Only Roots are answered, from the handler below; the other questions come with their slices.
+      inputRequired: { autoFulfill: deps.roots !== undefined },
     });
 
-    const { onLog } = deps;
+    const { onLog, roots } = deps;
+
+    if (roots !== undefined) {
+      client.setRequestHandler("roots/list", () => ({
+        roots: Arr.map(roots, (root) => ({ ...root })),
+      }));
+    }
 
     if (onLog !== undefined) {
       client.setNotificationHandler("notifications/message", ({ params }) => {
@@ -485,7 +507,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
       yield* Effect.tryPromise({
         try: (signal) => {
-          const options: ConnectOptions = { timeout: CONNECT_TIMEOUT_MS, signal };
+          const options: ConnectOptions = { timeout: connectMs, signal };
 
           if (prior !== undefined) {
             options.prior = prior;
@@ -544,7 +566,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         // still a server: its logs just come at its own level.
         if (transport.sessionId !== undefined && wantsLogs(client.getServerCapabilities() ?? {})) {
           yield* Effect.tryPromise(() =>
-            client.setLoggingLevel(MCP_LOG_LEVEL, { timeout: CONNECT_TIMEOUT_MS }),
+            client.setLoggingLevel(MCP_LOG_LEVEL, { timeout: connectMs }),
           ).pipe(Effect.ignore);
         }
       }
@@ -650,7 +672,12 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     if (live.era !== "modern") return undefined;
 
     const meta: RequestMeta = {
-      [CLIENT_CAPABILITIES_META_KEY]: declaredCapabilities(deps.capabilities, deps.extensions, ctx),
+      [CLIENT_CAPABILITIES_META_KEY]: declaredCapabilities(
+        deps.capabilities,
+        deps.extensions,
+        deps.roots,
+        ctx,
+      ),
     };
 
     if (wantsLogs(live.capabilities)) meta[LOG_LEVEL_META_KEY] = MCP_LOG_LEVEL;

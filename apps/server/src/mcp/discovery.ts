@@ -5,7 +5,8 @@
 // Discoveries run as fibers in the host's runtime, kept in its scope (`McpDiscovery`), so they outlive the call that
 // started them: single-flight per `conn`, at most 3 at once, each one request in flight on its server and one
 // background engine call (`McpLoadCaps`). Nothing arms an alarm: a server is retried only on demand (`requestStart`,
-// `servers`, a set change, a reload), once its backoff is over. A storage operation that fails stops new discoveries
+// `servers`, a set change, a reload), once its backoff is over. A stdio server is discovered only on a live caller's
+// demand that names the caller's Workspace, in that Workspace's Container, which the discovery may start. A storage operation that fails stops new discoveries
 // (a replaced instance, whose writes are refused; `docs/architecture/mcp-connections.md` → Deploys).
 //
 // A discovery passes the engine no callback (`engine.ts`), so the invocation that started it ending cuts nothing. A
@@ -20,6 +21,8 @@ import {
   MCP_CLIENT_CREDENTIALS_EXTENSION,
   type JsonObject,
   type McpEngineDiscoverResult,
+  type McpEngineHttpTarget,
+  type McpEngineStdioTarget,
   type McpEngineTarget,
   type McpServerState,
 } from "@cloudpid/mcp/types";
@@ -39,7 +42,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 import type * as Types from "effect/Types";
-import { authorizedDiscovery } from "./discovery-auth.ts";
+import { authorizedDiscovery, type DiscoveryAccess } from "./discovery-auth.ts";
 import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
 import { inventoryRows } from "./inventory.ts";
 import { McpLoadCaps } from "./limits.ts";
@@ -57,6 +60,7 @@ import {
   type Trigger,
 } from "./server-state.ts";
 import { McpHostStore, type StatusRow, type StoredServer } from "./store.ts";
+import { processEnded, rootsOf } from "./stdio.ts";
 import { SECOND_MS } from "./time.ts";
 import type { McpTokens } from "./tokens.ts";
 
@@ -146,14 +150,73 @@ const stringValues = (record: JsonObject) =>
 const hasNames = (headers: Readonly<Record<string, string>>): boolean =>
   Arr.some(Record.values(headers), (value) => value.includes("${"));
 
-/** An HTTP server's target, its `${NAME}` values resolved by the Registry, or why it cannot be reached. */
-export const targetOf = (environment: string, server: StoredServer) =>
+/** A stdio server's target in `workspace`, its `env` resolved and its Roots from that Workspace's Repos, or why it cannot be reached. */
+const stdioTargetOf = (environment: string, server: StoredServer, workspace: string | undefined) =>
   Effect.gen(function* () {
+    if (workspace === undefined) {
+      return notReached("unavailable", "A stdio server runs in a Workspace, and none was named");
+    }
+
+    const { command, args, cwd, timeout } = server.server;
+    const registry = yield* McpRegistryPort;
+
+    const answer = yield* registry
+      .serverValues({ environment, server: server.name, conn: server.conn, workspace })
+      .pipe(Effect.option);
+
+    if (Option.isNone(answer)) {
+      return notReached("unavailable", "The Registry could not resolve its ${NAME} values");
+    }
+
+    const values = answer.value;
+
+    if (values.status !== "values" || !("missing" in values)) {
+      return notReached("unavailable", "The Registry holds another definition of this server");
+    }
+
+    if (values.missing.length > 0) {
+      const names = Arr.join(
+        Arr.map(values.missing, (name) => "${" + name + "}"),
+        ", ",
+      );
+
+      return notReached("skipped", `Needs ${names}, which resolve to nothing`);
+    }
+
+    const target: Types.Mutable<McpEngineStdioTarget> = {
+      kind: "stdio",
+      conn: server.conn,
+      name: server.name,
+      workspace,
+      // A live caller's demand is what discovers a stdio server, so it may start the Container.
+      start: true,
+      command: Predicate.isString(command) ? command : "",
+      env: values.env,
+      roots: rootsOf(values.repos ?? []),
+      redact: values.redact ?? [],
+      timeoutMs: (Predicate.isNumber(timeout) ? timeout : 60) * 1000,
+    };
+
+    if (Arr.isArray(args)) target.args = Arr.filter(args, Predicate.isString);
+
+    if (Predicate.isString(cwd)) target.cwd = cwd;
+
+    return Result.succeed<McpEngineTarget>(target);
+  });
+
+/**
+ * A server's target, its `${NAME}` values resolved by the Registry, or why it cannot be reached. An HTTP server's is its
+ * URL and headers; a stdio server's is what its Workspace's bridge spawns, so it needs the `workspace`.
+ */
+export const targetOf = (environment: string, server: StoredServer, workspace?: string) =>
+  Effect.gen(function* () {
+    if (server.server.type === "stdio") return yield* stdioTargetOf(environment, server, workspace);
+
     const { url, headers, timeout } = server.server;
     const written = stringValues(isJsonObject(headers) ? headers : {});
 
     const target = (resolved: Readonly<Record<string, string>>, redact: ReadonlyArray<string>) => {
-      const reached: Types.Mutable<McpEngineTarget> = {
+      const reached: Types.Mutable<McpEngineHttpTarget> = {
         kind: "http",
         conn: server.conn,
         name: server.name,
@@ -209,11 +272,19 @@ const storeDiscoveryResult = (
   result: McpEngineDiscoverResult,
   previous: StatusRow | undefined,
   now: number,
+  workspace?: string,
 ) =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
 
-    store.applyEngineState(conn, result.state, now);
+    const ended = store.applyEngineState(
+      conn,
+      result.state,
+      now,
+      workspace === undefined ? undefined : { workspace, spawn: result.spawn },
+    );
+
+    if (workspace !== undefined && ended !== undefined) yield* processEnded(conn, workspace, ended);
 
     yield* Effect.annotateCurrentSpan(
       Match.value(result).pipe(
@@ -266,8 +337,16 @@ const PAST_DEADLINE = "The discovery did not end in time";
  * invocation that started it, recorded on the span: a discovery goes on after that invocation, and a span can be neither
  * re-parented nor linked (`docs/architecture/mcp.md` → Testing and tracing).
  */
-const discoverOne = (environment: string, view: ServerView, cause: string | undefined) =>
+const discoverOne = (
+  environment: string,
+  view: ServerView,
+  cause: string | undefined,
+  caller?: string,
+) =>
   Effect.gen(function* () {
+    // Only a stdio server is discovered in a Workspace.
+    const workspace = view.reach === "stdio" ? caller : undefined;
+
     const store = yield* McpHostStore;
     const engine = yield* McpEngineClient;
     const caps = yield* McpLoadCaps;
@@ -303,7 +382,7 @@ const discoverOne = (environment: string, view: ServerView, cause: string | unde
         });
       }
 
-      const reached = yield* targetOf(environment, view.server);
+      const reached = yield* targetOf(environment, view.server, workspace);
 
       if (Result.isFailure(reached)) {
         const { state, message } = reached.failure;
@@ -320,15 +399,20 @@ const discoverOne = (environment: string, view: ServerView, cause: string | unde
       const call = (target: McpEngineTarget) =>
         caps.inFlight(
           conn,
-          caps.engineCall("background", engine.discover(target, store.prior(conn))),
+          caps.engineCall("background", engine.discover(target, store.prior(conn, workspace))),
+          workspace,
         );
 
-      const result = yield* authorizedDiscovery(
-        environment,
-        view,
-        previous?.state,
-        reached.success,
-        call,
+      const { success: target } = reached;
+
+      // A stdio server has no sign-in: its call is made as it is.
+      const result = yield* (
+        target.kind === "stdio"
+          ? Effect.map(call(target), (answered): DiscoveryAccess => ({
+              kind: "answered",
+              result: answered,
+            }))
+          : authorizedDiscovery(environment, view, previous?.state, target, call)
       ).pipe(Effect.result);
 
       const now = yield* Clock.currentTimeMillis;
@@ -348,7 +432,7 @@ const discoverOne = (environment: string, view: ServerView, cause: string | unde
         return;
       }
 
-      yield* storeDiscoveryResult(conn, result.success.result, previous, now);
+      yield* storeDiscoveryResult(conn, result.success.result, previous, now, workspace);
     });
 
     yield* discovery.pipe(
@@ -431,7 +515,12 @@ export const reviveStale = Effect.gen(function* () {
  * Start the discoveries of `views` that are due for `trigger`, unless storage failed before. One already in flight is
  * left to run. A storage failure in a discovery stops new ones.
  */
-export const startDue = (environment: string, views: ReadonlyArray<ServerView>, trigger: Trigger) =>
+export const startDue = (
+  environment: string,
+  views: ReadonlyArray<ServerView>,
+  trigger: Trigger,
+  workspace?: string,
+) =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const discovery = yield* McpDiscovery;
@@ -447,7 +536,10 @@ export const startDue = (environment: string, views: ReadonlyArray<ServerView>, 
     for (const view of views) {
       const { conn } = view.server;
 
-      if (!FiberMap.hasUnsafe(discovery.fibers, conn) && isDue(view, trigger, now, usedRecently)) {
+      if (
+        !FiberMap.hasUnsafe(discovery.fibers, conn) &&
+        isDue(view, trigger, now, usedRecently, workspace)
+      ) {
         // Its deadline counts from when it holds one of the 3 slots, not while it waits for one.
         const started = Effect.flatMap(Clock.currentTimeMillis, (at) =>
           Effect.sync(() => {
@@ -459,7 +551,9 @@ export const startDue = (environment: string, views: ReadonlyArray<ServerView>, 
           discovery.fibers,
           conn,
           discovery.slots
-            .withPermits(1)(Effect.andThen(started, discoverOne(environment, view, cause)))
+            .withPermits(1)(
+              Effect.andThen(started, discoverOne(environment, view, cause, workspace)),
+            )
             .pipe(
               Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
               Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),

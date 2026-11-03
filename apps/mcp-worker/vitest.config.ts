@@ -36,7 +36,8 @@ const bundle = async (entry: string, out: string, flags: ReadonlyArray<string>) 
 /**
  * The engine's tests run in workerd: the test Worker (`src/workerd.fixture.ts`, which `@cloudflare/vitest-plugin`
  * needs with `nodejs_compat`) calls `McpWorker`'s `McpEngine` and `McpServer`, an auxiliary Worker bundled as it deploys, without `nodejs_compat`,
- * whose every outbound `fetch` goes to the fake MCP servers, another auxiliary Worker (`src/fakes.fixture.ts`). Plain
+ * whose every outbound `fetch` goes to the fake MCP servers, another auxiliary Worker (`src/fakes.fixture.ts`), and whose
+ * `MCP_BRIDGE` is a stand-in Workspaces Worker (`src/workspaces.fixture.ts`) over a fake server. Plain
  * `src/*.test.ts` run in the `node` project on the shared base.
  */
 export default defineConfig(async () => {
@@ -45,6 +46,12 @@ export default defineConfig(async () => {
   const fakes = await bundle("./src/fakes.fixture.ts", "./node_modules/.cache/workerd/fakes.js", [
     "nodejs_compat",
   ]);
+
+  const workspaces = await bundle(
+    "./src/workspaces.fixture.ts",
+    "./node_modules/.cache/workerd/workspaces.js",
+    ["nodejs_compat"],
+  );
 
   return {
     test: {
@@ -66,6 +73,7 @@ export default defineConfig(async () => {
                   MCP_SERVER: { name: "mcp-worker", entrypoint: "McpServer" },
                   MCP_WORKER: "mcp-worker",
                   FAKES: "fakes",
+                  WORKSPACES: "workspaces",
                 },
                 workers: [
                   {
@@ -74,6 +82,17 @@ export default defineConfig(async () => {
                     scriptPath: engine,
                     compatibilityDate: COMPATIBILITY_DATE,
                     outboundService: "fakes",
+                    // The Workspaces Worker's `WorkspaceMcpBridge`, which the engine reaches stdio servers through.
+                    serviceBindings: {
+                      MCP_BRIDGE: { name: "workspaces", entrypoint: "WorkspaceMcpBridge" },
+                    },
+                  },
+                  {
+                    name: "workspaces",
+                    modules: true,
+                    scriptPath: workspaces,
+                    compatibilityDate: COMPATIBILITY_DATE,
+                    compatibilityFlags: ["nodejs_compat"],
                   },
                   {
                     name: "fakes",

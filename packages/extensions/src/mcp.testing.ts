@@ -95,7 +95,7 @@ const inventoryOf = (
       source: { kind: "environment" },
       server: {
         ...server.entry,
-        type: "http",
+        type: server.entry?.["type"] ?? "http",
         url: `https://${server.name}.test/mcp`,
         exposure: server.exposure ?? "codemode",
         toolExposure: server.toolExposure ?? {},

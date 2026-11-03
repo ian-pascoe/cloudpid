@@ -105,8 +105,10 @@ export const secretsOf = (target: McpEngineTargetEncoded): Array<string> =>
     Arr.filter(
       [
         ...(target.redact ?? []),
-        ...Arr.flatMap(Record.toEntries(target.headers ?? {}), ([name, value]) =>
-          headerSecrets(name, value),
+        // A credential written into a header, or into a stdio server's `env`, rather than referenced as `${NAME}`.
+        ...Arr.flatMap(
+          Record.toEntries(target.kind === "http" ? (target.headers ?? {}) : (target.env ?? {})),
+          ([name, value]) => headerSecrets(name, value),
         ),
       ],
       (secret) => secret.length >= MIN_SECRET_LENGTH,

@@ -166,7 +166,8 @@ const browserBinding = Effect.gen(function* () {
 });
 
 /**
- * `McpWorker`'s two entrypoints, bound through the Worker's Output, not a literal name, so `McpWorker` deploys first: its
+ * `McpWorker`'s two entrypoints, bound through the Worker's Output, not a literal name, so `McpWorker` deploys first, after
+ * the `Workspaces` Worker whose `WorkspaceMcpBridge` entrypoint it binds as `MCP_BRIDGE`: its
  * `McpEngine`, for `McpHost`, which runs the MCP SDK through it (ADR-0038; `docs/architecture/mcp-connections.md` → The
  * engine), and its `McpServer`, which serves `/mcp` (`docs/architecture/mcp-endpoint.md` → The handler). Only the deploy
  * declares them: the bundle reads the bindings from `env`.
@@ -174,7 +175,8 @@ const browserBinding = Effect.gen(function* () {
 const mcpBindings = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
 
-  const mcpWorker = yield* McpWorker;
+  const workspaces = yield* Workspaces;
+  const mcpWorker = yield* McpWorker({ workspaces });
 
   return {
     [MCP_ENGINE_BINDING]: Cloudflare.WorkerEntrypoint(mcpWorker, MCP_ENGINE_ENTRYPOINT),

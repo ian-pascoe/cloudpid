@@ -39,7 +39,7 @@ import {
   type McpAuthEvent,
   type McpEngineDiscoverResult,
   type McpEngineRequestResult,
-  type McpEngineTarget,
+  type McpEngineHttpTarget,
   type McpServerState,
   type McpSignInNote,
   scopesOf,
@@ -64,7 +64,7 @@ export type DiscoveryAccess =
   | { readonly kind: "answered"; readonly result: McpEngineDiscoverResult };
 
 /** `target` with `token` as its `Authorization: Bearer`. */
-const withBearer = (target: McpEngineTarget, token: string): McpEngineTarget => ({
+const withBearer = (target: McpEngineHttpTarget, token: string): McpEngineHttpTarget => ({
   ...target,
   headers: { ...target.headers, Authorization: `Bearer ${token}` },
 });
@@ -72,7 +72,7 @@ const withBearer = (target: McpEngineTarget, token: string): McpEngineTarget => 
 /**
  * Whether the entry sends an `Authorization` header of its own, which OAuth never replaces (a 401 is then `failed`).
  */
-const hasOwnAuthorization = (target: McpEngineTarget): boolean =>
+const hasOwnAuthorization = (target: McpEngineHttpTarget): boolean =>
   Arr.some(Record.keys(target.headers ?? {}), (name) => name.toLowerCase() === "authorization");
 
 const isSignInRequired = (result: EngineAnswer): boolean =>
@@ -171,8 +171,10 @@ const refusalOfClientGrant = (result: EngineAnswer): string | undefined => {
  */
 const clientGrantDiscovery = (
   asked: TokenFor,
-  target: McpEngineTarget,
-  call: (target: McpEngineTarget) => Effect.Effect<McpEngineDiscoverResult, McpEngineUnreachable>,
+  target: McpEngineHttpTarget,
+  call: (
+    target: McpEngineHttpTarget,
+  ) => Effect.Effect<McpEngineDiscoverResult, McpEngineUnreachable>,
 ) =>
   Effect.gen(function* () {
     const tokens = yield* McpTokens;
@@ -248,8 +250,10 @@ export const authorizedDiscovery = (
   environment: string,
   view: ServerView,
   previous: McpServerState | undefined,
-  target: McpEngineTarget,
-  call: (target: McpEngineTarget) => Effect.Effect<McpEngineDiscoverResult, McpEngineUnreachable>,
+  target: McpEngineHttpTarget,
+  call: (
+    target: McpEngineHttpTarget,
+  ) => Effect.Effect<McpEngineDiscoverResult, McpEngineUnreachable>,
 ) =>
   Effect.gen(function* () {
     const tokens = yield* McpTokens;
@@ -391,7 +395,7 @@ export type RequestAccess =
  * and a 401 after that reports `rejected` unless the Registry's note says so already; a 403 for more scope reports
  * `step_up` unless the note names it; and a call that works on a token noted `rejected` reports `working`.
  */
-export const requestAccess = (environment: string, view: ServerView, target: McpEngineTarget) =>
+export const requestAccess = (environment: string, view: ServerView, target: McpEngineHttpTarget) =>
   Effect.gen(function* () {
     const tokens = yield* McpTokens;
     const asked: TokenFor = { environment, server: view.server.name, url: target.url };

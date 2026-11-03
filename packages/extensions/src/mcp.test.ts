@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { HostLost, type McpHostClientService, makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import {
   build,
+  codemodeWith,
   DOCS,
   deferredIn,
   detailsOf,
@@ -21,7 +22,14 @@ import {
   startOf,
 } from "./mcp.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
-import { answer, call, context } from "./subagents/harness.fixture.ts";
+import {
+  answer,
+  call,
+  context,
+  fakeSubagentWorkspaces,
+  openSubagentHarness,
+} from "./subagents/harness.fixture.ts";
+import { fixedToolSearchSettings, ToolSearch } from "./tool-search.ts";
 
 describe("Exposure", () => {
   it("offers direct tools, defers deferred ones, keeps codemode ones from tool_search, and registers no hidden one", async () => {
@@ -433,6 +441,80 @@ describe("a call", () => {
       },
     ]);
     expect(await session.texts("toolResult")).toEqual(['search {"query":"effect"}']);
+  });
+
+  it("names the Subagent Workspace a conversation works in, and the Session's for the others", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const tools = makeMcpTools(host.client);
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "root") {
+          return request.text === "go"
+            ? call(["subagent", { task: "Work", workspace: "new" }])
+            : answer("ok");
+        }
+
+        return request.text.endsWith("Work")
+          ? call(["mcp__docs_site__search", { query: "in the child" }])
+          : answer("done");
+      },
+      {},
+      [
+        await Effect.runPromise(
+          ToolSearch(["read"]).pipe(Effect.provide(fixedToolSearchSettings([]))),
+        ),
+        codemodeWith([]),
+      ],
+      { workspaces: workspaces.host },
+    );
+
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+    Option.map(tools.reinstall([]), ({ mcp }) => session.registry.install(mcp));
+    await session.prompt("go");
+    await session.settle();
+
+    const named = host.calls.flatMap((each) =>
+      each.method === "request" ? [[each.input.params.arguments, each.input.ctx.workspace]] : [],
+    );
+
+    expect(named).toEqual([[{ query: "in the child" }, "ws:00000001"]]);
+  });
+
+  it("readies the caller's Workspace before a call to a stdio server, and sends nothing when it did not answer", async () => {
+    const host = fakeMcpHost([{ ...DOCS, entry: { type: "stdio", command: "npx" } }, ISSUES]);
+    const readied: Array<string> = [];
+    let answers = true;
+
+    const tools = makeMcpTools(host.client, memoryMcpToolsStore(), {
+      ready: async (workspace) => {
+        readied.push(workspace);
+
+        return answers;
+      },
+    });
+
+    const session = await open((request) => {
+      if (request.text === "stdio") return call(["mcp__docs_site__search", { query: "q" }]);
+
+      if (request.text === "http") return call(["mcp__issues__list", {}]);
+
+      return answer("ok");
+    });
+
+    await session.start(tools);
+    await session.prompt("stdio");
+    await session.prompt("http");
+    answers = false;
+    await session.prompt("stdio");
+
+    // Only the stdio server's calls are readied, with the Session's Workspace for a conversation with no other.
+    expect(readied).toEqual(["ws:w1", "ws:w1"]);
+    expect(
+      host.calls.flatMap((each) => (each.method === "request" ? [each.input.server] : [])),
+    ).toEqual(["Docs-Site", "issues"]);
+    expect((await session.texts("toolResult")).at(-1)).toContain("did not answer");
   });
 
   it("puts progress in the running call's details, and Stop resolves untilAborted", async () => {

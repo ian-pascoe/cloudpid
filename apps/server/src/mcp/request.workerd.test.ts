@@ -148,12 +148,7 @@ describe("a request", () => {
   });
 
   it("refuses what it cannot send, without reaching the engine", async () => {
-    const host = await discovered(
-      ["search"],
-      entry("docs"),
-      entry("off", { enabled: false }),
-      entry("local", { type: "stdio", command: "server" }),
-    );
+    const host = await discovered(["search"], entry("docs"), entry("off", { enabled: false }));
 
     // SAFETY: an `op` a later build sends, as it crosses the edge to this host.
     const later = { ...call("docs", "search"), op: "resources/read" as "tools/call" };
@@ -162,7 +157,6 @@ describe("a request", () => {
     expect(await tagOf(host, call("nowhere", "search"))).toBe("UnknownServer");
     expect(await tagOf(host, call("docs", "missing"))).toBe("NotAllowed");
     expect(await tagOf(host, call("off", "search"))).toBe("NotAllowed");
-    expect(await tagOf(host, call("local", "search"))).toBe("NotAllowed");
     expect(await host.engineRequests()).toEqual([]);
   });
 
@@ -328,7 +322,7 @@ describe("a request to a server with a sign-in", () => {
 
     expect(sent?.hooks).toContain("auth");
     expect(sent?.tokens).toEqual([TOKEN]);
-    expect(sent?.target.headers?.["Authorization"]).toBeUndefined();
+    expect(sent?.target).not.toHaveProperty("headers.Authorization");
     expect(await host.reports()).toEqual([]);
   });
 
