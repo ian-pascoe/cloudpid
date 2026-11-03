@@ -146,6 +146,7 @@ import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
 import { type NavigateRequest, sessionBranches } from "./branches.ts";
 import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
+import { admissionLines } from "./admission.ts";
 import { isFilling, sessionForks, STILL_FILLING } from "./fork-host.ts";
 import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
 
@@ -353,11 +354,12 @@ export type Prompt = {
   readonly via?: SessionVia;
   readonly input: UserInput;
   /**
-   * Reads the Owner tabs the owner attached (`BrowserPane.attach`, redacted of held Secrets): run as the message is
-   * admitted, in arrival order and only when it is new (a resent `requestId` finds the first submission without reading
-   * again), so that a later message is not admitted first and a page that closed since cannot fail a message already
-   * admitted. What it reads reaches the model as a block of page content after the typed text and the Attachments'
-   * paths, and the owner's entry keeps it for the chip.
+   * Reads the Owner tabs the owner attached (`BrowserPane.attach`, redacted of held Secrets): run in the message's
+   * prepare step, outside the Session's lock, after the messages sent before it to the same conversation are placed
+   * and only when it is new (a resent `requestId` finds the first submission without reading again), so that a later
+   * message is not admitted first and a page that closed since cannot fail a message already admitted. What it reads
+   * reaches the model as a block of page content after the typed text and the Attachments' paths, and the owner's
+   * entry keeps it for the chip.
    */
   readonly attachPages?: Effect.Effect<ReadonlyArray<AttachedPage>, SessionError>;
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
@@ -762,9 +764,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   // Alarm decisions run one at a time, so an idle check never deletes the heartbeat a concurrent submit just armed.
   const serially = Semaphore.withPermit(yield* Semaphore.make(1));
 
-  // Submissions are admitted in the order they arrive: a message that waits on its expansion's Workspace calls holds back
-  // the ones sent after it, which would otherwise be admitted first.
+  // A message is placed (checked, then admitted) in its conversation's line, one at a time and briefly: what takes time
+  // is its preparation (template expansion and Attached page reads), outside this lock, in that line
+  // (docs/architecture/mcp-in-a-session.md → Getting a prompt at send).
   const inArrivalOrder = Semaphore.withPermit(yield* Semaphore.make(1));
+
+  const admission = admissionLines(inArrivalOrder);
 
   const { kv } = storage;
 
@@ -804,6 +809,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     onUsage: recordUsage,
     pendingCompactions,
     refusal: () => (isFilling(kv) ? STILL_FILLING : undefined),
+    preparing: (conversation) => admission.isPreparing(conversation),
     inArrivalOrder,
   });
 
@@ -1822,14 +1828,27 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         );
 
+  /**
+   * Admit `prompt` in two steps (docs/architecture/mcp-in-a-session.md → Getting a prompt at send). It first takes its
+   * place in the line of its conversation, where it waits for the messages sent before it; the Session tree does not
+   * move while it is in line. It is then prepared, with no lock held, so a slow expansion or page read holds back
+   * neither Stop nor another conversation. Last it is placed, briefly under `inArrivalOrder`: checked, then admitted.
+   */
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
-    // A message the Session would refuse is not expanded first.
-    unlessForking.pipe(
-      Effect.andThen(draftOf(prompt)),
-      Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
-      Effect.tap((draft) => guard(prompt.conversationId, draft)),
-      Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)),
-      inArrivalOrder,
+    admission.inLine(
+      addressed(prompt.conversationId).pipe(Effect.map((conversation) => conversation.id)),
+      (conversationId) =>
+        // A message the Session would refuse is not expanded first.
+        unlessForking.pipe(
+          Effect.andThen(draftOf({ ...prompt, conversationId })),
+          Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
+          Effect.flatMap((draft) =>
+            guard(conversationId, draft).pipe(
+              Effect.andThen(admitDraft(conversationId, draft, true)),
+              inArrivalOrder,
+            ),
+          ),
+        ),
     );
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {

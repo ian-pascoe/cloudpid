@@ -616,8 +616,8 @@ export const sessionSocketsLayer = (
           case "submit": {
             const { type: _type, id: _id, pages: refs, annotations: ids, ...typed } = message;
 
-            // The pages are read from the browser as the message is admitted (in arrival order, and not again for a
-            // resent request), cleaned and then redacted of held Secrets before they are cut, stored, escaped or sent to
+            // The pages are read from the browser in the message's prepare step (outside the Session's lock, in its
+            // conversation's line, and not again for a resent request), cleaned and then redacted of held Secrets before they are cut, stored, escaped or sent to
             // any client (so a Secret split by a character the cleaning drops is whole when redacted); one that is gone
             // fails the command, so the owner removes its chip, rather than going without it.
             const attachPages = secrets.refresh.pipe(
