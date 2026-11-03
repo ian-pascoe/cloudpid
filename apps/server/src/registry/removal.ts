@@ -99,6 +99,30 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
     );
 
   /**
+   * Remove Workspace `id` with the Session that left it, when no Session is left in it. The Session is gone whatever
+   * happens here, so a failure is logged and leaves the Workspace listed, for the owner to remove; a Session started in
+   * it meanwhile keeps the record, and its object is made again as it first works there.
+   */
+  const removeIfEmpty = (id: string) =>
+    Effect.gen(function* () {
+      const left = yield* registry.listSessions();
+
+      if (Arr.some(left, (session) => session.workspace === id)) return;
+
+      yield* inWorkspace("Could not delete the workspace's files", () =>
+        workspaces.destroy(workspaceObjectName(id)),
+      );
+
+      if ((yield* registry.deleteWorkspace({ id })) === "in-use") {
+        yield* Effect.logWarning(`Workspace ${id} got a Session while it was removed, and is kept`);
+      }
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning(`Could not remove workspace ${id} with its last session`, error),
+      ),
+    );
+
+  /**
    * Delete every Session `bound` picks (archived ones too), then `wipe` what they worked on, until `settled` says no
    * Session is left: one started meanwhile is deleted the same way and the sweep runs again, a few rounds, then the
    * owner is asked to try again. One Session at a time, so a failure stops it with what is left still listed.
@@ -225,6 +249,7 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
   return {
     deleteSession,
     removeWorkspace,
+    removeIfEmpty,
     removeSubagentWorkspace,
     deleteEnvironment,
     inWorkspace,

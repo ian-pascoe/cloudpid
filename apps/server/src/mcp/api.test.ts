@@ -121,6 +121,24 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
     }),
   stop: () => Effect.succeed({ ok: true as const, value: { status: "idle" as const } }),
   wait: () => Effect.succeed({ ok: true as const, value: ended }),
+  stageImportBegin: () =>
+    Effect.succeed({
+      ok: true as const,
+      value: { received: 0, expires_at: Date.parse("2026-01-01T01:00:00.000Z") },
+    }),
+  stageImportAppend: () =>
+    Effect.succeed({
+      ok: true as const,
+      value: { received: 10, expires_at: Date.parse("2026-01-01T01:00:00.000Z") },
+    }),
+  stageImportFinish: () =>
+    Effect.succeed({
+      ok: true as const,
+      value: { status: "idle" as const, cursor: "c-finish", warnings: [] },
+    }),
+  stageImportCancel: () =>
+    Effect.succeed({ ok: true as const, value: { cancelled: true as const } }),
+  deleteSession: () => Effect.void,
   ...overrides,
 });
 
@@ -140,7 +158,7 @@ describe("describe", () => {
     expect(service().describe().version).toBeUndefined();
   });
 
-  it("lists the read operations and the four that start, send, stop and wait, and no others", () => {
+  it("lists the read operations, the four that start, send, stop and wait, and the four of an import, and no others", () => {
     expect(service().describe().operations).toEqual([
       "environments",
       "sessions",
@@ -150,6 +168,10 @@ describe("describe", () => {
       "send",
       "stop",
       "wait",
+      "importBegin",
+      "importAppend",
+      "importFinish",
+      "importCancel",
     ]);
   });
 });
@@ -1174,5 +1196,290 @@ describe("the caller", () => {
     expect(
       await run(service({}, { withinRate: () => Effect.die("down") }).limited),
     ).toBeUndefined();
+  });
+});
+
+describe("the import tools", () => {
+  const imported = record({ marks: { kind: "import", auth: "oauth" } });
+  const begin = { environment: "Default", format: "pi-session-jsonl", size_bytes: 100, via: VIA };
+
+  const created = (overrides: Partial<McpBackend> = {}): Partial<McpBackend> => ({
+    createSession: () => Effect.succeed(imported),
+    session: () => Effect.succeed(imported),
+    ...overrides,
+  });
+
+  it("begins: marks the Session an import, and answers the id, the slice size, the expiry and the carry ref", async () => {
+    const createSession = vi.fn(() => Effect.succeed(imported));
+    const stageImportBegin = vi.fn(backend().stageImportBegin);
+
+    const result = await run(
+      service(created({ createSession, stageImportBegin }), {
+        caller: { kind: "owner", clientId: "dcr-client-1" },
+      }).importBegin({
+        ...begin,
+        title: "pi title",
+        model: "anthropic/claude-sonnet-5-5",
+        text: "carry on",
+      }),
+    );
+
+    expect(createSession).toHaveBeenCalledWith({
+      environment: DEFAULT_ENVIRONMENT,
+      title: "pi title",
+      marks: { kind: "import", auth: "oauth", client: VIA.client },
+      maxRunning: 10,
+    });
+    expect(stageImportBegin).toHaveBeenCalledWith(ID, {
+      size_bytes: 100,
+      model: "anthropic/claude-sonnet-5-5",
+      text: "carry on",
+      via: { client: VIA.client, auth: "oauth", era: "modern", clientId: "dcr-client-1" },
+      workspace: {
+        branch: "cloudpid/abcd1234",
+        repos: [{ name: "app", directory: "/workspace/app" }],
+      },
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        import_id: ID,
+        session_id: ID,
+        url: `${ORIGIN}/sessions/${ID}`,
+        received: 0,
+        max_slice_bytes: 2 * 1024 * 1024,
+        expires_at: "2026-01-01T01:00:00.000Z",
+        carry_ref: "refs/cloudpid/carry/cloudpid/abcd1234",
+      },
+    });
+  });
+
+  it("refuses a format that is not pi's, and a file over the limit, before anything is made", async () => {
+    const createSession = vi.fn(() => Effect.succeed(imported));
+    const api = service(created({ createSession }));
+
+    expect(await run(api.importBegin({ ...begin, format: "jsonl" }))).toMatchObject({
+      ok: false,
+      error: { code: "unsupported_format" },
+    });
+    expect(
+      await run(api.importBegin({ ...begin, size_bytes: 64 * 1024 * 1024 + 1 })),
+    ).toMatchObject({ ok: false, error: { code: "import_too_large" } });
+    expect(await run(api.importBegin({ ...begin, environment: "Nope" }))).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("says which Sessions hold a branch that is taken", async () => {
+    const result = await run(
+      service({
+        createSession: () => Effect.succeed({ refused: "branch-taken", workspace: "abcd1234" }),
+        allSessions: Effect.succeed([
+          record({ status: "running" }),
+          record({ id: OTHER_ID, workspace: "other000" }),
+        ]),
+      }).importBegin({ ...begin, branch: "feature/x" }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "branch_taken",
+        details: {
+          workspace: "abcd1234",
+          sessions: [
+            { id: ID, url: `${ORIGIN}/sessions/${ID}`, title: "Fix the thing", status: "running" },
+          ],
+        },
+      },
+    });
+  });
+
+  it("refuses a begin past the running cap, in words over the tools it serves", async () => {
+    const result = await run(
+      service({
+        createSession: () => Effect.succeed({ refused: "too-many-running", limit: 10 }),
+      }).importBegin(begin),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "too_many_running", retryable: true, details: { limit: 10 } },
+    });
+  });
+
+  it("deletes the Session it made when the Session cannot be set up as an import", async () => {
+    const deleteSession = vi.fn(() => Effect.void);
+
+    const result = await run(
+      service(
+        created({
+          deleteSession,
+          stageImportBegin: () =>
+            Effect.succeed({
+              ok: false as const,
+              error: { code: "import_too_large" as const, message: "too big", retryable: false },
+            }),
+        }),
+      ).importBegin(begin),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "import_too_large" } });
+    expect(deleteSession).toHaveBeenCalledWith(ID);
+  });
+
+  it("keeps a Session a repeated begin found, whatever the import says", async () => {
+    const deleteSession = vi.fn(() => Effect.void);
+
+    await run(
+      service(
+        created({
+          createSession: () => Effect.succeed({ ...imported, repeated: true as const }),
+          deleteSession,
+          stageImportBegin: () => Effect.die("cut"),
+        }),
+      ).importBegin({ ...begin, request_id: "r-1" }),
+    );
+
+    expect(deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("appends and finishes through the Session, and never reaches the object of a Session that is no import", async () => {
+    const stageImportAppend = vi.fn(backend().stageImportAppend);
+    const stageImportFinish = vi.fn(backend().stageImportFinish);
+    const api = service(created({ stageImportAppend, stageImportFinish }));
+
+    expect(await run(api.importAppend({ import_id: ID, offset: 0, data: "abc" }))).toEqual({
+      ok: true,
+      value: { received: 10 },
+    });
+    expect(await run(api.importFinish({ import_id: ID, sha256: "ab" }))).toEqual({
+      ok: true,
+      value: {
+        session_id: ID,
+        status: "idle",
+        url: `${ORIGIN}/sessions/${ID}`,
+        cursor: "c-finish",
+        warnings: [],
+      },
+    });
+
+    const plain = service({ stageImportAppend, stageImportFinish });
+
+    expect(await run(plain.importAppend({ import_id: ID, offset: 0, data: "x" }))).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(await run(plain.importFinish({ import_id: ID, sha256: "x" }))).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(stageImportAppend).toHaveBeenCalledTimes(1);
+    expect(stageImportFinish).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a Session's refusal on: offset_mismatch carries what is held", async () => {
+    const result = await run(
+      service(
+        created({
+          stageImportAppend: () =>
+            Effect.succeed({
+              ok: false as const,
+              error: {
+                code: "offset_mismatch" as const,
+                message: "send from 5",
+                retryable: true,
+                details: { received: 5 },
+              },
+            }),
+        }),
+      ).importAppend({ import_id: ID, offset: 9, data: "x" }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "offset_mismatch", retryable: true, details: { received: 5 } },
+    });
+  });
+
+  it("cancels: the Session discards the import, then it and its Workspace are deleted", async () => {
+    const calls: string[] = [];
+
+    const api = service(
+      created({
+        stageImportCancel: () =>
+          Effect.sync(() => {
+            calls.push("cancel");
+
+            return { ok: true as const, value: { cancelled: true as const } };
+          }),
+        deleteSession: () =>
+          Effect.sync(() => {
+            calls.push("delete");
+          }),
+      }),
+    );
+
+    expect(await run(api.importCancel({ import_id: ID }))).toEqual({
+      ok: true,
+      value: { cancelled: true },
+    });
+    expect(calls).toEqual(["cancel", "delete"]);
+  });
+
+  it("cancels again after the Session is gone, and never deletes a Session that is no import", async () => {
+    const deleteSession = vi.fn(() => Effect.void);
+    const stageImportCancel = vi.fn(backend().stageImportCancel);
+
+    expect(
+      await run(
+        service({
+          session: () => Effect.succeed(null),
+          deleteSession,
+          stageImportCancel,
+        }).importCancel({
+          import_id: ID,
+        }),
+      ),
+    ).toEqual({ ok: true, value: { cancelled: true } });
+
+    expect(
+      await run(service({ deleteSession, stageImportCancel }).importCancel({ import_id: ID })),
+    ).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(stageImportCancel).not.toHaveBeenCalled();
+  });
+
+  it("keeps an import that has ended: cancel is the Session's refusal, and nothing is deleted", async () => {
+    const deleteSession = vi.fn(() => Effect.void);
+
+    const result = await run(
+      service(
+        created({
+          deleteSession,
+          stageImportCancel: () =>
+            Effect.succeed({
+              ok: false as const,
+              error: { code: "invalid_argument" as const, message: "ended", retryable: false },
+            }),
+        }),
+      ).importCancel({ import_id: ID }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("reads a failure of the Session service as unavailable", async () => {
+    expect(
+      await run(
+        service(created({ stageImportFinish: () => Effect.die("cut") })).importFinish({
+          import_id: ID,
+          sha256: "x",
+        }),
+      ),
+    ).toMatchObject({ ok: false, error: { code: "unavailable" } });
   });
 });

@@ -13,6 +13,10 @@ import type {
 import type {
   EnvironmentsListResult,
   SessionGetResult,
+  SessionImportAppendResult,
+  SessionImportBeginResult,
+  SessionImportCancelResult,
+  SessionImportFinishResult,
   SessionSendResult,
   SessionsListResult,
   SessionStartResult,
@@ -22,6 +26,7 @@ import type {
 } from "@cloudpid/protocol/mcp-tools";
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
+import * as Record from "effect/Record";
 
 /** The most characters of `content` a result other than a transcript carries. */
 export const MAX_TEXT_CHARS = 12_000;
@@ -286,3 +291,48 @@ export const renderStop = (result: SessionStopResult): string =>
   result.stopping === true
     ? `Stopping: the Session is still ${result.status}; it was asked to stop.`
     : `The Session is ${result.status}.`;
+
+export const renderImportBegin = (result: SessionImportBeginResult): string =>
+  Arr.join(
+    [
+      `Import ${result.import_id} begun: it is Session ${result.session_id}, importing.`,
+      `url ${result.url}`,
+      `received ${result.received} bytes · slices of at most ${result.max_slice_bytes} bytes · expires ${result.expires_at} without an append`,
+      `carry_ref ${result.carry_ref}`,
+    ],
+    "\n",
+  );
+
+export const renderImportAppend = (result: SessionImportAppendResult): string =>
+  `Received ${result.received} bytes.`;
+
+export const renderImportFinish = (result: SessionImportFinishResult): string => {
+  const lines: Array<string> = [
+    result.status === "importing"
+      ? `Import of Session ${result.session_id} accepted: still importing.`
+      : `Import of Session ${result.session_id} ended: ${result.status}.`,
+    `url ${result.url}`,
+  ];
+
+  if (result.summary !== undefined) {
+    const { cut, dropped, closed } = result.summary;
+
+    const droppedKinds = Arr.join(
+      Arr.map(Record.toEntries(dropped), ([kind, count]) => `${kind} ${count}`),
+      ", ",
+    );
+
+    lines.push(
+      `summary: ${cut} cut, ${closed} closed, dropped ${droppedKinds === "" ? "none" : droppedKinds}`,
+    );
+  }
+
+  for (const warning of result.warnings) lines.push(`warning: ${warning}`);
+
+  lines.push(`cursor ${result.cursor}`);
+
+  return Arr.join(lines, "\n");
+};
+
+export const renderImportCancel = (_result: SessionImportCancelResult): string =>
+  "The import was cancelled and its Session deleted.";

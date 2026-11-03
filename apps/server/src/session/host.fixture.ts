@@ -40,6 +40,9 @@ import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/ex
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
 import type {
+  StageImportAppend,
+  StageImportBegin,
+  StageImportFinish,
   Annotation,
   AnnotationDraft,
   Catalog,
@@ -153,6 +156,13 @@ import {
 } from "./annotations.ts";
 import { SessionReviews, sessionReviewsLayer, type SessionReviewsService } from "./reviews.ts";
 import { SessionMcp, type SessionMcpService, sessionMcpLayer } from "./mcp.ts";
+import {
+  SessionImport,
+  type SessionImportService,
+  importWakeAt,
+  sessionImportLayer,
+} from "./import.ts";
+import { type ImportStaging, importStaging } from "./import-staging.ts";
 import {
   type ChangesSource,
   SessionChanges,
@@ -685,6 +695,8 @@ export class TestSession extends DurableObject {
   #viewed!: ViewedStoreService;
   #reviews!: SessionReviewsService;
   #mcp!: SessionMcpService;
+  #imports!: SessionImportService;
+  #staging!: ImportStaging;
   #runtime!: ManagedRuntime.ManagedRuntime<
     | SessionHost
     | SessionSockets
@@ -695,7 +707,8 @@ export class TestSession extends DurableObject {
     | AnnotationStore
     | ViewedStore
     | SessionReviews
-    | SessionMcp,
+    | SessionMcp
+    | SessionImport,
     unknown
   >;
   /** Resolves when this instance's model request starts and hangs. */
@@ -726,9 +739,22 @@ export class TestSession extends DurableObject {
       storage: ctx.storage.kv,
     });
 
+    this.#staging = importStaging(ctx.storage);
+
     void ctx.blockConcurrencyWhile(async () => {
       this.#runtime = ManagedRuntime.make(
-        sessionSocketsLayer(ctx).pipe(
+        sessionImportLayer({
+          staging: this.#staging,
+          // A test reads how often the Session asked to be deleted: the deletion itself is the Session DO's.
+          discard: Effect.sync(() => {
+            ctx.storage.kv.put(
+              "import-discards",
+              (ctx.storage.kv.get<number>("import-discards") ?? 0) + 1,
+            );
+          }),
+          finishWaitMs: () => ctx.storage.kv.get<number>("import-finish-wait") ?? 30_000,
+        }).pipe(
+          Layer.provideMerge(sessionSocketsLayer(ctx)),
           Layer.provideMerge(sessionReviewsLayer(ctx.storage.kv)),
           // The MCP endpoint's calls; a short poll, and a short stop, so a test sees a wake-up or a stop that is slow.
           Layer.provideMerge(
@@ -773,7 +799,9 @@ export class TestSession extends DurableObject {
               reportTimeout:
                 ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
               // As the Session DO's: a held Secret's expiry, or the browser's idle close.
-              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => wakeAt(held, browser)),
+              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) =>
+                wakeAt(held, browser, importWakeAt(this.#staging)),
+              ),
               // And what it does when it settles: the abandoned requests dropped, an idle browser closed.
               onIdle: Effect.flatMap(
                 Effect.all([
@@ -970,6 +998,7 @@ export class TestSession extends DurableObject {
       this.#viewed = Context.get(context, ViewedStore);
       this.#reviews = Context.get(context, SessionReviews);
       this.#mcp = Context.get(context, SessionMcp);
+      this.#imports = Context.get(context, SessionImport);
     });
   }
 
@@ -1001,6 +1030,47 @@ export class TestSession extends DurableObject {
   /** `SessionMethods.configure`. */
   mcpConfigure(request: ConfigureRequest) {
     return Effect.runPromise(this.#mcp.configure(request));
+  }
+
+  /** `SessionMethods.stageImportBegin`. */
+  stageBegin(request: StageImportBegin) {
+    return Effect.runPromise(this.#imports.begin(request));
+  }
+
+  /** `SessionMethods.stageImportAppend`. */
+  stageAppend(request: StageImportAppend) {
+    return Effect.runPromise(this.#imports.append(request));
+  }
+
+  /** `SessionMethods.stageImportFinish`. */
+  stageFinish(request: StageImportFinish) {
+    return Effect.runPromise(this.#imports.finish(request));
+  }
+
+  /** `SessionMethods.stageImportCancel`. */
+  stageCancel() {
+    return Effect.runPromise(this.#imports.cancel);
+  }
+
+  /** The import's record as kept, and how often the Session asked to be deleted. */
+  importState() {
+    return {
+      record: this.#staging.record(),
+      received: this.#staging.received(),
+      discards: this.ctx.storage.kv.get<number>("import-discards") ?? 0,
+    };
+  }
+
+  /** How long finish waits for the translation, in milliseconds (read at each finish). */
+  importFinishWait(ms: number): void {
+    this.ctx.storage.kv.put("import-finish-wait", ms);
+  }
+
+  /** The import's expiry has passed, as an hour with no slice makes it. */
+  expireImport(): void {
+    const record = this.#staging.record();
+
+    if (record !== undefined) this.#staging.save({ ...record, expiresAt: 1 });
   }
 
   /** The Viewed boxes as the Session keeps them. */
@@ -1765,6 +1835,7 @@ export class TestSession extends DurableObject {
   override async alarm(): Promise<void> {
     await this.#runtime.runPromise(
       Effect.flatMap(Effect.service(Secrets), (held) => held.sweep).pipe(
+        Effect.andThen(this.#imports.sweep),
         Effect.andThen(this.#host.alarm),
       ),
     );

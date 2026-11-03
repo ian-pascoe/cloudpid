@@ -153,11 +153,15 @@ export const clientOf = (
 };
 
 const SessionArgument = Schema.Struct({
-  session_id: Schema.String.check(Schema.isPattern(SESSION_ID)),
+  session_id: Schema.optionalKey(Schema.String.check(Schema.isPattern(SESSION_ID))),
+  // An import's id is its Session's.
+  import_id: Schema.optionalKey(Schema.String.check(Schema.isPattern(SESSION_ID))),
 });
 
 const decodeSessionArgument = Schema.decodeUnknownOption(SessionArgument);
 
-/** The `session_id` a `tools/call` names, for its span, when it is a full UUID. */
+/** The Session a `tools/call` names (`session_id`, or an import's `import_id`), for its span, when it is a full UUID. */
 export const sessionOf = (args: Wire): string | undefined =>
-  Option.getOrUndefined(Option.map(decodeSessionArgument(args), (found) => found.session_id));
+  Option.getOrUndefined(
+    Option.map(decodeSessionArgument(args), (found) => found.session_id ?? found.import_id),
+  );

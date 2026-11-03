@@ -11,6 +11,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { AccessCaller } from "../access.ts";
 import type { Builds } from "../registry/builds.ts";
 import { REGISTRY_NAME, type Registry } from "../registry/Registry.ts";
+import { type RemovalObjects, removals } from "../registry/removal.ts";
 import { type Spares, upkeepAfterStart } from "../registry/rpc.ts";
 import type { Session } from "../session/Session.ts";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
@@ -40,6 +41,8 @@ export interface RateLimiter {
 export interface McpEndpoint<R = never> {
   readonly registries: Cloudflare.DurableObject<Registry>;
   readonly sessions: Cloudflare.DurableObject<Session>;
+  /** What deleting an import's Session wipes besides its records, as the owner's delete does (`registry/removal.ts`). */
+  readonly objects: RemovalObjects;
   /** `McpWorker`'s `McpServer` entrypoint (`MCP_SERVER`). */
   readonly server: McpServerBinding;
   /** The spare and Build upkeep a start runs after the answer, as the owner's start does (`registry/rpc.ts`). */
@@ -69,7 +72,7 @@ const forwardedRequest = (source: Request): Request => {
 
 /** The Registry's and the Sessions' side of one request: each call is one RPC. */
 const backendOf = (
-  endpoint: Pick<McpEndpoint, "registries" | "sessions" | "spares" | "builds">,
+  endpoint: Pick<McpEndpoint, "registries" | "sessions" | "spares" | "builds" | "objects">,
   background: (effect: Effect.Effect<void>) => Effect.Effect<void>,
 ): McpBackend => {
   const registry = endpoint.registries.getByName(REGISTRY_NAME);
@@ -116,6 +119,25 @@ const backendOf = (
       endpoint.sessions.getByName(id).configure(request).pipe(Effect.orDie),
     submit: (id, request) => endpoint.sessions.getByName(id).submit(request).pipe(Effect.orDie),
     stop: (id, request) => endpoint.sessions.getByName(id).stop(request).pipe(Effect.orDie),
+    stageImportBegin: (id, request) =>
+      endpoint.sessions.getByName(id).stageImportBegin(request).pipe(Effect.orDie),
+    stageImportAppend: (id, request) =>
+      endpoint.sessions.getByName(id).stageImportAppend(request).pipe(Effect.orDie),
+    stageImportFinish: (id, request) =>
+      endpoint.sessions.getByName(id).stageImportFinish(request).pipe(Effect.orDie),
+    stageImportCancel: (id) =>
+      endpoint.sessions.getByName(id).stageImportCancel().pipe(Effect.orDie),
+    // The Session's object, then its record, then its Workspace if it was the last Session in it.
+    deleteSession: (id) =>
+      Effect.gen(function* () {
+        const removal = removals(registry, endpoint.objects);
+        const known = yield* registry.getSession({ id });
+
+        if (known === null) return;
+
+        yield* removal.deleteSession(known);
+        yield* removal.removeIfEmpty(known.workspace);
+      }).pipe(Effect.orDie),
   };
 };
 

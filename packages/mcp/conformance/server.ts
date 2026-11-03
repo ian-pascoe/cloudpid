@@ -8,7 +8,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off processEnv:off preferEffectRecord:off newPromise:off preferEffectArray:off missingPipeableSignature:off asyncFunction:off -- a Node script over `node:http`.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { apiOk, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
+import { apiFailure, apiOk, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
 import { type McpServerApi, serveMcp, toolGate } from "../src/server/index.ts";
 
 const ID = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
@@ -108,6 +108,11 @@ const api: McpServerApi = {
         cursor: "c4",
       }),
     ),
+  // The import tools are not listed by `describe()`, so no scenario reaches these.
+  importBegin: () => Promise.resolve(apiFailure("unsupported", "Not served here.")),
+  importAppend: () => Promise.resolve(apiFailure("unsupported", "Not served here.")),
+  importFinish: () => Promise.resolve(apiFailure("unsupported", "Not served here.")),
+  importCancel: () => Promise.resolve(apiFailure("unsupported", "Not served here.")),
   auth: "local",
 };
 

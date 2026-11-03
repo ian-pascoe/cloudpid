@@ -2,12 +2,15 @@
  * The endpoint's tools as the SDK is given them (`docs/architecture/mcp-endpoint.md` → Tools, Limits and errors): name,
  * title, description, annotations, the Effect Schemas of arguments and result, which `McpApi` operation serves each, and
  * how a result is put in words and followed by its `next` sentence. The four read tools come first; the other eight join
- * with their operations. `McpServer` owns all of this, and the main Worker's `api` none of it.
+ * with their operations, the four import tools (for programs, never a model) last. `McpServer` owns all of this, and the main Worker's `api` none of it.
  */
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- short plain lists of sentences and tool specs.
 import {
   ApiResult,
+  IMPORT_EXPIRY_MS,
+  MAX_MCP_IMPORT_BYTES,
   MAX_MCP_RUNNING,
+  MAX_MCP_SLICE_BYTES,
   type McpApi,
   type McpToolName,
   type Via,
@@ -17,6 +20,14 @@ import {
   EnvironmentsListResult,
   SessionGetInput,
   SessionGetResult,
+  SessionImportAppendInput,
+  SessionImportAppendResult,
+  SessionImportBeginInput,
+  SessionImportBeginResult,
+  SessionImportCancelInput,
+  SessionImportCancelResult,
+  SessionImportFinishInput,
+  SessionImportFinishResult,
   SessionSendInput,
   SessionSendResult,
   SessionsListInput,
@@ -36,6 +47,10 @@ import * as Schema from "effect/Schema";
 import {
   INTERRUPTED_NOTE,
   renderEnvironments,
+  renderImportAppend,
+  renderImportBegin,
+  renderImportCancel,
+  renderImportFinish,
   renderSend,
   renderSession,
   renderSessions,
@@ -48,7 +63,18 @@ import {
 /** What `McpServer` calls over RPC (a stub in the Worker, a plain object in the conformance run). */
 export type McpServerApi = Pick<
   McpApi,
-  "environments" | "sessions" | "session" | "transcript" | "start" | "send" | "stop" | "wait"
+  | "environments"
+  | "sessions"
+  | "session"
+  | "transcript"
+  | "start"
+  | "send"
+  | "stop"
+  | "wait"
+  | "importBegin"
+  | "importAppend"
+  | "importFinish"
+  | "importCancel"
 > & {
   /** Over RPC a call is a Promise, whatever the method says; a plain object in the conformance run answers at once. */
   readonly describe: () =>
@@ -80,6 +106,22 @@ const WRITE: Annotations = {
   idempotentHint: false,
   destructiveHint: false,
   openWorldHint: true,
+};
+
+/** W·idem: an idempotent write that reaches nothing outside cloudpid: a slice sent again, a finish repeated. */
+const WRITE_IDEMPOTENT: Annotations = {
+  readOnlyHint: false,
+  idempotentHint: true,
+  destructiveHint: false,
+  openWorldHint: false,
+};
+
+/** W for a program: a non-idempotent write that reaches nothing outside cloudpid (it registers a Session). */
+const WRITE_CLOSED: Annotations = {
+  readOnlyHint: false,
+  idempotentHint: false,
+  destructiveHint: false,
+  openWorldHint: false,
 };
 
 /** D·idem: `destructiveHint` and `idempotentHint`: a Stop ends work, and stopping what has stopped does nothing. */
@@ -389,6 +431,74 @@ const sessionStop = defineTool({
     ),
 });
 
+const sessionImportBegin = defineTool({
+  name: "session_import_begin",
+  title: "Begin a Session import",
+  description: (enabled) =>
+    `For programs, never a model: begin importing a local pi Session. It registers a Session in a new Workspace of the Environment (status importing; it takes no message until the import ends) and claims branch for it (refused as branch_taken, with the Sessions on it, if another Workspace has it). It returns the import_id, the slice size and carry_ref: push the local branch, and any uncommitted Changes as one commit to carry_ref, before finishing.${enabled.has("session_import_append") ? ` Then send the file (at most ${String(MAX_MCP_IMPORT_BYTES)} bytes) with session_import_append` : ""}${enabled.has("session_import_finish") ? ` and end with session_import_finish` : ""}${enabled.has("session_import_cancel") ? `; a failed push calls session_import_cancel` : ""}. An import with no slice for ${String(IMPORT_EXPIRY_MS / 60_000)} minutes expires and its Session is deleted. Send request_id so a retry does not begin a second import.`,
+  annotations: WRITE_CLOSED,
+  input: SessionImportBeginInput,
+  output: SessionImportBeginResult,
+  render: renderImportBegin,
+  call: (api, args, via) => api.importBegin({ ...args, via }),
+  next: (result, enabled) =>
+    enabled.has("session_import_append")
+      ? `Push the branch and the uncommitted Changes to ${result.carry_ref}, then call session_import_append with import_id="${result.import_id}" and offset=${String(result.received)} (at most ${String(result.max_slice_bytes)} bytes per slice).`
+      : undefined,
+});
+
+const sessionImportAppend = defineTool({
+  name: "session_import_append",
+  title: "Append to a Session import",
+  description: `For programs, never a model: send the next slice of the import's file. offset is the UTF-8 byte offset of data in the file and must equal the received count the last call gave; on offset_mismatch, resend from the received it names. A slice sent again is harmless. Slices are at most ${String(MAX_MCP_SLICE_BYTES)} bytes and are cut at any character boundary.`,
+  annotations: WRITE_IDEMPOTENT,
+  input: SessionImportAppendInput,
+  output: SessionImportAppendResult,
+  render: renderImportAppend,
+  call: (api, args) => api.importAppend(args),
+  next: (result, enabled) =>
+    sentences(
+      `Call session_import_append with offset=${String(result.received)} for the next slice`,
+      enabled.has("session_import_finish")
+        ? "or, with every byte sent, session_import_finish with the file's sha256."
+        : undefined,
+    ),
+});
+
+const sessionImportFinish = defineTool({
+  name: "session_import_finish",
+  title: "Finish a Session import",
+  description: (enabled) =>
+    `For programs, never a model: end the import once every byte is sent and the branch and carry_ref are pushed. cloudpid checks the size and sha256, translates the file into the Session and waits up to 30 s; if it is not done the status stays importing${enabled.has("session_wait") ? " and session_wait from the cursor reports import_ended" : ""}. The summary counts what was cut, dropped and closed; warnings tell of a model that was replaced and of a context over the model's window. Finishing again returns the same result.`,
+  annotations: WRITE_IDEMPOTENT,
+  input: SessionImportFinishInput,
+  output: SessionImportFinishResult,
+  render: renderImportFinish,
+  call: (api, args) => api.importFinish(args),
+  next: (result, enabled) =>
+    result.status === "importing"
+      ? enabled.has("session_wait")
+        ? `Call session_wait with session_id="${result.session_id}" and after="${result.cursor}" until the import ends.`
+        : undefined
+      : calls(
+          enabled.has("session_get") ? "session_get for its state" : undefined,
+          enabled.has("session_send") ? "session_send to give it work" : undefined,
+        ),
+});
+
+const sessionImportCancel = defineTool({
+  name: "session_import_cancel",
+  title: "Cancel a Session import",
+  description:
+    "For programs, never a model: cancel an import that has not finished and delete its Session. Use it when a push failed. Cancelling what is cancelled does nothing; an import that has finished cannot be cancelled.",
+  annotations: DESTRUCTIVE_IDEMPOTENT,
+  input: SessionImportCancelInput,
+  output: SessionImportCancelResult,
+  render: renderImportCancel,
+  call: (api, args) => api.importCancel(args),
+  next: () => undefined,
+});
+
 /** Every tool this version of `McpServer` has, in the order `tools/list` shows them. */
 export const TOOLS: ReadonlyArray<Tool> = [
   environmentsList,
@@ -399,4 +509,8 @@ export const TOOLS: ReadonlyArray<Tool> = [
   sessionStart,
   sessionSend,
   sessionStop,
+  sessionImportBegin,
+  sessionImportAppend,
+  sessionImportFinish,
+  sessionImportCancel,
 ];

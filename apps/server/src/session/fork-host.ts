@@ -39,11 +39,12 @@ const context = BACKGROUND_CONTEXT;
 
 /**
  * Set while the Session is being filled as a Fork or Clone, in the Session's key-value storage: the IDs its entries
- * were given, by the source's entry ID.
+ * were given, by the source's entry ID. A Session import sets it too (`import`: its entries are never copied a page at
+ * a time, so it keeps no IDs), so that it takes no message and no move until the import ends.
  */
 const FILL_KEY = "fork-copy";
 
-type Filling = { readonly ids: Readonly<Record<string, number>> };
+type Filling = { readonly ids: Readonly<Record<string, number>>; readonly import?: true };
 
 /**
  * Set on a source Session while a Fork or Clone carries its files to a new Workspace, in its key-value storage: until
@@ -60,6 +61,10 @@ const HOLD_LIFETIME_MS = 30 * 60 * 1000;
 export const STILL_FILLING =
   "This Session is still being made from the one it was forked or cloned from; try again shortly.";
 
+/** Why a Session that is importing a local pi Session refuses a message or a move. */
+export const STILL_IMPORTING =
+  "This Session is still importing a local pi Session; try again when the import has ended.";
+
 /** Why a Session whose files are being carried refuses a message. */
 const CARRYING =
   "This Session's files are being carried to a new workspace for a Fork or Clone; try again shortly.";
@@ -67,6 +72,19 @@ const CARRYING =
 /** Whether the Session that keeps `kv` is being filled as a Fork or Clone, and takes no message yet. */
 export const isFilling = (kv: SettingsKv): boolean =>
   (kv.get<Filling | null>(FILL_KEY) ?? null) !== null;
+
+/** Whether the Session that keeps `kv` is importing a local pi Session: its Workspace is readied only once that ends. */
+export const isImporting = (kv: SettingsKv): boolean =>
+  (kv.get<Filling | null>(FILL_KEY) ?? null)?.import === true;
+
+/** Why the Session that keeps `kv` takes no message or move while it is filled, or nothing when it is not being filled. */
+export const fillingRefusal = (kv: SettingsKv): string | undefined => {
+  const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
+
+  if (filling === null) return undefined;
+
+  return filling.import === true ? STILL_IMPORTING : STILL_FILLING;
+};
 
 /** What Forks and Clones take from the Session host. */
 export type ForksOptions = {
@@ -120,7 +138,9 @@ export const sessionForks = (options: ForksOptions) => {
    */
   const forkSource = (request: ForkSourceRequest) =>
     Effect.gen(function* () {
-      if (isFilling(kv)) return yield* refuse(STILL_FILLING);
+      const filling = fillingRefusal(kv);
+
+      if (filling !== undefined) return yield* refuse(filling);
 
       const conversation = yield* active;
       const busy = yield* restlessness(request.quiet, conversation);
@@ -262,6 +282,36 @@ export const sessionForks = (options: ForksOptions) => {
       } satisfies Filling);
     });
 
+  /** Start filling this new Session as a Session import: it takes no message and no move until `importFinish`. */
+  const importBegin = options.root.pipe(
+    Effect.andThen(
+      Effect.sync(() => kv.put(FILL_KEY, { ids: {}, import: true } satisfies Filling)),
+    ),
+  );
+
+  /**
+   * Append a Session import's translated entries to the root conversation in one transaction, so a translation is in
+   * whole or not at all. Their IDs and heads are the translation's own: each is renumbered as it is appended.
+   */
+  const importTranslated = (entries: ReadonlyArray<EntryRecord>) =>
+    Effect.gen(function* () {
+      const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
+
+      if (filling?.import !== true) return yield* refuse("This Session is not importing.");
+
+      const ids = new Map<number, number>();
+
+      yield* attempt("importEntries", () =>
+        harness.commit(async (tx) => {
+          for (const entry of entries) {
+            const appended = await tx.appendEntry(ROOT_CONVERSATION_ID, copiedDraft(entry, ids));
+
+            ids.set(entry.id, appended.id);
+          }
+        }, context),
+      );
+    });
+
   /** Take the agent and documents the plan carries, and take messages from then on. */
   const importFinish = (plan: ForkPlan) =>
     attempt("importFinish", () =>
@@ -301,7 +351,9 @@ export const sessionForks = (options: ForksOptions) => {
   /** Why the Session takes no message now: it is being filled, or its files are being carried; nothing when it takes them. */
   const refusal = Clock.currentTimeMillis.pipe(
     Effect.map((now): string | undefined => {
-      if (isFilling(kv)) return STILL_FILLING;
+      const filling = fillingRefusal(kv);
+
+      if (filling !== undefined) return filling;
 
       const hold = kv.get<Hold | null>(HOLD_KEY) ?? null;
 
@@ -313,7 +365,9 @@ export const sessionForks = (options: ForksOptions) => {
     forkSource,
     exportEntries,
     importStart,
+    importBegin,
     importEntries,
+    importTranslated,
     importFinish,
     releaseFork,
     refusal,

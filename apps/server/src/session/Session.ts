@@ -78,6 +78,8 @@ import {
 import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
+import { importWakeAt, SessionImport, sessionImportLayer } from "./import.ts";
+import { importStaging } from "./import-staging.ts";
 import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
 import { mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
@@ -95,6 +97,7 @@ import { changesRefreshingTools, SessionChanges, sessionChangesLayer } from "./c
 import { sessionComparisonsLayer } from "./comparisons.ts";
 import { runsOpeningTools, SessionRuns, sessionRunsLayer } from "./runs.ts";
 import { annotationsPruningTools, SessionReviews, sessionReviewsLayer } from "./reviews.ts";
+import { isImporting } from "./fork-host.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
 import {
@@ -111,6 +114,12 @@ import type {
   ApiResult,
   ConfigureRequest,
   SessionStatusReport,
+  StageImportAppend,
+  StageImportBegin,
+  StageImportFinish,
+  StagedCancel,
+  StagedFinish,
+  StagedImport,
   StopRequest,
   StopResult,
   SubmitRequest,
@@ -206,6 +215,18 @@ export type SessionMethods = {
   readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
   /** Pick the model and thinking level of a Session the MCP endpoint is starting (the socket's `configure`). */
   readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
+  /** Begin the Session import this new Session is for: it shows `importing` and takes no message or move until it ends. */
+  readonly stageImportBegin: (request: StageImportBegin) => Effect.Effect<ApiResult<StagedImport>>;
+  /** Keep a slice of the pi Session file, at the byte `offset` the held bytes end at. */
+  readonly stageImportAppend: (
+    request: StageImportAppend,
+  ) => Effect.Effect<ApiResult<StagedImport>>;
+  /** Check the file's `sha256`, translate it into the root conversation and end the import (waits up to 30 s). */
+  readonly stageImportFinish: (
+    request: StageImportFinish,
+  ) => Effect.Effect<ApiResult<StagedFinish>>;
+  /** Discard the bytes and the instruction of an import not yet finished; the caller deletes the Session. */
+  readonly stageImportCancel: () => Effect.Effect<ApiResult<StagedCancel>>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -358,6 +379,13 @@ export const SessionLive = Session.make(
           // What the Workspace is made of is the Registry's; a Workspace it no longer lists is left as it is.
           // @effect-diagnostics-next-line asyncFunction:off
           prepare: async (id) => {
+            // A Session import readies its Workspace once the import ends: its files are not carried before.
+            if (isImporting(kv)) {
+              throw new Error(
+                "This Session is importing a local pi Session; its Workspace is readied when the import ends.",
+              );
+            }
+
             // The Registry hands the Environment's Skill set only when it is not the one the Workspace holds.
             const skillSetHash = await workspaces.getByName(workspaceObjectName(id)).skillSetHash();
 
@@ -380,6 +408,9 @@ export const SessionLive = Session.make(
         const builds = buildUpkeep(registries, { workspaces: workspaceObjects, spares });
 
         const registryObject = registries.getByName(REGISTRY_NAME);
+
+        // The Session import's bytes and record, in this object's SQLite (`import-staging.ts`).
+        const staging = importStaging(state.raw.storage);
 
         const environments = sessionEnvironments({
           registry: registryObject,
@@ -405,16 +436,39 @@ export const SessionLive = Session.make(
           builds,
         });
 
+        const removal = removals(registryObject, {
+          workspaces: workspaceObjects,
+          sessions: { destroy: destroySessionObject(sessions) },
+        });
+
+        // An import that expired, or was left unfinished, takes its Session with it: the Registry forgets the Session, its
+        // Workspace goes with it if no other Session is in it, and the object wipes itself last, so a deletion that fails
+        // is tried again at the next alarm (`SessionImport.sweep`).
+        const discardImport: Effect.Effect<void> =
+          name === undefined
+            ? Effect.void
+            : Effect.gen(function* () {
+                const known = yield* registryObject.getSession({ id: name });
+
+                if (known !== null) {
+                  yield* registryObject.deleteSession({ id: name });
+                  yield* removal.removeIfEmpty(known.workspace);
+                }
+
+                yield* destroySessionObject(sessions)(name);
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Could not delete an expired Session import", cause),
+                ),
+              );
+
         // The Session's Subagent Workspaces: registered by the Registry as the Session's, removed as a Workspace is.
         const subagentWorkspaces = sessionSubagentWorkspaces({
           registry: registryObject,
           session: name,
           placement,
           objects: workspaceObjects,
-          remove: removals(registryObject, {
-            workspaces: workspaceObjects,
-            sessions: { destroy: destroySessionObject(sessions) },
-          }).removeSubagentWorkspace,
+          remove: removal.removeSubagentWorkspace,
           builds,
           run: (effect) => runtime.runPromise(effect),
         });
@@ -716,7 +770,9 @@ export const SessionLive = Session.make(
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
-          sessionSocketsLayer(state.raw).pipe(
+          sessionImportLayer({ staging, discard: discardImport }).pipe(
+            // The import greets the open pages again once it ends, so it is built over the sockets.
+            Layer.provideMerge(sessionSocketsLayer(state.raw)),
             // Reviews, which the sockets send, place through the host and check against the Changes.
             Layer.provideMerge(sessionReviewsLayer(kv)),
             // The MCP endpoint's calls, over the host, the Secrets and the requests waiting for the owner.
@@ -828,7 +884,7 @@ export const SessionLive = Session.make(
                 // browser falls idle past its keep-alive, so it is closed.
                 wakeAt: Effect.flatMap(
                   Effect.all([Effect.service(Secrets), Effect.service(BrowserSession)]),
-                  ([held, browser]) => wakeAt(held, browser),
+                  ([held, browser]) => wakeAt(held, browser, importWakeAt(staging)),
                 ),
                 // The Last run ends when the Session goes idle.
                 onSettled: (newest) =>
@@ -873,11 +929,17 @@ export const SessionLive = Session.make(
         const held = Context.get(services, Secrets);
         const reviews = Context.get(services, SessionReviews);
         const mcp = Context.get(services, SessionMcp);
+        const imports = Context.get(services, SessionImport);
 
         return {
           // A failed alarm is retried by the runtime. Expired Secrets are deleted first.
           alarm: () =>
-            invoked("session.alarm", Effect.orDie(held.sweep.pipe(Effect.andThen(host.alarm)))),
+            invoked(
+              "session.alarm",
+              Effect.orDie(
+                held.sweep.pipe(Effect.andThen(imports.sweep), Effect.andThen(host.alarm)),
+              ),
+            ),
           fetch: invoked(
             "session.connect",
             Effect.gen(function* () {
@@ -938,6 +1000,10 @@ export const SessionLive = Session.make(
               // Open pages are told the pick, as for the socket's `configure`.
               mcp.configure(request).pipe(Effect.tap(() => sockets.announcePicks)),
             ),
+          stageImportBegin: (request) => invoked("session.import.begin", imports.begin(request)),
+          stageImportAppend: (request) => invoked("session.import.append", imports.append(request)),
+          stageImportFinish: (request) => invoked("session.import.finish", imports.finish(request)),
+          stageImportCancel: () => invoked("session.import.cancel", imports.cancel),
           destroy: () =>
             invoked(
               "session.destroy",

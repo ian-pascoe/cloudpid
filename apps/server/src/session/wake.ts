@@ -13,12 +13,20 @@ export const earliest = (...times: ReadonlyArray<number | undefined>): number | 
   return set.length === 0 ? undefined : Math.min(...set);
 };
 
-/** When the object must wake although no work is live: when a held Secret expires, or the browser falls idle past its keep-alive. */
+/**
+ * When the object must wake although no work is live: when a held Secret expires, the browser falls idle past its
+ * keep-alive, or a Session import expires or is to be started again (`importWake`).
+ */
 export const wakeAt = (
   secrets: Pick<SecretsService, "nextExpiry">,
   browser: Pick<BrowserSessionService, "closeAt">,
+  importWake?: Effect.Effect<number | undefined>,
 ): Effect.Effect<number | undefined> =>
-  Effect.zipWith(secrets.nextExpiry, browser.closeAt, (expiry, close) => earliest(expiry, close));
+  Effect.gen(function* () {
+    const [expiry, close] = yield* Effect.all([secrets.nextExpiry, browser.closeAt]);
+
+    return earliest(expiry, close, importWake === undefined ? undefined : yield* importWake);
+  });
 
 /**
  * What the object does whenever it settles with no work live: clears the Secret requests, Browser Handoffs and Approval

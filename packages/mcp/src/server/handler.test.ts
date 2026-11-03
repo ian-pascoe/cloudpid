@@ -78,6 +78,10 @@ const fakeApi = (overrides: Partial<McpServerApi> = {}): McpServerApi => ({
   send: () => Promise.resolve(apiFailure("unsupported", "No.")),
   stop: () => Promise.resolve(apiFailure("unsupported", "No.")),
   wait: () => Promise.resolve(apiFailure("unsupported", "No.")),
+  importBegin: () => Promise.resolve(apiFailure("unsupported", "No.")),
+  importAppend: () => Promise.resolve(apiFailure("unsupported", "No.")),
+  importFinish: () => Promise.resolve(apiFailure("unsupported", "No.")),
+  importCancel: () => Promise.resolve(apiFailure("unsupported", "No.")),
   auth: "service_token",
   ...overrides,
 });
@@ -582,6 +586,239 @@ describe("the write tools", () => {
     );
 
     expect(result.structuredContent.error).toMatchObject({ code: "unsupported" });
+  });
+});
+
+describe("the import tools", () => {
+  const IMPORT_OPERATIONS = [
+    ...ALL_OPERATIONS,
+    "importBegin",
+    "importAppend",
+    "importFinish",
+    "importCancel",
+  ];
+
+  const importing = (overrides: Partial<McpServerApi> = {}) =>
+    fakeApi({ describe: describing(IMPORT_OPERATIONS), ...overrides });
+
+  const begun = {
+    import_id: ID,
+    session_id: ID,
+    url: `https://cloudpid.test/sessions/${ID}`,
+    received: 0,
+    max_slice_bytes: 2_097_152,
+    expires_at: "2026-01-01T01:00:00.000Z",
+    carry_ref: "refs/cloudpid/carry/feature/x",
+  };
+
+  it("lists them last, with their annotations, once the deployed Server lists their operations", async () => {
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), importing()));
+    const tools = result?.tools ?? [];
+
+    expect(tools.map((tool) => tool.name).slice(-4)).toEqual([
+      "session_import_begin",
+      "session_import_append",
+      "session_import_finish",
+      "session_import_cancel",
+    ]);
+
+    const annotated = Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
+
+    expect(annotated["session_import_begin"]).toMatchObject({
+      idempotentHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    expect(annotated["session_import_append"]).toMatchObject({
+      idempotentHint: true,
+      destructiveHint: false,
+    });
+    expect(annotated["session_import_finish"]).toMatchObject({ idempotentHint: true });
+    expect(annotated["session_import_cancel"]).toMatchObject({
+      destructiveHint: true,
+      idempotentHint: true,
+    });
+  });
+
+  it("leaves them out of an older Server's tools", async () => {
+    const old = await serve(
+      post(rpc("tools/list")),
+      fakeApi({ describe: describing(ALL_OPERATIONS) }),
+    );
+
+    expect(((await messageOf(old)).result?.tools ?? []).map((tool) => tool.name)).not.toContain(
+      "session_import_begin",
+    );
+  });
+
+  it("session_import_begin passes the arguments and who is calling, and says where to push", async () => {
+    const importBegin = vi.fn(() => Promise.resolve(apiOk(begun)));
+
+    const result = await call(
+      "session_import_begin",
+      {
+        environment: "Default",
+        format: "pi-session-jsonl",
+        size_bytes: 1200,
+        branch: "feature/x",
+        text: "carry on",
+        request_id: "r-1",
+      },
+      importing({ importBegin }),
+    );
+
+    expect(importBegin).toHaveBeenCalledWith({
+      environment: "Default",
+      format: "pi-session-jsonl",
+      size_bytes: 1200,
+      branch: "feature/x",
+      text: "carry on",
+      request_id: "r-1",
+      via: { era: "legacy" },
+    });
+    expect(result.structuredContent).toMatchObject({ import_id: ID, carry_ref: begun.carry_ref });
+    expect(result.content[0]?.text).toContain(`carry_ref ${begun.carry_ref}`);
+    expect(result.structuredContent.next).toContain(begun.carry_ref);
+    expect(result.structuredContent.next).toContain("session_import_append");
+  });
+
+  it("session_import_append sends a slice whole and answers received", async () => {
+    const data = "é".repeat(1_000_000);
+    const importAppend = vi.fn(() => Promise.resolve(apiOk({ received: 2_000_000 })));
+
+    const result = await call(
+      "session_import_append",
+      { import_id: ID, offset: 0, data },
+      importing({ importAppend }),
+    );
+
+    expect(importAppend).toHaveBeenCalledWith({ import_id: ID, offset: 0, data });
+    expect(result.structuredContent).toMatchObject({ received: 2_000_000 });
+    expect(result.structuredContent.next).toContain("offset=2000000");
+  });
+
+  it("answers an offset_mismatch with the received count, so the Local agent resends from it", async () => {
+    const result = await call(
+      "session_import_append",
+      { import_id: ID, offset: 10, data: "x" },
+      importing({
+        importAppend: () =>
+          Promise.resolve(
+            apiFailure("offset_mismatch", "Resend from byte 4.", {
+              retryable: true,
+              details: { received: 4 },
+            }),
+          ),
+      }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.error).toMatchObject({
+      code: "offset_mismatch",
+      retryable: true,
+      details: { received: 4 },
+    });
+  });
+
+  it("session_import_begin answers branch_taken with the Sessions on the branch", async () => {
+    const result = await call(
+      "session_import_begin",
+      { environment: "Default", format: "pi-session-jsonl", size_bytes: 1 },
+      importing({
+        importBegin: () =>
+          Promise.resolve(
+            apiFailure("branch_taken", "Another Workspace is on feature/x.", {
+              details: {
+                workspace: "w1",
+                sessions: [{ id: ID, url: begun.url, title: "Old", status: "idle" }],
+              },
+            }),
+          ),
+      }),
+    );
+
+    expect(result.structuredContent.error).toMatchObject({
+      code: "branch_taken",
+      details: { workspace: "w1", sessions: [{ id: ID, title: "Old" }] },
+    });
+  });
+
+  it("session_import_finish renders the summary and warnings, and names session_wait only for an import that goes on", async () => {
+    const finished = {
+      session_id: ID,
+      status: "idle" as const,
+      url: begun.url,
+      cursor: CURSOR,
+      summary: { cut: 1, dropped: { "custom:x": 2 }, closed: 3 },
+      warnings: ["The model m is not available: used m1."],
+    };
+
+    const done = await call(
+      "session_import_finish",
+      { import_id: ID, sha256: "a".repeat(64) },
+      importing({ importFinish: () => Promise.resolve(apiOk(finished)) }),
+    );
+
+    expect(done.content[0]?.text).toContain("summary: 1 cut, 3 closed, dropped custom:x 2");
+    expect(done.content[0]?.text).toContain("warning: The model m is not available");
+    expect(done.structuredContent.next).not.toContain("session_wait with");
+    expect(done.structuredContent.next).toContain("session_send");
+
+    const going = await call(
+      "session_import_finish",
+      { import_id: ID, sha256: "a".repeat(64) },
+      importing({
+        importFinish: () => Promise.resolve(apiOk({ ...finished, status: "importing" as const })),
+      }),
+    );
+
+    expect(going.structuredContent.next).toContain(`session_wait with session_id="${ID}"`);
+    expect(going.structuredContent.next).toContain(`after="${CURSOR}"`);
+  });
+
+  it("session_import_cancel answers cancelled, and an api without the operation is unsupported", async () => {
+    const cancelled = await call(
+      "session_import_cancel",
+      { import_id: ID },
+      importing({ importCancel: () => Promise.resolve(apiOk({ cancelled: true as const })) }),
+    );
+
+    expect(cancelled.structuredContent).toMatchObject({ cancelled: true });
+
+    const missing = await call(
+      "session_import_cancel",
+      { import_id: ID },
+      importing({
+        importCancel: () =>
+          Promise.reject(
+            new TypeError('The RPC receiver does not implement the method "importCancel".'),
+          ),
+      }),
+    );
+
+    expect(missing.structuredContent.error).toMatchObject({ code: "unsupported" });
+  });
+
+  it("records the import's Session in the span, as the import_id is the Session's id", async () => {
+    const attributes: Array<Parameters<McpObserver["call"]>[0]> = [];
+
+    const observe: McpObserver = {
+      ...unobserved,
+      call: (attrs, run) => {
+        attributes.push(attrs);
+
+        return run(() => undefined);
+      },
+    };
+
+    await call(
+      "session_import_cancel",
+      { import_id: ID },
+      importing({ importCancel: () => Promise.resolve(apiOk({ cancelled: true as const })) }),
+      observe,
+    );
+
+    expect(attributes[0]).toMatchObject({ tool: "session_import_cancel", session_id: ID });
   });
 });
 
