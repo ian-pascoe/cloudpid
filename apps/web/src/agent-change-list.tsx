@@ -5,6 +5,7 @@
 // dismissal.
 
 import { type AgentChange, fieldSkill, type SessionRecord } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Check, Undo2 } from "lucide-react";
@@ -15,7 +16,8 @@ import { cn } from "./lib/utils.ts";
 import { changeDiff, skillFileDiffs } from "./line-diff.ts";
 import { SessionLink } from "./sidebar.tsx";
 import { failureOf } from "./registry.ts";
-import { changeByline, changeFieldText, changeValueText, revertible } from "./environments.ts";
+import { changeByline, changeFieldText, fieldValueText, revertible } from "./environments.ts";
+import { inheritedLabel, inheritedLines } from "./mcp-change.ts";
 import { skillChangeFilesAtom, skillChangeKey } from "./skills-state.ts";
 
 /**
@@ -51,16 +53,27 @@ const SkillChangeDiff = ({ environment, change }: { environment: string; change:
 };
 
 /** A value before or after an Agent change, in full: a variable's can be long, so it scrolls. */
-const ChangeValue = ({ label, value }: { label: string; value: AgentChange["before"] }) => (
+const ChangeValue = ({
+  label,
+  field,
+  value,
+  inherited,
+}: {
+  label: string;
+  field: string;
+  value: AgentChange["before"];
+  /** The value was Global's, inherited at an Environment. */
+  inherited: boolean | undefined;
+}) => (
   <div className="flex min-w-0 flex-col gap-0.5">
-    <span className="text-xs text-muted-foreground">{label}</span>
+    <span className="text-xs text-muted-foreground">{inheritedLabel(label, field, inherited)}</span>
     <pre
       className={cn(
         "max-h-40 overflow-auto rounded bg-muted px-2 py-1 font-mono text-xs break-all whitespace-pre-wrap",
         value === null && "text-muted-foreground italic",
       )}
     >
-      {changeValueText(value)}
+      {fieldValueText(field, value)}
     </pre>
   </div>
 );
@@ -90,7 +103,7 @@ export const AgentChangeRow = ({
   const skill = fieldSkill(change.field) !== null;
 
   return (
-    <li className="flex flex-col gap-1.5 rounded-md border p-2">
+    <li id={`agent-change-${change.id}`} className="flex flex-col gap-1.5 rounded-md border p-2">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="font-mono text-sm break-all">{changeFieldText(change.field)}</span>
@@ -141,11 +154,28 @@ export const AgentChangeRow = ({
         <SkillChangeDiff environment={change.scope} change={change.id} />
       ) : diff === undefined ? (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <ChangeValue label="Before" value={change.before} />
-          <ChangeValue label="After" value={change.after} />
+          <ChangeValue
+            label="Before"
+            field={change.field}
+            value={change.before}
+            inherited={change.beforeInherited}
+          />
+          <ChangeValue
+            label="After"
+            field={change.field}
+            value={change.after}
+            inherited={change.afterInherited}
+          />
         </div>
       ) : (
-        <ChangeDiff rows={diff} />
+        <>
+          {Arr.map(inheritedLines(change), (note) => (
+            <p key={note} className="text-xs text-muted-foreground">
+              {note}
+            </p>
+          ))}
+          <ChangeDiff rows={diff} />
+        </>
       )}
     </li>
   );

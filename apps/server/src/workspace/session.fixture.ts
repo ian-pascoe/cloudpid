@@ -138,6 +138,7 @@ export class TestWorkspaceSession extends TestSession {
         view: () => Effect.die("No Settings"),
         own: Effect.die("No Settings"),
         reload: () => Effect.die("No Settings"),
+        check: () => Effect.die("No Settings"),
         pushes: () => Effect.die("No Settings"),
         pushed: () => Effect.die("No Settings"),
         host: () => ({

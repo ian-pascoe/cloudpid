@@ -599,11 +599,12 @@ export type SettingsChangeRequest = {
   readonly reason: string;
   readonly conversation: number;
   readonly unchanged: string;
+  /** The result's words; an Effect where the words wait for something that happens after the change (the MCP tools' pushes). */
   readonly changed: (made: {
     readonly changes: ReadonlyArray<AgentChange>;
     readonly applied: SettingsApplied;
     readonly reach: SettingsReach;
-  }) => string;
+  }) => string | Effect.Effect<string>;
 };
 
 /**
@@ -753,6 +754,9 @@ export const SettingsChanges = Effect.gen(function* () {
             Arr.map(answer.changes, (change) => change.field),
           );
 
+          const said = changed({ changes: answer.changes, applied, reach: reached });
+          const words = Predicate.isString(said) ? said : yield* said;
+
           const forgot =
             answer.dropped === undefined
               ? ""
@@ -762,7 +766,7 @@ export const SettingsChanges = Effect.gen(function* () {
             output: [
               {
                 type: "text" as const,
-                text: `${changed({ changes: answer.changes, applied, reach: reached })}${forgot}`,
+                text: `${words}${forgot}`,
               },
             ],
             structuredOutput: settingsChangeOutput({

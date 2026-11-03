@@ -12,6 +12,8 @@ import {
   normalizeMcpName,
   normalizeMcpServer,
   readMcpRepoFile,
+  mcpKeyField,
+  parseMcpField,
 } from "./mcp-servers.ts";
 import { resolveSettings } from "./settings.ts";
 
@@ -710,5 +712,35 @@ describe("a Repo's `.pi/mcp.json`", () => {
 
     expect(problems).toEqual([]);
     expect(entries).toHaveLength(1);
+  });
+});
+
+describe("parseMcpField", () => {
+  it("names the server and, for a key, the key", () => {
+    expect(parseMcpField("mcp.servers.linear")).toEqual({ name: "linear", key: null });
+    expect(parseMcpField("mcp.servers.linear.enabled")).toEqual({ name: "linear", key: "enabled" });
+    expect(parseMcpField("mcp.servers.linear.exposure")).toEqual({
+      name: "linear",
+      key: "exposure",
+    });
+    expect(parseMcpField("mcp.servers.linear.toolExposure")).toEqual({
+      name: "linear",
+      key: "toolExposure",
+    });
+  });
+
+  it("is null for any other field", () => {
+    expect(parseMcpField("roles.small")).toBeNull();
+    expect(parseMcpField("mcp.servers")).toBeNull();
+    expect(parseMcpField("mcp.servers.linear.url")).toBeNull();
+    expect(parseMcpField("mcp.servers.linear.enabled.x")).toBeNull();
+    expect(parseMcpField("mcp.other.linear.enabled")).toBeNull();
+  });
+
+  it("is the inverse of mcpKeyField", () => {
+    expect(parseMcpField(mcpKeyField("docs", "toolExposure"))).toEqual({
+      name: "docs",
+      key: "toolExposure",
+    });
   });
 });

@@ -22,6 +22,7 @@ import { disclosureOpenAtom } from "../session-layout-state.ts";
 import { useShownLayoutKey, useThreadConversation } from "./conversation.ts";
 import { ChangeDiff } from "../change-diff.tsx";
 import { changeTitleText, fieldValueText } from "../environments.ts";
+import { inheritedLabel, inheritedLines } from "../mcp-change.ts";
 import { changeDiff } from "../line-diff.ts";
 import { decodeCardDiff, diffTotals } from "../call-diff.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
@@ -350,11 +351,22 @@ const Change = ({ change }: { change: ShownChange }) => {
       </div>
       {diff === undefined ? (
         <>
-          <Output label="Before" text={fieldValueText(change.field, change.before)} />
-          <Output label="After" text={fieldValueText(change.field, change.after)} />
+          <Output
+            label={inheritedLabel("Before", change.field, change.beforeInherited)}
+            text={fieldValueText(change.field, change.before)}
+          />
+          <Output
+            label={inheritedLabel("After", change.field, change.afterInherited)}
+            text={fieldValueText(change.field, change.after)}
+          />
         </>
       ) : (
         <div className="mt-1">
+          {Arr.map(inheritedLines(change), (note) => (
+            <div key={note} className="text-xs text-muted-foreground">
+              {note}
+            </div>
+          ))}
           <ChangeDiff rows={diff} />
         </div>
       )}

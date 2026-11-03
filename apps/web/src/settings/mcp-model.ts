@@ -14,6 +14,7 @@ import {
   isMcpFullEntry,
   MCP_ADJUSTMENT_KEYS,
   MCP_EXPOSURES,
+  type McpAdjustmentKey,
   type McpExposure,
   type McpProblem,
   type McpProblemSource,
@@ -49,7 +50,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 
 /** The keys an Environment's adjustment of a Global server holds. */
-export type McpAdjustmentKey = (typeof MCP_ADJUSTMENT_KEYS)[number];
+export type { McpAdjustmentKey };
 
 /** A `${NAME}` an entry reads, and where. */
 export interface McpReference {

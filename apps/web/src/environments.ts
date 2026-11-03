@@ -52,6 +52,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { relativeTime } from "./format.ts";
+import { mcpFieldText, mcpValueText } from "./mcp-change.ts";
 
 /** An Environment's Sessions, newest first. */
 export type EnvironmentGroup = {
@@ -389,6 +390,10 @@ export const changeValueText = (value: AgentChange["before"]): string => {
 
 /** The setting an Agent change's field names, as the page says it: `variables.API_URL` is the variable API_URL. */
 export const changeFieldText = (field: string): string => {
+  const mcp = mcpFieldText(field);
+
+  if (mcp !== null) return mcp;
+
   const variable = fieldVariable(field);
 
   if (variable !== null) return `Variable ${variable}`;
@@ -437,7 +442,9 @@ export const changeTitleText = (field: string, where: string): string =>
  * "deleted" after it rather than none.
  */
 export const fieldValueText = (field: string, value: AgentChange["before"]): string =>
-  field === DELETED_FIELD && value === null ? "deleted" : changeValueText(value);
+  field === DELETED_FIELD && value === null
+    ? "deleted"
+    : (mcpValueText(field, value) ?? changeValueText(value));
 
 /**
  * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it) and

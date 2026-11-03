@@ -153,6 +153,37 @@ describe("toolSummary", () => {
     expect(toolSummary("settings_reset", { scope: "*", field: "roles.small", reason: "r" })).toBe(
       "roles.small",
     );
+    // The MCP server changes: the server, where, and what it is set to.
+    expect(toolSummary("settings_mcp_disable", { scope: "*", name: "linear", reason: "r" })).toBe(
+      "linear at Global",
+    );
+    expect(toolSummary("settings_mcp_disable", { scope: "env-1", name: "linear" })).toBe(
+      "linear in env-1",
+    );
+    expect(
+      toolSummary("settings_mcp_exposure_set", {
+        scope: "env-1",
+        name: "linear",
+        exposure: "direct",
+      }),
+    ).toBe("linear: direct in env-1");
+    expect(
+      toolSummary("settings_mcp_tool_exposure_set", {
+        scope: "*",
+        name: "linear",
+        tool: "delete_*",
+        exposure: "hidden",
+      }),
+    ).toBe("linear · delete_*: hidden at Global");
+    expect(
+      toolSummary("settings_mcp_tool_exposure_set", {
+        scope: "*",
+        name: "linear",
+        tool: "delete_*",
+        exposure: null,
+      }),
+    ).toBe("linear · delete_*: removed at Global");
+    expect(toolSummary("settings_mcp_disable", { scope: "*" })).toBeUndefined();
     expect(toolSummary("settings_compaction_set", { reason: "more room\nplease" })).toBe(
       "more room",
     );

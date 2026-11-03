@@ -10,6 +10,7 @@ import {
   OVERRIDE_FIELD_NAMES,
   overrideFieldPath,
   overrideFields,
+  overrideInherited,
   overrideValue,
   overridesPatchBetween,
   resolveOverrides,
@@ -293,10 +294,27 @@ describe("the fields an Environment overrides", () => {
     }
   });
 
-  it("are reset, not overridden, by null only for an extension's option", () => {
+  it("are reset, not overridden, by null only for an extension's option or an MCP server's key", () => {
     expect(resetsOverride("extensions.subagents.readToolset", null)).toBe(true);
     expect(resetsOverride("extensions.subagents.readToolset", ["read"])).toBe(false);
     expect(resetsOverride("spendLimit.perSession", null)).toBe(false);
+    expect(resetsOverride("mcp.servers.files.enabled", null)).toBe(true);
+    expect(resetsOverride("mcp.servers.files.toolExposure", null)).toBe(true);
+    expect(resetsOverride("mcp.servers.files.enabled", false)).toBe(false);
+  });
+
+  it("inherit an MCP server's key unless an Override holds it, and never inside the Environment's own entry", () => {
+    const adjusted = { mcp: { servers: { files: { enabled: false } } } };
+    const own = { mcp: { servers: { files: { command: "node" } } } };
+
+    expect(overrideInherited({}, "mcp.servers.files.enabled")).toBe(true);
+    expect(overrideInherited(adjusted, "mcp.servers.files.enabled")).toBe(false);
+    expect(overrideInherited(adjusted, "mcp.servers.files.exposure")).toBe(true);
+    // The entry replaces Global's whole: a key it does not write reads as its default, not as Global's.
+    expect(overrideInherited(own, "mcp.servers.files.enabled")).toBe(false);
+    expect(overrideInherited(own, "mcp.servers.other.enabled")).toBe(true);
+    expect(overrideInherited({ model: SONNET }, "model")).toBe(false);
+    expect(overrideInherited({}, "model")).toBe(true);
   });
 });
 

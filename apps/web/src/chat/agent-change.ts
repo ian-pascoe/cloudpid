@@ -15,6 +15,9 @@ export const ShownChange = Schema.Struct({
   field: Schema.String,
   before: Schema.NullOr(Schema.Json),
   after: Schema.NullOr(Schema.Json),
+  /** The value before (after) the change was Global's, inherited at the Environment. */
+  beforeInherited: Schema.optionalKey(Schema.Boolean),
+  afterInherited: Schema.optionalKey(Schema.Boolean),
   /** The owner approved the change before it was made (`docs/architecture/agent-changes.md` → Approval). */
   approved: Schema.optionalKey(Schema.Literal(true)),
 });

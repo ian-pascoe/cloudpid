@@ -7,6 +7,7 @@
 import {
   DEFAULT_SETTINGS,
   type OverrideFieldChange,
+  overrideInherited,
   overrideValue,
   overridesFrom,
   overridesWithFields,
@@ -203,7 +204,7 @@ export const changeSettingsOverrides = (
 
   if (differing.length === 0) return { answer: { status: "unchanged" }, overrides };
 
-  const inherited = (field: string) => Option.isNone(overrideValue(known.overrides, field));
+  const inherited = (field: string) => overrideInherited(known.overrides, field);
 
   const moved = differing.find(
     ({ field, expected }) =>
@@ -240,7 +241,7 @@ export const changeSettingsOverrides = (
           before: settingsFieldValue(known.settings, field),
           after: settingsFieldValue(after.success, field),
           beforeInherited: inherited(field),
-          afterInherited: Option.isNone(overrideValue(next.success, field)),
+          afterInherited: overrideInherited(next.success, field),
         }),
       ),
     },

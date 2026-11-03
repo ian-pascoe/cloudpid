@@ -14,6 +14,7 @@ import type {
   McpProblem,
   McpResolvedServer,
   McpSource,
+  McpWidening,
 } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
 import type { McpRepoFileView } from "./mcp-repo-files.ts";
@@ -133,6 +134,39 @@ export type SettingsMcpView = {
   /** `tools.offered` in force at the Scope, which can lift an MCP tool to `direct`. */
   readonly offered: ReadonlyArray<string>;
   readonly warnings: ReadonlyArray<string>;
+  /**
+   * At Global, with a name asked for that Global's own entries do not have: the Environments whose set has a server of that
+   * name (their own entry or a Repo's), which no `settings_mcp_*` tool at `*` can change. Absent otherwise, and from a
+   * Registry from before it.
+   */
+  readonly definedIn?: ReadonlyArray<SettingsMcpEnvironment> | undefined;
+};
+
+/** One field of a server given a new value, or reset (Global: back to its default; an Environment: inheriting again). */
+export type McpFieldChange = {
+  readonly field: string;
+  readonly value: Schema.Json | null;
+  readonly reset?: true | undefined;
+};
+
+/**
+ * What `mcpChangeCheck` finds of one Environment's set for a change to a server's keys: whether the entry in force of the
+ * server changes there (`reached`: an Environment whose own entry or adjustment overrides the key is not), and what
+ * the change makes reachable that was not (`checkMcpWidening`: a switched-off server on, a hidden tool in reach).
+ */
+export type SettingsMcpReach = {
+  readonly environment: SettingsMcpEnvironment;
+  readonly reached: boolean;
+  readonly widening: ReadonlyArray<McpWidening>;
+};
+
+/**
+ * `mcpChangeCheck`'s answer (`docs/architecture/mcp-configuration.md` → Approval, The check): for each Environment whose set
+ * has the server before or after the change, in the Registry's order (only the named one at an Environment's Scope). Null
+ * from the Registry when no Environment has the id.
+ */
+export type SettingsMcpChangeCheck = {
+  readonly environments: ReadonlyArray<SettingsMcpReach>;
 };
 
 /** What a reload made of one Repo's file. A string-valued state, so one a later build adds reads as itself. */

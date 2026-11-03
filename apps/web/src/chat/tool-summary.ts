@@ -171,6 +171,31 @@ const spendLimit = (args: Args): Option.Option<string> =>
       ? Option.some("no limit")
       : Option.none();
 
+/**
+ * What a `settings_mcp_*` call changes: the server, its tool (key) when the call names one, what it is set to, and where:
+ * `linear at Global`, `linear: direct in <id>`, `linear · delete_*: hidden in <id>`.
+ */
+const mcpChange = (args: Args): Option.Option<string> =>
+  Option.map(text(args, "name"), (name) => {
+    const tool = Option.match(text(args, "tool"), {
+      onNone: () => "",
+      onSome: (key) => ` · ${key}`,
+    });
+
+    // A tool exposure of null removes the key.
+    const set = Option.match(text(args, "exposure"), {
+      onNone: () => (args.exposure === null ? ": removed" : ""),
+      onSome: (exposure) => `: ${exposure}`,
+    });
+
+    const place = Option.match(text(args, "scope"), {
+      onNone: () => "",
+      onSome: (scope) => (scope === "*" ? " at Global" : ` in ${scope}`),
+    });
+
+    return `${name}${tool}${set}${place}`;
+  });
+
 /** What a `settings_subagent_depth_set` call asks to set: the levels of subagents below the root. */
 const subagentDepth = (args: Args): Option.Option<string> =>
   Predicate.isNumber(args.depth) ? Option.some(`depth ${args.depth}`) : Option.none();
@@ -272,6 +297,10 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "environment_toolchains_set":
       case "environment_ignore_set":
         return inEnvironment(args, firstLine(args, "reason"));
+      case "settings_mcp_disable":
+      case "settings_mcp_exposure_set":
+      case "settings_mcp_tool_exposure_set":
+        return mcpChange(args);
       case "settings_model_set":
         return defaultAgent(args);
       case "settings_role_set":

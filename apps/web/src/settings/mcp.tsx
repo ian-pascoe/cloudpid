@@ -16,16 +16,16 @@
 // problem, Sign in, Sign in again and Sign out, and the refused-document-client hint (`mcp-sign-in-parts.tsx`); at Global,
 // the Sign-ins list follows the servers (`#sign-ins`). The form's Sign-in (OAuth) disclosure is `mcp-sign-in-form.tsx`.
 //
-// As built, left to their tickets: "Changed
-// by the agent · 5 min ago" on a row (the `settings_mcp_*` tools, #484, are what make the records it reads: the row's
-// meta line is where it goes).
+// A row the agent changed (the `settings_mcp_*` tools, #484) says so on its meta line: "Changed by the agent · 5 min ago",
+// linking to its change in the Agent changes section, while that change is neither reverted nor dismissed.
 
 import type { McpExposure } from "@cloudpid/config";
-import { GLOBAL_SCOPE, readMcpRepoFileState } from "@cloudpid/protocol";
+import { type AgentChange, GLOBAL_SCOPE, readMcpRepoFileState } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
 import { Plus, RefreshCw, Trash2, Upload } from "lucide-react";
 import type { FormEvent } from "react";
@@ -33,10 +33,12 @@ import { Button } from "../components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "../components/ui/dialog.tsx";
 import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
-import { environmentListAtom } from "../environments-state.ts";
+import { agentChangesAtom, environmentListAtom } from "../environments-state.ts";
 import { relativeTime } from "../format.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
+import { latestAgentChange } from "../mcp-change.ts";
 import { navigate, settingsPath } from "../router.ts";
+import { settingsChangesAtom } from "../settings.ts";
 import { ExposureSelect, McpFormPanel, McpToolsPanel } from "./mcp-form-panel.tsx";
 import { mcpCopyForm, newMcpForm, toolsDraftOf } from "./mcp-form.ts";
 import { McpImportPanel } from "./mcp-import-panel.tsx";
@@ -184,6 +186,35 @@ const AdjustmentMarks = ({
   );
 };
 
+/** The agent's changes the Scope lists: Global's are the Settings', an Environment's its own. */
+const scopeChangesAtom = Atom.family((scope: string) =>
+  scope === GLOBAL_SCOPE ? settingsChangesAtom : agentChangesAtom(scope),
+);
+
+/** "Changed by the agent · 5 min ago", linking to the change in the Agent changes section; nothing while there is none. */
+const AgentChangedLine = ({ scope, name }: { scope: string; name: string }) => {
+  const loaded = useAtomValue(scopeChangesAtom(scope));
+
+  const change = latestAgentChange(
+    loaded.pipe(
+      AsyncResult.value,
+      Option.getOrElse((): ReadonlyArray<AgentChange> => []),
+    ),
+    name,
+  );
+
+  if (change === null) return null;
+
+  return (
+    <InAppLink
+      href={`${settingsPath(scope, "agent-changes")}#agent-change-${change.id}`}
+      className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+    >
+      Changed by the agent · {relativeTime(change.at, Date.now())}
+    </InAppLink>
+  );
+};
+
 /** One server of the list. */
 const McpRowView = ({
   scope,
@@ -248,6 +279,7 @@ const McpRowView = ({
         {chip !== undefined && !(signIn?.chip != null && isSignInState(chip)) && (
           <StatusChip chip={chip} />
         )}
+        <AgentChangedLine scope={scope} name={row.name} />
       </div>
       <p className="font-mono text-xs break-all text-muted-foreground">{targetOf(row)}</p>
       {signIn !== null && <SignInNotes id={noteId(`mcp-row-sign-in-${row.name}`)} line={signIn} />}

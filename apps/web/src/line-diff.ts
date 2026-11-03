@@ -5,6 +5,7 @@ import type { AgentChange, SkillChangeFiles } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
+import { mcpEntryTexts } from "./mcp-change.ts";
 
 /** One line of a diff: kept (`same`), taken out (`removed`) or put in (`added`). */
 export type DiffLine = {
@@ -182,6 +183,11 @@ export const changeDiff = (
   before: AgentChange["before"],
   after: AgentChange["after"],
 ): ReadonlyArray<DiffRow> | undefined => {
+  const entry = mcpEntryTexts(field, before, after);
+
+  // A server's whole entry is its JSON, in the order written: the lines that changed.
+  if (entry !== null) return foldDiff(diffLines(entry.before, entry.after));
+
   if (!TEXT_FIELDS.has(field)) return undefined;
 
   const asText = (value: AgentChange["before"]): string | undefined =>

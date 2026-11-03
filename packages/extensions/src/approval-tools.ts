@@ -110,6 +110,8 @@ import {
   SettingsScope,
   type SettingsView,
 } from "./settings.ts";
+import type { SettingsMcpAccess } from "./settings-mcp-access.ts";
+import { McpChanges } from "./settings-mcp-changes.ts";
 import { settingsChangeOutput } from "./settings-outputs.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
 import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
@@ -352,6 +354,7 @@ export const ApprovalTools: Effect.Effect<
   | Environments
   | EnvironmentRemoval
   | SettingsAccess
+  | SettingsMcpAccess
   | SettingsReload
   | AgentChangeLog
   | DeployCredentials
@@ -367,6 +370,7 @@ export const ApprovalTools: Effect.Effect<
 
   const holdsCredential = yield* credentialCheck;
   const { apply: applySettings, reach } = yield* SettingsChanges;
+  const mcp = yield* McpChanges;
 
   /**
    * Fails, asking nothing, when `text` (`what`: the reason, or the Instructions' text) holds a Secret the Session holds,
@@ -708,7 +712,7 @@ export const ApprovalTools: Effect.Effect<
         `Resetting a Limit (${Arr.join(
           Arr.map(SETTINGS_LIMITS, (limit) => limit.field),
           ", ",
-        )}) waits for the user's Approval at either Scope, as the Limit tools do: ${APPROVAL} Any other field is reset at once.`,
+        )}) waits for the user's Approval at either Scope, as the Limit tools do: ${APPROVAL} Any other field is reset at once. An MCP server's field (mcp.servers.<name>.enabled, .exposure or .toolExposure) is reset only at an Environment, and only where it is an adjustment of a server Global or a Repo defines (settings_mcp_list shows the fields it holds); it is refused at "*", for a key of the Environment's own entry (use settings_mcp_disable or the exposure tools) and for mcp.servers.<name> itself (removing a server is made by the user on the Settings page for now). A reset that would make a switched-off server or a hidden tool reachable again needs the user's Approval and is refused.`,
         CHANGE_NOTE,
       ],
       "\n\n",
@@ -741,6 +745,11 @@ export const ApprovalTools: Effect.Effect<
           return yield* SettingsAccessError.make({
             message: `Nothing was asked or saved: ${field} is not a setting settings_reset takes. The settings are: ${RESET_FIELDS}.`,
           });
+        }
+
+        // An MCP server's adjustment: only at an Environment, and never one that falls back to something reachable.
+        if (field.startsWith("mcp.")) {
+          return yield* mcp.resetField({ scope, field, reason, conversation: api.conversationId });
         }
 
         const view = yield* access.get(scope);

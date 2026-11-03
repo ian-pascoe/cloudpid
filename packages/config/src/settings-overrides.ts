@@ -18,6 +18,7 @@ import {
   MCP_ROOT,
   MCP_ADJUSTMENT_KEYS,
   mcpFieldPath,
+  parseMcpField,
   type McpSettingsProblem,
   mcpServersOf,
   mcpSettingsProblems,
@@ -128,10 +129,37 @@ export const OVERRIDE_FIELD_NAMES: ReadonlyArray<string> = Arr.flatMap(
 
 /**
  * Whether giving Override field `field` the value `value` resets it rather than overriding it: null takes an extension's
- * option away (and an extension's options, given for the extension), so at an Environment it inherits again.
+ * option away (and an extension's options, given for the extension), so at an Environment it inherits again; and null
+ * takes the `enabled`, `exposure` or `toolExposure` of an MCP server away: an adjustment's key is reset, and the key of
+ * an Environment's own entry is dropped from it (the key it did not have).
  */
 export const resetsOverride = (field: string, value: Schema.Json | null): boolean =>
-  value === null && field.startsWith("extensions.");
+  value === null && (field.startsWith("extensions.") || isMcpKeyField(field));
+
+/** Whether `field` is one of an MCP server's keys an adjustment may hold: `mcp.servers.<name>.enabled|exposure|toolExposure`. */
+const isMcpKeyField = (field: string): boolean => {
+  const parsed = parseMcpField(field);
+
+  return parsed !== null && parsed.key !== null;
+};
+
+/**
+ * Whether Environment Overrides `overrides` leave `field` to be inherited: they hold no Override of it. An MCP server's key
+ * inside the Environment's own full entry is never inherited (the entry replaces Global's whole), whether or not it is
+ * written there, so a key an own entry does not write reads as its default, not as Global's
+ * (`docs/architecture/mcp-configuration.md` → Records and revert).
+ */
+export const overrideInherited = (overrides: Schema.Json, field: string): boolean => {
+  const keys = overrideFieldPath(field);
+
+  if (keys !== undefined && isMcpKeyField(field)) {
+    const entry = valueAt(overrides, keys.slice(0, 3));
+
+    if (isJsonObject(entry) && isMcpFullEntry(entry)) return false;
+  }
+
+  return Option.isNone(overrideValue(overrides, field));
+};
 
 /**
  * The keys of Override field `field` (`model`, `roles.small`, `compaction.enabled`, `extensions.<extension>.<key>`, whose

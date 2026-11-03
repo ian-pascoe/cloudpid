@@ -17,6 +17,7 @@ import {
 } from "@cloudpid/config";
 import type { McpApplySet, McpSetEntry } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 /** The layers an Environment's set is resolved from: the Global document and the Environment's Overrides, as saved. */
@@ -48,6 +49,13 @@ export type McpSetContent = Omit<McpApplySet, "revision">;
 /** The servers of `layers` as `resolveMcpServerSet` resolves them: the set's entries, and what a value is read from. */
 export const resolvedMcpServers = (layers: McpSetLayers): ReadonlyArray<McpResolvedServer> =>
   resolveMcpServerSet(layers.global, layers.overrides, layers.repos).servers;
+
+/** The server called `name` among `servers`, or none. */
+export const mcpServerNamed = (
+  servers: ReadonlyArray<McpResolvedServer>,
+  name: string,
+): McpResolvedServer | undefined =>
+  Option.getOrUndefined(Arr.findFirst(servers, (each) => each.name === name));
 
 const setEntry = (resolved: McpResolvedServer): McpSetEntry => {
   const { source } = resolved;
