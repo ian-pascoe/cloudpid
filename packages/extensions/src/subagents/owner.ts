@@ -67,13 +67,17 @@ const below = (state: SubagentsState, agentId: string): AgentRecord[] =>
  * Abort the work of the agent whose conversation is `conversationId`, and withdraw its queued input. With
  * `subagents`, everything below it stops too, background work and the reports it held included: a subagent's own
  * subagents are agents of their own, and keep working otherwise. The caller has checked that it is an agent's.
+ * `reaching` is called with each conversation just before it is aborted, and waited for: the Session withdraws the
+ * messages in that conversation's line there, so a message not yet placed is not placed after the Stop.
  */
 export const stopConversation = async (
   harness: OwnerHarness,
   conversationId: ConversationId,
   options: { readonly subagents: boolean },
   context: Context,
+  reaching?: (conversationId: ConversationId) => Promise<void>,
 ): Promise<void> => {
+  await reaching?.(conversationId);
   await (
     await harness.conversation(conversationId, context)
   )?.abort(context, {
@@ -101,6 +105,7 @@ export const stopConversation = async (
     for (const agent of fresh) {
       stopped.add(agent.id);
 
+      await reaching?.(agent.conversationId);
       await (
         await harness.conversation(agent.conversationId, context)
       )?.abort(context, {

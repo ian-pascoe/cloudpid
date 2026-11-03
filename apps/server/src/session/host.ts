@@ -1833,6 +1833,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * place in the line of its conversation, where it waits for the messages sent before it; the Session tree does not
    * move while it is in line. It is then prepared, with no lock held, so a slow expansion or page read holds back
    * neither Stop nor another conversation. Last it is placed, briefly under `inArrivalOrder`: checked, then admitted.
+   * Stop withdraws it until it is placed: it then fails as `withdrawn()` and places nothing.
    */
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
     admission.inLine(
@@ -1842,13 +1843,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         unlessForking.pipe(
           Effect.andThen(draftOf({ ...prompt, conversationId })),
           Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
-          Effect.flatMap((draft) =>
-            guard(conversationId, draft).pipe(
-              Effect.andThen(admitDraft(conversationId, draft, true)),
-              inArrivalOrder,
-            ),
-          ),
         ),
+      (conversationId, draft) =>
+        guard(conversationId, draft).pipe(Effect.andThen(admitDraft(conversationId, draft, true))),
     );
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {
@@ -2555,10 +2552,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       const agent = yield* Effect.option(attempt("follow", () => conversation.agent(context)));
       const read = { newestEntry: newest.items[0]?.id ?? 0, newestSettled };
 
-      const unsettled = Arr.some(
-        submissions,
-        (record) => record.type === "input" && record.conversationId === conversation.id,
-      );
+      // A message still in the conversation's line is unsettled input too: Stop withdraws it.
+      const unsettled =
+        admission.isPreparing(conversation.id) ||
+        Arr.some(
+          submissions,
+          (record) => record.type === "input" && record.conversationId === conversation.id,
+        );
 
       const stalled = Arr.some(
         tasks,
@@ -2569,7 +2569,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         conversationId: conversation.id,
         activeBranch: current.id,
         copying,
-        idle: tasks.length === 0 && submissions.length === 0,
+        idle: tasks.length === 0 && submissions.length === 0 && !admission.anyPreparing(),
         unsettled,
         stalled,
         newestEntry: read.newestEntry,
@@ -2661,7 +2661,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     switchBranch: (conversationId) =>
       branches.switchBranch(conversationId).pipe(Effect.tap(usageChanged)),
     // What stopped reaches the Registry's summary of the subagents at once: an archived Session keeps it.
-    stopEverything: branches.stopEverything.pipe(Effect.andThen(settleAgents), Effect.asVoid),
+    stopEverything: admission.withdrawAll.pipe(
+      Effect.andThen(branches.stopEverything),
+      Effect.andThen(settleAgents),
+      Effect.asVoid,
+    ),
     forkSource: forks.forkSource,
     exportEntries: forks.exportEntries,
     importStart: forks.importStart,
@@ -2686,14 +2690,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       return { model: pick.model !== undefined, thinkingLevel: pick.thinkingLevel !== undefined };
     }),
     abort: (options = {}) =>
-      addressed(options.conversationId).pipe(
-        Effect.flatMap((conversation) =>
+      Effect.all([addressed(options.conversationId), Effect.context<never>()]).pipe(
+        Effect.flatMap(([conversation, services]) =>
           attempt("abort", () =>
             stopConversation(
               harness.harness,
               conversation.id,
               { subagents: options.subagents === true },
               context,
+              // The messages of each conversation stopped that are still in its line are withdrawn, then it is aborted.
+              (id) => Effect.runPromiseWith(services)(admission.withdraw(id)),
             ),
           ),
         ),

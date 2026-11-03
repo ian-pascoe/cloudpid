@@ -1,7 +1,8 @@
 // Admitting a message in two steps against real Durable Object storage (docs/architecture/mcp-in-a-session.md → Getting a
 // prompt at send): a message is prepared (here, its attached pages are read, held until the test lets them end) outside the
-// Session's lock, in a line per conversation, then placed. A slow preparation holds back neither Stop nor another
-// conversation, messages keep their order within each conversation, and the Session tree stays put while one is prepared.
+// Session's lock, in a line per conversation, then placed. A slow preparation holds back no other conversation, messages
+// keep their order within each conversation, the Session tree stays put while one is prepared, and Stop withdraws the
+// messages in a conversation's line (preparing or waiting) so that none is placed after it.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectRecord:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
@@ -18,6 +19,21 @@ declare global {
     }
   }
 }
+
+/** How a submit ended: placed, or withdrawn by Stop. */
+const PLACED = "placed";
+const WITHDRAWN = "withdrawn";
+
+/** The end of `submit`: it was placed, withdrawn by Stop, or failed for another reason (which is thrown). */
+const settled = (submit: Promise<number>): Promise<string> =>
+  submit.then(
+    () => PLACED,
+    (error: Error) => {
+      if (error.message.includes("Stopped before it was sent")) return WITHDRAWN;
+
+      throw error;
+    },
+  );
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -70,7 +86,7 @@ const sent = (instance: TestSubagentSession, child?: Parameters<TestSubagentSess
   instance.texts("user", child).then((texts) => texts.filter((text) => /^[a-z]\d$/.test(text)));
 
 describe("admitting a message", () => {
-  it("holds back neither Stop, nor another conversation, nor the lookups while a message is being prepared", async () => {
+  it("holds back neither another conversation nor the lookups while a message is being prepared", async () => {
     const { stub, child } = await withChild();
 
     await runInDurableObject(stub, async (instance: TestSubagentSession) => {
@@ -82,10 +98,8 @@ describe("admitting a message", () => {
 
       // Another conversation is admitted meanwhile.
       await instance.submitTo(child, "c1");
-      // Stop and a read of the Session go ahead. Neither ever took the lock, so this does not show the split: the other
+      // A read of the Session goes ahead. It never took the lock, so this does not show the split: the other
       // conversation's message above does, which waited on the lock before.
-      await instance.abort();
-      await instance.stopEverything();
       await instance.idle();
       // The message being prepared is not placed yet.
       expect(await sent(instance)).toEqual([]);
@@ -232,5 +246,122 @@ describe("admitting a message", () => {
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, branch)),
     ).toEqual(["a1", "a2"]);
+  });
+
+  it("withdraws, on Stop, the message being prepared and the ones waiting behind it, and not another conversation's", async () => {
+    const { stub, child } = await withChild();
+
+    const outcomes = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      instance.holdPreparing("a1");
+      instance.holdPreparing("c1");
+
+      const root = [instance.submit("a1"), instance.submit("a2")].map(settled);
+      const sub = settled(instance.submitTo(child, "c1"));
+
+      await sleep(50);
+
+      // A message in line is unsettled input: the Session is not idle, so the MCP endpoint's Stop does not skip it.
+      expect(await instance.busyness()).toEqual({ idle: false, unsettled: true });
+      await instance.abort();
+
+      // Withdrawn without its preparation being let end: a1's was cancelled, and a2 never started.
+      const withdrawn = await Promise.all(root);
+
+      // The other conversation's line is untouched: its message is still being prepared, and is placed.
+      instance.finishPreparing("c1");
+
+      return { withdrawn, other: await sub };
+    });
+
+    expect(outcomes.withdrawn).toEqual([WITHDRAWN, WITHDRAWN]);
+    expect(outcomes.other).toBe(PLACED);
+    await eventually(stub, (instance) => instance.idle());
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
+    ).toEqual([]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, child)),
+    ).toEqual(["c1"]);
+
+    // The line is free again: a message sent after the Stop is placed, and the tree may move.
+    await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      await instance.submit("a3");
+    });
+    await eventually(stub, (instance) => instance.idle());
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
+    ).toEqual(["a3"]);
+  });
+
+  it("withdraws only the line of the subagent Stop names", async () => {
+    const { stub, child } = await withChild();
+
+    const outcomes = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      instance.holdPreparing("a1");
+      instance.holdPreparing("c1");
+
+      const root = settled(instance.submit("a1"));
+      const sub = settled(instance.submitTo(child, "c1"));
+
+      await sleep(50);
+      await instance.abort({ conversationId: child });
+
+      const withdrawn = await sub;
+
+      instance.finishPreparing("a1");
+
+      return { withdrawn, other: await root };
+    });
+
+    expect(outcomes).toEqual({ withdrawn: WITHDRAWN, other: PLACED });
+  });
+
+  it("withdraws every conversation's line on Stop all", async () => {
+    const { stub, child } = await withChild();
+
+    const withdrawn = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      instance.holdPreparing("a1");
+      instance.holdPreparing("c1");
+
+      const lines = [instance.submit("a1"), instance.submitTo(child, "c1")].map(settled);
+
+      await sleep(50);
+      await instance.stopEverything();
+
+      return Promise.all(lines);
+    });
+
+    expect(withdrawn).toEqual([WITHDRAWN, WITHDRAWN]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
+    ).toEqual([]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, child)),
+    ).toEqual([]);
+  });
+
+  it("leaves the tree free to move once Stop withdrew the message that kept it", async () => {
+    const { stub } = await withChild();
+
+    const [during, after] = await runInDurableObject(
+      stub,
+      async (instance: TestSubagentSession) => {
+        instance.holdPreparing("a1");
+
+        const slow = settled(instance.submit("a1"));
+
+        await sleep(50);
+
+        const during = await instance.navigateNowhere();
+
+        await instance.abort();
+        await slow;
+
+        return [during, await instance.navigateNowhere()];
+      },
+    );
+
+    expect(during).toBe(NAVIGATE_WHILE_PREPARING);
+    expect(after).not.toBe(NAVIGATE_WHILE_PREPARING);
   });
 });

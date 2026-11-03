@@ -66,12 +66,16 @@ const CommandId = Schema.optionalKey(Schema.String);
  * title and selected text from the browser and gives them to the model as a block of page content, apart from the
  * owner's words; a tab that is gone fails the command. The screen of a shown tab travels as an image of `input`, after
  * the typed text and the Attachments' paths and before the Attachments' images, in the order of `pages`. Answered with
- * `{ submissionId }`.
+ * `{ submissionId }`, or `null` when Stop withdrew it first.
  *
  * With `annotations`, the IDs of drafts addressed to that conversation (`annotations`), it is a Review: the input is its
  * summary (it may be empty), and the Session renders the drafts as Markdown after it. It is refused when one of them is
  * gone ("Your drafts changed: check them and send again"); the drafts are deleted once the Session takes it, and come
  * back when Stop withdraws it before it was placed.
+ *
+ * Stop also withdraws a message still being prepared, or waiting its turn behind one that is, in its conversation's
+ * line (docs/architecture/mcp-in-a-session.md → Getting a prompt at send): nothing is placed, and the command is
+ * answered with `null` instead, as a client takes withdrawn queued input, gone without a failure.
  */
 export const Submit = Schema.Struct({
   type: Schema.Literal("submit"),

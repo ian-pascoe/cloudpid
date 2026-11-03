@@ -283,6 +283,15 @@ export class TestSubagentSession extends DurableObject {
     return this.#runtime.runPromise(Effect.flatMap(SessionHost, (host) => host.stopEverything));
   }
 
+  /** Whether the Session shows no work (`idle`) and none for its active branch (`unsettled`), as the MCP endpoint reads it. */
+  busyness(): Promise<{ readonly idle: boolean; readonly unsettled: boolean }> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.follow()).pipe(
+        Effect.map(({ idle, unsettled }) => ({ idle, unsettled })),
+      ),
+    );
+  }
+
   /** The Subagent Workspace of conversation `id`'s Changes (null: the Session's), or why it has none. */
   workspaceOf(
     id: ConversationId,

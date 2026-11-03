@@ -707,7 +707,8 @@ const sessionMcp = (options: SessionMcpOptions) =>
           return apiOk<SubmitResult>({ delivery, cursor: submitCursor(after, id, mark) });
         }).pipe(
           Effect.catchTag("SessionError", (error) =>
-            // The Session's own refusal of this input (too large to store, say) is the caller's to fix.
+            // The Session's own refusal of this input (too large to store, say) is the caller's to fix. A message Stop
+            // withdrew before it was placed (`WITHDRAWN`) has no submission to follow: it is `unavailable`, to send again.
             Effect.succeed(
               error.operation === "submit"
                 ? apiFailure("invalid_argument", error.message)

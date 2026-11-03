@@ -61,7 +61,7 @@ import { AnnotationStore } from "./annotations.ts";
 import { type ChangesMessage, type ChangesUpdate, SessionChanges } from "./changes.ts";
 import { SessionComparisons } from "./comparisons.ts";
 import { SessionRuns } from "./runs.ts";
-import { SessionError } from "./errors.ts";
+import { isWithdrawn, SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
 import { ViewedStore } from "./viewed.ts";
@@ -636,7 +636,12 @@ export const sessionSocketsLayer = (
               ids === undefined
                 ? host.submit(prompt)
                 : reviews.submit({ ...prompt, annotations: ids })
-            ).pipe(Effect.map((submissionId) => ({ submissionId })));
+            ).pipe(
+              Effect.map((submissionId) => ({ submissionId })),
+              // Stop withdrew it before it was placed: answered with `null`, which a client takes as it takes withdrawn
+              // queued input, gone without a failure, for the owner to send again.
+              Effect.catchIf(isWithdrawn, () => Effect.succeed(null)),
+            );
           }
 
           case "abort": {
