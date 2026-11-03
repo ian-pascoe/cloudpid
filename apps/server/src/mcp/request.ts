@@ -3,8 +3,10 @@
 // to a server that has an inventory, an HTTP server or a stdio server run in the caller's Workspace (`ctx.workspace`; the
 // call may start its Container); any other `op` is `HostUnsupported`.
 //
-// The call runs inside the caller's invocation, so the caller's `untilAborted` and `onProgress` stubs live as long as
-// it does (#409 answer 2), and they go on to the engine as they came. It takes a request slot on its server (8) and on
+// The call runs inside the caller's invocation, so the caller's `untilAborted`, `onProgress` and `onInput` stubs live as
+// long as it does (#409 answer 2), and they go on to the engine as they came. A question a Legacy server asks reaches
+// the caller's `onInput` this way (`ctx.answers` says which kinds it takes), and the call's timeout, the engine's, is
+// paused while it waits: the host holds no question state. It takes a request slot on its server (8) and on
 // the host (32), then a slot of the engine queue as a call, served before background work (`limits.ts`). The wait for
 // a slot counts toward the call's timeout: a call still waiting when its timeout passes is answered `Cut` that did not
 // run, never sent, and one sent gives the engine what is left of it. The caller's abort ends a wait at once; once sent,
@@ -223,6 +225,10 @@ const run = (
     if (ctx.workspace !== undefined) callCtx.workspace = ctx.workspace;
 
     if (offeredTask || isMcpHostTaskRequest(call)) callCtx.allowTask = true;
+
+    // What the caller can answer goes on as it came: with the caller's `onInput`, which `engineHooks` passes on, it says
+    // the call may be asked questions. The host keeps no question or answer (`mcp-server-requests.md` → Questions).
+    if (ctx.answers !== undefined) callCtx.answers = ctx.answers;
 
     const sending = engineRequestOf(call, heldTool, callCtx);
 
