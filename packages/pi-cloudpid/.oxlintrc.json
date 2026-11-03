@@ -1,0 +1,35 @@
+{
+  "$schema": "../../node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["../../.oxlintrc.json"],
+  "rules": {
+    // The extension runs on the owner's laptop and bundles the SDK (docs/architecture/mcp-endpoint.md → The `/cloudpid`
+    // command), so the SDK rule of the Workers is off; what a laptop bundle must never reach is restricted instead.
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "group": ["cloudflare:*", "@cloudflare/**"],
+            "message": "pi-cloudpid runs on the owner's machine and must not import Workers code (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["alchemy", "alchemy/**", "@alchemy.run/**"],
+            "message": "pi-cloudpid must not import alchemy (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["@earendil-works/pi-durable", "@earendil-works/pi-durable/**"],
+            "message": "pi-cloudpid must not import pi-durable: it is the Workers side of cloudpid (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["@cloudpid/extensions", "@cloudpid/extensions/**"],
+            "message": "pi-cloudpid must not import @cloudpid/extensions (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["workerd", "workerd/**"],
+            "message": "pi-cloudpid must not import workerd (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          }
+        ]
+      }
+    ]
+  }
+}

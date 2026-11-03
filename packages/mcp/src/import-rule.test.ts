@@ -100,6 +100,32 @@ describe("only packages/mcp imports @modelcontextprotocol/*", () => {
   });
 });
 
+describe("packages/pi-cloudpid runs on the owner's machine", () => {
+  it("passes the SDK it bundles and what a laptop extension imports", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import { Client } from "@modelcontextprotocol/client";`, false],
+      [`import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],
+      [`import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";`, false],
+      [`import { spawn } from "node:child_process";`, false],
+    ]);
+  });
+
+  it("fails what belongs to the Workers side", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import { env } from "cloudflare:workers";`, true],
+      [`import type { Fetcher } from "@cloudflare/workers-types";`, true],
+      [`import { Computer } from "@cloudflare/computer";`, true],
+      [`import "workerd";`, true],
+      [`import { Resource } from "alchemy";`, true],
+      [`import { Worker } from "alchemy/cloudflare";`, true],
+      [`import { Worker } from "@alchemy.run/cloudflare";`, true],
+      [`import { Harness } from "@earendil-works/pi-durable";`, true],
+      [`import { Todo } from "@cloudpid/extensions/todo";`, true],
+      [`import { Todo } from "@cloudpid/extensions";`, true],
+    ]);
+  });
+});
+
 describe("apps/web imports types only from @modelcontextprotocol/ext-apps", () => {
   it("passes a type-only import and fails every other", async () => {
     await check("apps/web", [

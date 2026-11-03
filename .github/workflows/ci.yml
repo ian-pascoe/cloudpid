@@ -142,13 +142,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `check` does not build; the web app's bundle is what the server serves, so make sure it still builds.
+          # `check` does not build; the web app's bundle is what the server serves, and `/cloudpid`'s bundle (which also
+          # fails when it reaches Workers code) is what the `pi-cloudpid` job publishes: make sure both still build.
           - name: Typecheck, lint, format, build
             part: static
             run: >-
               bunx turbo run typecheck lint
               && bun run format:check
-              && bunx turbo run build --filter @cloudpid/web
+              && bunx turbo run build --filter @cloudpid/web --filter @cloudpid/pi-cloudpid
           - name: Tests
             part: tests
             run: bunx turbo run test --filter '!@cloudpid/server'
@@ -311,6 +312,71 @@ jobs:
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+
+  # Publishes the `/cloudpid` pi extension (`packages/pi-cloudpid`) once `Deploy prod` has succeeded, so a laptop never
+  # updates to an extension that is ahead of the endpoint it talks to (`docs/architecture/mcp-endpoint.md` → The
+  # `/cloudpid` command → Distribution): it builds `dist/` and appends one commit naming the `main` SHA to the orphan
+  # branch `pi-cloudpid`, which the owner installs with `pi install git:github.com/ian-pascoe/cloudpid@pi-cloudpid`.
+  # It holds no deploy credentials and no environment, and `contents: write` reaches only the push step (the checkout
+  # keeps no token, so install scripts never see it). It never force-pushes: a branch that moved meanwhile fails the push.
+  # The build is not a turbo task here: turbo's cache would replay a `dist/` that has an older commit built in.
+  pi-cloudpid:
+    name: Publish pi-cloudpid
+    needs: deploy
+    if: needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    # One publish at a time, in the order the deploys ran; never cancel one midway.
+    concurrency:
+      group: pi-cloudpid
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      # No dependency cache in a job that can write to the repository (cache poisoning).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun --cwd packages/pi-cloudpid run build
+        env:
+          PI_CLOUDPID_SHA: ${{ github.sha }}
+
+      # A commit on top of the branch's tip with `dist/` as its whole tree (or the first commit of the orphan branch).
+      - name: Append to the pi-cloudpid branch
+        run: |
+          set -euo pipefail
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::${auth#AUTHORIZATION: basic }"
+          publish="$RUNNER_TEMP/publish"
+          mkdir "$publish"
+          cd "$publish"
+          git init --quiet --initial-branch=pi-cloudpid
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          if git -c "http.extraheader=$auth" fetch --quiet --depth=1 origin pi-cloudpid; then
+            git reset --quiet --soft FETCH_HEAD
+          fi
+          cp -R "$GITHUB_WORKSPACE/packages/pi-cloudpid/dist/." .
+          git add --all
+          if git diff --cached --quiet; then
+            echo "pi-cloudpid already has this build."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "pi-cloudpid: build of main $GITHUB_SHA"
+          git -c "http.extraheader=$auth" push origin pi-cloudpid
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Deploys stage `pr-<number>` for a pull request from this repository, and destroys it when the pull request is closed
   # (https://alchemy.run/environments/ci/#how-pr-previews-work). Credentials come from the `preview` environment, which
