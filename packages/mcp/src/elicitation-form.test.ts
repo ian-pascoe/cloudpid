@@ -12,9 +12,12 @@ import {
   answeredFields,
   ELICITATION_BOUNDS,
   endsInCredential,
+  messageIsCut,
   normalizeElicitationForm,
   plainLine,
   plainMessage,
+  quote,
+  safeName,
   validateElicitation,
   type Entered,
   type JsonObject,
@@ -257,6 +260,13 @@ describe("the credential rule", () => {
     "tokens",
     "page_token",
     "new_API_secret",
+    "pass_word",
+    "pass-word",
+    "password2",
+    "password_value",
+    "token_field",
+    "api_key_2",
+    "ｐａｓｓｗｏｒｄ",
   ])("declines the free-text field %s", (name) => {
     expect(declines(name)).toBe(name);
   });
@@ -290,6 +300,12 @@ describe("the credential rule", () => {
     expect(declines("api_token", { type: "string", format: "uri" })).toBeUndefined();
   });
 
+  it("lets a word that only ends like a credential through", () => {
+    expect(endsInCredential("sword")).toBe(false);
+    expect(endsInCredential("pass")).toBe(false);
+    expect(endsInCredential("pass_the_word")).toBe(false);
+  });
+
   it("never checks the message or descriptions", () => {
     expect(declines("name", { type: "string", description: "Your password" })).toBeUndefined();
   });
@@ -299,6 +315,66 @@ describe("the credential rule", () => {
     expect(endsInCredential("HTTPSToken")).toBe(true);
     expect(endsInCredential("monkey")).toBe(false);
     expect(endsInCredential("")).toBe(false);
+  });
+});
+
+describe("names the server chooses", () => {
+  it("refuses a field name that is empty, has control characters, is long or has extra spaces", () => {
+    for (const name of ["", "a\u0007b", "a\u202Eb", "a  b", " a", "x".repeat(121)]) {
+      expect(reasonOf(objectOf({ [name]: { type: "string" } }))).toContain("a field has a name");
+    }
+  });
+
+  it("says when a message is cut", () => {
+    expect(messageIsCut("x".repeat(ELICITATION_BOUNDS.message))).toBe(false);
+    expect(messageIsCut("x".repeat(ELICITATION_BOUNDS.message + 1))).toBe(true);
+    expect(plainMessage("x".repeat(5000))).toHaveLength(ELICITATION_BOUNDS.message);
+  });
+
+  it("quotes a name it names in a reason without a quote, a tag or a backslash in it", () => {
+    expect(safeName("it's </harness> `x` \\ done")).toBe("its /harness x  done");
+    expect(quote("a'b")).toBe("'ab'");
+    expect(reasonOf(objectOf({ "a<b>'": { $ref: "#/x" } }))).toBe(
+      "'ab' uses $ref, which is not supported",
+    );
+  });
+
+  it("treats __proto__, constructor and toString as the fields they are", () => {
+    const form = formOf(
+      objectOf(
+        {
+          ["__proto__"]: { type: "string" },
+          constructor: { type: "string" },
+          toString: { type: "boolean" },
+        },
+        ["__proto__", "constructor"],
+      ),
+    ).form;
+
+    const entered: Entered = Object.fromEntries([
+      ["__proto__", "x"],
+      ["constructor", "y"],
+    ]);
+
+    const checked = validateElicitation(form, entered);
+
+    expect(Result.isSuccess(checked)).toBe(true);
+
+    if (Result.isFailure(checked)) return;
+
+    expect(Object.keys(checked.success)).toEqual(["__proto__", "constructor"]);
+    expect(Object.getPrototypeOf(checked.success)).toBe(Object.prototype);
+    expect(Object.hasOwn(checked.success, "toString")).toBe(false);
+    expect(answeredFields(form, checked.success)).toEqual(["__proto__", "constructor"]);
+
+    // A name the form lacks that only the prototype chain has is not a field either.
+    const lacking = validateElicitation(form, {});
+
+    expect(Result.isFailure(lacking) && lacking.failure["__proto__"]).toBe("is required");
+    expect(Result.isFailure(lacking) && Object.keys(lacking.failure)).toEqual([
+      "__proto__",
+      "constructor",
+    ]);
   });
 });
 

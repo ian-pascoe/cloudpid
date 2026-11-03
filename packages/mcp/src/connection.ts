@@ -51,13 +51,13 @@ import * as Clock from "effect/Clock";
 import type * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import type { Mutable } from "effect/Types";
 import { authChallenge, classify, type Failure, signInRequired } from "./failures.ts";
+import { type PausableDeadline, pausableDeadline } from "./deadline.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
 import { MCP_LOG_LEVEL } from "./log.ts";
 import { CALL_HEADER, type TapObserver, tapFetch, Ties, Verdicts } from "./tap.ts";
@@ -257,72 +257,6 @@ export interface CallToolParams {
   readonly tool: Tool;
   readonly arguments?: Readonly<Record<string, Schema.Json>>;
 }
-
-/**
- * A `tools/call`'s timeout, which a question's wait pauses (`mcp-server-requests.md` → Questions) and a progress notice
- * starts again from the whole: `signal` aborts with the SDK's own timeout error when it runs out. Its timer is a fiber
- * on Effect's clock, so a test clock moves it.
- */
-const pausableDeadline = (ms: number) => deadlineOver(new AbortController(), ms);
-
-const deadlineOver = Effect.fnUntraced(function* (controller: AbortController, ms: number) {
-  let remaining = ms;
-  let startedAt = yield* Clock.currentTimeMillis;
-  let paused = 0;
-  let timer: Fiber.Fiber<void> | undefined;
-
-  const stop = Effect.suspend(() => {
-    const running = timer;
-
-    timer = undefined;
-
-    return running === undefined ? Effect.void : Fiber.interrupt(running);
-  });
-
-  const arm = (delay: number) =>
-    Effect.gen(function* () {
-      startedAt = yield* Clock.currentTimeMillis;
-      timer = yield* Effect.sleep(Duration.millis(delay)).pipe(
-        Effect.andThen(
-          Effect.sync(() =>
-            controller.abort(
-              new SdkError(SdkErrorCode.RequestTimeout, "Request timed out", { timeout: ms }),
-            ),
-          ),
-        ),
-        Effect.forkDetach,
-      );
-    });
-
-  yield* arm(ms);
-
-  return {
-    signal: controller.signal,
-    /** Stops the clock; every `pause` needs its `resume`. */
-    pause: Effect.gen(function* () {
-      paused += 1;
-
-      if (paused === 1) {
-        yield* stop;
-        remaining -= (yield* Clock.currentTimeMillis) - startedAt;
-      }
-    }),
-    resume: Effect.suspend(() => {
-      paused = Math.max(0, paused - 1);
-
-      return paused === 0 && !controller.signal.aborted ? arm(Math.max(1, remaining)) : Effect.void;
-    }),
-    /** Progress: the whole timeout again, from now. */
-    reset: Effect.suspend(() => {
-      remaining = ms;
-
-      return paused === 0 && !controller.signal.aborted
-        ? Effect.andThen(stop, arm(ms))
-        : Effect.void;
-    }),
-    clear: stop,
-  };
-});
 
 /** The most the SDK's own timer may be given: the core's deadline is the one that ends a call. */
 const SDK_TIMER_MAX_MS = 2_147_483_647;
@@ -1079,22 +1013,61 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     params: CallToolParams,
     ctx: McpCallContext,
   ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
-    request<CallSent>(
-      (client, signal) =>
-        offersTask(ctx)
-          ? callOnTaskWire(params, ctx, signal).then(
-              (answer) => ({ kind: "wire", answer }) as const,
-            )
-          : callOnClient(client, params, ctx, signal).then(
-              (value) => ({ kind: "client", value }) as const,
-            ),
-      true,
-      { declared: () => offersTask(ctx) },
-    ).pipe(
-      Effect.flatMap((sent): Effect.Effect<Outcome<CallToolResult>, McpError> =>
-        sent.kind === "wire" ? readCallAnswer(sent.answer) : completeCall(sent.value),
-      ),
-    );
+    Effect.gen(function* () {
+      const timeoutMs = target.timeoutMs ?? CALL_TIMEOUT_MS;
+      const token = `c${(callCount += 1)}`;
+      const { answers } = ctx;
+
+      // A Legacy `tools/call` whose caller can answer elicitations is tied to its questions by a header the tap strips,
+      // and has a clock of its own that a question's wait can stop. Every other call keeps the SDK's timeout, as before.
+      const askable =
+        live.era === "legacy" && deps.onInput !== undefined && answers?.elicitation === true;
+
+      const deadline = askable
+        ? yield* pausableDeadline(
+            timeoutMs,
+            () =>
+              new SdkError(SdkErrorCode.RequestTimeout, "Request timed out", {
+                timeout: timeoutMs,
+              }),
+          )
+        : undefined;
+
+      if (askable && deadline !== undefined) {
+        asking.set(token, {
+          waitMs: answers.inputWaitMs ?? MCP_ELICITATION_WAIT_MS,
+          pause: deadline.pause,
+          resume: deadline.resume,
+        });
+      }
+
+      const own = deadline === undefined ? undefined : { deadline, token };
+
+      const sent = yield* request<CallSent>(
+        (client, signal) =>
+          offersTask(ctx)
+            ? callOnTaskWire(params, ctx, signal).then(
+                (answer) => ({ kind: "wire", answer }) as const,
+              )
+            : callOnClient(client, params, ctx, signal, own).then(
+                (value) => ({ kind: "client", value }) as const,
+              ),
+        true,
+        { declared: () => offersTask(ctx) },
+      ).pipe(
+        Effect.ensuring(
+          Effect.andThen(
+            deadline === undefined ? Effect.void : deadline.clear,
+            Effect.sync(() => {
+              asking.delete(token);
+              ties.release(token);
+            }),
+          ),
+        ),
+      );
+
+      return yield* sent.kind === "wire" ? readCallAnswer(sent.answer) : completeCall(sent.value);
+    });
 
   const completeCall = (value: CallToolResult) =>
     Effect.map(
@@ -1113,6 +1086,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     params: CallToolParams,
     ctx: McpCallContext,
     signal: AbortSignal,
+    own: { readonly deadline: PausableDeadline; readonly token: string } | undefined,
   ) => {
     const call: CallToolRequestParams = {
       name: params.tool.name,
@@ -1125,19 +1099,41 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       call._meta = meta;
     }
 
+    const timeoutMs = target.timeoutMs ?? CALL_TIMEOUT_MS;
+
     const options: CallToolRequestOptions = {
-      signal,
-      timeout: target.timeoutMs ?? CALL_TIMEOUT_MS,
-      resetTimeoutOnProgress: true,
+      signal: own === undefined ? signal : AbortSignal.any([signal, own.deadline.signal]),
+      // The deadline's is the one that ends a call with a clock of its own: the SDK's own timer is given the most it takes.
+      timeout: own === undefined ? timeoutMs : SDK_TIMER_MAX_MS,
       // Without `outputSchema`, so the SDK checks no `structuredContent`: the engine does (D17). With the
       // definition given, the SDK rethrows a `-32020` header mismatch rather than refreshing `tools/list`: the
       // refresh and one retry (D14) belong to the catalog's owner, the engine, so it surfaces as `ServerError`.
       toolDefinition: Struct.omit(params.tool, ["outputSchema"]),
     };
 
-    if (deps.onProgress !== undefined) options.onprogress = progressOf(deps.onProgress);
+    if (own === undefined) options.resetTimeoutOnProgress = true;
 
-    return client.callTool(call, options);
+    if (deps.onProgress !== undefined) {
+      const progress = progressOf(deps.onProgress);
+
+      // With a deadline of its own, each notice starts the call's timeout again from the whole.
+      options.onprogress =
+        own === undefined
+          ? progress
+          : (notice) => {
+              Effect.runForkWith(context)(own.deadline.reset);
+              progress(notice);
+            };
+    }
+
+    if (own === undefined) return client.callTool(call, options);
+
+    options.headers = { [CALL_HEADER]: own.token };
+
+    // Each attempt (a request sent again after the server dropped its session or the era) has the whole timeout.
+    return Effect.runPromiseWith(context)(own.deadline.reset).then(() =>
+      client.callTool(call, options),
+    );
   };
 
   /**

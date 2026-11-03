@@ -19,6 +19,8 @@ import { JsonObject } from "./json.ts";
 import { McpLogEntry } from "./log.ts";
 import { McpAuthChallenge } from "./sign-in.ts";
 
+export * from "./deadline.ts";
+
 export * from "./elicitation.ts";
 
 export * from "./host.ts";
@@ -36,13 +38,12 @@ export type McpCallOrigin = typeof McpCallOrigin.Type;
 
 /**
  * What a caller can answer (`docs/architecture/mcp-server-requests.md` → Questions): the kinds of question the call's
- * `onInput` takes, and how long a Legacy question may wait for the owner (`inputWaitMs`, the largest of the kinds
+ * `onInput` takes (elicitation so far), and how long a Legacy question may wait for the owner (`inputWaitMs`, the largest of the kinds
  * offered). The core declares to the server only what is offered here, and a callback's presence is the other half of
  * the version-skew gate (`docs/architecture/mcp.md` → Deploys: `ctx.answers`).
  */
 export const McpAnswers = Schema.Struct({
   elicitation: Schema.optionalKey(Schema.Boolean),
-  sampling: Schema.optionalKey(Schema.Boolean),
   inputWaitMs: Schema.optionalKey(Schema.Finite),
 });
 

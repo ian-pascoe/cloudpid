@@ -31,9 +31,6 @@ export const MCP_ELICITATION_WAIT_MS = 10 * 60 * 1000;
 /** The most requests of this kind one call may make (the Session cancels the rest). */
 export const MCP_ELICITATIONS_PER_CALL = 10;
 
-/** A question's kind: the core answers roots itself, and passes the rest to the call's `onInput`. */
-export const McpInputKind = Schema.Literals(["elicitation", "sampling", "roots"]);
-
 /**
  * A server's question, as the core surfaces it to a call's `onInput` (`mcp-server-requests.md` → Questions). `key` names
  * it within its call; `params` are the server's own parameters (an elicitation's `message` and `requestedSchema`);
@@ -42,7 +39,7 @@ export const McpInputKind = Schema.Literals(["elicitation", "sampling", "roots"]
  */
 export const McpInputRequest = Schema.Struct({
   key: Schema.String,
-  kind: McpInputKind,
+  kind: Schema.Literal("elicitation"),
   params: JsonObject,
   mode: Schema.Literals(["live", "deferrable"]),
 });
@@ -125,6 +122,21 @@ const cut = (text: string, max: number) =>
 export const plainLine = (text: string, max: number): string =>
   cut(text.replace(UNSAFE_CHARS, "").replace(/\s+/g, " ").trim(), max);
 
+/**
+ * `text`, a server's name for a field or the like, as one short line that is safe to put between quotes in words the
+ * model reads: plain text, cut to `max`, with the quote marks, angle brackets and backslashes it could close a quote or
+ * open a tag with dropped.
+ */
+export const safeName = (text: string, max = 60): string =>
+  plainLine(text, max).replace(/[<>'`\\]/g, "");
+
+/** `text` as a field's name between quotes, in words the model or the owner reads. */
+export const quote = (text: string): string => `'${safeName(text)}'`;
+
+/** Whether a server's message is longer than the owner is shown (`plainMessage` cuts it, and a note says so). */
+export const messageIsCut = (text: string): boolean =>
+  text.replace(UNSAFE_CHARS, "").trim().length > ELICITATION_BOUNDS.message;
+
 /** A server's message, which may span lines: no control or bidi-override characters (newlines kept), cut to 4,000. */
 export const plainMessage = (text: string): string =>
   cut(text.replace(UNSAFE_CHARS, "").replace(/\r\n?/g, "\n").trim(), ELICITATION_BOUNDS.message);
@@ -155,18 +167,28 @@ const CREDENTIAL_PHRASES: ReadonlySet<string> = new Set([
 /** `text` as lowercase words, split at `_`, `-`, spaces, camelCase and acronym runs (`APIKey` → `api key`). */
 const wordsOf = (text: string): ReadonlyArray<string> =>
   text
+    .normalize("NFKC")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .split(/[^A-Za-z0-9]+/)
     .filter((word) => word !== "")
-    .map((word) => word.toLowerCase());
+    .map((word) => word.toLowerCase().replace(/\d+$/, ""))
+    .filter((word) => word !== "");
+
+/** Words a name may end in without changing what it asks for: `password_value`, `token_field`. */
+const FILLER_WORDS: ReadonlySet<string> = new Set(["value", "field", "input", "text", "entry"]);
 
 /** `word`, or its singular when it is a plural. */
 const singular = (word: string) => (word.endsWith("s") ? word.slice(0, -1) : word);
 
-/** Whether `text`, a field's name or title, ends in a credential word or phrase (or a plural of one). */
+/**
+ * Whether `text`, a field's name or title, ends in a credential word or phrase (or a plural of one). Trailing digits
+ * (`password2`), filler words (`password_value`) and a word split in two (`pass_word`) do not hide one.
+ */
 export const endsInCredential = (text: string): boolean => {
-  const words = wordsOf(text);
+  const all = wordsOf(text);
+  const trimmed = Arr.dropWhile(Arr.reverse(all), (word) => FILLER_WORDS.has(word));
+  const words = Arr.reverse(trimmed);
   const last = words.at(-1);
 
   if (last === undefined) return false;
@@ -175,10 +197,12 @@ export const endsInCredential = (text: string): boolean => {
 
   const before = words.at(-2);
 
+  if (before === undefined) return false;
+
   return (
-    before !== undefined &&
-    (CREDENTIAL_PHRASES.has(`${before} ${last}`) ||
-      CREDENTIAL_PHRASES.has(`${before} ${singular(last)}`))
+    CREDENTIAL_PHRASES.has(`${before} ${last}`) ||
+    CREDENTIAL_PHRASES.has(`${before} ${singular(last)}`) ||
+    CREDENTIAL_WORDS.has(`${before}${last}`)
   );
 };
 
@@ -285,7 +309,7 @@ const optionsOf = (name: string, raw: ReadonlyArray<Schema.Json>, notes: Notes) 
       ? { value: entry, title: entry }
       : isJsonObject(entry) && Predicate.isString(entry["const"])
         ? { value: entry["const"], title: textOf(entry, "title") ?? entry["const"] }
-        : refuse(`'${name}' has an option that is not a string`);
+        : refuse(`${quote(name)} has an option that is not a string`);
 
     if (!seen.has(choice.value)) {
       seen.add(choice.value);
@@ -296,14 +320,14 @@ const optionsOf = (name: string, raw: ReadonlyArray<Schema.Json>, notes: Notes) 
     }
   }
 
-  if (raw.length === 0) refuse(`'${name}' has no options`);
+  if (raw.length === 0) refuse(`${quote(name)} has no options`);
 
   if (options.length > ELICITATION_BOUNDS.options) {
-    refuse(`'${name}' has more than ${ELICITATION_BOUNDS.options} options`);
+    refuse(`${quote(name)} has more than ${ELICITATION_BOUNDS.options} options`);
   }
 
   if (options.length < raw.length) {
-    notes.lines.push(`'${name}' listed an option twice; the repeats were dropped`);
+    notes.lines.push(`${quote(name)} listed an option twice; the repeats were dropped`);
   }
 
   return options;
@@ -325,7 +349,9 @@ const titled = (
     names.length !== options.length ||
     !Arr.every(names, Predicate.isString)
   ) {
-    notes.lines.push(`'${name}' has enumNames that do not match its enum; the values are shown`);
+    notes.lines.push(
+      `${quote(name)} has enumNames that do not match its enum; the values are shown`,
+    );
 
     return options;
   }
@@ -340,7 +366,7 @@ const stringField = (name: string, property: JsonObject, notes: Notes, common: C
   const raw = listOf(property, "enum") ?? listOf(property, "oneOf");
 
   if (raw === undefined && (property["enum"] !== undefined || property["oneOf"] !== undefined)) {
-    return refuse(`'${name}' has an enum that is not a list`);
+    return refuse(`${quote(name)} has an enum that is not a list`);
   }
 
   if (raw !== undefined) {
@@ -351,7 +377,9 @@ const stringField = (name: string, property: JsonObject, notes: Notes, common: C
     if (given !== undefined && Arr.some(options, (option) => option.value === given)) {
       field.default = given;
     } else if (property["default"] !== undefined) {
-      notes.lines.push(`'${name}' has a default that is not one of its options; it was dropped`);
+      notes.lines.push(
+        `${quote(name)} has a default that is not one of its options; it was dropped`,
+      );
     }
 
     return { field, freeText: property["writeOnly"] === true };
@@ -362,7 +390,7 @@ const stringField = (name: string, property: JsonObject, notes: Notes, common: C
 
   if (format !== undefined && kind === undefined && format !== "password") {
     notes.lines.push(
-      `'${name}' has an unknown format '${plainLine(format, 40)}'; it is shown as plain text`,
+      `${quote(name)} has an unknown format ${quote(format)}; it is shown as plain text`,
     );
   }
 
@@ -373,7 +401,7 @@ const stringField = (name: string, property: JsonObject, notes: Notes, common: C
 
     if (bound !== undefined) field[key] = bound;
     else if (property[key] !== undefined) {
-      notes.lines.push(`'${name}' has a ${key} that is not a count; it was ignored`);
+      notes.lines.push(`${quote(name)} has a ${key} that is not a count; it was ignored`);
     }
   }
 
@@ -382,7 +410,7 @@ const stringField = (name: string, property: JsonObject, notes: Notes, common: C
   if (given !== undefined && (field.maxLength === undefined || given.length <= field.maxLength)) {
     field.default = given;
   } else if (property["default"] !== undefined) {
-    notes.lines.push(`'${name}' has a default that does not fit it; it was dropped`);
+    notes.lines.push(`${quote(name)} has a default that does not fit it; it was dropped`);
   }
 
   return { field, freeText: kind === undefined };
@@ -405,7 +433,7 @@ const numberField = (
 
     if (bound !== undefined) field[to] = bound;
     else if (property[key] !== undefined) {
-      notes.lines.push(`'${name}' has a ${key} that is not a number; it was ignored`);
+      notes.lines.push(`${quote(name)} has a ${key} that is not a number; it was ignored`);
     }
   }
 
@@ -419,7 +447,7 @@ const numberField = (
   ) {
     field.default = given;
   } else if (property["default"] !== undefined) {
-    notes.lines.push(`'${name}' has a default that does not fit it; it was dropped`);
+    notes.lines.push(`${quote(name)} has a default that does not fit it; it was dropped`);
   }
 
   return { field, freeText: false };
@@ -435,7 +463,7 @@ const multiField = (name: string, property: JsonObject, notes: Notes, common: Co
     raw === undefined ||
     (itemType !== undefined && itemType !== "string")
   ) {
-    return refuse(`'${name}' is a list of something other than choices`);
+    return refuse(`${quote(name)} is a list of something other than choices`);
   }
 
   const options = titled(name, items, optionsOf(name, raw, notes), notes);
@@ -446,7 +474,7 @@ const multiField = (name: string, property: JsonObject, notes: Notes, common: Co
 
     if (bound !== undefined) field[key] = bound;
     else if (property[key] !== undefined) {
-      notes.lines.push(`'${name}' has a ${key} that is not a count; it was ignored`);
+      notes.lines.push(`${quote(name)} has a ${key} that is not a count; it was ignored`);
     }
   }
 
@@ -462,10 +490,10 @@ const multiField = (name: string, property: JsonObject, notes: Notes, common: Co
     ) {
       field.default = chosen;
     } else {
-      notes.lines.push(`'${name}' has a default that does not fit it; it was dropped`);
+      notes.lines.push(`${quote(name)} has a default that does not fit it; it was dropped`);
     }
   } else if (property["default"] !== undefined) {
-    notes.lines.push(`'${name}' has a default that does not fit it; it was dropped`);
+    notes.lines.push(`${quote(name)} has a default that does not fit it; it was dropped`);
   }
 
   return { field, freeText: false };
@@ -485,10 +513,11 @@ const readField = (
   required: boolean,
   notes: Notes,
 ): Read => {
-  if (!isJsonObject(property)) return refuse(`'${name}' is not a schema`);
+  if (!isJsonObject(property)) return refuse(`${quote(name)} is not a schema`);
 
   for (const keyword of REFUSED_KEYWORDS) {
-    if (keyword in property) return refuse(`'${name}' uses ${keyword}, which is not supported`);
+    if (keyword in property)
+      return refuse(`${quote(name)} uses ${keyword}, which is not supported`);
   }
 
   for (const key of Object.keys(property)) if (!KNOWN_KEYWORDS.has(key)) notes.ignored.add(key);
@@ -521,7 +550,7 @@ const readField = (
 
     if (Predicate.isBoolean(given)) field.default = given;
     else if (given !== undefined) {
-      notes.lines.push(`'${name}' has a default that is not true or false; it was dropped`);
+      notes.lines.push(`${quote(name)} has a default that is not true or false; it was dropped`);
     }
 
     return { field, freeText: false };
@@ -531,8 +560,8 @@ const readField = (
 
   return refuse(
     type === undefined
-      ? `'${name}' has no type`
-      : `'${name}' has a type that is not supported (${Predicate.isString(type) ? plainLine(type, 20) : "not a name"})`,
+      ? `${quote(name)} has no type`
+      : `${quote(name)} has a type that is not supported (${Predicate.isString(type) ? safeName(type, 20) : "not a name"})`,
   );
 };
 
@@ -578,6 +607,15 @@ export const normalizeElicitationForm = (
     return Result.fail(`it has more than ${ELICITATION_BOUNDS.fields} fields`);
   }
 
+  // A name is the key the server reads the answer by, so it is never cleaned: one that is not plain is malformed.
+  if (
+    Arr.some(names, (name) => name === "" || plainLine(name, ELICITATION_BOUNDS.title) !== name)
+  ) {
+    return Result.fail(
+      `a field has a name that is empty, over ${ELICITATION_BOUNDS.title} characters, or has control characters or extra spaces`,
+    );
+  }
+
   const required = requested["required"] ?? [];
 
   if (!isJsonArray(required)) return Result.fail("its required is not a list of names");
@@ -589,7 +627,7 @@ export const normalizeElicitationForm = (
   const missing = Arr.findFirst(named, (name) => !names.includes(name));
 
   if (Option.isSome(missing)) {
-    return Result.fail(`it requires '${plainLine(missing.value, 60)}', which is not a property`);
+    return Result.fail(`it requires ${quote(missing.value)}, which is not a property`);
   }
 
   const notes: Notes = { lines: [], ignored: new Set() };
@@ -622,7 +660,7 @@ export const normalizeElicitationForm = (
   if (notes.ignored.size > 0) {
     notes.lines.push(
       `ignored keywords: ${Arr.join(
-        Arr.map(Arr.take([...notes.ignored], 10), (key) => plainLine(key, 30)),
+        Arr.map(Arr.take([...notes.ignored], 10), (key) => safeName(key, 30)),
         ", ",
       )}`,
     );
@@ -809,38 +847,41 @@ export const validateElicitation = (
   form: ElicitationForm,
   values: Entered,
 ): Result.Result<ElicitationContent, ElicitationErrors> => {
-  const errors: Record<string, string> = {};
-  const content: Record<string, ElicitationContent[string]> = {};
+  // Built from entries, never by assigning to a name: a field called `__proto__` is a field, not a prototype.
+  const errors: Array<readonly [string, string]> = [];
+  const content: Array<readonly [string, ElicitationContent[string]]> = [];
 
   for (const name of Object.keys(values)) {
     if (!Arr.some(form.fields, (field) => field.name === name)) {
-      errors[name] = "is not a field of this form";
+      errors.push([name, "is not a field of this form"]);
     }
   }
 
   for (const field of form.fields) {
-    const value = values[field.name];
+    const value = Object.hasOwn(values, field.name) ? values[field.name] : undefined;
 
     if (field.kind === "boolean" ? value === undefined : isEmpty(value)) {
-      if (field.required) errors[field.name] = "is required";
+      if (field.required) errors.push([field.name, "is required"]);
 
       continue;
     }
 
     const checked = checkField(field, value);
 
-    if ("problem" in checked) errors[field.name] = checked.problem;
-    else content[field.name] = checked.value;
+    if ("problem" in checked) errors.push([field.name, checked.problem]);
+    else content.push([field.name, checked.value]);
   }
+
+  const answered: ElicitationContent = Object.fromEntries(content);
 
   if (
-    Object.keys(errors).length === 0 &&
-    byteLength(JSON.stringify(content)) > ELICITATION_BOUNDS.answerBytes
+    errors.length === 0 &&
+    byteLength(JSON.stringify(answered)) > ELICITATION_BOUNDS.answerBytes
   ) {
-    errors[""] = "the answer is over 64 KiB";
+    errors.push(["", "the answer is over 64 KiB"]);
   }
 
-  return Object.keys(errors).length === 0 ? Result.succeed(content) : Result.fail(errors);
+  return errors.length === 0 ? Result.succeed(answered) : Result.fail(Object.fromEntries(errors));
 };
 
 /** The names of the fields `content` answers, in the form's order: all a record keeps of an answer, never a value. */
@@ -849,6 +890,6 @@ export const answeredFields = (
   content: ElicitationContent,
 ): ReadonlyArray<string> =>
   Arr.map(
-    Arr.filter(form.fields, (field) => field.name in content),
+    Arr.filter(form.fields, (field) => Object.hasOwn(content, field.name)),
     (field) => field.name,
   );

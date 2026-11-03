@@ -7,7 +7,7 @@
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import { AGENT, memoryStore, run, TARGET, testDeps } from "./core.fixture.ts";
+import { AGENT, completed, memoryStore, run, TARGET, testDeps } from "./core.fixture.ts";
 import {
   ASK_TOOL,
   type FakeServer,
@@ -66,7 +66,9 @@ const call = (deps: McpDeps, ctx: McpCallContext, timeoutMs?: number) =>
 
 const textOf = (outcome: Awaited<ReturnType<typeof call>>) =>
   Result.isSuccess(outcome)
-    ? outcome.success.value.content.map((block) => (block.type === "text" ? block.text : ""))
+    ? completed(outcome.success).value.content.map((block) =>
+        block.type === "text" ? block.text : "",
+      )
     : [];
 
 describe("a Legacy server's elicitation", () => {
