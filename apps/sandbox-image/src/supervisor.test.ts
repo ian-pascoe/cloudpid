@@ -408,18 +408,20 @@ describe("the supervisor's memory guard", () => {
 
 /**
  * A fake node for the bridge: it records its arguments, the token it was given and its pid, says it is up, and runs
- * until it is stopped, as the bridge does. The bridge's script is any file.
+ * until it is stopped, as the bridge does. The bridge's script is any file. The supervisor stops the bridge as soon as
+ * computerd exits, so a test reads the records only after `computerd` has waited for `up`, the file written last.
  */
 const fakeBridgeNode = () => {
   const dir = mkdtempSync(join(tmpdir(), "bridge-"));
   const node = join(dir, "node");
   const record = join(dir, "record");
   const pid = join(dir, "pid");
+  const up = join(dir, "up");
   const script = join(dir, "bridge.ts");
 
   writeFileSync(
     node,
-    `#!/bin/bash\nprintf '%s\\n' "$@" "token=$${MCP_BRIDGE_TOKEN_ENV}" >${record}\necho $$ >${pid}\necho "bridge up"\nexec sleep 600\n`,
+    `#!/bin/bash\nprintf '%s\\n' "$@" "token=$${MCP_BRIDGE_TOKEN_ENV}" >${record}\necho $$ >${pid}\n: >${up}\necho "bridge up"\nexec sleep 600\n`,
   );
   chmodSync(node, 0o755);
   writeFileSync(script, "// a bridge");
@@ -428,6 +430,8 @@ const fakeBridgeNode = () => {
     record,
     pid,
     script,
+    /** Bash for a fake computerd: waits (30 s at most) for the bridge to have written its records. */
+    untilUp: `for _ in $(seq 1 600); do [ -e ${up} ] && break; sleep 0.05; done; [ -e ${up} ] || { echo "the bridge never came up" >&2; exit 99; }`,
     env: { CLOUDPID_MCP_BRIDGE_NODE: node, CLOUDPID_MCP_BRIDGE: script },
   };
 };
@@ -441,7 +445,7 @@ describe("the supervisor's MCP bridge", () => {
   it("runs the bridge beside computerd when the launch has a token, its lines where computerd's go, and stops it with computerd", async () => {
     const { reports, port } = await reportServer();
     const bridge = fakeBridgeNode();
-    const computerd = fakeComputerd('sleep 0.5; echo "computerd out"; exit 1');
+    const computerd = fakeComputerd(`${bridge.untilUp}; echo "computerd out"; exit 1`);
 
     const run = await supervise(computerd, port, undefined, {
       ...bridge.env,
@@ -462,7 +466,9 @@ describe("the supervisor's MCP bridge", () => {
     const { port } = await reportServer();
     const bridge = fakeBridgeNode();
 
-    const computerd = fakeComputerd(`echo "token=[$${MCP_BRIDGE_TOKEN_ENV}]"; exit 0`);
+    const computerd = fakeComputerd(
+      `${bridge.untilUp}; echo "token=[$${MCP_BRIDGE_TOKEN_ENV}]"; exit 0`,
+    );
 
     const run = await supervise(computerd, port, undefined, {
       ...bridge.env,
@@ -479,7 +485,7 @@ describe("the supervisor's MCP bridge", () => {
     const bridge = fakeBridgeNode();
 
     const computerd = fakeComputerd(
-      'trap "exit 0" TERM; sleep 0.5; echo ready; while :; do sleep 0.1; done',
+      `trap "exit 0" TERM; ${bridge.untilUp}; echo ready; while :; do sleep 0.1; done`,
     );
 
     const run = await supervise(computerd, port, "SIGTERM", {
