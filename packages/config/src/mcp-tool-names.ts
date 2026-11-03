@@ -30,9 +30,10 @@ export const MCP_RESOURCE_TOOL_NAMES = [
   "read_mcp_resource",
 ] as const;
 
+const RESOURCE_TOOL_NAME_SET: ReadonlySet<string> = new Set(MCP_RESOURCE_TOOL_NAMES);
+
 /** Whether `name` is one of the resource tools. */
-export const isMcpResourceToolName = (name: string): boolean =>
-  MCP_RESOURCE_TOOL_NAMES.some((each) => each === name);
+export const isMcpResourceToolName = (name: string): boolean => RESOURCE_TOOL_NAME_SET.has(name);
 
 /**
  * Whether the `mcp` extension owns the tool `name`: an MCP tool or a resource tool. Its Exposure, not the settings'

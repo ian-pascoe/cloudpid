@@ -302,8 +302,9 @@ export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostA
  * - `resources`: the host answers `request({ op: "resources/list" | "resources/templates/list" | "resources/read" })`
  *   (`docs/architecture/mcp-in-a-session.md` → Resource tools).
  *
- * The Session side's own list, `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`), names those of these its MCP tools
- * need; a feature added here reaches the Session only once that list names it.
+ * The Session side names those of these its MCP tools use: `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`) the ones
+ * they cannot be built without, `MCP_OPTIONAL_TOOL_FEATURES` the ones it does without when the host lacks them (`resources`).
+ * A feature added here reaches the Session only once one of those lists names it.
  */
 export const MCP_HOST_FEATURES: ReadonlyArray<string> = [
   "inventory",
