@@ -24,15 +24,15 @@ export const isMcpToolName = (name: string): boolean => name.startsWith(MCP_TOOL
  * mcp-in-a-session.md` → Resource tools): snake_case like every tool, and not `mcp__`-prefixed since they are not any
  * one server's.
  */
-export const MCP_RESOURCE_TOOL_NAMES: ReadonlyArray<string> = [
+export const MCP_RESOURCE_TOOL_NAMES = [
   "list_mcp_resources",
   "list_mcp_resource_templates",
   "read_mcp_resource",
-];
+] as const;
 
 /** Whether `name` is one of the resource tools. */
 export const isMcpResourceToolName = (name: string): boolean =>
-  MCP_RESOURCE_TOOL_NAMES.includes(name);
+  MCP_RESOURCE_TOOL_NAMES.some((each) => each === name);
 
 /**
  * Whether the `mcp` extension owns the tool `name`: an MCP tool or a resource tool. Its Exposure, not the settings'

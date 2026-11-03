@@ -959,6 +959,9 @@ export type McpHostTaskCancel = typeof McpHostTaskCancel.Type;
 /** The MIME type of an MCP App's HTML, which a `ui://` resource's one content item must have exactly. */
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
+/** What marks a resource's MIME type as an MCP App's: the lists leave such a resource out. */
+export const MCP_APP_PROFILE = "profile=mcp-app";
+
 /** The most an App's HTML may weigh, as text. */
 export const MCP_APP_HTML_MAX_BYTES = 4 * MiB;
 

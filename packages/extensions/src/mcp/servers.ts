@@ -64,15 +64,12 @@ const hashOf = (text: string): string => sha256Hex(text).slice(0, 32);
 /** The listing of no server. */
 export const EMPTY_LISTING: McpListing = { text: "", hash: hashOf("") };
 
-/** The three resource tools: the intro names them only when the `mcp` extension registers them. */
-export const MCP_RESOURCE_TOOLS: ReadonlyArray<string> = MCP_RESOURCE_TOOL_NAMES;
-
 /** Which tools the intro may name: those the build registers. Each sentence about one is added in `mcpServersIntro`. */
 export type McpIntroFeatures = { readonly resourceTools: boolean; readonly signIn: boolean };
 
 /** The intro's features for an `mcp` extension that registers tools `names`. */
 export const introFeaturesOf = (names: ReadonlyArray<string>): McpIntroFeatures => ({
-  resourceTools: Arr.every(MCP_RESOURCE_TOOLS, (tool) => names.includes(tool)),
+  resourceTools: Arr.every(MCP_RESOURCE_TOOL_NAMES, (tool) => names.includes(tool)),
   signIn: names.includes(MCP_SIGN_IN_TOOL),
 });
 

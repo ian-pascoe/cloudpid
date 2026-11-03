@@ -30,6 +30,7 @@ import {
   NotAllowed,
   ProtocolViolation,
 } from "@cloudpid/mcp/types";
+import { sha256Hex } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -60,19 +61,6 @@ const decodeResourceRequest = Schema.decodeUnknownOption(McpHostResourceRequest)
 
 const decodeEra = Schema.decodeUnknownOption(EraRowV1);
 
-/** The lowercase hex of the SHA-256 of `text`. */
-const sha256Hex = (text: string) =>
-  Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))).pipe(
-    Effect.map((digest) =>
-      Arr.join(
-        Arr.map(Arr.fromIterable(new Uint8Array(digest)), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ),
-        "",
-      ),
-    ),
-  );
-
 /** `fields` of an object, sorted by key, so the same object always hashes alike. */
 const sortedEntries = (fields: Readonly<Record<string, string>> | undefined) =>
   Arr.sort(
@@ -86,10 +74,7 @@ const sortedEntries = (fields: Readonly<Record<string, string>> | undefined) =>
  * another, and a change of a Secret or a Variable is a new context. A stdio server has no token: its context is what it
  * is run with.
  */
-export const authContextOf = (
-  target: McpEngineTarget,
-  token: string | undefined,
-): Effect.Effect<string> =>
+export const authContextOf = (target: McpEngineTarget, token: string | undefined): string =>
   sha256Hex(
     JSON.stringify(
       target.kind === "http"
@@ -193,7 +178,7 @@ const listPage = (
     // The token the engine would send first: the hook may renew one that has expired, as the engine's call would.
     const token = reached.access.auth === undefined ? undefined : yield* reached.access.auth(false);
 
-    const auth = yield* authContextOf(reached.target, token);
+    const auth = authContextOf(reached.target, token);
     const key = Arr.join([conn, workspace ?? "", auth, op, cursor ?? ""], "\0");
     const before = eraOf(store.prior(conn, workspace).era);
     const now = yield* Clock.currentTimeMillis;

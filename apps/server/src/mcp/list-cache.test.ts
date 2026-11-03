@@ -236,18 +236,18 @@ describe("the auth context", () => {
     ({ kind: "http", conn: "c", name: "docs", url, headers }) as const;
 
   const of = (target: Parameters<typeof authContextOf>[0], token?: string) =>
-    Effect.runPromise(authContextOf(target, token));
+    authContextOf(target, token);
 
   it("is a SHA-256 that differs by URL, token and each header, and not by the order of the headers", async () => {
-    const base = await of(http("https://a.test/mcp", { A: "1", B: "2" }), "tok");
+    const base = of(http("https://a.test/mcp", { A: "1", B: "2" }), "tok");
 
     expect(base).toMatch(/^[0-9a-f]{64}$/);
-    expect(await of(http("https://a.test/mcp", { B: "2", A: "1" }), "tok")).toBe(base);
-    expect(await of(http("https://b.test/mcp", { A: "1", B: "2" }), "tok")).not.toBe(base);
-    expect(await of(http("https://a.test/mcp", { A: "1", B: "2" }), "other")).not.toBe(base);
-    expect(await of(http("https://a.test/mcp", { A: "1", B: "2" }))).not.toBe(base);
-    expect(await of(http("https://a.test/mcp", {}), "tok")).not.toBe(base);
-    expect(await of(http("https://a.test/mcp", { A: "1", B: "3" }), "tok")).not.toBe(base);
+    expect(of(http("https://a.test/mcp", { B: "2", A: "1" }), "tok")).toBe(base);
+    expect(of(http("https://b.test/mcp", { A: "1", B: "2" }), "tok")).not.toBe(base);
+    expect(of(http("https://a.test/mcp", { A: "1", B: "2" }), "other")).not.toBe(base);
+    expect(of(http("https://a.test/mcp", { A: "1", B: "2" }))).not.toBe(base);
+    expect(of(http("https://a.test/mcp", {}), "tok")).not.toBe(base);
+    expect(of(http("https://a.test/mcp", { A: "1", B: "3" }), "tok")).not.toBe(base);
   });
 
   it("is a stdio server's command, arguments, env and cwd", async () => {
@@ -263,7 +263,7 @@ describe("the auth context", () => {
         env,
       }) as const;
 
-    expect(await of(stdio({ KEY: "1" }))).not.toBe(await of(stdio({ KEY: "2" })));
-    expect(await of(stdio({ KEY: "1" }))).toBe(await of(stdio({ KEY: "1" })));
+    expect(of(stdio({ KEY: "1" }))).not.toBe(of(stdio({ KEY: "2" })));
+    expect(of(stdio({ KEY: "1" }))).toBe(of(stdio({ KEY: "1" })));
   });
 });

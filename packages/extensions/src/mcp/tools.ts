@@ -150,7 +150,6 @@ const toolFor = (
     tool: name,
     details: base,
     subject: "tool",
-    remember: true,
   };
 
   return {
@@ -179,10 +178,10 @@ const toolFor = (
             // SAFETY: the arguments pi-durable validated against the tool's `inputSchema`, an object.
             args as JsonObject,
           ),
-        (value, completed, kind) => {
+        (value, completed, caller) => {
           // A script's call gets its value whole and no spill.
           const call: McpResultContext =
-            kind === "script"
+            caller === "script"
               ? { kind: "script", details: base, readServer }
               : { kind: "model", details: base, spill: spillTo(api.env, context), readServer };
 

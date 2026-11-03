@@ -210,18 +210,22 @@ export type Exchange = {
   readonly details: McpDetails;
   /** A tool's call, which may have run when it was cut, or a resource's request, which never has. */
   readonly subject: Subject;
-  /**
-   * Whether the request is written to the `mcp.sent` marker before it leaves, so a rerun after a restart that finds it
-   * never sends it again: for a call that may have changed something, not for a read.
-   */
-  readonly remember: boolean;
 };
 
-/** What a successful request makes of its value: whose it is, a model's or a script's, tells whether it may spill. */
+/**
+ * Whether a request is written to the `mcp.sent` marker before it leaves, so a rerun after a restart that finds it never
+ * sends it again: a tool's call may have changed something, a resource request only asks.
+ */
+const remembers = (subject: Subject): boolean => subject === "tool";
+
+/** Who a call is for: a model's may spill, a script's gets its value whole (`codemode`). */
+export type Caller = "model" | "script";
+
+/** What a successful request makes of its value, for the `caller` it is for. */
 export type OnValue<A> = (
   value: Schema.Json,
   completed: McpHostCompleted,
-  kind: "model" | "script",
+  caller: Caller,
 ) => Promise<A>;
 
 /** What a request came to: what `onValue` made of its value and the questions asked, or the result that says why not. */
@@ -245,7 +249,8 @@ export const send = async <A>(
   ) => McpHostRequest | McpHostResourceRequest,
   onValue: OnValue<A>,
 ): Promise<Sent<A>> => {
-  const { client, origin, server, options, tool, subject, remember } = exchange;
+  const { client, origin, server, options, tool, subject } = exchange;
+  const remember = remembers(subject);
   const base = exchange.details;
   const noun = subject === "tool" ? "call" : "request";
   const failed = (result: ToolExecutionResult<JsonValue>): Sent<A> => ({ ok: false, result });
@@ -339,11 +344,11 @@ export const send = async <A>(
     }
 
     // A script's call gets its value whole and no spill.
-    const kind = (await isNested(api, context)) ? "script" : "model";
+    const caller: Caller = (await isNested(api, context)) ? "script" : "model";
 
     const done = async (value: Schema.Json): Promise<Sent<A>> => ({
       ok: true,
-      value: await onValue(value, result, kind),
+      value: await onValue(value, result, caller),
       asked: [],
     });
 

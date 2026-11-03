@@ -15,6 +15,7 @@ import {
   TimedOut,
 } from "@cloudpid/mcp/types";
 import type { ImageContent, JsonValue as DetailsValue, TextContent } from "@earendil-works/pi-ai";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -22,11 +23,11 @@ import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { describe, expect, it } from "vitest";
 import { build, deferredIn, detailsOf, open, results, startOf } from "./mcp.fixture.ts";
-import { makeMcpTools } from "./mcp.ts";
+import { makeMcpTools, mcpExtension } from "./mcp.ts";
 import { type FakeMcpAnswer, type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { MAX_LISTED_BYTES, MAX_LISTED_ITEMS } from "./mcp/resources.ts";
 import type { McpToolOptions } from "./mcp/tools.ts";
-import { answer, call } from "./subagents/harness.fixture.ts";
+import { answer, call, context } from "./subagents/harness.fixture.ts";
 
 /** A server with resources and no tools, its own Exposure `exposure`. */
 const store = (
@@ -427,6 +428,36 @@ describe("list_mcp_resources", () => {
   });
 });
 
+describe("a listing that cannot end", () => {
+  it("stops at a cursor the server gives twice, truncated, with the server left unfinished and why", async () => {
+    const looping: FakeMcpAnswer = async (input) =>
+      input.op === "resources/list"
+        ? McpHostCompleted.make({
+            result: {
+              kind: "inline",
+              value: { resources: resourcesOf("l", 2), nextCursor: "same" },
+            },
+          })
+        : HostUnsupported.make({ message: "lists only", op: input.op });
+
+    const { host, session } = await calling([FILES, DOCS], looping, [["list_mcp_resources", {}]]);
+
+    // The first page, then the page `same` leads to, whose own cursor is `same` again: not asked a third time.
+    expect(requestsOf(host)).toEqual([
+      ["resources/list", "File-Store", undefined],
+      ["resources/list", "File-Store", "same"],
+    ]);
+
+    const listed = await jsonOf(session);
+
+    expect(listed.truncated).toBe(true);
+    expect(listed.incomplete).toEqual([{ server: "file_store" }, { server: "docs" }]);
+    expect(listed.errors).toEqual([
+      { server: "file_store", error: expect.stringContaining("repeat a cursor") },
+    ]);
+  });
+});
+
 describe("list_mcp_resource_templates", () => {
   it("lists templates under resource_templates, leaving an App's out", async () => {
     const { host, session } = await calling(
@@ -608,12 +639,63 @@ describe("read_mcp_resource", () => {
     );
   });
 
-  it("is sent as a read: safe to rerun, and no `mcp.sent` marker written", async () => {
+  it("is sent as a read: safe to rerun, no `mcp.sent` marker written, and sent again by a rerun", async () => {
     const host = fakeMcpHost([FILES]);
-    const extension = Option.getOrThrow(await build(makeMcpTools(host.client)));
-    const tool = extension.tools?.find((each) => each.name === "read_mcp_resource");
 
-    expect(tool?.replay).toBe("safe");
+    host.answer(reading([{ uri: "file:///a.txt", text: "read" }]));
+
+    const extension = mcpExtension(
+      {
+        servers: [
+          {
+            name: "File-Store",
+            state: "connected",
+            discoveredAt: 1,
+            server: { exposure: "direct" },
+            resources: true,
+          },
+        ],
+        offered: [],
+        features: ["inventory", "call", "resources"],
+      },
+      host.client,
+    );
+
+    const tool = Option.getOrThrow(
+      Arr.findFirst(extension.tools ?? [], (each) => each.name === "read_mcp_resource"),
+    );
+
+    const memoed: Array<string> = [];
+
+    const parts: Partial<ToolExecutionApi> = {
+      callId: "call-1",
+      env: undefined,
+      getTask: async () => undefined,
+      details: async () => undefined,
+      memo: async (name: string) => {
+        memoed.push(name);
+
+        return undefined;
+      },
+    };
+
+    // SAFETY: only what the resource tools read of the api is given: the call's ids, its memo, task, details and environment.
+    const api = parts as ToolExecutionApi;
+    const run = () => tool.execute({ server: "file_store", uri: "file:///a.txt" }, api, context);
+
+    const sent = () => host.calls.filter((each) => each.method === "request").length;
+
+    expect(tool.replay).toBe("safe");
+    expect((await run()).output).toEqual([{ type: "text", text: "read" }]);
+    expect(sent()).toBe(1);
+
+    // A rerun after a restart asks again, and finds nothing to settle it as interrupted.
+    const rerun = await run();
+
+    expect(rerun.isError).toBeUndefined();
+    expect(rerun.output).toEqual([{ type: "text", text: "read" }]);
+    expect(sent()).toBe(2);
+    expect(memoed).toEqual([]);
   });
 });
 

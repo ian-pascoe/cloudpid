@@ -248,6 +248,50 @@ export const resultFor = async (
   return result;
 };
 
+/**
+ * What a model's call of a tool of ours (a resource tool) gives: `shown` within the limits, cut to its head with the whole
+ * in a Result Spill, `details` with the spill and the references of `shown`, and the least `structuredOutput` that fits
+ * the tool's schema, since the model reads the output and pi-durable only checks the value.
+ */
+export const modelResultOf = async (
+  shown: ReadonlyArray<Piece>,
+  call: Extract<McpResultContext, { readonly kind: "model" }>,
+  structuredOutput: JsonValue,
+): Promise<ToolExecutionResult<JsonValue>> => {
+  const limited = await withinLimits(shown, call);
+  const details: Mutable<McpDetails> = { ...call.details };
+  const refs = refsOf(shown);
+
+  if (limited.fullOutputPath !== undefined) details.full_output_path = limited.fullOutputPath;
+
+  if (refs.length > 0) details.resources = refs;
+
+  const result: Mutable<ToolExecutionResult<JsonValue>> = {
+    output: [...limited.output],
+    details,
+    structuredOutput,
+  };
+
+  if (limited.diagnostics.length > 0) result.diagnostics = [...limited.diagnostics];
+
+  return result;
+};
+
+/** What a script's call of a tool of ours gives: its `value` whole, and a line for the output nobody reads. */
+export const scriptResultOf = (
+  line: string,
+  details: McpDetails,
+  value: JsonValue,
+  refs: ReadonlyArray<McpResourceRef> = [],
+): ToolExecutionResult<JsonValue> => {
+  const kept: Mutable<McpDetails> = { ...details };
+  const some = Arr.take(refs, MAX_RESOURCE_REFS);
+
+  if (some.length > 0) kept.resources = some;
+
+  return { output: [textOf(line)], details: kept, structuredOutput: value };
+};
+
 /** `details` of a call that `ended` without a result, and what the model reads. */
 const endedWith = (ended: Ended, details: McpDetails): ToolExecutionResult<JsonValue> => {
   const kept: Mutable<McpDetails> = { ...details };
