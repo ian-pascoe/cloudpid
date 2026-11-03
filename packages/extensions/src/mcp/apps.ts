@@ -5,10 +5,8 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- builders over plain values.
 import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
 import type { McpAppDraft, McpAppHtmlAnswer, McpAppTool } from "@cloudpid/protocol";
-import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
-import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
@@ -30,16 +28,6 @@ export type McpAppRecorder = {
   readonly put: (draft: McpAppDraft) => Effect.Effect<void>;
   /** The App tools of the inventory the tools were last built from, whole; the recorder tells the clients when they change. */
   readonly setTools: (tools: ReadonlyArray<McpAppTool>) => void;
-};
-
-/** A tool's `_meta.ui.visibility` (MCP Apps): `model` and `app` when it has none, or one that cannot be read. */
-export const visibilityOf = (meta: Schema.Json | undefined): ReadonlyArray<string> => {
-  const ui = isJsonObject(meta) ? meta["ui"] : undefined;
-  const visibility = isJsonObject(ui) ? ui["visibility"] : undefined;
-
-  return Array.isArray(visibility) && Arr.every(visibility, Predicate.isString)
-    ? visibility
-    : ["model", "app"];
 };
 
 /** What a completed call of an App tool is recorded from. */

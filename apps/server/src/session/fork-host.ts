@@ -4,7 +4,7 @@
 // the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s.
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { TodoDoc } from "@cloudpid/extensions/todo";
-import type { McpAppCopy } from "@cloudpid/protocol";
+import type { McpAppCopies, McpAppCopy } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc,
@@ -33,7 +33,6 @@ import {
   NO_AGENT,
   toolResultIds,
 } from "./fork.ts";
-import type { McpAppsService } from "./mcp-apps.ts";
 import { isOwnerMessage, ownerMessageText } from "./tree.ts";
 import { type AgentPick, PICK_KEY, pickAsOf } from "./pick.ts";
 import type { SettingsKv } from "./settings.ts";
@@ -108,7 +107,7 @@ export type ForksOptions = {
   /** What the Session picked itself. */
   readonly picked: () => AgentPick;
   /** The Session's App records: a Fork or Clone carries those of the calls it copies (`McpAppsService`). */
-  readonly apps?: Pick<McpAppsService, "copiesFor" | "adopt"> | undefined;
+  readonly apps?: McpAppCopies | undefined;
   /** Runs `effect` in turn with the owner's messages, so none is admitted between a check and what follows it. */
   readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 };

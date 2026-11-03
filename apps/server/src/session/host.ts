@@ -66,6 +66,7 @@ import {
   USER_ENTRY_KIND,
   type UserEntryData,
   userEntryData,
+  type McpAppCopies,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -171,7 +172,6 @@ import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
 import { type NavigateRequest, sessionBranches } from "./branches.ts";
 import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
-import type { McpAppsService } from "./mcp-apps.ts";
 import { admissionLines } from "./admission.ts";
 import { fillingRefusal, sessionForks } from "./fork-host.ts";
 import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
@@ -427,7 +427,7 @@ export type SessionHostOptions<R = never> = {
    * The Session's App records (`docs/architecture/mcp-apps.md` → App records): a Fork or Clone carries those of the calls
    * it copies, a page of entries at a time.
    */
-  readonly apps?: Pick<McpAppsService, "copiesFor" | "adopt"> | undefined;
+  readonly apps?: McpAppCopies | undefined;
   /**
    * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
    * this is undefined too.

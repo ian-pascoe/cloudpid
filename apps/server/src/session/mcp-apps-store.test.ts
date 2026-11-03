@@ -203,7 +203,13 @@ describe("the Session's App records", () => {
     ]);
     expect(await run(service.mount("call-2"))).toEqual({
       status: "stub",
-      stub: { callId: "call-2", server: "docs", tool: "page", conversation: "1" },
+      stub: {
+        callId: "call-2",
+        server: "docs",
+        tool: "page",
+        conversation: "1",
+        at: expect.any(Number),
+      },
     });
     expect(await run(service.mount("call-1"))).toMatchObject({ status: "record" });
     expect(await run(service.mount("call-34"))).toMatchObject({ status: "record" });
@@ -292,7 +298,11 @@ describe("the Session's App records", () => {
 
     expect(
       Arr.map(copies, (copy) =>
-        copy.kind === "record" ? `record:${copy.record.callId}` : `stub:${copy.stub.callId}`,
+        copy.kind === "record" && "record" in copy
+          ? `record:${copy.record.callId}`
+          : copy.kind === "stub" && "stub" in copy
+            ? `stub:${copy.stub.callId}`
+            : copy.kind,
       ),
     ).toEqual(["stub:call-0", "record:nested", "record:call-9"]);
     expect(source.service.copiesFor([])).toEqual([]);
@@ -312,6 +322,77 @@ describe("the Session's App records", () => {
       record: { callId: "call-9", conversation: "1" },
     });
     expect(await run(target.service.mount("call-0"))).toMatchObject({ status: "stub" });
+  });
+
+  it("adopts what it knows of a Fork's copies and skips a kind it does not, whole and in one write of the index", async () => {
+    const storage = memory();
+    const writes: Array<string> = [];
+
+    const counting: McpAppsStorage = {
+      get: (key) => storage.get(key),
+      put: (key, value) => {
+        writes.push(key);
+        storage.put(key, value);
+      },
+      delete: (key) => storage.delete(key),
+    };
+
+    const { service } = open(counting);
+    const source = open();
+
+    await run(source.service.put(draft("kept", 10)));
+
+    const records = source.service.copiesFor(["kept"]);
+
+    expect(records).toHaveLength(1);
+
+    service.adopt(
+      [
+        { kind: "from-a-newer-session" },
+        ...records,
+        {
+          kind: "stub",
+          stub: { callId: "gone", server: "docs", tool: "page", conversation: "7", at: 42 },
+        },
+        { kind: "another-new-one" },
+      ],
+      conversation(2),
+    );
+
+    expect(Arr.filter(writes, (key) => key === "cloudpid:mcp-apps")).toHaveLength(1);
+    // Both are the target conversation's, and the stub keeps the time of its call.
+    expect(await run(service.list(conversation(2)))).toEqual([
+      expect.objectContaining({ callId: "kept", state: "kept" }),
+      expect.objectContaining({ callId: "gone", state: "evicted", at: 42 }),
+    ]);
+    expect(await run(service.list(conversation(7)))).toEqual([]);
+    expect(await run(service.mount("gone"))).toEqual({
+      status: "stub",
+      stub: { callId: "gone", server: "docs", tool: "page", conversation: "2", at: 42 },
+    });
+  });
+
+  it("leaves no parts behind when a copied stub takes the place of a record", async () => {
+    const storage = memory();
+    const { service } = open(storage);
+
+    await run(service.put(draft("call-1", 600 * 1024)));
+
+    const before = storage.size();
+
+    service.adopt(
+      [
+        {
+          kind: "stub",
+          stub: { callId: "call-1", server: "docs", tool: "page", conversation: "1" },
+        },
+      ],
+      conversation(1),
+    );
+
+    // The parts of the record went, and the index holds the stub.
+    expect(storage.size()).toBeLessThan(before);
+    expect(await run(service.mount("call-1"))).toMatchObject({ status: "stub" });
   });
 
   it("streams a conversation's App calls now and again as they change", async () => {

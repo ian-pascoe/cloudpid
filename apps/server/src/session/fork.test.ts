@@ -110,6 +110,45 @@ describe("the App records a page of a Fork carries", () => {
   });
 });
 
+describe("the App records of one entry too large for a page", () => {
+  it("carries the records that fit, in order, and the rest as stubs with the call's time", () => {
+    const large = (callId: string, parentCall: string): McpAppCopy => ({
+      kind: "record",
+      record: {
+        callId,
+        server: "docs",
+        tool: "app",
+        conversation: "1",
+        parentCall,
+        arguments: {},
+        result: { text: "z".repeat(MAX_COPY_PAGE_SIZE / 3) },
+        audit: [],
+        at: 7,
+      },
+    });
+
+    // One `codemode` script's result, whose four nested calls weigh more than a page.
+    const appsOf = () => ["a", "b", "c", "d"].map((callId) => large(callId, "script"));
+
+    const page = exportPage([result(1, "script")], false, appsOf);
+
+    expect(page.entries).toHaveLength(1);
+    expect(page.apps?.map((copy) => copy.kind)).toEqual(["record", "record", "stub", "stub"]);
+    expect(page.apps?.[3]).toEqual({
+      kind: "stub",
+      stub: {
+        callId: "d",
+        server: "docs",
+        tool: "app",
+        conversation: "1",
+        parentCall: "script",
+        at: 7,
+      },
+    });
+    expect(JSON.stringify(page).length).toBeLessThanOrEqual(MAX_COPY_PAGE_SIZE + 1024);
+  });
+});
+
 describe("the draft of a copied entry", () => {
   it("keeps its kind, messages and data", () => {
     const source = asEntry({

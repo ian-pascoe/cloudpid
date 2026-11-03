@@ -272,6 +272,40 @@ describe("an MCP App call in a Session", () => {
     ).toMatchObject({ status: "record", record: { arguments: { text: "hi" } } });
   });
 
+  it("is left out of a Fork made before it, which carries the records of the earlier calls only", async () => {
+    const { stub, host } = await overServer();
+
+    await callTool(stub, "app");
+    await settles(async () => expect(await host.appPages()).toHaveLength(1));
+    await callTool(stub, "app");
+
+    const calls = await runInDurableObject(stub, (instance: TestSession) => instance.appCalls());
+
+    expect(calls).toHaveLength(2);
+
+    // The second owner's message is where the Fork is made: before it, only the first call's result is copied.
+    const tree = await runInDurableObject(stub, (instance: TestSession) => instance.tree());
+    const second = tree.nodes.filter((node) => node.role === "user")[1];
+
+    if (second === undefined) throw new Error("No second owner message");
+
+    const target = `fork-${counter++}`;
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.forkInto(target, {
+        point: { entryId: second.id, position: "before" },
+        quiet: "none",
+      }),
+    );
+
+    const copied = await runInDurableObject(
+      env.SESSIONS.getByName(target),
+      (instance: TestSession) => instance.appCalls(),
+    );
+
+    expect(copied.map((call) => call.callId)).toEqual([calls[0]?.callId]);
+  });
+
   it("is bounded: a record over 1 MiB is cut, and one past the Session's 32 MiB leaves a stub", async () => {
     const { stub } = await overServer();
 
@@ -319,7 +353,13 @@ describe("an MCP App call in a Session", () => {
       await runInDurableObject(stub, (instance: TestSession) => instance.appMount("first")),
     ).toEqual({
       status: "stub",
-      stub: { callId: "first", server: "docs", tool: "app", conversation: "1" },
+      stub: {
+        callId: "first",
+        server: "docs",
+        tool: "app",
+        conversation: "1",
+        at: expect.any(Number),
+      },
     });
   }, 60_000);
 });

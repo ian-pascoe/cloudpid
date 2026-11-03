@@ -6,7 +6,7 @@
 // the agent as of the point.
 import type { ContextState } from "@cloudpid/extensions/context";
 import type { TodoState } from "@cloudpid/extensions/todo";
-import type { McpAppCopy, TreePoint } from "@cloudpid/protocol";
+import type { McpAppCopy, McpAppStub, TreePoint } from "@cloudpid/protocol";
 import type {
   AgentState,
   ContextEdit,
@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import type { Mutable } from "effect/Types";
 import type { AgentPick } from "./pick.ts";
 
 /** About the most one page of copied entries holds, in UTF-16 code units of their JSON: well under an RPC's 32 MiB. */
@@ -83,6 +84,46 @@ export const toolResultIds = (entry: EntryRecord): ReadonlyArray<string> =>
 /** What a copy of the entries carries of each: the App records of the calls whose results it holds (`McpAppsService.copiesFor`). */
 export type AppCopier = (entry: EntryRecord) => ReadonlyArray<McpAppCopy>;
 
+/** What a record is left as when it does not fit a page: its stub (who the call was, and its time). */
+const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
+  if (copy.kind !== "record" || !("record" in copy)) return copy;
+
+  const { callId, server, tool, conversation, parentCall, at } = copy.record;
+  const stub: Mutable<McpAppStub> = { callId, server, tool, conversation, at };
+
+  if (parentCall !== undefined) stub.parentCall = parentCall;
+
+  return { kind: "stub", stub };
+};
+
+/**
+ * `copies` as they fit in `budget` characters: the records in order while they do, the rest as stubs. A page is a single
+ * RPC's value and an entry is never split from its copies, so what one entry's calls hold past the budget (a `codemode`
+ * script with many App calls) is carried as stubs, which a card shows as "App data no longer kept".
+ */
+const fitCopies = (
+  copies: ReadonlyArray<McpAppCopy>,
+  budget: number,
+): ReadonlyArray<McpAppCopy> => {
+  let left = budget;
+
+  return Arr.map(copies, (copy) => {
+    const length = JSON.stringify(copy).length;
+
+    if (copy.kind === "stub" || length <= left) {
+      left -= length;
+
+      return copy;
+    }
+
+    const stub = stubOfCopy(copy);
+
+    left -= JSON.stringify(stub).length;
+
+    return stub;
+  });
+};
+
 /**
  * `entries` cut to a page: as many as fit in `MAX_COPY_PAGE_SIZE` (always one), counting the App records they carry
  * (`appsOf`: the records of the calls an entry holds the results of), and where the next page starts, or null when they are
@@ -98,11 +139,12 @@ export const exportPage = (
   let size = 0;
 
   for (const entry of entries) {
-    const copies = appsOf === undefined ? [] : appsOf(entry);
+    const own = JSON.stringify(entry).length;
 
-    const length =
-      JSON.stringify(entry).length +
-      Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length);
+    const copies =
+      appsOf === undefined ? [] : fitCopies(appsOf(entry), Math.max(0, MAX_COPY_PAGE_SIZE - own));
+
+    const length = own + Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length);
 
     if (kept.length > 0 && size + length > MAX_COPY_PAGE_SIZE) break;
 

@@ -98,6 +98,8 @@ export const McpAppStub = Schema.Struct({
   tool: Schema.String,
   conversation: Schema.String,
   parentCall: Schema.optionalKey(Schema.String),
+  /** Epoch milliseconds the call completed, when the stub knows (a record's eviction keeps it; older stubs have none). */
+  at: Schema.optionalKey(Schema.Finite),
 });
 
 export type McpAppStub = typeof McpAppStub.Type;
@@ -211,7 +213,17 @@ export type McpAppHtmlAnswer = typeof McpAppHtmlAnswer.Type;
  */
 export type McpAppCopy =
   | { readonly kind: "record"; readonly record: McpAppRecord }
-  | { readonly kind: "stub"; readonly stub: McpAppStub };
+  | { readonly kind: "stub"; readonly stub: McpAppStub }
+  // A kind a newer Session sends: skipped, never an error that leaves a Fork half done.
+  | { readonly kind: string };
+
+/** What a Session does with the App records of a Fork or Clone (`ExportPage.apps`): what its calls' copies are, and keeping them. */
+export type McpAppCopies = {
+  /** The records and stubs of the calls whose result entry is among `callIds`, and of the calls nested in them. */
+  readonly copiesFor: (callIds: ReadonlyArray<string>) => ReadonlyArray<McpAppCopy>;
+  /** Keep the copies a Fork or Clone's source sent, as the calls of conversation `conversation`; the bounds apply. */
+  readonly adopt: (copies: ReadonlyArray<McpAppCopy>, conversation: ConversationId) => void;
+};
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Bounds
@@ -357,33 +369,98 @@ const dropLargestBinary = (result: McpAppRecord["result"]): McpAppRecord["result
 const withoutKey = (value: McpAppRecord["result"], key: string): McpAppRecord["result"] =>
   Object.fromEntries(Object.entries(value).filter(([each]) => each !== key));
 
+/** The keys of a `CallToolResult` (MCP): any other is a server's own, and is the first to go when a record is too large. */
+const RESULT_KEYS: ReadonlyArray<string> = ["content", "structuredContent", "isError", "_meta"];
+
+/** The line that stands in for the content blocks a record is too large to keep. */
+const omitted = (count: number): Json => ({
+  type: "text",
+  text: `[${count} content block${count === 1 ? "" : "s"} omitted: too large for an App's record]`,
+});
+
+/** `result` with only its first `keep` content blocks and a line that says how many went. */
+const keepBlocks = (result: McpAppRecord["result"], keep: number): McpAppRecord["result"] => {
+  const { content } = result;
+
+  if (!Array.isArray(content)) return result;
+
+  // SAFETY: `result` is JSON, whose array `content` is an array of JSON values.
+  const blocks = content as ReadonlyArray<Json>;
+
+  return { ...result, content: [...Arr.take(blocks, keep), omitted(blocks.length - keep)] };
+};
+
+/**
+ * What a record is brought to when the other steps leave it over the bound: the result's own keys only, then its content
+ * blocks from the end replaced by a line, as many as it takes (found by halving, since a result may have tens of thousands),
+ * and, if even one block is too much, a result that is the line alone, with its `isError`.
+ */
+const withinBound = (record: McpAppRecord): McpAppRecord => {
+  const known = Object.fromEntries(
+    Object.entries(record.result).filter(([key]) => RESULT_KEYS.includes(key)),
+  );
+
+  let current: McpAppRecord = { ...record, result: known };
+
+  if (appRecordBytes(current) <= MAX_MCP_APP_RECORD_BYTES) return current;
+
+  const { content } = current.result;
+  let low = 0;
+  let high = Array.isArray(content) ? content.length : 0;
+
+  // The most blocks that fit beside the line, the line alone at least.
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+
+    if (
+      appRecordBytes({ ...current, result: keepBlocks(current.result, middle) }) <=
+      MAX_MCP_APP_RECORD_BYTES
+    ) {
+      low = middle;
+    } else high = middle - 1;
+  }
+
+  current = { ...current, result: keepBlocks(current.result, low) };
+
+  if (appRecordBytes(current) <= MAX_MCP_APP_RECORD_BYTES) return current;
+
+  const failed = current.result["isError"];
+
+  return {
+    ...current,
+    result: Predicate.isBoolean(failed)
+      ? { content: [omitted(Array.isArray(content) ? content.length : 0)], isError: failed }
+      : { content: [omitted(Array.isArray(content) ? content.length : 0)] },
+  };
+};
+
 /**
  * `record` held to `MAX_MCP_APP_RECORD_BYTES`. A record within it is returned as it is, after `redact` (which must give
  * the same value with the Secrets held replaced by their references; the default changes nothing). Over it, in this order
  * and only as far as it takes: the result's `structuredContent` is dropped (before `redact`, which then reads less); the
  * texts are cut to `MCP_APP_TEXT_CUT_BYTES` (after it, so a Secret is never cut into a piece `redact` cannot recognize);
- * the largest binary blocks are replaced by a line, the result's `_meta` dropped, and, last of all, the call's arguments.
- * A record cut at all says `truncated: true`; the same record is what a live mount and a replay are given.
+ * the largest binary blocks are replaced by a line, the result's `_meta` dropped, and the call's arguments; and last, so
+ * that the bound always holds, `withinBound`: the keys a `CallToolResult` does not have dropped, then content blocks from the
+ * end. A record cut at all says `truncated: true`; the same record is what a live mount and a replay are given.
  */
 export const boundAppRecord = (
   record: McpAppRecord,
   redact: <A>(value: A) => A = (value) => value,
 ): McpAppRecord => {
   let current = record;
-  let size = appRecordBytes(current);
   let cut = false;
 
-  if (size > MAX_MCP_APP_RECORD_BYTES && current.result["structuredContent"] !== undefined) {
+  if (
+    appRecordBytes(current) > MAX_MCP_APP_RECORD_BYTES &&
+    current.result["structuredContent"] !== undefined
+  ) {
     current = { ...current, result: withoutKey(current.result, "structuredContent") };
-    size = appRecordBytes(current);
     cut = true;
   }
 
   current = redact(current);
-  size = appRecordBytes(current);
 
   const steps: ReadonlyArray<(each: McpAppRecord) => McpAppRecord> = [
-    (each) => ({ ...each, result: withoutKey(each.result, "structuredContent") }),
     (each) => ({ ...each, result: cutTexts(each.result) }),
     (each) => {
       let next = each;
@@ -401,7 +478,10 @@ export const boundAppRecord = (
     },
     (each) => ({ ...each, result: withoutKey(each.result, "_meta") }),
     (each) => ({ ...each, arguments: {} }),
+    withinBound,
   ];
+
+  let size = appRecordBytes(current);
 
   for (const step of steps) {
     if (size <= MAX_MCP_APP_RECORD_BYTES) break;

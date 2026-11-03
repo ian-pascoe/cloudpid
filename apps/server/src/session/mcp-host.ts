@@ -379,7 +379,12 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   ): SessionHostMcpBuild<never> => {
     const { environment } = values.mcp;
 
-    if (environment === null) return { extensions: [], announce: Effect.void };
+    if (environment === null) {
+      // No Environment, no MCP servers: the clients are told there are no App tools (it is a no-op when none were told).
+      options.apps?.setTools([]);
+
+      return { extensions: [], announce: Effect.void };
+    }
 
     const built = toolsOf(environment).reinstall(values.toolSearch.offered);
 

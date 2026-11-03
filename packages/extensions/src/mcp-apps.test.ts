@@ -267,6 +267,37 @@ describe("the record of an App call", () => {
   });
 });
 
+describe("the record of a subagent's App call", () => {
+  it("is the child's own: its conversation is the child's, not the root's", async () => {
+    const host = fakeMcpHost([appServer()]);
+    const kept = recorder();
+    const tools = makeMcpTools(host.client, undefined, { apps: kept.apps });
+    let childTurns = 0;
+
+    host.answer(async () => completed({ content: [{ type: "text", text: "A page" }] }, "hash-3"));
+
+    const session = await open((request) => {
+      if (request.agent === "root") {
+        return request.text === "go" ? call(["subagent", { task: "Show the page" }]) : answer("ok");
+      }
+
+      childTurns += 1;
+
+      return childTurns === 1 ? call(["mcp__docs_site__page", { slug: "intro" }]) : answer("shown");
+    });
+
+    await session.start(tools, startOf(1, { offered: ["subagent*", "mcp__docs_site__page"] }));
+    await session.prompt("go");
+    await session.settle();
+
+    const child = (await session.state()).agents["agent-1"]!.conversationId;
+
+    expect(kept.drafts).toHaveLength(1);
+    expect(kept.drafts[0]).toMatchObject({ tool: "page", conversation: String(child) });
+    expect(kept.drafts[0]?.conversation).not.toBe("1");
+  });
+});
+
 describe("a ui:// resource link in a result", () => {
   it("is a link as any other: the model's line and a chip, and it mounts no App and writes no record", async () => {
     const host = fakeMcpHost([appServer()]);

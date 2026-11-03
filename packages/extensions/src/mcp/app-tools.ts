@@ -7,7 +7,7 @@ import { MAX_MCP_APP_TOOLS, type McpAppTool } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
-import { visibilityOf } from "./apps.ts";
+import { visibilityOf } from "./exposure.ts";
 import { listedTools, type McpBuildServer } from "./tools.ts";
 
 /**

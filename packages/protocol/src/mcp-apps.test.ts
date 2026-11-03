@@ -127,6 +127,65 @@ describe("boundAppRecord", () => {
     expect(bounded.arguments).toEqual({});
   });
 
+  it("holds a result of many mid-size texts to the bound, by omitting blocks from the end", () => {
+    // 40 texts of 70 KB are cut to 64 KiB each, which is still 2.6 MB.
+    const bounded = boundAppRecord(
+      record({
+        content: Array.from({ length: 40 }, (_, at) => text(70_000, String(at % 10))),
+        isError: true,
+      }),
+    );
+
+    const blocks = blocksOf(bounded);
+
+    expect(appRecordBytes(bounded)).toBeLessThanOrEqual(MAX_MCP_APP_RECORD_BYTES);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.result["isError"]).toBe(true);
+    // The blocks that fit are the first ones, whole, and a line says how many went.
+    expect(blocks.length).toBeGreaterThan(5);
+    expect(blocks[0]?.text).toHaveLength(MCP_APP_TEXT_CUT_BYTES);
+    expect(blocks.at(-1)?.text).toMatch(/^\[\d+ content blocks omitted/);
+  });
+
+  it("drops the keys of a result that a CallToolResult does not have, when one is what weighs", () => {
+    const bounded = boundAppRecord(
+      record({ content: [text(10)], isError: false, vendor: { rows: "x".repeat(3_000_000) } }),
+    );
+
+    expect(bounded.result).toEqual({ content: [text(10)], isError: false });
+    expect(bounded.truncated).toBe(true);
+    expect(appRecordBytes(bounded)).toBeLessThanOrEqual(MAX_MCP_APP_RECORD_BYTES);
+  });
+
+  it("holds tens of thousands of resource links to the bound", () => {
+    const link = (at: number) => ({
+      type: "resource_link",
+      uri: `https://docs.example/page/${at}`,
+      name: `page ${at}`,
+    });
+
+    const bounded = boundAppRecord(
+      record({ content: Array.from({ length: 30_000 }, (_, at) => link(at)) }),
+    );
+
+    expect(appRecordBytes(bounded)).toBeLessThanOrEqual(MAX_MCP_APP_RECORD_BYTES);
+    expect(bounded.truncated).toBe(true);
+    expect(blocksOf(bounded)[0]).toEqual(link(0));
+  });
+
+  it("falls back to the line alone, keeping isError, when even one block does not fit", () => {
+    // A block of an unknown type has no cut and no binary to drop: a single one of 3 MB.
+    const bounded = boundAppRecord(
+      record({ content: [{ type: "vendor", rows: "x".repeat(3_000_000) }], isError: true }),
+    );
+
+    expect(bounded.result).toEqual({
+      content: [{ type: "text", text: "[1 content block omitted: too large for an App's record]" }],
+      isError: true,
+    });
+    expect(appRecordBytes(bounded)).toBeLessThanOrEqual(MAX_MCP_APP_RECORD_BYTES);
+  });
+
   it("redacts after dropping structuredContent and before cutting, so a Secret never splits across the cut", () => {
     const secret = "s3cret-value-xyz";
 

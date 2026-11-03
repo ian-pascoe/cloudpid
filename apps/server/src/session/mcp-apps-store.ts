@@ -120,6 +120,7 @@ const stubOf = (entry: IndexEntry): McpAppStub => {
     server: entry.server,
     tool: entry.tool,
     conversation: entry.conversation,
+    at: entry.at,
   };
 
   if (entry.parentCall !== undefined) stub.parentCall = entry.parentCall;
@@ -254,11 +255,14 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     return touched;
   };
 
-  /** Keep `record` as call `record.callId`'s, replacing an earlier one; its entry's `mountedAt` is `mountedAt`. */
-  const keepRecord = (record: McpAppRecord, mountedAt: number) => {
+  /** `entries` with `record` as call `record.callId`'s, replacing an earlier one, its parts written; its `mountedAt` is `mountedAt`. */
+  const withRecord = (
+    entries: ReadonlyArray<IndexEntry>,
+    record: McpAppRecord,
+    mountedAt: number,
+  ): ReadonlyArray<IndexEntry> => {
     const text = JSON.stringify(record);
-    const before = index();
-    const old = Arr.findFirst(before, (entry) => entry.callId === record.callId);
+    const old = Arr.findFirst(entries, (entry) => entry.callId === record.callId);
 
     if (Option.isSome(old)) dropParts(old.value);
 
@@ -273,11 +277,14 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
 
     const entry = keptOf(record, count, mountedAt);
 
-    const after = Option.isSome(old)
-      ? Arr.map(before, (each) => (each.callId === record.callId ? entry : each))
-      : [...before, entry];
+    return Option.isSome(old)
+      ? Arr.map(entries, (each) => (each.callId === record.callId ? entry : each))
+      : [...entries, entry];
+  };
 
-    const touched = settle(after, record.callId);
+  /** Keep `record` as call `record.callId`'s: the bounds then hold, the record just written never the one evicted. */
+  const keepRecord = (record: McpAppRecord, mountedAt: number) => {
+    const touched = settle(withRecord(index(), record, mountedAt), record.callId);
 
     touched.add(record.conversation);
 
@@ -387,28 +394,33 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
 
   const adopt: McpAppsService["adopt"] = (copies, conversation) => {
     const at = now();
-    const touched = new Set<string>();
+    const root = String(conversation);
+    let entries = index();
 
     for (const copy of copies) {
-      if (copy.kind === "record") {
+      if (copy.kind === "record" && "record" in copy) {
         // Bounded as any record is; one that is within its bound is kept as it is.
-        const record = boundAppRecord({ ...copy.record, conversation: String(conversation) });
+        entries = withRecord(entries, boundAppRecord({ ...copy.record, conversation: root }), at);
+      } else if (copy.kind === "stub" && "stub" in copy) {
+        const { stub } = copy;
+        const old = Arr.findFirst(entries, (entry) => entry.callId === stub.callId);
 
-        for (const each of keepRecord(record, at)) touched.add(each);
+        // A call that has a record here keeps no parts once it is a stub.
+        if (Option.isSome(old)) dropParts(old.value);
 
-        continue;
+        entries = [
+          ...Arr.filter(entries, (entry) => entry.callId !== stub.callId),
+          evictedOf({ ...stub, conversation: root, at: stub.at ?? at }, at),
+        ];
       }
 
-      const { stub } = copy;
-      const before = Arr.filter(index(), (entry) => entry.callId !== stub.callId);
-
-      const entry = evictedOf({ ...stub, at }, at);
-
-      for (const each of settle([...before, entry], undefined)) touched.add(each);
-
-      touched.add(String(conversation));
+      // A kind a newer Session sends is skipped: the rest of the Fork is still made.
     }
 
+    // The index is written once, after the bounds hold of every copy together.
+    const touched = settle(entries, undefined);
+
+    touched.add(root);
     changed(touched);
   };
 
