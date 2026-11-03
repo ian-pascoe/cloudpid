@@ -4,6 +4,7 @@
 // requests, the transcript and the answers are redacted here, before they leave the object.
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
+import { McpQuestions } from "@cloudpid/extensions/mcp";
 import { Secrets } from "@cloudpid/extensions/secrets";
 import {
   type ApiResult,
@@ -159,6 +160,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
     const secrets = yield* Secrets;
     const approvals = yield* Approvals;
     const handoffs = yield* BrowserHandoffs;
+    const questions = yield* McpQuestions;
     const pollMs = options.pollMs ?? WAIT_POLL_MS;
     const stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS;
 
@@ -182,6 +184,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
         const asks = yield* secrets.pending;
         const approved = yield* approvals.pending;
         const handed = yield* handoffs.pending;
+        const asked = yield* questions.pending;
 
         const found: Array<{ readonly key: string; readonly request: Waiting }> = [
           ...Arr.map(approved, (ask) => ({
@@ -203,6 +206,19 @@ const sessionMcp = (options: SessionMcpOptions) =>
               summary: readable
                 ? redact(`Secret request: ${Arr.join(ask.names, ", ")}`)
                 : "Secret request",
+              url: "",
+            },
+          })),
+          // The server's name only, never what it asks: the card has that.
+          ...Arr.map(asked, (question) => ({
+            key: `elicitation:${question.id}`,
+            request: {
+              kind: "elicitation" as const,
+              request_id: question.id,
+              agent_id: agentIdOf(state, question.conversationId),
+              summary: readable
+                ? redact(`${question.server} needs your input`)
+                : "An MCP server needs your input",
               url: "",
             },
           })),

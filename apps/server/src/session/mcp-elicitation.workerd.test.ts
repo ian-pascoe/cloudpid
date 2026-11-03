@@ -3,8 +3,9 @@
 // form during the call; the form reaches a client of the Session socket as a card's request, the owner answers over the
 // socket, and the answer travels back to the server. Answered, declined and cancelled; a credential form declined unseen;
 // Stop withdrawing the card; and what the owner entered kept nowhere: not in the Session's storage, not in what the
-// sockets were sent, not in a log. (The 10-minute bound and the paused timeout are in
-// `packages/extensions/src/mcp-questions.test.ts` and `mcp-elicitation.test.ts`, over a test clock.)
+// sockets were sent, not in a log. The 10-minute bound runs here too, through the real engine, with the bound shortened
+// to 300 ms for a Session named `mcp-short-wait-*` (`host.fixture.ts`): nothing else is changed. (The paused timeout is
+// in `packages/extensions/src/mcp-elicitation.test.ts`, over a test clock.)
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
@@ -88,7 +89,7 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
 };
 
 /** A Session whose host runs the real engine against a fake Legacy server that has the `ask` tool. */
-const open = async (asked: Array<Schema.Json>, cancelled: Array<string> = []) => {
+const open = async (asked: Array<Schema.Json>, cancelled: Array<string> = [], name = "mcp") => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
   const server = legacyStatefulServer({ moreTools: [ASK_TOOL], asked, cancelled });
@@ -100,7 +101,7 @@ const open = async (asked: Array<Schema.Json>, cancelled: Array<string> = []) =>
   await host.useRealEngine();
   await host.apply(SET);
 
-  const stub = env.SESSIONS.getByName(`mcp-${environment}`);
+  const stub = env.SESSIONS.getByName(`${name}-${environment}`);
 
   await runInDurableObject(stub, (instance: TestSession) => {
     instance.mcpEnvironment(environment, 1);
@@ -297,6 +298,32 @@ describe("a Legacy MCP server's form in a Session", () => {
     await settles(async () =>
       expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
     );
+    owner.close();
+  });
+
+  it("is cancelled when the owner does not answer in time, the server told and the card withdrawn", async () => {
+    const { stub, asked } = await open([], [], "mcp-short-wait");
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(NAME_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () => expect(asked).toEqual([{ action: "cancel" }]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain(
+      "cloudpid cancelled docs's request for input: the owner did not answer in time",
+    );
+    expect(await inputPushes(stub)).toHaveLength(1);
     owner.close();
   });
 });

@@ -655,6 +655,8 @@ export class TestSession extends DurableObject {
       sockets: this.ctx,
       notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
       credentials: [],
+      // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
+      waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
     });
 
     return this.#questions;
