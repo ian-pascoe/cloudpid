@@ -11,6 +11,8 @@
  * - **Cuts:** an SSE stream that ends without its answer fails its request at once, since the SDK neither reconnects
  *   nor fails it (it drops `onRequestStreamEnd` for requests).
  * - **Not MCP:** a 2xx answer to a request that is neither JSON-RPC JSON nor an SSE stream.
+ * - **The GET stream:** a Legacy session's GET stream ends at an event over 1 MiB (D16), which the core does not
+ *   reopen; the span without it is a gap.
  *
  * A verdict on a request reaches the SDK as a JSON-RPC error answering it, carrying a token the core maps back to the
  * `McpError` (`Verdicts`), so the request fails at once whatever the SDK does with a broken stream. On the probe, which
@@ -207,7 +209,7 @@ const drain = (body: ReadableStream<Uint8Array> | null) => body?.cancel().catch(
 /**
  * `body` as it arrives, counted against the request's limit, watched for the answer to `request`: when the stream
  * ends or breaks without it, or runs over the limit, the stream ends with the verdict instead. With no resumption yet
- * (D15), a break is a cut and the limit spans the whole stream; both change when resumption lands.
+ * (D15; #542), a break is a cut and the limit spans the whole stream; both change when resumption lands.
  */
 const watchStream = (body: ReadableStream<Uint8Array>, request: Outgoing, verdicts: Verdicts) => {
   const limit = request.policy.limit;
@@ -275,6 +277,56 @@ const watchStream = (body: ReadableStream<Uint8Array>, request: Outgoing, verdic
       }
 
       scan(decoder.decode(chunk.value, { stream: true }));
+      controller.enqueue(chunk.value);
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+};
+
+/** The most one event on a GET stream may be (D16). */
+const EVENT_LIMIT = MiB;
+
+/** A blank line, which ends an SSE event. */
+const EVENT_END = /\r\n\r\n|\n\n|\r\r/g;
+
+/**
+ * A GET stream's `body`, ended (and let go of) at an event over 1 MiB, so no event the client must hold whole outgrows
+ * the limit. Bytes are counted from the last event's end.
+ */
+const capEvents = (body: ReadableStream<Uint8Array>) => {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let open = 0;
+  let tail = "";
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const chunk = await reader.read().catch(() => ({ done: true as const, value: undefined }));
+
+      if (chunk.done) {
+        controller.close();
+
+        return;
+      }
+
+      // The tail keeps an event end split across chunks findable.
+      const text = tail + decoder.decode(chunk.value, { stream: true });
+      const ends = [...text.matchAll(EVENT_END)];
+      const last = ends.at(-1);
+
+      open =
+        last === undefined
+          ? open + chunk.value.byteLength
+          : encoder.encode(text.slice((last.index ?? 0) + last[0].length)).byteLength;
+      tail = text.slice(-3);
+
+      if (open > EVENT_LIMIT) {
+        await reader.cancel().catch(() => undefined);
+        controller.close();
+
+        return;
+      }
+
       controller.enqueue(chunk.value);
     },
     cancel: (reason) => reader.cancel(reason),
@@ -383,6 +435,15 @@ export const tapFetch = (fetch: FetchLike, clock: TapClock, verdicts: Verdicts):
         message: `The server redirects to ${away}, another origin; not followed`,
         status: response.status,
       });
+    }
+
+    if (
+      init?.method === "GET" &&
+      response.ok &&
+      response.body !== null &&
+      mediaType(response) === "text/event-stream"
+    ) {
+      return new Response(capEvents(response.body), response);
     }
 
     if (

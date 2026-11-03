@@ -226,3 +226,37 @@ describe.each(bases)("a hostile %s server", (_name, base) => {
     expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(1);
   });
 });
+
+describe("a Legacy server's GET stream", () => {
+  it("is closed at an event over 1 MiB, and the calls go on", async () => {
+    let cancelled = false;
+    const encoder = new TextEncoder();
+
+    const server = hostileServer(legacyStatefulServer(), (request) => {
+      if (request.method !== "GET") {
+        return undefined;
+      }
+
+      // One event that never ends, 64 KiB at a time, until the client lets go.
+      let sent = 0;
+
+      const body = new ReadableStream<Uint8Array>({
+        pull: (controller) => {
+          controller.enqueue(encoder.encode(sent === 0 ? "data: " : "x".repeat(64 * 1024)));
+          sent += 1;
+        },
+        cancel: () => {
+          cancelled = true;
+        },
+      });
+
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    });
+
+    expect(await attempt(server)).toEqual({
+      listed: { tools: ["echo", "shout"] },
+      called: { content: [{ type: "text", text: "hi" }] },
+    });
+    await expect.poll(() => cancelled).toBe(true);
+  });
+});

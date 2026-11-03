@@ -41,7 +41,7 @@
         "patterns": [
           {
             "group": ["@modelcontextprotocol/**"],
-            "message": "Only packages/mcp imports @modelcontextprotocol/*: it loads the SDK, which adds about 9-10 MiB of cold heap to every isolate. Use @cloudpid/mcp/types or @cloudpid/mcp/oauth, or an RPC to McpEngine. See docs/architecture/mcp.md → Packages and objects."
+            "message": "Only packages/mcp imports @modelcontextprotocol/*: it loads the SDK, which adds about 9-10 MiB of cold heap to every isolate. Use @cloudpid/mcp/types or @cloudpid/mcp/oauth, or an RPC to McpEngine; tests use the fake servers from @cloudpid/mcp/testing. See docs/architecture/mcp.md → Packages and objects."
           }
         ]
       }

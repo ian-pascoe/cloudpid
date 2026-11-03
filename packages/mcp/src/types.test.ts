@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   Cut,
   McpError,
+  McpEngineRequestResult,
   McpErrorWire,
   mayHaveRun,
   NotFound,
@@ -101,5 +102,39 @@ describe("mayHaveRun", () => {
   it.each(RUNS)("%s: a tools/call may have run: %s; a read: %s", (_name, error, call, read) => {
     expect(mayHaveRun(error, "tools/call")).toBe(call);
     expect(mayHaveRun(error, "tools/list")).toBe(read);
+  });
+});
+
+describe("McpEngineRequestResult", () => {
+  const decodeResult = (value: typeof McpEngineRequestResult.Encoded) =>
+    Schema.decodeEffect(McpEngineRequestResult)(value).pipe(Effect.runPromise);
+
+  it("reads a newer engine's failure tag as an OtherMcpError, with the rows it changed", async () => {
+    const result = await Schema.decodeEffect(Schema.fromJsonString(McpEngineRequestResult))(
+      '{"kind":"failed","error":{"_tag":"QuotaExceeded","message":"Too many calls"},"state":{"era":null}}',
+    ).pipe(Effect.runPromise);
+
+    expect(result).toMatchObject({
+      kind: "failed",
+      error: { tag: "QuotaExceeded", message: "Too many calls" },
+      state: { era: null },
+    });
+    expect(result.kind === "failed" && result.error).toBeInstanceOf(OtherMcpError);
+  });
+
+  it("keeps a large value's native byte stream as it came", async () => {
+    const body = new ReadableStream<Uint8Array>();
+
+    const result = await decodeResult({
+      kind: "complete",
+      result: { kind: "stream", body, bytes: 2 * 1024 * 1024 },
+      cacheable: true,
+      fetchedAt: 0,
+      state: {},
+    });
+
+    expect(
+      result.kind === "complete" && result.result.kind === "stream" && result.result.body,
+    ).toBe(body);
   });
 });

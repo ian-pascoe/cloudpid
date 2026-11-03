@@ -3,6 +3,7 @@ import { BROWSER_HOST_BINDING, Browsers } from "@cloudpid/browser";
 import { WebConfigLive } from "@cloudpid/extensions/web";
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
+import { MCP_ENGINE_BINDING, MCP_ENGINE_ENTRYPOINT, McpWorker } from "@cloudpid/mcp-worker";
 import * as Alchemy from "alchemy";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Namespace from "alchemy/Namespace";
@@ -143,6 +144,21 @@ const browserBinding = Effect.gen(function* () {
 });
 
 /**
+ * `McpWorker`'s `McpEngine` entrypoint, bound for `McpHost`, which runs the MCP SDK through it (ADR-0038;
+ * `docs/architecture/mcp-connections.md` → The engine). It is bound through the Worker's Output, not a literal name, so
+ * `McpWorker` deploys first. Only the deploy declares it: the bundle reads the binding from `env`.
+ */
+const mcpEngineBinding = Effect.gen(function* () {
+  if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
+
+  const mcpWorker = yield* McpWorker;
+
+  return {
+    [MCP_ENGINE_BINDING]: Cloudflare.WorkerEntrypoint(mcpWorker, MCP_ENGINE_ENTRYPOINT),
+  };
+});
+
+/**
  * Deploy-time props, resolved from the stage: the Worker's name, where it is served, its Access application and the
  * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`), with the stage's `MCP_CLIENT_DOCUMENT`
  * var (on, except under `alchemy dev`). A deployed stage also declares the MCP endpoint's own Access application and
@@ -214,6 +230,7 @@ const props = Effect.gen(function* () {
       ...(yield* workspaceBinding),
       ...(yield* sandboxBinding),
       ...(yield* browserBinding),
+      ...(yield* mcpEngineBinding),
       // The Images binding the Session DOs' `read` prepares images with; `alchemy dev` emulates it with sharp.
       [IMAGES_BINDING]: Cloudflare.Images.Images(IMAGES_BINDING),
       ...mcpAccess.vars,

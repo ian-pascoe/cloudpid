@@ -1,0 +1,29 @@
+{
+  "name": "@cloudpid/mcp-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./binding": "./src/binding.ts"
+  },
+  "scripts": {
+    "typecheck": "effect-tsgo tsrs",
+    "lint": "oxlint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@cloudpid/mcp": "workspace:*",
+    "@cloudpid/telemetry": "workspace:*",
+    "alchemy": "2.0.0-beta.84",
+    "effect": "^4.0.6",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@alchemy.run/cloudflare-runtime": "2.0.0-beta.84",
+    "@cloudflare/vitest-plugin": "^1.4.8",
+    "@cloudpid/config": "workspace:*",
+    "rolldown": "1.2.13"
+  }
+}
