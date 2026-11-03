@@ -12,6 +12,7 @@ import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import type { McpToolRow } from "./mcp-form.ts";
 import { isFollowedRow, type McpRow, mcpServersIn, repoBaseOf } from "./mcp-model.ts";
 
 /**
@@ -255,3 +256,37 @@ export const mcpRepoRowChanges = (row: McpRow) => {
       exposure === base.exposure ? resetOf("exposure") : changes.exposure(exposure),
   };
 };
+
+/**
+ * A Repo's server's tool exposure once the owner has added `added` to its file's `base`: the added patterns, each `hidden`
+ * and ahead of the file's (the first match wins, so they can hide more and never less), then the file's own as they are.
+ * The file's rows cannot be removed or retyped from here: an adjustment is written whole, so they are kept in it.
+ */
+export const mcpRepoToolExposure = (
+  base: Readonly<Record<string, McpExposure>>,
+  added: ReadonlyArray<McpToolRow>,
+): Readonly<Record<string, McpExposure>> => {
+  const hidden = Arr.filter(added, ({ pattern }) => pattern !== "");
+
+  return Record.fromEntries([
+    ...Arr.map(hidden, ({ pattern }) => [pattern, "hidden"] as const),
+    ...Arr.filter(
+      Record.toEntries(base),
+      ([pattern]) => !Arr.some(hidden, (row) => row.pattern === pattern),
+    ),
+  ]);
+};
+
+/**
+ * What saving a Repo's server's tool exposure writes: the added rows over the file's, or a Reset of the adjustment when
+ * none is added (what the file says is then in force).
+ */
+export const mcpRepoToolsChange = (row: McpRow, added: ReadonlyArray<McpToolRow>): McpChange =>
+  Arr.some(added, ({ pattern }) => pattern !== "")
+    ? {
+        kind: "toolExposure",
+        name: row.name,
+        target: "adjustment",
+        toolExposure: mcpRepoToolExposure(repoBaseOf(row).toolExposure, added),
+      }
+    : { kind: "reset", fields: mcpAdjustmentFields(row.name, ["toolExposure"]) };

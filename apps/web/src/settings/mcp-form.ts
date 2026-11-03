@@ -35,6 +35,8 @@ import {
   mcpReferencesOf,
   type McpReferenceNames,
   type McpRow,
+  isRepoRow,
+  repoBaseOf,
   repoDirectoryOf,
 } from "./mcp-model.ts";
 
@@ -391,7 +393,10 @@ export interface McpFormDraft {
 export interface McpToolsDraft {
   readonly kind: "tools";
   readonly name: string;
+  /** The rows the owner edits: all of the tool exposure, or for a Repo's server only what is added to its file's. */
   readonly rows: ReadonlyArray<McpToolRow>;
+  /** A Repo's server only: the rows its file gives, which are not the owner's to change. */
+  readonly fixed: ReadonlyArray<McpToolRow>;
 }
 
 /** What a form of mode `mode` starts from: empty fields for an Add, or the entry `written` of server `name`. */
@@ -452,9 +457,29 @@ export const mcpFormShowing = (draft: McpFormDraft, tab: McpFormDraft["tab"]): M
 export const mcpCopyForm = (row: McpRow): McpFormDraft =>
   newMcpForm("copy", row.name, row.written, repoDirectoryOf(row) ?? undefined);
 
-/** The editor of Global server `row`'s tool exposure at an Environment: it starts from the exposure in force. */
-export const toolsDraftOf = (row: McpRow): McpToolsDraft => ({
-  kind: "tools",
-  name: row.name,
-  rows: rowsOfToolExposure(row.server.toolExposure),
-});
+/**
+ * The editor of server `row`'s tool exposure at an Environment: it starts from the exposure in force. For a Repo's server
+ * the file's own rows are `fixed`, and the owner's rows are those in force beyond them: the owner can only add to them
+ * (`mcpRepoToolExposure`).
+ */
+export const toolsDraftOf = (row: McpRow): McpToolsDraft => {
+  if (!isRepoRow(row)) {
+    return {
+      kind: "tools",
+      name: row.name,
+      rows: rowsOfToolExposure(row.server.toolExposure),
+      fixed: [],
+    };
+  }
+
+  const base = repoBaseOf(row).toolExposure;
+
+  return {
+    kind: "tools",
+    name: row.name,
+    rows: rowsOfToolExposure(
+      Record.filter(row.server.toolExposure, (exposure, pattern) => base[pattern] !== exposure),
+    ),
+    fixed: rowsOfToolExposure(base),
+  };
+};

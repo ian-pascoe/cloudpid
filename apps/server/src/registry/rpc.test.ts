@@ -541,6 +541,8 @@ const fakeRegistries = () => {
     );
 
   let sparesMade = 0;
+  /** A Registry from before `recordBuild` answered the Repos a Build moved: it answers nothing, as `void` did. */
+  const oldRegistry = { recordBuild: false };
   const mcpSyncs: Array<string | undefined> = [];
   /** The looks at the Repos' `.pi/mcp.json` the endpoint asked of the Registry, in order with the pushes. */
   const mcpLooks: Array<string> = [];
@@ -1152,7 +1154,8 @@ const fakeRegistries = () => {
         calls.push(`recordBuild:${environment}`);
         buildRecords.set(environment, { build, status });
 
-        return moved;
+        // SAFETY: an old Registry's answer, which the type does not have: the edge only gains.
+        return oldRegistry.recordBuild ? (undefined as never) : moved;
       }),
     listBuilds: () =>
       Effect.sync(() =>
@@ -1533,6 +1536,7 @@ const fakeRegistries = () => {
     }),
     /** The Environments the endpoint asked `mcp` to push the MCP server set to (undefined: every one). */
     mcpSyncs,
+    oldRegistry,
     mcpLooks,
     mcpNames,
     mcpOffered,
@@ -1750,7 +1754,17 @@ const fakeRegistries = () => {
     /** The upkeep of the spares, built once per fake as the main Worker builds it once per isolate. */
     spareUpkeep: upkeepOfSpares,
     /** The upkeep of the Builds, built once per fake too. */
-    buildUpkeep: buildUpkeep(registries, { workspaces: workspaceObjects, spares: upkeepOfSpares }),
+    buildUpkeep: buildUpkeep(registries, {
+      workspaces: workspaceObjects,
+      spares: upkeepOfSpares,
+      mcp: {
+        sync: (environment) =>
+          Effect.sync(() => {
+            mcpLooks.push(`sync ${environment}`);
+            mcpSyncs.push(environment);
+          }),
+      },
+    }),
     spareBuilds,
     /** What each Workspace DO's clones read as (`workState`), by object name; nothing to push when unset. */
     workStates,
@@ -5037,6 +5051,54 @@ it("asks for a Build again when the settings a Build uses change, and not for a 
   // The last good one is still what Workspaces start from meanwhile.
   expect(fake.buildRecords.get(environment)?.build).toEqual(good);
 });
+
+it.each([true, false])(
+  "pushes the MCP set once after a Build that moved a Repo, or carries on without when the Registry is from before it answered which (old: %s)",
+  async (old) => {
+    const fake = fakeRegistries();
+    const environment = await makeEnvironment(fake, "Cloudpid");
+
+    const build = (id: string, commit: string) => ({
+      key: "",
+      snapshot: { id, size: 1 },
+      image: "img-1",
+      ignore: null,
+      commits: { app: commit },
+      finishedAt: 10,
+    });
+
+    const before = build("snap-1", "c1");
+    const after = build("snap-2", "c2");
+
+    await fake.runBackground();
+    fake.overridesOf.set(environment, { setupScript: "docker pull postgres" });
+    before.key = await keyOf(fake, environment);
+    after.key = before.key;
+    fake.buildRecords.set(environment, { build: before, status: null });
+    // The Build object has moved on to a newer one, which the upkeep records.
+    fake.buildObjects.set(`build:${environment}`, {
+      image: "img-1",
+      last: after,
+      progress: null,
+      attemptedAt: Date.now(),
+    });
+    fake.oldRegistry.recordBuild = old;
+    fake.calls.length = 0;
+    fake.mcpSyncs.length = 0;
+
+    await call(fake, (registry) =>
+      registry.updateGlobalContainerSettings({ set: { variables: { SHARED: "all" } } }),
+    );
+    await fake.runBackground();
+
+    // The Build was recorded, and what follows it still ran: the spare was made from the newer one, and no push was made.
+    const recorded = fake.calls.indexOf(`recordBuild:${environment}`);
+
+    expect(recorded).toBeGreaterThanOrEqual(0);
+    expect(fake.calls.slice(recorded)).toContain(`upkeepSpares:${environment}`);
+    expect(fake.mcpSyncs.includes(environment)).toBe(!old);
+  },
+);
 
 it("makes a Build with the variables kept Global under the Environment's own, and keeps the request and key of one that overrides every name", async () => {
   const fake = fakeRegistries();

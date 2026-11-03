@@ -45,6 +45,7 @@ import {
   repoDirectoryOf,
 } from "./mcp-model.ts";
 import { MessageList, OptionSelect, ReferencesNotice } from "./mcp-parts.tsx";
+import { mcpRepoToolsChange } from "./mcp-write.ts";
 import { type McpReferencesState, mcpPanelAtom, saveMcpAtom } from "./mcp-state.ts";
 import { CODE_AREA, Field, noteId } from "./parts.tsx";
 
@@ -769,13 +770,19 @@ export const McpToolsPanel = ({
   const submit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (!busy && !gone)
-      save({
-        kind: "toolExposure",
-        name: draft.name,
-        target: "adjustment",
-        toolExposure: toolExposureOfRows(draft.rows),
-      });
+    if (busy || gone || row === null) return;
+
+    // A Repo's server: what the owner adds to its file's rows, which are kept as they are.
+    save(
+      directory === null
+        ? {
+            kind: "toolExposure",
+            name: draft.name,
+            target: "adjustment",
+            toolExposure: toolExposureOfRows(draft.rows),
+          }
+        : mcpRepoToolsChange(row, draft.rows),
+    );
   };
 
   return (
@@ -792,6 +799,20 @@ export const McpToolsPanel = ({
         {directory !== null && " A Repo's server can only have tools hidden here."}
       </p>
       <Suggestions id={listId} options={tools} />
+      {draft.fixed.length > 0 && (
+        <ul
+          aria-label={`${draft.name}: tool exposure from the Repo`}
+          className="flex flex-col gap-1 text-xs"
+        >
+          {draft.fixed.map((fixed) => (
+            <li key={fixed.pattern} className="flex items-center gap-2 text-muted-foreground">
+              <code className="font-mono">{fixed.pattern}</code>
+              <span>{MCP_EXPOSURE_LABELS[fixed.exposure]}</span>
+              <span>(from the Repo's file; not changed here)</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <ToolRows
         rows={draft.rows}
         listId={listId}

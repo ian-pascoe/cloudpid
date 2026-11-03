@@ -128,6 +128,8 @@ export const repoDirectoryOf = (row: McpRow): string | null =>
 export interface RepoBase {
   readonly enabled: boolean;
   readonly exposure: McpExposure;
+  /** The file's own `toolExposure`, in its order. */
+  readonly toolExposure: Readonly<Record<string, McpExposure>>;
 }
 
 /**
@@ -135,12 +137,24 @@ export interface RepoBase {
  * server is only ever switched off here (D9), so these are what Reset brings back.
  */
 export const repoBaseOf = (row: McpRow): RepoBase => {
-  const exposure = row.fileEntry?.["exposure"];
+  const exposureOf = (value: Schema.Json | undefined): McpExposure | undefined =>
+    Arr.findFirst(MCP_EXPOSURES, (known) => known === value).pipe(Option.getOrUndefined);
+
+  const tools = row.fileEntry?.["toolExposure"];
 
   return {
     enabled: row.fileEntry?.["enabled"] !== false,
-    exposure: Arr.findFirst(MCP_EXPOSURES, (known) => known === exposure).pipe(
-      Option.getOrElse((): McpExposure => "codemode"),
+    exposure: exposureOf(row.fileEntry?.["exposure"]) ?? "codemode",
+    toolExposure: Record.fromEntries(
+      isJsonObject(tools)
+        ? Arr.filterMap(Record.toEntries(tools), ([pattern, value]) => {
+            const known = exposureOf(value);
+
+            return known === undefined
+              ? Result.failVoid
+              : Result.succeed([pattern, known] as const);
+          })
+        : [],
     ),
   };
 };

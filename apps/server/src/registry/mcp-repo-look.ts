@@ -11,11 +11,15 @@
 //   the error and since when (`unreadable`), a problem after 24 h; the owner's Reload drops it;
 // - the Repo is not on GitHub: not read (`not_github`).
 //
-// A look never throws: what goes wrong is `unreadable`. Looks of one Repo that overlap are one.
+// A look never throws: what goes wrong is `unreadable`. Looks of one Repo that overlap are one, but for a Reload that
+// comes while another look runs: it looks again once that one is over, so that it drops the copy a failed look keeps.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off -- GitHub is read through a Promise API; plain functions over values.
 import { MCP_LIMITS } from "@cloudpid/config";
 import { type EnvironmentRepo, MCP_REPO_FILE_PATH } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Clock from "effect/Clock";
+import type * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { githubRepoOf } from "../workspace/github-pulls.ts";
@@ -23,6 +27,7 @@ import {
   MCP_REPO_LOOK_INTERVAL_MS,
   MCP_REPO_THROTTLE_MS,
   type McpRepoFileRecord,
+  mcpUnlookedRepos,
   recordOf,
 } from "./mcp-repo-files.ts";
 import type { RegistryStore } from "./store.ts";
@@ -236,3 +241,29 @@ export const openMcpRepoLooks = (store: McpRepoLookStore, reader: McpRepoReader)
     },
   };
 };
+
+/**
+ * A Session's first look at the Repos of `environment` that no look has left a row for (added before their files were
+ * read), so that their servers count and wake the host: a Session with no servers never asks the host for its set, so none
+ * would else. Waits for it at most `wait`, which must be well under what the Session waits for its settings (a look is up
+ * to three GitHub requests in a row, and a Session that gives up runs on defaults): past it the look goes on in the
+ * background, and the Session's next settings read finds the Repo looked at. Never fails.
+ */
+export const firstMcpLook = (
+  looks: McpRepoLooks,
+  store: McpRepoLookStore,
+  environment: string,
+  wait: Duration.Input,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const unlooked = mcpUnlookedRepos(store, environment);
+
+    if (unlooked.length === 0) return;
+
+    const now = yield* Clock.currentTimeMillis;
+
+    // The look is not stopped when the wait ends: an interrupted `Effect.promise` only stops being waited for.
+    yield* Effect.promise(() =>
+      looks.look({ environment, repos: unlooked, reason: "due", now }),
+    ).pipe(Effect.timeoutOption(wait));
+  });

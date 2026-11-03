@@ -65,13 +65,8 @@ import {
 } from "./skills.ts";
 import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
-import {
-  buildMovedRepos,
-  MCP_FIRST_LOOK_WAIT,
-  mcpRepoFileViews,
-  mcpUnlookedRepos,
-} from "./mcp-repo-files.ts";
-import { type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
+import { buildMovedRepos, MCP_FIRST_LOOK_WAIT, mcpRepoFileViews } from "./mcp-repo-files.ts";
+import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
   previewSkillUpdates,
@@ -1829,21 +1824,11 @@ export const RegistryLive = Registry.make(
             ),
           sessionSettings: ({ session }) =>
             Effect.gen(function* () {
-              // A Repo added before its file was read is looked at once, so that its servers count (and wake the host): a
-              // Session with no servers never asks the host for its set, so none would else. The wait is bounded (a look
-              // can be three GitHub requests in a row): past it the answer is made without those Repos, and the look goes on
-              // in the background, so the Session's next Context Window counts them.
+              // A Repo added before its file was read is looked at once, for a bounded wait (`firstMcpLook`).
               const environment = store.getSession(session)?.environment;
 
-              const unlooked =
-                environment === undefined ? [] : mcpUnlookedRepos(store, environment);
-
-              if (environment !== undefined && unlooked.length > 0) {
-                const now = yield* Clock.currentTimeMillis;
-
-                yield* Effect.promise(() =>
-                  mcpLooks.look({ environment, repos: unlooked, reason: "due", now }),
-                ).pipe(Effect.timeoutOption(MCP_FIRST_LOOK_WAIT));
+              if (environment !== undefined) {
+                yield* firstMcpLook(mcpLooks, store, environment, MCP_FIRST_LOOK_WAIT);
               }
 
               return sessionSettingsSource(store, session);

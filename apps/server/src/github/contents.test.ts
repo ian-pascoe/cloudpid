@@ -156,6 +156,29 @@ describe("githubContents", () => {
       expect(calls[1]?.url).toBe("https://api.github.com/repos/acme/skills/commits/HEAD");
     });
 
+    it("has no file in an empty repo, which has no commit (409) and is readable", async () => {
+      const { reader } = harness([
+        notFound(),
+        json({ message: "Git Repository is empty." }, { status: 409 }),
+      ]);
+
+      expect(await reader.file(repo, null, ".pi/mcp.json")).toBeNull();
+    });
+
+    it("still fails an empty repo's 409 for a commit asked on its own", async () => {
+      const { reader } = harness([json({ message: "Git Repository is empty." }, { status: 409 })]);
+
+      expect((await failure(reader.commit(repo, null))).message).toContain("409");
+    });
+
+    it("words a body that is not JSON as that, not as an unreachable GitHub", async () => {
+      const { reader } = harness([new Response("{not json")]);
+
+      expect((await failure(reader.file(repo, null, ".pi/mcp.json"))).message).toBe(
+        "GitHub's answer to the file was not valid JSON",
+      );
+    });
+
     it("fails where the repo itself is not there, and names why", async () => {
       const { reader } = harness([notFound(), notFound()]);
 

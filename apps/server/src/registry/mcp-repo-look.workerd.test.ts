@@ -3,12 +3,13 @@
 // copy kept when GitHub does not answer (and the problem it becomes after 24 h), a 404, an invalid file, an oversize one, a
 // Repo that is not on GitHub, the throttle, and what the set makes of it all.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
 import { resolveMcpServerSet } from "@cloudpid/config";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { fakeGithub } from "../github/skill-repo.fixture.ts";
@@ -20,7 +21,7 @@ import {
   mcpRepoLayers,
   mcpUnlookedRepos,
 } from "./mcp-repo-files.ts";
-import { openMcpRepoLooks } from "./mcp-repo-look.ts";
+import { firstMcpLook, openMcpRepoLooks } from "./mcp-repo-look.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
 
@@ -354,6 +355,60 @@ describe("a Repo's .pi/mcp.json", () => {
 
       expect(mcpUnlookedRepos(store, DEFAULT_ENVIRONMENT)).toEqual([]);
     }));
+
+  describe("a Session's first look", () => {
+    /** A reader whose file read waits for `release`. */
+    const slow = (github: ReturnType<typeof fakeGithub>) => {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+
+      return {
+        release: () => release(),
+        reader: {
+          ...github.reader,
+          file: async (...asked: Parameters<typeof github.reader.file>) => {
+            await gate;
+
+            return github.reader.file(...asked);
+          },
+        },
+      };
+    };
+
+    it("gives up waiting for a slow look, which goes on and leaves the Repo looked at", () =>
+      inRegistry(async ({ store, github, servers }) => {
+        github.push("acme/app", { [FILE]: file({ docs: DOCS }) });
+
+        const { reader, release } = slow(github);
+        const looks = openMcpRepoLooks(store, reader);
+        const started = Date.now();
+
+        await Effect.runPromise(firstMcpLook(looks, store, DEFAULT_ENVIRONMENT, "30 millis"));
+
+        // It answered at the bound, without the Repo's servers, and the look is still running.
+        expect(Date.now() - started).toBeLessThan(1_000);
+        expect(servers()).toEqual([]);
+        expect(mcpUnlookedRepos(store, DEFAULT_ENVIRONMENT)).toEqual(["app"]);
+
+        release();
+        // The same look, joined: it is not made twice.
+        await looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "due", now: 0 });
+
+        expect(servers()).toEqual(["docs"]);
+        expect(github.requests.filter((request) => request.startsWith("file"))).toHaveLength(1);
+      }));
+
+    it("does not wait, or look, for a Repo that was looked at", () =>
+      inRegistry(async ({ store, github, looks }) => {
+        github.push("acme/app", { [FILE]: file({ docs: DOCS }) });
+        await looks.look({ environment: DEFAULT_ENVIRONMENT, reason: "due", now: 0 });
+        github.reset();
+
+        await Effect.runPromise(firstMcpLook(looks, store, DEFAULT_ENVIRONMENT, "30 millis"));
+
+        expect(github.requests).toEqual([]);
+      }));
+  });
 
   it("goes with its Repo and with its Environment, and a Repo taken out while it is read is not left a row", () =>
     inRegistry(async ({ store, github, looks, view }) => {

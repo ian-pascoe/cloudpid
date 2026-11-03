@@ -44,7 +44,7 @@ import {
 } from "../registry.testing.ts";
 import { settingsAtom, settingsOverridesAtom } from "../settings.ts";
 import { McpSection } from "./mcp.tsx";
-import { emptyMcpFields, mcpCopyForm, newMcpForm } from "./mcp-form.ts";
+import { emptyMcpFields, mcpCopyForm, newMcpForm, toolsDraftOf } from "./mcp-form.ts";
 import { mcpScopeView } from "./mcp-model.ts";
 import {
   changeMcpAtom,
@@ -55,7 +55,12 @@ import {
   reloadMcpRepoAtom,
   writeMcpChange,
 } from "./mcp-state.ts";
-import { mcpRepoRowChanges, mcpRowChanges } from "./mcp-write.ts";
+import {
+  mcpRepoRowChanges,
+  mcpRepoToolExposure,
+  mcpRepoToolsChange,
+  mcpRowChanges,
+} from "./mcp-write.ts";
 
 const WORK: EnvironmentRecord = { id: "work", name: "Work", repos: [], createdAt: 1 };
 const HOME: EnvironmentRecord = { id: "home", name: "Home", repos: [], createdAt: 2 };
@@ -1509,7 +1514,7 @@ describe("the tool exposure editor of a Global server at an Environment", () => 
   it.effect("saves a server Global still has", () =>
     Effect.gen(function* () {
       const markup = yield* render("work", {
-        panel: { kind: "tools", name: "files", rows: [] },
+        panel: { kind: "tools", name: "files", rows: [], fixed: [] },
       });
 
       expect(textOf(markup)).toContain("Tool exposure of files");
@@ -1523,7 +1528,7 @@ describe("the tool exposure editor of a Global server at an Environment", () => 
     () =>
       Effect.gen(function* () {
         const markup = yield* render("work", {
-          panel: { kind: "tools", name: "vanished", rows: [] },
+          panel: { kind: "tools", name: "vanished", rows: [], fixed: [] },
         });
 
         expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Save tool exposure/);
@@ -1965,5 +1970,95 @@ describe("what the owner's actions write", () => {
       ]);
       registry.dispose();
     }),
+  );
+});
+
+describe("the tool exposure editor of a Repo's server", () => {
+  const TOOLS_FILE = repoFile({
+    text: JSON.stringify({
+      mcpServers: {
+        shell: {
+          command: "shell",
+          toolExposure: { "read_*": "direct", delete_all: "hidden" },
+        },
+      },
+    }),
+  });
+
+  it("keeps the file's rows apart, read-only, and starts the owner's rows empty", () => {
+    expect(toolsDraftOf(repoRowOf("shell", TOOLS_FILE))).toEqual({
+      kind: "tools",
+      name: "shell",
+      rows: [],
+      fixed: [
+        { pattern: "read_*", exposure: "direct" },
+        { pattern: "delete_all", exposure: "hidden" },
+      ],
+    });
+  });
+
+  it("shows only what is added beyond the file's rows as the owner's, once saved", () => {
+    const base = { "read_*": "direct", delete_all: "hidden" } as const;
+    const saved = mcpRepoToolExposure(base, [{ pattern: "drop_*", exposure: "hidden" }]);
+
+    const row = repoRowOf("shell", TOOLS_FILE);
+    const adjusted = { ...row, server: { ...row.server, toolExposure: saved } };
+
+    expect(toolsDraftOf(adjusted).rows).toEqual([{ pattern: "drop_*", exposure: "hidden" }]);
+    expect(toolsDraftOf(adjusted).fixed).toHaveLength(2);
+  });
+
+  it("can only hide more: what is added is hidden, ahead of the file's rows, which are all kept", () => {
+    const base = { "read_*": "direct", delete_all: "hidden", "list_*": "deferred" } as const;
+
+    // Whatever Exposure a row was typed with, it is hidden; the file's rows keep theirs, and cannot be left out.
+    const saved = mcpRepoToolExposure(base, [
+      { pattern: "drop_*", exposure: "direct" },
+      { pattern: "", exposure: "hidden" },
+      { pattern: "list_*", exposure: "codemode" },
+    ]);
+
+    expect(Object.entries(saved)).toEqual([
+      ["drop_*", "hidden"],
+      ["list_*", "hidden"],
+      ["read_*", "direct"],
+      ["delete_all", "hidden"],
+    ]);
+    expect(Object.keys(mcpRepoToolExposure(base, []))).toEqual(Object.keys(base));
+    expect(mcpRepoToolExposure(base, [])).toEqual(base);
+  });
+
+  it("saves the added rows as the adjustment, or resets it when none is left", () => {
+    const row = repoRowOf("shell", TOOLS_FILE);
+
+    expect(mcpRepoToolsChange(row, [{ pattern: "drop_*", exposure: "hidden" }])).toEqual({
+      kind: "toolExposure",
+      name: "shell",
+      target: "adjustment",
+      toolExposure: { "drop_*": "hidden", "read_*": "direct", delete_all: "hidden" },
+    });
+
+    expect(mcpRepoToolsChange(row, [])).toEqual({
+      kind: "reset",
+      fields: ["mcp.servers.shell.toolExposure"],
+    });
+  });
+
+  it.effect(
+    "lists the file's rows without a way to change them, and offers only hidden for the rest",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", {
+          held: { repoFiles: [TOOLS_FILE] },
+          panel: toolsDraftOf(repoRowOf("shell", TOOLS_FILE)),
+        });
+
+        const text = textOf(markup);
+
+        expect(text).toContain("read_* Direct (from the Repo's file; not changed here)");
+        expect(text).toContain("A Repo's server can only have tools hidden here");
+        // The file's rows have no inputs: the only inputs are the owner's rows, of which there are none yet.
+        expect(markup).not.toContain('aria-label="Tool exposure 1 pattern"');
+      }),
   );
 });

@@ -256,13 +256,17 @@ export const buildUpkeep = (
       const answered: BuildState = wanted ? state : { ...state, last: null, progress: null };
 
       if (!recordedAs(work.recorded, answered)) {
-        const moved = yield* registry.recordBuild({
+        // A Registry from before this answered the Repos a Build moved answers nothing: the edge only gains
+        // (`docs/architecture/mcp.md` → Deploys), so the rest of the upkeep runs either way.
+        const moved: ReadonlyArray<string> | undefined = yield* registry.recordBuild({
           environment: work.environment,
           build: answered.last,
           status: answered.progress,
         });
 
-        if (mcp !== undefined && moved.length > 0) yield* mcp.sync(work.environment);
+        if (mcp !== undefined && moved !== undefined && moved.length > 0) {
+          yield* mcp.sync(work.environment);
+        }
 
         // The spare is made from the last good Build: one made from another is stale now.
         if (answered.last?.snapshot.id !== work.recorded.build?.snapshot.id) {

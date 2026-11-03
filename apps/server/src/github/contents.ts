@@ -52,6 +52,8 @@ const NotFileAnswer = Schema.Union([
 
 const isNotFile = Schema.is(NotFileAnswer);
 
+const decodeJsonText = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
 const ErrorAnswer = Schema.Struct({ message: Schema.String });
 
 const decodeError = Schema.decodeUnknownOption(ErrorAnswer);
@@ -99,6 +101,8 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
     path: string,
     accept: string,
     notFound: (installed: boolean) => string,
+    /** Statuses answered as they are, not as failures: a 409 for an empty repo, by the commit. */
+    tolerate: ReadonlyArray<number> = [],
   ): Promise<Response> => {
     const answer = await askAsApp(
       { fetch: options.fetch, github: options.github, timeoutMs: REQUEST_TIMEOUT_MS },
@@ -115,7 +119,7 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
 
     const { response, installed } = answer;
 
-    if (response.ok) return response;
+    if (response.ok || tolerate.includes(response.status)) return response;
 
     const said = Option.getOrUndefined(decodeError(await response.json().catch(() => null)));
     const limit = rateLimitOf(response);
@@ -174,7 +178,12 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
     return { truncated: decoded.value.truncated, entries: decoded.value.tree };
   };
 
-  const commitOf: RepoReader["commit"] = async (repo, ref) => {
+  /** The commit `ref` names, or null where the repo is empty (GitHub answers 409) and `emptyIsNull`. */
+  const commitAt = async (
+    repo: SkillRepo,
+    ref: string | null,
+    emptyIsNull: boolean,
+  ): Promise<string | null> => {
     const response = await ask(
       repo,
       `${repoPath(repo)}/commits/${ref === null ? "HEAD" : refPath(ref)}`,
@@ -183,7 +192,10 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
         ref === null
           ? gone(repo)(installed)
           : `${gone(repo)(installed)} Or it has no ref ${JSON.stringify(ref)} (a branch, a tag or a commit).`,
+      emptyIsNull ? [409] : [],
     );
+
+    if (response.status === 409) return null;
 
     const sha = (await bodyOf(() => response.text())).trim();
 
@@ -195,7 +207,14 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
   };
 
   return {
-    commit: commitOf,
+    commit: async (repo, ref) => {
+      const sha = await commitAt(repo, ref, false);
+
+      // Not reached: only a read that tolerates the 409 answers null.
+      if (sha === null) throw GithubReadError.of("failed", "GitHub answered 409");
+
+      return sha;
+    },
     tree: (repo, at) => treeAt(repo, at),
     // One request, whatever the ref is: GitHub's Trees API takes a branch, a tag or a SHA, and `HEAD` is the default branch.
     headTree: (repo, ref) => treeAt(repo, ref === null ? "HEAD" : refPath(ref)),
@@ -222,11 +241,17 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
 
         // A body that does not arrive, or is not what GitHub answers for a file, fails the read (the last copy is kept);
         // only a path GitHub says is not a file (a directory, a link, a submodule) has no file.
-        const body: unknown = await bodyOf(() => response.json());
+        const text = await bodyOf(() => response.text());
 
-        if (isNotFile(body)) return null;
+        const body = decodeJsonText(text);
 
-        const found = decodeFile(body);
+        if (Option.isNone(body)) {
+          throw GithubReadError.of("failed", "GitHub's answer to the file was not valid JSON");
+        }
+
+        if (isNotFile(body.value)) return null;
+
+        const found = decodeFile(body.value);
 
         if (Option.isNone(found)) {
           throw GithubReadError.of("failed", "GitHub's answer to the file was not a file");
@@ -236,7 +261,8 @@ export const githubContents = (options: GithubContentsOptions): RepoReader => {
       } catch (cause) {
         // GitHub's 404 is the repo's and the path's alike: the commit asked for says which it was.
         if (isReadError(cause) && cause.kind === "not_found") {
-          await commitOf(repo, ref);
+          // An empty repo has no commit to ask for (409): it is readable, and has no file.
+          await commitAt(repo, ref, true);
 
           return null;
         }

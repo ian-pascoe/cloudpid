@@ -11,6 +11,7 @@ import {
   mcpRepoLayerOf,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import type * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -23,8 +24,11 @@ export const MCP_REPO_LOOK_INTERVAL_MS = 10 * 60_000;
 /** The least time between two looks at one (Environment, Repo): the scheduled looks and a Build's are held to it. */
 export const MCP_REPO_THROTTLE_MS = 30_000;
 
-/** How long a Session's first look at a Repo's file is waited for: the look goes on in the background past it. */
-export const MCP_FIRST_LOOK_WAIT = "5 seconds";
+/**
+ * How long a Session's first look at a Repo's file is waited for: the look goes on in the background past it. The Session
+ * gives up on its settings read after 2 s (`SETTINGS_TIMEOUT`) and then runs on defaults, so the wait is a fraction of it.
+ */
+export const MCP_FIRST_LOOK_WAIT: Duration.Input = "500 millis";
 
 /** How long looks fail before the Repo's last good copy is a problem. */
 export const MCP_REPO_STALE_MS = 24 * 60 * 60_000;
