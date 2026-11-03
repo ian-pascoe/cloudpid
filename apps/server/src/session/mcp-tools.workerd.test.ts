@@ -401,7 +401,7 @@ describe("an MCP tool in a Session", () => {
     expect(systems[1]).toBe(systems[0]);
     expect(systems[2]).toBe(systems[0]);
 
-    // The object starts again: the conversation's document is what keeps it from being told twice.
+    // The object starts again: what the conversation's context holds is what keeps it from being told twice.
     await abortAllDurableObjects();
 
     const after = env.SESSIONS.getByName(`mcp-${environment}`);

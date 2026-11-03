@@ -42,6 +42,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
@@ -83,7 +84,7 @@ export {
   mcpServersSection,
 } from "./mcp/servers.ts";
 
-export { type McpNotices, mcpNotices } from "./mcp/notices.ts";
+export { type McpCheckResult, type McpNotices, mcpNotices } from "./mcp/notices.ts";
 
 export {
   extensionName,
@@ -188,6 +189,12 @@ export type McpRequestStartInput = {
 export type McpReinstall = {
   readonly mcp: Extension;
   readonly namespaces: ReadonlyArray<CodemodeNamespace>;
+  /**
+   * Tell every conversation of the Session of the listing this build has, when it changed since they were last asked:
+   * the notices are written (queued behind a busy Run's boundary) before the caller installs the build, so no model call
+   * sees the new declarations before the notice that explains them. Never fails; not interrupted.
+   */
+  readonly announce: Effect.Effect<void>;
 };
 
 /** What a Session holds of its MCP tools, for its runtime. */
@@ -202,9 +209,8 @@ export type McpToolsService = {
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
-   * Tell `conversation` of the listing as it is if its section was shown another, and, when the listing changed since
-   * the last time, every other conversation of the Session too (a request start's check, outside any lock: it never
-   * fails, and a failure is logged and tried again by the conversation's next request).
+   * Tell `conversation` of the listing as it is if its section was shown another, and finish a broadcast that failed
+   * (a request start's check, outside any lock: it never fails, and a failure is logged and tried again by the next).
    */
   readonly notify: (conversation: ConversationId) => Effect.Effect<void>;
 };
@@ -258,64 +264,114 @@ export const makeMcpTools = (
   /** Whether a build has given a listing: before, `current` is no listing, and no conversation is told of it. */
   let listed = false;
 
-  /** Whether the listing changed since the conversations were last all asked. */
+  /** Whether the listing changed since every conversation was last asked, and how many changes there have been. */
   let changed = false;
+  let changes = 0;
 
   let notices: McpNotices | undefined;
 
   /** The hash of the listing each conversation is known to have been told, until it changes or the section shows anew. */
   const told = new Map<ConversationId, string>();
 
-  /** Ask whether `conversation` was shown `current`, writing its notice if not. */
-  const check = (conversation: ConversationId) => {
+  /** The conversations whose context showed no section when asked, until the section is shown anew in them. */
+  const unshown = new Set<ConversationId>();
+
+  /** How many times each conversation's section was shown anew, so an answer that is older than that is not kept. */
+  const shownCount = new Map<ConversationId, number>();
+
+  /** One broadcast at a time: the next finds the conversations told by the one before. */
+  const broadcasting = Semaphore.makeUnsafe(1);
+
+  /**
+   * Ask each of `conversations` whether it was shown `current`, writing its notice if not, and keep what is learned.
+   * False when the check could not be made for some: logged, and tried again by the next request of that conversation.
+   */
+  const ask = (conversations: ReadonlyArray<ConversationId>): Effect.Effect<boolean> => {
     const listing = current;
-
-    if (notices === undefined || !listed || told.get(conversation) === listing.hash) {
-      return Effect.void;
-    }
-
     const sink = notices;
+    const due = Arr.filter(conversations, (each) => told.get(each) !== listing.hash);
 
-    return Effect.tryPromise(() => sink.check({ conversation, listing, features })).pipe(
-      Effect.map((seen) => {
-        if (seen) told.set(conversation, listing.hash);
-      }),
+    if (sink === undefined || !listed || due.length === 0) return Effect.succeed(true);
+
+    const counted = Arr.map(due, (each) => shownCount.get(each) ?? 0);
+
+    return Effect.tryPromise(() => sink.check({ conversations: due, listing, features })).pipe(
+      Effect.flatMap((results) =>
+        Effect.forEach(results, (result) => {
+          if (result.outcome === "failed") {
+            return Effect.logWarning(
+              "The MCP servers notice could not be written",
+              result.error,
+            ).pipe(Effect.as(false));
+          }
+
+          return Effect.sync(() => {
+            if (result.outcome === "current") {
+              told.set(result.conversation, listing.hash);
+            } else if (
+              (shownCount.get(result.conversation) ?? 0) ===
+              counted[due.indexOf(result.conversation)]
+            ) {
+              unshown.add(result.conversation);
+            }
+
+            return true;
+          });
+        }),
+      ),
+      Effect.map((each) => Arr.every(each, Boolean)),
       Effect.catchCause((cause) =>
-        Effect.logWarning("The MCP servers notice could not be written", cause),
+        Effect.logWarning("The MCP servers notice could not be written", cause).pipe(
+          Effect.as(false),
+        ),
       ),
     );
   };
 
-  /** Ask every conversation but `conversation`, once for each change of the listing. */
-  const checkOthers = (conversation: ConversationId) => {
+  /** Ask whether `conversation` was shown `current`, writing its notice if not. */
+  const check = (conversation: ConversationId) =>
+    Effect.suspend(() => {
+      unshown.delete(conversation);
+
+      return Effect.asVoid(ask([conversation]));
+    });
+
+  /**
+   * Ask every conversation of the Session that may have been shown a listing, once for each change of it. Not
+   * interrupted, so a Stop of the message that ran it never leaves the rest untold; `changed` holds until all were asked,
+   * so a broadcast that failed is run again by the next request.
+   */
+  const broadcast: Effect.Effect<void> = Effect.suspend(() => {
     const sink = notices;
 
     if (sink === undefined || !listed || !changed) return Effect.void;
 
-    changed = false;
+    return broadcasting
+      .withPermit(
+        Effect.suspend(() => {
+          if (!changed) return Effect.void;
 
-    return Effect.tryPromise(() => sink.conversations()).pipe(
-      Effect.flatMap((all) =>
-        Effect.forEach(
-          Arr.filter(all, (each) => each !== conversation),
-          check,
-          { discard: true },
-        ),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.logWarning(
-          "The conversations of the Session could not be told of the MCP servers",
-          cause,
-        ).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              changed = true;
-            }),
-          ),
-        ),
-      ),
-    );
-  };
+          const at = changes;
+
+          return Effect.tryPromise(() => sink.conversations()).pipe(
+            Effect.flatMap((all) => ask(Arr.filter(all, (each) => !unshown.has(each)))),
+            Effect.tap((done) =>
+              Effect.sync(() => {
+                if (done && changes === at) changed = false;
+              }),
+            ),
+            Effect.asVoid,
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "The conversations of the Session could not be told of the MCP servers",
+                cause,
+              ),
+            ),
+          );
+        }),
+      )
+      .pipe(Effect.uninterruptible);
+  });
 
   /** The section, shared by every build: it reads the newest listing, and hears of each request that finds it shown. */
   const section = mcpServersSectionOf({
@@ -323,6 +379,8 @@ export const makeMcpTools = (
     features: () => features,
     shownAnew: (conversation) => {
       told.delete(conversation);
+      unshown.delete(conversation);
+      shownCount.set(conversation, (shownCount.get(conversation) ?? 0) + 1);
     },
     stillShown: (conversation) => check(conversation),
   });
@@ -474,6 +532,7 @@ export const makeMcpTools = (
         ? {
             mcp: mcpExtension({ servers: [], offered }, client, {}, sectionOptions),
             namespaces: [],
+            announce: broadcast,
           }
         : {
             mcp: mcpExtension(
@@ -483,11 +542,15 @@ export const makeMcpTools = (
               sectionOptions,
             ),
             namespaces: mcpNamespaces(latest.servers),
+            announce: broadcast,
           };
 
     const listing = mcpListing(latest?.servers ?? [], offered);
 
-    if (!listed || listing.hash !== current.hash) changed = true;
+    if (!listed || listing.hash !== current.hash) {
+      changed = true;
+      changes += 1;
+    }
 
     listed = true;
     current = listing;
@@ -502,7 +565,7 @@ export const makeMcpTools = (
     bindNotices: (next) => {
       notices = next;
     },
-    notify: (conversation) => Effect.andThen(check(conversation), checkOthers(conversation)),
+    notify: (conversation) => Effect.andThen(check(conversation), broadcast),
   };
 };
 

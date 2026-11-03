@@ -3,7 +3,7 @@
 // servers the `mcp` extension is built from and the offered tools.
 //
 // - **The listing** is a line for each enabled server that has a `codemode` or `deferred` tool or resources, or that
-//   may have one and is not discovered yet: `- mcp__<server> (codemode|tool_search): <summary>`, ending `· resources`
+//   may have one and is not discovered yet: `- mcp__<server> (codemode|tool_search|direct): <summary>`, ending `· resources`
 //   when the server has resources, with `(connecting)` or `(needs sign-in)` in place of how its tools are reached for a
 //   server with no inventory. Its summary is the entry's `description`, else the first line of the server's
 //   `instructions`, cut at 250 characters; the whole section holds at most 4,096, the servers past it counted.
@@ -97,6 +97,7 @@ export const mcpServersIntro = (options: McpIntroOptions): string =>
         : []),
       "A server marked (codemode) is called from a codemode script as tools.mcp__<server>__<tool>(args); describeNamespace shows its tools.",
       "A server marked (tool_search) has tools you load with tool_search and then call.",
+      "A server marked (direct) has its tools in your tool list already.",
       "(connecting) means the server is not discovered yet: its tools are not known.",
       ...(options.resourceTools
         ? [
@@ -127,9 +128,9 @@ const overflowLine = (left: number): string => `- … and ${left} more not liste
 /** `text` without its control characters. */
 const stripControls = (text: string): string => text.replace(/\p{Cc}/gu, "");
 
-/** `text` as one line with its control characters stripped, cut to `MAX_SUMMARY_LENGTH` characters. */
+/** `text` as one line (each run of whitespace one space, other control characters stripped), cut to `MAX_SUMMARY_LENGTH`. */
 const summaryText = (text: string): string => {
-  const clean = stripControls(text).replace(/\s+/g, " ").trim();
+  const clean = text.replace(/\s+|\p{Cc}/gu, (found) => (/\s/u.test(found) ? " " : "")).trim();
 
   const characters = Array.from(clean);
 
@@ -143,7 +144,7 @@ const summaryOf = (server: McpBuildServer): string => {
   const { description } = server.server;
 
   if (Predicate.isString(description)) {
-    const text = summaryText(description.replace(/[\r\n\t]+/g, " "));
+    const text = summaryText(description);
 
     if (text !== "") return text;
   }
@@ -156,10 +157,10 @@ const summaryOf = (server: McpBuildServer): string => {
   return Option.match(line, { onNone: () => "", onSome: summaryText });
 };
 
-/** How a server's tools are reached, from its tools that are not `direct`; none when it has none. */
-type Reach = "codemode" | "tool_search";
+/** How a server's tools are reached: from its tools that are not `direct`, else `direct` (a line for its resources). */
+type Reach = "codemode" | "tool_search" | "direct";
 
-const reachOf = (exposures: ReadonlyArray<"codemode" | "deferred">): Reach =>
+const reachOf = (exposures: ReadonlyArray<"codemode" | "deferred">): Exclude<Reach, "direct"> =>
   exposures.length > 0 && Arr.every(exposures, (each) => each === "deferred")
     ? "tool_search"
     : "codemode";
@@ -223,12 +224,8 @@ const serverLine = (server: McpBuildServer, offered: ReadonlyArray<string>): str
 
   if (exposures.length === 0 && !resources) return undefined;
 
-  const how =
-    exposures.length > 0
-      ? reachOf(exposures)
-      : keys.exposure === "deferred"
-        ? "tool_search"
-        : "codemode";
+  // Only resources are listed for a server whose tools are all `direct`: its tools are in the tool list already.
+  const how = exposures.length > 0 ? reachOf(exposures) : "direct";
 
   return lineOf(server, how, resources);
 };

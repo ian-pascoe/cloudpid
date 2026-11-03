@@ -69,6 +69,19 @@ const open = async (script: Parameters<typeof openSubagentHarness>[0]) => {
     return mcp;
   };
 
+  /** The Session's reinstall: the conversations are told of the listing, and then the build is installed. */
+  const install = async (mcp: McpToolsService) => {
+    const built = mcp.reinstall([]);
+
+    if (Option.isNone(built)) return;
+
+    await Effect.runPromise(built.value.announce);
+    session.registry.install(built.value.mcp);
+    session.registry.install(
+      createCodemodeExtension({ sandbox, models: false, namespaces: built.value.namespaces }),
+    );
+  };
+
   /** What the Session does at a conversation's request start: the host calls, the reinstall, the notice check. */
   const start = async (
     mcp: McpToolsService,
@@ -77,10 +90,8 @@ const open = async (script: Parameters<typeof openSubagentHarness>[0]) => {
   ) => {
     await Effect.runPromise(mcp.requestStart(startOf(conversation)));
 
-    Option.map(mcp.reinstall([]), ({ mcp: extension, namespaces }) => {
-      session.registry.install(extension);
-      session.registry.install(createCodemodeExtension({ sandbox, models: false, namespaces }));
-    });
+    // As the Session host: the conversations are told, then the build is installed.
+    await install(mcp);
 
     if (options.notify !== false) await Effect.runPromise(mcp.notify(conversation));
   };
@@ -89,7 +100,7 @@ const open = async (script: Parameters<typeof openSubagentHarness>[0]) => {
   const notices = async (id: ConversationId = ROOT_CONVERSATION_ID): Promise<EntryRecord[]> =>
     (await session.entries(id)).filter((entry) => entry.kind === MCP_SERVERS_KIND);
 
-  return { ...session, tools, start, notices };
+  return { ...session, tools, start, install, notices };
 };
 
 /** The model-facing text of a notice entry. */
@@ -196,7 +207,7 @@ describe("a set change under a conversation", () => {
     expect(session.requests[1]?.system).toBe(session.requests[0]?.system);
   });
 
-  it("is told the section's own listing again by a flip back, but not of a flip that no request saw", async () => {
+  it("is told of every listing the Session installs, a flip back to the section's own included", async () => {
     const host = fakeMcpHost([DOCS]);
     const session = await open(() => answer("ok"));
     const mcp = session.tools(host);
@@ -204,22 +215,14 @@ describe("a set change under a conversation", () => {
     await session.start(mcp);
     await session.prompt("one");
 
-    // Changed and changed back by starts of other conversations: this one was shown this listing, so it is told nothing.
+    // Each install tells the conversations first, whichever conversation's start made it: the flip back is told too,
+    // since the model reads the first notice before it.
     host.set([DOCS, LINEAR]);
     await session.start(mcp, ROOT_CONVERSATION_ID, { notify: false });
     host.set([DOCS]);
     await session.start(mcp, ROOT_CONVERSATION_ID, { notify: false });
     await session.start(mcp);
     await session.prompt("two");
-    expect(await session.notices()).toEqual([]);
-
-    // A change that was told, and then the flip back: one notice for each change, though the first listing is the section's.
-    host.set([DOCS, LINEAR]);
-    await session.start(mcp);
-    await session.prompt("three");
-    host.set([DOCS]);
-    await session.start(mcp);
-    await session.prompt("four");
 
     const notices = await session.notices();
 
@@ -591,5 +594,110 @@ describe("what a conversation was last shown", () => {
     await Effect.runPromise(session.tools(host).notify(ROOT_CONVERSATION_ID));
 
     expect(await session.notices()).toEqual([]);
+  });
+});
+
+describe("telling every conversation of a listing", () => {
+  const ownerless = (session: Awaited<ReturnType<typeof open>>) =>
+    session.harness.createConversation(
+      {
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: "faux", modelId: "faux-1" } },
+      },
+      context,
+    );
+
+  it("is done by a reinstall that no request start of the owner made", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+    const other = await ownerless(session);
+
+    await session.start(mcp);
+    await session.prompt("one");
+    await (await other.submit({ type: "input", content: "hello" }, context)).wait(context);
+
+    // A settings read installs again: the owner's conversation starts nothing, and everyone is told as the build installs.
+    host.set([DOCS, LINEAR]);
+    await Effect.runPromise(mcp.requestStart(startOf()));
+    await session.install(mcp);
+
+    expect(await session.notices(other.id)).toHaveLength(1);
+    expect(await session.notices()).toHaveLength(1);
+  });
+
+  it("is tried again by the next request when the Session's conversations could not be listed", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+    const sink = mcpNotices(session.harness);
+    let failures = 0;
+
+    mcp.bindNotices({
+      check: sink.check,
+      conversations: async () => {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error("The Harness is busy");
+        }
+
+        return sink.conversations();
+      },
+    });
+
+    const other = await ownerless(session);
+
+    await session.start(mcp);
+    await session.prompt("one");
+    await (await other.submit({ type: "input", content: "hello" }, context)).wait(context);
+
+    host.set([DOCS, LINEAR]);
+    failures = 2;
+    // The install's broadcast and the start's both fail: the owner's own conversation is told, the rest is not yet.
+    await session.start(mcp);
+    expect(await session.notices()).toHaveLength(1);
+    expect(await session.notices(other.id)).toEqual([]);
+
+    // The next request finds the broadcast still due, and finishes it; the owner is not told twice.
+    await session.start(mcp);
+    expect(await session.notices(other.id)).toHaveLength(1);
+    expect(await session.notices()).toHaveLength(1);
+  });
+
+  it("does not read again a conversation whose context shows no section yet, until it shows one", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const session = await open(() => answer("ok"));
+    const mcp = session.tools(host);
+    const sink = mcpNotices(session.harness);
+    const asked: ConversationId[][] = [];
+
+    mcp.bindNotices({
+      check: (input) => {
+        asked.push([...input.conversations]);
+
+        return sink.check(input);
+      },
+      conversations: sink.conversations,
+    });
+
+    const fresh = await ownerless(session);
+
+    await session.start(mcp);
+    await session.prompt("one");
+    host.set([DOCS, LINEAR]);
+    await session.start(mcp);
+    expect(asked.flat()).toContain(fresh.id);
+
+    asked.length = 0;
+    host.set([LINEAR]);
+    await session.start(mcp);
+    expect(asked.flat()).not.toContain(fresh.id);
+
+    // Its first request shows it the section as it is, and it is read again from then on.
+    await (await fresh.submit({ type: "input", content: "hello" }, context)).wait(context);
+    asked.length = 0;
+    host.set([DOCS]);
+    await session.start(mcp);
+    expect(asked.flat()).toContain(fresh.id);
   });
 });

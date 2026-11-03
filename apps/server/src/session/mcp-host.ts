@@ -40,7 +40,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type { Mutable } from "effect/Types";
-import type { SessionHostMcp } from "./host.ts";
+import type { SessionHostMcp, SessionHostMcpBuild } from "./host.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
 /** What each of `McpHostClient`'s methods is answered on the wire, before the shared readers. */
@@ -264,14 +264,14 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
   const reinstall = (
     installed: readonly Extension[],
     values: SessionSettingsValues,
-  ): readonly Extension[] => {
+  ): SessionHostMcpBuild<never> => {
     const { environment } = values.mcp;
 
-    if (environment === null) return [];
+    if (environment === null) return { extensions: [], announce: Effect.void };
 
     const built = toolsOf(environment).reinstall(values.toolSearch.offered);
 
-    if (Option.isNone(built)) return [];
+    if (Option.isNone(built)) return { extensions: [], announce: Effect.void };
 
     const { mcp, namespaces } = built.value;
     const codemode = options.codemode(namespaces);
@@ -280,7 +280,10 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
       each.name === mcp.name ? mcp : each.name === codemode.name ? codemode : each,
     );
 
-    return [mcp, codemode, reloadToolSearch(others, values.toolSearch)];
+    return {
+      extensions: [mcp, codemode, reloadToolSearch(others, values.toolSearch)],
+      announce: built.value.announce,
+    };
   };
 
   const bind = (next: McpNotices) => {

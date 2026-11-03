@@ -100,7 +100,7 @@ describe("the mcp_servers listing", () => {
         server("files", ["read"], { resources: true }, { exposure: "direct" }),
         server("docs", ["search"], { resources: true, instructions: "Use search." }),
       ]),
-    ).toBe("- mcp__files (codemode) · resources\n- mcp__docs (codemode): Use search. · resources");
+    ).toBe("- mcp__files (direct) · resources\n- mcp__docs (codemode): Use search. · resources");
   });
 
   it("uses the entry's description, else the first line of the instructions with control characters stripped", () => {
@@ -212,6 +212,7 @@ describe("the mcp_servers section and its notice", () => {
       expect(intro).toContain("read_mcp_resource");
       expect(intro).toContain("mcp_sign_in_ask");
       expect(intro).toContain("tools.mcp__<server>__<tool>(args)");
+      expect(intro).toContain("(direct)");
       expect(intro).not.toMatch(/prompt/i);
       expect(intro).not.toContain("\n\n");
     }
