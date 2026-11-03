@@ -281,7 +281,8 @@ const walkServer = async (
   };
 
   const op = tool.what === "resources" ? "resources/list" : "resources/templates/list";
-  const seen = new Set<string>();
+  // The cursor the listing starts from is one the server must not lead back to.
+  const seen = new Set<string>(from === undefined ? [] : [from]);
   let cursor = from;
 
   for (;;) {
@@ -326,18 +327,14 @@ const walkServer = async (
 
     const { nextCursor } = sent.value;
 
-    // A cursor the server gives twice would never end: the listing says it is not finished, as it does of any it leaves.
     if (nextCursor === undefined) return;
 
+    // A cursor the server gives twice would never end: this server's listing fails as a failed page does, and the
+    // next server is listed. What its earlier pages gave stays.
     if (seen.has(nextCursor)) {
-      listing.truncated = true;
-      listing.incomplete.push(unfinished(shown, undefined));
-      listing.errors.push({
-        server: shown,
-        error: "The server's pages repeat a cursor, so the listing stopped",
-      });
-
-      return;
+      return failed(
+        failedWith("The server's pages repeat a cursor, so its listing stopped", exchange.details),
+      );
     }
 
     seen.add(nextCursor);

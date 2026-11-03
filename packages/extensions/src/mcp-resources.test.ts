@@ -429,32 +429,52 @@ describe("list_mcp_resources", () => {
 });
 
 describe("a listing that cannot end", () => {
-  it("stops at a cursor the server gives twice, truncated, with the server left unfinished and why", async () => {
-    const looping: FakeMcpAnswer = async (input) =>
-      input.op === "resources/list"
-        ? McpHostCompleted.make({
-            result: {
-              kind: "inline",
-              value: { resources: resourcesOf("l", 2), nextCursor: "same" },
-            },
-          })
-        : HostUnsupported.make({ message: "lists only", op: input.op });
+  /** `File-Store` leads to the cursor `same` from every page, `docs` lists one page. */
+  const looping: FakeMcpAnswer = async (input) =>
+    input.op === "resources/list"
+      ? McpHostCompleted.make({
+          result: {
+            kind: "inline",
+            value:
+              input.server === "File-Store"
+                ? { resources: resourcesOf("l", 2), nextCursor: "same" }
+                : { resources: resourcesOf("d", 1) },
+          },
+        })
+      : HostUnsupported.make({ message: "lists only", op: input.op });
 
+  it("fails the server that gives a cursor twice, keeping its pages, and lists the next", async () => {
     const { host, session } = await calling([FILES, DOCS], looping, [["list_mcp_resources", {}]]);
 
     // The first page, then the page `same` leads to, whose own cursor is `same` again: not asked a third time.
     expect(requestsOf(host)).toEqual([
       ["resources/list", "File-Store", undefined],
       ["resources/list", "File-Store", "same"],
+      ["resources/list", "docs", undefined],
     ]);
 
     const listed = await jsonOf(session);
 
-    expect(listed.truncated).toBe(true);
-    expect(listed.incomplete).toEqual([{ server: "file_store" }, { server: "docs" }]);
+    expect(listed.resources).toHaveLength(5);
+    expect(listed.truncated).toBeUndefined();
+    expect(listed.incomplete).toBeUndefined();
     expect(listed.errors).toEqual([
       { server: "file_store", error: expect.stringContaining("repeat a cursor") },
     ]);
+  });
+
+  it("is the call's own error for one server, and a cursor it starts from counts as given", async () => {
+    const { host, session } = await calling([FILES, DOCS], looping, [
+      ["list_mcp_resources", { server: "File-Store", cursor: "same" }],
+    ]);
+
+    // Asked from `same`, the server leads straight back to it.
+    expect(requestsOf(host)).toEqual([["resources/list", "File-Store", "same"]]);
+
+    const [isError, content] = (await results(session))[0] ?? [];
+
+    expect(isError).toBe(true);
+    expect(textsOf(content ?? [])[0]).toContain("repeat a cursor");
   });
 });
 

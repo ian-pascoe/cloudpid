@@ -12,6 +12,7 @@ import {
   LIST_CACHE_MAX_TTL_MS,
   makeIsolateBudget,
   makeListCache,
+  isolateBudget,
   McpListCache,
 } from "./list-cache.ts";
 import { authContextOf } from "./resources.ts";
@@ -27,7 +28,7 @@ const DOCS = { conn: "conn-docs" };
 
 describe("the list cache", () => {
   it("keeps a value for its ttl, and gives it back until then", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     expect(cache.put("k", DOCS, "e", { a: 1 }, 1000, 0)).toBe(true);
     expect(cache.get("k", "e", 999)).toEqual({ a: 1 });
@@ -36,7 +37,7 @@ describe("the list cache", () => {
   });
 
   it("caps the ttl at 24 hours", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     cache.put("k", DOCS, "e", { a: 1 }, 30 * DAY_MS, 0);
 
@@ -46,7 +47,7 @@ describe("the list cache", () => {
   });
 
   it("keeps nothing for a ttl that is not above 0", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     expect(cache.put("k", DOCS, "e", {}, 0, 0)).toBe(false);
     expect(cache.put("k", DOCS, "e", {}, -5, 0)).toBe(false);
@@ -55,7 +56,7 @@ describe("the list cache", () => {
   });
 
   it("keeps no entry over 4 MiB, and one at it", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     expect(LIST_CACHE_ENTRY_BYTES).toBe(4 * MiB);
     expect(cache.put("big", DOCS, "e", weighing(4 * MiB), 1000, 0)).toBe(false);
@@ -84,7 +85,7 @@ describe("the list cache", () => {
   });
 
   it("replaces an entry under the same key, counting its bytes once", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     cache.put("k", DOCS, "e", weighing(1000), 1000, 0);
     cache.put("k", DOCS, "e", weighing(10), 1000, 0);
@@ -94,7 +95,7 @@ describe("the list cache", () => {
   });
 
   it("gives nothing back to a server that is in another epoch, and drops the entry", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     cache.put("k", DOCS, "2026-07-28@1", { a: 1 }, 1000, 0);
 
@@ -103,7 +104,7 @@ describe("the list cache", () => {
   });
 
   it("drops the pages of a server instance, and no other's", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     cache.put("a", { conn: "c1", workspace: "ws:1" }, "e", {}, 1000, 0);
     cache.put("b", { conn: "c1", workspace: "ws:2" }, "e", {}, 1000, 0);
@@ -117,7 +118,7 @@ describe("the list cache", () => {
   });
 
   it("keeps only the pages of the connections still in the set", () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
 
     cache.put("a", { conn: "old" }, "e", {}, 1000, 0);
     cache.put("b", { conn: "new" }, "e", {}, 1000, 0);
@@ -182,29 +183,79 @@ describe("the isolate's budget", () => {
     expect(cache.size().entries).toBe(0);
   });
 
-  it("is shared by the host's own layers: two built apart are two caches charging one budget", async () => {
-    const sizes = await Effect.runPromise(
+  it("is left by a cache that holds nothing, and a cache whose host is gone is drained by the others' puts", () => {
+    const isolate = makeIsolateBudget();
+    const abandoned = makeListCache(undefined, isolate);
+
+    // Built, it holds nothing of the budget.
+    expect(isolate.holders()).toBe(0);
+
+    // Its host object is gone, and nothing told it: never disposed.
+    abandoned.put("a", DOCS, "e", piece, 1000, 0);
+
+    expect(isolate.holders()).toBe(1);
+
+    const live = makeListCache(undefined, isolate);
+    const other = makeListCache(undefined, isolate);
+
+    live.put("b", DOCS, "e", piece, 1000, 0);
+
+    expect(isolate.holders()).toBe(2);
+
+    // 9 MiB: the abandoned cache's page is the least recently used of all.
+    other.put("c", DOCS, "e", piece, 1000, 0);
+
+    expect(abandoned.size()).toEqual({ entries: 0, bytes: 0 });
+    expect(isolate.holders()).toBe(2);
+    expect(isolate.bytes()).toBe(live.size().bytes + other.size().bytes);
+    expect(isolate.bytes()).toBeLessThan(7 * MiB);
+
+    live.dropServer(DOCS);
+    other.dropServer(DOCS);
+
+    expect(isolate.holders()).toBe(0);
+    expect(isolate.bytes()).toBe(0);
+  });
+
+  it("is shared by the host's own layers: three built apart are three caches, past 8 MiB together, charging one budget", async () => {
+    const before = isolateBudget.bytes();
+    const holdersBefore = isolateBudget.holders();
+    const big = weighing(3.9 * MiB);
+
+    const kept = await Effect.runPromise(
       Effect.gen(function* () {
         const one = yield* McpListCache;
 
         return yield* Effect.gen(function* () {
           const two = yield* McpListCache;
 
-          one.put("a", DOCS, "e", weighing(3.9 * MiB), 1000, 0);
-          two.put("b", DOCS, "e", weighing(3.9 * MiB), 1000, 0);
+          return yield* Effect.gen(function* () {
+            const three = yield* McpListCache;
 
-          return [one.size().entries, two.size().entries] as const;
-        }).pipe(Effect.provide(McpListCache.layer));
-      }).pipe(Effect.provide(McpListCache.layer)),
+            one.put("a", DOCS, "e", big, 1000, 0);
+            two.put("b", DOCS, "e", big, 1000, 0);
+            three.put("c", DOCS, "e", big, 1000, 0);
+
+            // 11.7 MiB asked of an 8 MiB budget: the oldest page, the first host's, went.
+            expect(isolateBudget.bytes() - before).toBeLessThanOrEqual(8 * MiB);
+
+            return [one.size().entries, two.size().entries, three.size().entries] as const;
+          }).pipe(Effect.provide(Layer.fresh(McpListCache.layer)));
+        }).pipe(Effect.provide(Layer.fresh(McpListCache.layer)));
+      }).pipe(Effect.provide(Layer.fresh(McpListCache.layer))),
     );
 
-    expect(sizes).toEqual([1, 1]);
+    expect(kept).toEqual([0, 1, 1]);
+
+    // Each scope ended and gave its bytes back.
+    expect(isolateBudget.bytes()).toBe(before);
+    expect(isolateBudget.holders()).toBe(holdersBefore);
   });
 });
 
 describe("a stdio server's process ending", () => {
   it("drops the pages the cache kept of it, and tells the handler", async () => {
-    const cache = makeListCache();
+    const cache = makeListCache(undefined, makeIsolateBudget());
     const told: Array<string> = [];
 
     cache.put("a", { conn: "c1", workspace: "ws:1" }, "e", {}, 1000, 0);
