@@ -28,11 +28,13 @@ import {
   shownPages,
   shownReview,
   shownSkills,
+  shownVia,
 } from "../session/thread-messages.ts";
 import type { AttachedPage } from "@cloudpid/protocol";
 import { pageHost, pageLabel } from "./attached-pages.ts";
 import { entryIdOf } from "../session/tree.ts";
 import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
+import { ViaChip } from "./via-chip.tsx";
 
 /**
  * A Skill the Session expanded into the owner's message: closed, under the typed text, so what the model got beyond it
@@ -109,11 +111,13 @@ const UserMessage = () => {
   const skills = shownSkills(custom);
   const pages = shownPages(custom);
   const review = shownReview(custom);
+  const via = shownVia(custom);
 
   return (
     <MessagePrimitive.Root className="group/message flex flex-col items-end gap-1">
       <div className="max-w-[85%] min-w-0 rounded-lg bg-muted px-4 py-2 break-words">
         <MessagePrimitive.Parts components={USER_PARTS} />
+        {via !== undefined && <ViaChip via={via} />}
         {pages.length > 0 && (
           <ul aria-label="Attached pages" className="mt-1.5 flex flex-col gap-1.5">
             {Arr.map(pages, (page) => (

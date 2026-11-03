@@ -5,10 +5,12 @@
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { Secrets } from "@cloudpid/extensions/secrets";
+import { parseModelId } from "@cloudpid/config";
 import {
   type ApiResult,
   apiFailure,
   apiOk,
+  type ConfigureRequest,
   type CursorState,
   decodeCursor,
   encodeCursor,
@@ -39,6 +41,7 @@ import {
   type WaitRequest,
   type WaitingRequest,
 } from "@cloudpid/protocol";
+import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -64,6 +67,8 @@ export type SessionMcpService = {
   readonly transcriptPage: (request: TranscriptRequest) => Effect.Effect<ApiResult<TranscriptPage>>;
   readonly submit: (request: SubmitRequest) => Effect.Effect<ApiResult<SubmitResult>>;
   readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
+  /** Pick the model and thinking level a started Session runs with, as the socket's `configure` does. */
+  readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
 };
 
 export class SessionMcp extends Context.Service<SessionMcp, SessionMcpService>()(
@@ -749,7 +754,27 @@ const sessionMcp = (options: SessionMcpOptions) =>
         }),
       );
 
-    return { status, waitForChange, transcriptPage, submit, stop } satisfies SessionMcpService;
+    const configure: SessionMcpService["configure"] = (request) =>
+      guarded(
+        Effect.suspend(() => {
+          const change: Types.Mutable<AgentChange> = {};
+
+          if (request.model !== undefined) change.model = parseModelId(request.model);
+
+          if (request.thinkingLevel !== undefined) change.thinkingLevel = request.thinkingLevel;
+
+          return host.configure(change).pipe(Effect.as(apiOk(null)));
+        }),
+      );
+
+    return {
+      status,
+      waitForChange,
+      transcriptPage,
+      submit,
+      stop,
+      configure,
+    } satisfies SessionMcpService;
   });
 
 /** The Session's `SessionMcp`; build it once per instance, over the host, the Secrets and the waiting requests. */

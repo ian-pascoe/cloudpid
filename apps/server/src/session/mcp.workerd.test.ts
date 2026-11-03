@@ -473,6 +473,33 @@ describe("stop", () => {
   });
 });
 
+describe("configure", () => {
+  it("picks the model and thinking level the first Run uses, as a socket's configure does", async () => {
+    const stub = fresh();
+
+    await script(stub, "done");
+    expect(
+      await stub.mcpConfigure({ model: "anthropic/claude-haiku-5-5", thinkingLevel: "low" }),
+    ).toEqual({ ok: true, value: null });
+
+    await send(stub);
+    await settled(stub);
+
+    expect(await stub.requests()).toEqual([{ model: "claude-haiku-5-5", thinking: "low" }]);
+  });
+
+  it("leaves a field it is not given as it is", async () => {
+    const stub = fresh();
+
+    await script(stub, "done");
+    await stub.mcpConfigure({ thinkingLevel: "minimal" });
+    await send(stub);
+    await settled(stub);
+
+    expect((await stub.requests())[0]?.thinking).toBe("minimal");
+  });
+});
+
 describe("redaction", () => {
   const SECRET = "hunter2-the-long-value";
   /** What a held Secret shows as. */

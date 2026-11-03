@@ -6,6 +6,7 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import {
   AttachedPage,
+  SessionVia,
   type SessionView,
   ShownReviewAnnotation,
   type TranscriptMessage,
@@ -207,6 +208,12 @@ const decodePages = Schema.decodeUnknownOption(Schema.Array(AttachedPage));
 export const shownPages = (custom: MessageCustom | undefined): readonly AttachedPage[] =>
   Option.getOrElse(decodePages(custom?.["pages"]), () => []);
 
+const decodeVia = Schema.decodeUnknownOption(SessionVia);
+
+/** Who sent a user message over the MCP endpoint, as its metadata keeps it; none for the owner's own. */
+export const shownVia = (custom: MessageCustom | undefined): SessionVia | undefined =>
+  Option.getOrUndefined(decodeVia(custom?.["via"]));
+
 const decodeReview = Schema.decodeUnknownOption(Schema.Array(ShownReviewAnnotation));
 
 /** The Annotations of a Review a user message's metadata keeps; none for a message that is not one. */
@@ -243,8 +250,11 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
     const pages = message.pages ?? [];
     const review = message.review ?? [];
 
-    if (skills.length > 0 || pages.length > 0 || review.length > 0) {
+    if (skills.length > 0 || pages.length > 0 || review.length > 0 || message.via !== undefined) {
       const custom: MessageCustom = {};
+
+      // The mark of who sent it over the MCP endpoint, which the message shows as a chip.
+      if (message.via !== undefined) custom["via"] = { ...message.via };
 
       if (skills.length > 0) custom["skills"] = skills;
 

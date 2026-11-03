@@ -560,6 +560,125 @@ describe("the Registry store", () => {
     ).toMatchObject({ id: "s-6" });
   });
 
+  describe("the running cap of the MCP endpoint", () => {
+    const mcp = { kind: "mcp" as const, auth: "oauth" as const };
+    const minute = 60 * 1_000;
+
+    /** Starts `count` capped Sessions at `at`, `s-<n>`, in distinct Workspaces. */
+    const start = async (
+      registry: ReturnType<typeof fresh>,
+      id: string,
+      at: number,
+      extra: {
+        requestId?: string;
+        marks?: typeof mcp | { kind: "import"; auth: "oauth" } | null;
+      } = {},
+    ) =>
+      registry.createSession(
+        {
+          id,
+          title: null,
+          workspace: newWorkspace(id.replace(/\D/g, "").padStart(8, "0")),
+          marks: extra.marks === undefined ? mcp : extra.marks,
+          maxRunning: 2,
+          requestId: extra.requestId,
+        },
+        at,
+      );
+
+    it("refuses a start past the cap, counting what has just been made before its first Run reports", async () => {
+      const registry = fresh();
+
+      await start(registry, "s-1", 1_000);
+      await start(registry, "s-2", 1_000);
+
+      // Neither has reported a Run yet, so both still count: starts made in parallel cannot all pass.
+      expect(await start(registry, "s-3", 2_000)).toEqual({
+        refused: "too-many-running",
+        limit: 2,
+      });
+      expect(await sessionIds(registry)).toEqual(["s-2", "s-1"]);
+
+      // A Session that never ran stops counting once it is old enough.
+      expect(await start(registry, "s-4", 1_000 + 3 * minute)).toMatchObject({ id: "s-4" });
+    });
+
+    it("counts the running ones, and frees a place when one stops or is archived", async () => {
+      const registry = fresh();
+
+      await start(registry, "s-1", 1_000);
+      await start(registry, "s-2", 1_000);
+      await registry.setSessionStatus("s-1", "running", 2_000);
+      await registry.setSessionStatus("s-2", "running", 2_000);
+
+      const late = 10 * minute;
+
+      expect(await start(registry, "s-3", late)).toEqual({ refused: "too-many-running", limit: 2 });
+
+      // A Run that ended: idle, its status changed, so it no longer counts.
+      await registry.setSessionStatus("s-1", "idle", 3_000);
+
+      expect(await start(registry, "s-3", late)).toMatchObject({ id: "s-3" });
+
+      await registry.setSessionStatus("s-3", "running", late + 1);
+
+      expect(await start(registry, "s-4", late + 2)).toEqual({
+        refused: "too-many-running",
+        limit: 2,
+      });
+
+      await registry.archiveSession("s-2", late + 3);
+
+      expect(await start(registry, "s-4", late + 4)).toMatchObject({ id: "s-4" });
+    });
+
+    it("counts imported Sessions, but not the owner's own or a Fork's, and no cap means none", async () => {
+      const registry = fresh();
+
+      await start(registry, "s-1", 1_000, { marks: { kind: "import", auth: "oauth" } });
+      await registry.createSession(
+        { id: "own", title: null, workspace: newWorkspace("0a0b0c0d") },
+        1_000,
+      );
+      await registry.setSessionStatus("own", "running", 1_500);
+      await start(registry, "s-2", 1_000);
+
+      expect(await start(registry, "s-3", 2_000)).toEqual({
+        refused: "too-many-running",
+        limit: 2,
+      });
+
+      // The owner's own starts pass no cap.
+      expect(
+        await registry.createSession(
+          { id: "own-2", title: null, workspace: newWorkspace("1a1b1c1d") },
+          2_000,
+        ),
+      ).toMatchObject({ id: "own-2" });
+    });
+
+    it("answers a repeated request id with its Session even at the cap, and registers nothing", async () => {
+      const registry = fresh();
+
+      const first = await start(registry, "s-1", 1_000, { requestId: "req-1" });
+
+      await start(registry, "s-2", 1_000);
+
+      expect(await start(registry, "s-3", 2_000, { requestId: "req-1" })).toEqual(first);
+      expect(await sessionIds(registry)).toEqual(["s-2", "s-1"]);
+    });
+
+    it("registers no Workspace for a refused start", async () => {
+      const registry = fresh();
+
+      await start(registry, "s-1", 1_000);
+      await start(registry, "s-2", 1_000);
+      await start(registry, "s-3", 2_000);
+
+      expect(await registry.listWorkspaces()).toHaveLength(2);
+    });
+  });
+
   it("lists the default Environment before anything is created", async () => {
     expect(await fresh().listEnvironments()).toEqual([
       expect.objectContaining({ id: DEFAULT_ENVIRONMENT, name: "Default", repos: [] }),

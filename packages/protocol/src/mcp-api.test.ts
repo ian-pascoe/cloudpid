@@ -193,6 +193,12 @@ describe("a value a newer deploy added", () => {
       era: "unknown",
       client: { name: "pi" },
     });
+    // The owner's grant id travels in the mark when there is one; a version that predates it reads the mark without it.
+    expect(read(SessionVia, { auth: "oauth", clientId: "dcr-1" })).toEqual({
+      auth: "oauth",
+      clientId: "dcr-1",
+    });
+    expect(read(SessionVia, { auth: "oauth" })).toEqual({ auth: "oauth" });
     expect(read(Via, { era: future })).toEqual({ era: "unknown" });
     expect(read(McpSessionOrigin, { kind: future, auth: future })).toEqual({
       kind: "unknown",

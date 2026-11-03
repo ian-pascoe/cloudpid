@@ -610,6 +610,11 @@ export const serveRegistryRpc = <R = never>(
           return failed(
             `Workspace "${refusal.workspace}" is already on branch ${branch ?? ""}: start a session in it instead`,
           );
+        // The owner's own starts pass no `maxRunning`: only the MCP endpoint's do.
+        case "too-many-running":
+          return failed(
+            `${String(refusal.limit)} sessions started over MCP are running: wait for one`,
+          );
       }
     };
 

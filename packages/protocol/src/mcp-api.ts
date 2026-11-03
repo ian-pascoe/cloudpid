@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { ModelId, ThinkingLevel } from "@cloudpid/config";
 import { WhenBusy } from "./session.ts";
 
 /** The most input text a message may carry over the endpoint, in UTF-8 bytes (`input_too_large`). */
@@ -17,6 +18,12 @@ export const MAX_MCP_SLICE_BYTES = 2 * 1024 * 1024;
 
 /** The most an import brings in total, in bytes. */
 export const MAX_MCP_IMPORT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The most Sessions started over the endpoint (or imported) that run at once (`too_many_running`), counted by the
+ * Registry (`docs/architecture/mcp-endpoint.md` → Limits and errors).
+ */
+export const MAX_MCP_RUNNING = 10;
 
 /** The longest `session_wait` may wait, in milliseconds. */
 export const MAX_MCP_WAIT_MS = 300_000;
@@ -117,12 +124,19 @@ export type Via = typeof Via.Type;
 /**
  * Who sent an input over the endpoint, as the Session object takes it and keeps it (`UserEntryData.via`;
  * `docs/architecture/mcp-endpoint.md` → Access and identity, Marks): never the owner's email. The `auth` kind and the
- * client's name are the audit mark; `era` is for telemetry. The main Worker adds `auth` to the `api`'s `Via`.
+ * client's name are the audit mark; `era` is for telemetry. The main Worker adds `auth` (and, for the owner, `clientId`)
+ * to the `api`'s `Via`, from the verified caller.
  */
 export const SessionVia = Schema.Struct({
   client: Schema.optionalKey(McpClient),
   auth: McpAuth,
   era: Schema.optionalKey(McpEra),
+  /**
+   * The owner's Access OAuth registration (the assertion's `oauth.client_id`, an opaque id Access gave the client when it
+   * registered): which of the owner's grants sent the input, so a Session's inputs can be told apart by grant. Absent
+   * for a service token, for local dev, and for a version that predates it. Kept in the input's entry; never displayed.
+   */
+  clientId: Schema.optionalKey(Schema.String),
 });
 
 export type SessionVia = typeof SessionVia.Type;
@@ -141,6 +155,10 @@ export const viaLabel = (
 
   return via.client === undefined ? prefix : `${prefix} · ${via.client.name}`;
 };
+
+/** The words that mark an input sent over the endpoint: "via pi (MCP)", or "via MCP" when the caller gave no name. */
+export const inputViaLabel = (via: Pick<SessionVia, "client">): string =>
+  via.client === undefined ? "via MCP" : `via ${via.client.name} (MCP)`;
 
 /**
  * Domain failures (`isError` results); the endpoint's `unsupported` and `unavailable` end the list. A code this version
@@ -551,6 +569,17 @@ export const SubmitResult = Schema.Struct({
 });
 
 export type SubmitResult = typeof SubmitResult.Type;
+
+/**
+ * The Session's `configure` argument: the model and thinking level the root conversation runs with from its next request
+ * on, as the socket's `configure` picks them (a field left out stays as it is).
+ */
+export const ConfigureRequest = Schema.Struct({
+  model: Schema.optionalKey(ModelId),
+  thinkingLevel: Schema.optionalKey(ThinkingLevel),
+});
+
+export type ConfigureRequest = typeof ConfigureRequest.Type;
 
 export const StopRequest = Schema.Struct({
   /** Also stop every subagent (Stop all). */

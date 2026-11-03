@@ -9,7 +9,9 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { AccessCaller } from "../access.ts";
+import type { Builds } from "../registry/builds.ts";
 import { REGISTRY_NAME, type Registry } from "../registry/Registry.ts";
+import type { Spares } from "../registry/rpc.ts";
 import type { Session } from "../session/Session.ts";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { mcpApiService, type McpBackend } from "./api.ts";
@@ -34,12 +36,17 @@ export interface RateLimiter {
   limit(options: { readonly key: string }): Promise<{ readonly success: boolean }>;
 }
 
-/** What the route takes of the Worker. */
-export interface McpEndpoint {
+/** What the route takes of the Worker; `R` is what its `background` needs of the request. */
+export interface McpEndpoint<R = never> {
   readonly registries: Cloudflare.DurableObject<Registry>;
   readonly sessions: Cloudflare.DurableObject<Session>;
   /** `McpWorker`'s `McpServer` entrypoint (`MCP_SERVER`). */
   readonly server: McpServerBinding;
+  /** The spare and Build upkeep a start runs after the answer, as the owner's start does (`registry/rpc.ts`). */
+  readonly spares: Pick<Spares, "of">;
+  readonly builds: Pick<Builds, "of">;
+  /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
+  readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
   /** `MCP_CALLS`; absent where the runtime has none (`alchemy dev`), which is no limit. */
   readonly calls: RateLimiter | undefined;
   /** `Server`'s deploy id (`CF_VERSION_METADATA`), which `describe()` reports for `serverInfo.version`; absent under `alchemy dev`. */
@@ -61,7 +68,11 @@ const forwardedRequest = (source: Request): Request => {
 };
 
 /** The Registry's and the Sessions' side of one request: each call is one RPC. */
-const backendOf = (endpoint: McpEndpoint): McpBackend => {
+const backendOf = (
+  endpoint: Omit<McpEndpoint, "background"> & {
+    readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void>;
+  },
+): McpBackend => {
   const registry = endpoint.registries.getByName(REGISTRY_NAME);
 
   // A failed RPC is a defect here: `McpApiService` answers every one as `unavailable`, which may heal.
@@ -78,6 +89,32 @@ const backendOf = (endpoint: McpEndpoint): McpBackend => {
     status: (id) => endpoint.sessions.getByName(id).status().pipe(Effect.orDie),
     transcript: (id, request) =>
       endpoint.sessions.getByName(id).transcriptPage(request).pipe(Effect.orDie),
+    createSession: ({ environment, title, branch, base, marks, requestId, maxRunning }) =>
+      registry
+        .createSession({
+          title,
+          workspace: { kind: "new", environment, branch, base },
+          marks,
+          requestId,
+          maxRunning,
+        })
+        .pipe(
+          Effect.orDie,
+          // The Session took the Environment's spare or made a Workspace: either way, the next one is made ahead.
+          Effect.tap((created) =>
+            "refused" in created
+              ? Effect.void
+              : endpoint.background(
+                  Effect.all([endpoint.spares.of(environment), endpoint.builds.of(environment)], {
+                    discard: true,
+                  }),
+                ),
+          ),
+        ),
+    configure: (id, request) =>
+      endpoint.sessions.getByName(id).configure(request).pipe(Effect.orDie),
+    submit: (id, request) => endpoint.sessions.getByName(id).submit(request).pipe(Effect.orDie),
+    stop: (id, request) => endpoint.sessions.getByName(id).stop(request).pipe(Effect.orDie),
   };
 };
 
@@ -85,7 +122,7 @@ const backendOf = (endpoint: McpEndpoint): McpBackend => {
  * Serves `/mcp`: `MCP_SERVER.serve(request, api)`, with `api` built for this request over the Registry and the Sessions and
  * the identity the guard admitted. The response is `McpServer`'s: a stream while a call is open.
  */
-export const serveMcpRoute = (endpoint: McpEndpoint) =>
+export const serveMcpRoute = <R = never>(endpoint: McpEndpoint<R>) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const caller = yield* AccessCaller;
@@ -96,8 +133,13 @@ export const serveMcpRoute = (endpoint: McpEndpoint) =>
     }
 
     const run = Effect.runPromiseWith(yield* Effect.context<never>());
+    const services = yield* Effect.context<R>();
 
-    const service = mcpApiService(backendOf(endpoint), {
+    // The upkeep after a start is the Worker's own (`waitUntil`), which needs the request's services.
+    const background = (effect: Effect.Effect<void>) =>
+      Effect.provideContext(endpoint.background(effect), services);
+
+    const service = mcpApiService(backendOf({ ...endpoint, background }), {
       origin: new URL(source.url).origin,
       caller,
       version: endpoint.version,

@@ -7,6 +7,7 @@ import {
   shownPages,
   shownReview,
   shownSkills,
+  shownVia,
   toThreadMessages,
 } from "./thread-messages.ts";
 
@@ -130,6 +131,20 @@ describe("the thread messages of a view", () => {
     expect(shownPages(message?.metadata?.custom)).toEqual([page]);
     expect(shownSkills(message?.metadata?.custom)).toEqual([]);
     expect(shownPages(undefined)).toEqual([]);
+  });
+
+  it("keeps who sent a message over the MCP endpoint, for its chip", () => {
+    const via = { auth: "oauth" as const, client: { name: "pi" }, era: "legacy" as const };
+
+    const [message] = toThreadMessages(
+      view({ messages: [{ ...user("1", "from the laptop"), via }] }),
+    );
+
+    expect(shownVia(message?.metadata?.custom)).toEqual(via);
+    expect(
+      shownVia(toThreadMessages(view({ messages: [user("2", "typed")] }))[0]?.metadata?.custom),
+    ).toBeUndefined();
+    expect(shownVia(undefined)).toBeUndefined();
   });
 
   it("keeps a Review's Annotations, for its chips", () => {

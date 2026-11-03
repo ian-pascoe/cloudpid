@@ -181,8 +181,24 @@ export const instructionsFor = (enabled: Enabled): string => {
     lines.push(
       "Start with environments_list, then session_start, then loop session_wait, passing the cursor it returns as `after`. After a connection error call session_wait again with the same cursor.",
     );
+  } else if (has("environments_list") && has("session_start")) {
+    lines.push(
+      "Start with environments_list, then session_start; follow the Session with session_get and session_transcript.",
+    );
   } else if (has("environments_list")) {
     lines.push("Start with environments_list to see the Environments and models.");
+  }
+
+  if (has("session_start") || has("session_send")) {
+    lines.push(
+      "Pass a request_id to session_start and session_send: a retry with the same one does not repeat the call.",
+    );
+  }
+
+  if (has("session_send") || has("session_stop")) {
+    lines.push(
+      `${has("session_send") ? "session_send messages a Session (when_busy: queue, steer or reject). " : ""}${has("session_stop") ? "session_stop ends its Run; the owner is told." : ""}`.trim(),
+    );
   }
 
   if (has("sessions_list") || has("session_get")) {
@@ -385,7 +401,7 @@ const callTool = (spec: Tool, args: Wire, context: CallContext): Promise<CallToo
     let answered: Wire;
 
     try {
-      answered = await spec.call(api, args);
+      answered = await spec.call(api, args, caller);
     } catch (error) {
       return fail(rpcFailure(error instanceof Error ? error.message : String(error)));
     }

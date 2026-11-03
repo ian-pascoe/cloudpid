@@ -139,7 +139,9 @@ export type StoredWorkspaceChoice =
 export type SessionRefusal =
   | { readonly refused: "no-environment" }
   | { readonly refused: "no-workspace" }
-  | { readonly refused: "branch-taken"; readonly workspace: string };
+  | { readonly refused: "branch-taken"; readonly workspace: string }
+  /** `maxRunning` Sessions started over the MCP endpoint or imported are running already (`createSession`'s `maxRunning`). */
+  | { readonly refused: "too-many-running"; readonly limit: number };
 
 /** What became of a record: deleted, not registered, or kept because something is still bound to it. */
 export type Deletion = "deleted" | "missing" | "in-use";
@@ -217,6 +219,12 @@ export type RegistryStore = {
        * and nothing is registered, so a start that is sent again finds the first.
        */
       readonly requestId?: string | undefined;
+      /**
+       * Refuse (`too-many-running`) when this many Sessions that the MCP endpoint started or imported are running
+       * (`runningMarked`), unless `requestId` finds its Session. The count and the insert are one transaction, so
+       * concurrent starts cannot both pass.
+       */
+      readonly maxRunning?: number | undefined;
     },
     now: number,
   ) => SessionRecord | SessionRefusal;
@@ -515,6 +523,14 @@ const decodeMarks = Schema.decodeUnknownOption(
 
 /** How long a start remembers its `requestId`. */
 export const REQUEST_MEMORY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long a Session the MCP endpoint made counts as running before its first Run reports
+ * (`docs/architecture/mcp-endpoint.md` → Limits and errors, As built, the running cap): the Session object tells the
+ * Registry a Run started a moment after the start's first message reaches it, and starts made in parallel must not all
+ * pass the running cap in that moment. A Session whose status never changed in this time is not counted.
+ */
+export const STARTING_MS = 2 * 60 * 1000;
 
 /** The two columns that keep a Session's origin: a Fork or Clone's source, or the endpoint's marks as JSON. */
 const originColumns = (
@@ -1160,6 +1176,24 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     return row === undefined ? null : getSession(row.session);
   };
 
+  /**
+   * How many Sessions the MCP endpoint started or imported are running: those the Registry has as running, and those it
+   * made less than `STARTING_MS` ago whose first Run has not reported yet (still idle, status never changed). Archived
+   * ones are stopped, so they never count.
+   */
+  const runningMarked = (now: number): number => {
+    const [row] = sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM sessions
+          WHERE origin_kind IN ('mcp', 'import') AND archived_at IS NULL
+            AND (status = 'running' OR (status = 'idle' AND updated_at = created_at AND created_at > ?))`,
+        now - STARTING_MS,
+      )
+      .toArray();
+
+    return row?.count ?? 0;
+  };
+
   return {
     createSession: (input, now) =>
       storage.transactionSync((): SessionRecord | SessionRefusal => {
@@ -1169,6 +1203,11 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           const earlier = requestedSession(requestId, now);
 
           if (earlier !== null) return earlier;
+        }
+
+        // Checked before anything is registered: a refusal returned from here does not roll a transaction back.
+        if (input.maxRunning !== undefined && runningMarked(now) >= input.maxRunning) {
+          return { refused: "too-many-running", limit: input.maxRunning };
         }
 
         const choice = input.workspace;

@@ -13,7 +13,10 @@ import type {
 import type {
   EnvironmentsListResult,
   SessionGetResult,
+  SessionSendResult,
   SessionsListResult,
+  SessionStartResult,
+  SessionStopResult,
   SessionTranscriptResult,
 } from "@cloudpid/protocol/mcp-tools";
 import * as Arr from "effect/Array";
@@ -197,3 +200,36 @@ export const renderTranscript = (result: SessionTranscriptResult): string => {
 
   return Arr.join(lines, "\n");
 };
+
+export const renderStart = (result: SessionStartResult): string =>
+  Arr.join(
+    [
+      `Started Session ${titled(result.title, result.session_id)}`,
+      Arr.join(
+        [
+          `status ${result.status}`,
+          `environment ${result.environment.name} [${result.environment.id}]`,
+          `repos ${result.environment.repos.length === 0 ? "none" : Arr.join(result.environment.repos, ", ")}`,
+        ],
+        " · ",
+      ),
+      `url ${result.url}`,
+      `cursor ${result.cursor}`,
+    ],
+    "\n",
+  );
+
+const DELIVERIES = {
+  started: "Sent: it started a Run.",
+  queued: "Queued: it starts another Run when the current one ends.",
+  steered: "Steered: it joins the running Run at its next step.",
+  unknown: "Sent.",
+} as const;
+
+export const renderSend = (result: SessionSendResult): string =>
+  Arr.join([DELIVERIES[result.delivery], `cursor ${result.cursor}`], "\n");
+
+export const renderStop = (result: SessionStopResult): string =>
+  result.stopping === true
+    ? `Stopping: the Session is still ${result.status}; it was asked to stop.`
+    : `The Session is ${result.status}.`;

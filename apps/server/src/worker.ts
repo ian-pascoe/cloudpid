@@ -376,6 +376,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const mcpRoute = serveMcpRoute({
       registries,
       sessions,
+      spares,
+      builds,
+      background: (effect) => execution.waitUntil(effect),
       server: worker[MCP_SERVER_BINDING] as McpServerBinding,
       calls: worker[MCP_CALLS_BINDING] as RateLimiter | undefined,
       // SAFETY: the deploy binds the version metadata as `CF_VERSION_METADATA` (an `{ id }`); `alchemy dev` may lack it.

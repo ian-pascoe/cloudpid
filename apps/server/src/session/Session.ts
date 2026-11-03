@@ -101,6 +101,7 @@ import { workspacePreparation } from "../workspace/prepare.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 import type {
   ApiResult,
+  ConfigureRequest,
   SessionStatusReport,
   StopRequest,
   StopResult,
@@ -195,6 +196,8 @@ export type SessionMethods = {
   readonly submit: (request: SubmitRequest) => Effect.Effect<ApiResult<SubmitResult>>;
   /** Stop the root's Run (and the subagents', with `subagents`), waiting up to 30 s for the Session to go idle. */
   readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
+  /** Pick the model and thinking level of a Session the MCP endpoint is starting (the socket's `configure`). */
+  readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -905,6 +908,7 @@ export const SessionLive = Session.make(
             invoked("session.mcp.transcript", mcp.transcriptPage(request)),
           submit: (request) => invoked("session.mcp.submit", mcp.submit(request)),
           stop: (request) => invoked("session.mcp.stop", mcp.stop(request)),
+          configure: (request) => invoked("session.mcp.configure", mcp.configure(request)),
           destroy: () =>
             invoked(
               "session.destroy",

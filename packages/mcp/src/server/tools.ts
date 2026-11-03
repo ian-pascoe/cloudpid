@@ -5,23 +5,40 @@
  * with their operations. `McpServer` owns all of this, and the main Worker's `api` none of it.
  */
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- short plain lists of sentences and tool specs.
-import { ApiResult, type McpApi, type McpToolName } from "@cloudpid/protocol/mcp-api";
+import { ApiResult, type McpApi, type McpToolName, type Via } from "@cloudpid/protocol/mcp-api";
 import {
   EnvironmentsListInput,
   EnvironmentsListResult,
   SessionGetInput,
   SessionGetResult,
+  SessionSendInput,
+  SessionSendResult,
   SessionsListInput,
   SessionsListResult,
+  SessionStartInput,
+  SessionStartResult,
+  SessionStopInput,
+  SessionStopResult,
   SessionTranscriptInput,
   SessionTranscriptResult,
 } from "@cloudpid/protocol/mcp-tools";
 import type * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import { renderEnvironments, renderSession, renderSessions, renderTranscript } from "./render.ts";
+import {
+  renderEnvironments,
+  renderSend,
+  renderSession,
+  renderSessions,
+  renderStart,
+  renderStop,
+  renderTranscript,
+} from "./render.ts";
 
 /** What `McpServer` calls over RPC (a stub in the Worker, a plain object in the conformance run). */
-export type McpServerApi = Pick<McpApi, "environments" | "sessions" | "session" | "transcript"> & {
+export type McpServerApi = Pick<
+  McpApi,
+  "environments" | "sessions" | "session" | "transcript" | "start" | "send" | "stop"
+> & {
   /** Over RPC a call is a Promise, whatever the method says; a plain object in the conformance run answers at once. */
   readonly describe: () =>
     | PromiseLike<ReturnType<McpApi["describe"]>>
@@ -30,13 +47,37 @@ export type McpServerApi = Pick<McpApi, "environments" | "sessions" | "session" 
   readonly auth?: PromiseLike<McpApi["auth"]> | McpApi["auth"];
 };
 
-/** The annotations `tools/list` shows (`readOnlyHint` and `idempotentHint` on the read tools; `openWorldHint` is false). */
-const READ_ONLY = {
+/** The annotations `tools/list` shows (`docs/architecture/mcp-endpoint.md` → Tools). */
+export interface Annotations {
+  readonly readOnlyHint: boolean;
+  readonly idempotentHint: boolean;
+  readonly destructiveHint: boolean;
+  readonly openWorldHint: boolean;
+}
+
+/** RO: `readOnlyHint` and `idempotentHint`; `openWorldHint` is false. */
+const READ_ONLY: Annotations = {
   readOnlyHint: true,
   idempotentHint: true,
   destructiveHint: false,
   openWorldHint: false,
-} as const;
+};
+
+/** W: a non-idempotent write. `openWorldHint` is true: what it sends reaches an agent that acts in the world. */
+const WRITE: Annotations = {
+  readOnlyHint: false,
+  idempotentHint: false,
+  destructiveHint: false,
+  openWorldHint: true,
+};
+
+/** D·idem: `destructiveHint` and `idempotentHint`: a Stop ends work, and stopping what has stopped does nothing. */
+const DESTRUCTIVE_IDEMPOTENT: Annotations = {
+  readOnlyHint: false,
+  idempotentHint: true,
+  destructiveHint: true,
+  openWorldHint: false,
+};
 
 /**
  * What crosses a seam this file does not own: the SDK's validated arguments, an RPC's answer, the result handed back. Each
@@ -58,11 +99,11 @@ export interface Tool {
   readonly name: McpToolName;
   readonly title: string;
   readonly description: string;
-  readonly annotations: typeof READ_ONLY;
+  readonly annotations: Annotations;
   readonly input: Schema.Codec<unknown, unknown>;
   readonly output: Schema.Codec<unknown, unknown>;
-  /** Calls the operation with arguments the SDK has validated against `input`. */
-  readonly call: (api: McpServerApi, args: Wire) => Promise<Wire>;
+  /** Calls the operation with arguments the SDK has validated against `input`; `via` is who is calling. */
+  readonly call: (api: McpServerApi, args: Wire, via: Via) => Promise<Wire>;
   /** Reads what `api` answered: members this version does not know read as their fallbacks. */
   readonly read: (answered: Wire) => Exit.Exit<ApiResult<Wire>, Schema.SchemaError>;
   /** The result as text followed by its `next` sentence, and as `structuredContent` carrying the same `next`. */
@@ -77,9 +118,10 @@ interface ToolSpec<
   readonly name: McpToolName;
   readonly title: string;
   readonly description: string;
+  readonly annotations?: Annotations;
   readonly input: In;
   readonly output: Out;
-  readonly call: (api: McpServerApi, args: In["Type"]) => Promise<Wire>;
+  readonly call: (api: McpServerApi, args: In["Type"], via: Via) => Promise<Wire>;
   /** The result in words, without `next`. */
   readonly render: (result: Out["Type"]) => string;
   /** One sentence naming the next tool and cursor, over the tools that are served. */
@@ -98,11 +140,11 @@ const defineTool = <
     name: spec.name,
     title: spec.title,
     description: spec.description,
-    annotations: READ_ONLY,
+    annotations: spec.annotations ?? READ_ONLY,
     input: spec.input,
     output: spec.output,
     // SAFETY: the SDK validated `args` against `spec.input` before the callback runs.
-    call: (api, args) => spec.call(api, args as In["Type"]),
+    call: (api, args, via) => spec.call(api, args as In["Type"], via),
     // SAFETY: the result's own type is erased here, as `Tool` says.
     read: (answered) => decode(answered) as Exit.Exit<ApiResult<Wire>, Schema.SchemaError>,
     present: (value, enabled) => {
@@ -214,10 +256,72 @@ const sessionTranscript = defineTool({
     ),
 });
 
+const sessionStart = defineTool({
+  name: "session_start",
+  title: "Start a Session",
+  description:
+    "Start a new Session in an Environment with a first message, which begins its first Run at once. Omit environment only for work tied to no Repo. The Session gets a new Workspace (a branch of its own, unless you name one). It runs in the background: follow it with the cursor in the result. Send request_id so a retry after a connection error does not start a second Session. At most 10 Sessions started over MCP run at once.",
+  annotations: WRITE,
+  input: SessionStartInput,
+  output: SessionStartResult,
+  render: renderStart,
+  call: (api, args, via) => api.start({ ...args, via }),
+  next: (result, enabled) =>
+    sentences(
+      enabled.has("session_wait")
+        ? `Call session_wait with session_id="${result.session_id}" and after="${result.cursor}" to follow its Run.`
+        : undefined,
+      calls(
+        enabled.has("session_get") ? "session_get for its state" : undefined,
+        enabled.has("session_transcript") ? "session_transcript to read what it did" : undefined,
+      ),
+    ),
+});
+
+const sessionSend = defineTool({
+  name: "session_send",
+  title: "Send a message to a Session",
+  description:
+    "Send a message to an existing Session as the owner would. when_busy says what to do while a Run is going: queue (default) starts another Run after it, steer joins the running Run at its next step, reject fails with session_busy. An idle Session starts a Run. Send request_id so a retry does not send twice. A Session the owner archived or that is still importing refuses messages.",
+  annotations: WRITE,
+  input: SessionSendInput,
+  output: SessionSendResult,
+  render: renderSend,
+  call: (api, args, via) => api.send({ ...args, via }),
+  next: (result, enabled) =>
+    enabled.has("session_wait")
+      ? `Call session_wait with after="${result.cursor}" to follow ${result.delivery === "queued" ? "the Run that takes it" : "its Run"}.`
+      : undefined,
+});
+
+const sessionStop = defineTool({
+  name: "session_stop",
+  title: "Stop a Session",
+  description:
+    "Stop a Session's Run: its queued and unsent messages are withdrawn, and the transcript notes the Stop. Its subagents keep working unless subagents is true (Stop all). Stopping a Session that is not running does nothing. Waits up to 30 s for the Session to go idle, else says it is stopping.",
+  annotations: DESTRUCTIVE_IDEMPOTENT,
+  input: SessionStopInput,
+  output: SessionStopResult,
+  render: renderStop,
+  call: (api, args, via) => api.stop({ ...args, via }),
+  next: (result, enabled) =>
+    sentences(
+      result.stopping === true && enabled.has("session_get")
+        ? "Call session_get to see when it is idle."
+        : undefined,
+      enabled.has("session_send") && result.stopping !== true
+        ? "Call session_send to give it new work."
+        : undefined,
+    ),
+});
+
 /** Every tool this version of `McpServer` has, in the order `tools/list` shows them. */
 export const TOOLS: ReadonlyArray<Tool> = [
   environmentsList,
   sessionsList,
   sessionGet,
   sessionTranscript,
+  sessionStart,
+  sessionSend,
+  sessionStop,
 ];

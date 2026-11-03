@@ -2,12 +2,14 @@
 // docs/architecture/mcp-endpoint.md → The `api` target, Limits and errors: the service over a fake Registry and Sessions.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off missedPipeableOpportunity:off
 import {
+  apiFailure,
   DEFAULT_ENVIRONMENT,
   type EnvironmentRecord,
   type SessionRecord,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
+import type { SessionRefusal } from "../registry/store.ts";
 import {
   MCP_CALLS_PERIOD_S,
   identityOf,
@@ -78,6 +80,15 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
       },
     }),
   transcript: () => Effect.succeed({ ok: true as const, value: { entries: [], newer: "n1" } }),
+  createSession: ({ environment, title }) =>
+    Effect.succeed(record({ title: title ?? null, environment })),
+  configure: () => Effect.succeed({ ok: true as const, value: null }),
+  submit: () =>
+    Effect.succeed({
+      ok: true as const,
+      value: { delivery: "started" as const, cursor: "c-sent" },
+    }),
+  stop: () => Effect.succeed({ ok: true as const, value: { status: "idle" as const } }),
   ...overrides,
 });
 
@@ -97,12 +108,15 @@ describe("describe", () => {
     expect(service().describe().version).toBeUndefined();
   });
 
-  it("lists the four read operations, and only them", () => {
+  it("lists the read operations and the three that start, send and stop, and no others", () => {
     expect(service().describe().operations).toEqual([
       "environments",
       "sessions",
       "session",
       "transcript",
+      "start",
+      "send",
+      "stop",
     ]);
   });
 });
@@ -317,6 +331,341 @@ describe("transcript", () => {
     expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
     expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
     expect(transcript).not.toHaveBeenCalled();
+  });
+});
+
+const VIA = { client: { name: "claude-code", version: "2.1" }, era: "modern" as const };
+
+describe("start", () => {
+  it("marks the Session and the first input by how the caller got in, without the owner's email", async () => {
+    const createSession = vi.fn(({ environment }: { environment: string }) =>
+      Effect.succeed(record({ environment })),
+    );
+
+    const submit = vi.fn(backend().submit);
+
+    const result = await run(
+      service(
+        { createSession, submit },
+        { caller: { kind: "owner", clientId: "dcr-client-1" } },
+      ).start({ text: "Fix it", via: VIA }),
+    );
+
+    expect(createSession).toHaveBeenCalledWith({
+      environment: DEFAULT_ENVIRONMENT,
+      marks: { kind: "mcp", auth: "oauth", client: VIA.client },
+      maxRunning: 10,
+    });
+    expect(submit).toHaveBeenCalledWith(ID, {
+      input: "Fix it",
+      via: { client: VIA.client, auth: "oauth", era: "modern", clientId: "dcr-client-1" },
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        session_id: ID,
+        title: "Fix the thing",
+        url: `${ORIGIN}/sessions/${ID}`,
+        status: "waiting_for_owner",
+        cursor: "c-sent",
+        environment: { id: DEFAULT_ENVIRONMENT, name: "Default", repos: ["app"] },
+      },
+    });
+    expect(JSON.stringify(createSession.mock.calls)).not.toContain("@");
+  });
+
+  it("marks a service token's and local dev's Sessions as such, and keeps no client id for them", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const submit = vi.fn(backend().submit);
+
+    await run(
+      service(
+        { createSession, submit },
+        { caller: { kind: "service_token", clientId: "id.access" } },
+      ).start({ text: "go", via: { era: "legacy" } }),
+    );
+
+    await run(
+      service({ createSession, submit }, { caller: { kind: "local" } }).start({
+        text: "go",
+        via: { era: "legacy" },
+      }),
+    );
+
+    expect(createSession.mock.calls.map(([input]) => input.marks)).toEqual([
+      { kind: "mcp", auth: "service_token" },
+      { kind: "mcp", auth: "local" },
+    ]);
+    expect(submit.mock.calls.map(([, input]) => input.via)).toEqual([
+      { auth: "service_token", era: "legacy" },
+      { auth: "local", era: "legacy" },
+    ]);
+  });
+
+  it("passes a repeated request_id to the Registry and the Session, which each find the first", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const submit = vi.fn(backend().submit);
+
+    await run(
+      service({ createSession, submit }).start({ text: "go", request_id: "req-1", via: VIA }),
+    );
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ requestId: "req-1" }));
+    expect(submit).toHaveBeenCalledWith(ID, expect.objectContaining({ requestId: "req-1" }));
+  });
+
+  it("takes the Environment by id or name, the default when none is named, and the options it was given", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const api = service({ createSession });
+
+    await run(
+      api.start({
+        environment: " docs ",
+        text: "go",
+        via: VIA,
+        title: "  T  ",
+        branch: "feat/x",
+        base: "dev",
+      }),
+    );
+
+    expect(createSession).toHaveBeenCalledWith({
+      environment: "e2",
+      title: "T",
+      branch: "feat/x",
+      base: "dev",
+      marks: expect.anything(),
+      maxRunning: 10,
+    });
+  });
+
+  it("configures the model and thinking before the first message, and only when asked", async () => {
+    const order: string[] = [];
+
+    const configure = vi.fn(() => {
+      order.push("configure");
+
+      return Effect.succeed({ ok: true as const, value: null });
+    });
+
+    const submit = vi.fn(() => {
+      order.push("submit");
+
+      return backend().submit(ID, {} as never);
+    });
+
+    const api = service({ configure, submit });
+
+    await run(api.start({ text: "go", via: VIA }));
+    expect(configure).not.toHaveBeenCalled();
+
+    await run(
+      api.start({ text: "go", model: "anthropic/claude-opus-5-5", thinking: "high", via: VIA }),
+    );
+
+    expect(configure).toHaveBeenCalledWith(ID, {
+      model: "anthropic/claude-opus-5-5",
+      thinkingLevel: "high",
+    });
+    expect(order).toEqual(["submit", "configure", "submit"]);
+  });
+
+  it("refuses a bad argument before it makes anything", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const api = service({ createSession });
+
+    const bad = await Promise.all([
+      run(api.start({ text: "go", model: "gpt-nope", via: VIA })),
+      run(api.start({ text: "go", thinking: "turbo", via: VIA })),
+      run(api.start({ text: "go", branch: "a..b", via: VIA })),
+      run(api.start({ text: "go", branch: "cloudpid/spare", via: VIA })),
+      run(api.start({ text: "go", base: "", via: VIA })),
+      run(api.start({ text: "go", title: "   ", via: VIA })),
+    ]);
+
+    for (const result of bad) {
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "invalid_argument", retryable: false },
+      });
+    }
+
+    const large = await run(api.start({ text: "é".repeat(1_000_000), via: VIA }));
+    const unknown = await run(api.start({ text: "go", environment: "nope", via: VIA }));
+
+    expect(large).toMatchObject({ ok: false, error: { code: "input_too_large" } });
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("answers the cap, a taken branch and a missing Environment with their codes, and sends nothing", async () => {
+    const submit = vi.fn(backend().submit);
+
+    const refused = (refusal: SessionRefusal) =>
+      run(
+        service({ createSession: () => Effect.succeed(refusal), submit }).start({
+          text: "go",
+          via: VIA,
+        }),
+      );
+
+    expect(await refused({ refused: "too-many-running", limit: 10 })).toMatchObject({
+      ok: false,
+      error: { code: "too_many_running", retryable: true, details: { limit: 10 } },
+    });
+    expect(await refused({ refused: "branch-taken", workspace: "abcd1234" })).toMatchObject({
+      ok: false,
+      error: { code: "branch_taken", retryable: false, details: { workspace: "abcd1234" } },
+    });
+    expect(await refused({ refused: "no-environment" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("answers what the Session refused of the first message, and a failed hop as unavailable", async () => {
+    const stopped = apiFailure("stopped", "Stopped before it was sent.", { retryable: false });
+
+    const withdrawn = await run(
+      service({ submit: () => Effect.succeed(stopped) }).start({ text: "go", via: VIA }),
+    );
+
+    const down = await run(
+      service({ submit: () => Effect.die("object reset") }).start({ text: "go", via: VIA }),
+    );
+
+    expect(withdrawn).toMatchObject({ ok: false, error: { code: "stopped", retryable: false } });
+    expect(down).toMatchObject({ ok: false, error: { code: "unavailable", retryable: true } });
+  });
+
+  it("says the Session is running when it cannot yet say", async () => {
+    const result = await run(
+      service({ status: () => Effect.die("waking") }).start({ text: "go", via: VIA }),
+    );
+
+    expect(result.ok && result.value.status).toBe("running");
+  });
+});
+
+describe("send", () => {
+  it("sends the text with the caller's mark, and queues unless told otherwise", async () => {
+    const submit = vi.fn(backend().submit);
+    const api = service({ submit }, { caller: { kind: "owner", clientId: "dcr-1" } });
+
+    const result = await run(api.send({ session_id: ID, text: "more", via: VIA }));
+
+    await run(
+      api.send({ session_id: ID, text: "now", when_busy: "steer", request_id: "r", via: VIA }),
+    );
+    await run(api.send({ session_id: ID, text: "or not", when_busy: "reject", via: VIA }));
+
+    expect(result).toEqual({ ok: true, value: { delivery: "started", cursor: "c-sent" } });
+    expect(
+      submit.mock.calls.map(([, input]) => [input.input, input.whenBusy, input.requestId]),
+    ).toEqual([
+      ["more", "followUp", undefined],
+      ["now", "steer", "r"],
+      ["or not", "reject", undefined],
+    ]);
+    expect(submit.mock.calls[0]?.[1].via).toEqual({
+      client: VIA.client,
+      auth: "oauth",
+      era: "modern",
+      clientId: "dcr-1",
+    });
+  });
+
+  it("never reaches a Session for an unknown or malformed id, or text over the limit", async () => {
+    const submit = vi.fn(backend().submit);
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), submit }).send({
+        session_id: ID,
+        text: "x",
+        via: VIA,
+      }),
+    );
+
+    const malformed = await run(
+      service({ submit }).send({ session_id: "nope", text: "x", via: VIA }),
+    );
+
+    const large = await run(
+      service({ submit }).send({ session_id: ID, text: "é".repeat(1_000_000), via: VIA }),
+    );
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(large).toMatchObject({ ok: false, error: { code: "input_too_large" } });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("answers the Session's own refusals as they are: busy, archived, stopped", async () => {
+    for (const code of ["session_busy", "session_archived", "stopped"] as const) {
+      const result = await run(
+        service({ submit: () => Effect.succeed(apiFailure(code, "no")) }).send({
+          session_id: ID,
+          text: "x",
+          via: VIA,
+        }),
+      );
+
+      expect(result).toMatchObject({ ok: false, error: { code } });
+    }
+  });
+
+  it("is unavailable when the Session cannot be reached", async () => {
+    const result = await run(
+      service({ submit: () => Effect.die("reset") }).send({ session_id: ID, text: "x", via: VIA }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "unavailable" } });
+  });
+});
+
+describe("stop", () => {
+  it("stops with the caller's mark, and subagents only when asked", async () => {
+    const stop = vi.fn(backend().stop);
+    const api = service({ stop }, { caller: { kind: "service_token", clientId: "id.access" } });
+
+    const plain = await run(api.stop({ session_id: ID, via: VIA }));
+
+    await run(api.stop({ session_id: ID, subagents: true, via: VIA }));
+
+    expect(plain).toEqual({ ok: true, value: { status: "idle" } });
+    expect(stop.mock.calls).toEqual([
+      [ID, { via: { client: VIA.client, auth: "service_token", era: "modern" } }],
+      [ID, { subagents: true, via: { client: VIA.client, auth: "service_token", era: "modern" } }],
+    ]);
+  });
+
+  it("never reaches a Session for an unknown or malformed id", async () => {
+    const stop = vi.fn(backend().stop);
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), stop }).stop({ session_id: ID, via: VIA }),
+    );
+
+    const malformed = await run(service({ stop }).stop({ session_id: "nope", via: VIA }));
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("says stopping when the Session had not gone idle", async () => {
+    const result = await run(
+      service({
+        stop: () =>
+          Effect.succeed({
+            ok: true as const,
+            value: { status: "running" as const, stopping: true },
+          }),
+      }).stop({ session_id: ID, via: VIA }),
+    );
+
+    expect(result).toEqual({ ok: true, value: { status: "running", stopping: true } });
   });
 });
 

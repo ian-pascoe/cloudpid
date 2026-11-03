@@ -1,8 +1,5 @@
-import { type SessionOrigin, type SessionRecord, viaLabel } from "@cloudpid/protocol";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
-import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
-import * as Option from "effect/Option";
 import { pageProblemAtom } from "./app-state.ts";
 import { revealShownAtom } from "./collapsed-groups.ts";
 import { forgetDismissedAtom } from "./list-subagents.ts";
@@ -11,54 +8,15 @@ import { SubagentPage } from "./chat/subagent-page.tsx";
 import { cn } from "./lib/utils.ts";
 import { pushSyncAtom } from "./push-state.ts";
 import { InAppLink } from "./in-app-link.tsx";
-import { navigate, pageAtom, sessionPath, settingsPath, type Page } from "./router.ts";
+import { pageAtom, settingsPath, type Page } from "./router.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { SessionMenu } from "./session-menu.tsx";
-import { currentSessionAtom, newSessionPlace, sessionListAtom } from "./sessions.ts";
+import { Origin } from "./session-origin.tsx";
+import { currentSessionAtom, newSessionPlace } from "./sessions.ts";
 import { SettingsPage } from "./settings/page.tsx";
 import { Sidebar, sessionTitle, type SettingsShown, type ShownPage } from "./sidebar.tsx";
 import { DraftComposer } from "./draft-composer.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
-
-/**
- * The line under a Fork's or a Clone's title: "Forked from" or "Cloned from" the Session it was made from, a link to it
- * while it is there.
- */
-const ForkedFrom = ({ origin }: { origin: SessionOrigin }) => {
-  const source = useAtomValue(sessionListAtom, (list) =>
-    Option.getOrUndefined(Arr.findFirst(list ?? [], (known) => known.id === origin.session)),
-  );
-
-  const made = origin.kind === "fork" ? "Forked from" : "Cloned from";
-
-  return source === undefined ? (
-    <>{made} a deleted session</>
-  ) : (
-    <>
-      {made}{" "}
-      <button
-        type="button"
-        onClick={() => {
-          navigate(sessionPath(source.id));
-        }}
-        className="underline underline-offset-2 hover:text-foreground"
-      >
-        {sessionTitle(source)}
-      </button>
-    </>
-  );
-};
-
-/**
- * What a Session came from, under its title: a Fork or Clone's source, or "MCP · pi" / "Imported · pi" for one the MCP
- * endpoint started or imported; none for one started afresh.
- */
-const Origin = ({ session }: { session: SessionRecord }) =>
-  session.origin !== undefined ? (
-    <ForkedFrom origin={session.origin} />
-  ) : session.marks !== undefined ? (
-    <>{viaLabel(session.marks, session.marks.kind)}</>
-  ) : undefined;
 
 /** Session `sessionId`'s page: its chat, with what the list knows of it. */
 const SessionPage = ({ sessionId }: { sessionId: string }) => {
