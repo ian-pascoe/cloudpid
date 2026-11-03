@@ -21,7 +21,7 @@ import {
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { Instructions, type InstructionsSettings } from "@cloudpid/extensions/instructions";
-import { emptyMcpExtension, type McpHostClient } from "@cloudpid/extensions/mcp";
+import { emptyMcpExtension } from "@cloudpid/extensions/mcp";
 import { ResultBounds } from "@cloudpid/extensions/result-bounds";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
@@ -68,7 +68,7 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * (`AgentChangeLog`), the root conversation's only (`docs/architecture/agent-changes.md`); the `settings_*` tools, which read
  * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
  * after a change (`SettingsReload`); the `settings_mcp_*` tools, which read the Registry's MCP servers (`SettingsMcpAccess`)
- * and their inventory in the Environment's `McpHost` (`McpHostClient`) (`docs/architecture/mcp-configuration.md` → The agent's
+ * and the inventory in the Environment's `McpHost` (`docs/architecture/mcp-configuration.md` → The agent's
  * changes); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
  * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `settings_instructions_set`,
  * `environment_container_size_limit_set`, `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
@@ -100,7 +100,6 @@ export const sessionExtensions: Effect.Effect<
   | AgentChangeLog
   | SettingsAccess
   | SettingsMcpAccess
-  | McpHostClient
   | SettingsReload
   | Approvals
   | EnvironmentRemoval

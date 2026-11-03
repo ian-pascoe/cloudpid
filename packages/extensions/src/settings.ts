@@ -461,7 +461,9 @@ export const describeSettings = (view: SettingsView, own: string | null): string
           ),
       )}. A Limit: settings_subagent_workspaces_set changes it once the user approves, at either Scope.`,
       `Extension options: ${options.length === 0 ? "none" : `\n${Arr.join(options, "\n")}`}`,
-      `MCP servers: ${view.mcpServers === undefined ? "not known" : view.mcpServers} at this Scope; settings_mcp_list shows them`,
+      view.mcpServers === undefined
+        ? "MCP servers: the count is unavailable now; settings_mcp_list shows them"
+        : `MCP servers: ${view.mcpServers} at this Scope; settings_mcp_list shows them`,
       instructionsLine,
       isGlobalView(view)
         ? "settings_reset puts a field back to its default at Global, or removes an Environment's Override of it; for a Limit it waits for the user's Approval."

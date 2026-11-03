@@ -206,6 +206,31 @@ describe("discovery at the first request", () => {
   });
 });
 
+describe("servers with demand: false", () => {
+  it("answers what the host holds and starts no discovery, where a plain read starts the due one", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("linear")));
+    await host.scriptEngine(urlOf("linear"), [found(["search"])]);
+
+    const held = await host.servers({ parts: ["tools"], demand: false, waitMs: 5000 });
+
+    await pause();
+
+    expect(held.servers.map(({ name, state }) => [name, state])).toEqual([
+      ["linear", "not_discovered"],
+    ]);
+    expect(await calls(host)).toBe(0);
+
+    // The same read as a demand discovers it.
+    await host.servers({ parts: [] });
+    await vi.waitFor(async () => expect(await calls(host)).toBe(1));
+    await settled(host);
+
+    expect((await host.servers({ parts: [], demand: false })).servers[0]?.state).toBe("connected");
+  });
+});
+
 describe("single-flight and slots", () => {
   it("discovers a `conn` once, however many reads ask while it runs", async () => {
     const host = freshHost();

@@ -18,7 +18,6 @@ import { Images } from "@cloudpid/extensions/images";
 import { InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
-import { McpHostClient } from "@cloudpid/extensions/mcp";
 import { SettingsAccess } from "@cloudpid/extensions/settings";
 import { SettingsMcpAccess } from "@cloudpid/extensions/settings-mcp";
 import { SubagentSettings, SubagentWorkspaces } from "@cloudpid/extensions/subagents";
@@ -56,7 +55,7 @@ import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
-import { sessionOwnMcpHost, sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
+import { sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import {
@@ -557,6 +556,7 @@ export const SessionLive = Session.make(
         const settingsMcp = sessionSettingsMcpAccess({
           registry: registries.getByName(REGISTRY_NAME),
           session: name,
+          host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
         });
 
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
@@ -896,16 +896,8 @@ export const SessionLive = Session.make(
                       session: name,
                     }),
                   ),
-                  // The `settings_mcp_*` tools: the Registry's MCP servers, and the host of the Session's own Environment.
+                  // The `settings_mcp_*` tools: the Registry's MCP servers, and the hosts of the Environments they name.
                   Effect.provideService(SettingsMcpAccess, settingsMcp),
-                  Effect.provideService(
-                    McpHostClient,
-                    sessionOwnMcpHost({
-                      own: settingsMcp.own,
-                      host: (environment) =>
-                        mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
-                    }),
-                  ),
                   Effect.provideService(DeployCredentials, {
                     values: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
                   }),

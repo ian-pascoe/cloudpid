@@ -431,7 +431,7 @@ describe("settings_get", () => {
     const tool = await toolsOver(fakeSettings().service);
     const result = await run(tool("settings_get"), { scope: "*" });
 
-    expect(text(result)).toContain("MCP servers: not known at this Scope");
+    expect(text(result)).toContain("MCP servers: the count is unavailable now");
     expect(result.structuredOutput).toMatchObject({ mcp_servers: null });
   });
 

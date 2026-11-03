@@ -22,7 +22,6 @@ import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { InstructionsSettings } from "@cloudpid/extensions/instructions";
 import type { Secrets } from "@cloudpid/extensions/secrets";
-import { McpHostClient } from "@cloudpid/extensions/mcp";
 import { SettingsAccess, type SettingsReload } from "@cloudpid/extensions/settings";
 import { SettingsMcpAccess } from "@cloudpid/extensions/settings-mcp";
 import {
@@ -134,19 +133,19 @@ export class TestWorkspaceSession extends TestSession {
         own: Effect.die("No Settings"),
         change: () => Effect.die("No Settings"),
       }),
-      // Nor a `settings_mcp_*` tool, nor an MCP host.
+      // Nor a `settings_mcp_*` tool, which reaches no MCP host.
       Effect.provideService(SettingsMcpAccess, {
         view: () => Effect.die("No Settings"),
         own: Effect.die("No Settings"),
         reload: () => Effect.die("No Settings"),
         pushes: () => Effect.die("No Settings"),
         pushed: () => Effect.die("No Settings"),
-      }),
-      Effect.provideService(McpHostClient, {
-        requestStart: () => Effect.die("No MCP host"),
-        servers: () => Effect.die("No MCP host"),
-        apply: () => Effect.die("No MCP host"),
-        request: () => Effect.die("No MCP host"),
+        host: () => ({
+          requestStart: () => Effect.die("No MCP host"),
+          servers: () => Effect.die("No MCP host"),
+          apply: () => Effect.die("No MCP host"),
+          request: () => Effect.die("No MCP host"),
+        }),
       }),
       Effect.provideService(DeployCredentials, { values: [] }),
       Effect.provideService(WorkspaceFiles, this.#workspace().files),

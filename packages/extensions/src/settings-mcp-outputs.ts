@@ -70,6 +70,7 @@ export const ReadOutput = Schema.Struct({
     description:
       "At Global: the Environments where the name is neither a Secret nor a Variable; empty at an Environment",
   }),
+  missing_in_truncated: Schema.Boolean.annotate({ description: "missing_in was cut" }),
 });
 
 /** A problem with an entry, an adjustment or a Repo's file. */
@@ -162,6 +163,7 @@ export const ListServerOutput = Schema.Struct({
     description:
       "The Repo entries this server hides: an owner's entry wins over a Repo's of the name",
   }),
+  shadowed_truncated: Schema.Boolean.annotate({ description: "shadowed was cut" }),
   transport: Schema.Literals(["stdio", "http"]),
   target: Schema.String.annotate({
     description: "A stdio server's command line, as written; an HTTP server's URL",
@@ -180,6 +182,7 @@ export const ListServerOutput = Schema.Struct({
   timeout: Schema.Finite.annotate({ description: "Its timeout in seconds" }),
   description: Schema.NullOr(Schema.String),
   reads: Schema.Array(ReadOutput),
+  reads_truncated: Schema.Boolean.annotate({ description: "reads was cut" }),
   reset_fields: Schema.Array(Schema.String).annotate({
     description:
       "The Override fields this Environment holds for it that settings_reset takes; empty at Global",
@@ -187,14 +190,17 @@ export const ListServerOutput = Schema.Struct({
   inventory: InventoryOutput,
   sign_in: SignInOutput,
   problems: Schema.Array(ProblemOutput),
+  problems_truncated: Schema.Boolean.annotate({ description: "problems was cut" }),
   overridden_in: Schema.Array(ScopeRef).annotate({
     description:
       "At Global: the Environments whose own entry of the name replaces Global's there; empty otherwise",
   }),
+  overridden_in_truncated: Schema.Boolean.annotate({ description: "overridden_in was cut" }),
   adjusted_in: Schema.Array(ScopeRef).annotate({
     description:
       "At Global: the Environments that adjust this server (enabled, exposure or toolExposure); empty otherwise",
   }),
+  adjusted_in_truncated: Schema.Boolean.annotate({ description: "adjusted_in was cut" }),
 });
 
 /** A Repo's file as last looked at. */
@@ -233,12 +239,11 @@ export const OrphanOutput = Schema.Struct({
 export const InventoryRead = Schema.Literals([
   "read",
   "global",
-  "other_environment",
   "no_servers",
   "host_unavailable",
 ]).annotate({
   description:
-    "read (from this Session's Environment's host), global (Global has no host), other_environment (a Session reaches only its own Environment's host, and never wakes another's), no_servers (the set has none, so the host is not asked) or host_unavailable (the host did not answer)",
+    "read (from the Environment's MCP host, which holds the state it already has: nothing is connected or started to read it), global (Global has no host), no_servers (the set has none, so the host is not asked) or host_unavailable (the host did not answer)",
 });
 
 /** `settings_mcp_list`: the MCP servers of a Scope. */
@@ -253,12 +258,15 @@ export const SettingsMcpListOutput = Schema.Struct({
   repos: Schema.Array(RepoOutput).annotate({
     description: "At an Environment: each Repo's .pi/mcp.json as last looked at; empty at Global",
   }),
+  repos_truncated: Schema.Boolean.annotate({ description: "repos was cut" }),
   orphans: Schema.Array(OrphanOutput),
+  orphans_truncated: Schema.Boolean.annotate({ description: "orphans was cut" }),
   problems: Schema.Array(ProblemOutput).annotate({
     description: "Every problem of the set, a Repo file's own included",
   }),
-  problems_truncated: Schema.Boolean,
+  problems_truncated: Schema.Boolean.annotate({ description: "problems was cut" }),
   warnings: Schema.Array(Schema.String),
+  warnings_truncated: Schema.Boolean.annotate({ description: "warnings was cut" }),
 });
 
 /** A tool of a server, as `settings_mcp_get` lists it. */
@@ -332,15 +340,19 @@ export const SettingsMcpGetOutput = Schema.Struct({
   tool_count: Schema.Finite,
   tools: Schema.Array(ToolOutput),
   tools_truncated: Schema.Boolean.annotate({
-    description: "tools was cut: only the first 500 are given",
+    description: "tools was cut: only the first 500, or as many as fit, are given",
   }),
   unmatched_tool_exposure: Schema.Array(Schema.String).pipe(Schema.NullOr).annotate({
     description:
       "The toolExposure keys that match none of the discovered tools (a hidden key then hides nothing); null when the server's tools are not known yet: not checked",
   }),
+  unmatched_tool_exposure_truncated: Schema.Boolean.annotate({
+    description: "unmatched_tool_exposure was cut",
+  }),
   prompts: Schema.Array(Schema.String).annotate({
     description: "The MCP prompts it offers, by name",
   }),
+  prompts_truncated: Schema.Boolean.annotate({ description: "prompts was cut" }),
   instructions: Schema.NullOr(
     Schema.Struct({
       text: Schema.String.annotate({
@@ -365,6 +377,7 @@ export const SettingsMcpGetOutput = Schema.Struct({
       "How many forms asking for a credential the host declined: not reported by the host yet, so always null",
   }),
   warnings: Schema.Array(Schema.String),
+  warnings_truncated: Schema.Boolean.annotate({ description: "warnings was cut" }),
 });
 
 /** What a reload found of one Repo's file. */
@@ -391,22 +404,30 @@ export const ReloadRepoOutput = Schema.Struct({
 export const SettingsMcpReloadOutput = Schema.Struct({
   scope: ScopeRef,
   repos: Schema.Array(ReloadRepoOutput),
+  repos_truncated: Schema.Boolean.annotate({ description: "repos was cut" }),
   set: Schema.Struct({
     servers: Schema.Finite.annotate({ description: "The servers the set has now" }),
     added: Schema.Array(Schema.String),
+    added_truncated: Schema.Boolean.annotate({ description: "added was cut" }),
     removed: Schema.Array(Schema.String),
+    removed_truncated: Schema.Boolean.annotate({ description: "removed was cut" }),
     changed: Schema.Array(Schema.String),
+    changed_truncated: Schema.Boolean.annotate({ description: "changed was cut" }),
     problems_added: Schema.Array(Schema.String),
+    problems_added_truncated: Schema.Boolean.annotate({ description: "problems_added was cut" }),
     problems_cleared: Schema.Array(Schema.String),
+    problems_cleared_truncated: Schema.Boolean.annotate({
+      description: "problems_cleared was cut",
+    }),
   }),
-  push: Schema.Literals(["pushed", "not_needed", "not_attempted", "failed"]).annotate({
+  push: Schema.Literals(["pushed", "not_needed", "failed"]).annotate({
     description:
-      "Whether the new set was sent to the Environment's host: pushed, not_needed (the host has it), not_attempted (not this Session's Environment) or failed",
+      "Whether the new set was sent to the Environment's host: pushed, not_needed (the host has it, or neither it nor the set has any server) or failed",
   }),
   host: Schema.Struct({
     status: Schema.Literals(["reloaded", "not_reached", "unsupported", "failed"]).annotate({
       description:
-        "reloaded (the host dropped its eras and Legacy sessions and rediscovers its HTTP servers at once), not_reached (not this Session's Environment, or it has no servers), unsupported (an older host) or failed",
+        "reloaded (the host dropped its eras and Legacy sessions and rediscovers its HTTP servers at once), not_reached (the set has no servers, so the host is not woken), unsupported (an older host) or failed",
     }),
     servers: Schema.Array(Schema.String).annotate({
       description: "The servers the reload reached",

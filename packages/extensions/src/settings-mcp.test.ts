@@ -22,11 +22,13 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
+import type { McpHostClientService } from "./mcp/client.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { runSized } from "./program.fixture.ts";
+import { storedBytes } from "./stored-bytes.ts";
 import { GLOBAL_SETTINGS_SCOPE, SettingsAccessError } from "./settings.ts";
 import {
   MAX_GET_INSTRUCTIONS_BYTES,
@@ -223,6 +225,7 @@ const fakeAccess = (
       Effect.sync(() => {
         events.push(`pushed ${input.environment} ${input.revision}`);
       }),
+    host: () => NO_HOST,
   };
 
   return { service, events };
@@ -231,14 +234,25 @@ const fakeAccess = (
 /** A set a push hands the host. */
 const SET = { kind: "set", hash: SET_HASH, revision: 3, entries: [] } as const;
 
+/** The host of an Environment that no test gave one: asked, it is a failure of the test. */
+const NO_HOST: McpHostClientService = {
+  requestStart: () => Effect.die("a host that was not meant to be asked"),
+  servers: () => Effect.die("a host that was not meant to be asked"),
+  apply: () => Effect.die("a host that was not meant to be asked"),
+  request: () => Effect.die("a host that was not meant to be asked"),
+};
+
+/** The tools over `access`, every Environment's host being `host`, or the one `host` gives for the Environment. */
 const toolsOver = async (
   access: SettingsMcpAccessService,
-  host: McpHostClientService,
+  host: McpHostClientService | ((environment: string) => McpHostClientService),
 ): Promise<((name: string) => ToolRegistration) & { extension: Extension }> => {
   const extension = await Effect.runPromise(
     SettingsMcpTools.pipe(
-      Effect.provideService(SettingsMcpAccess, access),
-      Effect.provideService(McpHostClient, host),
+      Effect.provideService(SettingsMcpAccess, {
+        ...access,
+        host: Predicate.isFunction(host) ? host : () => host,
+      }),
     ),
   );
 
@@ -280,6 +294,10 @@ const failure = async (call: Promise<Outcome>) => {
 /** Everything a result shows a program or the model, as one string. */
 const everything = (result: Outcome): string =>
   `${text(result)}\n${JSON.stringify(result.structuredOutput)}`;
+
+/** What a result's value weighs stored (`docs/architecture/workspace.md` → The rest of one tool result). */
+const weighed = (result: Outcome): number =>
+  storedBytes(JSON.parse(JSON.stringify(result.structuredOutput ?? null)));
 
 /** Each key of a result's value, however deep. */
 const keysOf = (output: Outcome["structuredOutput"]): ReadonlyArray<string> => {
@@ -399,7 +417,7 @@ describe("settings_mcp_list", () => {
     expect(shown).toContain("never discovered");
 
     // One read of what the host holds: no Workspace named (so no Container), no wait for a discovery, no request.
-    expect(host.calls).toEqual([{ method: "servers", input: { parts: ["tools"] } }]);
+    expect(host.calls).toEqual([{ method: "servers", input: { parts: ["tools"], demand: false } }]);
     expect(calledOf(host)).not.toContain("requestStart");
     expect(calledOf(host)).not.toContain("request");
     expect(access.events).toEqual([`view ${ENV}`, "own"]);
@@ -533,21 +551,45 @@ describe("settings_mcp_list", () => {
     expect(host.calls).toEqual([]);
   });
 
-  it("gives no inventory for another Environment, whose host this Session does not reach or wake", async () => {
+  it("reads another Environment's own host, which holds the state of its set, and no other's", async () => {
     const access = fakeAccess({
       views: { [OTHER]: viewOf([served(resolved("files"))], { scope: OTHER, name: "B" }) },
     });
 
-    const host = fakeMcpHost([{ name: "files", tools: [] }]);
-    const tool = await toolsOver(access.service, host.client);
+    const host = fakeMcpHost([{ name: "files", tools: [{ name: "read" }] }]);
+    const asked: Array<string> = [];
+
+    const tool = await toolsOver(access.service, (environment) => {
+      asked.push(environment);
+
+      return host.client;
+    });
+
     const result = await run(tool("settings_mcp_list"), { scope: OTHER });
 
     expect(result.structuredOutput).toMatchObject({
-      inventory: "other_environment",
+      inventory: "read",
       is_own: false,
-      servers: [{ inventory: null }],
+      servers: [{ inventory: { state: "connected", tools: 1 } }],
     });
-    expect(host.calls).toEqual([]);
+    expect(asked).toEqual([OTHER]);
+    expect(host.calls).toEqual([{ method: "servers", input: { parts: ["tools"], demand: false } }]);
+  });
+
+  it("never asks the host of an Environment whose set has no server", async () => {
+    const access = fakeAccess({ views: { [OTHER]: viewOf([], { scope: OTHER, name: "B" }) } });
+    const asked: Array<string> = [];
+
+    const tool = await toolsOver(access.service, (environment) => {
+      asked.push(environment);
+
+      return NO_HOST;
+    });
+
+    const result = await run(tool("settings_mcp_list"), { scope: OTHER });
+
+    expect(result.structuredOutput).toMatchObject({ inventory: "no_servers", servers: [] });
+    expect(asked).toEqual([]);
   });
 
   it("asks no host for an Environment without servers, and still lists its Repos", async () => {
@@ -703,6 +745,159 @@ describe("settings_mcp_list", () => {
   });
 });
 
+describe("the bounds of a value (docs/architecture/agent-capabilities.md → Bounds)", () => {
+  const LONG = "x".repeat(500);
+
+  it("cuts every growable list of settings_mcp_list by stored bytes, with its flag, under 1 MiB", async () => {
+    const environments = Arr.makeBy(2000, (index) => ({ id: `env-${index}`, name: LONG }));
+
+    const crowded = served(resolved("crowded", { type: "stdio", env: {} }, { kind: "global" }), {
+      reads: Arr.makeBy(400, (index) => ({
+        name: `NAME_${index}_${LONG}`,
+        kind: "missing" as const,
+        where: [`env.K${index}`],
+        missingIn: environments,
+      })),
+      problems: Arr.makeBy(400, () => ({
+        source: { kind: "global" as const },
+        name: "crowded",
+        message: LONG,
+      })),
+      overriddenIn: environments,
+      adjustedIn: environments,
+    });
+
+    const view = viewOf([crowded], {
+      scope: "*",
+      name: "Global",
+      repos: Arr.makeBy(2000, (index) => ({
+        repo: `repo-${index}`,
+        path: ".pi/mcp.json",
+        state: "read",
+        error: LONG,
+      })),
+      orphans: Arr.makeBy(2000, (index) => ({
+        source: { kind: "environment" as const },
+        name: `orphan-${index}-${LONG}`,
+        keys: ["enabled"],
+      })),
+      problems: Arr.makeBy(2000, () => ({
+        source: { kind: "global" as const },
+        name: null,
+        message: LONG,
+      })),
+      warnings: Arr.makeBy(2000, () => LONG),
+    });
+
+    const access = fakeAccess({ views: { "*": view } });
+    const tool = await toolsOver(access.service, NO_HOST);
+    const result = await run(tool("settings_mcp_list"), { scope: "*" });
+
+    expect(result.structuredOutput).toMatchObject({
+      repos_truncated: true,
+      orphans_truncated: true,
+      problems_truncated: true,
+      warnings_truncated: true,
+      servers: [
+        {
+          reads_truncated: true,
+          problems_truncated: true,
+          overridden_in_truncated: true,
+          adjusted_in_truncated: true,
+          reads: expect.arrayContaining([expect.objectContaining({ missing_in_truncated: true })]),
+        },
+      ],
+    });
+    expect(weighed(result)).toBeLessThan(1024 * 1024);
+    expect(text(result)).toContain("Cut to fit:");
+  });
+
+  it("cuts the tools, prompts, unmatched keys and warnings of settings_mcp_get by stored bytes, under 1 MiB", async () => {
+    const many = Arr.makeBy(500, (index) => ({ name: `tool_${index}`, title: LONG.repeat(4) }));
+    const hidden: McpExposure = "hidden";
+
+    const keys = Object.fromEntries(
+      Arr.makeBy(200, (index) => [`gone_${index}_${LONG}`, hidden] as const),
+    );
+
+    const view = viewOf([served(resolved("files", { toolExposure: keys }))], {
+      warnings: Arr.makeBy(2000, () => LONG),
+    });
+
+    const access = fakeAccess({ views: { [ENV]: view } });
+
+    const host = fakeMcpHost([
+      {
+        name: "files",
+        tools: many,
+        prompts: Arr.makeBy(2000, (index) => `prompt-${index}-${LONG}`),
+      },
+    ]);
+
+    const tool = await toolsOver(access.service, host.client);
+    const result = await run(tool("settings_mcp_get"), { scope: ENV, name: "files" });
+
+    const out = result.structuredOutput;
+
+    const listed =
+      Predicate.hasProperty(out, "tools") && Array.isArray(out.tools) ? out.tools.length : -1;
+
+    expect(result.structuredOutput).toMatchObject({
+      tool_count: 500,
+      tools_truncated: true,
+      prompts_truncated: true,
+      unmatched_tool_exposure_truncated: true,
+      warnings_truncated: true,
+    });
+    expect(listed).toBeGreaterThan(0);
+    expect(listed).toBeLessThan(500);
+    expect(weighed(result)).toBeLessThan(1024 * 1024);
+  });
+
+  it("cuts every list of settings_mcp_reload by stored bytes, with its flag, under 1 MiB", async () => {
+    const names = Arr.makeBy(5000, (index) => `server-${index}-${LONG}`);
+
+    const report = reloadOf({
+      repos: Arr.makeBy(2000, (index) => ({
+        directory: `repo-${index}`,
+        slug: null,
+        path: ".pi/mcp.json",
+        outcome: "unreadable" as const,
+        blob: null,
+        readAt: null,
+        error: LONG,
+        errorSince: null,
+        keptCopy: false,
+        problem: null,
+      })),
+      set: {
+        added: names,
+        removed: names,
+        changed: names,
+        problemsAdded: names,
+        problemsCleared: names,
+      },
+    });
+
+    const access = fakeAccess({ views: ownView(), reloads: { [ENV]: report } });
+    const host = fakeMcpHost([{ name: "files", tools: [] }]);
+    const tool = await toolsOver(access.service, host.client);
+    const result = await run(tool("settings_mcp_reload"), { scope: ENV });
+
+    expect(result.structuredOutput).toMatchObject({
+      repos_truncated: true,
+      set: {
+        added_truncated: true,
+        removed_truncated: true,
+        changed_truncated: true,
+        problems_added_truncated: true,
+        problems_cleared_truncated: true,
+      },
+    });
+    expect(weighed(result)).toBeLessThan(1024 * 1024);
+  });
+});
+
 describe("settings_mcp_get", () => {
   const files: FakeMcpServer = {
     name: "files",
@@ -794,7 +989,11 @@ describe("settings_mcp_get", () => {
     expect(host.calls).toEqual([
       {
         method: "servers",
-        input: { names: ["files"], parts: ["tools", "prompts", "instructions", "status"] },
+        input: {
+          names: ["files"],
+          parts: ["tools", "prompts", "instructions", "status"],
+          demand: false,
+        },
       },
     ]);
   });
@@ -817,7 +1016,11 @@ describe("settings_mcp_get", () => {
     expect(host.calls).toEqual([
       {
         method: "servers",
-        input: { names: ["files"], parts: ["tools", "prompts", "instructions", "status"] },
+        input: {
+          names: ["files"],
+          parts: ["tools", "prompts", "instructions", "status"],
+          demand: false,
+        },
       },
     ]);
     expect(everything(result)).not.toContain(SECRET_VALUE);
@@ -898,9 +1101,9 @@ describe("settings_mcp_get", () => {
   });
 });
 
-describe("settings_mcp_reload", () => {
-  const ownView = () => ({ [ENV]: viewOf([served(resolved("files"))]) });
+const ownView = () => ({ [ENV]: viewOf([served(resolved("files"))]) });
 
+describe("settings_mcp_reload", () => {
   /** A host that records, in the order of the Session's own record, what it was told. */
   const ordered = (
     events: Array<string>,
@@ -941,7 +1144,6 @@ describe("settings_mcp_reload", () => {
 
     expect(result.isError).toBeFalsy();
     expect(access.events).toEqual([
-      "own",
       `reload ${ENV}`,
       `pushes ${ENV}`,
       "host set",
@@ -991,7 +1193,7 @@ describe("settings_mcp_reload", () => {
     expect(host.calls).toEqual([]);
   });
 
-  it("looks only, for another Environment, whose host this Session does not reach", async () => {
+  it("sends the set to, and reloads, the host of another Environment, and no other's", async () => {
     const access = fakeAccess({
       views: ownView(),
       reloads: { [OTHER]: reloadOf({ scope: OTHER, name: "B" }) },
@@ -999,16 +1201,54 @@ describe("settings_mcp_reload", () => {
     });
 
     const host = fakeMcpHost([{ name: "files", tools: [] }]);
-    const tool = await toolsOver(access.service, host.client);
+    const asked: Array<string> = [];
+
+    const tool = await toolsOver(access.service, (environment) => {
+      asked.push(environment);
+
+      return ordered(access.events, host);
+    });
+
     const result = await run(tool("settings_mcp_reload"), { scope: OTHER });
 
     expect(result.structuredOutput).toMatchObject({
-      push: "not_attempted",
-      host: { status: "not_reached" },
+      scope: { id: OTHER },
+      push: "pushed",
+      host: { status: "reloaded", servers: ["files"] },
     });
-    expect(access.events).toEqual(["own", `reload ${OTHER}`]);
-    expect(host.calls).toEqual([]);
-    expect(text(result)).toContain("only its own Environment's MCP host");
+    expect(access.events).toEqual([
+      `reload ${OTHER}`,
+      `pushes ${OTHER}`,
+      "host set",
+      `pushed ${OTHER} 3`,
+      "host reload",
+    ]);
+    expect(new Set(asked)).toEqual(new Set([OTHER]));
+  });
+
+  it("never wakes the host of an Environment whose set is and was empty", async () => {
+    const access = fakeAccess({
+      views: ownView(),
+      // The Registry has nothing to hand it (`shouldPushMcpSet`), and the set has no server to rediscover.
+      reloads: { [OTHER]: reloadOf({ scope: OTHER, name: "B", servers: 0 }) },
+      pushes: [],
+    });
+
+    const asked: Array<string> = [];
+
+    const tool = await toolsOver(access.service, (environment) => {
+      asked.push(environment);
+
+      return NO_HOST;
+    });
+
+    const result = await run(tool("settings_mcp_reload"), { scope: OTHER });
+
+    expect(result.structuredOutput).toMatchObject({
+      push: "not_needed",
+      host: { status: "not_reached", note: "the set has no servers" },
+    });
+    expect(asked).toEqual([]);
   });
 
   it("says each Repo's outcome, an unreadable Repo's kept copy among them", async () => {

@@ -31,8 +31,8 @@ export type SessionSettingsAccessOptions = {
   readonly session: string | undefined;
 };
 
-/** Why an Environment's Settings are not reached: no Environment has the id. */
-const noEnvironment = (id: string) =>
+/** Why an Environment's Settings or MCP servers are not reached: no Environment has the id. */
+export const noEnvironment = (id: string) =>
   SettingsAccessError.make({
     message: `No Environment has the id ${JSON.stringify(id)}. Give scope "*" for Global, or an Environment's id as environment_list shows it.`,
   });
@@ -58,7 +58,10 @@ export const sessionSettingsAccess = ({
           Effect.suspend(() => registry.getSettingsOverrides({ environment: scope })),
           Effect.suspend(() => registry.getEnvironment({ id: scope })),
           // The Environment's whole set, its Repos' servers included: not known to a Registry from before it was asked.
-          Effect.suspend(() => registry.mcpServerNames({ environment: scope })),
+          // A count that cannot be read leaves the line without it; it never fails the tool.
+          Effect.suspend(() => registry.mcpServerNames({ environment: scope })).pipe(
+            Effect.orElseSucceed(() => null),
+          ),
         ]).pipe(
           Effect.flatMap(([state, environment, names]) =>
             state === null || environment === null
