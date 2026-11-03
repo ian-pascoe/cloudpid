@@ -200,7 +200,10 @@ const guardMembers = (
     },
   });
 
-/** The store's members that write: what `refuseWrites` with none named makes throw. */
+/**
+ * The store's members that write, kept by hand: what `refuseWrites()` makes throw. It must list every write member of
+ * `McpHostStoreService`, or `refuseWrites()` leaves one working.
+ */
 const STORE_WRITES: ReadonlySet<string> = new Set([
   "replaceSet",
   "setRevision",
@@ -274,6 +277,10 @@ export class TestMcpHost extends DurableObject {
   #pulls = 0;
 
   #offset = 0;
+
+  readonly #answers: Array<string> = [];
+
+  #aborts = 0;
 
   /** The real engine, once a test asks for it: the test Worker's `McpEngine` entrypoint, over RPC. */
   #real: McpEngineMethods | undefined;
@@ -607,7 +614,40 @@ export class TestMcpHost extends DurableObject {
     input: typeof McpHostRequestInput.Encoded,
     hooks: McpHostRequestHooks,
   ): Promise<McpHostRequestResult> {
-    return Effect.runPromise(this.#methods.request(input, hooks));
+    // What the caller is told, and whether its `untilAborted` fired (resolved or rejected) before the answer was given,
+    // are read back by a test: the caller going away after the answer cancels nothing.
+    let answered = false;
+
+    const watched: McpHostRequestHooks =
+      hooks.untilAborted === undefined
+        ? hooks
+        : {
+            ...hooks,
+            untilAborted: () => {
+              const fired = () => {
+                if (!answered) this.#aborts++;
+              };
+
+              return hooks.untilAborted?.().then(fired, fired) ?? Promise.resolve();
+            },
+          };
+
+    return Effect.runPromise(this.#methods.request(input, watched)).then((answer) => {
+      answered = true;
+      this.#answers.push(answer._tag);
+
+      return answer;
+    });
+  }
+
+  /** The tags of the answers `request` gave its callers, in order. */
+  requestAnswers(): ReadonlyArray<string> {
+    return this.#answers;
+  }
+
+  /** How many times a caller's `untilAborted` fired while its `request` was still unanswered. */
+  abortsSeen(): number {
+    return this.#aborts;
   }
 
   /**
@@ -644,10 +684,15 @@ export class TestMcpHost extends DurableObject {
 
   /**
    * Make the `members` of the host's store (reads or writes: `statuses`, `putInventory`) throw, as a storage that fails
-   * one operation does; with none named, every write, while its reads still answer.
+   * one operation does.
    */
-  refuse(members: ReadonlyArray<string> = []): void {
-    this.#refused = new Set(members.length === 0 ? ["writes"] : members);
+  refuse(members: ReadonlyArray<string>): void {
+    this.#refused = new Set(members);
+  }
+
+  /** Every write of the store throws while its reads still answer (`STORE_WRITES`). */
+  refuseWrites(): void {
+    this.#refused = new Set(["writes"]);
   }
 
   /** The store works again. */

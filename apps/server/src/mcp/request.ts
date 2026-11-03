@@ -75,7 +75,7 @@ import {
   sendToEngine,
   serverOf,
 } from "./engine-round.ts";
-import { halt, writeOrHalt } from "./discovery.ts";
+import { orHalt, writeOrHalt } from "./discovery.ts";
 import { versionsOf } from "./server-state.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 
@@ -413,8 +413,8 @@ export const request = (
       : yield* toolCall(environment, op, input, hooks);
   }).pipe(
     // A storage operation that fails stops background work too: the instance was replaced.
-    Effect.catchCause(() =>
-      Effect.as(halt, HostFailed.make({ message: "The MCP host could not read its storage" })),
+    Effect.catchCause(
+      orHalt(HostFailed.make({ message: "The MCP host could not read its storage" })),
     ),
     Effect.withSpan("mcp.request", { attributes: { op } }),
   );

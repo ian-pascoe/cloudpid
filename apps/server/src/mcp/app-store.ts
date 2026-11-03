@@ -45,9 +45,7 @@ export type AppStore = {
     page: AppPage,
     now: number,
   ) => string;
-  /** The page kept under `hash`, marked mounted at `now`; absent when it was evicted or never kept. */
-  readonly appHtml: (hash: string, now: number) => AppPage | undefined;
-  /** The page kept under `hash` as `appHtml` reads it, marked nowhere: the read alone, which a refused write cannot fail. */
+  /** The page kept under `hash`, marked nowhere: the read alone, which a refused write cannot fail; absent when it was evicted or never kept. */
   readonly readApp: (hash: string) => AppPage | undefined;
   /** Mark the page under `hash` mounted at `now`, so the pages evicted first are those no View mounted lately. */
   readonly touchApp: (hash: string, now: number) => void;
@@ -89,7 +87,7 @@ export const appStore = (storage: MigrationStorage): AppStore => {
     sql.exec("DELETE FROM mcp_app_ui WHERE hash NOT IN (SELECT hash FROM mcp_app_html_meta)");
   };
 
-  const store: Omit<AppStore, "appHtml"> = {
+  return {
     appUi: (conn, uri) =>
       sql
         .exec<AppUiRow>(
@@ -188,17 +186,6 @@ export const appStore = (storage: MigrationStorage): AppStore => {
 
     touchApp: (hash, now) => {
       sql.exec("UPDATE mcp_app_html_meta SET last_mounted_at = ? WHERE hash = ?", now, hash);
-    },
-  };
-
-  return {
-    ...store,
-    appHtml: (hash, now) => {
-      const page = store.readApp(hash);
-
-      if (page !== undefined) store.touchApp(hash, now);
-
-      return page;
     },
   };
 };

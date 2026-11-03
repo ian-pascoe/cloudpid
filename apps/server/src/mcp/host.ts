@@ -40,6 +40,7 @@ import {
 } from "@cloudpid/mcp/types";
 import { normalizeMcpName } from "@cloudpid/config";
 import * as Arr from "effect/Array";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -53,6 +54,7 @@ import {
   awaitDiscoveries,
   halt,
   interrupt,
+  orHalt,
   restartable,
   McpDiscovery,
   type McpDiscoveryServices,
@@ -217,11 +219,7 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
     yield* Effect.tryPromise(() => store.destroy(revision));
 
     return McpDestroyed.make({});
-  }).pipe(
-    Effect.catchCause(() =>
-      Effect.as(halt, HostFailed.make({ message: "The storage was not wiped" })),
-    ),
-  );
+  }).pipe(Effect.catchCause(orHalt(HostFailed.make({ message: "The storage was not wiped" }))));
 
 /**
  * `reload` (`settings_mcp_reload`, `mcpReconnect`): drop the eras and Legacy sessions of the named servers (all when
@@ -290,11 +288,7 @@ const reload = (environment: string | undefined, input: McpApply) =>
     if (environment !== undefined) yield* startDue(environment, views, "reload");
 
     return McpReloaded.make({ servers: Arr.map(views, (view) => view.server.name) });
-  }).pipe(
-    Effect.catchCause(() =>
-      Effect.as(halt, HostFailed.make({ message: "The servers were not reloaded" })),
-    ),
-  );
+  }).pipe(Effect.catchCause(orHalt(HostFailed.make({ message: "The servers were not reloaded" }))));
 
 /**
  * The servers of the held set that use an MCP sign-in change (`servers`, the names it goes by in this Environment's
@@ -354,9 +348,7 @@ const takeSignIns = (
 
     return McpSignInsTaken.make({ servers: Arr.map(views, (view) => view.server.name) });
   }).pipe(
-    Effect.catchCause(() =>
-      Effect.as(halt, HostFailed.make({ message: "The sign-in change was not taken" })),
-    ),
+    Effect.catchCause(orHalt(HostFailed.make({ message: "The sign-in change was not taken" }))),
   );
 
 /**
@@ -404,9 +396,7 @@ export const apply = (
     }
 
     return yield* takeSet(environment, set.value).pipe(
-      Effect.catchCause(() =>
-        Effect.as(halt, HostFailed.make({ message: "The set was not kept" })),
-      ),
+      Effect.catchCause(orHalt(HostFailed.make({ message: "The set was not kept" }))),
     );
   }).pipe(Effect.withSpan("mcp.apply"));
 
@@ -465,8 +455,11 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostServices> 
       );
     }
   }).pipe(
+    // A Registry that cannot answer is no storage failure; a storage operation that fails (a defect) stops background work.
     Effect.catchCause((cause) =>
-      Effect.logWarning(`Environment ${environment}'s MCP server set was not pulled`, cause),
+      Effect.logWarning(`Environment ${environment}'s MCP server set was not pulled`, cause).pipe(
+        Effect.andThen(Cause.hasDies(cause) ? halt : Effect.void),
+      ),
     ),
     Effect.withSpan("mcp.registry"),
   );
@@ -552,10 +545,7 @@ export const requestStart = (
       ),
       watches: { changed: [], ended: [] },
     };
-  }).pipe(
-    Effect.catchCause(() => Effect.as(halt, unreadable)),
-    Effect.withSpan("mcp.request_start"),
-  );
+  }).pipe(Effect.catchCause(orHalt(unreadable)), Effect.withSpan("mcp.request_start"));
 
 /**
  * A failure to read what the host holds: loud, never an empty inventory that reads as no servers. The read that failed
@@ -649,10 +639,7 @@ export const servers = (
       ...versions,
       servers: Arr.map(Arr.filter(views, named), (view) => toServerInventory(view, request.parts)),
     };
-  }).pipe(
-    Effect.catchCause(() => Effect.as(halt, unreadable)),
-    Effect.withSpan("mcp.servers"),
-  );
+  }).pipe(Effect.catchCause(orHalt(unreadable)), Effect.withSpan("mcp.servers"));
 
 /**
  * `serverLog`: the log ring of the server `request.server` of the held set (`docs/architecture/mcp-connections.md` →
@@ -672,10 +659,7 @@ export const serverLog = (
     if (Option.isNone(found)) return McpNoServer.make({});
 
     return McpServerLog.make({ entries: store.logs(found.value.server.conn) });
-  }).pipe(
-    Effect.catchCause(() => Effect.as(halt, unreadable)),
-    Effect.withSpan("mcp.server_log"),
-  );
+  }).pipe(Effect.catchCause(orHalt(unreadable)), Effect.withSpan("mcp.server_log"));
 
 /** What the host object answers over RPC. */
 export type McpHostMethods = {

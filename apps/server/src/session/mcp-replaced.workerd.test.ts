@@ -122,5 +122,10 @@ describe("a Session replaced mid-call", () => {
 
     // The call went to the host once: the new instance did not send it again.
     expect(await host.engineRequests()).toHaveLength(1);
+
+    // The host's answer did reach the old instance, whole, and its call was never cancelled: the result was dropped by a
+    // Session that could not record it, not lost to a Session that was reset before it came.
+    expect(await host.requestAnswers()).toEqual(["Completed"]);
+    expect(await host.abortsSeen()).toBe(0);
   });
 });

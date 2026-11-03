@@ -2,8 +2,8 @@
 // Durable Object code updates](https://github.com/ian-pascoe/cloudpid/issues/423) D3, D6): the old instance keeps running
 // the calls it has, but every storage operation fails. The host returns the results it has, its writes are best-effort, and
 // at its first failed storage operation it stops background work (discoveries, a call's App read, the upkeep of kept pages).
-// `replace()` is `refusingStorage`'s `trip()` on the test host's storage; `refuse` is a storage that refuses only its
-// writes, which makes each step visible. What a new instance finds is read through a new store over the same storage.
+// `replace()` is `refusingStorage`'s `trip()` on the test host's storage; `refuse` and `refuseWrites` make a storage refuse single
+// operations or only its writes, which makes each step visible. What a new instance finds is read through a new store over the same storage.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
 // The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.
@@ -275,6 +275,69 @@ describe("a host whose storage refuses an operation", () => {
     expect(await host.startResult({ caller: CALLER })).toMatchObject({ _tag: "HostFailed" });
 
     // The storage answers again, but the instance has seen it fail: nothing new starts.
+    await host.accept();
+    await host.apply(setOf(entry("docs"), entry("later")));
+    await host.scriptEngine(urlOf("later"), [found("modern")]);
+    await host.requestStart({ caller: CALLER, waitFor: ["later"], waitMs: 300 });
+
+    expect(await host.engineCalls()).toHaveLength(1);
+  });
+
+  it("returns a call's result when the server's logs cannot be kept, and stops background work there", async () => {
+    const host = await discovered("modern", entry("docs"));
+
+    await host.scriptRequest(urlOf("docs"), [
+      {
+        result: {
+          ...complete({ content: [{ type: "text", text: "ok" }] }),
+          logs: [{ at: 1, level: "info", data: '"said"' }],
+        },
+      },
+    ]);
+
+    await host.refuse(["putLogs"]);
+
+    expect(await host.request(callTool("echo"), {})).toMatchObject({ _tag: "Completed" });
+
+    await host.accept();
+    await host.apply(setOf(entry("docs"), entry("later")));
+    await host.scriptEngine(urlOf("later"), [found("modern")]);
+    await host.requestStart({ caller: CALLER, waitFor: ["later"], waitMs: 300 });
+
+    expect(await host.engineCalls()).toHaveLength(1);
+  });
+
+  it("stops background work when the pull at a Context Window cannot keep the set it was handed", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("docs")));
+    await host.scriptEngine(urlOf("docs"), [found("modern")]);
+
+    // The Registry hands a newer set, which the storage refuses.
+    const next = setOf(entry("docs"), entry("later"));
+
+    await host.script({
+      hash: next.hash,
+      signInsRevision: 0,
+      revision: next.revision,
+      set: next.entries,
+    });
+    await host.refuse(["replaceSet"]);
+    await host.requestStart({ caller: CALLER, windowOpened: true, waitFor: ["docs"], waitMs: 300 });
+
+    // `docs` was due, and nothing started it.
+    expect(await host.engineCalls()).toEqual([]);
+  });
+
+  it("stops background work when an App's read cannot read the rows it passes the engine, and answers the mount with a failure", async () => {
+    const host = await discovered("modern", entry("docs"));
+
+    await host.refuse(["prior"]);
+
+    expect(
+      await host.request({ op: "ui/html", server: "docs", params: { uri: URI }, ctx: CTX }, {}),
+    ).toMatchObject({ _tag: "HostFailed" });
+
     await host.accept();
     await host.apply(setOf(entry("docs"), entry("later")));
     await host.scriptEngine(urlOf("later"), [found("modern")]);
