@@ -20,6 +20,7 @@ import {
   mcpNotices,
   type McpRequestStartInput,
   type McpToolsService,
+  type McpToolsStore,
   memoryMcpToolsStore,
 } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
@@ -57,8 +58,11 @@ const open = async (script: Parameters<typeof openSubagentHarness>[0]) => {
   ]);
 
   /** A fresh `McpTools` over `host`, writing its notices to this Harness. */
-  const tools = (host: ReturnType<typeof fakeMcpHost>) => {
-    const mcp = makeMcpTools(host.client, memoryMcpToolsStore());
+  const tools = (
+    host: ReturnType<typeof fakeMcpHost>,
+    store: McpToolsStore = memoryMcpToolsStore(),
+  ) => {
+    const mcp = makeMcpTools(host.client, store);
 
     mcp.bindNotices(mcpNotices(session.harness));
 
@@ -249,6 +253,41 @@ describe("a set change under a conversation", () => {
     await session.start(after);
     await session.prompt("four");
     expect(await session.notices()).toHaveLength(2);
+  });
+
+  it("tells nothing after a restart that installs the kept build, and still tells of a change made while it was down", async () => {
+    const files: FakeMcpServer = { ...DOCS, name: "files", resources: true, description: "Files" };
+    const host = fakeMcpHost([DOCS, files]);
+    const store = memoryMcpToolsStore();
+    const session = await open(() => answer("ok"));
+    const before = session.tools(host, store);
+
+    await session.start(before);
+    await session.prompt("one");
+
+    // The object starts again: its `McpTools` is made over what the first kept, and installs it without asking the host.
+    host.fail(true);
+
+    const after = session.tools(host, store);
+
+    const kept = after.reinstall([]);
+
+    expect(Option.isSome(kept)).toBe(true);
+    Option.map(kept, ({ mcp }) => session.registry.install(mcp));
+    expect(after.listing()).toEqual(before.listing());
+    expect(after.listing().text).toContain("- mcp__files (codemode): Files · resources");
+
+    await session.prompt("two");
+    await Effect.runPromise(after.notify(ROOT_CONVERSATION_ID));
+    expect(await session.notices()).toEqual([]);
+    expect(session.requests[1]?.system).toBe(session.requests[0]?.system);
+
+    // The set changed meanwhile: the next request start reads it, and the conversation is told once.
+    host.fail(false);
+    host.set([DOCS]);
+    await session.start(after);
+    await session.prompt("three");
+    expect(await session.notices()).toHaveLength(1);
   });
 
   it("writes one notice when two checks of a conversation run together", async () => {
