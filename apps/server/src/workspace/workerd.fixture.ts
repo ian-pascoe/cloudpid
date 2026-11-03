@@ -15,7 +15,9 @@ import { RpcTarget } from "cloudflare:workers";
 import * as git from "isomorphic-git";
 import { type ChangesFiles, gitFs, WorkspaceChangesModule } from "./changes.ts";
 import type { Answers } from "./github-pulls.fixtures.ts";
-import type { ContainerPreviewActivity } from "./container-preview.ts";
+import { MCP_BRIDGE_HEALTH_PATH, MCP_BRIDGE_PORT } from "@cloudpid/sandbox-image/mcp-bridge";
+import type { ContainerActivity } from "./idle.ts";
+import type { McpBridgeHealthPoll } from "./mcp-bridge.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
 import { currentRevision } from "./change-log.ts";
@@ -44,8 +46,69 @@ export type DevServerSocket = {
   closed: { readonly code: number; readonly reason: string } | null;
 };
 
-/** How many times Container previews touched the Container, and began and ended a carried socket's hold on it. */
-export type ContainerPreviewUses = { touch: number; begin: number; end: number };
+/** How many times a caller (Container previews, MCP bridge requests) touched the Container, and began and ended a hold on it. */
+export type ContainerUses = { touch: number; begin: number; end: number };
+
+/** The holds a caller has begun and not ended, and how many of them may write. */
+type OpenHolds = { open: number; writing: number };
+
+/** `idle`, its touches and holds counted in `uses`, and in `holds` the ones that have not ended. */
+const countingActivity = (
+  idle: ContainerActivity,
+  uses: ContainerUses,
+  holds?: OpenHolds,
+): ContainerActivity => ({
+  touch: () => {
+    uses.touch++;
+
+    return idle.touch();
+  },
+  hold: (options) => {
+    const writes = options?.writes !== false;
+
+    uses.begin++;
+
+    if (holds !== undefined) {
+      holds.open++;
+
+      if (writes) holds.writing++;
+    }
+
+    const hold = idle.hold(options);
+
+    return {
+      begun: hold.begun,
+      end: () => {
+        uses.end++;
+
+        if (holds !== undefined) {
+          holds.open--;
+
+          if (writes) holds.writing--;
+        }
+
+        return hold.end();
+      },
+    };
+  },
+});
+
+/** What the fake MCP bridge was asked: every request but the health polls, which are only counted. */
+export type FakeBridgeState = {
+  readonly requests: Array<{
+    readonly method: string;
+    /** The path and query. */
+    readonly path: string;
+    readonly authorization: string | null;
+    readonly host: string | null;
+    readonly config: string | null;
+    readonly body: string;
+  }>;
+  /** How many health polls it was sent. */
+  healthPolls: number;
+  /** For each stream it opened (`/mcp?stream=1`), whether its reader cancelled it. */
+  readonly streams: Array<{ cancelled: boolean }>;
+};
 
 /** What the fake dev server was asked, by any port, and the WebSockets it opened. */
 export type DevServerState = {
@@ -477,6 +540,9 @@ export class TestWorkspace extends Workspace {
     if (fake === undefined) return super.runContainerScript(script);
 
     fake.scripts.push(script);
+
+    if (this.#failStart) return Promise.resolve({ exitCode: 1, stdout: "", stderr: "no capacity" });
+
     fake.running = true;
 
     return Promise.resolve({ exitCode: 0, stdout: fake.outputs.shift() ?? "", stderr: "" });
@@ -561,8 +627,110 @@ export class TestWorkspace extends Workspace {
       }
     | undefined;
 
+  /**
+   * The bridge on the fake Container (`WorkspaceMcpBridge`'s tests), on its port, answering requests with the bearer
+   * `token`: health answers 200 once `healthFailures` polls have found nothing listening (a bridge still starting),
+   * `/mcp` answers `{ ok: true }`, `/mcp?stream=1` a stream the test writes to (`bridgeSend`) and ends (`bridgeEnd`), and
+   * `unreachable` has nothing listening at all (a bridge that exited). What it was asked is recorded (`bridgeState`).
+   */
+  #bridge:
+    | {
+        token: string;
+        healthFailures: number;
+        unreachable: boolean;
+        state: FakeBridgeState;
+        controllers: ReadableStreamDefaultController<Uint8Array>[];
+      }
+    | undefined;
+
+  /** The uses MCP bridge requests made of the Container, as the idle stop is told of them. */
+  #mcpBridgeUses: ContainerUses = { touch: 0, begin: 0, end: 0 };
+
+  /** The holds MCP bridge requests have begun and not ended, and how many of them may write. */
+  #mcpBridgeHolds: OpenHolds = { open: 0, writing: 0 };
+
+  /** Whether a start of the fake Container (a command) fails with a non-zero exit. */
+  #failStart = false;
+
+  failContainerStart(): void {
+    this.#failStart = true;
+  }
+
+  mcpBridgeHolds() {
+    return { ...this.#mcpBridgeHolds };
+  }
+
+  /** The health poll's interval and time; short, so a test waits for a dead bridge briefly. */
+  #healthPoll: McpBridgeHealthPoll = { intervalMs: 10, timeoutMs: 200 };
+
+  fakeBridge(options: {
+    readonly token: string;
+    readonly healthFailures?: number;
+    readonly unreachable?: boolean;
+    readonly healthPoll?: McpBridgeHealthPoll;
+  }): void {
+    this.#bridge = {
+      token: options.token,
+      healthFailures: options.healthFailures ?? 0,
+      unreachable: options.unreachable ?? false,
+      state: { requests: [], healthPolls: 0, streams: [] },
+      controllers: [],
+    };
+    this.#healthPoll = options.healthPoll ?? this.#healthPoll;
+  }
+
+  bridgeState(): FakeBridgeState {
+    return structuredClone(this.#bridge?.state ?? { requests: [], healthPolls: 0, streams: [] });
+  }
+
+  /** The fake bridge writes `text` on its stream `index`. */
+  bridgeSend(index: number, text: string): void {
+    this.#bridge?.controllers[index]?.enqueue(new TextEncoder().encode(text));
+  }
+
+  /** The fake bridge ends its stream `index`. */
+  bridgeEnd(index: number): void {
+    this.#bridge?.controllers[index]?.close();
+  }
+
+  mcpBridgeUses(): ContainerUses {
+    return { ...this.#mcpBridgeUses };
+  }
+
+  /**
+   * The Workspace's record of itself, as a Workspace that was used has it: computer's row for the Skill set's mount. A
+   * file written through computer would put it there too, but as a use of the Workspace.
+   */
+  markRecorded(): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO _vfs_mounts (root, kind, indexed, mode, version) VALUES (?, 'skill-set', 1, 'read-only', 'test')",
+      "/workspace/.agents/skills",
+    );
+  }
+
+  /** No launch record, as before the platform has started the Container and `ContainerLaunch` has kept it. */
+  async forgetLaunchRecord(): Promise<void> {
+    await this.ctx.storage.delete("cloudpid:container-launch");
+  }
+
+  /**
+   * The launch record of the Container that runs, as `ContainerLaunch` keeps it (the fake Container is not launched
+   * through it): its bridge token is what `WorkspaceMcpBridge` sends the bridge as the bearer.
+   */
+  async seedLaunchRecord(bridgeToken: string | undefined): Promise<void> {
+    await this.ctx.storage.put("cloudpid:container-launch", {
+      instance: "cpu-1",
+      idleMinutes: 30,
+      needsSnapshot: false,
+      restoredFrom: undefined,
+      image: "img-1",
+      bridgeToken,
+      launchedAt: 1,
+    });
+  }
+
   /** The uses Container previews made of the Container, as the idle stop is told of them. */
-  #containerPreviewUses: ContainerPreviewUses = { touch: 0, begin: 0, end: 0 };
+  #containerPreviewUses: ContainerUses = { touch: 0, begin: 0, end: 0 };
 
   fakeDevServer(options: {
     readonly ports: readonly number[];
@@ -594,7 +762,7 @@ export class TestWorkspace extends Workspace {
     this.#devServer?.sockets[index]?.close(1012, "restarting");
   }
 
-  containerPreviewUses(): ContainerPreviewUses {
+  containerPreviewUses(): ContainerUses {
     return { ...this.#containerPreviewUses };
   }
 
@@ -603,7 +771,84 @@ export class TestWorkspace extends Workspace {
     return this.ctx.storage.kv.get<boolean>("cloudpid:spare-used") === true;
   }
 
+  protected override mcpBridgeHealthPoll(): McpBridgeHealthPoll {
+    return this.#healthPoll;
+  }
+
+  protected override mcpBridgeActivity(): ContainerActivity {
+    return countingActivity(super.mcpBridgeActivity(), this.#mcpBridgeUses, this.#mcpBridgeHolds);
+  }
+
   protected override containerPort(port: number): Fetcher {
+    const bridge = this.#bridge;
+
+    if (port === MCP_BRIDGE_PORT && bridge !== undefined) {
+      return {
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+
+          if (url.pathname === MCP_BRIDGE_HEALTH_PATH) bridge.state.healthPolls++;
+
+          if (bridge.unreachable) {
+            throw new Error(
+              `The container is not listening in the TCP address 10.0.0.1:${MCP_BRIDGE_PORT}`,
+            );
+          }
+
+          if (url.pathname === MCP_BRIDGE_HEALTH_PATH) {
+            if (bridge.healthFailures > 0) {
+              bridge.healthFailures--;
+
+              throw new Error(
+                `The container is not listening in the TCP address 10.0.0.1:${MCP_BRIDGE_PORT}`,
+              );
+            }
+          } else {
+            bridge.state.requests.push({
+              method: request.method,
+              path: `${url.pathname}${url.search}`,
+              authorization: request.headers.get("authorization"),
+              host: url.host,
+              config: request.headers.get("x-cloudpid-stdio-config"),
+              body: await request.text(),
+            });
+          }
+
+          if (request.headers.get("authorization") !== `Bearer ${bridge.token}`) {
+            return new Response("Unauthorized", { status: 401 });
+          }
+
+          if (url.pathname === MCP_BRIDGE_HEALTH_PATH) return Response.json({ status: "ok" });
+
+          const status = url.searchParams.get("status");
+
+          if (status !== null) return Response.json({ error: "no" }, { status: Number(status) });
+
+          if (url.searchParams.get("stream") === "1") {
+            const index = bridge.state.streams.push({ cancelled: false }) - 1;
+
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start: (controller) => {
+                  bridge.controllers[index] = controller;
+                },
+                cancel: () => {
+                  bridge.state.streams[index]!.cancelled = true;
+                },
+              }),
+              { headers: { "content-type": "text/event-stream", "x-cloudpid-spawn": "spawn-1" } },
+            );
+          }
+
+          return Response.json({ ok: true }, { headers: { "x-cloudpid-spawn": "spawn-1" } });
+        },
+        connect: () => {
+          throw new Error("No sockets on the fake Container");
+        },
+      };
+    }
+
     const server = this.#devServer;
 
     if (server === undefined) return super.containerPort(port);
@@ -681,31 +926,8 @@ export class TestWorkspace extends Workspace {
     };
   }
 
-  protected override containerPreviewActivity(): ContainerPreviewActivity {
-    const idle = super.containerPreviewActivity();
-    const uses = this.#containerPreviewUses;
-
-    return {
-      touch: () => {
-        uses.touch++;
-
-        return idle.touch();
-      },
-      hold: (options) => {
-        uses.begin++;
-
-        const hold = idle.hold(options);
-
-        return {
-          begun: hold.begun,
-          end: () => {
-            uses.end++;
-
-            return hold.end();
-          },
-        };
-      },
-    };
+  protected override containerPreviewActivity(): ContainerActivity {
+    return countingActivity(super.containerPreviewActivity(), this.#containerPreviewUses);
   }
 
   /** The keys of the Workspace DO's storage that start with `prefix`. */
@@ -730,7 +952,7 @@ export class TestWorkspace extends Workspace {
 export { WorkspaceServiceProxy };
 
 /** The Workspaces Worker's Container previews entrypoint, over this test Worker's Workspace DOs. */
-export { WorkspaceContainerPreviews } from "./worker.ts";
+export { WorkspaceContainerPreviews, WorkspaceMcpBridge } from "./worker.ts";
 
 export default {
   fetch: () => new Response("cloudpid Workspace test worker"),

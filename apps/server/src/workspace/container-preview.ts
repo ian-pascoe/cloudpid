@@ -16,7 +16,7 @@ import {
   containerPreviewHost,
 } from "@cloudpid/extensions/browser/contract";
 import * as Predicate from "effect/Predicate";
-import type { IdleStop } from "./idle.ts";
+import type { ContainerActivity } from "./idle.ts";
 import {
   CONTAINER_PREVIEW_HEADER,
   CONTAINER_PREVIEW_SCRIPT,
@@ -39,15 +39,12 @@ export const CONTAINER_PREVIEW_MAX_UNREAD_BYTES = 96 * 1024 * 1024;
 /** The most of a carried socket's stream written at once: a large message goes in slices, each read on its own. */
 const CONTAINER_PREVIEW_SLICE_BYTES = 64 * 1024;
 
-/** The use of the Container a Container preview makes, as the idle stop counts it (`IdleStop`). */
-export type ContainerPreviewActivity = Pick<IdleStop, "touch" | "hold">;
-
 export type ContainerPreviewDeps = {
   /** Whether the Container runs now. */
   readonly running: () => boolean;
   /** The Container's port `port`, as `ctx.container.getTcpPort` gives it. */
   readonly port: (port: number) => Fetcher;
-  readonly activity: () => ContainerPreviewActivity;
+  readonly activity: () => ContainerActivity;
   /** A request the Container preview serves is a use of the Workspace (a spare's is no longer a spare). */
   readonly used: () => void;
   /** A new carried socket's ID: unguessable, as only the page that opened the socket may write to it. */

@@ -61,6 +61,47 @@ export const MCP_BRIDGE_STDERR_LIMIT = 65_536;
 /** How long the bridge waits for a child's answer to its `server/discover` probe before it reads the child as Legacy. */
 export const MCP_BRIDGE_PROBE_MS = 15_000;
 
+/**
+ * The response header of a 503 from `WorkspaceMcpBridge`: the Workspace's Container is `stopped` and the request did not
+ * ask to start it. The answer is the entrypoint's own, not the bridge's (the bridge never sends this header).
+ */
+export const MCP_BRIDGE_CONTAINER_HEADER = "x-cloudpid-container";
+
+/** How a call to `WorkspaceMcpBridge.mcpBridge` reaches the bridge: whether it may start a stopped Container, and whether it is a use of it. */
+export type McpBridgeOptions = {
+  /** Start the Workspace's Container when it is stopped (a live caller's request); otherwise a stopped one answers 503 `stopped`. */
+  readonly start: boolean;
+  /**
+   * Whether the request is a use of the Container: touched and held until the response body ends (a call, a prompt get,
+   * a read, a completion, discovery, an MCP task poll). `false` for the GET stream, listens, subscribe and unsubscribe,
+   * and bridge control, which neither touch nor hold. Neither is activity.
+   */
+  readonly use: boolean;
+};
+
+/**
+ * Why `WorkspaceMcpBridge` answered itself instead of the bridge, as `{ error, message }` JSON with these statuses:
+ * `no_workspace` (404), `stopped` (503, with `MCP_BRIDGE_CONTAINER_HEADER`), and 502 for `start_failed` (the Container
+ * did not start), `bridge_unreachable` (nothing answers on the bridge's port, or it refuses the launch's token: its
+ * message says `container_restart` starts a new one) and `bridge_failed`. `bridge_failed` is the fallback member: a
+ * caller reads a code it does not know (a later change adds one: every RPC edge only gains, docs/architecture/mcp.md →
+ * Deploys) as it, a generic failure (`mcpBridgeRefusalCode`). Any other status is the bridge's own.
+ */
+export type McpBridgeRefusal = (typeof MCP_BRIDGE_REFUSALS)[number];
+
+/** Every refusal this version knows, the fallback last. */
+export const MCP_BRIDGE_REFUSALS = [
+  "no_workspace",
+  "stopped",
+  "start_failed",
+  "bridge_unreachable",
+  "bridge_failed",
+] as const;
+
+/** The refusal `code` names, or the fallback `bridge_failed` for a code this version does not know. */
+export const mcpBridgeRefusalCode = (code: string | undefined): McpBridgeRefusal =>
+  MCP_BRIDGE_REFUSALS.find((refusal) => refusal === code) ?? "bridge_failed";
+
 /** A stdio server's config: what the bridge spawns. A server's `env` is added to the bridge's `PATH` and `HOME` only. */
 export type McpBridgeConfig = {
   readonly command: string;

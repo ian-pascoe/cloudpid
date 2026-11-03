@@ -6,7 +6,7 @@ What an MCP server gives a Session's agents and its owner: tools, resources, pro
 
 MCP tools reach a Session as one `mcp` Session extension built from the Environment's MCP inventory. Each tool's `execute` calls `McpHost.request({ op: "tools/call" })` ([ADR-0030](../adr/0030-mcp-tools-reach-a-session-as-an-extension-rebuilt-from-the-mcp-inventory.md)).
 
-- **Request start:** at each request start, where the Session already refreshes its Settings, it calls `McpHost.requestStart({ caller: { session, conversation, workspace }, known, windowOpened?, waitFor?, waitMs? })`.
+- **Request start:** at each request start, where the Session already refreshes its Settings, it calls `McpHost.requestStart({ caller: { session, conversation, workspace }, known, windowOpened?, waitFor?, waitMs? })`. **Precondition for a stdio server:** the Session's Workspace readying is lazy, so before `requestStart`, or any `McpHost` call that may reach the bridge, the Session awaits a call to its calling Workspace (`noteSessionActivity`, for one), so the Workspace has marked itself. `WorkspaceMcpBridge`'s 404 `no_workspace` means "never used, or destroyed", and this precondition is what makes the host's reading of it as destroyed right ([_The stdio bridge_](mcp-connections.md#the-stdio-bridge)).
   - **Returns:** `{ version, promptsVersion, servers: { [name]: { toolsHash, promptsHash, state } }, watches: { changed, ended }, features }`.
   - **Skipped:** a Session whose `sessionSettings.mcp.servers` is 0 and which has no Resource watches makes no call, so `McpHost` is never woken for an Environment without MCP servers.
   - **`windowOpened`** is set on a Context Window's first request. It makes the host ask the Registry for the MCP server set.

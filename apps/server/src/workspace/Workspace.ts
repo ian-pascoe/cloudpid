@@ -83,7 +83,7 @@ import {
   WorkspaceRunsModule,
 } from "./runs.ts";
 import { WorkspaceWorkStateModule } from "./work-state.ts";
-import { type HeldStop, heldStopMinutes, IdleStop } from "./idle.ts";
+import { type ContainerActivity, type HeldStop, heldStopMinutes, IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
 import {
@@ -93,11 +93,14 @@ import {
   type StoredLaunchRecord,
 } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
+import { CONTAINER_PREVIEW_KEEP_ALIVE_MS, ContainerPreview } from "./container-preview.ts";
 import {
-  CONTAINER_PREVIEW_KEEP_ALIVE_MS,
-  ContainerPreview,
-  type ContainerPreviewActivity,
-} from "./container-preview.ts";
+  MCP_BRIDGE_HEALTH_INTERVAL_MS,
+  MCP_BRIDGE_HEALTH_TIMEOUT_MS,
+  McpBridge,
+  type McpBridgeHealthPoll,
+} from "./mcp-bridge.ts";
+import type { McpBridgeOptions } from "@cloudpid/sandbox-image/mcp-bridge";
 import { ContainerResizes } from "./resize.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
@@ -220,6 +223,9 @@ const SPARE_KEY = "cloudpid:spare-preparation";
 /** Kept once a Session used the Workspace, so it is never prepared, nor stopped, as a spare again (`SparePreparation`). */
 const SPARE_USED_KEY = "cloudpid:spare-used";
 
+/** Written when a spare Workspace is prepared, before any Session uses it: the Workspace exists (`recorded`). */
+const SPARE_PREPARED_KEY = "cloudpid:spare-prepared";
+
 /** Where each repo's last list from the Container's git is kept (`WorkspaceChangesModule`), under `<key>:<repo>`. */
 const CHANGES_KEY = "cloudpid:changes";
 
@@ -250,6 +256,12 @@ const CONTAINER_FILES_TIMEOUT_SECONDS = 300;
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
 export const CONTAINER_BACKEND_ID = "container-shell";
 
+/** 256 random bits, as hex: an unguessable ID or token. */
+const randomHex = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+
 export class Workspace extends ContainerHost {
   readonly #workspace: ComputerWorkspace;
   readonly #host: WorkspaceEnvHost;
@@ -279,6 +291,8 @@ export class Workspace extends ContainerHost {
   readonly #workState: WorkspaceWorkStateModule;
   /** The Container previews: the Session's browser's requests for the Container's ports (`containerPreview`). */
   readonly #containerPreview: ContainerPreview;
+  /** The MCP engine's requests for the Container's MCP bridge (`mcpBridge`). */
+  readonly #mcpBridge: McpBridge;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
   /** The Skill set the mount at `SKILLS_MOUNT` serves: empty until one is handed over (`updateSkills`). */
@@ -407,6 +421,7 @@ export class Workspace extends ContainerHost {
       running: () => ctx.container?.running === true,
       // A command that launches a Container holds it as it may write, before the launch is recorded.
       writing: () => this.#idle.writing(),
+      newBridgeToken: randomHex,
       now: () => Date.now(),
       warn: (message) => console.warn(message),
       info: (message) => console.info(message),
@@ -765,14 +780,82 @@ export class Workspace extends ContainerHost {
       port: (port) => this.containerPort(port),
       activity: () => this.containerPreviewActivity(),
       used: () => this.#spare.noteUse(),
-      // 256 random bits, as hex.
-      newId: () =>
-        Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join(""),
+      newId: randomHex,
       keepAliveMs: () => this.containerPreviewKeepAliveMs(),
       warn: (message) => console.warn(message),
     });
+
+    // The MCP engine's requests for the Container's bridge, which `WorkspaceMcpBridge` hands here: a start of the Container
+    // only when the caller asks, and a use of it (touched, held) only when the request is one.
+    this.#mcpBridge = new McpBridge({
+      recorded: () => this.#recorded(),
+      running: () => this.containerRunning(),
+      start: async () => {
+        const ran = await this.runContainerScript("true");
+
+        if (ran.exitCode !== 0) {
+          throw new Error(`the Container did not run a command (${ran.exitCode ?? ran.stderr})`);
+        }
+      },
+      token: () => launch.bridgeToken(),
+      launchedAt: () => launch.launchedAt(),
+      now: () => Date.now(),
+      port: (port) => this.containerPort(port),
+      activity: () => this.mcpBridgeActivity(),
+      used: () => this.#spare.noteUse(),
+      healthPoll: () => this.mcpBridgeHealthPoll(),
+      warn: (message) => console.warn(message),
+    });
+  }
+
+  /** The uses an MCP bridge request makes of the Container: the idle stop's. A test Worker counts them. */
+  protected mcpBridgeActivity(): ContainerActivity {
+    return this.#idle;
+  }
+
+  /** How the bridge's health is polled after a start. A test Worker shortens it. */
+  protected mcpBridgeHealthPoll(): McpBridgeHealthPoll {
+    return {
+      intervalMs: MCP_BRIDGE_HEALTH_INTERVAL_MS,
+      timeoutMs: MCP_BRIDGE_HEALTH_TIMEOUT_MS,
+    };
+  }
+
+  /**
+   * Whether the Workspace has a record of itself, which a destroyed one (its storage is wiped) has not. Any of:
+   * - a Session has used it (`SPARE_USED_KEY`): every call it makes to the Workspace is a use (its readying starts
+   *   with `skillSetHash`, then the Secrets and Skills writes), and none needs a file operation, so an Environment
+   *   with no Repos and no Skills is a Workspace too. A Session's readying is lazy, so the Session must make a call
+   *   (`noteSessionActivity`) before `requestStart`, or any host call that may reach the bridge, for `no_workspace` to
+   *   mean "destroyed" and not "never used" (docs/architecture/mcp-in-a-session.md → Request start);
+   * - it was prepared as a spare (`SPARE_PREPARED_KEY`), before any Session used it;
+   * - computer has indexed its mounts (`_vfs_mounts` has a row), which a Workspace that was used has, one that predates
+   *   the two marks included.
+   * A table that cannot be read (a computer upgrade changed it) counts as a record, as `#mountIndexed` does.
+   */
+  #recorded(): boolean {
+    const kv = this.ctx.storage.kv;
+
+    if (kv.get<boolean>(SPARE_USED_KEY) === true || kv.get<boolean>(SPARE_PREPARED_KEY) === true) {
+      return true;
+    }
+
+    try {
+      const table = this.#sql
+        .exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_vfs_mounts'")
+        .toArray();
+
+      return (
+        table.length > 0 && this.#sql.exec("SELECT 1 FROM _vfs_mounts LIMIT 1").toArray().length > 0
+      );
+    } catch (cause) {
+      console.warn(
+        "Cannot tell whether the Workspace has a record of itself; taking it for one",
+        cause,
+      );
+
+      return true;
+    }
   }
 
   /** The Container's port `port`, for a Container preview. A test Worker replaces it. */
@@ -788,7 +871,7 @@ export class Workspace extends ContainerHost {
   }
 
   /** The uses a Container preview makes of the Container: the idle stop's. A test Worker counts them. */
-  protected containerPreviewActivity(): ContainerPreviewActivity {
+  protected containerPreviewActivity(): ContainerActivity {
     return this.#idle;
   }
 
@@ -1241,6 +1324,9 @@ export class Workspace extends ContainerHost {
     // set-up stored stays small and a Session that takes the spare before its preparation finds the Skills.
     const { secrets, secretsUnavailable, skills, ...stored } = setup;
 
+    // The Workspace exists from here, whatever the preparation finds to write.
+    this.ctx.storage.kv.put(SPARE_PREPARED_KEY, true);
+
     if (secrets !== undefined) await this.#environmentSecrets.replace(secrets);
     else if (secretsUnavailable !== undefined) {
       await this.#environmentSecrets.markUnavailable(secretsUnavailable);
@@ -1280,6 +1366,16 @@ export class Workspace extends ContainerHost {
    */
   containerPreview(request: Request, port: number): Promise<Response> {
     return this.#containerPreview.serve(request, port);
+  }
+
+  /**
+   * Answer `request`, the MCP engine's, from the Container's MCP bridge: the Workspaces Worker's `WorkspaceMcpBridge`
+   * entrypoint hands it here (docs/architecture/mcp-connections.md → The stdio bridge). A stopped Container is started
+   * only for `start`, and the request touches and holds it only for `use`; neither is activity. A Workspace with no
+   * record of itself answers 404 `no_workspace`, a stopped Container 503 `stopped`.
+   */
+  mcpBridge(request: Request, options: McpBridgeOptions): Promise<Response> {
+    return this.#mcpBridge.serve(request, options);
   }
 
   /** The Container's egress: computerd dials back here, and `WorkspaceProxy` forwards its WebSocket upgrade. */
