@@ -16,6 +16,7 @@ import type {
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
+import { DISCOVERY_DEADLINE_MS } from "./discovery.ts";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 import { openMcpHostStore } from "./store.ts";
 
@@ -280,6 +281,87 @@ describe("states and backoff", () => {
     expect(await stateOf(host, "down")).toBe("connected");
   });
 
+  it("backs an unavailable server off 30 s, 1, 2, 5, then 10 min, and stays at 10 min", async () => {
+    const host = freshHost();
+    const steps = [30_000, MINUTE, 2 * MINUTE, 5 * MINUTE, 10 * MINUTE, 10 * MINUTE];
+
+    await host.apply(setOf(entry("down")));
+    await host.scriptEngine(urlOf("down"), Array.from({ length: 7 }, unreachable));
+    await start(host, { waitFor: ["down"] });
+
+    let expected = 1;
+
+    for (const step of steps) {
+      await host.advance(step - 1_000);
+      await restart(host);
+      expect(await calls(host)).toBe(expected);
+
+      await host.advance(1_000);
+      await restart(host);
+      await settled(host);
+      expected += 1;
+      expect(await calls(host)).toBe(expected);
+    }
+
+    const [down] = (await host.servers({ parts: ["status"] })).servers;
+
+    expect(down?.status).toMatchObject({ failures: 7 });
+  });
+
+  it("reads an engine out of reach as no failure of the server's: its state stays, held back 30 s", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("linear")));
+    await host.scriptEngine(urlOf("linear"), [
+      found(["a"]),
+      { ...found(["a"]), reject: "Network connection lost." },
+      found(["b"]),
+    ]);
+    await start(host, { waitFor: ["linear"] });
+
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await settled(host);
+
+    const [linear] = (await host.servers({ parts: ["status", "tools"] })).servers;
+
+    expect(linear).toMatchObject({ state: "connected", status: { failures: 0 } });
+    expect(linear?.error).toContain("Network connection lost.");
+    expect(linear?.tools?.map((tool) => tool.name)).toEqual(["a"]);
+
+    await restart(host);
+    expect(await calls(host)).toBe(2);
+
+    await host.advance(30_000);
+    await restart(host);
+    await settled(host);
+    expect(await calls(host)).toBe(3);
+  });
+
+  it("gives up a discovery that outlives its deadline, freeing its slot, and drops its answer", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("slow")));
+    await host.scriptEngine(urlOf("slow"), [{ ...found(["late"]), hold: true }, found(["b"])]);
+    await restart(host);
+    await vi.waitFor(async () => expect(await calls(host)).toBe(1));
+    expect(await stateOf(host, "slow")).toBe("connecting");
+
+    await host.advance(DISCOVERY_DEADLINE_MS + 1_000);
+    await restart(host);
+    await settled(host);
+
+    expect(await calls(host)).toBe(2);
+    expect(await stateOf(host, "slow")).toBe("connected");
+
+    await host.release(urlOf("slow"));
+    await settled(host);
+
+    const [slow] = (await host.servers({ parts: ["tools"] })).servers;
+
+    expect(slow?.tools?.map((tool) => tool.name)).toEqual(["b"]);
+  });
+
   it("never retries a failed server on demand, and a set change retries it once a minute has passed", async () => {
     const host = freshHost();
 
@@ -441,7 +523,7 @@ describe("versions", () => {
     expect(await calls(host)).toBe(4);
   });
 
-  it("move with a key outside `conn` with no new discovery, and keep the prompts version for a tools-only change", async () => {
+  it("move with a key outside `conn`, with no new discovery", async () => {
     const host = freshHost();
 
     await host.apply(setOf(entry("linear")));
@@ -459,8 +541,31 @@ describe("versions", () => {
   });
 });
 
+describe("versions, prompts", () => {
+  it("keep the prompts version over a change to the tools alone", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("linear")));
+    await host.scriptEngine(urlOf("linear"), [found(["a"]), found(["b"])]);
+
+    const before = await start(host, { waitFor: ["linear"] });
+
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await settled(host);
+
+    const after = await restart(host);
+
+    expect(await calls(host)).toBe(2);
+    expect(after.version).not.toBe(before.version);
+    expect(after.servers.linear?.toolsHash).not.toBe(before.servers.linear?.toolsHash);
+    expect(after.promptsVersion).toBe(before.promptsVersion);
+    expect(after.servers.linear?.promptsHash).toBe(before.servers.linear?.promptsHash);
+  });
+});
+
 describe("set diffs and the era cache", () => {
-  it("aborts a changed server's discovery, drops its era, rediscovers the new `conn`, and reuses the old inventory on a revert", async () => {
+  it("drops a changed server's discovery unread, drops its era, rediscovers the new `conn`, and reuses the old inventory on a revert", async () => {
     const host = freshHost();
     const a = entry("linear");
     const b = entry("linear", { url: urlOf("moved") }, { hash: "hash-moved", conn: "conn-moved" });
@@ -471,7 +576,7 @@ describe("set diffs and the era cache", () => {
 
     expect((await host.prior("conn-linear")).era).toMatchObject({ era: "modern" });
 
-    // A refresh in flight when the server changes is aborted.
+    // A refresh in flight when the server changes is dropped: its answer, once it comes, is never kept.
     await host.advance(11 * MINUTE);
     await restart(host);
     await vi.waitFor(async () => expect(await calls(host)).toBe(2));
@@ -480,7 +585,9 @@ describe("set diffs and the era cache", () => {
     await host.apply(setOf(b));
     await settled(host);
 
-    expect(await host.aborted()).toEqual([urlOf("linear")]);
+    await host.release(urlOf("linear"));
+    await settled(host);
+
     expect(await host.prior("conn-linear")).toEqual({});
     expect(await stateOf(host, "linear")).toBe("connected");
     expect((await host.engineCalls()).at(-1)?.target.url).toBe(urlOf("moved"));
@@ -576,6 +683,65 @@ describe("set diffs and the era cache", () => {
   });
 });
 
+describe("reload and retention", () => {
+  it("drops a discovery in flight at a reload before its rows, so its answer never writes them back", async () => {
+    const host = freshHost();
+    const stale = { v: 1, era: "modern", version: "stale", discover: {}, probedAt: 1 };
+
+    await host.apply(setOf(entry("linear")));
+    await host.scriptEngine(urlOf("linear"), [
+      found(["a"]),
+      { ...found(["a"], { state: { era: stale } }), hold: true },
+      found(["b"], { state: {} }),
+    ]);
+    await start(host, { waitFor: ["linear"] });
+    await host.advance(11 * MINUTE);
+    await restart(host);
+    await vi.waitFor(async () => expect(await calls(host)).toBe(2));
+
+    await host.apply(JSON.parse('{"kind":"reload"}'));
+    await settled(host);
+    await host.release(urlOf("linear"));
+    await settled(host);
+
+    const third = (await host.engineCalls())[2];
+
+    expect(third?.prior).toEqual({});
+    expect(await host.prior("conn-linear")).toEqual({});
+    expect(
+      (await host.servers({ parts: ["tools"] })).servers[0]?.tools?.map((tool) => tool.name),
+    ).toEqual(["b"]);
+  });
+
+  it("keeps the inventories of at most 20 servers that left the set, for 30 days", async () => {
+    const host = freshHost();
+    const names = Array.from({ length: 22 }, (_, index) => `s${index}`);
+
+    for (const name of names) {
+      await host.apply(setOf(entry(name)));
+      await host.scriptEngine(urlOf(name), [found(["a"])]);
+      await start(host, { waitFor: [name] });
+      await host.advance(1_000);
+    }
+
+    // s0 to s20 left the set, s0 first: the 20 most recent are kept.
+    const kept = await host.dump();
+
+    expect(kept).not.toContain('"conn-s0"');
+    expect(kept).toContain('"conn-s1"');
+    expect(kept).toContain('"conn-s20"');
+
+    await host.advance(31 * 24 * 60 * MINUTE);
+    await host.apply(setOf(entry("last")));
+
+    const pruned = await host.dump();
+
+    expect(pruned).not.toContain('"conn-s1"');
+    expect(pruned).not.toContain('"conn-s20"');
+    expect(pruned).toContain('"conn-s21"');
+  });
+});
+
 describe("servers", () => {
   it("answers each server's config, state and counts, and the parts asked for", async () => {
     const host = freshHost();
@@ -625,7 +791,7 @@ describe("servers", () => {
 });
 
 describe("apply({ kind: 'destroy' })", () => {
-  it("aborts the discoveries in flight before it wipes the storage", async () => {
+  it("drops the discoveries in flight before it wipes the storage, and passes the engine no callback", async () => {
     const host = freshHost();
 
     await host.apply(setOf(entry("linear")));
@@ -636,7 +802,10 @@ describe("apply({ kind: 'destroy' })", () => {
     expect(await host.apply(JSON.parse(`{"kind":"destroy","revision":${revision++}}`))).toEqual({
       _tag: "Destroyed",
     });
-    await vi.waitFor(async () => expect(await host.aborted()).toEqual([urlOf("linear")]));
+    await host.release(urlOf("linear"));
+    await settled(host);
+
     expect(await host.dump()).not.toContain("conn-linear");
+    expect((await host.engineCalls()).map((call) => call.hooks)).toEqual([[]]);
   });
 });

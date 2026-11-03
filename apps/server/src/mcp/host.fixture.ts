@@ -5,6 +5,7 @@
 // Testing): what the pull asks and the Registry answers (or that it cannot), the `${NAME}` values it resolves, what
 // each discovery of a server's URL answers (or holds until released or aborted), and a clock the test moves forward.
 import {
+  HostFailed,
   type McpApply,
   type McpApplyResult,
   type McpEngineDiscoverResult,
@@ -23,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Schema from "effect/Schema";
 import { mcpEngineClient } from "./engine.ts";
 import { mcpHostLayer, mcpHostMethods, McpRegistryUnavailable } from "./host.ts";
 import { environmentOfMcpHost } from "./name.ts";
@@ -34,16 +36,21 @@ export type PullAsked = {
   readonly heldHash: string | undefined;
 };
 
-/** One scripted discovery: its answer, and whether it waits for `release` (or the host's abort) first. */
+/**
+ * One scripted discovery: its answer, whether it waits for `release` first, and whether the RPC itself fails instead
+ * (`reject`, its error's message), as an engine out of reach does.
+ */
 export type EngineScript = {
   readonly result: typeof McpEngineDiscoverResult.Encoded;
   readonly hold?: boolean;
+  readonly reject?: string;
 };
 
-/** A discovery the engine was asked for: the target as it crossed, and the rows passed as `prior`. */
+/** A discovery the engine was asked for: the target as it crossed, the rows passed as `prior`, and the hooks' names. */
 export type EngineCall = {
   readonly target: McpEngineTargetEncoded;
   readonly prior: McpEnginePriorEncoded;
+  readonly hooks: ReadonlyArray<string>;
 };
 
 /** A clock `offset` ms ahead of `base`, sleeping as `base` does. */
@@ -58,6 +65,15 @@ const shiftedClock = (base: Clock.Clock, offset: () => number): Clock.Clock => (
   monotonicTimeNanos: base.monotonicTimeNanos,
   sleep: (duration) => base.sleep(duration),
 });
+
+const isHostFailed = Schema.is(HostFailed);
+
+/** `result`, an answer the test expects: a `HostFailed` throws, so the test fails with its message. */
+const answered = <A extends object>(result: A | HostFailed): A => {
+  if (isHostFailed(result)) throw new Error(result.message);
+
+  return result;
+};
 
 const unscripted = (url: string): typeof McpEngineDiscoverResult.Encoded => ({
   kind: "failed",
@@ -97,13 +113,12 @@ export class TestMcpHost extends DurableObject {
 
   readonly #calls: Array<EngineCall> = [];
 
-  readonly #aborted: Array<string> = [];
-
   #offset = 0;
 
   readonly #engine: Pick<McpEngineMethods, "discover"> = {
     discover: async (target, prior, hooks) => {
-      this.#calls.push({ target, prior });
+      // @effect-diagnostics-next-line preferEffectRecord:off -- the hooks' names as they crossed, whatever they are.
+      this.#calls.push({ target, prior, hooks: Object.keys(hooks) });
 
       const queue = this.#scripts.get(target.url) ?? [];
       const script = queue.shift();
@@ -111,24 +126,12 @@ export class TestMcpHost extends DurableObject {
       if (script === undefined) return unscripted(target.url);
 
       if (script.hold === true) {
-        const released = new Promise<void>((resolve) => {
+        await new Promise<void>((resolve) => {
           this.#held.set(target.url, [...(this.#held.get(target.url) ?? []), resolve]);
         });
-
-        const aborted = hooks.untilAborted().then(() => "aborted" as const);
-        const outcome = await Promise.race([released.then(() => "released" as const), aborted]);
-
-        if (outcome === "aborted") {
-          this.#aborted.push(target.url);
-
-          return {
-            kind: "failed",
-            // oxlint-disable-next-line anti-slop-effect/no-manual-tagged-construction -- an encoded answer, as it crosses
-            error: { _tag: "Cut", message: "aborted", mayHaveRun: false },
-            state: {},
-          };
-        }
       }
+
+      if (script.reject !== undefined) throw new Error(script.reject);
 
       return script.result;
     },
@@ -194,11 +197,6 @@ export class TestMcpHost extends DurableObject {
     return this.#calls;
   }
 
-  /** The URLs whose held discoveries the host aborted. */
-  aborted(): ReadonlyArray<string> {
-    return this.#aborted;
-  }
-
   /** Move the host's clock `ms` forward. */
   advance(ms: number): void {
     this.#offset += ms;
@@ -213,12 +211,12 @@ export class TestMcpHost extends DurableObject {
     return Effect.runPromise(this.#methods.apply(input));
   }
 
-  requestStart(request: McpRequestStart): Promise<McpRequestStartAnswer> {
-    return Effect.runPromise(this.#methods.requestStart(request));
+  async requestStart(request: McpRequestStart): Promise<McpRequestStartAnswer> {
+    return answered(await Effect.runPromise(this.#methods.requestStart(request)));
   }
 
-  servers(request: McpServersRequest): Promise<McpServersAnswer> {
-    return Effect.runPromise(this.#methods.servers(request));
+  async servers(request: McpServersRequest): Promise<McpServersAnswer> {
+    return answered(await Effect.runPromise(this.#methods.servers(request)));
   }
 
   /** The set as the store holds it. */

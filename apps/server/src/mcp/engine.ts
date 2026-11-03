@@ -3,10 +3,16 @@
 // build cannot read, an engine that cannot be reached and one that does not answer in time are one failure,
 // `McpEngineUnreachable`, which the host reads as the server being unavailable for now.
 //
-// RPC carries no `AbortSignal`, so each call passes `untilAborted()`, which resolves once the host interrupts the call
-// (a set change, a destroy): the engine then aborts the server request (#409 answer 2).
+// A discovery passes the engine no hooks: it runs as a fiber in the host's runtime, often past the invocation that
+// started it, and a function stub lives only as long as the invocation that made it (#409 answer 2), so an
+// `untilAborted()` would cut it about 72 s later. The RPC itself is the object's own pending I/O, which keeps the object
+// in memory for up to 15 minutes (Cloudflare's Durable Object lifecycle, "Pending operations prevent eviction"), and
+// the engine runs the discovery to its own bounds. A discovery the host interrupts (a set change, a reload, a destroy)
+// is dropped here, unread: it runs nothing on the server, so the engine finishing it costs only its own time.
 // @effect-diagnostics missingPipeableSignature:off -- the engine's methods, not combinators.
 import {
+  MCP_CONNECT_TIMEOUT_MS,
+  MCP_LIST_WALK_TIMEOUT_MS,
   McpEngineDiscoverResult,
   type McpEngineMethods,
   McpEngineTarget,
@@ -17,11 +23,16 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { PriorRows } from "./store.ts";
 
+/** What the host waits past the engine's own bounds, for the RPC's way there and back. */
+const DISCOVER_SLACK_MS = 30_000;
+
 /**
- * The longest the host waits for a discovery: past the engine's own bounds (15 s to probe or initialize, 120 s to walk
- * a list), so only an engine that went silent reaches it.
+ * The longest the host waits for a discovery: past the engine's own bounds for the slowest one, a Legacy server's
+ * (probe and `initialize`, then walking the tools and the prompts: 15 + 15 + 120 + 120 s), so only an engine that went
+ * silent reaches it. 300 s.
  */
-export const DISCOVER_TIMEOUT = Duration.seconds(180);
+export const DISCOVER_TIMEOUT_MS =
+  2 * MCP_CONNECT_TIMEOUT_MS + 2 * MCP_LIST_WALK_TIMEOUT_MS + DISCOVER_SLACK_MS;
 
 /** The engine could not be reached, did not answer in time, or answered with something this build cannot read. */
 export class McpEngineUnreachable extends Schema.TaggedError<
@@ -48,14 +59,6 @@ const decodeDiscovered = Schema.decodeUnknownEffect(McpEngineDiscoverResult);
 
 const unreachable = (message: string) => McpEngineUnreachable.make({ message });
 
-/** A promise that settles once `signal` aborts: the call's `untilAborted()`. */
-const abortOf = (signal: AbortSignal): Promise<void> =>
-  // @effect-diagnostics-next-line newPromise:off -- a native callback for the engine to await over RPC, not an effect.
-  new Promise((resolve) => {
-    if (signal.aborted) resolve();
-    else signal.addEventListener("abort", () => resolve(), { once: true });
-  });
-
 /** The engine over `engine`, the `MCP_ENGINE` binding's stub or a fake that answers as one. */
 export const mcpEngineClient = (
   engine: Pick<McpEngineMethods, "discover">,
@@ -67,18 +70,14 @@ export const mcpEngineClient = (
       );
 
       const answer = yield* Effect.tryPromise({
-        try: (signal) => {
-          const aborted = abortOf(signal);
-
-          return engine.discover(encoded, prior, { untilAborted: () => aborted });
-        },
+        try: () => engine.discover(encoded, prior, {}),
         catch: (error) =>
           unreachable(
             `The MCP engine could not be reached: ${error instanceof Error ? error.message : "no answer"}`,
           ),
       }).pipe(
         Effect.timeoutOrElse({
-          duration: DISCOVER_TIMEOUT,
+          duration: Duration.millis(DISCOVER_TIMEOUT_MS),
           orElse: () => Effect.fail(unreachable("The MCP engine did not answer in time")),
         }),
       );

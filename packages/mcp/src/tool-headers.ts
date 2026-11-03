@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
+import { isJsonObject, type JsonObject } from "./json.ts";
 
 const X_MCP_HEADER = "x-mcp-header";
 
@@ -53,11 +54,6 @@ const NAMED_KEYWORDS: ReadonlyArray<string> = [
   "$defs",
   "definitions",
 ];
-
-type JsonObject = { readonly [key: string]: Schema.Json };
-
-const isJsonObject = (value: Schema.Json | undefined): value is JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 const isJsonArray = (value: Schema.Json): value is ReadonlyArray<Schema.Json> => Arr.isArray(value);
 

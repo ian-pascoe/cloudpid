@@ -22,10 +22,10 @@ import {
   McpDestroyed,
   McpReloaded,
   type McpRequestStart,
-  type McpRequestStartAnswer,
+  type McpRequestStartResult,
   type McpServerInventory,
-  type McpServersAnswer,
   type McpServersRequest,
+  type McpServersResult,
   McpStale,
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
@@ -45,15 +45,14 @@ import {
   type McpDiscoveryServices,
   refreshVersions,
   reviveStale,
-  type ServerView,
   startDue,
-  type Trigger,
-  versionsOf,
-  viewServers,
+  writeOrHalt,
 } from "./discovery.ts";
 import { McpEngineClient, type McpEngineClientService } from "./engine.ts";
 import { serverHashes } from "./inventory.ts";
+import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
+import { type ServerView, type Trigger, viewServers } from "./server-state.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 
 export {
@@ -62,7 +61,7 @@ export {
   McpRegistryUnavailable,
 } from "./registry-port.ts";
 
-/** What the host's methods run over: its storage, the Registry, the engine and the discoveries in flight. */
+/** What the host's methods run over: its storage, the Registry, the engine, its load caps and the discoveries in flight. */
 export type McpHostServices = McpDiscoveryServices;
 
 /**
@@ -80,6 +79,7 @@ export const mcpHostLayer = (deps: {
     Layer.succeed(McpRegistryPort, deps.registry),
     Layer.succeed(McpEngineClient, deps.engine),
     McpDiscovery.layer,
+    McpLoadCaps.layer,
     deps.references ?? Layer.empty,
   );
 
@@ -143,7 +143,7 @@ const settleSet = (environment: string | undefined, before: ReadonlyArray<string
     const now = yield* Clock.currentTimeMillis;
 
     yield* interrupt(Arr.difference(before, conns));
-    store.settle(conns, now);
+    store.pruneOutsideSet(conns, now);
 
     if (environment !== undefined) yield* startDue(environment, views, "set");
 
@@ -168,7 +168,7 @@ const takeSet = (environment: string | undefined, set: McpApplySet) =>
 
 /**
  * Wipe the storage, keeping the revision of the deletion (or the held set's when it is later) as the floor of what may
- * fill it again, after aborting every discovery in flight (the engine aborts their server requests). The best-effort
+ * fill it again, after interrupting every discovery in flight (their answers are dropped unread). The best-effort
  * Legacy `DELETE` and the closing of streams come with `control` and listens, which the engine does not offer yet. A
  * wipe the storage refuses is `HostFailed`: the Registry still has it to send.
  */
@@ -218,7 +218,11 @@ const reload = (environment: string | undefined, input: McpApply) =>
       (view) => names === undefined || names.includes(view.server.name),
     );
 
-    store.dropPrior(Arr.map(views, (view) => view.server.conn));
+    const conns = Arr.map(views, (view) => view.server.conn);
+
+    // A discovery in flight would write back the rows the reload drops: it goes first.
+    yield* interrupt(conns);
+    store.dropPrior(conns);
 
     if (environment !== undefined) yield* startDue(environment, views, "reload");
 
@@ -328,17 +332,6 @@ const onDemand = (environment: string | undefined, trigger: Trigger) =>
     if (environment !== undefined) yield* startDue(environment, yield* viewServers, trigger);
   });
 
-/** The servers' reports and the versions, after recomputing and keeping them. */
-const answerOf = Effect.gen(function* () {
-  const store = yield* McpHostStore;
-  const views = yield* viewServers;
-  const versions = versionsOf(views);
-
-  store.setMeta(versions);
-
-  return { views, versions };
-});
-
 /**
  * `requestStart`: marks the host used and says what the Session needs to build its tools. A Context Window's first
  * request (`windowOpened`) pulls the set first. Servers due a discovery start it (an HTTP server never asked, a TTL
@@ -351,14 +344,16 @@ const answerOf = Effect.gen(function* () {
 export const requestStart = (
   environment: string | undefined,
   request: McpRequestStart,
-): Effect.Effect<McpRequestStartAnswer, never, McpHostServices> =>
+): Effect.Effect<McpRequestStartResult, never, McpHostServices> =>
   Effect.gen(function* () {
     // A host that no Environment names has none to ask the Registry about.
     if (request.windowOpened === true && environment !== undefined) yield* pull(environment);
 
     const store = yield* McpHostStore;
 
-    store.setMeta({ lastUsedAt: yield* Clock.currentTimeMillis });
+    const now = yield* Clock.currentTimeMillis;
+
+    yield* writeOrHalt(() => store.setMeta({ lastUsedAt: now }));
 
     yield* onDemand(environment, "demand");
 
@@ -376,30 +371,29 @@ export const requestStart = (
       );
     }
 
-    const { views, versions } = yield* answerOf;
+    const { views, versions } = yield* refreshVersions;
 
     return {
       ...versions,
       features: MCP_HOST_FEATURES,
       servers: Record.fromEntries(
-        Arr.map(views, (view) => [view.server.name, { ...hashesOf(view), state: view.state }]),
+        Arr.map(views, (view) => [
+          view.server.name,
+          { ...toServerHashes(view), state: view.state },
+        ]),
       ),
       watches: { changed: [], ended: [] },
     };
   }).pipe(
-    Effect.catchCause(() =>
-      Effect.succeed({
-        version: "",
-        promptsVersion: "",
-        features: MCP_HOST_FEATURES,
-        servers: {},
-        watches: { changed: [], ended: [] },
-      }),
-    ),
+    Effect.catchCause(() => Effect.succeed(unreadable)),
     Effect.withSpan("mcp.request_start"),
   );
 
-const hashesOf = (view: ServerView) =>
+/** A failure to read what the host holds: loud, never an empty inventory that reads as no servers. */
+const unreadable = HostFailed.make({ message: "The MCP host could not read its storage" });
+
+/** `view`'s `toolsHash` and `promptsHash`. */
+const toServerHashes = (view: ServerView) =>
   serverHashes({
     name: view.server.name,
     entryHash: view.server.entryHash,
@@ -408,7 +402,7 @@ const hashesOf = (view: ServerView) =>
   });
 
 /** One server as `servers` answers it, with the `parts` asked for. */
-const inventoryOf = (view: ServerView, parts: ReadonlyArray<string>): McpServerInventory => {
+const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpServerInventory => {
   const inventory = Option.getOrUndefined(view.inventory);
   const meta = inventory?.meta;
 
@@ -418,7 +412,7 @@ const inventoryOf = (view: ServerView, parts: ReadonlyArray<string>): McpServerI
     server: view.server.server,
     conn: view.server.conn,
     state: view.state,
-    ...hashesOf(view),
+    ...toServerHashes(view),
     counts: { tools: inventory?.tools.length ?? 0, prompts: inventory?.prompts.length ?? 0 },
     resources: meta !== undefined && "resources" in meta.capabilities,
     problems: meta?.problems ?? [],
@@ -463,7 +457,7 @@ const inventoryOf = (view: ServerView, parts: ReadonlyArray<string>): McpServerI
 export const servers = (
   environment: string | undefined,
   request: McpServersRequest,
-): Effect.Effect<McpServersAnswer, never, McpHostServices> =>
+): Effect.Effect<McpServersResult, never, McpHostServices> =>
   Effect.gen(function* () {
     yield* onDemand(environment, "demand");
 
@@ -475,14 +469,14 @@ export const servers = (
       waitOf(request.waitMs, 0),
     );
 
-    const { views, versions } = yield* answerOf;
+    const { views, versions } = yield* refreshVersions;
 
     return {
       ...versions,
-      servers: Arr.map(Arr.filter(views, named), (view) => inventoryOf(view, request.parts)),
+      servers: Arr.map(Arr.filter(views, named), (view) => toServerInventory(view, request.parts)),
     };
   }).pipe(
-    Effect.catchCause(() => Effect.succeed({ version: "", promptsVersion: "", servers: [] })),
+    Effect.catchCause(() => Effect.succeed(unreadable)),
     Effect.withSpan("mcp.servers"),
   );
 
@@ -492,9 +486,9 @@ export type McpHostMethods = {
    * A Session's request starts (`docs/architecture/mcp-connections.md` → RPC). `windowOpened` makes the host ask the
    * Registry for the MCP server set.
    */
-  readonly requestStart: (request: McpRequestStart) => Effect.Effect<McpRequestStartAnswer>;
+  readonly requestStart: (request: McpRequestStart) => Effect.Effect<McpRequestStartResult>;
   /** The MCP inventory per server, for the `mcp` extension's reads, `settings_mcp_*`, the composer and Settings. */
-  readonly servers: (request: McpServersRequest) => Effect.Effect<McpServersAnswer>;
+  readonly servers: (request: McpServersRequest) => Effect.Effect<McpServersResult>;
   /** The pushes: the Environment's MCP server set. An operation this host does not know is `HostUnsupported`. */
   readonly apply: (input: McpApply) => Effect.Effect<McpApplyResult>;
 };

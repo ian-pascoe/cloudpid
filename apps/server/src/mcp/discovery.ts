@@ -1,21 +1,23 @@
-// Discovery and its scheduling (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): what each
-// server of the set is in (its state), when it is due, and the discovery itself, from the cached era to the stored
-// inventory and its versions.
+// Discovery and its scheduler (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): the
+// discoveries in flight, which servers start one, and the discovery itself, from the cached era to the stored inventory
+// and its versions. When a server is due, and the state a discovery leaves it in, are `server-state.ts`'s.
 //
 // Discoveries run as fibers in the host's runtime, kept in its scope (`McpDiscovery`), so they outlive the call that
-// started them: single-flight per `conn`, at most 3 at once. Nothing arms an alarm: a server is retried only on demand
-// (`requestStart`, `servers`, a set change, a reload), once its backoff is over. A storage operation that fails stops
-// new discoveries (a replaced instance, whose writes are refused; `docs/architecture/mcp-connections.md` → Deploys).
+// started them: single-flight per `conn`, at most 3 at once, each one request in flight on its server and one
+// background engine call (`McpLoadCaps`). Nothing arms an alarm: a server is retried only on demand (`requestStart`,
+// `servers`, a set change, a reload), once its backoff is over. A storage operation that fails stops new discoveries
+// (a replaced instance, whose writes are refused; `docs/architecture/mcp-connections.md` → Deploys).
 //
-// A discovery started in the background passes the engine `untilAborted()` from the invocation that started it, which
-// lives only as long as that invocation (#409 answer 2): one that outlives it is cut, read as `unavailable`, and
-// retried after its backoff.
+// A discovery passes the engine no callback (`engine.ts`), so the invocation that started it ending cuts nothing. A
+// failure on the host's side (the engine out of reach or silent) is not the server's: it leaves its state as it was,
+// held back for 30 s. No discovery holds its slot past `DISCOVERY_DEADLINE_MS`: it is then given up the same way.
 // @effect-diagnostics missingPipeableSignature:off -- the scheduler's operations, not combinators.
-import type {
-  McpEngineDiscoverResult,
-  McpEngineTarget,
-  McpErrorWire,
-  McpServerState,
+import {
+  isJsonObject,
+  type JsonObject,
+  type McpEngineDiscoverResult,
+  type McpEngineTarget,
+  type McpServerState,
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -31,34 +33,39 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import type * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { McpEngineClient } from "./engine.ts";
+import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
+import { inventoryRows } from "./inventory.ts";
+import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort } from "./registry-port.ts";
-import { type Inventory, inventoryRows, inventoryVersions, readInventory } from "./inventory.ts";
+import {
+  currentVersions,
+  failedStatus,
+  hostFailureStatus,
+  isDue,
+  RECENT_USE_MS,
+  type ServerView,
+  STALE_CONNECTING_MS,
+  stateOfError,
+  type Trigger,
+} from "./server-state.ts";
 import { McpHostStore, type StatusRow, type StoredServer } from "./store.ts";
+import { SECOND_MS } from "./time.ts";
 
 /** At most 3 discoveries at once per host. */
 export const MAX_DISCOVERIES = 3;
 
-/** An HTTP server new to the set is discovered at once only if a Session used the host within 24 h. */
-export const RECENT_USE_MS = 24 * 60 * 60 * 1000;
-
-/** A `connecting` status older than this at wake belongs to a discovery that died with its instance. */
-export const STALE_CONNECTING_MS = 120 * 1000;
-
-/** `unavailable`'s backoff: 30 s, 1, 2, 5, then 10 min. */
-export const BACKOFF_MS: ReadonlyArray<number> = [30_000, 60_000, 120_000, 300_000, 600_000];
-
-/** A `failed` server is retried at most once a minute; a `skipped` one is looked at again after a minute. */
-export const RETRY_FLOOR_MS = 60 * 1000;
-
-/** A status error is cut at 300 characters. */
-export const MAX_ERROR = 300;
+/**
+ * The longest a discovery holds its slot, waiting for its turn included: past the engine call's own timeout, so only
+ * a discovery stuck elsewhere (a Registry that never answers) reaches it.
+ */
+export const DISCOVERY_DEADLINE_MS = DISCOVER_TIMEOUT_MS + 60 * SECOND_MS;
 
 export type McpDiscoveryService = {
   /** The discoveries in flight, by `conn`. */
   readonly fibers: FiberMap.FiberMap<string>;
+  /** When each discovery in flight started, by `conn`. */
+  readonly startedAt: Map<string, number>;
   /** At most `MAX_DISCOVERIES` at once. */
   readonly slots: Semaphore.Semaphore;
   /** Set once a storage operation failed: no discovery starts after it. */
@@ -74,6 +81,7 @@ export class McpDiscovery extends Context.Service<McpDiscovery, McpDiscoveryServ
     Effect.gen(function* () {
       return {
         fibers: yield* FiberMap.make<string>(),
+        startedAt: new Map<string, number>(),
         slots: yield* Semaphore.make(MAX_DISCOVERIES),
         halted: { value: false },
       };
@@ -82,174 +90,36 @@ export class McpDiscovery extends Context.Service<McpDiscovery, McpDiscoveryServ
 }
 
 /** What the host needs to discover. */
-export type McpDiscoveryServices = McpHostStore | McpEngineClient | McpRegistryPort | McpDiscovery;
+export type McpDiscoveryServices =
+  | McpHostStore
+  | McpEngineClient
+  | McpRegistryPort
+  | McpDiscovery
+  | McpLoadCaps;
 
-/** How a server of the set is reached: over HTTP, through the bridge (not built yet), or not at all (switched off). */
-type Reach = "http" | "stdio" | "off";
+/** Stop new discoveries: a storage operation failed, so this instance's writes are refused from now on. */
+export const halt = Effect.gen(function* () {
+  const discovery = yield* McpDiscovery;
 
-/** A server of the held set, with what the host knows of it. */
-export type ServerView = {
-  readonly server: StoredServer;
-  readonly reach: Reach;
-  readonly status: StatusRow | undefined;
-  readonly inventory: Option.Option<Inventory>;
-  readonly state: McpServerState;
-};
-
-const reachOf = (server: StoredServer): Reach => {
-  const { enabled, exposure, type } = server.server;
-
-  if (enabled === false || exposure === "hidden") return "off";
-
-  return type === "stdio" ? "stdio" : "http";
-};
-
-/** The state a server is reported in: `disabled` when switched off, `skipped` for stdio, else its status's. */
-const stateOf = (reach: Reach, status: StatusRow | undefined): McpServerState =>
-  Match.value(reach).pipe(
-    Match.when("off", () => "disabled" as const),
-    Match.when("stdio", () => "skipped" as const),
-    Match.orElse(() => status?.state ?? "not_discovered"),
-  );
-
-/** Every server of the held set, in its order, with its status and inventory. */
-export const viewServers: Effect.Effect<
-  ReadonlyArray<ServerView>,
-  never,
-  McpHostStore
-> = Effect.gen(function* () {
-  const store = yield* McpHostStore;
-  const set = store.readSet();
-  const statuses = store.statuses();
-  const inventories = store.inventories();
-
-  return Arr.map(set?.servers ?? [], (server): ServerView => {
-    const reach = reachOf(server);
-    const status = statuses.get(server.conn);
-    const rows = inventories.get(server.conn);
-
-    return {
-      server,
-      reach,
-      status,
-      inventory: rows === undefined ? Option.none() : readInventory(rows),
-      state: stateOf(reach, status),
-    };
-  });
+  discovery.halted.value = true;
 });
 
-/** The inventory's versions over `views`, kept in `mcp_meta`. */
-export const versionsOf = (views: ReadonlyArray<ServerView>) =>
-  inventoryVersions(
-    Arr.map(views, (view) => ({
-      name: view.server.name,
-      entryHash: view.server.entryHash,
-      state: view.state,
-      inventory: view.inventory,
-    })),
-  );
+/** Run a write that may fail without failing its caller: a failure halts background work instead. */
+export const writeOrHalt = (write: () => void) =>
+  Effect.sync(write).pipe(Effect.catchCause(() => halt));
 
-/** Recompute the versions and keep them. */
+/**
+ * The servers and the inventory's versions over them, the versions kept for the next reader. A read that fails fails
+ * this; a refused write only halts background work.
+ */
 export const refreshVersions = Effect.gen(function* () {
   const store = yield* McpHostStore;
-  const versions = versionsOf(yield* viewServers);
+  const current = yield* currentVersions;
 
-  store.setMeta(versions);
+  yield* writeOrHalt(() => store.setMeta(current.versions));
 
-  return versions;
+  return current;
 });
-
-/** What makes a discovery due: a demand (a Session's request, a status read), a set change, or a reload. */
-export type Trigger = "demand" | "set" | "reload";
-
-/** Whether `view` is due a discovery at `now` for `trigger`; `usedRecently` says whether a Session used the host. */
-export const isDue = (
-  view: ServerView,
-  trigger: Trigger,
-  now: number,
-  usedRecently: boolean,
-): boolean => {
-  if (view.reach !== "http") return false;
-
-  if (trigger === "reload") return true;
-
-  const { status } = view;
-
-  if (status === undefined) return trigger === "demand" || usedRecently;
-
-  return Match.value(status.state).pipe(
-    Match.when("connecting", () => false),
-    Match.when("connected", () =>
-      Option.match(view.inventory, {
-        onNone: () => true,
-        onSome: (inventory) => inventory.meta.ttlUntil <= now,
-      }),
-    ),
-    Match.whenOr("not_discovered", "disabled", () => true),
-    Match.whenOr("sign_in", "rejected", () => false),
-    Match.whenOr(
-      "unavailable",
-      "skipped",
-      () => status.nextRetryAt === undefined || status.nextRetryAt <= now,
-    ),
-    Match.whenOr(
-      "failed",
-      "unknown",
-      () => trigger === "set" && now - status.since >= RETRY_FLOOR_MS,
-    ),
-    Match.exhaustive,
-  );
-};
-
-const cut = (message: string) => message.slice(0, MAX_ERROR);
-
-/** The status a failure leaves the server in, from the one before it. */
-const failedStatus = (
-  conn: string,
-  state: McpServerState,
-  message: string,
-  previous: StatusRow | undefined,
-  now: number,
-): StatusRow => {
-  const failures = (previous?.failures ?? 0) + 1;
-
-  const nextRetryAt = Match.value(state).pipe(
-    Match.when(
-      "unavailable",
-      () => now + (BACKOFF_MS[Math.min(failures, BACKOFF_MS.length) - 1] ?? RETRY_FLOOR_MS),
-    ),
-    Match.when("skipped", () => now + RETRY_FLOOR_MS),
-    Match.orElse(() => undefined),
-  );
-
-  return {
-    conn,
-    state,
-    error: cut(message),
-    since: now,
-    failures,
-    nextRetryAt,
-    lastOkAt: previous?.lastOkAt,
-  };
-};
-
-/** The state a failed discovery leaves a server in (`docs/architecture/mcp-connections.md` → States). */
-const stateOfError = (error: McpErrorWire): McpServerState =>
-  Match.value(error).pipe(
-    Match.tag("SignInRequired", (signIn) => (signIn.rejected ? "rejected" : "sign_in")),
-    Match.tag("StepUpRequired", () => "sign_in" as const),
-    Match.tag("Unreachable", "Cut", "TimedOut", () => "unavailable" as const),
-    Match.tag(
-      "TooLarge",
-      "ServerError",
-      "NotFound",
-      "Unsupported",
-      "ProtocolViolation",
-      "OtherMcpError",
-      () => "failed" as const,
-    ),
-    Match.exhaustive,
-  );
 
 /** Why a server was not reached: the state it is left in, and the error to show. */
 type NotReached = { readonly state: McpServerState; readonly message: string };
@@ -257,13 +127,8 @@ type NotReached = { readonly state: McpServerState; readonly message: string };
 const notReached = (state: McpServerState, message: string) =>
   Result.fail<NotReached>({ state, message });
 
-const isJsonRecord = (
-  value: Schema.Json | undefined,
-): value is Readonly<Record<string, Schema.Json>> =>
-  Predicate.isObject(value) && !Arr.isArray(value);
-
 /** A JSON record's string values. */
-const stringValues = (record: Readonly<Record<string, Schema.Json>>) =>
+const stringValues = (record: JsonObject) =>
   Record.filterMap(record, (value) =>
     Predicate.isString(value) ? Result.succeed(value) : Result.failVoid,
   );
@@ -276,7 +141,7 @@ const hasNames = (headers: Readonly<Record<string, string>>): boolean =>
 const targetOf = (environment: string, server: StoredServer) =>
   Effect.gen(function* () {
     const { url, headers, timeout } = server.server;
-    const written = stringValues(isJsonRecord(headers) ? headers : {});
+    const written = stringValues(isJsonObject(headers) ? headers : {});
 
     const target = (resolved: Readonly<Record<string, string>>) =>
       Result.succeed<McpEngineTarget>({
@@ -319,7 +184,7 @@ const targetOf = (environment: string, server: StoredServer) =>
   });
 
 /** Keep what a discovery found: the rows it changed, then the inventory and status, or the status it failed with. */
-const keep = (
+const storeDiscoveryResult = (
   conn: string,
   result: McpEngineDiscoverResult,
   previous: StatusRow | undefined,
@@ -328,7 +193,7 @@ const keep = (
   Effect.gen(function* () {
     const store = yield* McpHostStore;
 
-    store.keepState(conn, result.state, now);
+    store.applyEngineState(conn, result.state, now);
 
     Match.value(result).pipe(
       Match.discriminatorsExhaustive("kind")({
@@ -344,70 +209,124 @@ const keep = (
     );
   });
 
+/** The status before a discovery: a `connecting` one left by another discovery reads as the state before it. */
+const statusBefore = (status: StatusRow | undefined): StatusRow | undefined =>
+  status?.state === "connecting"
+    ? { ...status, state: status.previousState ?? "not_discovered", previousState: undefined }
+    : status;
+
 /** Discover one server, single-flight per `conn`, within the host's slots. */
 const discoverOne = (environment: string, view: ServerView) =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const engine = yield* McpEngineClient;
+    const caps = yield* McpLoadCaps;
     const { conn } = view.server;
-    const previous = view.status;
+    const previous = statusBefore(view.status);
     const started = yield* Clock.currentTimeMillis;
 
-    // A connected server refreshes in place, its inventory served meanwhile.
-    if (previous?.state !== "connected") {
-      store.putStatus({
-        conn,
-        state: "connecting",
-        since: started,
-        failures: previous?.failures ?? 0,
-        nextRetryAt: previous?.nextRetryAt,
-        lastOkAt: previous?.lastOkAt,
-        previousState: previous?.state ?? "not_discovered",
-        error: previous?.error,
-      });
-    }
+    // Past its deadline: given up on the host's side, so the server's state goes back as it was, held back a while.
+    const giveUp = Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const message = "The discovery did not end in time";
 
-    const reached = yield* targetOf(environment, view.server);
+      yield* writeOrHalt(() => store.putStatus(hostFailureStatus(conn, message, previous, now)));
+    });
 
-    if (Result.isFailure(reached)) {
-      const { state, message } = reached.failure;
+    // Interrupted by the host itself (a set change, a reload, a destroy): the status goes back as it was before.
+    const restore = writeOrHalt(() =>
+      store.putStatus(previous ?? { conn, state: "not_discovered", since: started, failures: 0 }),
+    );
 
-      store.putStatus(failedStatus(conn, state, message, previous, yield* Clock.currentTimeMillis));
+    const discovery = Effect.gen(function* () {
+      // A connected server refreshes in place, its inventory served meanwhile.
+      if (previous?.state !== "connected") {
+        store.putStatus({
+          conn,
+          state: "connecting",
+          since: started,
+          failures: previous?.failures ?? 0,
+          nextRetryAt: previous?.nextRetryAt,
+          lastOkAt: previous?.lastOkAt,
+          previousState: previous?.state ?? "not_discovered",
+          error: previous?.error,
+        });
+      }
 
-      return;
-    }
+      const reached = yield* targetOf(environment, view.server);
 
-    const result = yield* engine.discover(reached.success, store.prior(conn)).pipe(Effect.result);
-    const now = yield* Clock.currentTimeMillis;
+      if (Result.isFailure(reached)) {
+        const { state, message } = reached.failure;
 
-    if (Result.isFailure(result)) {
-      store.putStatus(failedStatus(conn, "unavailable", result.failure.message, previous, now));
+        store.putStatus(
+          failedStatus(conn, state, message, previous, yield* Clock.currentTimeMillis),
+        );
 
-      return;
-    }
+        return;
+      }
 
-    yield* keep(conn, result.success, previous, now);
+      const result = yield* caps
+        .inFlight(
+          conn,
+          caps.engineCall("background", engine.discover(reached.success, store.prior(conn))),
+        )
+        .pipe(Effect.result);
+
+      const now = yield* Clock.currentTimeMillis;
+
+      if (Result.isFailure(result)) {
+        store.putStatus(hostFailureStatus(conn, result.failure.message, previous, now));
+
+        return;
+      }
+
+      yield* storeDiscoveryResult(conn, result.success, previous, now);
+    });
+
+    yield* discovery.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(DISCOVERY_DEADLINE_MS),
+        orElse: () => giveUp,
+      }),
+      Effect.onInterrupt(() => restore),
+    );
   }).pipe(
     Effect.andThen(refreshVersions),
     Effect.withSpan("mcp.discover", { attributes: { server: view.server.name } }),
   );
 
 /**
- * Return each `connecting` status older than 120 s that no discovery of this instance holds to the state before it,
- * with no backoff: the discovery died with the instance that ran it.
+ * Give up each discovery of this instance that outlived its deadline, and return each `connecting` status older than
+ * 120 s that no discovery of this instance holds to the state before it, with no backoff: the discovery died with the
+ * instance that ran it. Reads fail their caller; a refused write halts background work.
  */
 export const reviveStale = Effect.gen(function* () {
   const store = yield* McpHostStore;
-  const { fibers } = yield* McpDiscovery;
+  const discovery = yield* McpDiscovery;
   const now = yield* Clock.currentTimeMillis;
+
+  const overdue = Arr.filter(
+    [...discovery.startedAt],
+    ([, startedAt]) => now - startedAt > DISCOVERY_DEADLINE_MS,
+  );
+
+  yield* Effect.forEach(overdue, ([conn]) => FiberMap.remove(discovery.fibers, conn), {
+    discard: true,
+  });
 
   for (const status of store.statuses().values()) {
     if (
       status.state === "connecting" &&
       now - status.since > STALE_CONNECTING_MS &&
-      !FiberMap.hasUnsafe(fibers, status.conn)
+      !FiberMap.hasUnsafe(discovery.fibers, status.conn)
     ) {
-      store.putStatus({ ...status, state: status.previousState ?? "not_discovered" });
+      yield* writeOrHalt(() =>
+        store.putStatus({
+          ...status,
+          state: status.previousState ?? "not_discovered",
+          previousState: undefined,
+        }),
+      );
     }
   }
 });
@@ -421,34 +340,33 @@ export const startDue = (environment: string, views: ReadonlyArray<ServerView>, 
     const store = yield* McpHostStore;
     const discovery = yield* McpDiscovery;
     const now = yield* Clock.currentTimeMillis;
-    const { lastUsedAt } = store.meta();
-    const usedRecently = lastUsedAt !== undefined && now - lastUsedAt < RECENT_USE_MS;
 
     if (discovery.halted.value) return;
 
-    const halt = Effect.sync(() => {
-      discovery.halted.value = true;
-    });
+    const { lastUsedAt } = store.meta();
+    const usedRecently = lastUsedAt !== undefined && now - lastUsedAt < RECENT_USE_MS;
 
     for (const view of views) {
-      if (
-        !FiberMap.hasUnsafe(discovery.fibers, view.server.conn) &&
-        isDue(view, trigger, now, usedRecently)
-      ) {
+      const { conn } = view.server;
+
+      if (!FiberMap.hasUnsafe(discovery.fibers, conn) && isDue(view, trigger, now, usedRecently)) {
+        discovery.startedAt.set(conn, now);
+
         yield* FiberMap.run(
           discovery.fibers,
-          view.server.conn,
+          conn,
           discovery.slots
             .withPermits(1)(discoverOne(environment, view))
             .pipe(
               Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
+              Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),
             ),
         );
       }
     }
   });
 
-/** Interrupt the discoveries of `conns` (their server changed or left), or of every `conn`. */
+/** Interrupt the discoveries of `conns` (their server changed or left, or a reload), or of every `conn`. */
 export const interrupt = (conns?: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const { fibers } = yield* McpDiscovery;

@@ -72,9 +72,8 @@ interface CallInput {
   readonly mayHaveRun: boolean;
 }
 
-/** Fails as a cut once the caller aborts the call or dies, whichever comes first (#409 answer 2). */
-const abortedBy = (hooks: McpEngineHooks, mayHaveRun: boolean) =>
-  Effect.tryPromise(() => hooks.untilAborted()).pipe(
+const cutOnceAborted = (untilAborted: () => Promise<void>, mayHaveRun: boolean) =>
+  Effect.tryPromise(() => untilAborted()).pipe(
     Effect.ignore,
     Effect.andThen(
       Cut.make({
@@ -85,6 +84,16 @@ const abortedBy = (hooks: McpEngineHooks, mayHaveRun: boolean) =>
       }),
     ),
   );
+
+/**
+ * Fails as a cut once the caller aborts the call or dies, whichever comes first (#409 answer 2). A call with no
+ * `untilAborted` (the host's background discovery) is never cut by its caller: it runs to its own bounds.
+ */
+const abortedBy = (hooks: McpEngineHooks, mayHaveRun: boolean) => {
+  const { untilAborted } = hooks;
+
+  return untilAborted === undefined ? Effect.never : cutOnceAborted(untilAborted, mayHaveRun);
+};
 
 const decodeTools = Schema.decodeUnknownEffect(Schema.Array(McpToolDefinition));
 

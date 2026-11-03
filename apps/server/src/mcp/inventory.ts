@@ -10,7 +10,10 @@
 // @effect-diagnostics missingPipeableSignature:off -- pure functions over plain values, not combinators.
 import { sha256Hex, sortedJson } from "@cloudpid/config";
 import {
+  isJsonObject,
+  type JsonObject,
   type McpEngineDiscovered,
+  McpEra,
   McpInventoryProblem,
   type McpServerState,
   type McpToolDefinition,
@@ -23,6 +26,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { InventoryRows } from "./store.ts";
+import { DAY_MS, MINUTE_MS } from "./time.ts";
 
 /** Per server: at most 500 tools and 1 MiB of their declarations, in list order. */
 export const MAX_TOOLS = 500;
@@ -41,26 +45,21 @@ export const MAX_PROMPTS = 100;
 export const MAX_PROMPT_BYTES = 64 * 1024;
 
 /** How long a list stays fresh: a Modern server's `ttlMs`, at least a minute and at most 24 h, else 10 min. */
-export const DEFAULT_TTL_MS = 10 * 60 * 1000;
+export const DEFAULT_TTL_MS = 10 * MINUTE_MS;
 
-export const MIN_TTL_MS = 60 * 1000;
+export const MIN_TTL_MS = MINUTE_MS;
 
-export const MAX_TTL_MS = 24 * 60 * 60 * 1000;
+export const MAX_TTL_MS = DAY_MS;
 
-const JsonObject = Schema.Record(Schema.String, Schema.Json);
-
-type JsonObject = typeof JsonObject.Type;
-
-const isJsonObject = (value: Schema.Json | undefined): value is JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
+const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json);
 
 /** The `meta` part: what the server is, when and where it was discovered, until when it is fresh, and the problems. */
 const InventoryMeta = Schema.Struct({
-  era: Schema.String,
+  era: McpEra,
   protocolVersion: Schema.String,
-  serverInfo: Schema.optionalKey(JsonObject),
+  serverInfo: Schema.optionalKey(JsonObjectSchema),
   instructions: Schema.optionalKey(Schema.String),
-  capabilities: JsonObject,
+  capabilities: JsonObjectSchema,
   discoveredAt: Schema.Finite,
   discoveredIn: Schema.optionalKey(Schema.String),
   ttlUntil: Schema.Finite,
@@ -85,8 +84,8 @@ const bytesOf = (value: Schema.Json): number => utf8.encode(JSON.stringify(value
 /** `value` as canonical JSON text: every object's keys in order. */
 export const canonicalJson = (value: Schema.Json): string => JSON.stringify(sortedJson(value));
 
-/** A stored part: its canonical text and the SHA-256 of it. */
-const part = (value: Schema.Json) => {
+/** `value` as a stored part: its canonical text and the SHA-256 of it. */
+const toStoredPart = (value: Schema.Json) => {
   const json = canonicalJson(value);
 
   return { json, hash: sha256Hex(json) };
@@ -117,7 +116,7 @@ const requiresTasks = (tool: McpToolDefinition): boolean => {
 };
 
 /** Why a Session must not register `tool` on a server of `era`, if it must not. */
-const refusal = (tool: McpToolDefinition, era: string): Option.Option<string> => {
+const refusal = (tool: McpToolDefinition, era: McpEra): Option.Option<string> => {
   const headers = era === "modern" ? xMcpHeaderProblems(tool.inputSchema) : [];
 
   if (headers.length > 0) return Option.some(Arr.join(headers, "; "));
@@ -128,7 +127,11 @@ const refusal = (tool: McpToolDefinition, era: string): Option.Option<string> =>
 };
 
 /** The first items of `items` within `count` and `bytes`, in order, and how many were left out. */
-const within = <A extends Schema.Json>(items: ReadonlyArray<A>, count: number, bytes: number) => {
+const takeWithinBounds = <A extends Schema.Json>(
+  items: ReadonlyArray<A>,
+  count: number,
+  bytes: number,
+) => {
   const kept: Array<A> = [];
   let used = 0;
 
@@ -166,8 +169,8 @@ export const inventoryRows = (discovered: McpEngineDiscovered, now: number): Inv
 
   const refusedNames = new Set(Arr.map(refused, (each) => each.tool));
   const offered = Arr.filter(named, (tool) => !refusedNames.has(tool.name));
-  const tools = within(offered, MAX_TOOLS, MAX_TOOL_BYTES);
-  const prompts = within(discovered.prompts, MAX_PROMPTS, MAX_PROMPT_BYTES);
+  const tools = takeWithinBounds(offered, MAX_TOOLS, MAX_TOOL_BYTES);
+  const prompts = takeWithinBounds(discovered.prompts, MAX_PROMPTS, MAX_PROMPT_BYTES);
 
   const instructions =
     discovered.instructions === undefined
@@ -210,13 +213,15 @@ export const inventoryRows = (discovered: McpEngineDiscovered, now: number): Inv
   if (instructions !== undefined) meta.instructions = instructions;
 
   return {
-    tools: part(tools.kept),
-    prompts: part(prompts.kept),
-    meta: part(meta),
+    tools: toStoredPart(tools.kept),
+    prompts: toStoredPart(prompts.kept),
+    meta: toStoredPart(meta),
   };
 };
 
-const decodeTools = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(JsonObject)));
+const decodeTools = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(JsonObjectSchema)),
+);
 
 const decodeMeta = Schema.decodeUnknownOption(Schema.fromJsonString(InventoryMeta));
 

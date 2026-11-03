@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
-import { apply } from "./host.ts";
+import { apply, requestStart, servers } from "./host.ts";
 import { hostServicesOver, type TestMcpHost } from "./host.fixture.ts";
 import { openMcpHostStore } from "./store.ts";
 
@@ -265,6 +265,55 @@ describe("apply({ kind: 'set' })", () => {
     await evictDurableObject(host);
 
     expect((await host.readSet())?.hash).toBe("h1");
+  });
+});
+
+describe("a storage that refuses (a replaced instance)", () => {
+  const CALLER = { session: "s-1", conversation: "1", workspace: "w-1" };
+
+  it("answers `requestStart` and `servers` with `HostFailed` when it cannot read, never with no servers", async () => {
+    const host = hostOf("refused");
+
+    await host.apply(setOf("h1", 1, "linear"));
+
+    await runInDurableObject(host, async (_instance: TestMcpHost, state) => {
+      const gate = refusingStorage(state.storage);
+      const layer = hostServicesOver(openMcpHostStore(gate.storage));
+
+      gate.trip();
+
+      const started = await Effect.runPromise(
+        requestStart("refused", { caller: CALLER }).pipe(Effect.provide(layer)),
+      );
+
+      const listed = await Effect.runPromise(
+        servers("refused", { parts: [] }).pipe(Effect.provide(layer)),
+      );
+
+      expect(Predicate.isTagged(started, "HostFailed")).toBe(true);
+      expect(Predicate.isTagged(listed, "HostFailed")).toBe(true);
+    });
+  });
+
+  it("still answers what it reads when only its writes are refused", async () => {
+    const host = hostOf("writes");
+
+    await host.apply(setOf("h1", 1, "linear"));
+
+    await runInDurableObject(host, async (_instance: TestMcpHost, state) => {
+      const refuse = () => {
+        throw new Error("refused");
+      };
+
+      const store = { ...openMcpHostStore(state.storage), setMeta: refuse, putStatus: refuse };
+      const layer = hostServicesOver(store);
+
+      const started = await Effect.runPromise(
+        requestStart("writes", { caller: CALLER }).pipe(Effect.provide(layer)),
+      );
+
+      expect(started).toMatchObject({ servers: { linear: { state: "not_discovered" } } });
+    });
   });
 });
 

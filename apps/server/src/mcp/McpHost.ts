@@ -14,7 +14,7 @@ import {
   McpServerSetAnswer,
   McpServerValuesAnswer,
 } from "@cloudpid/mcp/types";
-import { workersTelemetry, type WorkersTracing } from "@cloudpid/telemetry";
+import { workersTelemetry } from "@cloudpid/telemetry";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -22,6 +22,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
+import { workersTracing } from "../tracing.ts";
 import { mcpEngineClient } from "./engine.ts";
 import {
   type McpHostMethods,
@@ -40,15 +41,8 @@ const decodeAnswer = Schema.decodeUnknownEffect(McpServerSetAnswer);
 
 const decodeValues = Schema.decodeUnknownEffect(McpServerValuesAnswer);
 
-/** Workers' tracing API, where the runtime has one; read when an object is built (`../session/workers-tracing.ts`). */
-const workersTracing = (): Promise<WorkersTracing | undefined> =>
-  import("../session/workers-tracing.ts").then(
-    (workers) => workers.tracing,
-    () => undefined,
-  );
-
-/** A failed Registry call, as the host reads it: never with a value in it. */
-const unavailable = (what: string) => (cause: Cause.Cause<unknown>) =>
+/** A failed Registry call for `what`, as the host reads it: the Registry unavailable, never with a value in it. */
+const registryUnavailable = (what: string) => (cause: Cause.Cause<unknown>) =>
   Effect.fail(
     McpRegistryUnavailable.make({
       message: `The Registry did not answer for ${what}: ${Cause.pretty(cause)}`,
@@ -76,7 +70,7 @@ export const McpHostLive = McpHost.make(
               .mcpServerSet(input)
               .pipe(
                 Effect.flatMap(decodeAnswer),
-                Effect.catchCause(unavailable("the MCP server set")),
+                Effect.catchCause(registryUnavailable("the MCP server set")),
               ),
           serverValues: (input) =>
             registries
@@ -84,7 +78,7 @@ export const McpHostLive = McpHost.make(
               .mcpServerValues(input)
               .pipe(
                 Effect.flatMap(decodeValues),
-                Effect.catchCause(unavailable("an MCP server's values")),
+                Effect.catchCause(registryUnavailable("an MCP server's values")),
               ),
         };
 

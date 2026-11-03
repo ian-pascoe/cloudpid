@@ -314,6 +314,14 @@ export const McpRequestStartAnswer = Schema.Struct({
 export type McpRequestStartAnswer = typeof McpRequestStartAnswer.Type;
 
 /**
+ * What `requestStart` answers: its answer, or `HostFailed` when the host could not read what it holds (a replaced
+ * instance whose storage is refused), never an empty inventory that would read as no servers.
+ */
+export const McpRequestStartResult = Schema.Union([McpRequestStartAnswer, HostFailed]);
+
+export type McpRequestStartResult = typeof McpRequestStartResult.Type;
+
+/**
  * `servers`' arguments (`docs/architecture/mcp-connections.md` → RPC): the servers by name (every one when absent),
  * the parts to add (a part this build does not know is left out), how long to wait for one being discovered, and the
  * caller's Workspace. It never starts a Container.
@@ -387,6 +395,11 @@ export const McpServersAnswer = Schema.Struct({
 });
 
 export type McpServersAnswer = typeof McpServersAnswer.Type;
+
+/** What `servers` answers: its answer, or `HostFailed` when the host could not read what it holds. */
+export const McpServersResult = Schema.Union([McpServersAnswer, HostFailed]);
+
+export type McpServersResult = typeof McpServersResult.Type;
 
 /**
  * The Registry's answer to the host's `mcpServerSet({ environment, heldHash })` (`docs/architecture/mcp-configuration.md`
