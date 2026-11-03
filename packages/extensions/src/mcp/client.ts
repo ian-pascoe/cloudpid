@@ -3,11 +3,9 @@
 import type {
   McpApply,
   McpApplyResult,
-  McpHostPromptGet,
-  McpHostRequest,
   McpHostRequestHooks,
+  McpHostRequestInput,
   McpHostRequestResult,
-  McpHostResourceRequest,
   McpRequestStart,
   McpRequestStartResult,
   McpServersRequest,
@@ -46,7 +44,7 @@ export type McpHostClientService = {
    * from the `mcp` extension, or the owner's `prompts/get` from the Session host.
    */
   readonly request: (
-    input: McpHostRequest | McpHostResourceRequest | McpHostPromptGet,
+    input: McpHostRequestInput,
     hooks: McpHostRequestHooks,
   ) => Effect.Effect<McpHostRequestResult | HostLost>;
 };

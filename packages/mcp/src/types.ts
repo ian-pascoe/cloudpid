@@ -11,11 +11,12 @@
  */
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { McpInputAnswer, McpInputRequest } from "./elicitation.ts";
 import { hostAnswerReader, McpHostFailure } from "./host.ts";
-import { JsonObject } from "./json.ts";
+import { isJsonObject, JsonObject } from "./json.ts";
 import { McpLogEntry } from "./log.ts";
 import { McpAuthChallenge } from "./sign-in.ts";
 
@@ -971,6 +972,23 @@ export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
 /** What marks a resource's MIME type as an MCP App's: the lists leave such a resource out. */
 export const MCP_APP_PROFILE = "profile=mcp-app";
+
+/** A `ui://` URI is at most this long; longer is a server's mistake, not a page. */
+const MCP_APP_URI_MAX_LENGTH = 2048;
+
+/**
+ * The `ui://` resource a tool declares as its App in its `_meta.ui.resourceUri` (`docs/architecture/mcp-apps.md` →
+ * Declaring and reading Apps); undefined for any other tool, or a URI over 2048 characters. `meta` is the tool's whole
+ * `_meta`, as the inventory keeps it.
+ */
+export const appUriOfMeta = (meta: Schema.Json | undefined): string | undefined => {
+  const ui = isJsonObject(meta) ? meta["ui"] : undefined;
+  const uri = isJsonObject(ui) ? ui["resourceUri"] : undefined;
+
+  return Predicate.isString(uri) && uri.startsWith("ui://") && uri.length <= MCP_APP_URI_MAX_LENGTH
+    ? uri
+    : undefined;
+};
 
 /** The most an App's HTML may weigh, as text. */
 export const MCP_APP_HTML_MAX_BYTES = 4 * MiB;

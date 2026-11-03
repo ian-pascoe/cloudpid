@@ -48,6 +48,10 @@ import type {
   Annotation,
   AnnotationDraft,
   AttachedPage,
+  McpAppCopy,
+  McpAppDraft,
+  McpAppEntry,
+  McpAppMounted,
   Catalog,
   ChangeFile,
   CommandOutcome,
@@ -126,6 +130,7 @@ import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import type { McpSignInAskAnswer } from "@cloudpid/mcp/types";
+import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
 import {
@@ -733,6 +738,24 @@ export class TestSession extends DurableObject {
     return this.#signIns;
   }
 
+  /** The Session's App records, made once: the MCP tools record through its service, the runtime provides its layer. */
+  #apps: ReturnType<typeof sessionMcpApps> | undefined;
+
+  #mcpApps(): ReturnType<typeof sessionMcpApps> {
+    this.#apps ??= sessionMcpApps({
+      storage: this.ctx.storage.kv,
+      sockets: this.ctx,
+      html: (input) =>
+        this.#mcpTools === undefined
+          ? Effect.succeed({ status: "unsupported", message: "No MCP tools" })
+          : this.#mcpTools.appHtml(input),
+    });
+
+    return this.#apps;
+  }
+
+  #mcpTools: ReturnType<typeof sessionMcp> | undefined;
+
   /** Whether this Session has MCP tools (the tests that look at them name it so). */
   #hasMcpTools(): boolean {
     return this.ctx.id.name?.startsWith("mcp-") === true;
@@ -751,6 +774,7 @@ export class TestSession extends DurableObject {
     const hosts = this.env.MCP_HOSTS;
 
     const mcp = sessionMcp({
+      apps: this.#mcpApps().service,
       questions: this.#mcpQuestions().service,
       signIns: this.#mcpSignIns().service,
       session: this.ctx.id.name,
@@ -774,6 +798,8 @@ export class TestSession extends DurableObject {
         return defineExtension({ name: "codemode", tools: [] });
       },
     });
+
+    this.#mcpTools = mcp;
 
     // Where each reinstall's announcement and its install fall (`mcpOrder`): an extension whose tools are read as it is
     // installed, beside what the build installs.
@@ -944,6 +970,7 @@ export class TestSession extends DurableObject {
                 Effect.flatMap(Effect.service(SessionRuns), (runs) => runs.settled(newest)),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               mcp: this.hostMcp(),
+              apps: this.#mcpApps().service,
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
               // The Workspace's side of the hold cap: the activity noted is counted, and the held stops are what a
@@ -1123,6 +1150,7 @@ export class TestSession extends DurableObject {
             }),
           ),
           Layer.provideMerge(this.#mcpQuestions().layer),
+          Layer.provideMerge(this.#mcpApps().layer),
           Layer.provideMerge(this.#mcpSignIns().layer),
           Layer.provideMerge(
             sessionSecretsLayer({
@@ -1760,7 +1788,8 @@ export class TestSession extends DurableObject {
         { exportEntries: this.#host.exportEntries },
         {
           importStart: Effect.promise(() => target.importStart()),
-          importEntries: (entries) => Effect.promise(() => target.importEntries(entries)),
+          importEntries: (entries, apps) =>
+            Effect.promise(() => target.importEntries(entries, apps)),
           importFinish: (finished) => Effect.promise(() => target.importFinish(finished)),
         },
         plan,
@@ -1778,8 +1807,11 @@ export class TestSession extends DurableObject {
     return this.#runtime.runPromise(this.#host.importStart);
   }
 
-  importEntries(entries: ReadonlyArray<EntryRecord>): Promise<void> {
-    return this.#runtime.runPromise(this.#host.importEntries(entries));
+  importEntries(
+    entries: ReadonlyArray<EntryRecord>,
+    apps?: ReadonlyArray<McpAppCopy>,
+  ): Promise<void> {
+    return this.#runtime.runPromise(this.#host.importEntries(entries, apps));
   }
 
   importFinish(plan: ForkPlan): Promise<void> {
@@ -2175,6 +2207,23 @@ export class TestSession extends DurableObject {
         return Arr.map(live?.tools ?? [], (slot) => slot.details);
       }),
     );
+  }
+
+  /** The App calls of the root conversation, as `mcp_apps` lists them. */
+  appCalls(): Promise<ReadonlyArray<McpAppEntry>> {
+    return Effect.runPromise(this.#mcpApps().service.list(ROOT_CONVERSATION_ID));
+  }
+
+  /** Mount App call `callId`, as `mcp_app_mount` does. */
+  appMount(callId: string): Promise<McpAppMounted> {
+    return Effect.runPromise(this.#mcpApps().service.mount(callId));
+  }
+
+  /** Keep an App record as the `mcp` extension's tools do, for a test of the bounds. */
+  async appPut(draft: McpAppDraft): Promise<void> {
+    // The runtime builds the service's layer, which binds the Secrets its redaction needs.
+    await this.#runtime.runPromise(Effect.void);
+    await Effect.runPromise(this.#mcpApps().service.put(draft));
   }
 
   /** Stop the root conversation's run, as a client's `abort` does. */

@@ -9,6 +9,7 @@
 // the one `async` reads a stream the engine returned, a Web API.
 import { sha256Hex, sortedJson } from "@cloudpid/config";
 import {
+  appUriOfMeta,
   isJsonObject,
   MCP_APP_HTML_MAX_BYTES,
   MCP_APP_READ_BYTES,
@@ -28,22 +29,12 @@ import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { AppPage } from "./app-store.ts";
 
-/** A `ui://` URI is at most this long; longer is a server's mistake, not a page. */
-const MAX_URI_LENGTH = 2048;
-
 /** `_meta.ui` is kept up to this many bytes of JSON: a Content Security Policy is short. */
 const MAX_UI_META_BYTES = 16 * 1024;
 
 /** The `ui://` resource an App tool declares in its `_meta.ui.resourceUri`; undefined for any other tool. */
-export const appUriOf = (tool: McpToolDefinition): string | undefined => {
-  const meta = tool["_meta"];
-  const ui = isJsonObject(meta) ? meta["ui"] : undefined;
-  const uri = isJsonObject(ui) ? ui["resourceUri"] : undefined;
-
-  return Predicate.isString(uri) && uri.startsWith("ui://") && uri.length <= MAX_URI_LENGTH
-    ? uri
-    : undefined;
-};
+export const appUriOf = (tool: McpToolDefinition): string | undefined =>
+  appUriOfMeta(tool["_meta"]);
 
 const utf8 = new TextEncoder();
 

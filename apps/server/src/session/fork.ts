@@ -6,7 +6,7 @@
 // the agent as of the point.
 import type { ContextState } from "@cloudpid/extensions/context";
 import type { TodoState } from "@cloudpid/extensions/todo";
-import type { TreePoint } from "@cloudpid/protocol";
+import type { McpAppCopy, McpAppStub, TreePoint } from "@cloudpid/protocol";
 import type {
   AgentState,
   ContextEdit,
@@ -15,7 +15,9 @@ import type {
   EntryId,
   EntryRecord,
 } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import type { Mutable } from "effect/Types";
 import type { AgentPick } from "./pick.ts";
 
 /** About the most one page of copied entries holds, in UTF-16 code units of their JSON: well under an RPC's 32 MiB. */
@@ -62,35 +64,99 @@ export type ExportRequest = {
   readonly after: number | null;
 };
 
-/** One page of the entries a Fork copies, oldest first, and the entry the next page starts after (null: the last). */
+/**
+ * One page of the entries a Fork copies, oldest first, and the entry the next page starts after (null: the last), and the
+ * App records (and stubs) of the calls those entries hold the results of (`apps`; absent when there are none, or from a
+ * Session before App records: a page only ever gains).
+ */
 export type ExportPage = {
   readonly entries: ReadonlyArray<EntryRecord>;
   readonly next: number | null;
+  readonly apps?: ReadonlyArray<McpAppCopy>;
+};
+
+/** The IDs of the tool calls whose results `entry` holds: the calls it copies, and the `codemode` calls that nested ones belong to. */
+export const toolResultIds = (entry: EntryRecord): ReadonlyArray<string> =>
+  Arr.flatMap(entry.model ?? [], (message) =>
+    message.role === "toolResult" ? [message.toolCallId] : [],
+  );
+
+/** What a copy of the entries carries of each: the App records of the calls whose results it holds (`McpAppsService.copiesFor`). */
+export type AppCopier = (entry: EntryRecord) => ReadonlyArray<McpAppCopy>;
+
+/** What a record is left as when it does not fit a page: its stub (who the call was, and its time). */
+const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
+  if (copy.kind !== "record" || !("record" in copy)) return copy;
+
+  const { callId, server, tool, conversation, parentCall, at } = copy.record;
+  const stub: Mutable<McpAppStub> = { callId, server, tool, conversation, at };
+
+  if (parentCall !== undefined) stub.parentCall = parentCall;
+
+  return { kind: "stub", stub };
 };
 
 /**
- * `entries` cut to a page: as many as fit in `MAX_COPY_PAGE_SIZE` (always one), and where the next page starts, or null
- * when they are all of what is left (`more` false) and all fit.
+ * `copies` as they fit in `budget` characters: the records in order while they do, the rest as stubs. A page is a single
+ * RPC's value and an entry is never split from its copies, so what one entry's calls hold past the budget (a `codemode`
+ * script with many App calls) is carried as stubs, which a card shows as "App data no longer kept".
  */
-export const exportPage = (entries: ReadonlyArray<EntryRecord>, more: boolean): ExportPage => {
+const fitCopies = (
+  copies: ReadonlyArray<McpAppCopy>,
+  budget: number,
+): ReadonlyArray<McpAppCopy> => {
+  let left = budget;
+
+  return Arr.map(copies, (copy) => {
+    const length = JSON.stringify(copy).length;
+
+    if (copy.kind === "stub" || length <= left) {
+      left -= length;
+
+      return copy;
+    }
+
+    const stub = stubOfCopy(copy);
+
+    left -= JSON.stringify(stub).length;
+
+    return stub;
+  });
+};
+
+/**
+ * `entries` cut to a page: as many as fit in `MAX_COPY_PAGE_SIZE` (always one), counting the App records they carry
+ * (`appsOf`: the records of the calls an entry holds the results of), and where the next page starts, or null when they are
+ * all of what is left (`more` false) and all fit.
+ */
+export const exportPage = (
+  entries: ReadonlyArray<EntryRecord>,
+  more: boolean,
+  appsOf?: AppCopier,
+): ExportPage => {
   const kept: EntryRecord[] = [];
+  const apps: McpAppCopy[] = [];
   let size = 0;
 
   for (const entry of entries) {
-    const length = JSON.stringify(entry).length;
+    const own = JSON.stringify(entry).length;
+
+    const copies =
+      appsOf === undefined ? [] : fitCopies(appsOf(entry), Math.max(0, MAX_COPY_PAGE_SIZE - own));
+
+    const length = own + Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length);
 
     if (kept.length > 0 && size + length > MAX_COPY_PAGE_SIZE) break;
 
     kept.push(entry);
+    apps.push(...copies);
     size += length;
   }
 
   const last = kept.at(-1);
+  const next = last === undefined || (!more && kept.length === entries.length) ? null : last.id;
 
-  return {
-    entries: kept,
-    next: last === undefined || (!more && kept.length === entries.length) ? null : last.id,
-  };
+  return apps.length === 0 ? { entries: kept, next } : { entries: kept, next, apps };
 };
 
 /** The source Session's side of filling a Fork or Clone. */
@@ -101,7 +167,10 @@ export type FillSource<E, R> = {
 /** The new Session's side of filling it. */
 export type FillTarget<E, R> = {
   readonly importStart: Effect.Effect<void, E, R>;
-  readonly importEntries: (entries: ReadonlyArray<EntryRecord>) => Effect.Effect<void, E, R>;
+  readonly importEntries: (
+    entries: ReadonlyArray<EntryRecord>,
+    apps?: ReadonlyArray<McpAppCopy>,
+  ) => Effect.Effect<void, E, R>;
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, E, R>;
 };
 
@@ -127,7 +196,7 @@ export const fillSession = <E, R>(
           after,
         });
 
-        yield* target.importEntries(page.entries);
+        yield* target.importEntries(page.entries, page.apps);
         after = page.next;
       } while (after !== null);
     }

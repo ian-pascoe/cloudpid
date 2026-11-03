@@ -34,6 +34,7 @@ import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { agentOf, conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
+import type { McpAppRecorder } from "./apps.ts";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails, McpElicitationDetail } from "./details.ts";
 import { elicitingHooks, withElicitation } from "./elicit.ts";
@@ -92,6 +93,11 @@ export type McpToolOptions = {
   readonly connectWaitMs?: number | undefined;
   /** The extension's system prompt sections: the `mcp_servers` section (`./servers.ts`). */
   readonly sections?: ReadonlyArray<PromptSection>;
+  /**
+   * Where the records of App calls and the inventory's App tools are kept (`./apps.ts`): with it, a completed call of an
+   * App tool is recorded. Without it nothing is.
+   */
+  readonly apps?: McpAppRecorder | undefined;
 };
 
 /** Who the Session's calls are made for: the Session and its Workspace (`ws:<id>`). */
@@ -131,14 +137,21 @@ const abortedBy = (signals: ReadonlyArray<AbortSignal>) =>
     }
   });
 
-/** Whether the call is a script's (`codemode`): a nested call of the task `api` runs. */
-export const isNested = async (api: ToolExecutionApi, context: Context): Promise<boolean> => {
+/** The call of the `codemode` script that made the nested call the task `api` runs; undefined for a model's own call. */
+export const parentCallOf = async (
+  api: ToolExecutionApi,
+  context: Context,
+): Promise<string | undefined> => {
   const task = await api.getTask(api.taskId, context).catch(() => undefined);
   // SAFETY: a tool call's task is a `pi.tool` task, whose input is a `ToolTaskInput`.
   const input = task?.input as ToolTaskInput | undefined;
 
-  return input?.kind === "nested";
+  return input?.kind === "nested" ? input.parentCallId : undefined;
 };
+
+/** Whether the call is a script's (`codemode`): a nested call of the task `api` runs. */
+export const isNested = async (api: ToolExecutionApi, context: Context): Promise<boolean> =>
+  (await parentCallOf(api, context)) !== undefined;
 
 /**
  * The Workspace the calling conversation works in (`ws:<id>`): its own Subagent Workspace, or its nearest ancestor's, else

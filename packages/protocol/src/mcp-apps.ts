@@ -1,0 +1,501 @@
+// MCP Apps on the Session socket (`docs/architecture/mcp-apps.md` → App records, Socket messages): the App record the
+// Session keeps for each App call, its bounds, and the messages and answers around it. Records are additive-only, with
+// fallback members and no format `v`: a member a later build adds is a key an older reader passes over, and an enum of
+// strings (`state`, `kind`, `status`) is read as the fallback it names when it does not know the value.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- bounds over plain
+// values, written as loops so a record is measured and cut without copying it more than it must.
+import * as Arr from "effect/Array";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
+import { ConversationId } from "./conversation-id.ts";
+
+const MiB = 1024 * 1024;
+
+/** The most one App record may weigh, as its JSON in UTF-8 bytes (`boundAppRecord`). */
+export const MAX_MCP_APP_RECORD_BYTES = MiB;
+
+/** The most the records of one Session may weigh in all: past it the least recently mounted are evicted. */
+export const MAX_MCP_APP_RECORDS_BYTES = 32 * MiB;
+
+/** A text of a record that is over its bound is cut to this many UTF-8 bytes. */
+export const MCP_APP_TEXT_CUT_BYTES = 64 * 1024;
+
+/**
+ * The most records a Session keeps, however small: the index of them is one stored value, and sent to the page (as
+ * `mcp_apps`) whenever it changes. Past it the least recently mounted record is evicted, as past `MAX_MCP_APP_RECORDS_BYTES`.
+ */
+export const MAX_MCP_APP_RECORDS = 1000;
+
+/** The most stubs (what an evicted record leaves) a Session keeps; the oldest are dropped, and read as no record. */
+export const MAX_MCP_APP_STUBS = 2000;
+
+/** The most entries an App's audit log keeps (`docs/architecture/mcp-apps.md` → An App View's calls). */
+export const MAX_MCP_APP_AUDIT = 50;
+
+/** The most App tools `mcp_app_tools` lists. */
+export const MAX_MCP_APP_TOOLS = 1000;
+
+/** One entry of an App View's audit log: what it asked for, and what came of it. `kind` is a string so one a later build adds still reads. */
+export const McpAppAuditEntry = Schema.Struct({
+  /** Epoch milliseconds. */
+  at: Schema.Finite,
+  kind: Schema.String,
+  /** A line of plain text: the call's tool and what it came to, never a Secret's value. */
+  summary: Schema.String,
+});
+
+export type McpAppAuditEntry = typeof McpAppAuditEntry.Type;
+
+/** The last App context an App View sent (`ui/update-model-context`) for the call, which the card shows as a chip. */
+export const McpAppContext = Schema.Struct({
+  /** What it is deduplicated by. */
+  hash: Schema.String,
+  text: Schema.String,
+  /** Epoch milliseconds the Session held it. */
+  at: Schema.Finite,
+  /** Whether it was delivered to the conversation, or is pending. */
+  delivered: Schema.optionalKey(Schema.Boolean),
+});
+
+export type McpAppContext = typeof McpAppContext.Type;
+
+/**
+ * The record of one App call, direct or nested in `codemode`, root or subagent: what a mount, live or later, is given. The
+ * `result` is the whole Secret-redacted `CallToolResult` (`content`, `structuredContent`, `isError` and the result's
+ * `_meta`), as the server sent it. `truncated` is set when a bound cut it (`boundAppRecord`).
+ */
+export const McpAppRecord = Schema.Struct({
+  callId: Schema.String,
+  /** The server's configured name. */
+  server: Schema.String,
+  /** The tool, as the server names it. */
+  tool: Schema.String,
+  /** The conversation that made the call, as a number's text. */
+  conversation: Schema.String,
+  /** For a call nested in a `codemode` script, the script's call. */
+  parentCall: Schema.optionalKey(Schema.String),
+  arguments: Schema.Record(Schema.String, Schema.Json),
+  /** The hash the App's page is kept under at the host (`mcp_app_html`), when the host had it. */
+  htmlHash: Schema.optionalKey(Schema.String),
+  result: Schema.Record(Schema.String, Schema.Json),
+  truncated: Schema.optionalKey(Schema.Boolean),
+  /** The App View's calls and reads, newest last, at most `MAX_MCP_APP_AUDIT`. */
+  audit: Schema.Array(McpAppAuditEntry),
+  context: Schema.optionalKey(McpAppContext),
+  /** Epoch milliseconds the call completed. */
+  at: Schema.Finite,
+});
+
+export type McpAppRecord = typeof McpAppRecord.Type;
+
+/** What a call's record is made from: everything the call knows; the audit log and the context start empty. */
+export type McpAppDraft = Omit<McpAppRecord, "audit" | "context" | "truncated" | "at">;
+
+/** What an evicted record leaves: who the call was, and nothing of its data. */
+export const McpAppStub = Schema.Struct({
+  callId: Schema.String,
+  server: Schema.String,
+  tool: Schema.String,
+  conversation: Schema.String,
+  parentCall: Schema.optionalKey(Schema.String),
+  /** Epoch milliseconds the call completed, when the stub knows (a record's eviction keeps it; older stubs have none). */
+  at: Schema.optionalKey(Schema.Finite),
+});
+
+export type McpAppStub = typeof McpAppStub.Type;
+
+/**
+ * One App call of a conversation, as `mcp_apps` lists them: `kept` (its record can be mounted) or `evicted` (a stub: the
+ * card shows the call's summary only, "App data no longer kept"). A state this build does not know reads as `evicted`.
+ */
+export const McpAppEntry = Schema.Struct({
+  callId: Schema.String,
+  server: Schema.String,
+  tool: Schema.String,
+  parentCall: Schema.optionalKey(Schema.String),
+  state: Schema.String,
+  htmlHash: Schema.optionalKey(Schema.String),
+  truncated: Schema.optionalKey(Schema.Boolean),
+  /** Epoch milliseconds the call completed. */
+  at: Schema.Finite,
+});
+
+export type McpAppEntry = typeof McpAppEntry.Type;
+
+/** Whether an entry's record can be mounted: `kept`; any other state, one a later build adds included, cannot. */
+export const isKeptApp = (entry: Pick<McpAppEntry, "state">): boolean => entry.state === "kept";
+
+/**
+ * A conversation's App calls, whole: sent after the snapshot of each conversation a client `watch`es, and again each
+ * time they change; each replaces the last one of that conversation. A conversation with none has an empty list.
+ */
+export const McpAppsMessage = Schema.Struct({
+  type: Schema.Literal("mcp_apps"),
+  conversationId: ConversationId,
+  apps: Schema.Array(McpAppEntry),
+});
+
+/** An App tool of the inventory: what the page needs to know a call is an App's as it starts, and what an App View may call. */
+export const McpAppTool = Schema.Struct({
+  /** The tool's model-facing name (`mcp__<server>__<tool>`), which a tool call carries. */
+  name: Schema.String,
+  /** The server's configured name. */
+  server: Schema.String,
+  /** The tool, as the server names it. */
+  tool: Schema.String,
+  title: Schema.optionalKey(Schema.String),
+  /** The `ui://` resource the tool declares. */
+  uri: Schema.String,
+  /** Its `_meta.ui.visibility`: `model`, `app`, or both, the default. */
+  visibility: Schema.Array(Schema.String),
+});
+
+export type McpAppTool = typeof McpAppTool.Type;
+
+/**
+ * The inventory's App tools, whole: sent after `hello` on every connect (an empty list too) and to every client when the
+ * inventory changes them. A server switched off or removed has none.
+ */
+export const McpAppToolsMessage = Schema.Struct({
+  type: Schema.Literal("mcp_app_tools"),
+  tools: Schema.Array(McpAppTool),
+});
+
+/** The longest `callId` or `hash` a client's message may carry. */
+export const MAX_MCP_APP_KEY = 512;
+
+/**
+ * What `mcp_app_mount` answers: the call's `record`, a `stub` (evicted: the summary only) or `none` (no record of the call:
+ * it is still running, it was not an App's, or it came before records were kept). A status this build does not know reads as `none`.
+ */
+export const McpAppMounted = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("record"), record: McpAppRecord }),
+  Schema.Struct({ status: Schema.Literal("stub"), stub: McpAppStub }),
+  Schema.Struct({ status: Schema.Literal("none") }),
+  Schema.Struct({ status: Schema.String }),
+]);
+
+export type McpAppMounted = typeof McpAppMounted.Type;
+
+/** The page's `_meta.ui` the View is mounted with, as the host keeps it. */
+export const McpAppPageMeta = Schema.Struct({
+  csp: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  permissions: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  domain: Schema.optionalKey(Schema.String),
+  prefersBorder: Schema.optionalKey(Schema.Boolean),
+});
+
+export type McpAppPageMeta = typeof McpAppPageMeta.Type;
+
+/**
+ * What `mcp_app_html` answers: the page (`html`, with its `meta`), or why there is none: `missing` (no record pins the hash,
+ * or the host no longer keeps it: the mount reads it by its URI, later), `unsupported` (the host does not serve it) or
+ * `failed`. A status this build does not know reads as `failed`.
+ */
+export const McpAppHtmlAnswer = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("html"),
+    hash: Schema.String,
+    html: Schema.String,
+    meta: McpAppPageMeta,
+  }),
+  Schema.Struct({ status: Schema.Literal("missing"), message: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("unsupported"), message: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("failed"), message: Schema.String }),
+  Schema.Struct({ status: Schema.String, message: Schema.optionalKey(Schema.String) }),
+]);
+
+export type McpAppHtmlAnswer = typeof McpAppHtmlAnswer.Type;
+
+/**
+ * A call's App record or stub as a Fork or Clone carries it to the new Session, with the page of entries that holds its
+ * call (`ExportPage.apps`). Only an RPC's value, never a message to a client.
+ */
+export type McpAppCopy =
+  | { readonly kind: "record"; readonly record: McpAppRecord }
+  | { readonly kind: "stub"; readonly stub: McpAppStub }
+  // A kind a newer Session sends: skipped, never an error that leaves a Fork half done.
+  | { readonly kind: string };
+
+/** What a Session does with the App records of a Fork or Clone (`ExportPage.apps`): what its calls' copies are, and keeping them. */
+export type McpAppCopies = {
+  /** The records and stubs of the calls whose result entry is among `callIds`, and of the calls nested in them. */
+  readonly copiesFor: (callIds: ReadonlyArray<string>) => ReadonlyArray<McpAppCopy>;
+  /** Keep the copies a Fork or Clone's source sent, as the calls of conversation `conversation`; the bounds apply. */
+  readonly adopt: (copies: ReadonlyArray<McpAppCopy>, conversation: ConversationId) => void;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Bounds
+
+/** `text`'s length in UTF-8 bytes, counted without making them. */
+const utf8Length = (text: string): number => {
+  let bytes = 0;
+
+  for (let at = 0; at < text.length; at++) {
+    const unit = text.charCodeAt(at);
+
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit < 0xdc00 && at + 1 < text.length) {
+      // A surrogate pair is one character of four bytes.
+      bytes += 4;
+      at += 1;
+    } else bytes += 3;
+  }
+
+  return bytes;
+};
+
+/** What `record` weighs: its JSON, in UTF-8 bytes. */
+export const appRecordBytes = (record: McpAppRecord): number => utf8Length(JSON.stringify(record));
+
+/** `text` cut to at most `max` UTF-8 bytes, at a character's end. */
+const cutUtf8 = (text: string, max: number): string => {
+  let bytes = 0;
+  let at = 0;
+
+  while (at < text.length) {
+    const unit = text.charCodeAt(at);
+    const pair = unit >= 0xd800 && unit < 0xdc00 && at + 1 < text.length;
+    const width = unit < 0x80 ? 1 : unit < 0x800 ? 2 : pair ? 4 : 3;
+
+    if (bytes + width > max) break;
+
+    bytes += width;
+    at += pair ? 2 : 1;
+  }
+
+  return at === text.length ? text : text.slice(0, at);
+};
+
+type Json = Schema.Json;
+
+type JsonRecord = { readonly [key: string]: Json };
+
+const isRecord = (value: Json | undefined): value is JsonRecord =>
+  Predicate.isObject(value) && !Array.isArray(value);
+
+/** `result` with its `content` blocks mapped by `change`: `undefined` leaves a block as it is. */
+const mapContent = (
+  result: McpAppRecord["result"],
+  change: (block: JsonRecord) => Json | undefined,
+): McpAppRecord["result"] => {
+  const { content } = result;
+
+  if (!Array.isArray(content)) return result;
+
+  return {
+    ...result,
+    // SAFETY: `result` is JSON, whose array `content` is an array of JSON values.
+    content: Arr.map(content as ReadonlyArray<Json>, (block) =>
+      isRecord(block) ? (change(block) ?? block) : block,
+    ),
+  };
+};
+
+/** Every text of the result cut to `MCP_APP_TEXT_CUT_BYTES`: a text block's, and an embedded resource's text. */
+const cutTexts = (result: McpAppRecord["result"]): McpAppRecord["result"] =>
+  mapContent(result, (block) => {
+    const { text, resource } = block;
+
+    if (block["type"] === "text" && Predicate.isString(text)) {
+      return Object.assign({}, block, { text: cutUtf8(text, MCP_APP_TEXT_CUT_BYTES) });
+    }
+
+    if (
+      block["type"] === "resource" &&
+      isRecord(resource) &&
+      Predicate.isString(resource["text"])
+    ) {
+      return Object.assign({}, block, {
+        resource: Object.assign({}, resource, {
+          text: cutUtf8(resource["text"], MCP_APP_TEXT_CUT_BYTES),
+        }),
+      });
+    }
+
+    return undefined;
+  });
+
+/** The binary payload of a content block, in characters: an image's or audio's `data`, an embedded resource's `blob`. */
+const binaryLength = (block: JsonRecord): number => {
+  const { data, resource } = block;
+
+  if (Predicate.isString(data) && (block["type"] === "image" || block["type"] === "audio")) {
+    return data.length;
+  }
+
+  return isRecord(resource) && Predicate.isString(resource["blob"]) ? resource["blob"].length : 0;
+};
+
+/** The largest binary block of the result replaced whole by a line that says so; the same result when it has none. */
+const dropLargestBinary = (result: McpAppRecord["result"]): McpAppRecord["result"] => {
+  const { content } = result;
+
+  if (!Array.isArray(content)) return result;
+
+  const blocks: ReadonlyArray<Json> = content;
+  let largest = -1;
+  let length = 0;
+
+  blocks.forEach((block, index) => {
+    const size = isRecord(block) ? binaryLength(block) : 0;
+
+    if (size > length) {
+      length = size;
+      largest = index;
+    }
+  });
+
+  if (largest === -1) return result;
+
+  const dropped = blocks[largest];
+  const kind = isRecord(dropped) ? dropped["type"] : undefined;
+
+  return {
+    ...result,
+    content: Arr.map(blocks, (block, index) =>
+      index === largest
+        ? {
+            type: "text",
+            text: `[${Predicate.isString(kind) ? kind : "binary"} content omitted: too large for an App's record]`,
+          }
+        : block,
+    ),
+  };
+};
+
+const withoutKey = (value: McpAppRecord["result"], key: string): McpAppRecord["result"] =>
+  Object.fromEntries(Object.entries(value).filter(([each]) => each !== key));
+
+/** The keys of a `CallToolResult` (MCP): any other is a server's own, and is the first to go when a record is too large. */
+const RESULT_KEYS: ReadonlyArray<string> = ["content", "structuredContent", "isError", "_meta"];
+
+/** The line that stands in for the content blocks a record is too large to keep. */
+const omitted = (count: number): Json => ({
+  type: "text",
+  text: `[${count} content block${count === 1 ? "" : "s"} omitted: too large for an App's record]`,
+});
+
+/** `result` with only its first `keep` content blocks and a line that says how many went. */
+const keepBlocks = (result: McpAppRecord["result"], keep: number): McpAppRecord["result"] => {
+  const { content } = result;
+
+  if (!Array.isArray(content)) return result;
+
+  // SAFETY: `result` is JSON, whose array `content` is an array of JSON values.
+  const blocks = content as ReadonlyArray<Json>;
+
+  return { ...result, content: [...Arr.take(blocks, keep), omitted(blocks.length - keep)] };
+};
+
+/**
+ * What a record is brought to when the other steps leave it over the bound: the result's own keys only, then its content
+ * blocks from the end replaced by a line, as many as it takes (found by halving, since a result may have tens of thousands),
+ * and, if even one block is too much, a result that is the line alone, with its `isError`.
+ */
+const withinBound = (record: McpAppRecord): McpAppRecord => {
+  const known = Object.fromEntries(
+    Object.entries(record.result).filter(([key]) => RESULT_KEYS.includes(key)),
+  );
+
+  let current: McpAppRecord = { ...record, result: known };
+
+  if (appRecordBytes(current) <= MAX_MCP_APP_RECORD_BYTES) return current;
+
+  const { content } = current.result;
+  let low = 0;
+  let high = Array.isArray(content) ? content.length : 0;
+
+  // The most blocks that fit beside the line, the line alone at least.
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+
+    if (
+      appRecordBytes({ ...current, result: keepBlocks(current.result, middle) }) <=
+      MAX_MCP_APP_RECORD_BYTES
+    ) {
+      low = middle;
+    } else high = middle - 1;
+  }
+
+  current = { ...current, result: keepBlocks(current.result, low) };
+
+  if (appRecordBytes(current) <= MAX_MCP_APP_RECORD_BYTES) return current;
+
+  const failed = current.result["isError"];
+
+  return {
+    ...current,
+    result: Predicate.isBoolean(failed)
+      ? { content: [omitted(Array.isArray(content) ? content.length : 0)], isError: failed }
+      : { content: [omitted(Array.isArray(content) ? content.length : 0)] },
+  };
+};
+
+/**
+ * `record` held to `MAX_MCP_APP_RECORD_BYTES`. A record within it is returned as it is, after `redact` (which must give
+ * the same value with the Secrets held replaced by their references; the default changes nothing). Over it, in this order
+ * and only as far as it takes: the result's `structuredContent` is dropped (before `redact`, which then reads less); the
+ * texts are cut to `MCP_APP_TEXT_CUT_BYTES` (after it, so a Secret is never cut into a piece `redact` cannot recognize);
+ * the largest binary blocks are replaced by a line, the result's `_meta` dropped, and the call's arguments; and last, so
+ * that the bound always holds, `withinBound`: the keys a `CallToolResult` does not have dropped, then content blocks from the
+ * end. A record cut at all says `truncated: true`; the same record is what a live mount and a replay are given.
+ */
+export const boundAppRecord = (
+  record: McpAppRecord,
+  redact: <A>(value: A) => A = (value) => value,
+): McpAppRecord => {
+  let current = record;
+  let cut = false;
+
+  if (
+    appRecordBytes(current) > MAX_MCP_APP_RECORD_BYTES &&
+    current.result["structuredContent"] !== undefined
+  ) {
+    current = { ...current, result: withoutKey(current.result, "structuredContent") };
+    cut = true;
+  }
+
+  current = redact(current);
+
+  const steps: ReadonlyArray<(each: McpAppRecord) => McpAppRecord> = [
+    (each) => ({ ...each, result: cutTexts(each.result) }),
+    (each) => {
+      let next = each;
+
+      // One at a time, largest first: a small image may stay when the large one was the cost.
+      while (appRecordBytes(next) > MAX_MCP_APP_RECORD_BYTES) {
+        const result = dropLargestBinary(next.result);
+
+        if (result === next.result) break;
+
+        next = Object.assign({}, next, { result });
+      }
+
+      return next;
+    },
+    (each) => ({ ...each, result: withoutKey(each.result, "_meta") }),
+    (each) => ({ ...each, arguments: {} }),
+    withinBound,
+  ];
+
+  let size = appRecordBytes(current);
+
+  for (const step of steps) {
+    if (size <= MAX_MCP_APP_RECORD_BYTES) break;
+
+    const next = step(current);
+    const after = appRecordBytes(next);
+
+    // A step that changed nothing leaves the record as it is, and not cut.
+    if (after !== size) {
+      current = next;
+      size = after;
+      cut = true;
+    }
+  }
+
+  return cut ? { ...current, truncated: true } : current;
+};

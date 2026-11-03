@@ -13,6 +13,7 @@ import {
   fieldSecret,
   fieldSkill,
   MAX_ENVIRONMENT_SECRETS,
+  type McpAppCopy,
   McpNoEnvironment,
   McpRepoFiles,
   type McpRepoFileView,
@@ -86,8 +87,12 @@ export type SessionObjects = {
   readonly exportEntries: (id: string, request: ExportRequest) => Effect.Effect<ExportPage>;
   /** Start filling new Session `id` as a Fork or Clone (`SessionMethods.importStart`). */
   readonly importStart: (id: string) => Effect.Effect<void>;
-  /** Append a page of the source's entries to new Session `id` (`SessionMethods.importEntries`). */
-  readonly importEntries: (id: string, entries: ReadonlyArray<EntryRecord>) => Effect.Effect<void>;
+  /** Append a page of the source's entries, and the App records of their calls, to new Session `id` (`SessionMethods.importEntries`). */
+  readonly importEntries: (
+    id: string,
+    entries: ReadonlyArray<EntryRecord>,
+    apps?: ReadonlyArray<McpAppCopy>,
+  ) => Effect.Effect<void>;
   /** Give new Session `id` what `plan` carries, and let it take messages (`SessionMethods.importFinish`). */
   readonly importFinish: (id: string, plan: ForkPlan) => Effect.Effect<void>;
   /** Let Session `id` take messages again once a Fork or Clone carried its files (`SessionMethods.releaseFork`). */
@@ -543,7 +548,7 @@ export const serveRegistryRpc = <R = never>(
             { exportEntries: (request) => sessions.exportEntries(source, request) },
             {
               importStart: sessions.importStart(created.id),
-              importEntries: (entries) => sessions.importEntries(created.id, entries),
+              importEntries: (entries, apps) => sessions.importEntries(created.id, entries, apps),
               importFinish: (finished) => sessions.importFinish(created.id, finished),
             },
             plan,

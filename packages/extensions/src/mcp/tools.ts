@@ -23,6 +23,7 @@ import {
   resolveExposure,
 } from "@cloudpid/config";
 import {
+  appUriOfMeta,
   isJsonObject,
   type JsonObject,
   type McpHostRequest,
@@ -32,17 +33,20 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
+import { draftOf, type McpAppCall, MCP_APP_FEATURE } from "./apps.ts";
 import { baseDetails } from "./details.ts";
 import {
   contextOf,
   type Exchange,
   type McpCallOrigin,
   type McpToolOptions,
+  parentCallOf,
   send,
 } from "./exchange.ts";
 import { withElicitation } from "./elicit.ts";
@@ -139,8 +143,10 @@ const toolFor = (
   exposure: Exclude<McpExposure, "hidden">,
   options: McpToolOptions,
   readServer: string | undefined,
+  appHtml: boolean,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
+  const app = options.apps !== undefined && appUriOfMeta(tool._meta) !== undefined;
 
   const exchange: Exchange = {
     client,
@@ -178,20 +184,54 @@ const toolFor = (
             // SAFETY: the arguments pi-durable validated against the tool's `inputSchema`, an object.
             args as JsonObject,
           ),
-        (value, completed, caller) => {
+        async (value, completed, caller) => {
           // A script's call gets its value whole and no spill.
           const call: McpResultContext =
             caller === "script"
               ? { kind: "script", details: base, readServer }
               : { kind: "model", details: base, spill: spillTo(api.env, context), readServer };
 
-          return resultFor(value, completed.structuredOutput, call);
+          const result = await resultFor(value, completed.structuredOutput, call);
+
+          // A completed call of an App tool, an `isError` result too, is recorded for the View's mounts: the whole result,
+          // which the model's and the script's value drop part of. The page's hash is read only when the host lists it.
+          if (app) {
+            await recordApp(
+              options.apps,
+              {
+                callId: api.callId,
+                conversation: String(api.conversationId),
+                parentCall: await parentCallOf(api, context),
+                server: server.name,
+                tool: tool.name,
+                // SAFETY: the arguments pi-durable validated against the tool's `inputSchema`, an object.
+                arguments: args as JsonObject,
+                htmlHash: appHtml ? completed.app?.htmlHash : undefined,
+              },
+              value,
+            );
+          }
+
+          return result;
         },
       );
 
       return sent.ok ? withElicitation(sent.value, sent.asked) : sent.result;
     },
   };
+};
+
+/** The record of `call`, kept by `apps`; a record that could not be kept never fails the call. */
+const recordApp = async (
+  apps: McpToolOptions["apps"],
+  call: McpAppCall,
+  value: Schema.Json,
+): Promise<void> => {
+  const draft = draftOf(call, value);
+
+  if (apps === undefined || draft === undefined) return;
+
+  await Effect.runPromise(apps.put(draft)).catch(() => undefined);
 };
 
 /** What the `mcp` extension is built from: the host's servers with their tools, and the tools the settings offer. */
@@ -215,6 +255,7 @@ export const mcpExtension = (
   options: McpToolOptions = {},
 ): Extension => {
   const resources = resourceTools(build, client, origin, options);
+  const appHtml = build.features?.includes(MCP_APP_FEATURE) === true;
 
   // A link a result carries says how to read it only when the resource tools reach its server.
   const readServerOf = (server: McpBuildServer): string | undefined =>
@@ -247,7 +288,17 @@ export const mcpExtension = (
       return exposure === "hidden" || !reachesModel(tool._meta)
         ? Result.failVoid
         : Result.succeed(
-            toolFor(client, origin, server, tool, name, exposure, options, readServerOf(server)),
+            toolFor(
+              client,
+              origin,
+              server,
+              tool,
+              name,
+              exposure,
+              options,
+              readServerOf(server),
+              appHtml,
+            ),
           );
     });
   });

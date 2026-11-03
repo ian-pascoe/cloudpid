@@ -14,6 +14,7 @@ import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
+import { MAX_MCP_APP_KEY, McpAppsMessage, McpAppToolsMessage } from "./mcp-apps.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import { ElicitationAction, ElicitationContent, McpElicitationRequest } from "./mcp-elicitation.ts";
 import { McpCatalogServer, McpPromptEntry, McpPromptRef } from "./mcp-prompts.ts";
@@ -595,6 +596,27 @@ export const OwnerTabCloseRequest = Schema.Struct({
   ownerTabId: Schema.String,
 });
 
+/**
+ * Mount the App View of call `callId` (`docs/architecture/mcp-apps.md` → App records, Socket messages): answered with an
+ * `McpAppMounted`, the call's record (what a live mount and a replay are both given), its stub once the record was evicted,
+ * or none. A mount marks the record as the most recently mounted.
+ */
+export const McpAppMount = Schema.Struct({
+  type: Schema.Literal("mcp_app_mount"),
+  id: CommandId,
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+});
+
+/**
+ * Ask for the page of an App record's `htmlHash`: answered with an `McpAppHtmlAnswer`. The Session serves it through the
+ * host's `ui/html`, only for a hash some record pins, and only when the host lists `app_html`.
+ */
+export const McpAppHtml = Schema.Struct({
+  type: Schema.Literal("mcp_app_html"),
+  id: CommandId,
+  hash: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   TreeRequest,
@@ -622,6 +644,8 @@ export const ClientMessage = Schema.Union([
   AnnotationSave,
   AnnotationDelete,
   ViewedSet,
+  McpAppMount,
+  McpAppHtml,
   WatchTaskGraph,
   UnwatchTaskGraph,
   WatchUsage,
@@ -1375,6 +1399,8 @@ export const ServerMessage = Schema.Union([
   ChangesMessage,
   TodosMessage,
   LastRunMessage,
+  McpAppsMessage,
+  McpAppToolsMessage,
 ]);
 
 export type ServerMessage = typeof ServerMessage.Type;

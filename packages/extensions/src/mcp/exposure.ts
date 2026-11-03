@@ -98,9 +98,13 @@ const Visibility = Schema.Struct({
 
 const decodeVisibility = Schema.decodeUnknownOption(Visibility);
 
+/** A tool's `_meta.ui.visibility` (MCP Apps): `model` and `app` when it has none, or one that cannot be read. */
+export const visibilityOf = (meta: Schema.Json | undefined): ReadonlyArray<string> =>
+  Option.match(decodeVisibility(meta), {
+    onNone: () => ["model", "app"],
+    onSome: ({ ui }) => ui.visibility,
+  });
+
 /** Whether a tool's `_meta.ui.visibility` (MCP Apps) lets the model see it: absent, or unreadable, means it does. */
 export const reachesModel = (meta: Schema.Json | undefined): boolean =>
-  Option.match(decodeVisibility(meta), {
-    onNone: () => true,
-    onSome: ({ ui }) => ui.visibility.includes("model"),
-  });
+  visibilityOf(meta).includes("model");

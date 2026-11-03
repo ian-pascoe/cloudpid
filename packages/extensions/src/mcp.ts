@@ -35,6 +35,7 @@
 // conversation's last opened Context Window, so `windowOpened` is sent once per window across restarts.
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
 import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
+import type { McpAppHtmlAnswer } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
@@ -59,11 +60,17 @@ import {
 } from "./mcp/servers.ts";
 import { signsIn } from "./mcp/sign-in-tool.ts";
 import { MCP_RESOURCE_FEATURE } from "./mcp/resources.ts";
+import { appToolsOf } from "./mcp/app-tools.ts";
+import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
 import { McpBuildServer, mcpExtension, mcpNamespaces, type McpToolOptions } from "./mcp/tools.ts";
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 
 export { mayBeDirect } from "./mcp/exposure.ts";
+
+export { appToolsOf } from "./mcp/app-tools.ts";
+
+export { MCP_APP_FEATURE, type McpAppHtmlInput, type McpAppRecorder } from "./mcp/apps.ts";
 
 export {
   createMcpSignIns,
@@ -129,9 +136,13 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
 
 /**
  * The features the tools may use when the host lists them, and do without when it does not: the resource tools need
- * `resources` (`./mcp/resources.ts`), and a host without it gets every other tool as before, none of these.
+ * `resources` (`./mcp/resources.ts`), and a host without it gets every other tool as before, none of these; an App
+ * tool's call reads `app.htmlHash` of its answer, and `mcp_app_html` is served, only with `app_html` (`./mcp/apps.ts`).
  */
-export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [MCP_RESOURCE_FEATURE];
+export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
+  MCP_RESOURCE_FEATURE,
+  MCP_APP_FEATURE,
+];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
 export const MCP_WAIT_MS = 10_000;
@@ -244,6 +255,11 @@ export type McpToolsService = {
    * otherwise. Run under the Session's install lock, with the settings in force.
    */
   readonly reinstall: (offered: ReadonlyArray<string>) => Option.Option<McpReinstall>;
+  /**
+   * The page of an App record's `htmlHash`, served through the host's `ui/html` only when the host listed `app_html` at the
+   * last request start (`docs/architecture/mcp-apps.md` → Declaring and reading Apps). Never fails.
+   */
+  readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
@@ -575,6 +591,9 @@ export const makeMcpTools = (
 
     installed = key;
 
+    // The App tools the build declares, for the clients' `mcp_app_tools`: told when they change.
+    options.apps?.setTools(latest === undefined ? [] : appToolsOf(latest.servers));
+
     const text = latest === undefined ? undefined : Option.getOrUndefined(encodeKept(latest));
 
     if (text !== saved) {
@@ -620,6 +639,13 @@ export const makeMcpTools = (
   return {
     requestStart,
     reinstall,
+    appHtml: (input) =>
+      appHtmlOf(
+        client,
+        latest?.features.includes(MCP_APP_FEATURE) === true,
+        latest?.origin ?? {},
+        input,
+      ),
     bindNotices: (next) => {
       notices = next;
     },
