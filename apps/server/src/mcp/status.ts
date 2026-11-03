@@ -2,7 +2,7 @@
 // Telemetry; #382 D12.3): `mcpServers`, `mcpServerLog` and `mcpReconnect` of `RegistryRpcs`, over the host objects. The
 // Registry says which servers an Environment has first, so an Environment with none never wakes its host, and a name the
 // set does not hold never reaches it. The host answers from its own storage (`serverLog` starts no Container, and neither
-// does this); the main Worker adds each tool's Exposure with the pure resolver of `@cloudpid/config`.
+// does this); the main Worker adds each tool's Exposure with the pure resolver of `@cloudpid/config`, over the Environment's `tools.offered` too.
 //
 // Every answer has a fallback: a host that fails, or answers with a tag or shape this build does not know, is
 // `Unavailable` (`docs/architecture/mcp.md` → Deploys), whose message never carries the cause.
@@ -11,6 +11,7 @@ import {
   MCP_EXPOSURES,
   type McpExposure,
   type McpExposureKeys,
+  mcpToolNames,
   resolveExposure,
 } from "@cloudpid/config";
 import {
@@ -47,7 +48,7 @@ import type { McpHostMethods } from "./host.ts";
 import { mcpHostName } from "./name.ts";
 
 /** The Registry's method a status read uses, on its object. */
-type StatusRegistry = Pick<RegistryMethods, "mcpServerNames">;
+type StatusRegistry = Pick<RegistryMethods, "mcpServerNames" | "getSettingsOverrides">;
 
 /** The Registry object and the host objects, by name, as the main Worker reaches them. */
 export type McpStatusObjects = {
@@ -108,19 +109,34 @@ const exposureKeysOf = (server: McpServerInventory["server"]): McpExposureKeys =
   return { exposure: keys.exposure ?? DEFAULT_EXPOSURE, toolExposure: keys.toolExposure ?? {} };
 };
 
-const toolViews = (inventory: McpServerInventory): ReadonlyArray<McpToolView> => {
+/**
+ * The server's tools with the Exposure each has: its `exposure` and `toolExposure`, and a `tools.offered` entry of the
+ * Environment's Settings (`offered`) that matches the tool's model-facing name and lifts `codemode` or `deferred` to `direct`.
+ */
+const toolViews = (
+  inventory: McpServerInventory,
+  offered: ReadonlyArray<string>,
+): ReadonlyArray<McpToolView> => {
   const keys = exposureKeysOf(inventory.server);
 
-  return Arr.filterMap(inventory.tools ?? [], (raw) =>
-    Option.match(decodeTool(raw), {
-      onNone: () => Result.failVoid,
-      onSome: (tool) =>
-        Result.succeed({
-          ...tool,
-          exposure: resolveExposure({ server: keys, tool: tool.name }).exposure,
-        }),
-    }),
+  const tools = Arr.filterMap(inventory.tools ?? [], (raw) =>
+    Option.match(decodeTool(raw), { onNone: () => Result.failVoid, onSome: Result.succeed }),
   );
+
+  const names = mcpToolNames(
+    inventory.name,
+    Arr.map(tools, (tool) => tool.name),
+  );
+
+  return Arr.map(tools, (tool) => ({
+    ...tool,
+    exposure: resolveExposure({
+      server: keys,
+      tool: tool.name,
+      modelName: names.get(tool.name),
+      offered,
+    }).exposure,
+  }));
 };
 
 const promptViews = (inventory: McpServerInventory): ReadonlyArray<McpPromptView> =>
@@ -129,7 +145,10 @@ const promptViews = (inventory: McpServerInventory): ReadonlyArray<McpPromptView
   );
 
 /** One server as the client reads it: no entry (its `${NAME}` references and URL stay with the host), no hashes. */
-const serverView = (inventory: McpServerInventory): McpServerView => {
+const serverView = (
+  inventory: McpServerInventory,
+  offered: ReadonlyArray<string>,
+): McpServerView => {
   const view: Mutable<McpServerView> = {
     name: inventory.name,
     source: inventory.source,
@@ -137,7 +156,7 @@ const serverView = (inventory: McpServerInventory): McpServerView => {
     counts: inventory.counts,
     resources: inventory.resources,
     problems: inventory.problems,
-    tools: toolViews(inventory),
+    tools: toolViews(inventory, offered),
     prompts: promptViews(inventory),
   };
 
@@ -168,6 +187,16 @@ const namesOf = (objects: McpStatusObjects, environment: string) =>
         ).pipe(Effect.as(undefined)),
       ),
     );
+
+/**
+ * The `tools.offered` of `environment`'s Settings in force (its Overrides over Global's, as a Session resolves them),
+ * which lifts a tool's Exposure to `direct`; none for an Environment the Registry no longer has.
+ */
+const offeredOf = (objects: McpStatusObjects, environment: string) =>
+  objects
+    .registry()
+    .getSettingsOverrides({ environment })
+    .pipe(Effect.map((state) => (state === null ? [] : state.settings.tools.offered)));
 
 /**
  * Runs `read` over the names of `environment`'s servers, once the Registry has said it has some; the Registry's
@@ -202,25 +231,27 @@ export const mcpStatus = (objects: McpStatusObjects): McpStatus => ({
     readSet(objects, environment, "servers were not read", (names) =>
       names.length === 0
         ? Effect.succeed(McpServersList.make({ version: "", servers: [] }))
-        : objects
-            .host(mcpHostName(environment))
-            .servers({ parts: ["tools", "prompts", "status"] })
-            .pipe(
-              Effect.map((answer): McpServersView => {
-                const decoded = decodeServers(answer);
+        : Effect.all([
+            offeredOf(objects, environment),
+            objects
+              .host(mcpHostName(environment))
+              .servers({ parts: ["tools", "prompts", "status"] }),
+          ]).pipe(
+            Effect.map(([offered, answer]): McpServersView => {
+              const decoded = decodeServers(answer);
 
-                if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
+              if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
 
-                if (Predicate.isTagged(decoded.value, "HostFailed")) {
-                  return unavailable(COULD_NOT_ANSWER);
-                }
+              if (Predicate.isTagged(decoded.value, "HostFailed")) {
+                return unavailable(COULD_NOT_ANSWER);
+              }
 
-                return McpServersList.make({
-                  version: decoded.value.version,
-                  servers: Arr.map(decoded.value.servers, serverView),
-                });
-              }),
-            ),
+              return McpServersList.make({
+                version: decoded.value.version,
+                servers: Arr.map(decoded.value.servers, (each) => serverView(each, offered)),
+              });
+            }),
+          ),
     ),
 
   serverLog: ({ environment, server, workspace }) =>

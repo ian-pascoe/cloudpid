@@ -544,6 +544,8 @@ const fakeRegistries = () => {
   /** The MCP server names of each Environment (none for one not listed here), and what the hosts were asked. */
   const mcpNames = new Map<string, ReadonlyArray<string>>();
   const mcpHostCalls: Array<string> = [];
+  /** The `tools.offered` entries of the Settings in force, besides the defaults. */
+  const mcpOffered: Array<string> = [];
 
   /** What the fake MCP hosts answer; each is the answer as it crosses the edge, so a test may script an unknown one. */
   const mcpHostAnswers: McpHostAnswers = {
@@ -1283,7 +1285,14 @@ const fakeRegistries = () => {
         return environment === DEFAULT_ENVIRONMENT
           ? {
               environment,
-              settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
+              settings: {
+                ...DEFAULT_SETTINGS,
+                thinkingLevel: "low",
+                tools: {
+                  ...DEFAULT_SETTINGS.tools,
+                  offered: [...DEFAULT_SETTINGS.tools.offered, ...mcpOffered],
+                },
+              },
               global: DEFAULT_SETTINGS,
               overrides: { thinkingLevel: "low" },
               instructions: "",
@@ -1499,6 +1508,7 @@ const fakeRegistries = () => {
     /** The Environments the endpoint asked `mcp` to push the MCP server set to (undefined: every one). */
     mcpSyncs,
     mcpNames,
+    mcpOffered,
     mcpHostCalls,
     mcpHostAnswers,
     /** The status reads over the fake Registry and the fake hosts, which record what they were asked. */
@@ -5868,6 +5878,62 @@ describe("the MCP status reads", () => {
     prompts: [{ name: "summarize", description: "Summarize." }],
     status: { since: 5, failures: 0, lastOkAt: 5 },
     ...extra,
+  });
+
+  it("lifts a tool the Environment's `tools.offered` names to direct, and never a hidden one", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+    fake.mcpOffered.push("mcp__linear__search", "mcp__linear__list_*", "mcp__other__get_issue");
+    fake.mcpHostAnswers.servers = {
+      version: "v1",
+      promptsVersion: "p1",
+      servers: [
+        server("linear", {
+          server: {
+            type: "http",
+            url: "https://linear.example/mcp",
+            toolExposure: { delete: "hidden" },
+          },
+          tools: [
+            { name: "search", inputSchema: {} },
+            { name: "delete", inputSchema: {} },
+            { name: "listIssues", inputSchema: {} },
+            { name: "getIssue", inputSchema: {} },
+          ],
+        }),
+      ],
+    };
+
+    const answer = await call(fake, (registry) =>
+      registry.mcpServers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    const exposures = (view: typeof answer) =>
+      Predicate.isTagged(view, "Servers")
+        ? view.servers.flatMap((each) => each.tools.map((tool) => [tool.name, tool.exposure]))
+        : view;
+
+    // `search` and the `list_*` pattern are offered; `delete` is hidden whatever is offered; `getIssue` is another server's name.
+    expect(exposures(answer)).toEqual([
+      ["search", "direct"],
+      ["delete", "hidden"],
+      ["listIssues", "direct"],
+      ["getIssue", "codemode"],
+    ]);
+
+    fake.mcpOffered.length = 0;
+
+    expect(
+      exposures(
+        await call(fake, (registry) => registry.mcpServers({ environment: DEFAULT_ENVIRONMENT })),
+      ),
+    ).toEqual([
+      ["search", "codemode"],
+      ["delete", "hidden"],
+      ["listIssues", "codemode"],
+      ["getIssue", "codemode"],
+    ]);
   });
 
   it("answers an Environment's servers with each tool's Exposure and no entry, URL or hash", async () => {

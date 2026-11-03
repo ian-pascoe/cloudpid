@@ -7,6 +7,7 @@ import {
   McpReconnectView,
   McpServerLogView,
   McpServersView,
+  readMcpExposure,
   readMcpServerState,
 } from "./mcp-status.ts";
 
@@ -18,6 +19,17 @@ describe("readMcpServerState", () => {
     expect(mcpStateIsProblem("failed")).toBe(true);
     expect(mcpStateIsProblem("connected")).toBe(false);
     expect(mcpStateIsProblem("disabled")).toBe(false);
+  });
+});
+
+describe("readMcpExposure", () => {
+  it("reads an Exposure it does not know as unknown, never as one that allows more", () => {
+    for (const known of ["codemode", "deferred", "direct", "hidden"]) {
+      expect(readMcpExposure(known)).toBe(known);
+    }
+
+    expect(readMcpExposure("everywhere")).toBe("unknown");
+    expect(readMcpExposure("")).toBe("unknown");
   });
 });
 

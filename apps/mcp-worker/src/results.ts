@@ -37,21 +37,55 @@ export const malformed = (what: string) =>
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json));
 
-/**
- * `text` with every token in `tokens` replaced, as it appears inside a JSON string; longest first, so a token that
- * contains another (an old one and its refresh) leaves no remainder.
- */
-export const scrubText = (text: string, tokens: ReadonlySet<string>) => {
+/** `forms` replaced in `text`, longest first, so a form that contains another (an old token and its refresh) leaves no remainder. */
+const replaceForms = (text: string, forms: ReadonlyArray<string>) => {
   let scrubbed = text;
 
-  for (const token of Arr.sort(
-    tokens,
-    Order.mapInput(Order.Number, (token: string) => -token.length),
+  for (const form of Arr.sort(
+    Arr.filter(forms, (each) => each.length > 0),
+    Order.mapInput(Order.Number, (form: string) => -form.length),
   )) {
-    scrubbed = scrubbed.replaceAll(JSON.stringify(token).slice(1, -1), REDACTED);
+    scrubbed = scrubbed.replaceAll(form, REDACTED);
   }
 
   return scrubbed;
+};
+
+/** `token` as it appears inside a JSON string: a `"` or a `\` escaped. */
+const escapedForm = (token: string) => JSON.stringify(token).slice(1, -1);
+
+/**
+ * `text`, the text of a JSON value, with every token in `tokens` replaced as it appears inside a JSON string. Not the
+ * raw form, which could match the JSON's own structure.
+ */
+export const scrubText = (text: string, tokens: ReadonlySet<string>) =>
+  replaceForms(text, Arr.map([...tokens], escapedForm));
+
+/**
+ * `text`, a string that stands alone (a log's data), with every token in `tokens` replaced in both forms: as it is, and
+ * as it would be inside a JSON string, since a server may echo either (a value with a `"` or a `\` differs in the two).
+ */
+export const scrubRaw = (text: string, tokens: ReadonlySet<string>) =>
+  replaceForms(
+    text,
+    Arr.flatMap([...tokens], (token) => [token, escapedForm(token)]),
+  );
+
+/**
+ * `encoded`, a value as it crosses RPC, with every token in `tokens` replaced in the text of all of it: through its
+ * JSON text and back, which fails for what does not read back.
+ */
+export const scrubEncoded = <I>(
+  schema: Schema.Codec<I, I>,
+  encoded: I,
+  tokens: ReadonlySet<string>,
+) => {
+  const json = Schema.fromJsonString(schema);
+
+  return Schema.encodeEffect(json)(encoded).pipe(
+    Effect.map((text) => scrubText(text, tokens)),
+    Effect.flatMap(Schema.decodeEffect(json)),
+  );
 };
 
 /** The JSON text of `value`, with every token in `tokens` replaced. */

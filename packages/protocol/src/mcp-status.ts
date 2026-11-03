@@ -5,6 +5,7 @@
 //
 // Every answer union only gains (`docs/architecture/mcp.md` → Deploys): a state is a string and a tag this build does
 // not know reads as `Unavailable` (`readMcpServerState`, the unions' last member), never as a decode error.
+import { MCP_EXPOSURES, type McpExposure } from "@cloudpid/config";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
@@ -33,6 +34,16 @@ const isServerState = Schema.is(Schema.Literals(MCP_SERVER_STATES));
 /** `raw`, a state as it crossed the edge, as one this build knows: `unknown` for any other. */
 export const readMcpServerState = (raw: string): McpServerState =>
   isServerState(raw) ? raw : "unknown";
+
+const isExposure = Schema.is(Schema.Literals(MCP_EXPOSURES));
+
+/**
+ * `raw`, an Exposure as it crossed the edge (`McpToolView.exposure`, a string so that one a later build adds still
+ * decodes), as one this build knows (`MCP_EXPOSURES` of `@cloudpid/config`, which protocol already depends on):
+ * `unknown` for any other, never a guess at what it allows.
+ */
+export const readMcpExposure = (raw: string): McpExposure | "unknown" =>
+  isExposure(raw) ? raw : "unknown";
 
 /** Whether `state` is one the owner should look at: a failure, a sign-in, a refusal or a state this build does not know. */
 export const mcpStateIsProblem = (state: string): boolean => {
@@ -67,7 +78,11 @@ export const McpToolView = Schema.Struct({
   name: Schema.String,
   title: Schema.optionalKey(Schema.String),
   description: Schema.optionalKey(Schema.String),
-  /** `codemode`, `deferred`, `direct` or `hidden`: from the server's `exposure` and `toolExposure` (`tools.offered` not applied). */
+  /**
+   * `codemode`, `deferred`, `direct` or `hidden` (read it with `readMcpExposure`): from the server's `exposure` and
+   * `toolExposure`, and a `tools.offered` entry of the Environment's Settings that lifts it to `direct`. The Settings
+   * are the Environment's in force (its Overrides over Global's); Sessions resolve theirs the same way.
+   */
   exposure: Schema.String,
 });
 
@@ -165,7 +180,10 @@ export const McpServersView = Schema.Union([
 
 export type McpServersView = typeof McpServersView.Type;
 
-/** One server log entry, oldest first in the ring: `at` is when the engine received it; `data` is JSON text, cut and scrubbed. */
+/**
+ * One server log entry, oldest first in the ring: `at` is when the engine received it; `data` is JSON text, cut and
+ * scrubbed. The twin of `McpLogEntry` in `@cloudpid/mcp`, which protocol does not depend on: change them together.
+ */
 export const McpLogView = Schema.Struct({
   at: Schema.Finite,
   level: Schema.String,

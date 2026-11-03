@@ -1,6 +1,7 @@
+// @effect-diagnostics preferEffectArray:off
 import { MCP_LOG_DATA_MAX, MCP_LOG_RING } from "@cloudpid/mcp/types";
 import { describe, expect, it } from "vitest";
-import { callLogs, redactOf } from "./logs.ts";
+import { callLogs, secretsOf } from "./logs.ts";
 
 const collector = (tokens: ReadonlySet<string> = new Set()) => {
   let now = 0;
@@ -67,6 +68,19 @@ describe("callLogs", () => {
     expect(entry?.data).toHaveLength(MCP_LOG_DATA_MAX - 20 + "[REDACTED]".length);
   });
 
+  it("scrubs a value with a quote or a backslash in both of its forms: as a string and as JSON text", () => {
+    const odd = 'pa"ss\\word';
+    const logs = collector(new Set([odd]));
+
+    logs.hear({ level: "warning", data: `raw ${odd}` });
+    logs.hear({ level: "warning", data: { echo: odd } });
+
+    expect(logs.entries().map((entry) => entry.data)).toEqual([
+      "raw [REDACTED]",
+      '{"echo":"[REDACTED]"}',
+    ]);
+  });
+
   it("keeps nothing for data that has no JSON", () => {
     const logs = collector();
 
@@ -76,7 +90,7 @@ describe("callLogs", () => {
   });
 });
 
-describe("redactOf", () => {
+describe("secretsOf", () => {
   const target = {
     kind: "http",
     conn: "c",
@@ -84,11 +98,47 @@ describe("redactOf", () => {
     url: "https://docs.example.test/mcp",
   } as const;
 
-  it("takes the Secret values the host named, as far as four characters, and none from a target without", () => {
-    expect(redactOf({ ...target, redact: ["abcdefgh", "abcd", "abc"] })).toEqual([
+  it("takes the Secret values the host named, as far as four characters", () => {
+    expect(secretsOf({ ...target, redact: ["abcdefgh", "abcd", "abc"] })).toEqual([
       "abcdefgh",
       "abcd",
     ]);
-    expect(redactOf({ ...target, headers: { authorization: "Bearer abcdefgh" } })).toEqual([]);
+    expect(secretsOf(target)).toEqual([]);
+  });
+
+  it("takes from the headers the value, the credential after a scheme, a Basic password and a cookie's values", () => {
+    expect(
+      secretsOf({
+        ...target,
+        redact: ["named-secret"],
+        headers: {
+          authorization: "Bearer abcdefgh",
+          "proxy-authorization": `Basic ${btoa("user:pa:ss")}`,
+          cookie: 'a=one-value; b="two-value"; c=xy',
+        },
+      }),
+    ).toEqual([
+      "named-secret",
+      "Bearer abcdefgh",
+      "abcdefgh",
+      `Basic ${btoa("user:pa:ss")}`,
+      btoa("user:pa:ss"),
+      "pa:ss",
+      'a=one-value; b="two-value"; c=xy',
+      'b="two-value"; c=xy',
+      "one-value",
+      "two-value",
+    ]);
+  });
+
+  it("finds nothing in a Basic credential that is not base64, or has no password", () => {
+    expect(secretsOf({ ...target, headers: { authorization: "Basic !!!not-base64!!!" } })).toEqual([
+      "Basic !!!not-base64!!!",
+      "!!!not-base64!!!",
+    ]);
+    expect(secretsOf({ ...target, headers: { x: `Basic ${btoa("only-a-user")}` } })).toEqual([
+      `Basic ${btoa("only-a-user")}`,
+      btoa("only-a-user"),
+    ]);
   });
 });

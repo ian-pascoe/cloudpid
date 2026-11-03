@@ -49,8 +49,8 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
 import { type CallContext, type CallEnvironment, withCall } from "./call-context.ts";
-import { redactOf } from "./logs.ts";
-import { type Answer, malformed, scrubError, toEngineValue } from "./results.ts";
+import { secretsOf } from "./logs.ts";
+import { type Answer, malformed, scrubEncoded, scrubError, toEngineValue } from "./results.ts";
 import { Validators, type ValidatorsApi } from "./validators.ts";
 
 /** Discovery, and the tools listed again after a `-32020`, are the host's own work (The MCP core #394 D7). */
@@ -164,7 +164,7 @@ const runCall = Effect.fnUntraced(function* <A, R>(
         yield* annotateWire(input.target, wire?.(), call.bytes(), logs.length);
 
         if (Result.isSuccess(outcome)) {
-          return { outcome, state: call.state(), logs };
+          return { outcome, state: call.state(), logs, tokens: call.tokens };
         }
 
         // A stream made before the call failed is never returned, so its lease goes back now.
@@ -174,10 +174,11 @@ const runCall = Effect.fnUntraced(function* <A, R>(
           outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
           state: call.state(),
           logs,
+          tokens: call.tokens,
         };
       }),
     // A server may echo a header it was sent (a Secret's value) into a log, an error or a result; all are scrubbed of them.
-    { secrets: redactOf(input.target), discovering: input.discovering },
+    { secrets: secretsOf(input.target), discovering: input.discovering },
   );
 });
 
@@ -241,15 +242,28 @@ const failed = (error: McpErrorWire, state: McpEngineState): McpEngineFailed => 
   state,
 });
 
-/** `result` encoded for RPC; one that cannot be encoded (a server's odd value) fails as not MCP. */
+/**
+ * `result` encoded for RPC, with every token in `tokens` (when given) replaced in the text of all of it; one that cannot
+ * be encoded, or scrubbed whole, (a server's odd value) fails as not MCP.
+ */
 const encodeResult = <A extends { readonly state: McpEngineState }, I>(
   schema: Schema.Codec<A | McpEngineFailed, I>,
   result: A | McpEngineFailed,
-) =>
-  Schema.encodeEffect(schema)(result).pipe(
+  tokens?: ReadonlySet<string>,
+) => {
+  const encoded = Schema.encodeEffect(schema)(result);
+
+  return (
+    tokens === undefined
+      ? encoded
+      : encoded.pipe(
+          Effect.flatMap((value) => scrubEncoded(Schema.toEncoded(schema), value, tokens)),
+        )
+  ).pipe(
     Effect.catch(() => Schema.encodeEffect(schema)(failed(malformed("its answer"), result.state))),
     Effect.orDie,
   );
+};
 
 /** Discovers the server: its era, what it is, every page of its tools and prompts, and its tools' schema problems. */
 export const discover = Effect.fn("mcp.engine.discover")(function* (
@@ -260,7 +274,7 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
 ) {
   const validators = yield* Validators;
 
-  const { outcome, state, logs } = yield* runCall(
+  const { outcome, state, logs, tokens } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: false, discovering: true },
     (connection) =>
       Effect.gen(function* () {
@@ -301,11 +315,17 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
       }),
   );
 
-  return yield* encodeResult(McpEngineDiscoverResult, {
-    ...(Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state)),
-    ...logsField(logs),
-    state,
-  });
+  // Everything a discovery stores (tools, prompts, problems, instructions, the error) is scrubbed of what the call sent,
+  // as an error or a result is: a server may echo a header into any of them.
+  return yield* encodeResult(
+    McpEngineDiscoverResult,
+    {
+      ...(Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state)),
+      ...logsField(logs),
+      state,
+    },
+    tokens,
+  );
 });
 
 const isServerError = Schema.is(ServerError);

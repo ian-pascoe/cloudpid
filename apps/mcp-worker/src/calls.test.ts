@@ -2,8 +2,8 @@
  * What an engine call records in its span (`docs/architecture/mcp-connections.md` → Telemetry): the wire's counts and
  * status, the server's name and origin, and no value (header, token, URL path or query, argument, result, log).
  */
-// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off strictEffectProvide:off schemaSync:off
-import { fetchTo, modernServer } from "@cloudpid/mcp/testing";
+// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off strictEffectProvide:off schemaSync:off preferSchemaOverJson:off
+import { type FakeServer, fetchTo, modernServer } from "@cloudpid/mcp/testing";
 import { McpEngineDiscoverResult } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,13 +25,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** `discover` against a Modern server that logs the secret, with the spans it made. */
-const discovering = async (url: string) => {
-  const server = modernServer({
-    logs: [{ level: "warning", data: `rejected ${HEADER} and ${TOKEN}`, logger: "auth" }],
-  });
+/** What `discovering` varies: the server, how its `fetch` answers, and the target's headers and `redact`. */
+type Discovering = {
+  readonly server?: FakeServer;
+  readonly fetch?: (server: FakeServer) => typeof fetch;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly redact?: ReadonlyArray<string>;
+};
 
-  vi.stubGlobal("fetch", fetchTo(server));
+/** `discover` against a Modern server that logs the secret, with the spans it made. */
+const discovering = async (url: string, options: Discovering = {}) => {
+  const server =
+    options.server ??
+    modernServer({
+      logs: [{ level: "warning", data: `rejected ${HEADER} and ${TOKEN}`, logger: "auth" }],
+    });
+
+  vi.stubGlobal("fetch", options.fetch === undefined ? fetchTo(server) : options.fetch(server));
 
   const spans: Array<Tracer.NativeSpan> = [];
 
@@ -50,8 +60,8 @@ const discovering = async (url: string) => {
     conn: "conn-1",
     name: "docs",
     url,
-    headers: { authorization: HEADER },
-    redact: [SECRET],
+    headers: options.headers ?? { authorization: HEADER },
+    redact: options.redact ?? [SECRET],
   };
 
   const answer = await Effect.runPromise(
@@ -99,11 +109,109 @@ describe("an engine call's span", () => {
 
     expect(answer).toMatchObject({
       kind: "discovered",
-      logs: [
-        { level: "warning", logger: "auth", data: "rejected Bearer [REDACTED] and [REDACTED]" },
-      ],
+      logs: [{ level: "warning", logger: "auth", data: "rejected [REDACTED] and [REDACTED]" }],
     });
     expect(JSON.stringify(answer)).not.toContain(SECRET);
     expect(JSON.stringify(answer)).not.toContain(TOKEN);
+  });
+
+  const URL = "https://mcp.example.test/mcp";
+
+  it("scrubs what a literal header holds, which the host did not name: a credential, a Basic password, a cookie's values", async () => {
+    const basic = `Basic ${btoa("user:hunter2-pass")}`;
+
+    const server = modernServer({
+      logs: [
+        {
+          level: "warning",
+          data: "literal-credential-1 hunter2-pass cookie-session-9 and a plain word",
+          logger: "auth",
+        },
+      ],
+    });
+
+    const { answer } = await discovering(URL, {
+      server,
+      redact: [],
+      headers: {
+        authorization: "Bearer literal-credential-1",
+        "proxy-authorization": basic,
+        cookie: "sid=cookie-session-9; theme=ok",
+      },
+    });
+
+    expect(answer).toMatchObject({
+      kind: "discovered",
+      logs: [{ data: "[REDACTED] [REDACTED] [REDACTED] and a plain word" }],
+    });
+  });
+
+  it("scrubs a Secret with a quote or a backslash, as a string and inside a JSON log", async () => {
+    const odd = 'pa"ss\\word-0123';
+    const escaped = JSON.stringify(odd).slice(1, -1);
+
+    const server = modernServer({
+      logs: [
+        { level: "warning", data: `echo ${odd}` },
+        { level: "warning", data: { echo: odd } },
+        { level: "warning", data: `echo ${escaped}` },
+      ],
+    });
+
+    const { answer } = await discovering(URL, { server, redact: [odd], headers: {} });
+
+    if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
+
+    expect(answer.logs?.map((log) => log.data)).toEqual([
+      "echo [REDACTED]",
+      '{"echo":"[REDACTED]"}',
+      "echo [REDACTED]",
+    ]);
+    expect(JSON.stringify(answer)).not.toContain(odd);
+    expect(JSON.stringify(answer)).not.toContain(escaped);
+  });
+
+  it("scrubs the error of a discovery whose server echoes a header", async () => {
+    const failList =
+      (server: FakeServer): typeof fetch =>
+      async (input, init) => {
+        const request = new Request(input, init);
+        const body = await request.clone().text();
+
+        if (!body.includes('"tools/list"')) return fetchTo(server)(request);
+
+        return Response.json({
+          jsonrpc: "2.0",
+          id: JSON.parse(body).id,
+          error: { code: -32603, message: `denied ${HEADER}` },
+        });
+      };
+
+    const { answer } = await discovering(URL, { fetch: failList });
+
+    expect(answer.kind).toBe("failed");
+    expect(JSON.stringify(answer)).not.toContain(SECRET);
+    expect(JSON.stringify(answer)).toContain("[REDACTED]");
+  });
+
+  it("scrubs the tools, prompts and instructions a discovery stores", async () => {
+    const server = modernServer({
+      moreTools: [
+        {
+          name: "leak",
+          description: `calls with ${HEADER}`,
+          inputSchema: { type: "object", properties: { key: { description: SECRET } } },
+        },
+      ],
+    });
+
+    const { answer } = await discovering(URL, { server });
+
+    if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
+
+    expect(answer.tools.find((tool) => tool.name === "leak")?.description).toBe(
+      "calls with [REDACTED]",
+    );
+    expect(JSON.stringify(answer)).not.toContain(SECRET);
   });
 });
