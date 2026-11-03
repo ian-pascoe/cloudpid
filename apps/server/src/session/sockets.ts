@@ -23,6 +23,7 @@ import {
   type OwnerTabListing,
   type ClientMessage,
   type McpElicitationRequest,
+  type McpSignInRequest,
   type ServerMessage,
   ServerMessageJson,
   cleanPage,
@@ -35,7 +36,12 @@ import {
   type SecretsError,
 } from "@cloudpid/extensions/secrets";
 import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/extensions/approvals";
-import { McpQuestions, type McpQuestionsError } from "@cloudpid/extensions/mcp";
+import {
+  McpQuestions,
+  type McpQuestionsError,
+  McpSignIns,
+  type McpSignInsError,
+} from "@cloudpid/extensions/mcp";
 import {
   BrowserError,
   type BrowserHandoffRequest,
@@ -186,6 +192,12 @@ export const ownerTabDriversMessage = (drivers: ReadonlyArray<OwnerTabDriver>): 
 export const mcpElicitationRequests = (
   requests: ReadonlyArray<McpElicitationRequest>,
 ): ServerMessage => ({ type: "mcp_elicitation_requests", requests });
+
+/** The `mcp_sign_in_requests` message for `requests`, which every client is sent. */
+export const mcpSignInRequests = (requests: ReadonlyArray<McpSignInRequest>): ServerMessage => ({
+  type: "mcp_sign_in_requests",
+  requests,
+});
 
 /**
  * The `approval_requests` message for `requests`, which every client is sent: each request as the card shows it, without
@@ -359,6 +371,7 @@ export const sessionSocketsLayer = (
   | OwnerTabDrivers
   | Approvals
   | McpQuestions
+  | McpSignIns
   | AnnotationStore
   | ViewedStore
   | SessionReviews
@@ -379,6 +392,7 @@ export const sessionSocketsLayer = (
       const drivers = yield* OwnerTabDrivers;
       const approvals = yield* Approvals;
       const mcpQuestions = yield* McpQuestions;
+      const mcpSignIns = yield* McpSignIns;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
       const watching = new Map<WebSocket, FiberMap.FiberMap<WatchKey>>();
@@ -612,7 +626,12 @@ export const sessionSocketsLayer = (
         | OwnerTabLinks
         | OwnerTabListing
         | null,
-        SessionError | SecretsError | BrowserError | ApprovalsError | McpQuestionsError
+        | SessionError
+        | SecretsError
+        | BrowserError
+        | ApprovalsError
+        | McpQuestionsError
+        | McpSignInsError
       > => {
         switch (message.type) {
           case "tree":
@@ -824,6 +843,8 @@ export const sessionSocketsLayer = (
                   : { action: message.action },
               )
               .pipe(Effect.as(null));
+          case "mcp_sign_in_answer":
+            return mcpSignIns.decline(message.request, message.reason).pipe(Effect.as(null));
           case "annotation_save":
             return reviews.save(message.annotation).pipe(Effect.as(null));
           case "annotation_delete":
@@ -956,6 +977,10 @@ export const sessionSocketsLayer = (
         // MCP servers' questions live only as long as their calls wait; sent when none waits too, so a client clears the
         // cards it held.
         yield* send(server, mcpElicitationRequests(yield* mcpQuestions.pending));
+
+        // Sign-in requests have no deadline and survive an eviction; sent when none waits too, so a client clears the
+        // cards it held.
+        yield* send(server, mcpSignInRequests(yield* mcpSignIns.pending));
 
         // The draft Annotations, an empty list too, so a client that reconnects drops the drafts deleted meanwhile.
         yield* send(server, annotationsMessage(yield* annotations.list));

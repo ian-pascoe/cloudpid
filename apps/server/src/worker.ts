@@ -48,6 +48,7 @@ import { mcpPushes } from "./mcp/push.ts";
 import { mcpSignInManage, signInStageView } from "./mcp/sign-in-manage.ts";
 import { mcpStatus } from "./mcp/status.ts";
 import { mcpSignInCarry } from "./mcp/sign-in-carry.ts";
+import { mcpSignInSessions } from "./mcp/sign-in-sessions.ts";
 import { REGISTRY_NAME, Registry, RegistryLive } from "./registry/Registry.ts";
 import {
   legacyCleanup,
@@ -334,7 +335,10 @@ export default class Server extends Cloudflare.Worker<Server>()(
 
     // A completed MCP sign-in, and a sign-out, go to the hosts of the Environments that use it (a rebind completes a
     // sign-in, so it is carried as one).
-    const signInCarry = mcpSignInCarry({ host: (name) => mcpHosts.getByName(name) });
+    const signInCarry = mcpSignInCarry({
+      host: (name) => mcpHosts.getByName(name),
+      sessions: mcpSignInSessions({ session: (id) => sessions.getByName(id) }),
+    });
 
     // The draft composer's lookups. The listings of its `@` menu are held per isolate, as a Session holds its own, in a
     // scope that is never closed: it lives as long as the isolate.

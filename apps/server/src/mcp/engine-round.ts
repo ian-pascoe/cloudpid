@@ -212,7 +212,10 @@ export const reachServer = (
                 message: `MCP server ${server.name} needs you signed in: ${access.message}`,
                 rejected: access.state === "rejected",
               })
-            : Unreachable.make({ message: access.message }),
+            : access.state === "unavailable"
+              ? // A sign-in that cannot be used for now: a Session says "try again shortly", not "ask the owner".
+                Unreachable.make({ message: access.message, signIn: true })
+              : Unreachable.make({ message: access.message }),
         ),
       );
     }

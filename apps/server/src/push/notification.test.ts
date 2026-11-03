@@ -72,6 +72,22 @@ describe("describeEvent", () => {
     });
   });
 
+  it("asks for a sign-in with the server and the agent's reason, tagged by the sign-in's key so one Notification stands per sign-in", () => {
+    expect(
+      describeEvent(
+        {
+          kind: "input",
+          names: [],
+          signIn: { server: "sentry", reason: "I need the crash list", key: "k1" },
+        },
+        session,
+      ),
+    ).toMatchObject({
+      body: "Sign-in needed: sentry — I need the crash list",
+      tag: "0190f3a0-1111-7000-8000-000000000001:mcp-sign-in:k1",
+    });
+  });
+
   it("carries a notice a caller words, to the page it names", () => {
     expect(
       describeEvent(

@@ -200,7 +200,7 @@ describe("the callback", () => {
         { id: "env_1", name: "Work" },
         { id: "env_2", name: "Home" },
       ],
-      resolved: [],
+      resolved: [{ session: "s1", request: "signin-1" }],
       revision: 4,
     };
 
@@ -228,6 +228,7 @@ describe("the callback", () => {
           server: "sentry",
           environments: signedIn.environments,
           revision: 4,
+          resolved: [{ session: "s1", request: "signin-1" }],
         },
       ]);
     });

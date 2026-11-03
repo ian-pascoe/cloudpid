@@ -246,6 +246,7 @@ export const serveCallback = (
         server: answer.server,
         environments: answer.environments,
         revision: answer.revision,
+        resolved: answer.resolved,
       });
     }
 

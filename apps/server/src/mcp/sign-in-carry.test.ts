@@ -18,6 +18,31 @@ const change = {
 } as const;
 
 describe("mcpSignInCarry", () => {
+  it("passes the Sign-in requests a change resolved on to the Sessions, after the hosts", async () => {
+    const order: Array<string | ReadonlyArray<unknown>> = [];
+    const resolved = [{ session: "s1", request: "signin-1" }];
+
+    await Effect.runPromise(
+      mcpSignInCarry({
+        host: () => ({
+          apply: () => {
+            order.push("host");
+
+            return Effect.succeed(McpSignInsTaken.make({ servers: ["sentry"] }));
+          },
+        }),
+        sessions: {
+          carry: (told) =>
+            Effect.sync(() => {
+              order.push(told);
+            }),
+        },
+      }).carry({ ...change, resolved }),
+    );
+
+    expect(order).toEqual(["host", "host", resolved]);
+  });
+
   it("applies the change to the host of each Environment that uses the sign-in", async () => {
     const applied: Array<[string, unknown]> = [];
 

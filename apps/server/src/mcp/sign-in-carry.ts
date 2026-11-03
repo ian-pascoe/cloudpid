@@ -6,13 +6,19 @@
 // `windowOpened`, whose pull finds the sign-ins revision moved (`docs/architecture/mcp.md` → Deploys: a loud failure
 // that heals). What it logs is the Environment and the result's tag, never a token (there is none here) or the server's
 // URL.
-import { type McpApplyResult, type McpSignInChange, readMcpApplyResult } from "@cloudpid/mcp/types";
+import {
+  type McpApplyResult,
+  type McpResolvedWaiter,
+  type McpSignInChange,
+  readMcpApplyResult,
+} from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import type { McpHostMethods } from "./host.ts";
 import { mcpHostName } from "./name.ts";
+import { type McpSignInSessionCarry, noSignInSessionCarry } from "./sign-in-sessions.ts";
 
 /** How long a host is waited for: the owner's page does not wait longer for a host that is slow or gone. */
 export const CARRY_TIMEOUT = Duration.seconds(5);
@@ -30,6 +36,11 @@ export type McpSignInChangeCarried = {
   readonly server: string;
   readonly environments: ReadonlyArray<{ readonly id: string }>;
   readonly revision: number;
+  /**
+   * The Sign-in requests this change resolved (`completeMcpSignIn`'s `resolved`), which the Sessions are told of
+   * (`mcp/sign-in-sessions.ts`); only a completed sign-in has any.
+   */
+  readonly resolved?: ReadonlyArray<McpResolvedWaiter>;
 };
 
 /**
@@ -52,33 +63,38 @@ const failureText = (result: McpApplyResult): string =>
 /** A carry that reaches no host: for a Worker or a test that has none. */
 export const noSignInCarry: McpSignInCarry = { carry: () => Effect.void };
 
-/** The carry over `hosts`. */
-export const mcpSignInCarry = (hosts: McpSignInHosts): McpSignInCarry => ({
-  carry: ({ change, server, environments, revision }) =>
-    Effect.forEach(
-      Arr.map(environments, ({ id }) => id),
-      (environment) =>
-        hosts
-          .host(mcpHostName(environment))
-          .apply({ kind: "sign_ins", change, servers: [server], revision })
-          .pipe(
-            // A host that does not answer does not hold the callback page: it heals at its next `windowOpened`.
-            Effect.timeout(CARRY_TIMEOUT),
-            Effect.map(readMcpApplyResult),
-            Effect.flatMap((result) =>
-              Predicate.isTagged(result, "SignInsTaken")
-                ? Effect.void
-                : Effect.logWarning(
-                    `Environment ${environment}'s MCP host did not take a sign-in change (${failureText(result)})`,
-                  ),
-            ),
-            Effect.catchCause((cause) =>
-              Effect.logWarning(
-                `Environment ${environment}'s MCP sign-in change was not sent`,
-                cause,
+/** The carry over `hosts`, and over `sessions` for the Sign-in requests a change resolved. */
+export const mcpSignInCarry = (
+  hosts: McpSignInHosts & { readonly sessions?: McpSignInSessionCarry },
+): McpSignInCarry => ({
+  carry: ({ change, server, environments, revision, resolved }) =>
+    Effect.andThen(
+      Effect.forEach(
+        Arr.map(environments, ({ id }) => id),
+        (environment) =>
+          hosts
+            .host(mcpHostName(environment))
+            .apply({ kind: "sign_ins", change, servers: [server], revision })
+            .pipe(
+              // A host that does not answer does not hold the callback page: it heals at its next `windowOpened`.
+              Effect.timeout(CARRY_TIMEOUT),
+              Effect.map(readMcpApplyResult),
+              Effect.flatMap((result) =>
+                Predicate.isTagged(result, "SignInsTaken")
+                  ? Effect.void
+                  : Effect.logWarning(
+                      `Environment ${environment}'s MCP host did not take a sign-in change (${failureText(result)})`,
+                    ),
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning(
+                  `Environment ${environment}'s MCP sign-in change was not sent`,
+                  cause,
+                ),
               ),
             ),
-          ),
-      { discard: true, concurrency: "unbounded" },
+        { discard: true, concurrency: "unbounded" },
+      ),
+      (hosts.sessions ?? noSignInSessionCarry).carry(resolved ?? []),
     ),
 });
