@@ -215,6 +215,12 @@ export class Unreachable extends Schema.TaggedError<
   message: Schema.String,
   status: Schema.optionalKey(Schema.Int),
   stopped: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Set when the server is unreachable because its sign-in could not be used for now (the Registry could not refresh it or
+   * be asked), so a Session says so ("try again shortly") and `details.sign_in` is `unavailable`
+   * (`docs/architecture/mcp-sign-in.md` → Sign-in requests). Optional, so an edge that does not know it reads the failure as any.
+   */
+  signIn: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /**

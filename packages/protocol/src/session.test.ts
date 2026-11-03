@@ -501,4 +501,76 @@ describe("the Session socket messages", () => {
       ).pipe(Effect.option, Effect.runPromise),
     ).toEqual(Option.none());
   });
+
+  it("carry the Sign-in requests waiting for the owner: hosts, the agent's reason and why, never a URL or token", async () => {
+    const text = JSON.stringify({
+      type: "mcp_sign_in_requests",
+      requests: [
+        {
+          id: "signin-1",
+          conversationId: 1,
+          server: "sentry",
+          environment: "env_1",
+          source: { kind: "repo", slug: "acme/app" },
+          urlHost: "mcp.sentry.dev",
+          issuerHost: "auth.sentry.dev",
+          reason: "I need the issue list",
+          why: "step_up",
+          scopes: ["issues:read"],
+          problem: "The last sign-in was refused",
+          askedAt: 1_700_000_000_000,
+        },
+      ],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+    expect(await readServer('{"type":"mcp_sign_in_requests","requests":[]}')).toEqual({
+      type: "mcp_sign_in_requests",
+      requests: [],
+    });
+    // A request with no id is not one.
+    expect(
+      await Schema.decodeEffect(ServerMessageJson)(
+        '{"type":"mcp_sign_in_requests","requests":[{"conversationId":1}]}',
+      ).pipe(Effect.option, Effect.runPromise),
+    ).toEqual(Option.none());
+  });
+
+  it("read the owner's decline of a Sign-in request, with a bounded reason, and nothing else as an answer", async () => {
+    expect(
+      await readClient(
+        '{"type":"mcp_sign_in_answer","id":"c1","request":"signin-1","action":"decline"}',
+      ),
+    ).toEqual(
+      Option.some({
+        type: "mcp_sign_in_answer",
+        id: "c1",
+        request: "signin-1",
+        action: "decline",
+      }),
+    );
+    expect(
+      await readClient(
+        '{"type":"mcp_sign_in_answer","id":"c1","request":"signin-1","action":"decline","reason":"not now"}',
+      ),
+    ).toEqual(expect.objectContaining({ value: expect.objectContaining({ reason: "not now" }) }));
+
+    // Signing in is the card's link, not a command; a reason is bounded.
+    expect(
+      await readClient(
+        '{"type":"mcp_sign_in_answer","id":"c1","request":"signin-1","action":"accept"}',
+      ),
+    ).toEqual(Option.none());
+    expect(
+      await readClient(
+        JSON.stringify({
+          type: "mcp_sign_in_answer",
+          id: "c1",
+          request: "signin-1",
+          action: "decline",
+          reason: "x".repeat(301),
+        }),
+      ),
+    ).toEqual(Option.none());
+  });
 });

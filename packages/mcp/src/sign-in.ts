@@ -358,3 +358,87 @@ export const readMcpSignInCompleteAnswer = (
 /** The scopes of a space-separated list (an OAuth `scope` value), as the Registry and the host both read one. */
 export const scopesOf = (list: string | undefined): ReadonlyArray<string> =>
   Arr.filter((list ?? "").split(/\s+/), (scope) => scope !== "");
+
+// Sign-in requests (`docs/architecture/mcp-sign-in.md` → Sign-in requests) --------------------------------------------------
+
+/**
+ * `mcpSignInAsk`: a Session's Sign-in request for `server` in `environment`'s set, under its own `request` id. Asking
+ * again with the same `session` and `request` joins the waiter already kept, and re-checks the sign-in: a Session that
+ * resumes after an eviction asks this way.
+ */
+export const McpSignInAskInput = Schema.Struct({
+  environment: Schema.String,
+  server: Schema.String,
+  session: Schema.String,
+  request: Schema.String,
+});
+
+export type McpSignInAskInput = typeof McpSignInAskInput.Type;
+
+/** Where a server's definition is, as a card names it: `global`, `environment` or `repo` (then its `owner/repo`). */
+export const McpSignInSource = Schema.Struct({
+  kind: Schema.String,
+  slug: Schema.optionalKey(Schema.String),
+});
+
+export type McpSignInSource = typeof McpSignInSource.Type;
+
+/**
+ * The answer to `mcpSignInAsk`. `signed_in` and `not_applicable` (a client grant, an `Authorization` header, a stdio
+ * server) are immediate and keep no waiter. `step_up_failed` is a step-up that was completed three times and challenged
+ * again for the same scope set. `open` is a waiter kept: `first` says it is the first open one for the sign-in's key,
+ * which sends the owner the one Notification; `why` is `required`, `step_up`, `rejected` or `refresh_failing`; the rest is
+ * what the card shows. `unavailable` is a server not in the set or a store that cannot answer; `full` a store at its
+ * bound. A status this build does not know is the last member, read as `unavailable`.
+ */
+const KnownAskAnswer = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("signed_in") }),
+  Schema.Struct({ status: Schema.Literal("not_applicable"), reason: Schema.String }),
+  Schema.Struct({
+    status: Schema.Literal("step_up_failed"),
+    reason: Schema.String,
+    scopes: Schema.Array(Schema.String),
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), reason: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("full"), message: Schema.String }),
+  Schema.Struct({
+    status: Schema.Literal("open"),
+    first: Schema.Boolean,
+    /** The sign-in's key hash, which tags the Notification. */
+    key: Schema.String,
+    why: Schema.String,
+    scopes: Schema.Array(Schema.String),
+    source: McpSignInSource,
+    urlHost: Schema.String,
+    issuerHost: Schema.optionalKey(Schema.String),
+    /** The last problem the sign-in had (≤300 characters), when there is one. */
+    problem: Schema.optionalKey(Schema.String),
+  }),
+]);
+
+export const McpSignInAskAnswer = Schema.Union([
+  ...KnownAskAnswer.members,
+  Schema.Struct({ status: Schema.String }),
+]);
+
+export type McpSignInAskAnswer = typeof McpSignInAskAnswer.Type;
+
+/** The members of {@link McpSignInAskAnswer} this build knows. */
+export type McpSignInKnownAskAnswer = typeof KnownAskAnswer.Type;
+
+/** The ask's answer as this build knows it: one it does not know is `unavailable`. */
+export const readMcpSignInAskAnswer = (answer: McpSignInAskAnswer): McpSignInKnownAskAnswer =>
+  Schema.is(KnownAskAnswer)(answer)
+    ? answer
+    : {
+        status: "unavailable",
+        reason: "The Registry answered with something this build does not know",
+      };
+
+/** `mcpSignInWithdraw`: the Sign-in request `request` of `session` ended (declined or withdrawn): its waiter goes. */
+export const McpSignInWithdrawInput = Schema.Struct({
+  session: Schema.String,
+  request: Schema.String,
+});
+
+export type McpSignInWithdrawInput = typeof McpSignInWithdrawInput.Type;
