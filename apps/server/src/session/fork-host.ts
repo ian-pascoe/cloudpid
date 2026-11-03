@@ -4,6 +4,7 @@
 // the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s.
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { TodoDoc } from "@cloudpid/extensions/todo";
+import type { McpAppCopy } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc,
@@ -30,7 +31,9 @@ import {
   type ForkQuiet,
   type ForkSourceRequest,
   NO_AGENT,
+  toolResultIds,
 } from "./fork.ts";
+import type { McpAppsService } from "./mcp-apps.ts";
 import { isOwnerMessage, ownerMessageText } from "./tree.ts";
 import { type AgentPick, PICK_KEY, pickAsOf } from "./pick.ts";
 import type { SettingsKv } from "./settings.ts";
@@ -104,6 +107,8 @@ export type ForksOptions = {
   readonly pendingCompactions: () => Readonly<Record<string, string>>;
   /** What the Session picked itself. */
   readonly picked: () => AgentPick;
+  /** The Session's App records: a Fork or Clone carries those of the calls it copies (`McpAppsService`). */
+  readonly apps?: Pick<McpAppsService, "copiesFor" | "adopt"> | undefined;
   /** Runs `effect` in turn with the owner's messages, so none is admitted between a check and what follows it. */
   readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 };
@@ -246,7 +251,16 @@ export const sessionForks = (options: ForksOptions) => {
           conversation.entries(range, EXPORT_PAGE_ENTRIES, undefined, context),
         );
       }),
-      Effect.map((page) => exportPage(page.items, page.next !== undefined)),
+      Effect.map((page) => {
+        const { apps } = options;
+
+        // The records of the calls whose results the page holds go with it, so no page is larger than the RPC allows.
+        return exportPage(
+          page.items,
+          page.next !== undefined,
+          apps === undefined ? undefined : (entry) => apps.copiesFor(toolResultIds(entry)),
+        );
+      }),
     );
 
   /** Start filling this new Session as a Fork or Clone: it takes no message until `importFinish`. */
@@ -254,8 +268,11 @@ export const sessionForks = (options: ForksOptions) => {
     Effect.andThen(Effect.sync(() => kv.put(FILL_KEY, { ids: {} } satisfies Filling))),
   );
 
-  /** Append a page of the source's entries to the root conversation, renumbered. */
-  const importEntries = (entries: ReadonlyArray<EntryRecord>) =>
+  /**
+   * Append a page of the source's entries to the root conversation, renumbered, and keep the App records it carries (a
+   * source from before App records sends none) as the root conversation's.
+   */
+  const importEntries = (entries: ReadonlyArray<EntryRecord>, apps?: ReadonlyArray<McpAppCopy>) =>
     Effect.gen(function* () {
       const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
 
@@ -276,6 +293,10 @@ export const sessionForks = (options: ForksOptions) => {
           }
         }, context),
       );
+
+      if (apps !== undefined && apps.length > 0) {
+        yield* Effect.sync(() => options.apps?.adopt(apps, ROOT_CONVERSATION_ID));
+      }
 
       kv.put(FILL_KEY, {
         ids: Record.fromEntries(Arr.map([...ids], ([key, value]) => [String(key), value] as const)),

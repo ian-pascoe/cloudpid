@@ -13,10 +13,8 @@ import {
   McpApplied,
   McpHostCompleted,
   McpReloaded,
-  type McpHostPromptGet,
-  type McpHostRequest,
   type McpHostRequestHooks,
-  type McpHostResourceRequest,
+  type McpHostRequestInput,
   type McpHostRequestResult,
   type McpRequestStart,
   type McpServerInventory,
@@ -78,7 +76,7 @@ export type FakeMcpCall =
   | { readonly method: "apply"; readonly input: McpApply }
   | {
       readonly method: "request";
-      readonly input: McpHostRequest | McpHostResourceRequest | McpHostPromptGet;
+      readonly input: McpHostRequestInput;
     };
 
 /**
@@ -92,7 +90,7 @@ export type FakeMcpApplyAnswer = (
 
 /** How the fake answers a request: by default, the tool's name and its arguments as text. */
 export type FakeMcpAnswer = (
-  input: McpHostRequest | McpHostResourceRequest | McpHostPromptGet,
+  input: McpHostRequestInput,
   hooks: McpHostRequestHooks,
 ) => Promise<McpHostRequestResult | HostLost>;
 

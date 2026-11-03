@@ -1025,6 +1025,11 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         update({ viewed: message.viewed });
 
         return;
+      // The App tools and a conversation's App calls (`docs/architecture/mcp-apps.md` → Socket messages) are the App View's
+      // (#482): nothing shows them yet, and a tab that reads them as it does today keeps working.
+      case "mcp_app_tools":
+      case "mcp_apps":
+        return;
       case "events": {
         const thread = threadWatches.get(message.conversationId);
 

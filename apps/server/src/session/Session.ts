@@ -86,6 +86,7 @@ import { importWakeAt, SessionImport, sessionImportLayer } from "./import.ts";
 import { importStaging } from "./import-staging.ts";
 import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
 import { mcpHostClient, sessionMcp } from "./mcp-host.ts";
+import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import {
@@ -117,6 +118,7 @@ import { ReportError, SessionRegistry } from "./status.ts";
 import type {
   ApiResult,
   ConfigureRequest,
+  McpAppCopy,
   SessionStatusReport,
   StageImportAppend,
   StageImportBegin,
@@ -184,9 +186,10 @@ export type SessionMethods = {
   readonly exportEntries: (request: ExportRequest) => Effect.Effect<ExportPage, SessionError>;
   /** Start filling this new Session as a Fork or Clone; it takes no message until `importFinish`. */
   readonly importStart: () => Effect.Effect<void, SessionError>;
-  /** Append a page of the source's entries, renumbered. */
+  /** Append a page of the source's entries, renumbered, with the App records of the calls it holds the results of. */
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
+    apps?: ReadonlyArray<McpAppCopy>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents a Fork or Clone carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
@@ -587,8 +590,17 @@ export const SessionLive = Session.make(
           notify: notifyOwner,
         });
 
+        // The App calls' records, kept in this object's storage, and the inventory's App tools, told to every client
+        // (`./mcp-apps-store.ts`). The page of a record is the host's, asked through the MCP tools' own client.
+        const mcpApps = sessionMcpApps({
+          storage: kv,
+          sockets: state.raw,
+          html: (input) => mcpTools.appHtml(input),
+        });
+
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
         const mcpTools = sessionMcp({
+          apps: mcpApps.service,
           questions: mcpQuestions.service,
           signIns: mcpSignIns.service,
           session: name,
@@ -941,6 +953,7 @@ export const SessionLive = Session.make(
                 ),
                 reload: reloadSessionExtensions,
                 mcp: mcpTools,
+                apps: mcpApps.service,
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,
@@ -969,6 +982,8 @@ export const SessionLive = Session.make(
             ),
             // The MCP servers' questions, checked against the Secrets, which are built below.
             Layer.provideMerge(mcpQuestions.layer),
+            // The App records, redacted of the same Secrets.
+            Layer.provideMerge(mcpApps.layer),
             // The Sign-in requests, which redact the agent's words of the same Secrets.
             Layer.provideMerge(mcpSignIns.layer),
             Layer.provideMerge(sessionSecrets),
@@ -1049,7 +1064,8 @@ export const SessionLive = Session.make(
           forkSource: (request) => invoked("session.fork.source", host.forkSource(request)),
           exportEntries: (request) => invoked("session.fork.export", host.exportEntries(request)),
           importStart: () => invoked("session.fork.start", host.importStart),
-          importEntries: (entries) => invoked("session.fork.import", host.importEntries(entries)),
+          importEntries: (entries, apps) =>
+            invoked("session.fork.import", host.importEntries(entries, apps)),
           importFinish: (plan) =>
             invoked(
               "session.fork.finish",

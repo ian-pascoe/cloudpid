@@ -19,6 +19,8 @@ import {
   makeMcpTools,
   MCP_STREAM_SLOT_WAIT_MS,
   readStreamed,
+  type McpAppHtmlInput,
+  type McpAppRecorder,
   type McpHostClientService,
   type McpNotices,
   type McpQuestionsService,
@@ -28,6 +30,7 @@ import {
   type McpToolsStore,
 } from "@cloudpid/extensions/mcp";
 import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
+import type { McpAppHtmlAnswer } from "@cloudpid/protocol";
 import {
   HostFailed,
   type McpApplyResult,
@@ -259,10 +262,18 @@ export type SessionMcpOptions = {
   readonly questions?: McpQuestionsService;
   /** The Session's Sign-in requests: with them, the build registers `mcp_sign_in_ask` when the set has a server that can need one. */
   readonly signIns?: McpSignInsService;
+  /** Where the records of App calls and the inventory's App tools are kept (`./mcp-apps-store.ts`). */
+  readonly apps?: McpAppRecorder;
+};
+
+/** The Session host's MCP tools, and the page of an App record, which the sockets serve through the same host client. */
+export type SessionMcp = SessionHostMcp<never> & {
+  /** The page under an App record's `htmlHash`, through the host's `ui/html`, when it lists `app_html`. Never fails. */
+  readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
 };
 
 /** The Session host's MCP tools (`SessionHostOptions.mcp`), with one `McpTools` for the Session's Environment. */
-export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> => {
+export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   let held: { readonly environment: string; readonly tools: McpToolsService } | undefined;
 
   /** Where the notices are written, once the host's Harness is open. */
@@ -299,6 +310,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
     if (options.questions !== undefined) toolOptions.questions = options.questions;
 
     if (options.signIns !== undefined) toolOptions.signIns = options.signIns;
+
+    if (options.apps !== undefined) toolOptions.apps = options.apps;
 
     const tools = makeMcpTools(
       options.host(environment),
@@ -487,7 +500,15 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
 
   const prompts: SessionHostMcpPrompts = { session: options.session, catalog, get: getPrompt };
 
-  return { start, reinstall, bind, notify, prompts };
+  const appHtml: SessionMcp["appHtml"] = (input) =>
+    held === undefined
+      ? Effect.succeed<McpAppHtmlAnswer>({
+          status: "unsupported",
+          message: "This Session has no MCP servers",
+        })
+      : held.tools.appHtml(input);
+
+  return { start, reinstall, bind, notify, prompts, appHtml };
 };
 
 /** What a prompt get came to: the result `use` made, or why it is refused. */

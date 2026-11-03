@@ -22,6 +22,10 @@ import {
   type OwnerTabLinks,
   type OwnerTabListing,
   type ClientMessage,
+  type McpAppEntry,
+  type McpAppHtmlAnswer,
+  type McpAppMounted,
+  type McpAppTool,
   type McpElicitationRequest,
   type McpSignInRequest,
   type ServerMessage,
@@ -72,6 +76,7 @@ import { SessionRuns } from "./runs.ts";
 import { isWithdrawn, SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
+import { McpApps } from "./mcp-apps.ts";
 import { ViewedStore } from "./viewed.ts";
 
 /**
@@ -230,6 +235,19 @@ export const viewedMessage = (viewed: ReadonlyArray<ViewedFile>): ServerMessage 
   viewed,
 });
 
+/** The `mcp_app_tools` message for `tools`, which every client is sent after `hello` and whenever the inventory changes them. */
+export const mcpAppToolsMessage = (tools: ReadonlyArray<McpAppTool>): ServerMessage => ({
+  type: "mcp_app_tools",
+  tools,
+});
+
+/** The `mcp_apps` message for `conversationId`'s App calls, which each client watching it is sent. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain helper, not an Effect operator.
+export const mcpAppsMessage = (
+  conversationId: ConversationId,
+  apps: ReadonlyArray<McpAppEntry>,
+): ServerMessage => ({ type: "mcp_apps", conversationId, apps });
+
 /**
  * The agent change a `configure` asks for: a field it leaves out is left out, as is. The socket's `configure` and the MCP
  * endpoint's (`SessionMethods.configure`) share it.
@@ -374,6 +392,7 @@ export const sessionSocketsLayer = (
   | McpSignIns
   | AnnotationStore
   | ViewedStore
+  | McpApps
   | SessionReviews
 > =>
   Layer.effect(
@@ -385,6 +404,7 @@ export const sessionSocketsLayer = (
       const runs = yield* SessionRuns;
       const annotations = yield* AnnotationStore;
       const viewed = yield* ViewedStore;
+      const mcpApps = yield* McpApps;
       const reviews = yield* SessionReviews;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
@@ -424,7 +444,7 @@ export const sessionSocketsLayer = (
         Effect.gen(function* () {
           const fibers = yield* watchesOf(socket);
           const started = yield* Deferred.make<void, SessionError>();
-          let todosStarted = false;
+          let listsStarted = false;
 
           yield* setWatched(socket, conversationId, true);
           yield* host.events(conversationId).pipe(
@@ -433,11 +453,12 @@ export const sessionSocketsLayer = (
                 // After the first batch, the snapshot, so the client has the conversation before its list.
                 Effect.andThen(
                   Effect.suspend(() => {
-                    if (todosStarted) return Effect.void;
+                    if (listsStarted) return Effect.void;
 
-                    todosStarted = true;
+                    listsStarted = true;
 
                     return Effect.forkChild(streamTodos(socket, conversationId)).pipe(
+                      Effect.andThen(Effect.forkChild(streamMcpApps(socket, conversationId))),
                       Effect.asVoid,
                     );
                   }),
@@ -481,6 +502,17 @@ export const sessionSocketsLayer = (
               ),
             ),
           ),
+        );
+
+      /**
+       * Stream `conversationId`'s App calls to `socket`, as its Todo List is (`mcp_apps`): the list now, and again each time
+       * a record is kept, evicted or copied. A child of the conversation's watch, so it ends with it; one that fails is
+       * logged, and the client keeps the last list it was sent.
+       */
+      const streamMcpApps = (socket: WebSocket, conversationId: ConversationId) =>
+        mcpApps.updates(conversationId).pipe(
+          Stream.runForEach((apps) => send(socket, mcpAppsMessage(conversationId, apps))),
+          Effect.catchCause((cause) => Effect.logWarning("App calls watch ended", cause)),
         );
 
       /**
@@ -625,6 +657,8 @@ export const sessionSocketsLayer = (
         | LiveViewLinks
         | OwnerTabLinks
         | OwnerTabListing
+        | McpAppMounted
+        | McpAppHtmlAnswer
         | null,
         | SessionError
         | SecretsError
@@ -882,6 +916,10 @@ export const sessionSocketsLayer = (
             return reviews.save(message.annotation).pipe(Effect.as(null));
           case "annotation_delete":
             return annotations.delete(message.annotationId).pipe(Effect.as(null));
+          case "mcp_app_mount":
+            return mcpApps.mount(message.callId);
+          case "mcp_app_html":
+            return mcpApps.html(message.hash);
           case "viewed_set":
             return viewed
               .set({ repo: message.repo, pull: message.pull, path: message.path }, message.blob)
@@ -1027,6 +1065,9 @@ export const sessionSocketsLayer = (
 
         // The Viewed boxes, an empty list too, for the same reason.
         yield* send(server, viewedMessage(yield* viewed.list));
+
+        // The inventory's App tools, an empty list too, so a client that reconnects drops one a server no longer has.
+        yield* send(server, mcpAppToolsMessage(yield* mcpApps.tools));
 
         // Where the Last run stands, null too, so a client that reconnects drops one that was replaced meanwhile.
         yield* send(server, { type: "last_run", lastRun: yield* runs.lastRun });

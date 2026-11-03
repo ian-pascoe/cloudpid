@@ -54,6 +54,7 @@ import {
   looksLikeMcpPromptCommand,
   promptArguments,
   promptArgumentsProblem,
+  type McpAppCopy,
   SessionVia,
   clampPage,
   pageBlock,
@@ -170,6 +171,7 @@ import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
 import { type NavigateRequest, sessionBranches } from "./branches.ts";
 import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
+import type { McpAppsService } from "./mcp-apps.ts";
 import { admissionLines } from "./admission.ts";
 import { fillingRefusal, sessionForks } from "./fork-host.ts";
 import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
@@ -422,6 +424,11 @@ export type SessionHostOptions<R = never> = {
    */
   readonly mcp?: SessionHostMcp<R> | undefined;
   /**
+   * The Session's App records (`docs/architecture/mcp-apps.md` → App records): a Fork or Clone carries those of the calls
+   * it copies, a page of entries at a time.
+   */
+  readonly apps?: Pick<McpAppsService, "copiesFor" | "adopt"> | undefined;
+  /**
    * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
    * this is undefined too.
    */
@@ -613,9 +620,10 @@ export type SessionHostService = {
   readonly exportEntries: (request: ExportRequest) => Effect.Effect<ExportPage, SessionError>;
   /** Start filling this new Session as a Fork or Clone: it takes no message until `importFinish`. */
   readonly importStart: Effect.Effect<void, SessionError>;
-  /** Append a page of the source's entries to the root conversation, renumbered. */
+  /** Append a page of the source's entries to the root conversation, renumbered, and keep the App records it carries. */
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
+    apps?: ReadonlyArray<McpAppCopy>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents the plan carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
@@ -1137,6 +1145,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     inspect,
     pendingCompactions,
     picked,
+    apps: options.apps,
     inArrivalOrder,
   });
 

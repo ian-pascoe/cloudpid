@@ -6,7 +6,7 @@
 // the agent as of the point.
 import type { ContextState } from "@cloudpid/extensions/context";
 import type { TodoState } from "@cloudpid/extensions/todo";
-import type { TreePoint } from "@cloudpid/protocol";
+import type { McpAppCopy, TreePoint } from "@cloudpid/protocol";
 import type {
   AgentState,
   ContextEdit,
@@ -15,6 +15,7 @@ import type {
   EntryId,
   EntryRecord,
 } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type { AgentPick } from "./pick.ts";
 
@@ -62,35 +63,58 @@ export type ExportRequest = {
   readonly after: number | null;
 };
 
-/** One page of the entries a Fork copies, oldest first, and the entry the next page starts after (null: the last). */
+/**
+ * One page of the entries a Fork copies, oldest first, and the entry the next page starts after (null: the last), and the
+ * App records (and stubs) of the calls those entries hold the results of (`apps`; absent when there are none, or from a
+ * Session before App records: a page only ever gains).
+ */
 export type ExportPage = {
   readonly entries: ReadonlyArray<EntryRecord>;
   readonly next: number | null;
+  readonly apps?: ReadonlyArray<McpAppCopy>;
 };
 
+/** The IDs of the tool calls whose results `entry` holds: the calls it copies, and the `codemode` calls that nested ones belong to. */
+export const toolResultIds = (entry: EntryRecord): ReadonlyArray<string> =>
+  Arr.flatMap(entry.model ?? [], (message) =>
+    message.role === "toolResult" ? [message.toolCallId] : [],
+  );
+
+/** What a copy of the entries carries of each: the App records of the calls whose results it holds (`McpAppsService.copiesFor`). */
+export type AppCopier = (entry: EntryRecord) => ReadonlyArray<McpAppCopy>;
+
 /**
- * `entries` cut to a page: as many as fit in `MAX_COPY_PAGE_SIZE` (always one), and where the next page starts, or null
- * when they are all of what is left (`more` false) and all fit.
+ * `entries` cut to a page: as many as fit in `MAX_COPY_PAGE_SIZE` (always one), counting the App records they carry
+ * (`appsOf`: the records of the calls an entry holds the results of), and where the next page starts, or null when they are
+ * all of what is left (`more` false) and all fit.
  */
-export const exportPage = (entries: ReadonlyArray<EntryRecord>, more: boolean): ExportPage => {
+export const exportPage = (
+  entries: ReadonlyArray<EntryRecord>,
+  more: boolean,
+  appsOf?: AppCopier,
+): ExportPage => {
   const kept: EntryRecord[] = [];
+  const apps: McpAppCopy[] = [];
   let size = 0;
 
   for (const entry of entries) {
-    const length = JSON.stringify(entry).length;
+    const copies = appsOf === undefined ? [] : appsOf(entry);
+
+    const length =
+      JSON.stringify(entry).length +
+      Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length);
 
     if (kept.length > 0 && size + length > MAX_COPY_PAGE_SIZE) break;
 
     kept.push(entry);
+    apps.push(...copies);
     size += length;
   }
 
   const last = kept.at(-1);
+  const next = last === undefined || (!more && kept.length === entries.length) ? null : last.id;
 
-  return {
-    entries: kept,
-    next: last === undefined || (!more && kept.length === entries.length) ? null : last.id,
-  };
+  return apps.length === 0 ? { entries: kept, next } : { entries: kept, next, apps };
 };
 
 /** The source Session's side of filling a Fork or Clone. */
@@ -101,7 +125,10 @@ export type FillSource<E, R> = {
 /** The new Session's side of filling it. */
 export type FillTarget<E, R> = {
   readonly importStart: Effect.Effect<void, E, R>;
-  readonly importEntries: (entries: ReadonlyArray<EntryRecord>) => Effect.Effect<void, E, R>;
+  readonly importEntries: (
+    entries: ReadonlyArray<EntryRecord>,
+    apps?: ReadonlyArray<McpAppCopy>,
+  ) => Effect.Effect<void, E, R>;
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, E, R>;
 };
 
@@ -127,7 +154,7 @@ export const fillSession = <E, R>(
           after,
         });
 
-        yield* target.importEntries(page.entries);
+        yield* target.importEntries(page.entries, page.apps);
         after = page.next;
       } while (after !== null);
     }

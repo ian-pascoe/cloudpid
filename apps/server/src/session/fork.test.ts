@@ -1,7 +1,8 @@
 // @effect-diagnostics preferEffectArray:off -- plain arrays of fixtures.
 import type { AgentState, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import { copiedDraft, copyAgent, exportPage, MAX_COPY_PAGE_SIZE } from "./fork.ts";
+import type { McpAppCopy } from "@cloudpid/protocol";
+import { copiedDraft, copyAgent, exportPage, MAX_COPY_PAGE_SIZE, toolResultIds } from "./fork.ts";
 
 type FixtureValue =
   | string
@@ -42,6 +43,70 @@ describe("a page of the entries a Fork copies", () => {
 
     expect(huge.entries).toHaveLength(1);
     expect(huge.next).toBeNull();
+  });
+});
+
+/** An entry that holds the result of tool call `callId`. */
+const result = (id: number, callId: string) =>
+  asEntry({
+    id,
+    kind: "pi.tool_result",
+    model: [
+      {
+        role: "toolResult",
+        toolCallId: callId,
+        toolName: "mcp__docs__app",
+        content: [],
+      },
+    ],
+  });
+
+/** A stub, which a copy carries as it is. */
+const stubOf = (callId: string): McpAppCopy => ({
+  kind: "stub",
+  stub: { callId, server: "docs", tool: "app", conversation: "1" },
+});
+
+describe("the App records a page of a Fork carries", () => {
+  it("names the tool calls whose results an entry holds", () => {
+    expect(toolResultIds(result(1, "call-1"))).toEqual(["call-1"]);
+    expect(toolResultIds(entry(2))).toEqual([]);
+  });
+
+  it("holds the copies of the calls its entries have results of, and none when there are none", () => {
+    const appsOf = (each: EntryRecord) => toolResultIds(each).map((callId) => stubOf(callId));
+
+    const page = exportPage([entry(1), result(2, "call-2"), result(3, "call-3")], false, appsOf);
+
+    expect(page.apps).toEqual([stubOf("call-2"), stubOf("call-3")]);
+    expect(page.entries).toHaveLength(3);
+    // A page of calls that have no records has no `apps` at all, as one from a Session before App records.
+    expect(exportPage([entry(1)], false, appsOf)).toEqual({ entries: [entry(1)], next: null });
+  });
+
+  it("counts the copies in the page's size, so a page of large records is cut, and its copies go with its entries", () => {
+    const large = (callId: string): McpAppCopy => ({
+      kind: "record",
+      record: {
+        callId,
+        server: "docs",
+        tool: "app",
+        conversation: "1",
+        arguments: {},
+        result: { text: "z".repeat(MAX_COPY_PAGE_SIZE / 2) },
+        audit: [],
+        at: 1,
+      },
+    });
+
+    const appsOf = (each: EntryRecord) => toolResultIds(each).map(large);
+
+    const page = exportPage([result(1, "a"), result(2, "b"), result(3, "c")], false, appsOf);
+
+    expect(page.entries.map((each) => each.id)).toEqual([1]);
+    expect(page.next).toBe(1);
+    expect(page.apps).toHaveLength(1);
+    expect(page.apps?.[0]).toMatchObject({ kind: "record", record: { callId: "a" } });
   });
 });
 
