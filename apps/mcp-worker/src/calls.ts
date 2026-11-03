@@ -578,7 +578,13 @@ const runToolCall = Effect.fnUntraced(function* (
   return completed;
 });
 
-type TaskOp = McpEngineRequest & { readonly op: "tasks/get" | "tasks/update" | "tasks/cancel" };
+type TaskOp = Extract<
+  McpEngineRequest,
+  { readonly op: "tasks/get" | "tasks/update" | "tasks/cancel" }
+>;
+
+/** Whether `req` is for an MCP task: its `op`s share the `tasks/` prefix. */
+const isTaskRequest = (req: McpEngineRequest): req is TaskOp => req.op.startsWith("tasks/");
 
 /**
  * Runs a `tasks/*` request on the connection's task wire. A completed task's result is checked against the tool's
@@ -673,10 +679,6 @@ const runList = Effect.fnUntraced(function* (
   return completed;
 });
 
-/** Whether `req` only reads: a list, or a `tasks/get`. */
-const isRead = (req: McpEngineRequest) =>
-  req.op !== "tools/call" && req.op !== "tasks/update" && req.op !== "tasks/cancel";
-
 /**
  * Runs one request: a `tools/call`, a `tasks/*` request on the MCP task wire, or a list walked to its end. An `op` this
  * engine does not know is `Unsupported`.
@@ -701,20 +703,20 @@ export const request = Effect.fn("mcp.engine.request")(function* (
   const req = decoded.value;
 
   const { outcome, state, logs, spawn } = yield* runCall(
-    // Anything that changes or may have started something may have run when the caller aborts: a call, an update, a cancel.
-    { target, prior, hooks, env, mayHaveRun: !isRead(req) },
-    (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> => {
-      switch (req.op) {
-        case "tools/call":
-          return runToolCall(connection, context, req, env, validators, bridge);
-        case "tasks/get":
-        case "tasks/update":
-        case "tasks/cancel":
-          return runTaskOp(connection, context, req, env, validators);
-        default:
-          return runList(connection, context, req, env, validators);
-      }
+    // A call, an update and a cancel may have run when the caller aborts; a `tasks/get` and a list only read.
+    {
+      target,
+      prior,
+      hooks,
+      env,
+      mayHaveRun: req.op === "tools/call" || (isTaskRequest(req) && req.op !== "tasks/get"),
     },
+    (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
+      req.op === "tools/call"
+        ? runToolCall(connection, context, req, env, validators, bridge)
+        : isTaskRequest(req)
+          ? runTaskOp(connection, context, req, env, validators)
+          : runList(connection, context, req, env, validators),
   );
 
   const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);

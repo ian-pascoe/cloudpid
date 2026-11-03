@@ -9,6 +9,7 @@
  * (`docs/architecture/mcp-connections.md` → Storage), `McpEngine`'s RPC, `McpEngineMethods`
  * (`docs/architecture/mcp-connections.md` → The engine), and the host's own RPC (`./host.ts`).
  */
+import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -551,6 +552,9 @@ export const MCP_CONNECT_TIMEOUT_MS = 15_000;
 /** The core's bound on walking every page of a list (#394 D15). */
 export const MCP_LIST_WALK_TIMEOUT_MS = 120_000;
 
+/** What a `tasks/*` request may take, in the core and at the host: 30 s each (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions). */
+export const MCP_TASK_TIMEOUT_MS = 30_000;
+
 /**
  * A discovery (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory): what the server is, every
  * page of its tools and prompts, and the tools whose output schema could not be compiled. The inventory's bounds,
@@ -889,6 +893,23 @@ export const McpHostRequest = Schema.Union([
 ]);
 
 export type McpHostRequest = typeof McpHostRequest.Type;
+
+/** The `op`s `request` takes, read from its union: the one list the host's allowlist and its routing come from. */
+const MCP_HOST_REQUEST_OPS: ReadonlyArray<string> = Arr.map(
+  McpHostRequest.members,
+  (member) => member.fields.op.literal,
+);
+
+/** Whether `op` is one `request` takes; any other is `HostUnsupported`, an `op` a later build sends. */
+export const isMcpHostRequestOp = (op: string) => MCP_HOST_REQUEST_OPS.includes(op);
+
+/** A `tasks/*` request: everything `request` takes besides a `tools/call`. */
+export const isMcpHostTaskRequest = (
+  call: McpHostRequest,
+): call is Exclude<McpHostRequest, McpHostToolCall> => call.op !== "tools/call";
+
+/** What a failure for an MCP task the request did not ask for says, in the core and at the host. */
+export const MCP_UNASKED_TASK_MESSAGE = "The server started an MCP task that was not asked for";
 
 /**
  * The callbacks a Session's request carries, passed as RPC stubs that live as long as its invocation, so the Session

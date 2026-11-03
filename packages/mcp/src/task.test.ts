@@ -14,7 +14,9 @@ import {
   modernTaskServer,
   REPORT_TOOL,
   rpcMethods,
+  sse,
   type FakeServer,
+  type RpcBody,
   TASKS_EXTENSION,
 } from "./fakes.fixture.ts";
 import { connect, type McpConnection } from "./index.ts";
@@ -30,10 +32,12 @@ import {
   TARGET,
 } from "./core.fixture.ts";
 import {
+  Cut,
   MCP_LARGE_RESULT_BYTES,
   type McpCallContext,
   type McpError,
   NotFound,
+  ProtocolViolation,
   ServerError,
   TooLarge,
   Unsupported,
@@ -312,5 +316,205 @@ describe("the 16 MiB limits", () => {
     );
 
     expect(result).toEqual(failedWith(TooLarge));
+  });
+});
+
+/**
+ * `base`, except that its first `times` requests for `method` are cut: the connection breaks, or (`streamed`) the answer's
+ * stream ends before its answer arrives.
+ */
+const cutting = (base: FakeServer, method: string, times: number, streamed = false) => {
+  let cut = 0;
+
+  return hostileServer(base, (_request, rpc) => {
+    if (rpc?.method !== method || cut >= times) return undefined;
+
+    cut += 1;
+
+    if (streamed) {
+      return sse([
+        { jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "x" } },
+      ]);
+    }
+
+    throw new TypeError("network connection lost");
+  });
+};
+
+describe("a tasks/* request cut before its answer", () => {
+  it("sends tasks/get once more, as a read", async () => {
+    const base = modernTaskServer();
+    const server = cutting(base, "tasks/get", 1, true);
+
+    const state = await withConnection(server, (connection) =>
+      Effect.gen(function* () {
+        const id = yield* taskOf(connection, {});
+
+        return yield* connection.task.get(id, TASKING);
+      }),
+    );
+
+    expect(state.task.status).toBe("completed");
+    expect(rpcMethods(server).filter((method) => method === "tasks/get")).toHaveLength(2);
+  });
+
+  it("sends tasks/update and tasks/cancel once more, though the first may have run", async () => {
+    const base = modernTaskServer();
+    const server = cutting(cutting(base, "tasks/update", 1), "tasks/cancel", 1);
+
+    await withConnection(server, (connection) =>
+      Effect.gen(function* () {
+        const asking = yield* taskOf(connection, { ask: true });
+        const slow = yield* taskOf(connection, { polls: 5 });
+
+        yield* connection.task.update(asking, { which: { action: "accept" } }, TASKING);
+        yield* connection.task.cancel(slow, TASKING);
+      }),
+    );
+
+    expect(rpcMethods(server).filter((method) => method === "tasks/update")).toHaveLength(2);
+    expect(rpcMethods(server).filter((method) => method === "tasks/cancel")).toHaveLength(2);
+    expect(base.tasks.get("task-2")?.status).toBe("cancelled");
+  });
+
+  it("fails a cancel cut twice as a cut that may have run, after one resend only", async () => {
+    const server = cutting(modernTaskServer(), "tasks/cancel", 5);
+
+    const failed = await withConnection(server, (connection) =>
+      Effect.gen(function* () {
+        const id = yield* taskOf(connection, { polls: 5 });
+
+        return yield* settled(connection.task.cancel(id, TASKING));
+      }),
+    );
+
+    expect(failed).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(rpcMethods(server).filter((method) => method === "tasks/cancel")).toHaveLength(2);
+  });
+
+  it("fails a tasks/get cut twice as a cut that did not run, after one resend only", async () => {
+    const server = cutting(modernTaskServer(), "tasks/get", 5, true);
+
+    const failed = await withConnection(server, (connection) =>
+      Effect.gen(function* () {
+        const id = yield* taskOf(connection, {});
+
+        return yield* settled(connection.task.get(id, TASKING));
+      }),
+    );
+
+    expect(failed).toEqual(failedWith(Cut, { mayHaveRun: false }));
+    expect(rpcMethods(server).filter((method) => method === "tasks/get")).toHaveLength(2);
+  });
+
+  it("never sends a tools/call that may have run once more", async () => {
+    const server = cutting(modernTaskServer(), "tools/call", 5);
+
+    const failed = await withConnection(server, (connection) =>
+      settled(report(connection, { region: "eu" })),
+    );
+
+    expect(failed).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(1);
+  });
+});
+
+/**
+ * A server that answers as `first` until its next `method` request, which gets a 405 (a Modern era drop) and is
+ * followed by `then`, as a server downgraded or redeployed without the extension does.
+ */
+const replacedAt = (method: string, first: FakeServer, then: FakeServer) => {
+  let active = first;
+
+  const server = hostileServer(
+    { handle: (request) => active.handle(request), received: [] },
+    (_request, rpc: RpcBody | undefined) => {
+      if (rpc?.method !== method || active !== first) return undefined;
+
+      active = then;
+
+      return new Response(null, { status: 405 });
+    },
+  );
+
+  return server;
+};
+
+describe("a request after the server's era dropped", () => {
+  it("fails a tasks/* request as unsupported, sending none to a server that is Legacy now", async () => {
+    const legacy = legacyStatelessServer({ moreTools: [REPORT_TOOL] });
+    const server = replacedAt("tasks/get", modernTaskServer(), legacy);
+
+    const failed = await withConnection(server, (connection) =>
+      Effect.gen(function* () {
+        const id = yield* taskOf(connection, {});
+
+        return yield* settled(connection.task.get(id, TASKING));
+      }),
+    );
+
+    expect(failed).toEqual(failedWith(Unsupported, { message: expect.stringContaining("Legacy") }));
+    expect(rpcMethods(legacy)).not.toContain("tasks/get");
+  });
+
+  it("fails a tasks/* request as unsupported when the server is Modern but no longer advertises the extension", async () => {
+    const after = modernTaskServer({ unadvertised: true });
+    const server = replacedAt("tasks/cancel", modernTaskServer(), after);
+
+    const failed = await withConnection(server, (connection) =>
+      Effect.gen(function* () {
+        const id = yield* taskOf(connection, { polls: 5 });
+
+        return yield* settled(connection.task.cancel(id, TASKING));
+      }),
+    );
+
+    expect(failed).toEqual(
+      failedWith(Unsupported, { message: expect.stringContaining("no longer advertises") }),
+    );
+    expect(rpcMethods(after)).not.toContain("tasks/cancel");
+  });
+
+  it("sends a tools/call again to a server that is Legacy now without declaring the extension", async () => {
+    const legacy = legacyStatelessServer({ moreTools: [REPORT_TOOL] });
+    const server = replacedAt("tools/call", modernTaskServer(), legacy);
+
+    const outcome = await withConnection(server, (connection) =>
+      report(connection, { text: "again" }),
+    );
+
+    expect(outcome.kind).toBe("complete");
+    expect(rpcMethods(legacy)).toContain("tools/call");
+    expect(JSON.stringify(legacy.received.map((received) => received.rpc))).not.toContain(
+      TASKS_EXTENSION,
+    );
+  });
+
+  it("sends a tools/call again to a Modern server that no longer advertises the extension without declaring it", async () => {
+    const after = modernTaskServer({ unadvertised: true });
+    const server = replacedAt("tools/call", modernTaskServer(), after);
+
+    const outcome = await withConnection(server, (connection) =>
+      report(connection, { region: "eu" }),
+    );
+
+    expect(completed(outcome).value.content).toEqual([{ type: "text", text: "report:eu" }]);
+    expect(after.declared).toEqual([{ method: "tools/call", tasks: false }]);
+    expect(after.tasks.size).toBe(0);
+  });
+});
+
+describe("a task the request did not ask for", () => {
+  it("is a protocol violation on the client's own path, and the caller never gets the task", async () => {
+    const server = modernTaskServer({ alwaysTask: true });
+
+    const failed = await withConnection(server, (connection) =>
+      settled(report(connection, { region: "eu" }, AGENT)),
+    );
+
+    expect(failed).toEqual(
+      failedWith(ProtocolViolation, { message: expect.stringContaining("not asked for") }),
+    );
+    expect(server.declared).toEqual([{ method: "tools/call", tasks: false }]);
   });
 });

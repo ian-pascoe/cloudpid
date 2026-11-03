@@ -33,6 +33,7 @@ import {
   Cut,
   MCP_TASKS_EXTENSION,
   type McpAuthChallenge,
+  MCP_UNASKED_TASK_MESSAGE,
   McpError,
   NotFound,
   ProtocolViolation,
@@ -253,6 +254,8 @@ const fromCode = (
   return ServerError.make({ message, code });
 };
 
+const decodeResultType = Schema.decodeUnknownOption(Schema.Struct({ resultType: Schema.String }));
+
 const fromSdk = (error: SdkError, request: FailedRequest): McpError | undefined => {
   switch (error.code) {
     case SdkErrorCode.RequestTimeout:
@@ -266,6 +269,10 @@ const fromSdk = (error: SdkError, request: FailedRequest): McpError | undefined 
     case SdkErrorCode.ClientHttpUnexpectedContent:
       return ProtocolViolation.make({ message: `Not an MCP server: ${error.message}` });
     case SdkErrorCode.UnsupportedResultType:
+      // A task the request did not declare the extension for: the server broke the protocol (as the host reads it).
+      return Option.exists(decodeResultType(error.data), ({ resultType }) => resultType === "task")
+        ? ProtocolViolation.make({ message: MCP_UNASKED_TASK_MESSAGE })
+        : Unsupported.make({ message: error.message });
     case SdkErrorCode.CapabilityNotSupported:
     case SdkErrorCode.MethodNotSupportedByProtocolVersion:
       return Unsupported.make({ message: error.message });

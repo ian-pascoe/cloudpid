@@ -12,10 +12,12 @@ import type {
   McpHostRequest,
   McpSetEntry,
 } from "@cloudpid/mcp/types";
+import { MCP_UNASKED_TASK_MESSAGE } from "@cloudpid/mcp/types";
+import { modernTaskServer, REPORT_TOOL } from "@cloudpid/mcp/testing";
 import { env } from "cloudflare:workers";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 
 declare global {
@@ -82,10 +84,14 @@ const completed = (text: string): typeof McpEngineRequestResult.Encoded => ({
 });
 
 /** A `tools/call` of `tool` on `server`, as a Session sends it. */
-const call = (server: string, tool: string): typeof McpHostRequest.Encoded => ({
+const call = (
+  server: string,
+  tool: string,
+  args: Readonly<Record<string, Schema.Json>> = { q: "x" },
+): typeof McpHostRequest.Encoded => ({
   op: "tools/call",
   server,
-  params: { name: tool, arguments: { q: "x" } },
+  params: { name: tool, arguments: args },
   ctx: {
     origin: "agent",
     callId: "call-1",
@@ -309,15 +315,25 @@ const started = (): typeof McpEngineRequestResult.Encoded => ({
 const taskOp = (
   op: "tasks/get" | "tasks/update" | "tasks/cancel",
   server: string,
-  conn = `conn-${server}`,
-  ctx: typeof McpHostRequest.Encoded.ctx = call(server, "search").ctx,
+  over: {
+    readonly conn?: string;
+    readonly taskId?: string;
+    readonly tool?: string;
+    readonly inputResponses?: Readonly<Record<string, Schema.Json>>;
+  } = {},
 ): typeof McpHostRequest.Encoded => {
-  const params = { taskId: "task-1", tool: "search", conn };
+  const params = {
+    taskId: over.taskId ?? "task-1",
+    tool: over.tool ?? "search",
+    conn: over.conn ?? `conn-${server}`,
+  };
+
+  const { ctx } = call(server, "search");
 
   // SAFETY: each `op` with the params it takes, encoded.
   return (
     op === "tasks/update"
-      ? { op, server, params: { ...params, inputResponses: {} }, ctx }
+      ? { op, server, params: { ...params, inputResponses: over.inputResponses ?? {} }, ctx }
       : { op, server, params, ctx }
   ) as typeof McpHostRequest.Encoded;
 };
@@ -431,7 +447,7 @@ describe("an MCP task", () => {
   it("answers ServerChanged, sending nothing, when the server's conn is not the one the task started on", async () => {
     const host = await discovered(["search"], entry("docs"));
 
-    expect(await host.request(taskOp("tasks/get", "docs", "conn-old"), {})).toEqual({
+    expect(await host.request(taskOp("tasks/get", "docs", { conn: "conn-old" }), {})).toEqual({
       _tag: "ServerChanged",
       message: expect.stringContaining("changed"),
       conn: "conn-docs",
@@ -460,6 +476,128 @@ describe("an MCP task", () => {
 
     expect(await tagOf(host, bare)).toBe("NotAllowed");
     expect(await tagOf(host, taskOp("tasks/get", "nowhere"))).toBe("UnknownServer");
+  });
+});
+
+/** What the engine answered `call` with, when it did not answer what the call asked for. */
+const taskAnswers = {
+  task: started(),
+  state: {
+    kind: "task_state",
+    task: { ...CREATED, status: "working" },
+    fetchedAt: Date.now(),
+    state: {},
+  },
+  ack: { kind: "task_ack", state: {} },
+} satisfies Record<string, typeof McpEngineRequestResult.Encoded>;
+
+describe("an engine answer that is not what the request asked for", () => {
+  const MISMATCHES = [
+    ["tools/call", "task_state", taskAnswers.state],
+    ["tools/call", "task_ack", taskAnswers.ack],
+    ["tasks/get", "complete", completed("late")],
+    ["tasks/get", "task", taskAnswers.task],
+    ["tasks/get", "task_ack", taskAnswers.ack],
+    ["tasks/update", "complete", completed("late")],
+    ["tasks/update", "task_state", taskAnswers.state],
+    ["tasks/cancel", "task", taskAnswers.task],
+    ["tasks/cancel", "task_state", taskAnswers.state],
+  ] as const;
+
+  it.each(MISMATCHES)(
+    "fails %s answered with %s as a protocol violation",
+    async (op, _kind, answer) => {
+      const host = await discovered(["search"], entry("docs"));
+
+      await host.scriptRequest(urlOf("docs"), [{ result: answer }]);
+
+      const input = op === "tools/call" ? call("docs", "search") : taskOp(op, "docs");
+
+      expect(await host.request(input, {})).toMatchObject({
+        _tag: "CallFailed",
+        error: { _tag: "ProtocolViolation" },
+      });
+    },
+  );
+
+  it("names a task that was not asked for the same in the host as in the core", async () => {
+    const host = await discovered(["search"], entry("docs"));
+
+    await host.scriptRequest(urlOf("docs"), [{ result: started() }]);
+
+    expect(await host.request(call("docs", "search"), {})).toMatchObject({
+      error: { message: MCP_UNASKED_TASK_MESSAGE },
+    });
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("an MCP task through the real engine", () => {
+  it("starts, is read, updated and cancelled over a fake Modern task server, and a call without allowTask gets the result", async () => {
+    const server = modernTaskServer();
+
+    // Every outbound `fetch` of the test Worker, the engine's included, reaches the fake server.
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+      server.handle(new Request(input, init)),
+    );
+
+    const host = freshHost();
+
+    await host.useRealEngine();
+    await host.apply(setOf(entry("docs")));
+    await host.requestStart({
+      caller: { session: "s-1", conversation: "1", workspace: "ws:w-1" },
+      waitFor: ["docs"],
+      waitMs: 10_000,
+    });
+
+    const report = (
+      args: Readonly<Record<string, Schema.Json>>,
+      ctx: Partial<typeof McpHostRequest.Encoded.ctx>,
+    ) => withCtx(call("docs", REPORT_TOOL.name, args), ctx);
+
+    const plain = await host.request(report({ region: "eu" }, {}), {});
+
+    expect(plain).toMatchObject({ _tag: "Completed", result: { kind: "inline" } });
+    expect(server.tasks.size).toBe(0);
+
+    const made = await host.request(report({ region: "eu", ask: true }, { allowTask: true }), {});
+
+    expect(made).toMatchObject({
+      _tag: "Task",
+      task: { taskId: "task-1", status: "input_required" },
+      conn: "conn-docs",
+      identity: "identity-docs",
+    });
+    expect(server.declared.at(-1)).toEqual({ method: "tools/call", tasks: true });
+
+    const asked = { tool: "report" };
+
+    expect(
+      await host.request(
+        taskOp("tasks/update", "docs", {
+          ...asked,
+          inputResponses: { which: { action: "accept", content: { region: "eu" } } },
+        }),
+        {},
+      ),
+    ).toMatchObject({ _tag: "TaskAck" });
+    expect(await host.request(taskOp("tasks/get", "docs", asked), {})).toMatchObject({
+      _tag: "TaskState",
+      task: { status: "completed" },
+      result: { kind: "inline", value: { content: [{ type: "text", text: "report:eu" }] } },
+    });
+
+    const second = await host.request(report({ region: "eu", polls: 9 }, { allowTask: true }), {});
+
+    expect(second).toMatchObject({ _tag: "Task", task: { taskId: "task-2" } });
+    expect(
+      await host.request(taskOp("tasks/cancel", "docs", { ...asked, taskId: "task-2" }), {}),
+    ).toMatchObject({ _tag: "TaskAck" });
+    expect(server.tasks.get("task-2")?.status).toBe("cancelled");
   });
 });
 

@@ -497,6 +497,8 @@ export interface TaskServerOptions extends FakeOptions {
   readonly requireTask?: boolean;
   /** Do not advertise the extension. */
   readonly unadvertised?: boolean;
+  /** Answer a `report` call with a task even to a client that did not declare the extension, as a broken server does. */
+  readonly alwaysTask?: boolean;
   /** `pollIntervalMs` in every task the server reports. */
   readonly pollIntervalMs?: number;
 }
@@ -657,7 +659,7 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
     const text = (given.bytes ?? 0) > 0 ? "x".repeat(given.bytes ?? 0) : `report:${region}`;
     const complete = { resultType: "complete", content: [{ type: "text", text }] };
 
-    if (!extensions.includes(TASKS_EXTENSION)) {
+    if (!extensions.includes(TASKS_EXTENSION) && options.alwaysTask !== true) {
       return options.requireTask === true
         ? rpcError(id, -32021, "This tool runs only as an MCP task", TASKS_REQUIRED)
         : rpcResult(id, complete);

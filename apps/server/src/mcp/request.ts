@@ -25,6 +25,10 @@ import {
   type McpEngineRequest,
   type McpEngineRequestResult,
   McpHostRequest,
+  isMcpHostRequestOp,
+  isMcpHostTaskRequest,
+  MCP_TASK_TIMEOUT_MS,
+  MCP_UNASKED_TASK_MESSAGE,
   type McpHostRequestContext,
   type McpHostRequestHooks,
   type McpHostRequestResult,
@@ -66,9 +70,6 @@ const decodeDefinition = Schema.decodeUnknownOption(McpToolDefinition);
 /** The engine's `tools/call` request. */
 type McpEngineToolCall = Extract<McpEngineRequest, { readonly op: "tools/call" }>;
 
-/** What a `tasks/*` request is allowed to take: 30 s each (`mcp-connections.md` → Requests and Legacy sessions). */
-const TASK_TIMEOUT_MS = 30_000;
-
 /** The origins whose `tools/call` may be offered an MCP task: an agent's and an App View's, never the owner's or the host's. */
 const mayWaitForTask = (ctx: McpHostRequestContext) =>
   ctx.allowTask === true && (ctx.origin === "agent" || ctx.origin === "app");
@@ -100,9 +101,6 @@ const abortOf = (hooks: McpHostRequestHooks) =>
     ? Effect.never
     : Effect.tryPromise(() => hooks.untilAborted?.() ?? Promise.resolve()).pipe(Effect.ignore);
 
-/** What a request is, once decoded: the server it names, who it is for and how it reaches the engine. */
-type Decoded = McpHostRequest;
-
 /**
  * `request`: the call `input` asks for, to the server it names, with the caller's `hooks`. Never fails: a server not in
  * the set is `UnknownServer`, one that may not be called (switched off or `hidden`, not discovered, a tool its inventory
@@ -130,8 +128,6 @@ export const request = (
   );
 };
 
-const isTaskOp = (call: Decoded) => call.op !== "tools/call";
-
 const run = (
   environment: string | undefined,
   op: string,
@@ -139,12 +135,7 @@ const run = (
   hooks: McpHostRequestHooks,
 ): Effect.Effect<McpHostRequestResult, never, McpDiscoveryServices> =>
   Effect.gen(function* () {
-    if (
-      op !== "tools/call" &&
-      op !== "tasks/get" &&
-      op !== "tasks/update" &&
-      op !== "tasks/cancel"
-    ) {
+    if (!isMcpHostRequestOp(op)) {
       return HostUnsupported.make({ message: `This host does not know the request ${op}`, op });
     }
 
@@ -154,6 +145,11 @@ const run = (
 
     const call = decoded.value;
     const { server: name, ctx } = call;
+
+    // Before anything is sent, so a request that times out, is cancelled or never gets a slot still names its task.
+    if (isMcpHostTaskRequest(call)) {
+      yield* Effect.annotateCurrentSpan("mcp.task", yield* taskHash(call.params.taskId));
+    }
 
     if (environment === undefined) {
       return NotAllowed.make({ message: "The MCP host's name is unknown" });
@@ -168,7 +164,7 @@ const run = (
     const { server, reach, inventory, state } = view.value;
 
     // A task is the server's under the `conn` it was started on: another one is another server.
-    if (call.op !== "tools/call" && call.params.conn !== server.conn) {
+    if (isMcpHostTaskRequest(call) && call.params.conn !== server.conn) {
       return ServerChanged.make({
         message: `MCP server ${name} changed since the task was started`,
         conn: server.conn,
@@ -182,7 +178,7 @@ const run = (
     }
 
     // MCP tasks do not run on stdio servers yet (#494); a stdio call is made as it always was.
-    if (reach === "stdio" && isTaskOp(call)) {
+    if (reach === "stdio" && isMcpHostTaskRequest(call)) {
       return HostUnsupported.make({
         message: `MCP server ${name} runs in a Workspace; MCP tasks on stdio servers are not supported yet`,
         op,
@@ -217,11 +213,24 @@ const run = (
         ),
       );
 
-    // A call names a tool the inventory lists; a task's tool, which only checks a completed result, may have gone.
-    const tool = heldTool(call.op === "tools/call" ? call.params.name : call.params.tool);
+    // A call is offered a task only when the caller can wait for one, for an HTTP server; a `tasks/*` request is a task's.
+    const offeredTask = !isMcpHostTaskRequest(call) && reach === "http" && mayWaitForTask(ctx);
 
-    if (call.op === "tools/call" && Option.isNone(tool)) {
-      return NotAllowed.make({ message: `MCP server ${name} lists no tool ${call.params.name}` });
+    const callCtx: Mutable<McpEngineToolCall["ctx"]> = { origin: ctx.origin };
+
+    if (ctx.conversation !== undefined) callCtx.conversation = ctx.conversation;
+
+    if (ctx.workspace !== undefined) callCtx.workspace = ctx.workspace;
+
+    if (offeredTask || isMcpHostTaskRequest(call)) callCtx.allowTask = true;
+
+    const sending = engineRequestOf(call, heldTool, callCtx);
+
+    // A call names a tool the inventory lists; a task's tool, which only checks a completed result, may have gone.
+    if (Option.isNone(sending)) {
+      return NotAllowed.make({
+        message: `MCP server ${name} lists no tool ${isMcpHostTaskRequest(call) ? call.params.tool : call.params.name}`,
+      });
     }
 
     const store = yield* McpHostStore;
@@ -260,25 +269,12 @@ const run = (
     /** Whether the engine was given the call: an abort before it was cannot have run anything. */
     let sent = false;
 
-    const timeoutMs = isTaskOp(call)
-      ? TASK_TIMEOUT_MS
+    const timeoutMs = isMcpHostTaskRequest(call)
+      ? MCP_TASK_TIMEOUT_MS
       : (target.success.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
-    const what = isTaskOp(call) ? "The request" : "The call";
+    const what = isMcpHostTaskRequest(call) ? "The request" : "The call";
     const queuedAt = yield* Clock.currentTimeMillis;
-
-    const callCtx: Mutable<McpEngineToolCall["ctx"]> = { origin: ctx.origin };
-
-    if (ctx.conversation !== undefined) callCtx.conversation = ctx.conversation;
-
-    if (ctx.workspace !== undefined) callCtx.workspace = ctx.workspace;
-
-    // A call is offered a task only when the caller can wait for one, for an HTTP server; a `tasks/*` request is a task's.
-    const offeredTask = call.op === "tools/call" && reach === "http" && mayWaitForTask(ctx);
-
-    if (offeredTask || isTaskOp(call)) callCtx.allowTask = true;
-
-    const sending: McpEngineRequest = engineRequestOf(call, tool, callCtx);
 
     const engineCall = Effect.gen(function* () {
       const waited = (yield* Clock.currentTimeMillis) - queuedAt;
@@ -288,7 +284,7 @@ const run = (
       return yield* engine.request(
         { ...target.success, timeoutMs: Math.max(1, timeoutMs - waited) },
         store.prior(server.conn, workspace),
-        sending,
+        sending.value,
         engineHooks,
       );
     });
@@ -377,10 +373,6 @@ const run = (
       ),
     );
 
-    if (call.op !== "tools/call") {
-      yield* Effect.annotateCurrentSpan("mcp.task", yield* taskHash(call.params.taskId));
-    }
-
     if (result.kind === "failed") {
       // A client grant's refused token is not a sign-in the agent could ask for: the call is unreachable with why.
       const refusal = access.refusal?.(result);
@@ -390,7 +382,7 @@ const run = (
       );
     }
 
-    return answered(result, {
+    return answered(call, result, {
       conn: server.conn,
       identity: server.identity,
       signIn: access.signIn?.(),
@@ -398,25 +390,24 @@ const run = (
     });
   });
 
-/** The engine's request for `call`: the tool call, or the `tasks/*` request, with `ctx`. */
+/**
+ * The engine's request for `call` with `ctx`: none for a `tools/call` of a tool the inventory does not list. A `tasks/get`
+ * carries its tool's definition when the inventory still has it, to check a completed result.
+ */
 const engineRequestOf = (
-  call: Decoded,
-  tool: Option.Option<McpToolDefinition>,
+  call: McpHostRequest,
+  heldTool: (name: string) => Option.Option<McpToolDefinition>,
   ctx: McpEngineToolCall["ctx"],
-): McpEngineRequest => {
+): Option.Option<McpEngineRequest> => {
   switch (call.op) {
-    case "tools/call": {
-      const sending: Mutable<McpEngineToolCall> = {
-        op: "tools/call",
-        // The caller named a tool the inventory lists, which `run` checked.
-        tool: Option.getOrThrow(tool),
-        ctx,
-      };
+    case "tools/call":
+      return Option.map(heldTool(call.params.name), (tool) => {
+        const sending: Mutable<McpEngineToolCall> = { op: "tools/call", tool, ctx };
 
-      if (call.params.arguments !== undefined) sending.arguments = call.params.arguments;
+        if (call.params.arguments !== undefined) sending.arguments = call.params.arguments;
 
-      return sending;
-    }
+        return sending;
+      });
 
     case "tasks/get": {
       const sending: Mutable<Extract<McpEngineRequest, { readonly op: "tasks/get" }>> = {
@@ -425,21 +416,23 @@ const engineRequestOf = (
         ctx,
       };
 
+      const tool = heldTool(call.params.tool);
+
       if (Option.isSome(tool)) sending.tool = tool.value;
 
-      return sending;
+      return Option.some(sending);
     }
 
     case "tasks/update":
-      return {
+      return Option.some({
         op: "tasks/update",
         taskId: call.params.taskId,
         inputResponses: call.params.inputResponses,
         ctx,
-      };
+      });
 
     case "tasks/cancel":
-      return { op: "tasks/cancel", taskId: call.params.taskId, ctx };
+      return Option.some({ op: "tasks/cancel", taskId: call.params.taskId, ctx });
   }
 };
 
@@ -453,8 +446,13 @@ interface Answered {
   readonly mayStartTask: boolean;
 }
 
-/** The host's answer to an engine result that is not a failure. */
+/**
+ * The host's answer to an engine result that is not a failure: what `call` asked for. A `tools/call` is answered with a
+ * result, or a task when it could be offered one; a `tasks/get` with its state; a `tasks/update` or `tasks/cancel` with
+ * an acknowledgement. Any other answer is an engine that misread the request: a protocol violation.
+ */
 const answered = (
+  call: McpHostRequest,
   result: Exclude<McpEngineRequestResult, { readonly kind: "failed" }>,
   about: Answered,
 ): McpHostRequestResult => {
@@ -464,8 +462,31 @@ const answered = (
 
   if (result.spawn !== undefined) origin.spawn = result.spawn;
 
-  switch (result.kind) {
-    case "complete":
+  const misread = callFailed(
+    ProtocolViolation.make({
+      message:
+        result.kind === "task"
+          ? MCP_UNASKED_TASK_MESSAGE
+          : `The engine answered ${call.op} with ${result.kind}`,
+    }),
+  );
+
+  switch (call.op) {
+    case "tools/call":
+      if (result.kind === "task") {
+        // Never to a call that could not be offered one.
+        return about.mayStartTask
+          ? McpHostTaskStarted.make({
+              task: result.task,
+              conn: about.conn,
+              identity: about.identity,
+              ...origin,
+            })
+          : misread;
+      }
+
+      if (result.kind !== "complete") return misread;
+
       return result.structuredOutput === undefined
         ? McpHostCompleted.make({ result: result.result })
         : McpHostCompleted.make({
@@ -473,22 +494,9 @@ const answered = (
             structuredOutput: result.structuredOutput,
           });
 
-    case "task":
-      // Never to a call that could not be offered one: an engine that answers so has misread the request.
-      return about.mayStartTask
-        ? McpHostTaskStarted.make({
-            task: result.task,
-            conn: about.conn,
-            identity: about.identity,
-            ...origin,
-          })
-        : callFailed(
-            ProtocolViolation.make({
-              message: "The server started an MCP task that was not asked for",
-            }),
-          );
+    case "tasks/get": {
+      if (result.kind !== "task_state") return misread;
 
-    case "task_state": {
       const state: Mutable<Parameters<typeof McpHostTaskState.make>[0]> = {
         task: result.task,
         ...origin,
@@ -501,7 +509,8 @@ const answered = (
       return McpHostTaskState.make(state);
     }
 
-    case "task_ack":
-      return McpHostTaskAck.make(origin);
+    case "tasks/update":
+    case "tasks/cancel":
+      return result.kind === "task_ack" ? McpHostTaskAck.make(origin) : misread;
   }
 };
