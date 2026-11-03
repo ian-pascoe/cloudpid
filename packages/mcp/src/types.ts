@@ -283,6 +283,12 @@ export const McpEngineTarget = Schema.Struct({
   name: Schema.String,
   url: Schema.String,
   headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * The Secret values the host substituted for `${NAME}` into `headers` (and the URL): exactly what the engine scrubs, as
+   * far as four characters, from the logs, errors and results it hands back (`docs/architecture/mcp-connections.md` →
+   * Telemetry). Absent for an entry that references none, and from a host older than this field.
+   */
+  redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
   timeoutMs: Schema.optionalKey(Schema.Int),
 });

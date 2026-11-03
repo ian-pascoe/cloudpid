@@ -49,7 +49,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
 import { type CallContext, type CallEnvironment, withCall } from "./call-context.ts";
-import { secretsOf } from "./logs.ts";
+import { redactOf } from "./logs.ts";
 import { type Answer, malformed, scrubError, toEngineValue } from "./results.ts";
 import { Validators, type ValidatorsApi } from "./validators.ts";
 
@@ -72,6 +72,8 @@ interface CallInput {
   readonly env: CallEnvironment;
   /** Whether the server may have run the request once it was sent: only a `tools/call`. */
   readonly mayHaveRun: boolean;
+  /** Whether this is a discovery (the core then asks a Legacy server for its log level even with no session to keep). */
+  readonly discovering: boolean;
 }
 
 const cutOnceAborted = (untilAborted: () => Promise<void>, mayHaveRun: boolean) =>
@@ -157,10 +159,12 @@ const runCall = Effect.fnUntraced(function* <A, R>(
           Effect.result,
         );
 
-        yield* annotateWire(input.target, wire?.(), call);
+        const logs = call.logs();
+
+        yield* annotateWire(input.target, wire?.(), call.bytes(), logs.length);
 
         if (Result.isSuccess(outcome)) {
-          return { outcome, state: call.state(), logs: call.logs() };
+          return { outcome, state: call.state(), logs };
         }
 
         // A stream made before the call failed is never returned, so its lease goes back now.
@@ -169,11 +173,11 @@ const runCall = Effect.fnUntraced(function* <A, R>(
         return {
           outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
           state: call.state(),
-          logs: call.logs(),
+          logs,
         };
       }),
-    // A server may echo a header it was sent (a Secret's value) into a log; logs are scrubbed of them.
-    secretsOf(input.target.headers),
+    // A server may echo a header it was sent (a Secret's value) into a log, an error or a result; all are scrubbed of them.
+    { secrets: redactOf(input.target), discovering: input.discovering },
   );
 });
 
@@ -196,12 +200,13 @@ type WireAttributes = {
 const annotateWire = (
   target: McpEngineTargetEncoded,
   wire: McpConnectionStats | undefined,
-  call: CallContext,
+  bytes: number,
+  logs: number,
 ) => {
   const attributes: WireAttributes = {
     "mcp.server": target.name,
-    "mcp.bytes": call.bytes(),
-    "mcp.logs": call.logs().length,
+    "mcp.bytes": bytes,
+    "mcp.logs": logs,
   };
 
   Option.map(originOf(target.url), (origin) => {
@@ -230,14 +235,9 @@ const originOf = (url: string) =>
 /** `logs` as the result's gain-only field: absent when the call heard none. */
 const logsField = (logs: ReadonlyArray<McpLogEntry>) => (logs.length === 0 ? {} : { logs });
 
-const failed = (
-  error: McpErrorWire,
-  state: McpEngineState,
-  logs: ReadonlyArray<McpLogEntry> = [],
-): McpEngineFailed => ({
+const failed = (error: McpErrorWire, state: McpEngineState): McpEngineFailed => ({
   kind: "failed",
   error,
-  ...logsField(logs),
   state,
 });
 
@@ -261,7 +261,7 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
   const validators = yield* Validators;
 
   const { outcome, state, logs } = yield* runCall(
-    { target, prior, hooks, env, mayHaveRun: false },
+    { target, prior, hooks, env, mayHaveRun: false, discovering: true },
     (connection) =>
       Effect.gen(function* () {
         const tools = yield* connection.list("tools", HOST_WORK);
@@ -301,12 +301,11 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
       }),
   );
 
-  return yield* encodeResult(
-    McpEngineDiscoverResult,
-    Result.isSuccess(outcome)
-      ? { ...outcome.success, ...logsField(logs), state }
-      : failed(outcome.failure, state, logs),
-  );
+  return yield* encodeResult(McpEngineDiscoverResult, {
+    ...(Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state)),
+    ...logsField(logs),
+    state,
+  });
 });
 
 const isServerError = Schema.is(ServerError);
@@ -466,14 +465,14 @@ export const request = Effect.fn("mcp.engine.request")(function* (
   const req = decoded.value;
 
   const { outcome, state, logs } = yield* runCall(
-    { target, prior, hooks, env, mayHaveRun: req.op === "tools/call" },
+    { target, prior, hooks, env, mayHaveRun: req.op === "tools/call", discovering: false },
     (connection, context): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
       req.op === "tools/call"
         ? runToolCall(connection, context, req, env, validators)
         : runList(connection, context, req, env, validators),
   );
 
-  const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state, logs);
+  const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);
 
   return yield* encodeResult(McpEngineRequestResult, { ...result, ...logsField(logs), state });
 });

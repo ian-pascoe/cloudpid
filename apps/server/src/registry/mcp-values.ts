@@ -22,47 +22,57 @@ const REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 type Values = Extract<McpServerValuesAnswer, { readonly status: "values" }>;
 
-/** `text` with each `${NAME}` replaced by its value; a name with none stays as written and is added to `missing`. */
+/** What resolving notes besides the text: the names with no value, and the values that came from Secrets. */
+type Tally = { readonly missing: Set<string>; readonly secrets: Set<string> };
+
+/**
+ * `text` with each `${NAME}` replaced by its value; a name with none stays as written and is added to `missing`, and a
+ * value read from a Secret is added to `secrets`.
+ */
 const resolveText = (
   text: string,
   sources: McpValueSources,
   allowSecrets: boolean,
-  missing: Set<string>,
+  tally: Tally,
 ): string =>
   text.replaceAll(REFERENCE, (reference, name: string) => {
     const secret = allowSecrets ? Record.get(sources.secrets, name) : Option.none();
     const found = Option.orElse(secret, () => Record.get(sources.variables, name));
 
     if (Option.isNone(found)) {
-      missing.add(name);
+      tally.missing.add(name);
 
       return reference;
     }
+
+    if (Option.isSome(secret)) tally.secrets.add(found.value);
 
     return found.value;
   });
 
 /**
  * The `env` (a stdio server's) and `headers` (an HTTP server's) of `resolved` with every `${NAME}` resolved, and the
- * names that resolved to nothing, which stay as written for the host to skip the server or connect without them.
+ * names that resolved to nothing, which stay as written for the host to skip the server or connect without them. The
+ * values that came from Secrets go back as `redact`, for the engine to scrub from what it hands back.
  */
 export const resolveMcpServerValues = (
   resolved: McpResolvedServer,
   sources: McpValueSources,
 ): Values => {
-  const missing = new Set<string>();
+  const tally: Tally = { missing: new Set<string>(), secrets: new Set<string>() };
   const { server } = resolved;
   const given = server.type === "stdio" ? server.env : server.headers;
 
   const values = Record.map(given, (text) =>
-    resolveText(text, sources, resolved.resolvesSecrets, missing),
+    resolveText(text, sources, resolved.resolvesSecrets, tally),
   );
 
   return {
     status: "values",
     env: server.type === "stdio" ? values : {},
     headers: server.type === "http" ? values : {},
-    missing: Arr.sort(Arr.fromIterable(missing), Order.String),
+    missing: Arr.sort(Arr.fromIterable(tally.missing), Order.String),
+    redact: Arr.sort(Arr.fromIterable(tally.secrets), Order.String),
   };
 };
 

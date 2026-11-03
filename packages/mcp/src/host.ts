@@ -491,6 +491,8 @@ export const McpServerValuesAnswer = Schema.Union([
     env: Schema.Record(Schema.String, Schema.String),
     headers: Schema.Record(Schema.String, Schema.String),
     missing: Schema.Array(Schema.String),
+    /** The Secret values (not Variables) substituted into `env` and `headers`, for the engine to scrub from what it hands back. Gain-only. */
+    redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   }),
   Schema.Struct({ status: Schema.Literal("unknown_server") }),
   Schema.Struct({ status: Schema.Literal("server_changed"), conn: Schema.String }),

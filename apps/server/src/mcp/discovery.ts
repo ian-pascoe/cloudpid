@@ -145,17 +145,18 @@ const targetOf = (environment: string, server: StoredServer) =>
     const { url, headers, timeout } = server.server;
     const written = stringValues(isJsonObject(headers) ? headers : {});
 
-    const target = (resolved: Readonly<Record<string, string>>) =>
+    const target = (resolved: Readonly<Record<string, string>>, redact: ReadonlyArray<string>) =>
       Result.succeed<McpEngineTarget>({
         kind: "http",
         conn: server.conn,
         name: server.name,
         url: Predicate.isString(url) ? url : "",
         headers: resolved,
+        redact,
         timeoutMs: (Predicate.isNumber(timeout) ? timeout : 60) * 1000,
       });
 
-    if (!hasNames(written)) return target(written);
+    if (!hasNames(written)) return target(written, []);
 
     const registry = yield* McpRegistryPort;
 
@@ -182,7 +183,7 @@ const targetOf = (environment: string, server: StoredServer) =>
       return notReached("skipped", `Needs ${names}, which resolve to nothing`);
     }
 
-    return target(values.headers);
+    return target(values.headers, values.redact ?? []);
   });
 
 /** Keep what a discovery found: the rows it changed, then the inventory and status, or the status it failed with. */

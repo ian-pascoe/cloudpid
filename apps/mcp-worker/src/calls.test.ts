@@ -51,6 +51,7 @@ const discovering = async (url: string) => {
     name: "docs",
     url,
     headers: { authorization: HEADER },
+    redact: [SECRET],
   };
 
   const answer = await Effect.runPromise(
@@ -93,12 +94,14 @@ describe("an engine call's span", () => {
     }
   });
 
-  it("hands the host the logs, scrubbed of the header and the token", async () => {
+  it("hands the host the logs, scrubbed of the Secret and the token", async () => {
     const { answer } = await discovering("https://mcp.example.test/mcp");
 
     expect(answer).toMatchObject({
       kind: "discovered",
-      logs: [{ level: "warning", logger: "auth", data: "rejected [REDACTED] and [REDACTED]" }],
+      logs: [
+        { level: "warning", logger: "auth", data: "rejected Bearer [REDACTED] and [REDACTED]" },
+      ],
     });
     expect(JSON.stringify(answer)).not.toContain(SECRET);
     expect(JSON.stringify(answer)).not.toContain(TOKEN);

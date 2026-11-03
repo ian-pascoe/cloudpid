@@ -118,6 +118,7 @@ describe("server logs", () => {
   const logging = (key: string) => ({
     ...target("logging", key),
     headers: { authorization: "Bearer sk-echoed-secret-0123456789" },
+    redact: ["sk-echoed-secret-0123456789"],
   });
 
   it("come back in a discovery that passed no hooks: warning and above, cut to 2 KiB, scrubbed", async () => {
@@ -131,7 +132,7 @@ describe("server logs", () => {
       ["warning", "auth"],
       ["error", undefined],
     ]);
-    expect(discovered.logs?.[0]?.data).toBe("rejected [REDACTED]");
+    expect(discovered.logs?.[0]?.data).toBe("rejected Bearer [REDACTED]");
     expect(discovered.logs?.[1]?.data).toHaveLength(2048);
     expect(JSON.stringify(discovered)).not.toContain("sk-echoed-secret");
   });

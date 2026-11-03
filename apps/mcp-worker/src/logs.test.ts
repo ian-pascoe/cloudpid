@@ -1,14 +1,11 @@
 import { MCP_LOG_DATA_MAX, MCP_LOG_RING } from "@cloudpid/mcp/types";
 import { describe, expect, it } from "vitest";
-import { callLogs, secretsOf } from "./logs.ts";
+import { callLogs, redactOf } from "./logs.ts";
 
-const collector = (
-  tokens: ReadonlySet<string> = new Set(),
-  secrets: ReadonlyArray<string> = [],
-) => {
+const collector = (tokens: ReadonlySet<string> = new Set()) => {
   let now = 0;
 
-  return callLogs({ now: () => ++now, tokens: () => tokens, secrets });
+  return callLogs({ now: () => ++now, tokens: () => tokens });
 };
 
 describe("callLogs", () => {
@@ -38,9 +35,9 @@ describe("callLogs", () => {
     expect(small).toMatchObject({ level: "info", logger: "db", data: '{"n":1}' });
   });
 
-  it("scrubs the tokens sent so far, as they are when the entries are made, and the header values", () => {
-    const tokens = new Set<string>();
-    const logs = collector(tokens, secretsOf({ "x-api-key": "key-0123456789", accept: "json" }));
+  it("scrubs the tokens and Secrets held so far, as they are when the entries are made", () => {
+    const tokens = new Set<string>(["key-0123456789"]);
+    const logs = collector(tokens);
 
     logs.hear({
       level: "warning",
@@ -79,11 +76,19 @@ describe("callLogs", () => {
   });
 });
 
-describe("secretsOf", () => {
-  it("takes each header value, and the credential after a scheme, and leaves short ones", () => {
-    expect(
-      secretsOf({ authorization: "Bearer abcdefgh", accept: "json", "x-key": "abcdef" }),
-    ).toEqual(["Bearer abcdefgh", "abcdefgh", "abcdef"]);
-    expect(secretsOf(undefined)).toEqual([]);
+describe("redactOf", () => {
+  const target = {
+    kind: "http",
+    conn: "c",
+    name: "docs",
+    url: "https://docs.example.test/mcp",
+  } as const;
+
+  it("takes the Secret values the host named, as far as four characters, and none from a target without", () => {
+    expect(redactOf({ ...target, redact: ["abcdefgh", "abcd", "abc"] })).toEqual([
+      "abcdefgh",
+      "abcd",
+    ]);
+    expect(redactOf({ ...target, headers: { authorization: "Bearer abcdefgh" } })).toEqual([]);
   });
 });

@@ -9,7 +9,7 @@ import * as Arr from "effect/Array";
 import { nullable, optional } from "./sql.ts";
 
 /** The longest `logger` and `level` kept: a server's own words, bounded. */
-const MAX_NAME = 128;
+const MAX_LABEL_LENGTH = 128;
 
 export type LogStore = {
   /** `conn`'s ring, oldest first. */
@@ -66,8 +66,8 @@ export const logStore = (storage: MigrationStorage): LogStore => ({
           conn,
           next + index,
           entry.at,
-          entry.level.slice(0, MAX_NAME),
-          nullable(entry.logger?.slice(0, MAX_NAME)),
+          entry.level.slice(0, MAX_LABEL_LENGTH),
+          nullable(entry.logger?.slice(0, MAX_LABEL_LENGTH)),
           entry.data.slice(0, MCP_LOG_DATA_MAX),
         );
       });

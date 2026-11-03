@@ -276,6 +276,7 @@ describe("a discovery's spans", () => {
       env: {},
       headers: { authorization: `Bearer ${SECRET}` },
       missing: [],
+      redact: [SECRET],
     });
     await discovered(host, "docs", [log(1, "warning", "auth")]);
     await host.servers({ parts: ["tools", "status"] });

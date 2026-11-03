@@ -152,6 +152,8 @@ const serverView = (inventory: McpServerInventory): McpServerView => {
   return view;
 };
 
+const NOT_LISTED = "The MCP servers could not be listed";
+
 /** The names of `environment`'s servers, or why there are none to ask about. */
 const namesOf = (objects: McpStatusObjects, environment: string) =>
   objects
@@ -167,129 +169,110 @@ const namesOf = (objects: McpStatusObjects, environment: string) =>
       ),
     );
 
+/**
+ * Runs `read` over the names of `environment`'s servers, once the Registry has said it has some; the Registry's
+ * answer for an Environment that is not listed, or one it could not give, is the answer; and a read that fails is
+ * `Unavailable`, with the cause in the log and not in the answer (`what` says which read it was).
+ */
+const readSet = <A>(
+  objects: McpStatusObjects,
+  environment: string,
+  what: string,
+  read: (names: ReadonlyArray<string>) => Effect.Effect<A>,
+) =>
+  Effect.gen(function* () {
+    const names = yield* namesOf(objects, environment);
+
+    if (names === undefined) return unavailable(NOT_LISTED);
+
+    if (Option.isNone(names)) return McpNoEnvironment.make({});
+
+    return yield* read(names.value);
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning(`Environment ${environment}'s MCP ${what}`, cause).pipe(
+        Effect.as(unavailable(NO_HOST)),
+      ),
+    ),
+  );
+
 /** The MCP status reads over `objects`. */
-export const mcpStatus = (objects: McpStatusObjects): McpStatus => {
-  /** Run `read` against the host of `environment` once the Registry says it has servers; `empty` answers one with none. */
-  const withHost = <A>(
-    environment: string,
-    names: ReadonlyArray<string>,
-    read: () => Effect.Effect<A>,
-    empty: A,
-  ) => (names.length === 0 ? Effect.succeed(empty) : read());
-
-  return {
-    servers: (environment) =>
-      Effect.gen(function* () {
-        const names = yield* namesOf(objects, environment);
-
-        if (names === undefined) return unavailable("The MCP servers could not be listed");
-
-        if (Option.isNone(names)) return McpNoEnvironment.make({});
-
-        return yield* withHost(
-          environment,
-          names.value,
-          () =>
-            objects
-              .host(mcpHostName(environment))
-              .servers({ parts: ["tools", "prompts", "status"] })
-              .pipe(
-                Effect.map((answer): McpServersView => {
-                  const decoded = decodeServers(answer);
-
-                  if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
-
-                  if (Predicate.isTagged(decoded.value, "HostFailed")) {
-                    return unavailable(COULD_NOT_ANSWER);
-                  }
-
-                  return McpServersList.make({
-                    version: decoded.value.version,
-                    servers: Arr.map(decoded.value.servers, serverView),
-                  });
-                }),
-              ),
-          McpServersList.make({ version: "", servers: [] }),
-        );
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning(`Environment ${environment}'s MCP servers were not read`, cause).pipe(
-            Effect.as(unavailable(NO_HOST)),
-          ),
-        ),
-      ),
-
-    serverLog: ({ environment, server, workspace }) =>
-      Effect.gen(function* () {
-        const names = yield* namesOf(objects, environment);
-
-        if (names === undefined) return unavailable("The MCP servers could not be listed");
-
-        if (Option.isNone(names)) return McpNoEnvironment.make({});
-
-        // A name the set does not hold never wakes the host.
-        if (!Arr.contains(names.value, server)) return McpServerMissing.make({});
-
-        const answer = yield* objects
-          .host(mcpHostName(environment))
-          .serverLog(workspace === undefined ? { server } : { server, workspace });
-
-        const decoded = decodeLog(answer);
-
-        if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
-
-        const log = decoded.value;
-
-        return Match.value(log).pipe(
-          Match.tagsExhaustive({
-            NoServer: () => McpServerMissing.make({}),
-            HostFailed: () => unavailable(COULD_NOT_ANSWER),
-            ServerLog: (found) => {
-              const view: Mutable<McpServerLogEntries> = McpServerLogEntries.make({
-                entries: found.entries,
-              });
-
-              if (found.stderr !== undefined) view.stderr = found.stderr;
-
-              return view;
-            },
-          }),
-        );
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning(`Environment ${environment}'s MCP server log was not read`, cause).pipe(
-            Effect.as(unavailable(NO_HOST)),
-          ),
-        ),
-      ),
-
-    reconnect: ({ environment, servers }) =>
-      Effect.gen(function* () {
-        const names = yield* namesOf(objects, environment);
-
-        if (names === undefined) return unavailable("The MCP servers could not be listed");
-
-        if (Option.isNone(names)) return McpNoEnvironment.make({});
-
-        const wanted = servers === undefined ? names.value : Arr.intersection(servers, names.value);
-
-        if (wanted.length === 0) return McpReconnecting.make({ servers: [] });
-
-        const answer = readMcpApplyResult(
-          yield* objects
+export const mcpStatus = (objects: McpStatusObjects): McpStatus => ({
+  servers: (environment) =>
+    readSet(objects, environment, "servers were not read", (names) =>
+      names.length === 0
+        ? Effect.succeed(McpServersList.make({ version: "", servers: [] }))
+        : objects
             .host(mcpHostName(environment))
-            .apply({ kind: "reload", servers: Arr.fromIterable(wanted) }),
-        );
+            .servers({ parts: ["tools", "prompts", "status"] })
+            .pipe(
+              Effect.map((answer): McpServersView => {
+                const decoded = decodeServers(answer);
 
-        return Predicate.isTagged(answer, "Reloaded")
-          ? McpReconnecting.make({ servers: answer.servers })
-          : unavailable(COULD_NOT_ANSWER);
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning(`Environment ${environment}'s MCP reconnect was not sent`, cause).pipe(
-            Effect.as(unavailable(NO_HOST)),
-          ),
-        ),
-      ),
-  };
-};
+                if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
+
+                if (Predicate.isTagged(decoded.value, "HostFailed")) {
+                  return unavailable(COULD_NOT_ANSWER);
+                }
+
+                return McpServersList.make({
+                  version: decoded.value.version,
+                  servers: Arr.map(decoded.value.servers, serverView),
+                });
+              }),
+            ),
+    ),
+
+  serverLog: ({ environment, server, workspace }) =>
+    readSet(objects, environment, "server log was not read", (names) =>
+      // A name the set does not hold never wakes the host.
+      !Arr.contains(names, server)
+        ? Effect.succeed(McpServerMissing.make({}))
+        : objects
+            .host(mcpHostName(environment))
+            .serverLog(workspace === undefined ? { server } : { server, workspace })
+            .pipe(
+              Effect.map((answer): McpServerLogView => {
+                const decoded = decodeLog(answer);
+
+                if (Option.isNone(decoded)) return unavailable(NOT_KNOWN);
+
+                return Match.value(decoded.value).pipe(
+                  Match.tagsExhaustive({
+                    NoServer: () => McpServerMissing.make({}),
+                    HostFailed: () => unavailable(COULD_NOT_ANSWER),
+                    ServerLog: (found) => {
+                      const view: Mutable<McpServerLogEntries> = McpServerLogEntries.make({
+                        entries: found.entries,
+                      });
+
+                      if (found.stderr !== undefined) view.stderr = found.stderr;
+
+                      return view;
+                    },
+                  }),
+                );
+              }),
+            ),
+    ),
+
+  reconnect: ({ environment, servers }) =>
+    readSet(objects, environment, "reconnect was not sent", (names) => {
+      const wanted = servers === undefined ? names : Arr.intersection(servers, names);
+
+      return wanted.length === 0
+        ? Effect.succeed(McpReconnecting.make({ servers: [] }))
+        : objects
+            .host(mcpHostName(environment))
+            .apply({ kind: "reload", servers: Arr.fromIterable(wanted) })
+            .pipe(
+              Effect.map((answer): McpReconnectView => {
+                const applied = readMcpApplyResult(answer);
+
+                return Predicate.isTagged(applied, "Reloaded")
+                  ? McpReconnecting.make({ servers: applied.servers })
+                  : unavailable(COULD_NOT_ANSWER);
+              }),
+            );
+    }),
+});

@@ -13,8 +13,12 @@ const env = { version: "test", hold: () => undefined };
 
 /** A call that takes the large slot, keeps no stream, then does `then`. */
 const largeCall = <A, E>(then: Effect.Effect<A, E>) =>
-  withCall({}, hooks, env, (call) =>
-    Effect.promise(() => call.lease.charge(10 * MiB)).pipe(Effect.andThen(then)),
+  withCall(
+    {},
+    hooks,
+    env,
+    (call) => Effect.promise(() => call.lease.charge(10 * MiB)).pipe(Effect.andThen(then)),
+    { secrets: [], discovering: false },
   );
 
 /** Whether the large slot is free: a new lease takes it at once. */
@@ -49,10 +53,15 @@ describe("withCall", () => {
     const budget = makeBudget();
 
     await Effect.runPromise(
-      withCall({}, hooks, env, (call) =>
-        Effect.promise(() => call.lease.charge(10 * MiB)).pipe(
-          Effect.andThen(Effect.sync(() => call.handOff())),
-        ),
+      withCall(
+        {},
+        hooks,
+        env,
+        (call) =>
+          Effect.promise(() => call.lease.charge(10 * MiB)).pipe(
+            Effect.andThen(Effect.sync(() => call.handOff())),
+          ),
+        { secrets: [], discovering: false },
       ).pipe(Effect.provideService(ByteBudget, budget)),
     );
 
@@ -65,5 +74,18 @@ describe("withCall", () => {
     await Effect.runPromise(Effect.void.pipe(largeCall, Effect.provideService(ByteBudget, budget)));
 
     expect(await largeSlotFree(budget)).toBe(true);
+  });
+
+  it("scrubs the Secrets its target carries as it scrubs a token", async () => {
+    const budget = makeBudget();
+
+    const held = await Effect.runPromise(
+      withCall({}, hooks, env, (call) => Effect.succeed([...call.tokens]), {
+        secrets: ["sk-held-secret"],
+        discovering: false,
+      }).pipe(Effect.provideService(ByteBudget, budget)),
+    );
+
+    expect(held).toEqual(["sk-held-secret"]);
   });
 });

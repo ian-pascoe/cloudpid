@@ -185,6 +185,7 @@ describe("the values of a server", () => {
       env: {},
       headers: { Authorization: "Bearer s3cret" },
       missing: [],
+      redact: ["s3cret"],
     });
 
     expect(
@@ -192,7 +193,13 @@ describe("the values of a server", () => {
         secrets: {},
         variables: { KEY: "value" },
       }),
-    ).toEqual({ status: "values", env: { KEY: "value", PLAIN: "x" }, headers: {}, missing: [] });
+    ).toEqual({
+      status: "values",
+      env: { KEY: "value", PLAIN: "x" },
+      headers: {},
+      missing: [],
+      redact: [],
+    });
   });
 
   it("leaves a name with no value as written, and lists it", () => {
@@ -205,6 +212,7 @@ describe("the values of a server", () => {
       env: { A: "${B}-c", D: "${B}" },
       headers: {},
       missing: ["B"],
+      redact: [],
     });
   });
 
