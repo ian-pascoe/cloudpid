@@ -74,7 +74,7 @@ import {
   conversationPromptAtoms,
   type PromptChip,
   promptTitle,
-  refusalFields,
+  refusalOfCause,
   refusalOutcome,
   startingValues,
 } from "./mcp-prompt-state.ts";
@@ -183,20 +183,6 @@ const ComposerBox = ({
 
   const catalog = useAtomValue(catalogAtom(key));
 
-  const { chip, setChip, form, setForm, standing, pickPrompt, finishForm, cancelForm, editChip } =
-    usePromptChip({
-      state,
-      catalog,
-      focusInput: () => {
-        requestAnimationFrame(() => {
-          input.current?.focus();
-        });
-      },
-      clearNote: () => {
-        setNote(null);
-      },
-    });
-
   const runSessionCommand = useCall(sessionCommandAtom(key));
   const copy = useCall(copyAtom);
   const store = useContext(RegistryContext);
@@ -220,6 +206,33 @@ const ComposerBox = ({
   // The drafts addressed to this conversation: while there are some, what is sent here is a Review of them.
   const drafts = draftsTo(allDrafts, conversationId);
   const reviewing = drafts.length > 0;
+
+  const {
+    chip,
+    setChip,
+    form,
+    setForm,
+    standing,
+    promptWaiting,
+    gone,
+    pickPrompt,
+    finishForm,
+    cancelForm,
+    editChip,
+  } = usePromptChip({
+    state,
+    catalog,
+    reviewing,
+    focusInput: () => {
+      requestAnimationFrame(() => {
+        input.current?.focus();
+      });
+    },
+    clearNote: () => {
+      setNote(null);
+    },
+  });
+
   // The composer sends a message with Attachments, an MCP prompt or a Review itself: assistant-ui sends text alone.
   const ownSend = attached || reviewing || chip !== null;
   // Attachments and attached pages alone make a message, and so do drafts (a Review needs no summary).
@@ -227,31 +240,22 @@ const ComposerBox = ({
   // Why Send waits, shown under the box while no other note is.
   const attachmentsWaiting = attached ? waitingFor(attachments) : null;
 
-  const promptWaiting =
-    form !== null
-      ? "Fill in the prompt's arguments, or cancel them."
-      : chip === null
-        ? null
-        : reviewing
-          ? "An MCP prompt cannot go with a Review: remove one of them."
-          : standing?.kind === "gone"
-            ? standing.message
-            : null;
-
   const waiting = attachmentsWaiting ?? promptWaiting;
   const noteId = useId();
 
   // Where a refused prompt's Sign in link goes: the Session's Environment, and back to the Session once done.
   const environment = sessions?.find((session) => session.id === key.sessionId)?.environment;
 
-  const signInHref = (server: string): string =>
-    mcpSignInStartHref({
-      scope: environment ?? GLOBAL_SCOPE,
-      global: GLOBAL_SCOPE,
-      server,
-      stepUp: false,
-      returnPath: sessionPath(key.sessionId),
-    });
+  const signInHref = (server: string): string | undefined =>
+    environment === undefined
+      ? undefined
+      : mcpSignInStartHref({
+          scope: environment,
+          global: GLOBAL_SCOPE,
+          server,
+          stepUp: false,
+          returnPath: sessionPath(key.sessionId),
+        });
 
   const shownNote: Note | null =
     note ?? (waiting === null ? null : { tone: "info", text: waiting });
@@ -392,11 +396,25 @@ const ComposerBox = ({
   };
 
   /**
+   * Whether the prompt holds the message back (its form is open, it cannot go with a Review, or the chip cannot be sent as
+   * it is): then it says why and nothing is sent, whichever way the owner tried to send.
+   */
+  const refusedForPrompt = (): boolean => {
+    if (promptWaiting === null) return false;
+
+    setNote({ tone: "info", text: promptWaiting });
+
+    return true;
+  };
+
+  /**
    * Send what is typed with the Attachments, once they are all uploaded and fitted, and as a Review of the drafts when
    * there are some; else say what it waits for. Should the Session refuse the message, its text and Attachments come back
    * to the composer, with why under it.
    */
   const sendWithAttachments = (whenBusy: WhenBusy) => {
+    if (refusedForPrompt()) return;
+
     if (sentAttachments(attachments) === undefined) {
       setNote({
         tone: "info",
@@ -412,24 +430,9 @@ const ComposerBox = ({
     // The Attachments leave the composer with the text, as the send takes them.
     if (reviewing) message.annotations = drafts.map((draft) => draft.id);
 
-    // The prompt's definition as the catalog has it now; arguments it no longer takes are dropped, one it requires is asked.
-    if (chip !== null && standing !== null) {
-      if (standing.kind === "gone") {
-        setNote({ tone: "error", text: standing.message });
-
-        return;
-      }
-
-      if (standing.kind === "arguments") {
-        setForm({
-          prompt: standing.prompt,
-          values: startingValues(standing.prompt, chip.values),
-          problem: standing.message,
-        });
-
-        return;
-      }
-
+    // The prompt's definition as the catalog has it now: arguments it no longer takes are dropped (`promptWaiting` held
+    // back one that is gone, or that it now needs more of).
+    if (chip !== null && standing?.kind === "ready") {
       message.prompt = { prompt: standing.prompt, values: chip.values };
     }
 
@@ -451,10 +454,7 @@ const ComposerBox = ({
       }
 
       // The refused prompt comes back as the chip (a newer one picked meanwhile stays), and what the refusal says to do.
-      const outcome = refusalOutcome({
-        message: messageOf(exit.cause),
-        ...refusalFields(exit.cause),
-      });
+      const outcome = refusalOutcome(messageOf(exit.cause), refusalOfCause(exit.cause));
 
       store.set(state.chip, store.get(state.chip) ?? sentChip);
 
@@ -476,7 +476,7 @@ const ComposerBox = ({
   };
 
   const queue = () => {
-    if (!hasMessage || handled()) return;
+    if (!hasMessage || handled() || refusedForPrompt()) return;
 
     if (ownSend) sendWithAttachments("followUp");
     else aui.composer.send({ steer: false });
@@ -484,6 +484,13 @@ const ComposerBox = ({
 
   const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
     if (busy || handled()) {
+      event.preventDefault();
+
+      return;
+    }
+
+    // A prompt that holds the message back holds back what assistant-ui would send of its text, too.
+    if (refusedForPrompt()) {
       event.preventDefault();
 
       return;
@@ -507,7 +514,13 @@ const ComposerBox = ({
     }
 
     // assistant-ui's own steer shortcut would send the text without the Attachments or the drafts.
-    if (ownSend && event.key === "Enter" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
+    // An open prompt form holds it back too.
+    if (
+      (ownSend || promptWaiting !== null) &&
+      event.key === "Enter" &&
+      event.shiftKey &&
+      (event.ctrlKey || event.metaKey)
+    ) {
       event.preventDefault();
 
       if (!busy && !handled()) sendWithAttachments("steer");
@@ -572,7 +585,7 @@ const ComposerBox = ({
           {chip !== null && (
             <PromptChipView
               chip={chip}
-              gone={standing?.kind === "gone" ? standing.message : undefined}
+              gone={gone}
               onEdit={editChip}
               onRemove={() => {
                 setChip(null);

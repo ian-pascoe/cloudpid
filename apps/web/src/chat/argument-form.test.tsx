@@ -76,10 +76,26 @@ describe("the argument form", () => {
   });
 
   it("disables Done while a required field is empty", () => {
-    expect(render({ pr: "  " })).toContain('type="submit" disabled=""');
-    expect(render({ pr: "7" })).not.toContain('type="submit" disabled=""');
+    expect(render({ pr: "  " })).toContain('type="button" disabled=""');
+    expect(render({ pr: "7" })).not.toContain('disabled=""');
     expect(requiredFilled(FIELDS, { pr: "7" })).toBe(true);
     expect(requiredFilled(FIELDS, { focus: "x" })).toBe(false);
+  });
+
+  it("disables Done over the bounds, and says which one", () => {
+    const html = render({ pr: "7", focus: "x".repeat(65 * 1024) });
+
+    expect(html).toContain('type="button" disabled=""');
+    expect(html).toContain("The value of focus is over 64 KiB");
+    expect(render({ pr: "" })).not.toContain('role="alert"');
+  });
+
+  it("is a group, not a form: a submit from Done must not reach the composer's own form", () => {
+    const html = render({ pr: "7" });
+
+    expect(html).toContain('role="group"');
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain('type="submit"');
   });
 
   it("says why the Session refused the last send above the fields", () => {

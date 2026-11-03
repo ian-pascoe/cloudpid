@@ -689,8 +689,7 @@ describe("the first message of a Session", () => {
             text: "focus on tests",
             reason: "The argument pr is required",
             chip,
-            code: "MCP_PROMPT_ARGUMENTS",
-            server: "docs",
+            refusal: { code: "MCP_PROMPT_ARGUMENTS", server: "docs" },
           },
         });
       }),

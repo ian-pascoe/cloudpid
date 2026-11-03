@@ -296,8 +296,7 @@ describe("a composer's Attachments", () => {
 
         expect(exitFailure(exit)).toBe("docs is not signed in");
         expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : null).toMatchObject({
-          code: "MCP_SIGN_IN_REQUIRED",
-          server: "docs",
+          refusal: { code: "MCP_SIGN_IN_REQUIRED", server: "docs" },
         });
       }),
   );

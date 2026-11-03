@@ -8,7 +8,7 @@ import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ShownMcpPrompt } from "../session/thread-messages.ts";
 import { ShownSession } from "./conversation.ts";
-import { McpPromptDisclosure } from "./prompt-message.tsx";
+import { McpPromptChipLine, McpPromptDisclosure } from "./prompt-message.tsx";
 
 const PROMPT: ShownMcpPrompt = {
   server: "docs",
@@ -39,6 +39,8 @@ const render = (prompt: ShownMcpPrompt) => {
   const markup = renderToStaticMarkup(
     <RegistryContext.Provider value={registry}>
       <ShownSession.Provider value="s1">
+        <McpPromptChipLine prompt={prompt} />
+        <p>typed text</p>
         <McpPromptDisclosure prompt={prompt} messageId="4" />
       </ShownSession.Provider>
     </RegistryContext.Provider>,
@@ -49,7 +51,7 @@ const render = (prompt: ShownMcpPrompt) => {
   return markup;
 };
 
-describe("McpPromptDisclosure", () => {
+describe("an MCP prompt in the owner's message", () => {
   it("shows the chip with its arguments, and the block closed under it", () => {
     const markup = render(PROMPT);
 
@@ -58,6 +60,13 @@ describe("McpPromptDisclosure", () => {
     expect(markup).toContain("Reviews a pull request.");
     expect(markup).toContain("What the model got");
     expect(markup).not.toContain("<details open");
+  });
+
+  it("puts the chip line above the typed text and the closed block below it", () => {
+    const markup = render(PROMPT);
+
+    expect(markup.indexOf("MCP prompt · docs")).toBeLessThan(markup.indexOf("typed text"));
+    expect(markup.indexOf("typed text")).toBeLessThan(markup.indexOf("What the model got"));
   });
 
   it("quotes the assistant's messages in the prompt as the prompt's", () => {

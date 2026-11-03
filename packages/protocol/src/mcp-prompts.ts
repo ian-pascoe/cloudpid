@@ -134,6 +134,16 @@ export const McpPromptData = Schema.Struct({
 export type McpPromptData = typeof McpPromptData.Type;
 
 /**
+ * An argument's value as one line, cut to at most `limit` characters with a `…`: where a chip, the transcript and an
+ * export show a value that may run to many lines.
+ */
+export const flatCut = (value: string, limit: number): string => {
+  const flat = value.replaceAll(/\s+/gu, " ").trim();
+
+  return flat.length <= limit ? flat : `${flat.slice(0, limit - 1)}…`;
+};
+
+/**
  * The label an MCP prompt goes by where the owner typed nothing to name the message (the title, the tree, a lane):
  * `<server> · <title, else name>`. The chip adds the arguments.
  */

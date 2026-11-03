@@ -1,8 +1,8 @@
-// What an MCP prompt's message shows in the transcript (`docs/architecture/mcp-in-a-session.md` → What the transcript
-// shows): the head line, its arguments, and the block the model got read back into the messages it came from. Pure, so
+// What an MCP prompt's message shows in the transcript (`docs/architecture/mcp-in-a-session.md` → Into the conversation,
+// The transcript): the head line, its arguments, and the block the model got read back into the messages it came from. Pure, so
 // it is tested without a thread.
 
-import { type McpPromptData, mcpPromptLabel } from "@cloudpid/protocol";
+import { flatCut, type McpPromptData, mcpPromptLabel } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 
@@ -24,11 +24,9 @@ export const promptArgumentLines = (
   prompt: Pick<McpPromptData, "arguments">,
 ): ReadonlyArray<string> =>
   Arr.flatMap(Record.toEntries(prompt.arguments), ([name, value]) => {
-    const flat = value.replaceAll(/\s+/gu, " ").trim();
+    const flat = flatCut(value, VALUE_CHARS);
 
-    if (flat === "") return [];
-
-    return [`${name}: ${flat.length > VALUE_CHARS ? `${flat.slice(0, VALUE_CHARS - 1)}…` : flat}`];
+    return flat === "" ? [] : [`${name}: ${flat}`];
   });
 
 const OPEN = /^<mcp_prompt\b[^\n]*>\n?/u;

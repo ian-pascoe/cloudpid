@@ -610,17 +610,27 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
 
   useAtomMount(state.effects);
 
-  const { chip, setChip, form, setForm, standing, pickPrompt, finishForm, cancelForm, editChip } =
-    usePromptChip({
-      state,
-      catalog,
-      focusInput: () => {
-        requestAnimationFrame(() => {
-          box.current?.focus();
-        });
-      },
-      clearNote: () => {},
-    });
+  const {
+    chip,
+    setChip,
+    form,
+    setForm,
+    standing,
+    promptWaiting,
+    gone,
+    pickPrompt,
+    finishForm,
+    cancelForm,
+    editChip,
+  } = usePromptChip({
+    state,
+    catalog,
+    focusInput: () => {
+      requestAnimationFrame(() => {
+        box.current?.focus();
+      });
+    },
+  });
 
   const edit = (next: Edited) => {
     Atom.batch(() => {
@@ -670,13 +680,6 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
   const attached = attachments.items.length > 0;
   // Why Send waits for the Attachments, shown under the box.
   const waiting = attached ? draftWaitingFor(attachments) : null;
-
-  const promptWaiting =
-    form !== null
-      ? "Fill in the prompt's arguments, or cancel them."
-      : standing === null || standing.kind === "ready"
-        ? null
-        : standing.message;
 
   const sendable =
     draftSendable(input, attached) && waiting === null && promptWaiting === null && !sending;
@@ -777,7 +780,7 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
             {chip !== null && (
               <PromptChipView
                 chip={chip}
-                gone={standing?.kind === "gone" ? standing.message : undefined}
+                gone={gone}
                 onEdit={editChip}
                 onRemove={() => {
                   if (!sending) setChip(null);

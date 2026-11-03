@@ -4,7 +4,11 @@
 // one field per argument in declared order, above the composer. It takes the fields and the values, and gives the values
 // back: the prompt's chip is made of them (Done), or nothing is (Cancel). Values may be several lines; Tab or Enter moves on.
 
-import { type McpPromptArgument, MAX_MCP_PROMPT_ARGUMENT_BYTES } from "@cloudpid/protocol";
+import {
+  type McpPromptArgument,
+  MAX_MCP_PROMPT_ARGUMENT_BYTES,
+  promptArgumentsProblem,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { useEffect, useId, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
@@ -19,7 +23,11 @@ export const requiredFilled = (
 
 /**
  * The argument form of a prompt: `title` (what it is, with `server` muted beside it), `fields` and their `values`,
- * and `problem` above them when the Session refused the last send. Done is disabled while a required field is empty.
+ * and `problem` above them when the Session refused the last send. Done is disabled while a required field is empty or the
+ * values are over their bounds (`promptArgumentsProblem`, which the Session checks again), and says which bound.
+ *
+ * It is a group, not a `<form>`: the composer's own form is around it, and a submit from Done would bubble to it and send
+ * the message with the chip's old values.
  */
 export const ArgumentForm = ({
   title,
@@ -42,7 +50,11 @@ export const ArgumentForm = ({
 }) => {
   const id = useId();
   const inputs = useRef<(HTMLTextAreaElement | null)[]>([]);
-  const valid = requiredFilled(fields, values);
+  const problemNow = promptArgumentsProblem(fields, values);
+  const valid = problemNow === undefined;
+
+  // An empty required field is what the label's asterisk says; a value over a bound needs saying.
+  const overBound = requiredFilled(fields, values) ? problemNow : undefined;
   const problemId = `${id}-problem`;
 
   // The first field takes the focus as the form opens: the owner picked the prompt to fill it in.
@@ -55,14 +67,10 @@ export const ArgumentForm = ({
   };
 
   return (
-    <form
+    <div
+      role="group"
       aria-label={`Arguments of ${title}`}
       aria-describedby={problem === undefined ? undefined : problemId}
-      onSubmit={(event) => {
-        event.preventDefault();
-
-        if (valid) onDone();
-      }}
       className="flex flex-col gap-2 rounded-lg border bg-background p-3 shadow-sm"
     >
       <div className="flex items-baseline gap-2 text-sm">
@@ -128,14 +136,19 @@ export const ArgumentForm = ({
           </div>
         );
       })}
+      {overBound !== undefined && (
+        <p role="alert" className="text-xs text-destructive">
+          {overBound}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" size="sm" disabled={!valid}>
+        <Button type="button" size="sm" disabled={!valid} onClick={onDone}>
           Done
         </Button>
       </div>
-    </form>
+    </div>
   );
 };

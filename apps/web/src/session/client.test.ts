@@ -975,8 +975,7 @@ describe("a Session connection", () => {
         expect(failures).toMatchObject([
           {
             message: "The argument pr is required",
-            code: "MCP_PROMPT_ARGUMENTS",
-            server: "docs",
+            refusal: { code: "MCP_PROMPT_ARGUMENTS", server: "docs" },
           },
         ]);
         expect(state().sending).toEqual([]);

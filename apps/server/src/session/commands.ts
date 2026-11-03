@@ -6,6 +6,7 @@ import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import {
   type Catalog,
   type CatalogEntry,
+  flatCut,
   MCP_PROMPT_COMMAND_PREFIX,
   projectEntry,
   sessionCommandsFor,
@@ -94,22 +95,13 @@ const quoted = (text: string): string =>
 /** The longest an argument's value is shown in an export, in characters. */
 const EXPORT_ARGUMENT_CHARACTERS = 200;
 
-/** An argument's value on one line, cut. */
-const argumentValue = (value: string): string => {
-  const flat = value.replace(/\s+/gu, " ").trim();
-
-  return flat.length <= EXPORT_ARGUMENT_CHARACTERS
-    ? flat
-    : `${flat.slice(0, EXPORT_ARGUMENT_CHARACTERS - 1)}…`;
-};
-
 /**
  * What an export says of an MCP prompt the owner sent (`TranscriptMessage.mcpPrompt`): which prompt with its arguments
  * (redacted as kept), the block the model got as a blockquote, and the resources it linked or embedded, by URI.
  */
 const promptMarkdown = (prompt: NonNullable<TranscriptMessage["mcpPrompt"]>): string[] => {
   const args = Record.toEntries(prompt.arguments)
-    .map(([name, value]) => `${name}=${argumentValue(value)}`)
+    .map(([name, value]) => `${name}=${flatCut(value, EXPORT_ARGUMENT_CHARACTERS)}`)
     .join(", ");
 
   const resources = prompt.resources.map((resource) => `- ${resource.uri}`);

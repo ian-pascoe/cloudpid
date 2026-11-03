@@ -6,7 +6,10 @@
 import { cn } from "../lib/utils.ts";
 import type { Note } from "./composer-state.ts";
 
-/** `note` under the composer `id` describes; `signInHref` is the link to sign in to a server, `onRetry` sends again. */
+/**
+ * `note` under the composer `id` describes; `signInHref` is the link to sign in to a server (none while the Session's
+ * Environment is not known, which it is the link's scope: the link then waits), `onRetry` sends again.
+ */
 export const ComposerNote = ({
   id,
   note,
@@ -15,7 +18,7 @@ export const ComposerNote = ({
 }: {
   id: string;
   note: Note;
-  signInHref: (server: string) => string;
+  signInHref: (server: string) => string | undefined;
   onRetry: () => void;
 }) => (
   <p
@@ -30,14 +33,20 @@ export const ComposerNote = ({
     {note.signIn !== undefined && (
       <>
         {" "}
-        <a
-          href={signInHref(note.signIn)}
-          target="_blank"
-          rel="noopener"
-          className="font-medium underline underline-offset-2"
-        >
-          Sign in to {note.signIn}
-        </a>
+        {signInHref(note.signIn) === undefined ? (
+          <span aria-disabled="true" className="text-muted-foreground">
+            Sign in to {note.signIn}
+          </span>
+        ) : (
+          <a
+            href={signInHref(note.signIn)}
+            target="_blank"
+            rel="noopener"
+            className="font-medium underline underline-offset-2"
+          >
+            Sign in to {note.signIn}
+          </a>
+        )}
       </>
     )}
     {note.retry === true && (

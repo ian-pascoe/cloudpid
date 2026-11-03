@@ -11,8 +11,9 @@ import {
   needsForm,
   offeredPrompt,
   promptLane,
+  promptWaitingFor,
   refOf,
-  refusalFields,
+  refusalOfCause,
   refusalOutcome,
   restoredChip,
   startingValues,
@@ -147,46 +148,93 @@ describe("the chip Branch gives back", () => {
   });
 });
 
+describe("what holds a message back while an MCP prompt is in the composer", () => {
+  const ready = { kind: "ready", prompt: REVIEW } as const;
+
+  it("is its open form, whatever else is true: nothing is sent until Done or Cancel", () => {
+    const form = { prompt: REVIEW, values: {} };
+
+    expect(promptWaitingFor({ form, chip: null, standing: null, reviewing: false })).toMatch(
+      /Fill in the prompt's arguments/,
+    );
+    expect(
+      promptWaitingFor({ form, chip: chip({ pr: "1" }), standing: ready, reviewing: false }),
+    ).toMatch(/Fill in the prompt's arguments/);
+  });
+
+  it("is a Review the prompt cannot go with, a prompt the catalog dropped, or arguments it now needs", () => {
+    const held = { form: null, chip: chip({ pr: "1" }) } as const;
+
+    expect(promptWaitingFor({ ...held, standing: ready, reviewing: true })).toMatch(/Review/);
+    expect(
+      promptWaitingFor({
+        ...held,
+        standing: { kind: "gone", message: "docs no longer offers Review PR" },
+        reviewing: false,
+      }),
+    ).toBe("docs no longer offers Review PR");
+    expect(
+      promptWaitingFor({
+        ...held,
+        standing: { kind: "arguments", message: "The argument branch is required", prompt: REVIEW },
+        reviewing: false,
+      }),
+    ).toBe("The argument branch is required");
+  });
+
+  it("is nothing for a chip that can be sent, or no chip", () => {
+    expect(
+      promptWaitingFor({ form: null, chip: chip({ pr: "1" }), standing: ready, reviewing: false }),
+    ).toBeNull();
+    expect(
+      promptWaitingFor({ form: null, chip: null, standing: null, reviewing: true }),
+    ).toBeNull();
+  });
+});
+
 describe("what a refused send of an MCP prompt does", () => {
   it("reopens the form for arguments, offers a sign-in for a server that needs one, and retries a failed get", () => {
+    expect(refusalOutcome("The argument pr is required", { code: "MCP_PROMPT_ARGUMENTS" })).toEqual(
+      {
+        message: "The argument pr is required",
+        reopenForm: true,
+        retry: false,
+        signIn: undefined,
+        refreshCatalog: true,
+      },
+    );
     expect(
-      refusalOutcome({ message: "The argument pr is required", code: "MCP_PROMPT_ARGUMENTS" }),
-    ).toEqual({
-      message: "The argument pr is required",
-      reopenForm: true,
-      retry: false,
-      signIn: undefined,
-      refreshCatalog: true,
-    });
-    expect(
-      refusalOutcome({ message: "Sign in", code: "MCP_SIGN_IN_REQUIRED", server: "docs" }),
-    ).toMatchObject({ reopenForm: false, retry: true, signIn: "docs" });
-    expect(refusalOutcome({ message: "Too big", code: "MCP_PROMPT_TOO_LARGE" })).toMatchObject({
+      refusalOutcome("Sign in", { code: "MCP_SIGN_IN_REQUIRED", server: "docs" }),
+    ).toMatchObject({ reopenForm: false, retry: true, signIn: "docs", refreshCatalog: false });
+    expect(refusalOutcome("Too big", { code: "MCP_PROMPT_TOO_LARGE" })).toMatchObject({
       retry: false,
       refreshCatalog: false,
     });
-    expect(refusalOutcome({ message: "down", code: "MCP_PROMPT_FAILED" })).toMatchObject({
+    expect(refusalOutcome("down", { code: "MCP_PROMPT_FAILED" })).toMatchObject({
       retry: true,
       refreshCatalog: true,
       reopenForm: false,
     });
   });
 
-  it("treats a refusal with no code, or one it does not know, as a failed get: the chip comes back and may be retried", () => {
-    for (const code of [undefined, "A_CODE_FROM_A_NEWER_SESSION"]) {
-      expect(refusalOutcome({ message: "Excess property", code })).toMatchObject({
+  it("treats a refusal with no code, or one it does not know, as a failed get: the chip comes back, the catalog is asked for again, and the owner may retry", () => {
+    for (const refusal of [undefined, {}, { code: "A_CODE_FROM_A_NEWER_SESSION" }]) {
+      expect(refusalOutcome("Excess property", refusal)).toEqual({
         message: "Excess property",
         reopenForm: false,
         retry: true,
         signIn: undefined,
+        refreshCatalog: true,
       });
     }
   });
 
-  it("reads the code and server of a failure that carries them", () => {
+  it("reads the refusal of a failure that carries one", () => {
     expect(
-      refusalFields(Cause.fail({ message: "m", code: "MCP_PROMPT_FAILED", server: "docs" })),
+      refusalOfCause(
+        Cause.fail({ message: "m", refusal: { code: "MCP_PROMPT_FAILED", server: "docs" } }),
+      ),
     ).toEqual({ code: "MCP_PROMPT_FAILED", server: "docs" });
-    expect(refusalFields(Cause.fail(new Error("closed")))).toEqual({});
+    expect(refusalOfCause(Cause.fail(new Error("closed")))).toBeUndefined();
   });
 });

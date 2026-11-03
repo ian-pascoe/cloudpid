@@ -338,16 +338,7 @@ export const composerState = (source: ComposerSource): ComposerState => {
           if (message.chip === undefined) get.set(note, { tone: "error", text: message.reason });
           else {
             get.set(source.prompt.chip, message.chip);
-            get.set(
-              note,
-              refusalNote(
-                refusalOutcome({
-                  message: message.reason,
-                  code: message.code,
-                  server: message.server,
-                }),
-              ),
-            );
+            get.set(note, refusalNote(refusalOutcome(message.reason, message.refusal)));
           }
 
           if (message.files !== undefined && message.files.length > 0) {

@@ -4,14 +4,12 @@ import { ComposerNote } from "./composer-note.tsx";
 import { refusalNote } from "./composer-state.ts";
 import { refusalOutcome } from "./mcp-prompt-state.ts";
 
-const render = (note: Parameters<typeof ComposerNote>[0]["note"]) =>
+const render = (
+  note: Parameters<typeof ComposerNote>[0]["note"],
+  signInHref: (server: string) => string | undefined = (server) => `/sign-in?server=${server}`,
+) =>
   renderToStaticMarkup(
-    <ComposerNote
-      id="note"
-      note={note}
-      signInHref={(server) => `/sign-in?server=${server}`}
-      onRetry={() => {}}
-    />,
+    <ComposerNote id="note" note={note} signInHref={signInHref} onRetry={() => {}} />,
   );
 
 describe("the note under the composer", () => {
@@ -23,11 +21,7 @@ describe("the note under the composer", () => {
   it("offers a link to sign in to the server a refusal names, in a new tab, and Retry", () => {
     const html = render(
       refusalNote(
-        refusalOutcome({
-          message: "docs is not signed in",
-          code: "MCP_SIGN_IN_REQUIRED",
-          server: "docs",
-        }),
+        refusalOutcome("docs is not signed in", { code: "MCP_SIGN_IN_REQUIRED", server: "docs" }),
       ),
     );
 
@@ -37,10 +31,21 @@ describe("the note under the composer", () => {
     expect(html).toContain(">Retry<");
   });
 
-  it("offers neither for a refusal of the arguments or of a size", () => {
+  it("shows the sign-in as no link until the Session's Environment, which its scope is, is known", () => {
     const html = render(
-      refusalNote(refusalOutcome({ message: "Too big", code: "MCP_PROMPT_TOO_LARGE" })),
+      refusalNote(
+        refusalOutcome("docs is not signed in", { code: "MCP_SIGN_IN_REQUIRED", server: "docs" }),
+      ),
+      () => undefined,
     );
+
+    expect(html).not.toContain("<a ");
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain("Sign in to docs");
+  });
+
+  it("offers neither for a refusal of the arguments or of a size", () => {
+    const html = render(refusalNote(refusalOutcome("Too big", { code: "MCP_PROMPT_TOO_LARGE" })));
 
     expect(html).not.toContain("Retry");
     expect(html).not.toContain("Sign in");

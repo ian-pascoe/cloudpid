@@ -34,7 +34,7 @@ import { replying } from "../calls.ts";
 import { reviewLaneText } from "../review/drafts.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
-import type { SessionCommandError } from "../session/client.ts";
+import { Refusal, type SessionCommandError } from "../session/client.ts";
 import {
   formatSize,
   isPictureType,
@@ -611,21 +611,18 @@ export class SendError extends Schema.TaggedError<SendError, { readonly brand: u
   "SendError",
   {
     message: Schema.String,
-    /** What a refusal of an MCP prompt send carries (`error.code`, `error.server`). */
-    code: Schema.optionalKey(Schema.String),
-    server: Schema.optionalKey(Schema.String),
+    /** What a refusal of an MCP prompt send carries (`SessionCommandError.refusal`). */
+    refusal: Schema.optionalKey(Refusal),
   },
 ) {}
 
-/** A `SendError`'s fields from the Session's refusal: its message, with the code and server when it had them. */
+/** A `SendError`'s fields from the Session's refusal: its message, with its code and server when it had them. */
 const sendErrorOf = (error: SessionCommandError) => {
   const fields: Types.Mutable<ConstructorParameters<typeof SendError>[0]> = {
     message: error.message,
   };
 
-  if (error.code !== undefined) fields.code = error.code;
-
-  if (error.server !== undefined) fields.server = error.server;
+  if (error.refusal !== undefined) fields.refusal = error.refusal;
 
   return fields;
 };

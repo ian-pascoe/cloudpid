@@ -23,7 +23,7 @@ import { changing, RegistryClient } from "./registry.ts";
 import { isDraftPath, pathAtom, sessionPath } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { sessionClientAtom } from "./session/atoms.ts";
-import type { SessionCommandError } from "./session/client.ts";
+import type { Refusal, SessionCommandError } from "./session/client.ts";
 import type { OutgoingMessage } from "./session/state.ts";
 import { draftPromptAtoms, type PromptChip, withPrompt } from "./chat/mcp-prompt-state.ts";
 
@@ -214,10 +214,10 @@ export interface RefusedFirstMessage {
   readonly reason: string;
   /** The files attached to it, which the composer attaches again. */
   readonly files?: readonly File[];
-  /** The MCP prompt it was sent with, which the composer holds as its chip again; `code` and `server` are the refusal's. */
+  /** The MCP prompt it was sent with, which the composer holds as its chip again. */
   readonly chip?: PromptChip;
-  readonly code?: string;
-  readonly server?: string;
+  /** What the Session's refusal carried of an MCP prompt send. */
+  readonly refusal?: Refusal;
 }
 
 /**
@@ -245,22 +245,20 @@ export const drainFirstMessageAtom = Atom.family((sessionId: string) =>
 
         const { text, message = text, files, chip } = first;
 
-        const answered = (refusal: SessionCommandError | null) =>
+        const answered = (error: SessionCommandError | null) =>
           Effect.sync(() => {
             const { [sessionId]: _sent, ...others } = get.once(pendingFirstMessagesAtom);
 
             get.set(pendingFirstMessagesAtom, others);
 
-            if (refusal !== null) {
-              const refused: Types.Mutable<RefusedFirstMessage> = { text, reason: refusal.message };
+            if (error !== null) {
+              const refused: Types.Mutable<RefusedFirstMessage> = { text, reason: error.message };
 
               if (files !== undefined) refused.files = files;
 
               if (chip !== undefined) refused.chip = chip;
 
-              if (refusal.code !== undefined) refused.code = refusal.code;
-
-              if (refusal.server !== undefined) refused.server = refusal.server;
+              if (error.refusal !== undefined) refused.refusal = error.refusal;
 
               get.set(refusedFirstMessagesAtom, {
                 ...get.once(refusedFirstMessagesAtom),

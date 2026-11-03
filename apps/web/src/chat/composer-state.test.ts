@@ -485,8 +485,7 @@ describe("one composer's state", () => {
             text: "focus on tests",
             reason: "The server is not signed in",
             chip: { prompt, values: { pr: "7" } },
-            code: "MCP_SIGN_IN_REQUIRED",
-            server: "docs",
+            refusal: { code: "MCP_SIGN_IN_REQUIRED", server: "docs" },
           },
         });
 

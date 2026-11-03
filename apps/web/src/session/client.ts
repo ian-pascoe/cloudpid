@@ -92,6 +92,28 @@ const PROBE_AFTER_ATTEMPTS = 2;
 /** Why a request cannot be answered while the socket is down. */
 const NOT_CONNECTED = "The session is not connected; try again once it is.";
 
+/** The code a Session's refusal of an MCP prompt send carries (`error.code`), and the server it names (`error.server`). */
+export const Refusal = Schema.Struct({
+  code: Schema.optionalKey(Schema.String),
+  server: Schema.optionalKey(Schema.String),
+});
+
+export type Refusal = typeof Refusal.Type;
+
+/** The `code` and `server` of `source`, if it has either: a refusal's, whatever else it carries. */
+const refusalOf = (source: {
+  readonly code?: string | undefined;
+  readonly server?: string | undefined;
+}): Refusal | undefined => {
+  const refusal: Types.Mutable<Refusal> = {};
+
+  if (source.code !== undefined) refusal.code = source.code;
+
+  if (source.server !== undefined) refusal.server = source.server;
+
+  return refusal.code === undefined && refusal.server === undefined ? undefined : refusal;
+};
+
 /**
  * Why a command to the Session did not get the answer it waited for: the Session refused it (its message), its answer
  * could not be read, or the socket closed first.
@@ -101,9 +123,8 @@ export class SessionCommandError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("SessionCommandError", {
   message: Schema.String,
-  /** The code a refusal of an MCP prompt send carries (`error.code`), and the server it names. */
-  code: Schema.optionalKey(Schema.String),
-  server: Schema.optionalKey(Schema.String),
+  /** What a refusal of an MCP prompt send carries besides its message. */
+  refusal: Schema.optionalKey(Refusal),
 }) {}
 
 /**
@@ -759,7 +780,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   const settle = (
     submit: PendingSubmit,
     failure: string | null,
-    refusal?: { readonly code?: string | undefined; readonly server?: string | undefined },
+    source?: { readonly code?: string | undefined; readonly server?: string | undefined },
   ): void => {
     if (submit.outcome === undefined) return;
 
@@ -773,9 +794,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       message: failure,
     };
 
-    if (refusal?.code !== undefined) error.code = refusal.code;
+    const refusal = source === undefined ? undefined : refusalOf(source);
 
-    if (refusal?.server !== undefined) error.server = refusal.server;
+    if (refusal !== undefined) error.refusal = refusal;
 
     Deferred.doneUnsafe(submit.outcome, Effect.fail(SessionCommandError.make(error)));
   };
@@ -788,7 +809,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     commandId: string,
     submissionId: string | undefined,
     failure: string | null = null,
-    refusal?: { readonly code?: string | undefined; readonly server?: string | undefined },
+    source?: { readonly code?: string | undefined; readonly server?: string | undefined },
   ): void => {
     const index = pending.findIndex((submit) => submit.commandId === commandId);
     const submit = pending[index];
@@ -796,7 +817,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     if (submit === undefined) return;
 
     pending.splice(index, 1);
-    settle(submit, failure, refusal);
+    settle(submit, failure, source);
 
     if (submissionId !== undefined) {
       texts.set(submissionId, submit.text);

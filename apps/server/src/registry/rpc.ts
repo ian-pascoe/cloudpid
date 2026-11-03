@@ -1156,17 +1156,20 @@ export const serveRegistryRpc = <R = never>(
           ),
       listWorkspaces: () => registry.listWorkspaces(),
       draftCatalog: ({ environment, workspace }) =>
-        Effect.all([
-          draftPlace(environment, workspace).pipe(
-            Effect.flatMap((place) =>
-              place === null
-                ? Effect.succeed({ commands: [], templates: [], skills: [] })
-                : lookups.catalog(place),
+        Effect.all(
+          [
+            draftPlace(environment, workspace).pipe(
+              Effect.flatMap((place) =>
+                place === null
+                  ? Effect.succeed({ commands: [], templates: [], skills: [] })
+                  : lookups.catalog(place),
+              ),
             ),
-          ),
-          // The Environment's MCP prompts, from its host's inventory: no Workspace is readied for them.
-          mcpStatus.prompts(environment),
-        ]).pipe(
+            // The Environment's MCP prompts, from its host's inventory: no Workspace is readied for them.
+            mcpStatus.prompts(environment),
+          ],
+          { concurrency: 2 },
+        ).pipe(
           Effect.map(([found, mcp]): Catalog => {
             const catalog: Mutable<Catalog> = { ...found };
 

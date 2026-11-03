@@ -7,6 +7,7 @@
 
 import {
   type Catalog,
+  flatCut,
   mcpPromptErrorCode,
   type McpPromptArgument,
   type McpPromptData,
@@ -17,8 +18,10 @@ import {
 } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import * as Atom from "effect/reactivity/Atom";
 import type * as Types from "effect/Types";
+import { Refusal } from "../session/client.ts";
 import type { OutgoingMessage } from "../session/state.ts";
 import type { ConversationKey } from "./conversation.ts";
 
@@ -96,11 +99,9 @@ export const chipProblem = (chip: PromptChip): string | undefined =>
 export const chipArguments = (chip: PromptChip, limit = 40): string =>
   chip.prompt.arguments
     .flatMap((argument: McpPromptArgument) => {
-      const flat = (chip.values[argument.name] ?? "").replace(/\s+/gu, " ").trim();
+      const flat = flatCut(chip.values[argument.name] ?? "", limit);
 
-      if (flat === "") return [];
-
-      return [`${argument.name}: ${flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat}`];
+      return flat === "" ? [] : [`${argument.name}: ${flat}`];
     })
     .join(" · ");
 
@@ -193,26 +194,34 @@ export const chipStanding = (
     : { kind: "arguments", message: problem, prompt };
 };
 
-/** The `code` and `server` a failed send carries, when it carries them (`SendError`). */
-export interface RefusalFields {
-  readonly code?: string;
-  readonly server?: string;
-}
+const isRefusal = Schema.is(Refusal);
 
-/** The `code` and `server` of `cause`'s failure, when it carries them. */
-export const refusalFields = (cause: Cause.Cause<unknown>): RefusalFields => {
+/** The `code` and `server` `cause`'s failure carries (`SendError.refusal`), when it carries them. */
+export const refusalOfCause = (cause: Cause.Cause<unknown>): Refusal | undefined => {
   const error = Cause.squash(cause);
-  const fields: Types.Mutable<RefusalFields> = {};
 
-  if (Predicate.hasProperty(error, "code") && Predicate.isString(error.code)) {
-    fields.code = error.code;
-  }
+  return Predicate.hasProperty(error, "refusal") && isRefusal(error.refusal)
+    ? error.refusal
+    : undefined;
+};
 
-  if (Predicate.hasProperty(error, "server") && Predicate.isString(error.server)) {
-    fields.server = error.server;
-  }
+/**
+ * Why the message cannot be sent while an MCP prompt is in the composer, or null when nothing holds it back: its form is
+ * open, it goes with a Review (which carries no prompt), or the chip cannot be sent as it is (`chipStanding`).
+ */
+export const promptWaitingFor = (held: {
+  readonly form: PromptForm | null;
+  readonly chip: PromptChip | null;
+  readonly standing: ChipStanding | null;
+  readonly reviewing: boolean;
+}): string | null => {
+  if (held.form !== null) return "Fill in the prompt's arguments, or cancel them.";
 
-  return fields;
+  if (held.chip === null) return null;
+
+  if (held.reviewing) return "An MCP prompt cannot go with a Review: remove one of them.";
+
+  return held.standing === null || held.standing.kind === "ready" ? null : held.standing.message;
 };
 
 /** What a refused send does to the composer. */
@@ -234,45 +243,24 @@ export interface RefusalOutcome {
  * and a refusal without one (an older Session that read `mcpPrompt` as an excess property, or a socket that closed),
  * count as a failed get: the chip and text are given back all the same, and the owner may retry.
  */
-export const refusalOutcome = (error: {
-  readonly message: string;
-  readonly code?: string | undefined;
-  readonly server?: string | undefined;
-}): RefusalOutcome => {
-  const code = mcpPromptErrorCode(error.code);
+export const refusalOutcome = (message: string, refusal?: Refusal): RefusalOutcome => {
+  // A refusal with no code, or one this build does not know, is a failed get.
+  const code = mcpPromptErrorCode(refusal?.code) ?? "MCP_PROMPT_FAILED";
 
   switch (code) {
     case "MCP_PROMPT_ARGUMENTS":
-      return {
-        message: error.message,
-        reopenForm: true,
-        retry: false,
-        signIn: undefined,
-        refreshCatalog: true,
-      };
+      return { message, reopenForm: true, retry: false, signIn: undefined, refreshCatalog: true };
     case "MCP_SIGN_IN_REQUIRED":
       return {
-        message: error.message,
+        message,
         reopenForm: false,
         retry: true,
-        signIn: error.server,
+        signIn: refusal?.server,
         refreshCatalog: false,
       };
     case "MCP_PROMPT_TOO_LARGE":
-      return {
-        message: error.message,
-        reopenForm: false,
-        retry: false,
-        signIn: undefined,
-        refreshCatalog: false,
-      };
-    default:
-      return {
-        message: error.message,
-        reopenForm: false,
-        retry: true,
-        signIn: undefined,
-        refreshCatalog: code === "MCP_PROMPT_FAILED",
-      };
+      return { message, reopenForm: false, retry: false, signIn: undefined, refreshCatalog: false };
+    case "MCP_PROMPT_FAILED":
+      return { message, reopenForm: false, retry: true, signIn: undefined, refreshCatalog: true };
   }
 };
