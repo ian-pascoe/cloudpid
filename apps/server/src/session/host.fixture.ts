@@ -1629,6 +1629,8 @@ export class TestSession extends DurableObject {
     readonly pages?: ReadonlyArray<AttachedPage>;
   }): Promise<
     | { readonly submission: number }
+    /** Stop withdrew it before it was placed. */
+    | { readonly withdrawn: true }
     | {
         readonly failure: {
           readonly message: string;
@@ -1648,6 +1650,7 @@ export class TestSession extends DurableObject {
     return this.#runtime.runPromise(
       this.#host.submit(prompt).pipe(
         Effect.map((submission) => ({ submission })),
+        Effect.catchIf(isWithdrawn, () => Effect.succeed({ withdrawn: true as const })),
         Effect.catch((error) =>
           Effect.succeed({
             failure: { message: error.message, code: error.code, server: error.server },

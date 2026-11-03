@@ -152,7 +152,7 @@ import { historyPage } from "./history.ts";
 import type { EntriesRequest, FollowState, SettledInput } from "./mcp-reads.ts";
 import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file-search.ts";
 import { cropParts, fitCrops } from "./crops.ts";
-import { inputProblem, storedBytes } from "./input-guard.ts";
+import { type InputProblem, inputProblemOf, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { AgentsReport, sessionAgentsOf } from "./agents-report.ts";
@@ -2328,20 +2328,47 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * expansion is in it, so what is measured is what would be written. Run in arrival order, so the inbox read is not
    * outgrown by a message admitted meanwhile.
    */
-  const guard = (conversationId: ConversationId | undefined, draft: InputSubmissionDraft) =>
+  const guard = (
+    conversationId: ConversationId | undefined,
+    draft: InputSubmissionDraft,
+    // The server of the MCP prompt the message got: its refusal then says why with a code.
+    prompt?: string,
+  ) =>
     Effect.suspend(() => {
-      const refused = (message: string) => SessionError.make({ operation: "submit", message });
+      const refused = (problem: InputProblem) =>
+        SessionError.make(
+          prompt === undefined
+            ? { operation: "submit", message: problem.message }
+            : {
+                operation: "submit",
+                message: problem.message,
+                // Only a size is a prompt too large; a wrong image type is the server's content, which fails the get.
+                code: problem.kind === "size" ? "MCP_PROMPT_TOO_LARGE" : "MCP_PROMPT_FAILED",
+                server: prompt,
+              },
+        );
 
       // The row pi-durable writes is the entry (its model message, from `content`, and its kind and data, from `entry`) or
       // the inbox document holding it, both as JSON; `{ content, entry }` is that JSON but for a few fields (IDs, the
       // timestamp, the role), which the room between `MAX_STORED_INPUT_BYTES` and the 8 MiB row (workerd#7493) leaves.
-      const alone = inputProblem(draft, 0);
+      const alone = inputProblemOf(draft, 0);
 
       if (alone !== undefined) return Effect.fail(refused(alone));
 
       return queuedBytes(conversationId).pipe(
+        // The storage could not be read: not a size, whatever the message is.
+        Effect.mapError((error) =>
+          prompt === undefined
+            ? error
+            : SessionError.make({
+                operation: error.operation,
+                message: error.message,
+                code: "MCP_PROMPT_FAILED",
+                server: prompt,
+              }),
+        ),
         Effect.flatMap((queued) => {
-          const problem = inputProblem(draft, queued);
+          const problem = inputProblemOf(draft, queued);
 
           return problem === undefined ? Effect.void : Effect.fail(refused(problem));
         }),
@@ -2441,18 +2468,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             Effect.flatMap((draft) => withVia(draft, prompt.input, prompt.via)),
           ),
         (conversationId, draft) =>
-          guard(conversationId, draft).pipe(
-            // A prompt's message that the Session could not store is refused as too large, for the form to say so.
-            Effect.mapError((error) =>
-              prompt.mcpPrompt === undefined
-                ? error
-                : SessionError.make({
-                    operation: error.operation,
-                    message: error.message,
-                    code: "MCP_PROMPT_TOO_LARGE",
-                    server: prompt.mcpPrompt.ref.server,
-                  }),
-            ),
+          guard(conversationId, draft, prompt.mcpPrompt?.ref.server).pipe(
             Effect.andThen(admitDraft(conversationId, draft, { named: true, started: true })),
           ),
         requestId,

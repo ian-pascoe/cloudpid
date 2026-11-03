@@ -28,29 +28,51 @@ const megabytes = (bytes: number): string => (Math.ceil(bytes / 10_000) / 100).t
 
 const LIMIT = `${MAX_STORED_INPUT_BYTES / 1_000_000} MB`;
 
+/** Why an input cannot be admitted: an image of a type the providers do not take (`type`), or too many bytes (`size`). */
+export type InputProblem = {
+  readonly kind: "type" | "size";
+  readonly message: string;
+};
+
 /**
  * Why `input` cannot be admitted, or undefined when it can: an image of a type that is not PNG, JPEG, WebP or GIF, a
  * message over `MAX_STORED_INPUT_BYTES`, or one that would take the inbox past it beside the `queuedBytes` already
  * waiting there.
  */
-export const inputProblem = (input: StoredInput, queuedBytes: number): string | undefined => {
+export const inputProblemOf = (
+  input: StoredInput,
+  queuedBytes: number,
+): InputProblem | undefined => {
   const parts = Predicate.isString(input.content) ? [] : input.content;
 
   for (const part of parts) {
     if (part.type === "image" && !isInlineImageType(part.mimeType)) {
-      return `An image must be PNG, JPEG, WebP or GIF to go to the model, not ${part.mimeType}.`;
+      return {
+        kind: "type",
+        message: `An image must be PNG, JPEG, WebP or GIF to go to the model, not ${part.mimeType}.`,
+      };
     }
   }
 
   const bytes = storedBytes({ content: input.content, entry: input.entry });
 
   if (bytes > MAX_STORED_INPUT_BYTES) {
-    return `This message is ${megabytes(bytes)} MB, and one holds at most ${LIMIT}: send fewer or smaller images, or less text.`;
+    return {
+      kind: "size",
+      message: `This message is ${megabytes(bytes)} MB, and one holds at most ${LIMIT}: send fewer or smaller images, or less text.`,
+    };
   }
 
   if (bytes + queuedBytes > MAX_STORED_INPUT_BYTES) {
-    return `The messages waiting for the run and this one are ${megabytes(bytes + queuedBytes)} MB together, over the ${LIMIT} the queue holds: send it once the run has taken them.`;
+    return {
+      kind: "size",
+      message: `The messages waiting for the run and this one are ${megabytes(bytes + queuedBytes)} MB together, over the ${LIMIT} the queue holds: send it once the run has taken them.`,
+    };
   }
 
   return undefined;
 };
+
+/** `inputProblemOf`'s message. */
+export const inputProblem = (input: StoredInput, queuedBytes: number): string | undefined =>
+  inputProblemOf(input, queuedBytes)?.message;

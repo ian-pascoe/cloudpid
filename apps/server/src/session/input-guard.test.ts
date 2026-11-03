@@ -16,7 +16,7 @@ import {
 } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { cropParts, fitCrops } from "./crops.ts";
-import { inputProblem, storedBytes } from "./input-guard.ts";
+import { inputProblem, inputProblemOf, storedBytes } from "./input-guard.ts";
 
 /** A page draft at every limit: its URL, selector, tag, quote, text and crop. */
 const pageAtLimits = (index: number, text = MAX_ANNOTATION_TEXT): PageAnnotation => ({
@@ -151,6 +151,12 @@ describe("inputProblem", () => {
     expect(inputProblem({ content: [image("image/svg+xml")] }, 0)).toBe(
       "An image must be PNG, JPEG, WebP or GIF to go to the model, not image/svg+xml.",
     );
+  });
+
+  it("tells a wrong image type from a size, for a refusal that needs to say which", () => {
+    expect(inputProblemOf({ content: [image("image/svg+xml")] }, 0)?.kind).toBe("type");
+    expect(inputProblemOf({ content: [image("image/png", 2_000_000)] }, 0)?.kind).toBe("size");
+    expect(inputProblemOf({ content: "y".repeat(1_000_000) }, 1_000_000)?.kind).toBe("size");
   });
 
   it("refuses a message that would not fit one stored row, counting its entry's data", () => {

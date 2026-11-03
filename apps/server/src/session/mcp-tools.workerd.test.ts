@@ -742,6 +742,103 @@ describe("an MCP prompt in a Session", () => {
     expect(await ownerMessages(stub)).toHaveLength(1);
   });
 
+  it("is not got again for a resend of a message already admitted, which finds the first submission", async () => {
+    const { host, stub } = await discovered();
+
+    await host.scriptRequest(DOCS, [
+      gotPrompt([{ role: "user", content: { type: "text", text: "Review PR 7." } }]),
+      gotPrompt([{ role: "user", content: { type: "text", text: "A second get." } }]),
+    ]);
+
+    const pick = { requestId: "dup", text: "go", ref: { ...REVIEW, arguments: { pr: "7" } } };
+
+    const [first, again] = await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["reviewed"]);
+
+      return [await instance.submitMcpPrompt(pick), await instance.submitMcpPrompt(pick)] as const;
+    });
+
+    await idle(stub);
+    expect(first).toHaveProperty("submission");
+    expect(again).toEqual(first);
+    expect(
+      (await host.engineRequests()).filter((each) => each.request.op === "prompts/get"),
+    ).toHaveLength(1);
+    expect(await ownerMessages(stub)).toHaveLength(2);
+  });
+
+  it("is cancelled by Stop while the server is still answering: nothing is placed", async () => {
+    const { host, stub } = await discovered();
+
+    await host.scriptRequest(DOCS, [
+      {
+        ...gotPrompt([{ role: "user", content: { type: "text", text: "Never placed." } }]),
+        hold: true,
+      },
+    ]);
+
+    // The send waits on the server's answer, which never comes before Stop.
+    const sending = runInDurableObject(stub, (instance: TestSession) =>
+      instance.submitMcpPrompt({
+        requestId: "held",
+        text: "go",
+        ref: { ...REVIEW, arguments: { pr: "7" } },
+      }),
+    );
+
+    await settles(async () =>
+      expect(
+        (await host.engineRequests()).filter((each) => each.request.op === "prompts/get"),
+      ).toHaveLength(1),
+    );
+    await runInDurableObject(stub, (instance: TestSession) => instance.abortRoot());
+
+    expect(await sending).toEqual({ withdrawn: true });
+    await host.release(DOCS);
+    expect(await ownerMessages(stub)).toHaveLength(1);
+  });
+
+  it("is refused as too large only for a size: a message over the stored limit, not a wrong image type", async () => {
+    const { host, stub } = await discovered();
+
+    const gotOk = gotPrompt([{ role: "user", content: { type: "text", text: "Review." } }]);
+
+    await host.scriptRequest(DOCS, [gotOk, gotOk]);
+
+    const ref = { ...REVIEW, arguments: { pr: "7" } };
+
+    const [large, wrongType] = await runInDurableObject(stub, async (instance: TestSession) => [
+      await instance.submitMcpPrompt({
+        requestId: "large",
+        text: "",
+        ref,
+        input: [
+          { type: "text", text: "go" },
+          { type: "image", data: "A".repeat(1_950_000), mimeType: "image/png" },
+        ],
+      }),
+      await instance.submitMcpPrompt({
+        requestId: "type",
+        text: "",
+        ref,
+        input: [
+          { type: "text", text: "go" },
+          { type: "image", data: "AAAA", mimeType: "image/svg+xml" },
+        ],
+      }),
+    ]);
+
+    expect(large).toMatchObject({ failure: { code: "MCP_PROMPT_TOO_LARGE", server: "docs" } });
+    expect(wrongType).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_FAILED",
+        server: "docs",
+        message: expect.stringContaining("image/svg+xml"),
+      },
+    });
+    expect(await ownerMessages(stub)).toHaveLength(1);
+  });
+
   it("is refused with a code for a missing required argument or a prompt not offered, without asking the server", async () => {
     const { host, stub } = await discovered();
 
