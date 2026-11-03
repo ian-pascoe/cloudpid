@@ -36,7 +36,7 @@ export const RETRY_FLOOR_MS = MINUTE_MS;
 /** A status error is cut at 300 characters. */
 export const MAX_ERROR = 300;
 
-/** How a server of the set is reached: over HTTP, through the bridge (not built yet), or not at all (switched off). */
+/** How a server of the set is reached: over HTTP, through the bridge of a Workspace's Container, or not at all (switched off). */
 type Reach = "http" | "stdio" | "off";
 
 /** A server of the held set, with what the host knows of it. */
@@ -56,13 +56,9 @@ const reachOf = (server: StoredServer): Reach => {
   return type === "stdio" ? "stdio" : "http";
 };
 
-/** The state a server is reported in: `disabled` when switched off, `skipped` for stdio, else its status's. */
+/** The state a server is reported in: `disabled` when switched off, else its status's. */
 const stateOf = (reach: Reach, status: StatusRow | undefined): McpServerState =>
-  Match.value(reach).pipe(
-    Match.when("off", () => "disabled" as const),
-    Match.when("stdio", () => "skipped" as const),
-    Match.orElse(() => status?.state ?? "not_discovered"),
-  );
+  reach === "off" ? "disabled" : (status?.state ?? "not_discovered");
 
 /** Every server of the held set, in its order, with its status and inventory. */
 export const viewServers: Effect.Effect<
@@ -115,14 +111,25 @@ export const currentVersions = Effect.gen(function* () {
  */
 export type Trigger = "demand" | "set" | "reload" | "sign_in";
 
-/** Whether `view` is due a discovery at `now` for `trigger`; `usedRecently` says whether a Session used the host. */
+/**
+ * Whether `view` is due a discovery at `now` for `trigger`; `usedRecently` says whether a Session used the host. A stdio
+ * server runs in a Container, which only a live caller's demand may start: it is due only on a `demand` that names the
+ * caller's Workspace (`workspace`), as an HTTP server that never was discovered is, and a `failed` one is tried again by
+ * such a demand once a minute has passed (an HTTP one only on a set change). A set change, a reload or a sign-in does
+ * nothing for it.
+ */
 export const isDue = (
   view: ServerView,
   trigger: Trigger,
   now: number,
   usedRecently: boolean,
+  workspace?: string,
 ): boolean => {
-  if (view.reach !== "http") return false;
+  if (view.reach === "off") return false;
+
+  const stdio = view.reach === "stdio";
+
+  if (stdio && (trigger !== "demand" || workspace === undefined)) return false;
 
   if (trigger === "reload") return true;
 
@@ -163,7 +170,7 @@ export const isDue = (
     Match.whenOr(
       "failed",
       "unknown",
-      () => trigger === "set" && now - status.since >= RETRY_FLOOR_MS,
+      () => (trigger === "set" || stdio) && now - status.since >= RETRY_FLOOR_MS,
     ),
     Match.exhaustive,
   );

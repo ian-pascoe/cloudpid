@@ -10,7 +10,10 @@ import {
   legacyStatelessServer,
   modernServer,
 } from "@cloudpid/mcp/testing";
-import { MCP_CLIENT_CREDENTIALS_EXTENSION, type McpEngineTargetEncoded } from "@cloudpid/mcp/types";
+import {
+  MCP_CLIENT_CREDENTIALS_EXTENSION,
+  type McpEngineHttpTargetEncoded,
+} from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -29,14 +32,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const target = (extensions?: McpEngineTargetEncoded["extensions"]): McpEngineTargetEncoded => {
+const target = (
+  extensions?: McpEngineHttpTargetEncoded["extensions"],
+): McpEngineHttpTargetEncoded => {
   const base = {
     kind: "http",
     conn: "conn-1",
     name: "docs",
     url: "https://mcp.example.test/mcp",
     headers: {},
-  } satisfies McpEngineTargetEncoded;
+  } satisfies McpEngineHttpTargetEncoded;
 
   return extensions === undefined ? base : { ...base, extensions };
 };
@@ -83,7 +88,7 @@ const declared = (server: FakeServer, method: string) =>
 
 const discovering = async (
   server: FakeServer,
-  extensions?: McpEngineTargetEncoded["extensions"],
+  extensions?: McpEngineHttpTargetEncoded["extensions"],
 ) => {
   vi.stubGlobal("fetch", fetchTo(server));
 

@@ -45,6 +45,7 @@ import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
 import { baseDetails } from "./details.ts";
+import { conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
 import { exposureKeys, flagsOf, reachesModel } from "./exposure.ts";
 import {
   failedWith,
@@ -84,6 +85,8 @@ export const McpBuildServer = Schema.Struct({
   state: Schema.String,
   discoveredAt: Schema.optionalKey(Schema.Finite),
   server: Schema.Struct({
+    /** `stdio` for a server that runs in a Workspace's Container; its calls ready the caller's Workspace first. */
+    type: Schema.optionalKey(Schema.Json),
     timeout: Schema.optionalKey(Schema.Json),
     description: Schema.optionalKey(Schema.Json),
     exposure: Schema.optionalKey(Schema.Json),
@@ -148,6 +151,12 @@ export type McpToolOptions = {
   readonly streamIdleMs?: number;
   /** How long a result's stream waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
   readonly streamWaitMs?: number;
+  /**
+   * A call to Workspace `workspace` (`ws:<id>`) that marks it used (`noteSessionActivity`), awaited before a call to a
+   * stdio server, which may start that Workspace's Container; false when it did not answer, and the call is then not sent.
+   * Absent: nothing is awaited.
+   */
+  readonly ready?: ((workspace: string) => Promise<boolean>) | undefined;
 };
 
 /** A promise that resolves when any of `signals` aborts, and never without one. */
@@ -202,6 +211,28 @@ const requestOf = (
   return { op: "tools/call", server, params: { name: tool, arguments: args }, ctx };
 };
 
+/**
+ * The Workspace the calling conversation works in (`ws:<id>`): its own Subagent Workspace, or its nearest ancestor's, else
+ * `fallback`, the Session's. A read that fails is the Session's too.
+ */
+const workspaceOfCall = async (
+  api: Parameters<ToolRegistration["execute"]>[1],
+  context: Parameters<ToolRegistration["execute"]>[2],
+  fallback: string | undefined,
+): Promise<string | undefined> => {
+  try {
+    const state = await api.snapshot(SubagentsDoc, context);
+
+    return (
+      (state === undefined
+        ? undefined
+        : conversationWorkspace(state, api.conversationId)?.object) ?? fallback
+    );
+  } catch {
+    return fallback;
+  }
+};
+
 /** The tool that calls `tool` of `server` through `client`. */
 const toolFor = (
   client: McpHostClientService,
@@ -229,6 +260,24 @@ const toolFor = (
       if ((await api.memo<boolean>(SENT, context)) !== undefined)
         return interruptedResult(name, base);
 
+      // An HTTP server is called from the Session's Workspace, as it always was. A stdio server runs in the Container of the
+      // Workspace that calls it: a conversation in a Subagent Workspace calls for it, not for the Session's, and the
+      // Workspace is marked used before the call that may start the Container.
+      let workspace = origin.workspace;
+
+      if (server.server.type === "stdio") {
+        workspace = await workspaceOfCall(api, context, origin.workspace);
+
+        const ready = workspace !== undefined && (await (options.ready?.(workspace) ?? true));
+
+        if (!ready) {
+          return failedWith(
+            "The Workspace this server runs in did not answer; the call was not sent",
+            base,
+          );
+        }
+      }
+
       const lost = deadline(wait);
       const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
 
@@ -245,7 +294,7 @@ const toolFor = (
       };
 
       const request = requestOf(
-        origin,
+        { ...origin, workspace },
         server.name,
         tool.name,
         // SAFETY: the arguments pi-durable validated against the tool's `inputSchema`, an object.

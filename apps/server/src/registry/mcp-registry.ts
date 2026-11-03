@@ -33,6 +33,8 @@ import {
   resolvedMcpServers,
   shouldPushMcpSet,
 } from "./mcp-set.ts";
+import { workspaceIdOf } from "../workspace/binding.ts";
+import { githubRepoOf } from "../workspace/github-pulls.ts";
 import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { signInsRevisionOf } from "./mcp-sign-ins.ts";
 import { resolveMcpServerValues } from "./mcp-values.ts";
@@ -45,7 +47,10 @@ export const MCP_HANDED_DOCUMENT = "mcp-handed";
 /** The store as the MCP set reads it: the Settings at both Scopes, and the Environments. */
 export type McpSetStore = DocumentStore &
   McpRepoFilesStore &
-  Pick<RegistryStore, "getSettingsOverrides" | "listEnvironments" | "getEnvironmentSettings">;
+  Pick<
+    RegistryStore,
+    "getSettingsOverrides" | "listEnvironments" | "getEnvironmentSettings" | "getWorkspaceSetup"
+  >;
 
 /** `environment`'s MCP server set, without its revision, or null when it is not registered. */
 export const environmentMcpSet = (
@@ -185,11 +190,45 @@ export const mcpServerSetAnswer = (
     : { ...answer, set: known.entries };
 };
 
-/** The host's `mcpServerValues` arguments: the server by name, with the `conn` the host holds it under. */
+/**
+ * The host's `mcpServerValues` arguments: the server by name, with the `conn` the host holds it under, and, for a stdio
+ * server about to run in a Workspace, that Workspace (`ws:<id>`, or its id) whose Repos it is offered as Roots.
+ */
 export type McpValuesInput = {
   readonly environment: string;
   readonly server: string;
   readonly conn: string;
+  readonly workspace?: string | undefined;
+};
+
+/** `owner/repo` of a Repo's clone URL, as a Repo's `.pi/mcp.json` is keyed by it (`mcp-repo-look.ts`); the directory for a Repo not on GitHub. */
+const slugOfRepo = (url: string, directory: string): string => {
+  const remote = githubRepoOf(url);
+
+  return remote === undefined ? directory : `${remote.owner}/${remote.name}`;
+};
+
+/**
+ * The Repos a stdio server in `workspace` is offered as Roots (`docs/architecture/mcp-in-a-session.md` → Roots): the
+ * Workspace's own, which it keeps from the Environment as it was when the Workspace was made; a Repo's entry is offered its
+ * own Repo only. Absent when no Workspace is named or the Registry does not know it.
+ */
+const reposOf = (
+  store: McpSetStore,
+  workspace: string | undefined,
+  resolved: McpResolvedServer,
+) => {
+  if (workspace === undefined) return undefined;
+
+  if (resolved.source.kind === "repo") {
+    return [{ directory: resolved.source.directory, slug: resolved.source.slug }];
+  }
+
+  const setup = store.getWorkspaceSetup(workspaceIdOf(workspace));
+
+  return setup === null
+    ? undefined
+    : Arr.map(setup.repos, ({ name, url }) => ({ directory: name, slug: slugOfRepo(url, name) }));
 };
 
 /**
@@ -212,10 +251,15 @@ export const mcpServerValuesAnswer = (
 
   const state = environmentSettingsOf(store, input.environment);
 
-  return resolveMcpServerValues(resolved, {
+  const values = resolveMcpServerValues(resolved, {
     secrets,
     variables: state === null ? {} : state.settings.variables,
   });
+
+  const repos =
+    resolved.server.type === "stdio" ? reposOf(store, input.workspace, resolved) : undefined;
+
+  return repos === undefined ? values : { ...values, repos };
 };
 
 /** Whether `server` of `environment` may read Secrets, for the caller to open them only then; false when it is gone. */

@@ -19,7 +19,9 @@ import type {
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import type { Mutable } from "effect/Types";
 import { ByteBudget } from "./budget.ts";
+import type { McpBridgeBinding } from "./binding.ts";
 import { discover, request } from "./calls.ts";
 import type { CallEnvironment } from "./call-context.ts";
 import { Validators } from "./validators.ts";
@@ -28,6 +30,8 @@ import { Validators } from "./validators.ts";
 export interface McpWorkerEnv {
   /** The deployed version; absent where the Worker runs undeployed (tests). */
   readonly CF_VERSION_METADATA?: { readonly id: string };
+  /** The Workspaces Worker's `WorkspaceMcpBridge`, which reaches a Workspace's Container MCP bridge; absent where undeployed. */
+  readonly MCP_BRIDGE?: McpBridgeBinding;
 }
 
 const EngineLive = Layer.mergeAll(ByteBudget.layer, Validators.layer);
@@ -58,10 +62,16 @@ export class McpEngine extends WorkerEntrypoint<McpWorkerEnv> implements McpEngi
   }
 
   #environment(): CallEnvironment {
-    return {
+    const { MCP_BRIDGE: bridge } = this.env;
+
+    const environment: Mutable<CallEnvironment> = {
       version: this.env.CF_VERSION_METADATA?.id ?? "dev",
       hold: (done) => this.ctx.waitUntil(done),
     };
+
+    if (bridge !== undefined) environment.bridge = bridge;
+
+    return environment;
   }
 
   /** Runs a call, held under `ctx.waitUntil` until it settles. */

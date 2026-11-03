@@ -22,6 +22,7 @@ import {
   type ListKind,
   type McpConnection,
   type McpConnectionStats,
+  type McpTarget,
 } from "@cloudpid/mcp";
 import {
   Cut,
@@ -39,8 +40,10 @@ import {
   type McpEngineRequestEncoded,
   McpEngineRequestResult,
   type McpEngineState,
+  type McpEngineHttpTarget,
   McpEngineTarget,
   type McpEngineTargetEncoded,
+  EraRowV1,
   type McpError,
   type McpErrorWire,
   type McpLogEntry,
@@ -53,10 +56,12 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
+import { stdioBridge, type StdioBridge, STDIO_CONNECT_TIMEOUT_MS, STDIO_URL } from "./bridge.ts";
 import { type CallContext, type CallEnvironment, withCall } from "./call-context.ts";
 import { secretsOf } from "./logs.ts";
 import { type Answer, malformed, scrubError, toEngineValue } from "./results.ts";
@@ -89,7 +94,7 @@ interface CallInput {
  * Credentials, `docs/architecture/mcp.md` → Extensions) and no other: a third party's extension is never declared, and a
  * connection the host named none for declares none.
  */
-const withExtensions = (deps: McpDeps, named: McpEngineTarget["extensions"]): McpDeps => {
+const withExtensions = (deps: McpDeps, named: McpEngineHttpTarget["extensions"]): McpDeps => {
   const known = named?.[MCP_CLIENT_CREDENTIALS_EXTENSION];
 
   return known === undefined
@@ -140,6 +145,58 @@ const decodeAbout = Schema.decodeUnknownEffect(
 const definitionsOf = (tools: Answer) =>
   decodeTools(tools).pipe(Effect.mapError(() => malformed("a tool definition")));
 
+const decodeEraRow = Schema.decodeUnknownOption(EraRowV1);
+
+/**
+ * Reaches a stdio target through the Workspaces Worker's bridge, offering the server the Roots the target carries (none
+ * given, an empty list: a bridge connection always declares `roots`); an HTTP target is reached as it is, with none.
+ */
+const reachBridge = Effect.fnUntraced(function* (
+  server: McpEngineTarget,
+  era: Schema.Json | undefined,
+  env: CallEnvironment,
+  call: CallContext,
+) {
+  if (server.kind !== "stdio") return undefined;
+
+  const { bridge } = env;
+
+  if (bridge === undefined) {
+    return yield* Unsupported.make({ message: "This engine has no way to reach a Container" });
+  }
+
+  const hint = Option.map(decodeEraRow(era), (row) => row.era);
+  const scrub = (text: string) => scrubRaw(text, call.tokens);
+  const through = stdioBridge(bridge, server, Option.getOrUndefined(hint), scrub);
+
+  call.routeVia(through.fetch, server.roots ?? []);
+
+  return through;
+});
+
+/** What the core connects to: an HTTP server's URL and headers, or the bridge's, whose connects may start a Container. */
+const connectTarget = (server: McpEngineTarget): McpTarget => {
+  const target: Mutable<McpTarget> =
+    server.kind === "http"
+      ? { url: server.url }
+      : { url: STDIO_URL, connectTimeoutMs: STDIO_CONNECT_TIMEOUT_MS };
+
+  if (server.kind === "http" && server.headers !== undefined) target.headers = server.headers;
+
+  if (server.timeoutMs !== undefined) target.timeoutMs = server.timeoutMs;
+
+  return target;
+};
+
+/**
+ * `error`, named from the bridge's status if it is a cut of a stdio call (a `tools/call` hands its failure back as a
+ * result, so it comes here too); as it was for an HTTP server.
+ */
+const named = (bridge: StdioBridge | undefined, error: McpError) =>
+  bridge === undefined || !Predicate.isTagged(error, "Cut")
+    ? Effect.succeed(error)
+    : Effect.promise(() => bridge.explainCut(error));
+
 /**
  * Runs `work` over a new connection to the call's target, racing the caller's abort: the outcome, its error scrubbed
  * of the call's tokens, and the rows the call changed. The call's lease goes back when it ends, however it ends,
@@ -150,11 +207,12 @@ const runCall = Effect.fnUntraced(function* <A, R>(
   work: (
     connection: McpConnection,
     call: CallContext,
+    bridge: StdioBridge | undefined,
   ) => Effect.Effect<A, McpError, R | Scope.Scope>,
 ) {
   // A row this engine cannot read is absent: it probes or initializes again.
-  const rows = yield* Schema.decodeEffect(McpEnginePrior)(input.prior).pipe(
-    Effect.orElseSucceed(() => ({})),
+  const rows: McpEnginePrior = yield* Schema.decodeEffect(McpEnginePrior)(input.prior).pipe(
+    Effect.orElseSucceed((): McpEnginePrior => ({})),
   );
 
   return yield* withCall(
@@ -164,20 +222,29 @@ const runCall = Effect.fnUntraced(function* <A, R>(
     (call) =>
       Effect.gen(function* () {
         let wire: (() => McpConnectionStats) | undefined;
+        let bridge: StdioBridge | undefined;
 
-        const outcome = yield* Effect.gen(function* () {
-          const server = yield* Schema.decodeEffect(McpEngineTarget)(input.target).pipe(
-            Effect.mapError(() =>
-              Unsupported.make({ message: "This engine cannot reach that kind of server" }),
+        const outcome = yield* Schema.decodeEffect(McpEngineTarget)(input.target).pipe(
+          Effect.mapError(() =>
+            Unsupported.make({ message: "This engine cannot reach that kind of server" }),
+          ),
+          Effect.flatMap((server) =>
+            Effect.gen(function* () {
+              bridge = yield* reachBridge(server, rows.era, input.env, call);
+
+              const connection = yield* connect(
+                connectTarget(server),
+                withExtensions(call.deps, server.kind === "http" ? server.extensions : undefined),
+              );
+
+              wire = connection.stats;
+
+              return yield* work(connection, call, bridge);
+            }).pipe(
+              // A cut of a stdio call is named from the bridge's status, whichever step it came in.
+              Effect.catchTag("Cut", (cut) => Effect.flatMap(named(bridge, cut), Effect.fail)),
             ),
-          );
-
-          const connection = yield* connect(server, withExtensions(call.deps, server.extensions));
-
-          wire = connection.stats;
-
-          return yield* work(connection, call);
-        }).pipe(
+          ),
           Effect.scoped,
           Effect.raceFirst(abortedBy(input.hooks, input.mayHaveRun)),
           Effect.result,
@@ -191,8 +258,10 @@ const runCall = Effect.fnUntraced(function* <A, R>(
         // made of a header it was sent: they are scrubbed in their string values as the result is.
         const state = scrubValues(call.state(), call.tokens);
 
+        const spawn = bridge?.spawn();
+
         if (Result.isSuccess(outcome)) {
-          return { outcome, state, logs };
+          return { outcome, state, logs, spawn };
         }
 
         // A stream made before the call failed is never returned, so its lease goes back now.
@@ -202,6 +271,7 @@ const runCall = Effect.fnUntraced(function* <A, R>(
           outcome: Result.fail(yield* scrubError(outcome.failure, call.tokens)),
           state,
           logs,
+          spawn,
         };
       }),
     // A server may echo a header it was sent (a Secret's value) into a log, an error or a result; all are scrubbed of them.
@@ -237,9 +307,12 @@ const annotateWire = (
     "mcp.logs": logs,
   };
 
-  Option.map(originOf(target.url), (origin) => {
-    attributes["mcp.server.origin"] = origin;
-  });
+  // A stdio server has no origin: it runs in a Container, which a span never names.
+  if (target.kind === "http") {
+    Option.map(originOf(target.url), (origin) => {
+      attributes["mcp.server.origin"] = origin;
+    });
+  }
 
   if (wire !== undefined) {
     attributes["mcp.http.responses"] = wire.responses;
@@ -262,6 +335,9 @@ const originOf = (url: string) =>
 
 /** `logs` as the result's gain-only field: absent when the call heard none. */
 const logsField = (logs: ReadonlyArray<McpLogEntry>) => (logs.length === 0 ? {} : { logs });
+
+/** `spawn` as the result's gain-only field: absent for an HTTP server. */
+const spawnField = (spawn: string | undefined) => (spawn === undefined ? {} : { spawn });
 
 const failed = (error: McpErrorWire, state: McpEngineState): McpEngineFailed => ({
   kind: "failed",
@@ -313,7 +389,7 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
 ) {
   const validators = yield* Validators;
 
-  const { outcome, state, logs } = yield* runCall(
+  const { outcome, state, logs, spawn } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: false },
     (connection, call) =>
       Effect.gen(function* () {
@@ -367,6 +443,7 @@ export const discover = Effect.fn("mcp.engine.discover")(function* (
   return yield* encodeResult(McpEngineDiscoverResult, {
     ...(Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state)),
     ...logsField(logs),
+    ...spawnField(spawn),
     state,
   });
 });
@@ -441,6 +518,7 @@ const runToolCall = Effect.fnUntraced(function* (
   req: ToolCall,
   env: CallEnvironment,
   validators: ValidatorsApi,
+  bridge: StdioBridge | undefined,
 ) {
   const { sent, tool, refreshed } = yield* callWithRefresh(
     connection,
@@ -454,7 +532,7 @@ const runToolCall = Effect.fnUntraced(function* (
   if (Result.isFailure(sent)) {
     return {
       kind: "failed",
-      error: yield* scrubError(sent.failure, call.tokens),
+      error: yield* scrubError(yield* named(bridge, sent.failure), call.tokens),
       ...extras,
     } satisfies RequestOutcome;
   }
@@ -550,15 +628,20 @@ export const request = Effect.fn("mcp.engine.request")(function* (
 
   const req = decoded.value;
 
-  const { outcome, state, logs } = yield* runCall(
+  const { outcome, state, logs, spawn } = yield* runCall(
     { target, prior, hooks, env, mayHaveRun: req.op === "tools/call" },
-    (connection, context): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
+    (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> =>
       req.op === "tools/call"
-        ? runToolCall(connection, context, req, env, validators)
+        ? runToolCall(connection, context, req, env, validators, bridge)
         : runList(connection, context, req, env, validators),
   );
 
   const result = Result.isSuccess(outcome) ? outcome.success : failed(outcome.failure, state);
 
-  return yield* encodeResult(McpEngineRequestResult, { ...result, ...logsField(logs), state });
+  return yield* encodeResult(McpEngineRequestResult, {
+    ...result,
+    ...logsField(logs),
+    ...spawnField(spawn),
+    state,
+  });
 });

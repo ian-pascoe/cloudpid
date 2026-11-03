@@ -1,8 +1,9 @@
 // The host's load caps (`docs/architecture/mcp-connections.md` → The engine → Load caps): what bounds the work it has
 // in flight, kept in its runtime for the object's life and taken by discovery and `request` alike.
 //
-// - **Requests in flight:** at most 8 per server (`conn`) and 32 per host object; over a cap a request waits, first
-//   come first served (the wait counts toward its timeout, which is the caller's).
+// - **Requests in flight:** at most 8 per HTTP server (`conn`), 4 per stdio server and Workspace (one child in one
+//   Container serves them all), and 32 per host object; over a cap a request waits, first come first served (the wait
+//   counts toward its timeout, which is the caller's).
 // - **The engine queue:** at most 5 engine calls in flight per host object. Background work takes at most 3 of them,
 //   and when a slot frees, a call waiting is served before any background work waiting.
 //
@@ -22,6 +23,9 @@ import * as Layer from "effect/Layer";
 /** At most 8 requests in flight per HTTP server. */
 export const MAX_IN_FLIGHT_PER_SERVER = 8;
 
+/** At most 4 requests in flight per stdio server and Workspace. */
+export const MAX_IN_FLIGHT_PER_STDIO_SERVER = 4;
+
 /** At most 32 requests in flight per host object. */
 export const MAX_IN_FLIGHT_PER_HOST = 32;
 
@@ -35,10 +39,14 @@ export const MAX_BACKGROUND_ENGINE_CALLS = 3;
 export type EngineCallKind = "call" | "background";
 
 export type McpLoadCapsService = {
-  /** Run `effect` as one request in flight on `conn`, within its server's cap and the host's. */
+  /**
+   * Run `effect` as one request in flight on `conn`, within its server's cap and the host's. A stdio server's cap is
+   * its own in each Workspace it runs in: pass the `workspace`.
+   */
   readonly inFlight: <A, E, R>(
     conn: string,
     effect: Effect.Effect<A, E, R>,
+    workspace?: string,
   ) => Effect.Effect<A, E, R>;
   /** Run `effect`, one engine call of `kind`, within the engine queue. */
   readonly engineCall: <A, E, R>(
@@ -165,30 +173,36 @@ export const makeLoadCaps = (): McpLoadCapsService => {
   // A server's cap lives while a request holds or waits for it, so a server that left the set leaves nothing behind.
   const servers = new Map<string, { readonly pool: ReturnType<typeof cap>; users: number }>();
 
-  const serverCap = (conn: string) => {
-    const held = servers.get(conn) ?? { pool: cap(MAX_IN_FLIGHT_PER_SERVER), users: 0 };
+  const serverCap = (key: string, max: number) => {
+    const held = servers.get(key) ?? { pool: cap(max), users: 0 };
 
-    servers.set(conn, held);
+    servers.set(key, held);
     held.users += 1;
 
     return held;
   };
 
-  const leave = (conn: string, held: { users: number }) =>
+  const leave = (key: string, held: { users: number }) =>
     Effect.sync(() => {
       held.users -= 1;
 
-      if (held.users === 0) servers.delete(conn);
+      if (held.users === 0) servers.delete(key);
     });
 
   return {
-    inFlight: (conn, effect) =>
+    inFlight: (conn, effect, workspace) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.suspend(() => {
-          const held = serverCap(conn);
+          // A `conn` is a hash: it holds no NUL, so the key tells a server from a server in a Workspace.
+          const key = workspace === undefined ? conn : `${conn}\0${workspace}`;
+
+          const held = serverCap(
+            key,
+            workspace === undefined ? MAX_IN_FLIGHT_PER_SERVER : MAX_IN_FLIGHT_PER_STDIO_SERVER,
+          );
 
           return restore(held.pool.run("held", host.run("held", effect))).pipe(
-            Effect.ensuring(leave(conn, held)),
+            Effect.ensuring(leave(key, held)),
           );
         }),
       ),

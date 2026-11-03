@@ -97,6 +97,11 @@ export type EngineCall = {
   readonly hooks: ReadonlyArray<string>;
 };
 
+/** What the scripts of a stdio server are keyed by is `stdio:<name>` (an HTTP server's is its URL). */
+/** What `target`'s scripts are keyed by. */
+const keyOf = (target: McpEngineTargetEncoded) =>
+  target.kind === "http" ? target.url : `stdio:${target.name}`;
+
 /** A clock `offset` ms ahead of `base`, sleeping as `base` does. */
 const shiftedClock = (base: Clock.Clock, offset: () => number): Clock.Clock => ({
   currentTimeMillisUnsafe: () => base.currentTimeMillisUnsafe() + offset(),
@@ -161,7 +166,7 @@ export const hostServicesOver = (store: McpHostStoreService) =>
       reportAuth: () => Effect.fail(McpRegistryUnavailable.make({ message: "No Registry" })),
     },
     engine: mcpEngineClient({
-      discover: async (target) => unscripted(target.url),
+      discover: async (target) => unscripted(keyOf(target)),
       request: () => Promise.reject(new Error("Nothing scripted")),
     }),
   });
@@ -181,6 +186,15 @@ export class TestMcpHost extends DurableObject {
   readonly #tokens = new Map<string, Array<McpAccessTokenAnswer | "unreachable">>();
 
   readonly #tokenAsks: Array<McpAccessTokenInput> = [];
+
+  /** The child ends the host told its handler of, in order. */
+  readonly #ended: Array<{ conn: string; workspace: string; spawn: string | undefined }> = [];
+
+  /** What the host asked the Registry for a server's values with. */
+  readonly #valueAsks: Array<{
+    readonly server: string;
+    readonly workspace?: string | undefined;
+  }> = [];
 
   readonly #reports: Array<McpAuthReport> = [];
 
@@ -244,13 +258,13 @@ export class TestMcpHost extends DurableObject {
       // @effect-diagnostics-next-line preferEffectRecord:off -- the hooks' names as they crossed, whatever they are.
       this.#requests.push({ target, prior, request, hooks: Object.keys(hooks), tokens });
 
-      const script = this.#requestScripts.get(target.url)?.shift();
+      const script = this.#requestScripts.get(keyOf(target))?.shift();
 
-      if (script === undefined) throw new Error(`No request scripted for ${target.url}`);
+      if (script === undefined) throw new Error(`No request scripted for ${keyOf(target)}`);
 
       for (const stale of script.auth ?? []) tokens.push(await hooks.auth?.(stale));
 
-      if (script.hold === true) await this.#holdUntilReleased(target.url);
+      if (script.hold === true) await this.#holdUntilReleased(keyOf(target));
 
       if (script.reject !== undefined) throw new Error(script.reject);
 
@@ -264,12 +278,12 @@ export class TestMcpHost extends DurableObject {
       // @effect-diagnostics-next-line preferEffectRecord:off -- the hooks' names as they crossed, whatever they are.
       this.#calls.push({ target, prior, hooks: Object.keys(hooks) });
 
-      const queue = this.#scripts.get(target.url) ?? [];
+      const queue = this.#scripts.get(keyOf(target)) ?? [];
       const script = queue.shift();
 
-      if (script === undefined) return unscripted(target.url);
+      if (script === undefined) return unscripted(keyOf(target));
 
-      if (script.hold === true) await this.#holdUntilReleased(target.url);
+      if (script.hold === true) await this.#holdUntilReleased(keyOf(target));
 
       if (script.reject !== undefined) throw new Error(script.reject);
 
@@ -290,15 +304,18 @@ export class TestMcpHost extends DurableObject {
               : Effect.succeed(this.#answer);
           }),
         serverValues: (input) =>
-          Effect.sync(
-            () =>
+          Effect.sync(() => {
+            this.#valueAsks.push(input);
+
+            return (
               this.#values.get(input.server) ?? {
                 status: "values",
                 env: {},
                 headers: {},
                 missing: [],
-              },
-          ),
+              }
+            );
+          }),
         accessToken: (input) =>
           Effect.suspend(() => {
             this.#tokenAsks.push(input);
@@ -327,6 +344,10 @@ export class TestMcpHost extends DurableObject {
           }),
       },
       engine: mcpEngineClient(this.#engine),
+      processEnded: (conn, workspace, spawn) =>
+        Effect.sync(() => {
+          this.#ended.push({ conn, workspace, spawn });
+        }),
       references: Layer.mergeAll(
         Layer.succeed(
           Clock.Clock,
@@ -375,6 +396,20 @@ export class TestMcpHost extends DurableObject {
   /** Script the Registry's answer for `server`'s `${NAME}` values. */
   scriptValues(server: string, answer: McpServerValuesAnswer): void {
     this.#values.set(server, answer);
+  }
+
+  /** The child ends the host told its handler of, in order. */
+  endedProcesses(): ReadonlyArray<{
+    readonly conn: string;
+    readonly workspace: string;
+    readonly spawn: string | undefined;
+  }> {
+    return this.#ended;
+  }
+
+  /** What the host asked the Registry for the values of a server with, in order. */
+  valueAsks(): ReadonlyArray<{ readonly server: string; readonly workspace?: string | undefined }> {
+    return this.#valueAsks;
   }
 
   /** Script the Registry's answers to `mcpAccessToken` for `server`, in order; the last one stays. */
@@ -504,9 +539,21 @@ export class TestMcpHost extends DurableObject {
     return this.#store.readSet();
   }
 
-  /** The era and Legacy session rows of `conn`. */
-  prior(conn: string): McpEnginePriorEncoded {
-    return this.#store.prior(conn);
+  /** The era and Legacy session rows of `conn`, an HTTP server's or a stdio server's in `workspace`. */
+  prior(conn: string, workspace?: string): McpEnginePriorEncoded {
+    return this.#store.prior(conn, workspace);
+  }
+
+  /** The session rows of `conn`: its Workspaces' (`''` for an HTTP server's), and the spawn id each was last heard on. */
+  sessionRows(
+    conn: string,
+  ): ReadonlyArray<{ readonly workspace: string; readonly spawn: string | null }> {
+    return this.ctx.storage.sql
+      .exec<{ workspace: string; spawn: string | null }>(
+        "SELECT workspace, spawn FROM mcp_sessions WHERE conn = ? ORDER BY workspace",
+        conn,
+      )
+      .toArray();
   }
 
   /** What the host's runtime logged, and every span it made with its attributes, as text: to look for what must not be there. */

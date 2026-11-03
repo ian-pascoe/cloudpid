@@ -34,12 +34,14 @@ const store = (ids: ReadonlyArray<string>) => {
   let live = [...ids];
   const overrides = new Map<string, Schema.Json>(Arr.map(ids, (id) => [id, {}] as const));
   const container = new Map<string, Schema.Json>(Arr.map(ids, (id) => [id, {}] as const));
+  const workspaces = new Map<string, ReadonlyArray<{ name: string; url: string }>>();
 
   const fake: McpSetStore & {
     readonly global: (document: Schema.Json) => void;
     readonly overridesOf: (id: string, document: Schema.Json) => void;
     readonly variables: (id: string, variables: Record<string, string>) => void;
     readonly remove: (id: string) => void;
+    readonly workspace: (id: string, repos: ReadonlyArray<{ name: string; url: string }>) => void;
   } = {
     getDocument: (name) => documents.get(name) ?? null,
     putDocument: (name, body) => void documents.set(name, body),
@@ -48,6 +50,14 @@ const store = (ids: ReadonlyArray<string>) => {
     getEnvironment: (id) => (live.includes(id) ? { id, name: id, repos: [], createdAt: 0 } : null),
     getMcpRepoFiles: () => [],
     listEnvironments: () => Arr.map(live, (id) => ({ id, name: id, repos: [], createdAt: 0 })),
+    getWorkspaceSetup: (id) => {
+      const repos = workspaces.get(id);
+
+      return repos === undefined
+        ? null
+        : { id, environment: "a", branch: `cloudpid/${id}`, base: null, repos };
+    },
+    workspace: (id, repos) => void workspaces.set(id, repos),
     remove: (id) => void (live = live.filter((kept) => kept !== id)),
     global: (document) => void documents.set(SETTINGS_DOCUMENT, JSON.stringify(document)),
     overridesOf: (id, document) => void overrides.set(id, document),
@@ -390,6 +400,45 @@ describe("the values of a server (mcpServerValues)", () => {
       headers: { Authorization: "Bearer variable" },
       redact: [],
     });
+  });
+
+  it("lists the Workspace's Repos with a stdio server's values, as Roots for it, when a Workspace is named", () => {
+    const registry = store(["a"]);
+
+    registry.global(servers({ local: LOCAL, linear: LINEAR }));
+    registry.workspace("1a2b3c4d", [
+      { name: "app", url: "https://github.com/ian/app.git" },
+      { name: "tools", url: "https://example.com/team/tools" },
+    ]);
+
+    const input = (server: string, workspace?: string) => ({
+      environment: "a",
+      server,
+      conn: withConn(registry, server),
+      workspace,
+    });
+
+    const repos = [
+      { directory: "app", slug: "ian/app" },
+      { directory: "tools", slug: "tools" },
+    ];
+
+    // The Workspace as its object names it, or by its id.
+    expect(mcpServerValuesAnswer(registry, input("local", "ws:1a2b3c4d"), {})).toMatchObject({
+      status: "values",
+      repos,
+    });
+    expect(mcpServerValuesAnswer(registry, input("local", "1a2b3c4d"), {})).toMatchObject({
+      repos,
+    });
+    // Not named, not known, or not a stdio server's: no Repos.
+    expect(mcpServerValuesAnswer(registry, input("local"), {})).not.toHaveProperty("repos");
+    expect(mcpServerValuesAnswer(registry, input("local", "ws:ffffffff"), {})).not.toHaveProperty(
+      "repos",
+    );
+    expect(mcpServerValuesAnswer(registry, input("linear", "ws:1a2b3c4d"), {})).not.toHaveProperty(
+      "repos",
+    );
   });
 
   it("says a server is unknown, or changed with its current connection, and reads no Secret then", () => {

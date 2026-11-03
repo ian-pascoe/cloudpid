@@ -20,6 +20,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import type { Mutable } from "effect/Types";
 import type * as Schema from "effect/Schema";
+import type { McpBridgeBinding } from "./binding.ts";
 import { ByteBudget, type Lease, meteredFetch } from "./budget.ts";
 import { callLogs } from "./logs.ts";
 
@@ -29,6 +30,8 @@ export interface CallEnvironment {
   readonly version: string;
   /** Keeps the invocation alive until `done` settles (`ctx.waitUntil`): a large result's stream is read after return. */
   readonly hold: (done: Promise<void>) => void;
+  /** `MCP_BRIDGE`, which a stdio target is reached through; absent where the Worker has none. */
+  readonly bridge?: McpBridgeBinding;
 }
 
 /** One call's connection deps, and what the call learns along the way. */
@@ -47,6 +50,11 @@ export interface CallContext {
   readonly logs: () => ReadonlyArray<McpLogEntry>;
   /** The response bytes the call read from the server. */
   readonly bytes: () => number;
+  /**
+   * Sends the call's requests through `route` instead of the Worker's own `fetch` (a stdio target's bridge, still metered),
+   * and offers the server `roots`: a connection is declared them only through here, so a remote server never is.
+   */
+  readonly routeVia: (route: McpDeps["fetch"], roots: McpDeps["roots"]) => void;
 }
 
 /** A row store over one in-memory cell, recording whether the call kept or dropped its row. */
@@ -133,6 +141,13 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   // The Secrets the host put into the target are scrubbed as the access tokens are: from logs, errors and results.
   const tokens = new Set<string>(secrets);
   let bytes = 0;
+  // Where the call's requests go: the Worker's own `fetch`, until a stdio target says otherwise.
+  let route: McpDeps["fetch"] = (input, init) => fetch(input, init);
+
+  // The core hands `fetch` a URL (or a `Request`, whose URL is all that is read) and an `init` that carries the method,
+  // headers, body and signal: a bridge's `fetch` builds its own request from them.
+  const routed: typeof globalThis.fetch = (input, init) =>
+    route(input instanceof Request ? input.url : input, init);
 
   const logs = callLogs({
     now: () => Effect.runSyncWith(context)(Clock.currentTimeMillis),
@@ -141,7 +156,7 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
 
   const base = {
     fetch: meteredFetch(
-      (input, init) => fetch(input, init),
+      routed,
       lease,
       hooks.opened === undefined ? undefined : notifier(hooks.opened),
       (read) => {
@@ -150,7 +165,7 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     ),
     eras: eras.store,
     sessions: sessions.store,
-    // A remote server is offered no roots, and the questions it may ask come with later slices.
+    // Roots are offered on a bridge connection only (`routeVia`); the questions a server may ask come with later slices.
     capabilities: () => ({}),
     clientInfo: { name: "cloudpid", version: env.version },
     onLog: logs.hear,
@@ -189,6 +204,11 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     handedOff: () => handed,
     logs: logs.entries,
     bytes: () => bytes,
+    routeVia: (through, roots) => {
+      route = through;
+
+      if (roots !== undefined) deps.roots = roots;
+    },
   } satisfies CallContext;
 });
 

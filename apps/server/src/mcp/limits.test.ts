@@ -10,6 +10,7 @@ import {
   type EngineCallKind,
   MAX_IN_FLIGHT_PER_HOST,
   MAX_IN_FLIGHT_PER_SERVER,
+  MAX_IN_FLIGHT_PER_STDIO_SERVER,
   makeLoadCaps,
   type McpLoadCapsService,
 } from "./limits.ts";
@@ -202,6 +203,47 @@ describe("requests in flight", () => {
     );
 
     expect(peaks).toEqual({ server: MAX_IN_FLIGHT_PER_SERVER, host: MAX_IN_FLIGHT_PER_HOST });
+  });
+
+  it("holds at most 4 per stdio server in each Workspace, the Workspaces' caps apart", async () => {
+    const peaks = await run((caps) =>
+      Effect.gen(function* () {
+        const live = new Map<string, number>();
+        const peak = new Map<string, number>();
+        const gate = yield* Deferred.make<void>();
+
+        const one = (workspace: string) =>
+          caps.inFlight(
+            "conn",
+            Effect.gen(function* () {
+              live.set(workspace, (live.get(workspace) ?? 0) + 1);
+              peak.set(workspace, Math.max(peak.get(workspace) ?? 0, live.get(workspace) ?? 0));
+              yield* Deferred.await(gate);
+              live.set(workspace, (live.get(workspace) ?? 0) - 1);
+            }),
+            workspace,
+          );
+
+        const fibers = yield* Effect.forEach(
+          Arr.flatMap(["ws:a", "ws:b"], (workspace) => Arr.replicate(workspace, 7)),
+          (workspace) => Effect.forkChild(one(workspace)),
+        );
+
+        yield* settle;
+        const during = [...peak];
+
+        yield* Deferred.succeed(gate, undefined);
+        yield* Effect.forEach(fibers, Fiber.join, { discard: true });
+
+        return { during, left: caps.serversHeld() };
+      }),
+    );
+
+    expect(peaks.during).toEqual([
+      ["ws:a", MAX_IN_FLIGHT_PER_STDIO_SERVER],
+      ["ws:b", MAX_IN_FLIGHT_PER_STDIO_SERVER],
+    ]);
+    expect(peaks.left).toBe(0);
   });
 
   it("serves an older waiter before a later arrival when a slot frees", async () => {

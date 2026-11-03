@@ -160,6 +160,10 @@ export default {
             : [],
         ),
         cancelled: fake.cancelled,
+        // The capabilities the client declared at each `initialize`.
+        declared: fake.server.received.flatMap((received) =>
+          received.rpc?.method === "initialize" ? [received.rpc.params?.["capabilities"]] : [],
+        ),
       });
     }
 

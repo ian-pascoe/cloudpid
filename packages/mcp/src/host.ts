@@ -587,6 +587,13 @@ export const McpServerValuesAnswer = Schema.Union([
     missing: Schema.Array(Schema.String),
     /** The Secret values (not Variables) substituted into `env` and `headers`, for the engine to scrub from what it hands back. Gain-only. */
     redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
+    /**
+     * For a request that named a `workspace`: that Workspace's Repos (it keeps the Environment's from when it was made), of
+     * which a stdio server is offered Roots. Gain-only: absent when no Workspace was named, or the Registry does not list it.
+     */
+    repos: Schema.Array(Schema.Struct({ directory: Schema.String, slug: Schema.String })).pipe(
+      Schema.optionalKey,
+    ),
   }),
   Schema.Struct({ status: Schema.Literal("unknown_server") }),
   Schema.Struct({ status: Schema.Literal("server_changed"), conn: Schema.String }),

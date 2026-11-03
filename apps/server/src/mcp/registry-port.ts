@@ -31,12 +31,14 @@ export type McpRegistryPortService = {
   }) => Effect.Effect<McpServerSetAnswer, McpRegistryUnavailable>;
   /**
    * `server`'s `env` and `headers` with every `${NAME}` resolved, when the Registry holds it under `conn`; the names
-   * that resolved to nothing are `missing`. Held in memory for the call only.
+   * that resolved to nothing are `missing`. Held in memory for the call only. For a stdio server about to run in a
+   * `workspace`, the answer also has that Workspace's `repos`, which it is offered as Roots.
    */
   readonly serverValues: (input: {
     readonly environment: string;
     readonly server: string;
     readonly conn: string;
+    readonly workspace?: string | undefined;
   }) => Effect.Effect<McpServerValuesAnswer, McpRegistryUnavailable>;
   /**
    * The access token `server`'s sign-in holds for `environment`, or why there is none; `stale` is the token a server

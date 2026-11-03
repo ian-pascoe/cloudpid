@@ -6,6 +6,7 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off newPromise:off
 import {
   createMcpHandler,
+  inputRequired,
   Server,
   type Tool,
   WebStandardStreamableHTTPServerTransport,
@@ -120,6 +121,13 @@ export const REGION_TOOL = {
 
 const RegionArguments = Schema.Struct({ region: Schema.String });
 
+/** The fakes' tool that asks the client for its Roots (`roots/list`) and answers with what it was told, as JSON text. Never listed. */
+export const ROOTS_TOOL = {
+  name: "roots",
+  description: "Answer with the client's Roots.",
+  inputSchema: { type: "object" as const },
+};
+
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
 export interface FakeOptions {
   /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
@@ -164,7 +172,11 @@ const untilAborted = (signal: AbortSignal, aborted: () => void) =>
  * An SDK server answering `tools/list` a page at a time and `tools/call` for its tools: `echo` and `shout`, and
  * `big`, `hang`, `typed` and `region`, listed only with `listMore`, and `progress`, listed only in `moreTools`.
  */
-const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions = {}) => {
+const fakeMcp = (
+  sends?: (server: Server) => Promise<void>,
+  options: FakeOptions = {},
+  modern = false,
+) => {
   const server = new Server(
     { name: options.serverName ?? "fake", version: "1.0.0" },
     {
@@ -234,6 +246,19 @@ const fakeMcp = (sends?: (server: Server) => Promise<void>, options: FakeOptions
         return { content: [{ type: "text", text: "done" }] };
       }
 
+      case "roots": {
+        // Modern asks in an `input_required` round and reads the answer from the retry; Legacy asks on the call's stream.
+        if (modern) {
+          const answered = ctx.mcpReq.inputResponses?.["roots"];
+
+          return answered === undefined
+            ? inputRequired({ inputRequests: { roots: inputRequired.listRoots() } })
+            : { content: [{ type: "text", text: JSON.stringify(answered) }] };
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify(await server.listRoots()) }] };
+      }
+
       case "region": {
         const { region } = Schema.decodeUnknownSync(RegionArguments)(request.params.arguments);
 
@@ -295,7 +320,7 @@ const recording = (handle: (request: Request) => Promise<Response>): FakeServer 
 
 /** A Modern (`2026-07-28`) server: stateless, and answering any Legacy request as unsupported. */
 export const modernServer = (options?: FakeOptions): FakeServer =>
-  recording(createMcpHandler(() => fakeMcp(undefined, options), { legacy: "reject" }).fetch);
+  recording(createMcpHandler(() => fakeMcp(undefined, options, true), { legacy: "reject" }).fetch);
 
 /** A Legacy server with no sessions: each POST is answered by a fresh server; GET and DELETE are 405. */
 export const legacyStatelessServer = (options?: FakeOptions): FakeServer =>

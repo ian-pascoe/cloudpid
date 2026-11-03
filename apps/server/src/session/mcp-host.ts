@@ -161,20 +161,9 @@ export type SessionMcpOptions = {
 export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> => {
   let held: { readonly environment: string; readonly tools: McpToolsService } | undefined;
 
-  /** The Session's `McpTools`, made once, from what was kept: its Environment never changes. */
-  const toolsOf = (environment: string) => {
-    if (held?.environment === environment) return held.tools;
-
-    const tools = makeMcpTools(options.host(environment), kvMcpToolsStore(options.kv, environment));
-
-    held = { environment, tools };
-
-    return tools;
-  };
-
   /**
    * The Workspace marked used before any host call, tried twice: false when it never answered, and the request start
-   * then calls nothing (`docs/architecture/mcp-in-a-session.md` → Request start).
+   * then calls nothing (`docs/architecture/mcp-in-a-session.md` → Request start), nor a call to a stdio server.
    */
   const readied = (workspace: string) =>
     options.ready(workspace).pipe(
@@ -187,6 +176,26 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
         ).pipe(Effect.as(false)),
       ),
     );
+
+  /**
+   * The Session's `McpTools`, made once, from what was kept: its Environment never changes. A call to a stdio server marks
+   * the Workspace of the conversation that calls (its Subagent Workspace's, or the Session's) used first.
+   */
+  const toolsOf = (environment: string) => {
+    if (held?.environment === environment) return held.tools;
+
+    const tools = makeMcpTools(
+      options.host(environment),
+      kvMcpToolsStore(options.kv, environment),
+      {
+        ready: (workspace) => Effect.runPromise(readied(workspace)),
+      },
+    );
+
+    held = { environment, tools };
+
+    return tools;
+  };
 
   /** A request start that cannot be made: the tools stay as they were built, and why is logged. */
   const skipped = (why: string, cause?: Cause.Cause<unknown>) =>
@@ -207,8 +216,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
 
     const startFor = (workspace: string | null) =>
       toolsOf(environment).requestStart({
-        // Not read without servers, whose host is never asked. A subagent's conversation calls for the Session's own
-        // Workspace too, as its calls do: right until stdio servers run in a Subagent Workspace (#460, #462).
+        // Not read without servers, whose host is never asked. A subagent's conversation asks as the Session's own: the
+        // inventory is the Environment's, shared (D13); its calls name its own Subagent Workspace (`McpToolOptions.ready`).
         caller: {
           session: options.session ?? "",
           conversation: String(conversationId),

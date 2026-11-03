@@ -66,6 +66,7 @@ import { McpLoadCaps } from "./limits.ts";
 import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
 import { request } from "./request.ts";
 import { type ServerView, type Trigger, viewServers } from "./server-state.ts";
+import { McpProcessEnded, type McpProcessEndedHandler } from "./stdio.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 import { McpTokens } from "./tokens.ts";
 
@@ -86,6 +87,8 @@ export const mcpHostLayer = (deps: {
   readonly store: McpHostStoreService;
   readonly registry: McpRegistryPortService;
   readonly engine: McpEngineClientService;
+  /** What is done when a stdio server's child ended; nothing, until #478. */
+  readonly processEnded?: McpProcessEndedHandler;
   readonly references?: Layer.Layer<never>;
 }): Layer.Layer<McpHostServices> =>
   Layer.mergeAll(
@@ -95,6 +98,9 @@ export const mcpHostLayer = (deps: {
     McpTokens.layer.pipe(Layer.provide(Layer.succeed(McpRegistryPort, deps.registry))),
     McpDiscovery.layer,
     McpLoadCaps.layer,
+    deps.processEnded === undefined
+      ? McpProcessEnded.none
+      : Layer.succeed(McpProcessEnded, deps.processEnded),
     deps.references ?? Layer.empty,
   );
 
@@ -216,8 +222,9 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
 
 /**
  * `reload` (`settings_mcp_reload`, `mcpReconnect`): drop the eras and Legacy sessions of the named servers (all when
- * none is named), then rediscover the HTTP ones at once, whatever their state. A name not in the set is left out of
- * the answer.
+ * none is named), then rediscover the HTTP ones at once, whatever their state. A stdio one that has an inventory keeps
+ * it, expired and with its hold cleared, for the next live demand to refresh without starting a Container; one with
+ * none goes back to never discovered, for that demand to discover. A name not in the set is left out of the answer.
  */
 const reload = (environment: string | undefined, input: McpApply) =>
   Effect.gen(function* () {
@@ -239,7 +246,43 @@ const reload = (environment: string | undefined, input: McpApply) =>
 
     // A discovery in flight would write back the rows the reload drops: it goes first.
     yield* interrupt(conns);
+
+    // A stdio server is not asked here: that would start a Container with no one waiting for it. One that has an inventory
+    // keeps it, expired and with no hold on it, so the next live demand that names a Workspace refreshes it (`start:
+    // false`: a stopped Container leaves the tools it lists served); one with none goes back to never discovered, for
+    // that demand to discover, starting the Container if it must. All of it is written in one synchronous step.
+    const stdio = Arr.filter(views, (view) => view.reach === "stdio");
+    const now = yield* Clock.currentTimeMillis;
+
     store.dropPrior(conns);
+    yield* Effect.sync(() => {
+      const kept = Arr.filter(stdio, (view) => Option.isSome(view.inventory));
+
+      store.expireInventory(Arr.map(kept, (view) => view.server.conn));
+
+      for (const view of kept) {
+        const { status } = view;
+
+        if (status !== undefined) {
+          store.putStatus({
+            ...status,
+            failures: status.state === "failed" ? 0 : status.failures,
+            nextRetryAt: undefined,
+          });
+        }
+      }
+
+      for (const view of Arr.filter(stdio, (each) => Option.isNone(each.inventory))) {
+        store.putStatus({
+          conn: view.server.conn,
+          state: "not_discovered",
+          since: now,
+          failures: 0,
+        });
+      }
+    });
+
+    if (stdio.length > 0) yield* refreshVersions;
 
     if (environment !== undefined) yield* startDue(environment, views, "reload");
 
@@ -431,17 +474,19 @@ const waitOf = (waitMs: number | undefined, fallback: number) =>
  * The demand-driven part of a read: `connecting` statuses that died with their instance go back, and the servers due
  * a discovery start it.
  */
-const onDemand = (environment: string | undefined, trigger: Trigger) =>
+const onDemand = (environment: string | undefined, trigger: Trigger, workspace?: string) =>
   Effect.gen(function* () {
     yield* reviveStale;
 
-    if (environment !== undefined) yield* startDue(environment, yield* viewServers, trigger);
+    if (environment !== undefined) {
+      yield* startDue(environment, yield* viewServers, trigger, workspace);
+    }
   });
 
 /**
  * `requestStart`: marks the host used and says what the Session needs to build its tools. A Context Window's first
  * request (`windowOpened`) pulls the set first. Servers due a discovery start it (an HTTP server never asked, a TTL
- * passed, a backoff over); a caller with no `known` version (a Session's first request) waits up to `waitMs` (at most
+ * passed, a backoff over; a stdio server not yet discovered, or failed a minute ago, in the caller's Workspace); a caller with no `known` version (a Session's first request) waits up to `waitMs` (at most
  * 10 s) for the servers it names in `waitFor` that have no inventory yet, each wait ending once its discovery ends,
  * whatever it ends in. The answer is the inventory's content-hash versions, the features the host lists, and per
  * server its hashes and state. The Registry is asked only here and never at the host's start: a host that no Session
@@ -461,7 +506,13 @@ export const requestStart = (
 
     yield* writeOrHalt(() => store.setMeta({ lastUsedAt: now }));
 
-    yield* onDemand(environment, "demand");
+    // A stdio server is discovered here, in the caller's Workspace, and only here (it may start the Container).
+    // (A Session with no Workspace says so with an empty one.)
+    yield* onDemand(
+      environment,
+      "demand",
+      request.caller.workspace === "" ? undefined : request.caller.workspace,
+    );
 
     const waitFor = request.waitFor ?? [];
 
@@ -563,8 +614,8 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
 
 /**
  * `servers`: the inventory per server, with the parts asked for. HTTP servers due a discovery start it, and it waits up
- * to `waitMs` (at most 10 s, none by default) for those being discovered. It never starts a Container: stdio servers
- * are not discovered here.
+ * to `waitMs` (at most 10 s, none by default) for those being discovered. It never starts a Container: only a live
+ * caller's `requestStart` and `request` do.
  */
 export const servers = (
   environment: string | undefined,

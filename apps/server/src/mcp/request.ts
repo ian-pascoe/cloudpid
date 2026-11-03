@@ -1,6 +1,7 @@
 // `McpHost.request` (`docs/architecture/mcp-connections.md` → RPC, The engine → Load caps): a Session's call to one of
-// the Environment's MCP servers, sent through `McpEngine` with the caller's hooks. As built (#452), `op: "tools/call"`
-// to an HTTP server that has an inventory; any other `op` is `HostUnsupported`.
+// the Environment's MCP servers, sent through `McpEngine` with the caller's hooks. As built (#452, #460), `op: "tools/call"`
+// to a server that has an inventory, an HTTP server or a stdio server run in the caller's Workspace (`ctx.workspace`; the
+// call may start its Container); any other `op` is `HostUnsupported`.
 //
 // The call runs inside the caller's invocation, so the caller's `untilAborted` and `onProgress` stubs live as long as
 // it does (#409 answer 2), and they go on to the engine as they came. It takes a request slot on its server (8) and on
@@ -39,12 +40,13 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { requestAccess } from "./discovery-auth.ts";
-import { targetOf, writeOrHalt, type McpDiscoveryServices } from "./discovery.ts";
+import { type RequestAccess, requestAccess } from "./discovery-auth.ts";
+import { halt, isWorkspaceGone, targetOf, type McpDiscoveryServices } from "./discovery.ts";
 import { McpEngineClient } from "./engine.ts";
 import { McpLoadCaps } from "./limits.ts";
 import { recordLogs } from "./logs.ts";
 import { viewServers } from "./server-state.ts";
+import { processEnded } from "./stdio.ts";
 import { McpHostStore } from "./store.ts";
 
 const OpOnly = Schema.Struct({ op: Schema.String });
@@ -112,8 +114,13 @@ export const request = (
       return NotAllowed.make({ message: `MCP server ${name} is switched off or hidden` });
     }
 
-    if (reach === "stdio") {
-      return NotAllowed.make({ message: `MCP server ${name} runs over stdio, which comes later` });
+    // A stdio server runs in the Workspace of the caller: with none named, there is no Container to call it in.
+    const workspace = reach === "stdio" ? (ctx.workspace ?? "") : undefined;
+
+    if (workspace === "") {
+      return NotAllowed.make({
+        message: `MCP server ${name} runs in a Workspace, and the call named none`,
+      });
     }
 
     // A server that wants a sign-in is not sent the call: the owner signs in first.
@@ -141,13 +148,17 @@ export const request = (
     const store = yield* McpHostStore;
     const engine = yield* McpEngineClient;
     const caps = yield* McpLoadCaps;
-    const target = yield* targetOf(environment, server);
+    const target = yield* targetOf(environment, server, workspace);
 
     if (Result.isFailure(target)) {
       return callFailed(Unreachable.make({ message: target.failure.message }));
     }
 
-    const access = yield* requestAccess(environment, view.value, target.success);
+    // A stdio server has no sign-in: its call is made as it is.
+    const access: RequestAccess =
+      target.success.kind === "stdio"
+        ? { kind: "open", answered: () => Effect.void }
+        : yield* requestAccess(environment, view.value, target.success);
 
     // No token to call with: not sent, as a discovery would not connect.
     if (access.kind === "blocked") {
@@ -194,7 +205,7 @@ export const request = (
 
       return yield* engine.request(
         { ...target.success, timeoutMs: Math.max(1, timeoutMs - waited) },
-        store.prior(server.conn),
+        store.prior(server.conn, workspace),
         sending,
         engineHooks,
       );
@@ -207,12 +218,14 @@ export const request = (
       ),
     );
 
-    const answer = yield* caps.inFlight(server.conn, caps.engineCall("call", engineCall)).pipe(
-      Effect.map((result) => ({ result })),
-      Effect.raceFirst(Effect.as(abortOf(hooks), "aborted" as const)),
-      Effect.raceFirst(queuedPast),
-      Effect.result,
-    );
+    const answer = yield* caps
+      .inFlight(server.conn, caps.engineCall("call", engineCall), workspace)
+      .pipe(
+        Effect.map((result) => ({ result })),
+        Effect.raceFirst(Effect.as(abortOf(hooks), "aborted" as const)),
+        Effect.raceFirst(queuedPast),
+        Effect.result,
+      );
 
     if (Result.isFailure(answer)) {
       // The engine is out of reach, or its RPC broke mid-call: the server may have run it. The cause is logged, never
@@ -252,7 +265,24 @@ export const request = (
     const now = yield* Clock.currentTimeMillis;
 
     // The rows the call changed are kept as a discovery's are; a write the storage refuses never fails the result.
-    yield* writeOrHalt(() => store.applyEngineState(server.conn, result.state, now));
+    const ended = yield* Effect.sync(() =>
+      store.applyEngineState(
+        server.conn,
+        result.state,
+        now,
+        workspace === undefined ? undefined : { workspace, spawn: result.spawn },
+      ),
+    ).pipe(Effect.catchCause(() => Effect.as(halt, undefined)));
+
+    // A stdio server spawned again: the child the row named has ended.
+    if (workspace !== undefined && ended !== undefined) {
+      yield* processEnded(server.conn, workspace, ended);
+    }
+
+    // Its Workspace no longer exists (the bridge's `no_workspace`): whatever ran there is gone with it.
+    if (workspace !== undefined && isWorkspaceGone(result)) {
+      yield* processEnded(server.conn, workspace, undefined);
+    }
 
     // What the server answered of its sign-in, told the Registry on a change; a report never fails the call.
     yield* access.answered(result);

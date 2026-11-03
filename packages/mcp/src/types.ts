@@ -109,13 +109,18 @@ export class StepUpRequired extends Schema.TaggedError<
   challenge: Schema.optionalKey(McpAuthChallenge),
 }) {}
 
-/** The server could not be reached or is not answering for now: a network error, a 5xx, a 408 or a 429. */
+/**
+ * The server could not be reached or is not answering for now: a network error, a 5xx, a 408 or a 429. `stopped` is set
+ * for a stdio server whose Workspace's Container is not running (the bridge's `stopped` refusal): nothing was wrong, and
+ * the host asks again only where the process runs. Optional, so an edge that does not know it reads the failure as any.
+ */
 export class Unreachable extends Schema.TaggedError<
   Unreachable,
   { readonly brand: unique symbol }
 >()("Unreachable", {
   message: Schema.String,
   status: Schema.optionalKey(Schema.Int),
+  stopped: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /**
@@ -289,25 +294,29 @@ export const mayHaveRun = (error: McpErrorWire, method: string): boolean => {
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
- * The server a call goes to: its connection key `conn`, its name and its `timeout`, and for an HTTP server its URL and
- * headers, `${NAME}` values resolved. `kind` keeps room for stdio targets (`workspace`, `start`, `env`), which an
- * engine that does not know them fails as `Unsupported`.
+ * What every target carries: the connection key `conn`, the server's name, the Secret values the host substituted for
+ * `${NAME}` (`redact`) and the entry's `timeout`.
  */
-export const McpEngineTarget = Schema.Struct({
-  kind: Schema.Literal("http"),
+const TargetFields = {
   conn: Schema.String,
   name: Schema.String,
-  url: Schema.String,
-  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   /**
-   * The Secret values the host substituted for `${NAME}` into `headers` (`${…}` is refused in the URL): what the engine
-   * scrubs, as far as four characters, from the logs, errors, results and inventory it hands back
-   * (`docs/architecture/mcp-connections.md` → Telemetry). Empty for an entry that references no Secret, and absent from a
-   * host older than this field.
+   * The Secret values the host substituted for `${NAME}` into `headers` or `env` (`${…}` is refused in the URL): what
+   * the engine scrubs, as far as four characters, from the logs, errors, results and inventory it hands back
+   * (`docs/architecture/mcp-connections.md` → Telemetry). Empty for an entry that references no Secret, and absent from
+   * a host older than this field.
    */
   redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
   timeoutMs: Schema.optionalKey(Schema.Int),
+};
+
+/** A remote server: its URL and headers, `${NAME}` values resolved. */
+export const McpEngineHttpTarget = Schema.Struct({
+  kind: Schema.Literal("http"),
+  ...TargetFields,
+  url: Schema.String,
+  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   /**
    * The MCP extensions this connection declares besides MCP Apps, in both eras (`docs/architecture/mcp.md` →
    * Extensions): today only OAuth Client Credentials, and only on a connection that signs in with that grant. The engine
@@ -315,6 +324,47 @@ export const McpEngineTarget = Schema.Struct({
    */
   extensions: Schema.Record(Schema.String, JsonObject).pipe(Schema.optionalKey),
 });
+
+export type McpEngineHttpTarget = typeof McpEngineHttpTarget.Type;
+
+export type McpEngineHttpTargetEncoded = typeof McpEngineHttpTarget.Encoded;
+
+/**
+ * A Root as a stdio server is offered it (`docs/architecture/mcp-in-a-session.md` → Roots): `file:///workspace/<repo-dir>`,
+ * named `owner/name`.
+ */
+export const McpRoot = Schema.Struct({
+  uri: Schema.String,
+  name: Schema.optionalKey(Schema.String),
+});
+
+export type McpRoot = typeof McpRoot.Type;
+
+/**
+ * A stdio server, run by the bridge of the Container of Workspace object `workspace` (`ws:<id>`): what the bridge spawns,
+ * with the entry's `env` resolved, and whether the call may start a stopped Container (`start`: a live caller's request
+ * only, never background work). `roots` are what the server is offered, the Repos of that Workspace; a target without
+ * them declares no `roots` (`docs/architecture/mcp-connections.md` → The stdio bridge).
+ */
+export const McpEngineStdioTarget = Schema.Struct({
+  kind: Schema.Literal("stdio"),
+  ...TargetFields,
+  workspace: Schema.String,
+  start: Schema.Boolean,
+  command: Schema.String,
+  args: Schema.Array(Schema.String).pipe(Schema.optionalKey),
+  env: Schema.Record(Schema.String, Schema.String).pipe(Schema.optionalKey),
+  cwd: Schema.optionalKey(Schema.String),
+  roots: Schema.Array(McpRoot).pipe(Schema.optionalKey),
+});
+
+export type McpEngineStdioTarget = typeof McpEngineStdioTarget.Type;
+
+/**
+ * The server a call goes to. A `kind` an engine does not know fails as `Unsupported`, sending nothing, so the edge only
+ * gains (`docs/architecture/mcp.md` → Deploys).
+ */
+export const McpEngineTarget = Schema.Union([McpEngineHttpTarget, McpEngineStdioTarget]);
 
 export type McpEngineTarget = typeof McpEngineTarget.Type;
 
@@ -339,6 +389,13 @@ export type McpEngineState = typeof McpEngineState.Type;
 
 /** The logs a call received, oldest first, at most `MCP_LOG_RING`. Gain-only on every result: absent when none came. */
 const EngineLogs = { logs: McpLogEntry.pipe(Schema.Array, Schema.optionalKey) };
+
+/**
+ * The spawn id of the stdio server's process the call last heard from (the bridge's `x-cloudpid-spawn`): it changes when
+ * the process is spawned again, so the host learns of a restart (`docs/architecture/mcp-connections.md` → The stdio
+ * bridge). Gain-only: absent for an HTTP server and from an engine that does not know it.
+ */
+const EngineSpawn = { spawn: Schema.optionalKey(Schema.String) };
 
 /**
  * A tool's definition, as the server listed it and the host keeps it in its catalog: a `tools/call` carries it, since
@@ -395,6 +452,7 @@ export const McpEngineFailed = Schema.Struct({
   error: McpErrorWire,
   ...RefreshedTools,
   ...EngineLogs,
+  ...EngineSpawn,
   state: McpEngineState,
 });
 
@@ -445,6 +503,7 @@ export const McpEngineDiscovered = Schema.Struct({
   ttlMs: Schema.optionalKey(Schema.Finite),
   fetchedAt: Schema.Finite,
   ...EngineLogs,
+  ...EngineSpawn,
   state: McpEngineState,
 });
 
@@ -523,6 +582,7 @@ export const McpEngineCompleted = Schema.Struct({
   /** For a `prompts/list` request, the prompts left out. */
   ...PromptProblems,
   ...EngineLogs,
+  ...EngineSpawn,
   state: McpEngineState,
 });
 
