@@ -20,9 +20,13 @@ import {
   type McpApplyResult,
   McpApplySet,
   McpDestroyed,
+  McpNoServer,
   McpReloaded,
   type McpRequestStart,
   type McpRequestStartResult,
+  McpServerLog,
+  type McpServerLogRequest,
+  type McpServerLogResult,
   type McpServerInventory,
   type McpServersRequest,
   type McpServersResult,
@@ -250,6 +254,8 @@ export const apply = (
       return HostFailed.make({ message: "apply takes an object with a kind" });
     }
 
+    yield* Effect.annotateCurrentSpan({ "mcp.apply_kind": kind.value.kind });
+
     if (kind.value.kind === "destroy") {
       return yield* destroy(input);
     }
@@ -274,7 +280,7 @@ export const apply = (
     return yield* takeSet(environment, set.value).pipe(
       Effect.catchCause(() => Effect.succeed(HostFailed.make({ message: "The set was not kept" }))),
     );
-  });
+  }).pipe(Effect.withSpan("mcp.apply"));
 
 /**
  * Ask the Registry for the set and keep it when it differs from the one held, so a push that was lost heals. A Registry
@@ -372,6 +378,12 @@ export const requestStart = (
     }
 
     const { views, versions } = yield* refreshVersions;
+
+    yield* Effect.annotateCurrentSpan({
+      "mcp.servers": views.length,
+      "mcp.window_opened": request.windowOpened === true,
+      "mcp.known": request.known !== undefined,
+    });
 
     return {
       ...versions,
@@ -471,6 +483,8 @@ export const servers = (
 
     const { views, versions } = yield* refreshVersions;
 
+    yield* Effect.annotateCurrentSpan({ "mcp.servers": views.length });
+
     return {
       ...versions,
       servers: Arr.map(Arr.filter(views, named), (view) => toServerInventory(view, request.parts)),
@@ -478,6 +492,29 @@ export const servers = (
   }).pipe(
     Effect.catchCause(() => Effect.succeed(unreadable)),
     Effect.withSpan("mcp.servers"),
+  );
+
+/**
+ * `serverLog`: the log ring of the server `request.server` of the held set (`docs/architecture/mcp-connections.md` →
+ * Telemetry). It reads the host's own storage and nothing else: no discovery starts, the engine and the Registry are not
+ * asked, and no Workspace or Container is touched, whatever `workspace` the caller names (a stdio server's stderr tail,
+ * which comes with the bridge, will be read from `bridge_status` with `start: false`). A server not in the set is
+ * `NoServer`; a read the storage refuses is `HostFailed`.
+ */
+export const serverLog = (
+  request: McpServerLogRequest,
+): Effect.Effect<McpServerLogResult, never, McpHostServices> =>
+  Effect.gen(function* () {
+    const store = yield* McpHostStore;
+    const views = yield* viewServers;
+    const found = Arr.findFirst(views, (view) => view.server.name === request.server);
+
+    if (Option.isNone(found)) return McpNoServer.make({});
+
+    return McpServerLog.make({ entries: store.logs(found.value.server.conn) });
+  }).pipe(
+    Effect.catchCause(() => Effect.succeed(unreadable)),
+    Effect.withSpan("mcp.server_log"),
   );
 
 /** What the host object answers over RPC. */
@@ -489,6 +526,11 @@ export type McpHostMethods = {
   readonly requestStart: (request: McpRequestStart) => Effect.Effect<McpRequestStartResult>;
   /** The MCP inventory per server, for the `mcp` extension's reads, `settings_mcp_*`, the composer and Settings. */
   readonly servers: (request: McpServersRequest) => Effect.Effect<McpServersResult>;
+  /**
+   * A server's log ring, read from storage only: it starts no discovery and no Container (`serverLog`). For the main
+   * Worker's `mcpServerLog`.
+   */
+  readonly serverLog: (request: McpServerLogRequest) => Effect.Effect<McpServerLogResult>;
   /** The pushes: the Environment's MCP server set. An operation this host does not know is `HostUnsupported`. */
   readonly apply: (input: McpApply) => Effect.Effect<McpApplyResult>;
 };
@@ -508,6 +550,7 @@ export const mcpHostMethods = (
   return {
     requestStart: (request) => provided(requestStart(environment, request)),
     servers: (request) => provided(servers(environment, request)),
+    serverLog: (request) => provided(serverLog(request)),
     apply: (input) =>
       environment === undefined
         ? Effect.succeed(HostFailed.make({ message: "The MCP host's name is unknown" }))

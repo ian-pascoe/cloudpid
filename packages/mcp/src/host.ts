@@ -11,6 +11,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import { McpLogEntry } from "./log.ts";
 
 /**
  * Where an entry of the set is defined: Global, the Environment, or a Repo's `.pi/mcp.json`. `kind` this build does not
@@ -402,6 +403,38 @@ export const McpServersResult = Schema.Union([McpServersAnswer, HostFailed]);
 export type McpServersResult = typeof McpServersResult.Type;
 
 /**
+ * `serverLog`'s arguments (`docs/architecture/mcp-connections.md` → Telemetry): the server by name, and the Workspace
+ * whose stdio server's stderr tail is wanted. It reads what the host holds and never starts a Container.
+ */
+export const McpServerLogRequest = Schema.Struct({
+  server: Schema.String,
+  workspace: Schema.optionalKey(Schema.String),
+});
+
+export type McpServerLogRequest = typeof McpServerLogRequest.Type;
+
+/**
+ * A server's log ring: the last `MCP_LOG_RING` entries the host kept, oldest first. `stderr` is a stdio server's
+ * stderr tail from the bridge's status (`start: false`), which comes with the bridge's first user; absent until then.
+ */
+export const McpServerLog = Schema.TaggedStruct("ServerLog", {
+  entries: Schema.Array(McpLogEntry),
+  stderr: Schema.optionalKey(Schema.String),
+});
+
+export type McpServerLog = typeof McpServerLog.Type;
+
+/** The host's set has no server by that name. */
+export const McpNoServer = Schema.TaggedStruct("NoServer", {});
+
+export type McpNoServer = typeof McpNoServer.Type;
+
+/** What `serverLog` answers: the ring, that there is no such server, or `HostFailed` when the host could not read it. */
+export const McpServerLogResult = Schema.Union([McpServerLog, McpNoServer, HostFailed]);
+
+export type McpServerLogResult = typeof McpServerLogResult.Type;
+
+/**
  * The Registry's answer to the host's `mcpServerSet({ environment, heldHash })` (`docs/architecture/mcp-configuration.md`
  * → From the Registry to the host): the current set's hash, and the set itself unless it is the one held.
  */
@@ -458,6 +491,8 @@ export const McpServerValuesAnswer = Schema.Union([
     env: Schema.Record(Schema.String, Schema.String),
     headers: Schema.Record(Schema.String, Schema.String),
     missing: Schema.Array(Schema.String),
+    /** The Secret values (not Variables) substituted into `env` and `headers`, for the engine to scrub from what it hands back. Gain-only. */
+    redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   }),
   Schema.Struct({ status: Schema.Literal("unknown_server") }),
   Schema.Struct({ status: Schema.Literal("server_changed"), conn: Schema.String }),

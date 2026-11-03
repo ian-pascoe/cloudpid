@@ -8,6 +8,7 @@ export {
   ECHO_TOOL,
   type FakeOptions,
   type FakeServer,
+  fetchTo,
   HANG_TOOL,
   hostileServer,
   legacyStatefulServer,

@@ -23,6 +23,8 @@ import {
   type Implementation,
   type JSONObject,
   type JsonSchemaValidator,
+  LOG_LEVEL_META_KEY,
+  type LoggingLevel,
   type PriorDiscovery,
   type Prompt,
   type ProtocolEra,
@@ -46,7 +48,8 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import { classify, type Failure } from "./failures.ts";
 import { declaredCapabilities, SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.ts";
-import { tapFetch, Verdicts } from "./tap.ts";
+import { MCP_LOG_LEVEL } from "./log.ts";
+import { type TapObserver, tapFetch, Verdicts } from "./tap.ts";
 import {
   Cut,
   type EraRow,
@@ -94,6 +97,37 @@ export interface McpDeps {
   readonly extensions?: Readonly<Record<string, JSONObject>>;
   /** `{ name: "cloudpid", version: <deploy> }`. */
   readonly clientInfo: Implementation;
+  /**
+   * Hears each `notifications/message` the server sends. With it, the core asks a server that declares `logging` for
+   * `warning` and above, in both eras (Legacy: `logging/setLevel` after an `initialize` that opens a session the host
+   * keeps, since a server that keeps none forgets the level at once; Modern: `_meta` `logLevel` on every request);
+   * without it, it asks for none.
+   */
+  readonly onLog?: (log: McpLog) => void;
+}
+
+/** A `notifications/message` as the server sent it: the level, the logger's name and the data, any JSON. */
+export interface McpLog {
+  readonly level: string;
+  readonly logger?: string | undefined;
+  readonly data: unknown;
+}
+
+/**
+ * What a connection did on the wire, for the engine's span: counts and one status, never a URL, header or value
+ * (`docs/architecture/mcp-connections.md` → Telemetry).
+ */
+export interface McpConnectionStats {
+  /** HTTP responses received, retries included. */
+  readonly responses: number;
+  /** The last HTTP status received. */
+  readonly lastStatus: number | undefined;
+  /** Requests sent again after a 408, 429 or 5xx. */
+  readonly retries: number;
+  /** Modern requests the server refused as of another era. */
+  readonly eraDrops: number;
+  /** Times the connection initialized or probed again. */
+  readonly reinitializes: number;
 }
 
 /** What `list` lists, and the items of each. */
@@ -134,6 +168,8 @@ export interface McpConnection {
   readonly serverInfo: Implementation | undefined;
   readonly capabilities: ServerCapabilities;
   readonly instructions: string | undefined;
+  /** What the connection did on the wire so far. */
+  readonly stats: () => McpConnectionStats;
   /** Every page of `kind`. */
   readonly list: <K extends ListKind>(
     kind: K,
@@ -165,8 +201,14 @@ const MAX_DISCOVER_BYTES = 64 * 1024;
 /** A list request's params: a cursor, and the client's declaration on Modern. */
 interface PageParams {
   cursor?: string;
-  _meta?: { readonly [CLIENT_CAPABILITIES_META_KEY]: ClientCapabilities };
+  _meta?: RequestMeta;
 }
+
+/** A Modern request's `_meta`: the client's declaration, and the log level asked for where the server logs. */
+type RequestMeta = {
+  [CLIENT_CAPABILITIES_META_KEY]: ClientCapabilities;
+  [LOG_LEVEL_META_KEY]?: LoggingLevel;
+};
 
 /** One page of a list: its items, the next cursor, and the result for its cache hints. */
 interface Page<A> {
@@ -287,6 +329,19 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const verdicts = new Verdicts();
   const auth = authState(deps, context);
 
+  const counts = { responses: 0, retries: 0, eraDrops: 0, reinitializes: 0 };
+  let lastStatus: number | undefined;
+
+  const observer: TapObserver = {
+    response: (status) => {
+      counts.responses += 1;
+      lastStatus = status;
+    },
+    retried: () => {
+      counts.retries += 1;
+    },
+  };
+
   const fetch = tapFetch(
     deps.fetch,
     {
@@ -294,6 +349,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       sleep: (ms) => Effect.sleep(Duration.millis(ms)).pipe(Effect.runPromiseWith(context)),
     },
     verdicts,
+    observer,
   );
 
   const failure = (cause: unknown, mayHaveRun = false) =>
@@ -354,8 +410,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     return transport;
   };
 
-  const newClient = () =>
-    new Client(deps.clientInfo, {
+  const newClient = () => {
+    const client = new Client(deps.clientInfo, {
       capabilities: declaredCapabilities(deps.capabilities, deps.extensions),
       supportedProtocolVersions: SUPPORTED_PROTOCOL_VERSIONS,
       versionNegotiation: { mode: "auto", probe: { timeoutMs: CONNECT_TIMEOUT_MS, maxRetries: 0 } },
@@ -363,6 +419,21 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       jsonSchemaValidator: noValidation,
       inputRequired: { autoFulfill: false },
     });
+
+    const { onLog } = deps;
+
+    if (onLog !== undefined) {
+      client.setNotificationHandler("notifications/message", ({ params }) => {
+        onLog({ level: params.level, logger: params.logger, data: params.data });
+      });
+    }
+
+    return client;
+  };
+
+  /** Whether the server is asked for logs: `onLog` hears them, and the server declares `logging`. */
+  const wantsLogs = (capabilities: ServerCapabilities) =>
+    deps.onLog !== undefined && capabilities.logging !== undefined;
 
   /**
    * Closes `client` once the notifications in flight are sent (at most 2 s), so an aborted Legacy request's
@@ -438,6 +509,16 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         yield* transport.sessionId === undefined
           ? deps.sessions.drop
           : deps.sessions.set(sessionRowOf(client, transport.sessionId, protocolVersion, now));
+
+        // The level belongs to the session the server just opened, so only an `initialize` sets it, and only one whose
+        // session is kept pays for it: a server with no session is initialized by every connection and forgets the level
+        // at once, so asking is a round trip for nothing, in a discovery as in a call. A server that refuses the level is
+        // still a server: its logs just come at its own level.
+        if (transport.sessionId !== undefined && wantsLogs(client.getServerCapabilities() ?? {})) {
+          yield* Effect.tryPromise(() =>
+            client.setLoggingLevel(MCP_LOG_LEVEL, { timeout: CONNECT_TIMEOUT_MS }),
+          ).pipe(Effect.ignore);
+        }
       }
 
       return {
@@ -486,6 +567,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   /** Swaps the live client for one `reopen` opens. */
   const replace = (reopen: Effect.Effect<Live, Failure>) =>
     Effect.gen(function* () {
+      counts.reinitializes += 1;
       yield* closeClient(live.client);
       live = yield* reopen;
     });
@@ -511,6 +593,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     /** What brings the request back after `failed`, when the server refused it before it ran or it only reads. */
     const recovery = (failed: Failure) => {
       if (eraDropped(live, failed)) {
+        counts.eraDrops += 1;
+
         return Option.some(Effect.andThen(deps.eras.drop, replace(open({ kind: "probe" }))));
       }
 
@@ -534,16 +618,17 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   };
 
   /** The client's declaration for `ctx`, sent in a Modern request's `_meta` (D7, D23); none on Legacy. */
-  const metaFor = (ctx: McpCallContext) =>
-    live.era === "modern"
-      ? {
-          [CLIENT_CAPABILITIES_META_KEY]: declaredCapabilities(
-            deps.capabilities,
-            deps.extensions,
-            ctx,
-          ),
-        }
-      : undefined;
+  const metaFor = (ctx: McpCallContext): RequestMeta | undefined => {
+    if (live.era !== "modern") return undefined;
+
+    const meta: RequestMeta = {
+      [CLIENT_CAPABILITIES_META_KEY]: declaredCapabilities(deps.capabilities, deps.extensions, ctx),
+    };
+
+    if (wantsLogs(live.capabilities)) meta[LOG_LEVEL_META_KEY] = MCP_LOG_LEVEL;
+
+    return meta;
+  };
 
   const list = <K extends ListKind>(kind: K, ctx: McpCallContext) =>
     Effect.gen(function* () {
@@ -660,6 +745,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     get instructions() {
       return live.instructions;
     },
+    stats: () => ({ ...counts, lastStatus }),
     list,
     callTool,
   };

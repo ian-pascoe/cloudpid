@@ -48,6 +48,7 @@ import { joinRepoSkills, joinSkillView, repoSearchQuery, type SkillRepos } from 
 import type { SkillSearcher } from "./skill-search.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
 import type { McpPushes } from "../mcp/push.ts";
+import type { McpStatus } from "../mcp/status.ts";
 import { removals } from "./removal.ts";
 import { REGISTRY_NAME, type Registry, type SettingsOverridesUpdate } from "./Registry.ts";
 import {
@@ -112,6 +113,11 @@ export type RegistryRpcObjects<R = never> = {
    * the answer (`docs/architecture/mcp-configuration.md` → From the Registry to the host).
    */
   readonly mcp: McpPushes;
+  /**
+   * The MCP status reads (`mcpServers`, `mcpServerLog`, `mcpReconnect`): they ask the Registry which servers an Environment
+   * has, then its host, which answers from its own storage; none starts a Container or a Workspace.
+   */
+  readonly mcpStatus: McpStatus;
   /** The draft composer's catalog and `@` menu, looked up in a Workspace's object. */
   readonly lookups: WorkspaceLookups;
   /** The draft's Start from menu: the branches of an Environment's Repos, asked of GitHub. */
@@ -350,6 +356,7 @@ export const serveRegistryRpc = <R = never>(
     spares,
     builds,
     mcp,
+    mcpStatus,
     lookups,
     branches,
     skillSearch,
@@ -1173,6 +1180,9 @@ export const serveRegistryRpc = <R = never>(
             ),
           ),
         ),
+      mcpServers: ({ environment }) => mcpStatus.servers(environment),
+      mcpServerLog: (input) => mcpStatus.serverLog(input),
+      mcpReconnect: (input) => mcpStatus.reconnect(input),
       restartContainer: ({ workspace }) =>
         knownWorkspace(workspace).pipe(
           Effect.andThen(

@@ -1,4 +1,5 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off
+/* oxlint-disable anti-slop-effect/no-manual-tagged-construction -- the host answers are scripted as they cross the edge */
 import {
   DEFAULT_CONTAINER_SETTINGS,
   DEFAULT_SETTINGS,
@@ -77,6 +78,8 @@ import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
 import type { McpPushes } from "../mcp/push.ts";
+import { mcpStatus } from "../mcp/status.ts";
+import type { McpHostMethods } from "../mcp/host.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -103,6 +106,22 @@ const fakeDirectorySearch: SkillDirectory["searchListed"] = (query) =>
         rows: [{ source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 }],
         listed: query.startsWith("many") ? 200 : 1,
       });
+
+/** What the fake MCP hosts answer, each as it crosses the edge, so a test may script an unknown one. */
+type McpHostAnswers = {
+  servers: unknown;
+  serverLog: unknown;
+  apply: unknown;
+};
+
+/** A fake MCP host whose answers are scripted as they cross the edge, which is the point of an unknown one. */
+const scriptedMcpHost = (methods: {
+  [K in "servers" | "serverLog" | "apply"]: (
+    ...args: Parameters<McpHostMethods[K]>
+  ) => Effect.Effect<unknown>;
+}) =>
+  // SAFETY: the answers are `unknown` on purpose; the status reads decode them as they would an answer from the wire.
+  methods as Pick<McpHostMethods, "servers" | "serverLog" | "apply">;
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
@@ -522,6 +541,20 @@ const fakeRegistries = () => {
 
   let sparesMade = 0;
   const mcpSyncs: Array<string | undefined> = [];
+  /** The MCP server names of each Environment (none for one not listed here), and what the hosts were asked. */
+  const mcpNames = new Map<string, ReadonlyArray<string>>();
+  const mcpHostCalls: Array<string> = [];
+  /** The `tools.offered` entries of the Settings in force, besides the defaults. */
+  const mcpOffered: Array<string> = [];
+  /** Whether reading the Settings fails, as a Registry whose storage is gone does. */
+  const mcpSettings = { fails: false };
+
+  /** What the fake MCP hosts answer; each is the answer as it crosses the edge, so a test may script an unknown one. */
+  const mcpHostAnswers: McpHostAnswers = {
+    servers: { version: "v1", promptsVersion: "p1", servers: [] },
+    serverLog: { _tag: "ServerLog", entries: [] },
+    apply: { _tag: "Reloaded", servers: [] },
+  };
 
   /** Runs once, when the next Registry `createSession` is called: what happens just before it is answered. */
   let beforeCreate: (() => void) | undefined;
@@ -1251,10 +1284,19 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         calls.push(`getSettingsOverrides:${environment}`);
 
+        if (mcpSettings.fails) throw new Error("no storage with a secret in it");
+
         return environment === DEFAULT_ENVIRONMENT
           ? {
               environment,
-              settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
+              settings: {
+                ...DEFAULT_SETTINGS,
+                thinkingLevel: "low",
+                tools: {
+                  ...DEFAULT_SETTINGS.tools,
+                  offered: [...DEFAULT_SETTINGS.tools.offered, ...mcpOffered],
+                },
+              },
               global: DEFAULT_SETTINGS,
               overrides: { thinkingLevel: "low" },
               instructions: "",
@@ -1307,6 +1349,12 @@ const fakeRegistries = () => {
     // The host's pull and the pushes' source: the endpoint reaches the Registry only through `mcp`.
     mcpServerSet: () => Effect.die("The endpoint answers no host"),
     mcpServerValues: () => Effect.die("The endpoint answers no host"),
+    mcpServerNames: ({ environment }) =>
+      Effect.succeed(
+        environments.some((each) => each.id === environment)
+          ? (mcpNames.get(environment) ?? [])
+          : null,
+      ),
     mcpPending: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpPushed: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpDestroyed: () => Effect.die("The endpoint pushes through `mcp`"),
@@ -1463,6 +1511,38 @@ const fakeRegistries = () => {
     }),
     /** The Environments the endpoint asked `mcp` to push the MCP server set to (undefined: every one). */
     mcpSyncs,
+    mcpNames,
+    mcpOffered,
+    mcpSettings,
+    mcpHostCalls,
+    mcpHostAnswers,
+    /** The status reads over the fake Registry and the fake hosts, which record what they were asked. */
+    mcpStatus: mcpStatus({
+      registry: () => registry,
+      host: (name) =>
+        scriptedMcpHost({
+          servers: (request) =>
+            Effect.sync(() => {
+              mcpHostCalls.push(`${name} servers ${request.parts.join(",")}`);
+
+              return mcpHostAnswers.servers;
+            }),
+          serverLog: (request) =>
+            Effect.sync(() => {
+              mcpHostCalls.push(`${name} serverLog ${request.server} ${request.workspace ?? "-"}`);
+
+              return mcpHostAnswers.serverLog;
+            }),
+          apply: (input) =>
+            Effect.sync(() => {
+              mcpHostCalls.push(
+                `${name} apply ${input.kind} ${input.kind === "reload" ? (input.servers ?? []).join(",") : ""}`,
+              );
+
+              return mcpHostAnswers.apply;
+            }),
+        }),
+    }),
     /** What hands the set to its host, which the endpoint runs in the background after a save. */
     mcp: {
       sync: (environment) =>
@@ -1680,6 +1760,7 @@ const worker =
       spares: fake.spareUpkeep,
       builds: fake.buildUpkeep,
       mcp: fake.mcp,
+      mcpStatus: fake.mcpStatus,
       lookups: fake.lookups,
       branches: fake.branches,
       skillSearch: fake.skillSearch,
@@ -5774,5 +5855,249 @@ describe("handing the MCP server set to the hosts", () => {
     await fake.runBackground();
 
     expect(fake.mcpSyncs).toEqual([]);
+  });
+});
+
+describe("the MCP status reads", () => {
+  const server = (name: string, extra: Readonly<Record<string, Schema.Json>> = {}) => ({
+    name,
+    source: { kind: "global" },
+    server: {
+      type: "http",
+      url: `https://${name}.example/private?key=querysecret`,
+      headers: { authorization: "Bearer ${TOKEN}" },
+      exposure: "direct",
+      toolExposure: { delete: "hidden" },
+    },
+    conn: `conn-${name}`,
+    state: "connected",
+    toolsHash: "t",
+    promptsHash: "p",
+    counts: { tools: 2, prompts: 1 },
+    resources: false,
+    problems: [],
+    tools: [
+      { name: "search", description: "Find it.", inputSchema: {} },
+      { name: "delete", inputSchema: {} },
+    ],
+    prompts: [{ name: "summarize", description: "Summarize." }],
+    status: { since: 5, failures: 0, lastOkAt: 5 },
+    ...extra,
+  });
+
+  it("lifts a tool the Environment's `tools.offered` names to direct, and never a hidden one", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+    fake.mcpOffered.push("mcp__linear__search", "mcp__linear__list_*", "mcp__other__get_issue");
+    fake.mcpHostAnswers.servers = {
+      version: "v1",
+      promptsVersion: "p1",
+      servers: [
+        server("linear", {
+          server: {
+            type: "http",
+            url: "https://linear.example/mcp",
+            toolExposure: { delete: "hidden" },
+          },
+          tools: [
+            { name: "search", inputSchema: {} },
+            { name: "delete", inputSchema: {} },
+            { name: "listIssues", inputSchema: {} },
+            { name: "getIssue", inputSchema: {} },
+          ],
+        }),
+      ],
+    };
+
+    const answer = await call(fake, (registry) =>
+      registry.mcpServers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    const exposures = (view: typeof answer) =>
+      Predicate.isTagged(view, "Servers")
+        ? view.servers.flatMap((each) => each.tools.map((tool) => [tool.name, tool.exposure]))
+        : view;
+
+    // `search` and the `list_*` pattern are offered; `delete` is hidden whatever is offered; `getIssue` is another server's name.
+    expect(exposures(answer)).toEqual([
+      ["search", "direct"],
+      ["delete", "hidden"],
+      ["listIssues", "direct"],
+      ["getIssue", "codemode"],
+    ]);
+
+    fake.mcpOffered.length = 0;
+
+    expect(
+      exposures(
+        await call(fake, (registry) => registry.mcpServers({ environment: DEFAULT_ENVIRONMENT })),
+      ),
+    ).toEqual([
+      ["search", "codemode"],
+      ["delete", "hidden"],
+      ["listIssues", "codemode"],
+      ["getIssue", "codemode"],
+    ]);
+  });
+
+  it("answers that the servers could not be listed when the Settings cannot be read, without asking the host", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+    fake.mcpSettings.fails = true;
+
+    const answer = await call(fake, (registry) =>
+      registry.mcpServers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(answer).toEqual({ _tag: "Unavailable", message: "The MCP servers could not be listed" });
+    expect(fake.mcpHostCalls).toEqual([]);
+  });
+
+  it("answers an Environment's servers with each tool's Exposure and no entry, URL or hash", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+    fake.mcpHostAnswers.servers = {
+      version: "v1",
+      promptsVersion: "p1",
+      servers: [server("linear", { state: "a state from a later build" })],
+    };
+
+    const answer = await call(fake, (registry) =>
+      registry.mcpServers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(answer).toEqual({
+      _tag: "Servers",
+      version: "v1",
+      servers: [
+        {
+          name: "linear",
+          source: { kind: "global" },
+          // A state this build does not know reads as `unknown`, a problem.
+          state: "unknown",
+          counts: { tools: 2, prompts: 1 },
+          resources: false,
+          problems: [],
+          tools: [
+            { name: "search", description: "Find it.", exposure: "direct" },
+            { name: "delete", exposure: "hidden" },
+          ],
+          prompts: [{ name: "summarize", description: "Summarize." }],
+          status: { since: 5, failures: 0, lastOkAt: 5 },
+        },
+      ],
+    });
+    expect(JSON.stringify(answer)).not.toContain("querysecret");
+    expect(JSON.stringify(answer)).not.toContain("${TOKEN}");
+    expect(fake.mcpHostCalls).toEqual([`mcp:${DEFAULT_ENVIRONMENT} servers tools,prompts,status`]);
+  });
+
+  it("answers no servers for an Environment with none without waking its host, and NoEnvironment for one not listed", async () => {
+    const fake = fakeRegistries();
+
+    const none = await call(fake, (registry) =>
+      registry.mcpServers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    const missing = await call(fake, (registry) => registry.mcpServers({ environment: "nope" }));
+
+    expect(none).toEqual({ _tag: "Servers", version: "", servers: [] });
+    expect(missing).toEqual({ _tag: "NoEnvironment" });
+    expect(fake.mcpHostCalls).toEqual([]);
+  });
+
+  it("reads a host's answer it cannot read, or one that failed, as Unavailable", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+    fake.mcpHostAnswers.servers = { _tag: "HostFailed", message: "no storage with a secret in it" };
+
+    const failed = await call(fake, (registry) =>
+      registry.mcpServers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    fake.mcpHostAnswers.serverLog = { _tag: "SomethingNew", entries: [] };
+
+    const unknown = await call(fake, (registry) =>
+      registry.mcpServerLog({ environment: DEFAULT_ENVIRONMENT, server: "linear" }),
+    );
+
+    expect(failed).toEqual({ _tag: "Unavailable", message: "The MCP host could not answer" });
+    expect(unknown._tag).toBe("Unavailable");
+    expect(JSON.stringify([failed, unknown])).not.toContain("secret");
+  });
+
+  it("reads the log ring from the host's storage and never starts a Container or touches a Workspace", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+    fake.mcpHostAnswers.serverLog = {
+      _tag: "ServerLog",
+      entries: [{ at: 1, level: "warning", logger: "disk", data: "low" }],
+    };
+
+    const log = await call(fake, (registry) =>
+      registry.mcpServerLog({
+        environment: DEFAULT_ENVIRONMENT,
+        server: "linear",
+        workspace: "0123abcd",
+      }),
+    );
+
+    const unknown = await call(fake, (registry) =>
+      registry.mcpServerLog({ environment: DEFAULT_ENVIRONMENT, server: "nobody" }),
+    );
+
+    expect(log).toEqual({
+      _tag: "Log",
+      entries: [{ at: 1, level: "warning", logger: "disk", data: "low" }],
+    });
+    // A name the set does not hold never reaches the host.
+    expect(unknown).toEqual({ _tag: "NoServer" });
+    expect(fake.mcpHostCalls).toEqual([`mcp:${DEFAULT_ENVIRONMENT} serverLog linear 0123abcd`]);
+    // No Workspace or Container call of any kind: the fake records every one in `calls`.
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("reconnects the servers it names that the Environment has, or all of them", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear", "docs"]);
+    fake.mcpHostAnswers.apply = { _tag: "Reloaded", servers: ["linear"] };
+
+    const named = await call(fake, (registry) =>
+      registry.mcpReconnect({ environment: DEFAULT_ENVIRONMENT, servers: ["linear", "gone"] }),
+    );
+
+    await call(fake, (registry) => registry.mcpReconnect({ environment: DEFAULT_ENVIRONMENT }));
+
+    expect(named).toEqual({ _tag: "Reconnecting", servers: ["linear"] });
+    expect(fake.mcpHostCalls).toEqual([
+      `mcp:${DEFAULT_ENVIRONMENT} apply reload linear`,
+      `mcp:${DEFAULT_ENVIRONMENT} apply reload linear,docs`,
+    ]);
+  });
+
+  it("answers Unavailable for a host that refused the reload, and wakes none for an Environment with no servers", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpHostAnswers.apply = { _tag: "HostUnsupported", message: "old", op: "reload" };
+
+    const idle = await call(fake, (registry) =>
+      registry.mcpReconnect({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear"]);
+
+    const refused = await call(fake, (registry) =>
+      registry.mcpReconnect({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(idle).toEqual({ _tag: "Reconnecting", servers: [] });
+    expect(refused._tag).toBe("Unavailable");
+    expect(fake.mcpHostCalls).toHaveLength(1);
   });
 });

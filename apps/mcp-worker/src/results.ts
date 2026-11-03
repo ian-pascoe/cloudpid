@@ -10,12 +10,11 @@
 // @effect-diagnostics missingPipeableSignature:off -- `byteStream` is a plain function over bytes, not a combinator.
 import type { ListItems, ListKind, McpConnection } from "@cloudpid/mcp";
 import { McpErrorWire, type McpEngineValue, ProtocolViolation } from "@cloudpid/mcp/types";
-import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import { STREAM_HOLD_MS } from "./budget.ts";
 import type { CallContext, CallEnvironment } from "./call-context.ts";
+import { scrubValues } from "./scrub.ts";
 import { MiB } from "./units.ts";
 
 /** A value serialized to more than this goes back as a byte stream (D9.2). */
@@ -23,8 +22,6 @@ export const INLINE_LIMIT = MiB;
 
 /** The size of the pieces a large value's stream yields. */
 const STREAM_CHUNK = 64 * 1024;
-
-const REDACTED = "[REDACTED]";
 
 /** What a request completes with: a `tools/call` result, or a list's items. */
 export type Answer =
@@ -37,35 +34,21 @@ export const malformed = (what: string) =>
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json));
 
-/**
- * `text` with every token in `tokens` replaced, as it appears inside a JSON string; longest first, so a token that
- * contains another (an old one and its refresh) leaves no remainder.
- */
-const scrubText = (text: string, tokens: ReadonlySet<string>) => {
-  let scrubbed = text;
-
-  for (const token of Arr.sort(
-    tokens,
-    Order.mapInput(Order.Number, (token: string) => -token.length),
-  )) {
-    scrubbed = scrubbed.replaceAll(JSON.stringify(token).slice(1, -1), REDACTED);
-  }
-
-  return scrubbed;
-};
-
-/** The JSON text of `value`, with every token in `tokens` replaced. */
+/** The JSON text of `value`, with every token in `tokens` replaced in its string values (never its keys or numbers). */
 const scrubbedJson = (value: Answer, tokens: ReadonlySet<string>) =>
   Effect.try({
-    try: () => scrubText(JSON.stringify(value), tokens),
+    try: () => JSON.stringify(scrubValues(value, tokens)),
     catch: () => malformed("its answer"),
   });
 
-const ErrorJson = Schema.fromJsonString(McpErrorWire);
+const encodeError = Schema.encodeEffect(McpErrorWire);
+
+const decodeError = Schema.decodeEffect(McpErrorWire);
 
 /**
- * `error` with every token in `tokens` replaced in its fields, since a server's error message may echo what it was
- * sent. One that does not come back whole reads as a server not speaking MCP, never as the original.
+ * `error` with every token in `tokens` replaced in its string values, since a server's error message may echo what it was
+ * sent; its code and shape stay. One that does not come back whole reads as a server not speaking MCP, never as the
+ * original.
  */
 export const scrubError = Effect.fnUntraced(function* (
   error: McpErrorWire,
@@ -75,8 +58,8 @@ export const scrubError = Effect.fnUntraced(function* (
     return error;
   }
 
-  return yield* Schema.encodeEffect(ErrorJson)(error).pipe(
-    Effect.flatMap((json) => Schema.decodeEffect(ErrorJson)(scrubText(json, tokens))),
+  return yield* encodeError(error).pipe(
+    Effect.flatMap((wire) => decodeError(scrubValues(wire, tokens))),
     Effect.orElseSucceed((): McpErrorWire => malformed("its error")),
   );
 });

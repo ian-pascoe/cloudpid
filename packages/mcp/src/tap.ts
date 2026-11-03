@@ -371,8 +371,21 @@ const readUpTo = async (body: ReadableStream<Uint8Array>, limit: number) => {
   return whole;
 };
 
+/** What the tap tells a connection about its wire, for the connection's counts: statuses only, never what was sent. */
+export interface TapObserver {
+  /** A response arrived, with its HTTP status. */
+  readonly response: (status: number) => void;
+  /** A request is sent again after a 408, 429 or 5xx. */
+  readonly retried: () => void;
+}
+
 /** The tap over `fetch` for one connection. */
-export const tapFetch = (fetch: FetchLike, clock: TapClock, verdicts: Verdicts): FetchLike => {
+export const tapFetch = (
+  fetch: FetchLike,
+  clock: TapClock,
+  verdicts: Verdicts,
+  observer?: TapObserver,
+): FetchLike => {
   /** Fails `request` with `error`: thrown on the probe, answered as a JSON-RPC error otherwise. */
   const fail = (request: Outgoing, error: McpError, response: Response) => {
     if (request.policy.probe) {
@@ -411,10 +424,14 @@ export const tapFetch = (fetch: FetchLike, clock: TapClock, verdicts: Verdicts):
     const request = outgoing(init);
     let response = await send(input, init, request);
 
+    observer?.response(response.status);
+
     if (shouldRetry(request, response.status)) {
+      observer?.retried();
       await drain(response.body);
       await clock.sleep(retryAfter(response, clock.now()));
       response = await send(input, init, request);
+      observer?.response(response.status);
 
       if (request?.policy.probe === true && (response.status === 408 || response.status === 429)) {
         await drain(response.body);

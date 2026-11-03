@@ -11,4 +11,6 @@ export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   "aecf9457beee8fe7",
   // 3: `mcp_meta`'s versions, last use and MCP sign-ins revision.
   "1988766cefcda198",
+  // 4: per `conn`, the server log ring.
+  "35478948f07bbf90",
 ];

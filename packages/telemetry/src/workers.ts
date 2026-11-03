@@ -9,6 +9,7 @@
 // object's lifetime.
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -19,6 +20,8 @@ import { CallerFrame, captureFrame, type Frame } from "@cloudpid/effect-durable"
 export type WorkersSpan = {
   /** False when the invocation is not sampled: nothing is recorded. */
   readonly isTraced: boolean;
+  /** The span's context, whose `traceId` is the trace it belongs to; a runtime without it has no IDs to give. */
+  spanContext?(): { readonly traceId: string };
   setAttribute(key: string, value: string | number | boolean): void;
   end(): void;
 };
@@ -97,6 +100,31 @@ const frameOf = (span: Tracer.AnySpan | undefined): Frame | undefined => {
 
   return undefined;
 };
+
+/**
+ * The ID of the trace `span` belongs to: the runtime's trace ID where the span is one of this tracer's and the runtime
+ * gives one, else Effect's own. Work another invocation starts (a background discovery) records it, since a span can
+ * be neither re-parented nor linked (`docs/architecture/mcp.md` → Testing and tracing).
+ */
+export const traceIdOf = (span: Tracer.AnySpan): string => {
+  let current: Tracer.AnySpan | undefined = span;
+
+  while (current?._tag === "Span") {
+    if (current instanceof WorkersEffectSpan) {
+      return current.native?.spanContext?.().traceId ?? current.traceId;
+    }
+
+    current = Option.getOrUndefined(current.parent);
+  }
+
+  return span.traceId;
+};
+
+/** The ID of the trace the running effect belongs to, or none outside any span. */
+export const currentTraceId: Effect.Effect<string | undefined> = Effect.currentParentSpan.pipe(
+  Effect.map(traceIdOf),
+  Effect.orElseSucceed(() => undefined),
+);
 
 /**
  * The Effect tracer for Workers Observability. `tracing` is `cloudflare:workers`'s; leave it out where the runtime has

@@ -156,6 +156,25 @@ describe("inventoryVersions", () => {
     expect(prompted.promptsVersion).not.toBe(first.promptsVersion);
   });
 
+  it("keeps a prompt left out as a prompt problem, which moves the prompts version alone", () => {
+    const first = inventoryVersions([server("a", discovered())]);
+
+    const left = inventoryVersions([
+      server("a", discovered({ promptProblems: [{ prompt: "prompt #1", problem: "left out" }] })),
+    ]);
+
+    expect(left.version).toBe(first.version);
+    expect(left.promptsVersion).not.toBe(first.promptsVersion);
+    expect(
+      read(
+        inventoryRows(
+          discovered({ promptProblems: [{ prompt: "prompt #1", problem: "left out" }] }),
+          0,
+        ),
+      ).meta.problems,
+    ).toEqual([{ prompt: "prompt #1", problem: "left out" }]);
+  });
+
   it("covers a server with no inventory by its coarse state: connecting or sign-in", () => {
     const connecting = inventoryVersions([server("a", undefined, "connecting")]);
 

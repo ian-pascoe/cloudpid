@@ -69,11 +69,26 @@ const headersServer = (options: FakeOptions) =>
     },
   );
 
+/** The secret the `logging` server echoes in a log, as one that logs the header it was sent (`calls.test.ts` knows it by its text). */
+const ECHOED_SECRET = "sk-echoed-secret-0123456789";
+
+/** A Modern server that declares `logging` and sends three logs with every first page of `tools/list` and every call. */
+const loggingServer = (options: FakeOptions) =>
+  modernServer({
+    ...options,
+    logs: [
+      { level: "info", data: "quiet" },
+      { level: "warning", data: `rejected Bearer ${ECHOED_SECRET}`, logger: "auth" },
+      { level: "error", data: { big: "x".repeat(5000) } },
+    ],
+  });
+
 const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map([
   ["modern.test", modernServer],
   ["legacy.test", legacyStatelessServer],
   ["stateful.test", legacyStatefulServer],
   ["headers.test", headersServer],
+  ["logging.test", loggingServer],
 ]);
 
 interface Fake {

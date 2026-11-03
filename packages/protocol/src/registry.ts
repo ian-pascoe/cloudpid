@@ -7,6 +7,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { MarkedOrigin } from "./mcp-api.ts";
+import { McpReconnectView, McpServerLogView, McpServersView } from "./mcp-status.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
 import {
@@ -1068,6 +1069,39 @@ export class RegistryRpcs extends RpcGroup.make(
     },
     success: SettingsOverridesState,
     error: SettingsError,
+  }),
+  /**
+   * An Environment's MCP servers with their state, counts, status, problems, tools (with Exposure) and prompts
+   * (`docs/architecture/mcp-connections.md` → Telemetry). It may start the discovery of a server that is due one, and
+   * never starts a Container. An Environment with no MCP servers answers none without waking its host.
+   */
+  Rpc.make("mcpServers", {
+    payload: { environment: EnvironmentId },
+    success: McpServersView,
+  }),
+  /**
+   * The log ring of one MCP server: its last 50 `notifications/message` entries, oldest first. It reads what the host
+   * stored and never starts a Container or a Workspace, whichever `workspace` it names (a stdio server's stderr tail comes
+   * with the bridge, read with `start: false`).
+   */
+  Rpc.make("mcpServerLog", {
+    payload: {
+      environment: EnvironmentId,
+      server: Schema.String,
+      workspace: Schema.optionalKey(WorkspaceId),
+    },
+    success: McpServerLogView,
+  }),
+  /**
+   * Discover MCP servers again at once, a `failed` one included, dropping what the host holds of their protocol era and
+   * sessions: `servers` (every server of the Environment when absent). Answers the names of the set it reached.
+   */
+  Rpc.make("mcpReconnect", {
+    payload: {
+      environment: EnvironmentId,
+      servers: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+    },
+    success: McpReconnectView,
   }),
   /**
    * Replace Environment `environment`'s own Instructions with `instructions` (empty for none), shown to its Sessions

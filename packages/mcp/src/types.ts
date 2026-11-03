@@ -13,8 +13,11 @@ import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { JsonObject } from "./json.ts";
+import { McpLogEntry } from "./log.ts";
 
 export * from "./host.ts";
+
+export * from "./log.ts";
 
 export { isJsonObject, JsonObject } from "./json.ts";
 
@@ -280,6 +283,13 @@ export const McpEngineTarget = Schema.Struct({
   name: Schema.String,
   url: Schema.String,
   headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * The Secret values the host substituted for `${NAME}` into `headers` (`${…}` is refused in the URL): what the engine
+   * scrubs, as far as four characters, from the logs, errors, results and inventory it hands back
+   * (`docs/architecture/mcp-connections.md` → Telemetry). Empty for an entry that references no Secret, and absent from a
+   * host older than this field.
+   */
+  redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
   timeoutMs: Schema.optionalKey(Schema.Int),
 });
@@ -304,6 +314,9 @@ export const McpEngineState = Schema.Struct({
 });
 
 export type McpEngineState = typeof McpEngineState.Type;
+
+/** The logs a call received, oldest first, at most `MCP_LOG_RING`. Gain-only on every result: absent when none came. */
+const EngineLogs = { logs: McpLogEntry.pipe(Schema.Array, Schema.optionalKey) };
 
 /**
  * A tool's definition, as the server listed it and the host keeps it in its catalog: a `tools/call` carries it, since
@@ -339,11 +352,27 @@ const RefreshedTools = {
   problems: McpToolProblem.pipe(Schema.Array, Schema.optionalKey),
 };
 
+/**
+ * What was found wrong with a prompt: one left out for a name or a key that holds a value the call keeps secret, said by
+ * its place in the list (`prompt #3`) and never the value. A prompt's problems are kept apart from a tool's, so a
+ * prompts-only change never changes the tools' version (`docs/architecture/mcp-connections.md` → Versions).
+ */
+export const McpPromptProblem = Schema.Struct({
+  prompt: Schema.String,
+  problem: Schema.String,
+});
+
+export type McpPromptProblem = typeof McpPromptProblem.Type;
+
+/** The problems of the prompts a call listed. Gain-only: absent when there are none. */
+const PromptProblems = { promptProblems: McpPromptProblem.pipe(Schema.Array, Schema.optionalKey) };
+
 /** What a call failed with, and the rows it changed before it did. */
 export const McpEngineFailed = Schema.Struct({
   kind: Schema.Literal("failed"),
   error: McpErrorWire,
   ...RefreshedTools,
+  ...EngineLogs,
   state: McpEngineState,
 });
 
@@ -377,9 +406,11 @@ export const McpEngineDiscovered = Schema.Struct({
   tools: Schema.Array(McpToolDefinition),
   prompts: Schema.Array(JsonObject),
   problems: Schema.Array(McpToolProblem),
+  ...PromptProblems,
   /** The tools list's cache hint (SEP-2549), for the host's TTL. */
   ttlMs: Schema.optionalKey(Schema.Finite),
   fetchedAt: Schema.Finite,
+  ...EngineLogs,
   state: McpEngineState,
 });
 
@@ -455,6 +486,9 @@ export const McpEngineCompleted = Schema.Struct({
    * `problems` alone, the listed tools' schema problems.
    */
   ...RefreshedTools,
+  /** For a `prompts/list` request, the prompts left out. */
+  ...PromptProblems,
+  ...EngineLogs,
   state: McpEngineState,
 });
 
@@ -471,7 +505,9 @@ export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
 
 /**
  * The callbacks a call carries, passed as RPC stubs that live as long as the caller's invocation (`docs/architecture/
- * mcp.md` → RPC edges). Later slices add `onInput`, `onProgress` and `onLog`.
+ * mcp.md` → RPC edges). Later slices add `onInput` and `onProgress`. There is no `onLog`: a server's logs come back in
+ * the result (`logs`), so a discovery, which passes no hooks, brings them too (`docs/architecture/mcp-connections.md` →
+ * Telemetry).
  */
 export interface McpEngineHooks {
   /**

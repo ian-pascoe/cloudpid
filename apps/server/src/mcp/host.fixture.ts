@@ -15,6 +15,8 @@ import {
   type McpRequestStart,
   type McpRequestStartAnswer,
   type McpServerSetAnswer,
+  type McpServerLogRequest,
+  type McpServerLogResult,
   type McpServersAnswer,
   type McpServersRequest,
   type McpServerValuesAnswer,
@@ -24,7 +26,11 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as Tracer from "effect/Tracer";
 import { mcpEngineClient } from "./engine.ts";
 import { mcpHostLayer, mcpHostMethods, McpRegistryUnavailable } from "./host.ts";
 import { environmentOfMcpHost } from "./name.ts";
@@ -65,6 +71,27 @@ const shiftedClock = (base: Clock.Clock, offset: () => number): Clock.Clock => (
   monotonicTimeNanos: base.monotonicTimeNanos,
   sleep: (duration) => base.sleep(duration),
 });
+
+/** A span the host made, as a test reads it: its name, its trace, its parent and what it recorded. */
+export type RecordedSpan = {
+  readonly name: string;
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly parentId: string | undefined;
+  readonly attributes: Readonly<Record<string, string | number | boolean>>;
+  readonly events: ReadonlyArray<{
+    readonly name: string;
+    readonly attributes: Readonly<Record<string, string | number | boolean>>;
+  }>;
+};
+
+/** `attributes`' scalar values: what crosses RPC, and all the host records. */
+const scalars = (attributes: Readonly<Record<string, unknown>>) =>
+  Record.filter(
+    attributes,
+    (value): value is string | number | boolean =>
+      Predicate.isString(value) || Predicate.isNumber(value) || Predicate.isBoolean(value),
+  );
 
 const isHostFailed = Schema.is(HostFailed);
 
@@ -112,6 +139,8 @@ export class TestMcpHost extends DurableObject {
   readonly #held = new Map<string, Array<() => void>>();
 
   readonly #calls: Array<EngineCall> = [];
+
+  readonly #spans: Array<Tracer.NativeSpan> = [];
 
   #offset = 0;
 
@@ -161,9 +190,23 @@ export class TestMcpHost extends DurableObject {
           ),
       },
       engine: mcpEngineClient(this.#engine),
-      references: Layer.succeed(
-        Clock.Clock,
-        shiftedClock(Clock.Clock.defaultValue(), () => this.#offset),
+      references: Layer.mergeAll(
+        Layer.succeed(
+          Clock.Clock,
+          shiftedClock(Clock.Clock.defaultValue(), () => this.#offset),
+        ),
+        Layer.succeed(
+          Tracer.Tracer,
+          Tracer.make({
+            span: (options) => {
+              const span = new Tracer.NativeSpan(options);
+
+              this.#spans.push(span);
+
+              return span;
+            },
+          }),
+        ),
       ),
     }),
   );
@@ -215,6 +258,26 @@ export class TestMcpHost extends DurableObject {
     return answered(await Effect.runPromise(this.#methods.requestStart(request)));
   }
 
+  /** `serverLog` as the host answers it, whatever it answers. */
+  serverLog(request: McpServerLogRequest): Promise<McpServerLogResult> {
+    return Effect.runPromise(this.#methods.serverLog(request));
+  }
+
+  /** The spans the host made so far, in the order they started. */
+  spans(): ReadonlyArray<RecordedSpan> {
+    return this.#spans.map((span) => ({
+      name: span.name,
+      traceId: span.traceId,
+      spanId: span.spanId,
+      parentId: Option.getOrUndefined(Option.map(span.parent, (parent) => parent.spanId)),
+      attributes: scalars(Record.fromEntries(span.attributes)),
+      events: span.events.map(([name, , attributes]) => ({
+        name,
+        attributes: scalars(attributes),
+      })),
+    }));
+  }
+
   async servers(request: McpServersRequest): Promise<McpServersAnswer> {
     return answered(await Effect.runPromise(this.#methods.servers(request)));
   }
@@ -232,9 +295,15 @@ export class TestMcpHost extends DurableObject {
   /** Every table's rows as text, to look for what must not be there. */
   dump(): string {
     return JSON.stringify(
-      ["mcp_meta", "mcp_servers", "mcp_inventories", "mcp_status", "mcp_eras", "mcp_sessions"].map(
-        (table) => this.ctx.storage.sql.exec(`SELECT * FROM ${table}`).toArray(),
-      ),
+      [
+        "mcp_meta",
+        "mcp_servers",
+        "mcp_inventories",
+        "mcp_status",
+        "mcp_eras",
+        "mcp_sessions",
+        "mcp_logs",
+      ].map((table) => this.ctx.storage.sql.exec(`SELECT * FROM ${table}`).toArray()),
     );
   }
 }

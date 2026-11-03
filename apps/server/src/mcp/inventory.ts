@@ -178,6 +178,7 @@ export const inventoryRows = (discovered: McpEngineDiscovered, now: number): Inv
   const problems: Array<McpInventoryProblem> = [
     ...Arr.map(refused, ({ tool, problem }) => ({ tool, problem: `not offered: ${problem}` })),
     ...Arr.map(discovered.problems, ({ tool, problem }) => ({ tool, problem })),
+    ...Arr.map(discovered.promptProblems ?? [], ({ prompt, problem }) => ({ prompt, problem })),
     ...(tools.dropped > 0
       ? [
           {

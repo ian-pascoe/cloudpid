@@ -21,4 +21,10 @@ export {
 
 export { tracingTools } from "./tools.ts";
 
-export { workersTracer, type WorkersSpan, type WorkersTracing } from "./workers.ts";
+export {
+  currentTraceId,
+  traceIdOf,
+  workersTracer,
+  type WorkersSpan,
+  type WorkersTracing,
+} from "./workers.ts";

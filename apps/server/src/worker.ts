@@ -45,6 +45,7 @@ import { skillReposOver } from "./registry/skill-repo.ts";
 import { searchSkillsSh } from "./registry/skill-search.ts";
 import { McpHost, McpHostLive } from "./mcp/McpHost.ts";
 import { mcpPushes } from "./mcp/push.ts";
+import { mcpStatus } from "./mcp/status.ts";
 import { REGISTRY_NAME, Registry, RegistryLive } from "./registry/Registry.ts";
 import {
   legacyCleanup,
@@ -319,6 +320,13 @@ export default class Server extends Cloudflare.Worker<Server>()(
       host: (name) => mcpHosts.getByName(name),
     });
 
+    // The MCP status reads of the client: the Registry says which servers an Environment has, and its host answers from
+    // its own storage, so no Container is started and an Environment with no servers never wakes a host.
+    const mcpStatusReads = mcpStatus({
+      registry: () => registries.getByName(REGISTRY_NAME),
+      host: (name) => mcpHosts.getByName(name),
+    });
+
     // The draft composer's lookups. The listings of its `@` menu are held per isolate, as a Session holds its own, in a
     // scope that is never closed: it lives as long as the isolate.
     const listings = yield* Layer.buildWithScope(fileListingsLayer(), yield* Scope.make()).pipe(
@@ -415,6 +423,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
               spares,
               builds,
               mcp,
+              mcpStatus: mcpStatusReads,
               lookups,
               branches,
               skillSearch: searchSkillsSh,

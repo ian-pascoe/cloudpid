@@ -381,9 +381,12 @@ describe("the values of a server (mcpServerValues)", () => {
       env: {},
       headers: { Authorization: "Bearer secret" },
       missing: [],
+      redact: ["secret"],
     });
+    // A Variable is no Secret: its value is not scrubbed.
     expect(mcpServerValuesAnswer(registry, input, {})).toMatchObject({
       headers: { Authorization: "Bearer variable" },
+      redact: [],
     });
   });
 
