@@ -27,7 +27,13 @@ import { connectSession } from "./connect.ts";
 import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { accessProps } from "./access-props.ts";
 import { bypassAccessProps } from "./bypass-access.ts";
-import { guardedRoutes } from "./sign-in-routes.ts";
+import { guardedRoutes, isStartRequest } from "./sign-in-routes.ts";
+import {
+  serveCallback,
+  serveClientDocument,
+  serveStart,
+  type SignInEnv,
+} from "./mcp/sign-in-http.ts";
 import { type GuardEnv, guardFromEnv, loadTeamKeysFromAccess, teamKeys } from "./access.ts";
 import { type AssetLayer, serveAsset } from "./assets.ts";
 import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
@@ -340,16 +346,27 @@ export default class Server extends Cloudflare.Worker<Server>()(
 
     // The two public sign-in paths go first, ahead of the guard: a bypass application reaches further than the two paths
     // it names, and no other form of them may reach the single-page app's fallback or the assets (`guardedRoutes`,
-    // sign-in-routes.ts). Every form is a 404 until #450.
+    // sign-in-routes.ts). The two exact ones are the client document and the OAuth callback (`mcp/sign-in-http.ts`); the
+    // start is behind the guard.
     //
     // The guard of every other route (docs/architecture/mcp-sign-in.md → The Access guard): the Worker verifies the Access
     // assertion itself and refuses the rest, so a request that reached it some other way (a bypass application's wider
     // paths, a service binding) gets a 403. The deploy put its vars in the Worker's environment.
+    // SAFETY: the deploy sets the sign-in vars as strings (`deployment()`'s env, the label var), and nothing else puts a value under their names.
+    const signInEnv = worker as SignInEnv;
+    const registry = () => registries.getByName(REGISTRY_NAME);
+
     // SAFETY: the deploy sets these vars as strings (`guardVars`), and nothing else puts a value under their names.
-    const guard = guardedRoutes({
-      ...guardFromEnv(worker as GuardEnv),
-      keys: teamKeys(loadTeamKeysFromAccess),
-    });
+    const guard = guardedRoutes(
+      {
+        ...guardFromEnv(worker as GuardEnv),
+        keys: teamKeys(loadTeamKeysFromAccess),
+      },
+      {
+        clientDocument: serveClientDocument(signInEnv),
+        callback: (path) => serveCallback(registry, path),
+      },
+    );
 
     // SAFETY: the Worker's assets are bound as `ASSETS` (the Fetcher of the asset layer), as the deploy declares them.
     const assets = worker.ASSETS as AssetLayer;
@@ -383,6 +400,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
           if (attachment !== undefined) {
             return yield* serveAttachment(registries, attachmentFiles, attachment);
           }
+
+          // The start of an MCP sign-in: behind the guard, and the link's own request.
+          if (isStartRequest(request)) return yield* serveStart(registry, signInEnv);
 
           if (isRegistryRpc(request))
             return yield* serveRegistryRpc(registries, {

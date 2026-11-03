@@ -28,6 +28,14 @@ export const LOCAL_MODE_VAR = "CLOUDPID_LOCAL_MODE";
  */
 export const MCP_CLIENT_DOCUMENT_VAR = "MCP_CLIENT_DOCUMENT";
 
+/**
+ * The Worker var that carries the stage's {@link appOrigin}, where the client document, the DCR redirect URI and the
+ * sign-in pages take the origin from (docs/architecture/mcp-sign-in.md → The client document and the callback outside
+ * Access): set on live deployed stages only, never taken from a request's `Host`. `alchemy dev` has none: it has two
+ * origins, taken from `Host` against a fixed set (`mcp/sign-in-origin.ts`).
+ */
+export const APP_ORIGIN_VAR = "CLOUDPID_APP_ORIGIN";
+
 /** The custom domain of the `prod` stage, on the `ianpascoe.dev` zone of the same account. */
 export const PRODUCTION_DOMAIN = "pi.ianpascoe.dev";
 
@@ -137,7 +145,8 @@ export const checkedAppOrigin = (served: {
  * `<host>/oauth/mcp/callback`, and one Bypass/Everyone policy; it too is declared only while the Worker is live. The Worker
  * refuses every other form of those two paths itself (`sign-in-routes.ts`).
  *
- * `env` is the stage's own Worker vars. {@link MCP_CLIENT_DOCUMENT_VAR} is `"true"` on every live deployed stage (`prod`,
+ * `env` is the stage's own Worker vars. {@link APP_ORIGIN_VAR} is its {@link appOrigin} on every live deployed stage and
+ * absent under `alchemy dev`. {@link MCP_CLIENT_DOCUMENT_VAR} is `"true"` on every live deployed stage (`prod`,
  * `dev_$USER`, `pr-<n>`) and `"false"` under `alchemy dev` (`options.dev`), where Access cannot front `localhost` and a
  * client document needs an https URL. It stays a switch rather than something derived from the origin: if an
  * authorization server refuses `workers.dev` clients, one line turns the document off for every non-prod stage. The
@@ -150,9 +159,9 @@ export const deployment = (stage: string, options: { readonly dev: boolean }) =>
     policies: [{ decision: "allow" as const, include: [{ email: OWNER_EMAIL }] }],
   };
 
-  const env = {
-    [MCP_CLIENT_DOCUMENT_VAR]: options.dev ? ("false" as const) : ("true" as const),
-  };
+  const env = options.dev
+    ? { [MCP_CLIENT_DOCUMENT_VAR]: "false" as const }
+    : { [MCP_CLIENT_DOCUMENT_VAR]: "true" as const, [APP_ORIGIN_VAR]: appOrigin(stage) };
 
   return stage === "prod"
     ? { label: undefined, domain: PRODUCTION_DOMAIN, workersDev: false, access, env }

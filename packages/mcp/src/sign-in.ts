@@ -116,3 +116,210 @@ export const McpAuthReportAnswer = Schema.Union([
 ]);
 
 export type McpAuthReportAnswer = typeof McpAuthReportAnswer.Type;
+
+// Starting and completing a sign-in (`docs/architecture/mcp-sign-in.md` → Starting and completing a sign-in) ---------------
+
+/** The Environment a start names when the entry is Global's own: `environment=all` of the start link. */
+export const MCP_SIGN_IN_GLOBAL = "all";
+
+/**
+ * What the main Worker knows of the stage and the request, which the Registry (no environment variables of its own to
+ * read) cannot: where the sign-in starts, the stage's name for client names, and whether the document is in the ladder.
+ */
+export const McpSignInStage = Schema.Struct({
+  /** The app origin the sign-in starts on: the stage's own, or one of `alchemy dev`'s two. Never taken from a header on a live stage. */
+  origin: Schema.String,
+  /** The stage's label; absent on `prod`. */
+  label: Schema.optional(Schema.String),
+  /** Under `alchemy dev`: the client name says "local", and the DCR client is `native`. */
+  local: Schema.Boolean,
+  /** `MCP_CLIENT_DOCUMENT`: whether the client document is in the ladder for new sign-ins. */
+  documentEnabled: Schema.Boolean,
+});
+
+export type McpSignInStage = typeof McpSignInStage.Type;
+
+/** `startMcpSignIn`: the start link's parameters (the Worker has checked them) and the stage. */
+export const McpSignInStartInput = Schema.Struct({
+  /** An Environment's id, or `MCP_SIGN_IN_GLOBAL`. */
+  environment: Schema.String,
+  /** The server's name as its entry spells it. */
+  server: Schema.String,
+  stage: McpSignInStage,
+  /** A step-up: no refresh, the scope the row wants. */
+  stepUp: Schema.optional(Schema.Boolean),
+  /** The Sign-in request that asked: its Session and request. */
+  requester: Schema.optional(McpResolvedWaiter),
+  /** Where Back goes: a path of the app. */
+  returnPath: Schema.optional(Schema.String),
+});
+
+export type McpSignInStartInput = typeof McpSignInStartInput.Type;
+
+/** What the issuer interstitial shows: never a secret's value. */
+export const McpSignInConfirmation = Schema.Struct({
+  /** The one-time field of Continue and Cancel: the `state` of the pending row. */
+  state: Schema.String,
+  server: Schema.String,
+  /** `owner` or `repo:<owner/repo>`. */
+  source: Schema.String,
+  url: Schema.String,
+  issuer: Schema.String,
+  /** The issuer the client was bound to before, on a change. */
+  previousIssuer: Schema.optional(Schema.String),
+  clientId: Schema.String,
+  /** Where the client secret resolves: `Secret` or `Variable`, and the `${NAME}`'s name. */
+  secret: Schema.optional(Schema.Struct({ scope: Schema.String, name: Schema.String })),
+});
+
+export type McpSignInConfirmation = typeof McpSignInConfirmation.Type;
+
+/** The fields every answer that ends in a page may carry, so Back and Start again are offered. */
+const McpSignInRetry = Schema.Struct({
+  retry: Schema.optional(Schema.Struct({ environment: Schema.String, server: Schema.String })),
+  returnPath: Schema.optional(Schema.String),
+});
+
+/**
+ * The answer to `startMcpSignIn`: where to send the owner's browser, the interstitial to show, or why there is no
+ * sign-in to start (`message` is for the owner, and never holds a secret). A `status` this build does not know is the last
+ * member.
+ */
+const KnownStartAnswer = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("redirect"), url: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("confirm"), confirmation: McpSignInConfirmation }),
+  Schema.Struct({ status: Schema.Literal("problem"), message: Schema.String }),
+]);
+
+export const McpSignInStartAnswer = Schema.Union([
+  ...KnownStartAnswer.members,
+  Schema.Struct({ status: Schema.String }),
+]);
+
+export type McpSignInStartAnswer = typeof McpSignInStartAnswer.Type;
+
+/** The start answer as this build knows it: what it does not know is a problem with a generic message. */
+export const readMcpSignInStartAnswer = (
+  answer: McpSignInStartAnswer,
+): typeof KnownStartAnswer.Type =>
+  Schema.is(KnownStartAnswer)(answer)
+    ? answer
+    : {
+        status: "problem",
+        message: "The Registry answered with something this build does not know",
+      };
+
+/** `confirmMcpSignIn`: Continue or Cancel of the interstitial. */
+export const McpSignInConfirmInput = Schema.Struct({
+  state: Schema.String,
+  decision: Schema.Union([Schema.Literals(["continue", "cancel"]), Schema.String]),
+});
+
+export type McpSignInConfirmInput = typeof McpSignInConfirmInput.Type;
+
+const KnownConfirmAnswer = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("redirect"), url: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("cancelled") }),
+  Schema.Struct({ status: Schema.Literal("expired") }),
+  Schema.Struct({ status: Schema.Literal("problem"), message: Schema.String }),
+]);
+
+export const McpSignInConfirmAnswer = Schema.Union([
+  ...KnownConfirmAnswer.members,
+  Schema.Struct({ status: Schema.String }),
+]);
+
+export type McpSignInConfirmAnswer = typeof McpSignInConfirmAnswer.Type;
+
+/** The confirm answer as this build knows it, an unknown one being a problem. */
+export const readMcpSignInConfirmAnswer = (
+  answer: McpSignInConfirmAnswer,
+): typeof KnownConfirmAnswer.Type =>
+  Schema.is(KnownConfirmAnswer)(answer)
+    ? answer
+    : {
+        status: "problem",
+        message: "The Registry answered with something this build does not know",
+      };
+
+/** `completeMcpSignIn`: what the callback received, bounded by the Worker. A secret reaches the Registry only as `code`. */
+export const McpSignInCompleteInput = Schema.Struct({
+  state: Schema.String,
+  /** The callback's path, `/oauth/mcp/callback` or with its 12-character hash. */
+  path: Schema.String,
+  code: Schema.optional(Schema.String),
+  iss: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.String),
+  errorDescription: Schema.optional(Schema.String),
+});
+
+export type McpSignInCompleteInput = typeof McpSignInCompleteInput.Type;
+
+/** An Environment that uses a sign-in. */
+export const McpSignInEnvironment = Schema.Struct({ id: Schema.String, name: Schema.String });
+
+export type McpSignInEnvironment = typeof McpSignInEnvironment.Type;
+
+/** The outcomes of a callback that saved nothing (`mcp-sign-in.md` → Page outcomes). */
+export const MCP_SIGN_IN_FAILURES = [
+  "expired",
+  "declined",
+  "provider_error",
+  "missing_code",
+  "iss_mismatch",
+  "exchange_failed",
+  "path_mismatch",
+  "unconfirmed",
+  "unavailable",
+] as const;
+
+/**
+ * The answer to `completeMcpSignIn`. `signed_in` names the Environments that use the sign-in and the Sign-in requests it
+ * resolved, which whoever carries the answer on tells the Sessions (the Registry never calls out); the hosts of those
+ * Environments take the change at their next pull, which the raised revision announces. Any other outcome saved nothing and
+ * left the old tokens as they were. `code` is the authorization server's error code, `message` its description or what
+ * failed, cut to 300 characters. A `status` this build does not know is the last member.
+ */
+const KnownCompleteAnswer = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("signed_in"),
+    server: Schema.String,
+    environments: Schema.Array(McpSignInEnvironment),
+    resolved: Schema.Array(McpResolvedWaiter),
+    revision: Schema.Finite,
+    returnPath: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    status: Schema.Literals(MCP_SIGN_IN_FAILURES),
+    code: Schema.optional(Schema.String),
+    message: Schema.optional(Schema.String),
+    ...McpSignInRetry.fields,
+  }),
+]);
+
+export const McpSignInCompleteAnswer = Schema.Union([
+  ...KnownCompleteAnswer.members,
+  Schema.Struct({ status: Schema.String }),
+]);
+
+export type McpSignInCompleteAnswer = typeof McpSignInCompleteAnswer.Type;
+
+/** The members of {@link McpSignInCompleteAnswer} this build knows. */
+export type McpSignInKnownCompleteAnswer = typeof KnownCompleteAnswer.Type;
+
+/** A callback that saved nothing. */
+export type McpSignInFailure = Exclude<
+  McpSignInKnownCompleteAnswer,
+  { readonly status: "signed_in" }
+>;
+
+/** The complete answer as this build knows it: one it does not know is `unavailable`, which saved nothing as far as it can tell. */
+export const readMcpSignInCompleteAnswer = (
+  answer: McpSignInCompleteAnswer,
+): typeof KnownCompleteAnswer.Type =>
+  Schema.is(KnownCompleteAnswer)(answer)
+    ? answer
+    : {
+        status: "unavailable",
+        message: "The Registry answered with something this build does not know",
+      };

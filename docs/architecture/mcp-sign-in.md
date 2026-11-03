@@ -133,7 +133,7 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 - **Routes on the main Worker:**
   - `GET /oauth/mcp/client.json` and `GET /oauth/mcp/callback[/<id>]` are public on every deployed stage.
   - `GET`/`POST /oauth/mcp/start` stays behind Access.
-- **Origin:** `https://pi.ianpascoe.dev` on prod and `appOrigin(stage)` elsewhere (`https://cloudpid-server-<label>.ian-g-pascoe.workers.dev`, from `apps/server/src/deployment.ts`; see [_The App sandbox_](mcp-apps.md#the-app-sandbox) for the fixed names). The Worker gets it as a deploy-time var and never takes it from `Host`.
+- **Origin:** `https://pi.ianpascoe.dev` on prod and `appOrigin(stage)` elsewhere (`https://cloudpid-server-<label>.ian-g-pascoe.workers.dev`, from `apps/server/src/deployment.ts`; see [_The App sandbox_](mcp-apps.md#the-app-sandbox) for the fixed names). The Worker gets it as a deploy-time var (`CLOUDPID_APP_ORIGIN`, set on live stages only) and never takes it from `Host`. A live Worker without it refuses to start a sign-in.
 - **The document:**
 
   | Field                        | Value                                     |
@@ -157,7 +157,7 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 - **`MCP_CLIENT_DOCUMENT`:** set by `deployment(stage, { dev })`. It is on for every live deployed stage and off under `alchemy dev`. Turning it off removes the document from the ladder for new sign-ins only; the route keeps serving. It exists as the way out if an authorization server refuses `workers.dev` clients. The other way out is an entry's `clientRegistration: "dcr"`.
 - **A refused document client:** an authorization server shows the refusal only on its own page; RFC 6749 §4.1.2.1 forbids redirecting back. So when a document-client sign-in expires without a callback, the Settings row says: "If <AS host> showed an error about the client, set Client registration to DCR."
 - **The Access guard** ([Whether workers.dev stages serve the client document](https://github.com/ian-pascoe/cloudpid/issues/422) D9). It lands first, before the bypass, as its own slice. Access lets through more than the two named paths (any sub-path, any capitalisation, doubled slashes), so the Worker doesn't trust that Access ran:
-  - **The exact public paths** are `/oauth/mcp/client.json`, `/oauth/mcp/callback` and `/oauth/mcp/callback/<12-char hash>`, matched case-sensitively. They skip the check and never read identity. Every other form under those two prefixes gets a 404 before the guard and ahead of the single-page app's fallback, asset serving, and any case-insensitive or `%2f`-decoding router. The router is a pure function (`apps/server/src/sign-in-routes.ts`) that reads the path as it was sent: it treats a path as under a prefix after decoding escapes, applying `;` path parameters and dot segments, collapsing slashes and lowercasing, so it refuses more than it serves. Until the sign-in slice ([Start and complete MCP sign-ins with the client document](https://github.com/ian-pascoe/cloudpid/issues/450)) serves them, the two exact paths answer 404 too.
+  - **The exact public paths** are `/oauth/mcp/client.json`, `/oauth/mcp/callback` and `/oauth/mcp/callback/<12-char hash>`, matched case-sensitively. They skip the check and never read identity. Every other form under those two prefixes gets a 404 before the guard and ahead of the single-page app's fallback, asset serving, and any case-insensitive or `%2f`-decoding router. The router is a pure function (`apps/server/src/sign-in-routes.ts`) that reads the path as it was sent: it treats a path as under a prefix after decoding escapes, applying `;` path parameters and dot segments, collapsing slashes and lowercasing, so it refuses more than it serves.
   - **Every other route** (`/`, assets, `/rpc`, the socket, attachments, `/oauth/mcp/start`) needs a valid `Cf-Access-Jwt-Assertion`. The Worker checks it against the `spirit-led-software` team's keys: issuer, signature, `exp`, `nbf`, and an `aud` equal to the Worker's own application's. The `email` must be `OWNER_EMAIL`, with no `common_name`. Anything else gets a 403, and the guard fails closed. `/mcp` takes its own audience (see [_Access and identity_](mcp-endpoint.md#access-and-identity)).
   - The audiences arrive as deploy-time vars from alchemy outputs (`CLOUDPID_ACCESS_AUD` for the main application's; see `docs/development/infra.md` → Stages and Access). The Worker and its own application's `aud` form a cycle in alchemy's graph, which the engine settles through the Worker's precreate stub, so main routes check the audience. A deployed Worker missing them refuses every guarded route. A `fetch` through a service binding carries no assertion and is refused; internal callers use RPC entrypoints.
   - Under `alchemy dev`, a request counts as the owner only when both hold:
@@ -168,7 +168,7 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 - **`alchemy dev`:**
   - No Access, no bypass application, and the document route answers 404.
   - DCR registers `http://localhost:<port>/oauth/mcp/callback` with `application_type: native`.
-  - There are two app origins, `http://localhost:1337` (workerd) and `http://localhost:5173` (Vite with `strictPort`, which proxies all of `/oauth/mcp/`). The Worker accepts a request's origin only from that set (from `Host`, or Vite's forwarded host if Vite rewrites `Host`: checked during implementation), and the redirect URI follows the origin the sign-in started on. That makes two DCR registrations per authorization server in dev.
+  - There are two app origins, `http://localhost:1337` (workerd) and `http://localhost:5173` (Vite with `strictPort`, which proxies all of `/oauth/mcp/`). The Worker accepts a request's origin only from that set, read from `Host` and nothing else (a forwarded header is the client's to set), and the redirect URI follows the origin the sign-in started on. Vite's string form of a proxy target sets `changeOrigin` and so rewrites `Host` to `localhost:1337` (checked during #450), which would make every start look like workerd's. The `/oauth/mcp/` proxy in `apps/web/vite.config.ts` therefore sets `changeOrigin: false` and the browser's `Host` (`localhost:5173`) reaches the Worker. That makes two DCR registrations per authorization server in dev.
 - **Stage lifecycle:**
   - A preview's destroy doesn't revoke its grants at the authorization servers. They stay listed under its client name for the owner to revoke.
   - `alchemy dev --stage dev_$USER` deletes the stage's deployed Durable Objects, MCP sign-ins included. The redeploy comes back on the same URL and the same document client, and the owner signs in again.
@@ -182,14 +182,14 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
 
   Nothing sends a Notification without an agent's ask (or cloudpid's, for an MCP task).
 
-- **The link:** `<a target="_blank" rel="noopener">` to `/oauth/mcp/start?environment=<id|all>&server=<name>[&session=…&request=…]&return=<path>`. It needs `Sec-Fetch-Site: same-origin`, and it is a link, not an RPC followed by `window.open`, because popup blockers would stop that. The start answers in that tab with a 303 to the authorization page, the issuer interstitial, or an error page.
+- **The link:** `<a target="_blank" rel="noopener">` to `/oauth/mcp/start?environment=<id|all>&server=<name>[&step_up=1][&session=…&request=…]&return=<path>` (`all` is Global's own layers: its Secrets and Variables, and sign-ins that every Environment can use; `step_up=1` asks for the wanted scope of a sign-in that is already there; `return` is kept only as a path of this app). It needs `Sec-Fetch-Site: same-origin`, and it is a link, not an RPC followed by `window.open`, because popup blockers would stop that. The start answers in that tab with a 303 to the authorization page, the issuer interstitial, or an error page.
 - **`startMcpSignIn`** (Registry):
   1. Resolves the entry from that Environment's set.
   2. Discovers from the last reported challenge, else the well-known paths.
   3. Picks the client by the ladder and binds it.
   4. Makes a PKCE verifier and a 256-bit `state`.
   5. Writes one pending row per key; a newer start replaces it. The row expires after 10 min and holds:
-     - the `state` hash, the key and the Environment;
+     - the `state` hash, the key and the Environment (`all` or an id);
      - the redirect URI, issuer, metadata and client;
      - the sealed verifier, the scope, the resource and the step-up flag;
      - the requester, the return path and `awaiting_confirmation`.
@@ -204,16 +204,23 @@ An MCP sign-in is how cloudpid reaches a remote MCP server that wants OAuth. It 
   - The page is served with `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, and a CSP that allows only its own inline script **by hash** (`script-src 'sha256-…'`; Cloudflare's injected scripts copy a nonce). Its first script calls `history.replaceState`.
 - **Page outcomes:**
   - signed in, naming the Environments that use the sign-in;
-  - expired or already used;
-  - replaced by a newer sign-in;
+  - expired, already used or replaced by a newer sign-in (one page: a pending row that is gone cannot say which, because only a hash of `state` is kept and the row is deleted first);
   - missing `state` or `code`;
   - declined at the server's page ("Nothing changed");
   - an authorization server error (its code, and the escaped description ≤300);
   - an `iss` mismatch ("nothing saved");
-  - an exchange failure.
+  - an exchange failure;
+  - a store that could not be reached ("Nothing was saved", 503).
 
   A failure leaves the old tokens as they were. A pending Sign-in request stays open and shows the last failure. Every page says "You can close this tab" and offers Back and Start again. No page ever redirects on its own: on the installed iOS PWA the sign-in opens in an in-app sheet.
 
+- **As built (#450):**
+  - The Registry, not the Worker, does discovery, registration and the exchange, through `guardedFetch` (`apps/server/src/mcp/oauth-fetch.ts`: 15 s, no response read past 64 KiB, every redirect hop checked). The Worker shapes and bounds what reaches it (`mcp/sign-in-http.ts`) and renders the pages (`mcp/sign-in-pages.ts`); the three RPC methods are `startMcpSignIn`, `confirmMcpSignIn` and `completeMcpSignIn`, each with a fallback member on its answer.
+  - The `state` is 43 characters (256 random bits, Base64url); only its hash is stored. The PKCE pair and the authorization URL are built here (`mcp/sign-in-client.ts`), so the interstitial's Continue rebuilds the URL from the sealed verifier. The interstitial's one-time field is the `state`; Continue and Cancel are one `POST /oauth/mcp/start`, which needs `Origin` equal to the origin the sign-in started on and `Sec-Fetch-Site: same-origin`.
+  - The authorization server must publish metadata (no legacy `/authorize` fallback). `offline_access` is asked for only when the base scope is not empty and the server lists it.
+  - A configured client's secret is resolved again at completion, from the entry as it is then, never copied into the pending row.
+  - A failure writes `lastError` only on a row with no tokens: a `step_up` row that carried an error would read as "token rejected".
+  - Hosts are not pushed: a completion raises the revision, and a host takes it at its next pull. The answer lists the Environments and the Sign-in requests it resolved, for whoever carries it on ([#470](https://github.com/ian-pascoe/cloudpid/issues/470)).
 - **Learning the outcome:**
   - The page posts on `BroadcastChannel("cloudpid:mcp-sign-in")`.
   - Settings refetches when that message arrives and on focus or `visibilitychange`.
@@ -335,7 +342,7 @@ The extension `io.modelcontextprotocol/oauth-client-credentials` ([Signing in](h
 
 ## Testing
 
-- **Unit:** `deployment()`'s table, covering the label, the flag, the client name and the bypass gate. Routing tests cover capitalisation, doubled slashes, sub-paths, `;` and `%2f` under both public prefixes, all answering 404. The guard's audience, email and `common_name` checks, and the local-mode var's absence from the live `deployment()` output, are tested too.
+- **Unit:** the origin rule, the client name, PKCE (RFC 7636's vector), the authorization URL, the pages (each CSP hash against `crypto.subtle`, escaping, "close this tab" on every outcome), the routes (a malformed `state` never reaches the Registry; `Sec-Fetch-Site` and `Origin` checks) and the guarded fetch. The Registry's start and completion run over real Durable Object storage and a fake network (`mcp-sign-in-flow.workerd.test.ts`). `deployment()`'s table, covering the label, the flag, the client name and the bypass gate. Routing tests cover capitalisation, doubled slashes, sub-paths, `;` and `%2f` under both public prefixes, all answering 404 apart from the two exact paths. The guard's audience, email and `common_name` checks, and the local-mode var's absence from the live `deployment()` output, are tested too.
 - **Preview check by the implementing agent** (curl from outside), when the bypass lands:
   - the bypass reaches the Worker, `/oauth/mcp/callback/<hash>` included;
   - other forms get a 404;

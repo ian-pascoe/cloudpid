@@ -95,11 +95,21 @@ describe("MCP_CLIENT_DOCUMENT", () => {
     ["dev_ian", true, "false"],
     ["pr-444", true, "false"],
   ])("on %s, with alchemy dev %s, is %s", (stage, dev, flag) => {
-    expect(deployment(stage, { dev }).env).toEqual({ MCP_CLIENT_DOCUMENT: flag });
+    expect(deployment(stage, { dev }).env).toMatchObject({ MCP_CLIENT_DOCUMENT: flag });
   });
 
-  it.each(["prod", "pr-444"])("is the only var %s's deployment sets", (stage) => {
-    expect(deployment(stage, LIVE).env).toStrictEqual({ MCP_CLIENT_DOCUMENT: "true" });
+  it.each([
+    ["prod", `https://${PRODUCTION_DOMAIN}`],
+    ["pr-444", "https://cloudpid-server-pr-444.ian-g-pascoe.workers.dev"],
+  ])("is, with the app origin, the only var %s's deployment sets", (stage, origin) => {
+    expect(deployment(stage, LIVE).env).toStrictEqual({
+      MCP_CLIENT_DOCUMENT: "true",
+      CLOUDPID_APP_ORIGIN: origin,
+    });
+  });
+
+  it.each(["prod", "dev_ian"])("leaves the app origin out under alchemy dev on %s", (stage) => {
+    expect(deployment(stage, { dev: true }).env).toStrictEqual({ MCP_CLIENT_DOCUMENT: "false" });
   });
 });
 

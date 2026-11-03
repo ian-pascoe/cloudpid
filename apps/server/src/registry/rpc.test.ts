@@ -1331,6 +1331,10 @@ const fakeRegistries = () => {
     mcpAccessToken: () => Effect.die("The endpoint hands out no token"),
     reportMcpAuth: () => Effect.die("The endpoint reports no sign-in"),
     signInsRevision: () => Effect.die("The endpoint reads no sign-in revision"),
+    // The owner's start and the public callback are the main Worker's own routes, never the endpoint's.
+    startMcpSignIn: () => Effect.die("The endpoint starts no sign-in"),
+    confirmMcpSignIn: () => Effect.die("The endpoint confirms no sign-in"),
+    completeMcpSignIn: () => Effect.die("The endpoint completes no sign-in"),
     // The Session DO makes Agent changes, never the endpoint.
     changeSettings: () => Effect.die("The endpoint makes no Agent change"),
     listSettingsChanges: () => Effect.sync(() => Arr.filter(settingsChanges, listed).toReversed()),

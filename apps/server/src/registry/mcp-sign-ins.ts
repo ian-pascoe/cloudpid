@@ -15,7 +15,7 @@
 // push it lost is healed. No row's sealed value is ever read into a listing (`McpSignInRecord` has none).
 //
 // The store holds more than this slice calls: the tables and their bounds are this ticket's (#442), and the slices that
-// follow are what use them, so some of the surface has no caller yet:
+// follow are what use them, so some of the surface has no caller yet (#450 has since landed, in `mcp-sign-in-flow.ts`):
 //   - #450 (start and complete a sign-in): `put` with its tokens, registrations (`getRegistration`, `putRegistration`,
 //     `deleteRegistration`), bindings (`getBinding`, `putBinding`), the pending row (`putPending`, `takePending`,
 //     `getPending`, `deletePending`) and the step-up bookkeeping a completed step-up writes (`SignInWrite.wantedScope`,

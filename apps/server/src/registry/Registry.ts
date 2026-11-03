@@ -178,13 +178,27 @@ import {
   type WorkspaceRecord,
   type WorkspaceSetup,
 } from "./store.ts";
-import type {
-  McpAccessTokenAnswer,
-  McpAccessTokenInput,
-  McpAuthReport,
-  McpAuthReportAnswer,
+import {
+  MCP_SIGN_IN_GLOBAL,
+  type McpAccessTokenAnswer,
+  type McpAccessTokenInput,
+  type McpAuthReport,
+  type McpAuthReportAnswer,
+  type McpSignInCompleteAnswer,
+  type McpSignInCompleteInput,
+  type McpSignInConfirmAnswer,
+  type McpSignInConfirmInput,
+  type McpSignInStartAnswer,
+  type McpSignInStartInput,
 } from "@cloudpid/mcp/types";
+import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
 import { mcpAccessToken, reportMcpAuth } from "./mcp-sign-in-registry.ts";
+import {
+  completeMcpSignIn,
+  confirmMcpSignIn,
+  type FlowDeps,
+  startMcpSignIn,
+} from "./mcp-sign-in-flow.ts";
 import { MCP_OAUTH_PURPOSE } from "./mcp-sign-in-seal.ts";
 import { openMcpSignIns } from "./mcp-sign-ins.ts";
 
@@ -906,6 +920,26 @@ export type RegistryMethods = {
    * `windowOpened`, so a push it lost heals (`mcpServerSet` carries it too).
    */
   readonly signInsRevision: () => Effect.Effect<number>;
+  /**
+   * The owner's start of an MCP sign-in (`docs/architecture/mcp-sign-in.md` → Starting and completing a sign-in): discovers the
+   * authorization server, picks the client by the ladder, and keeps the one pending row of the sign-in. The answer is where
+   * to send the owner's browser, the issuer interstitial to show, or why there is no sign-in to start. For the main Worker's
+   * `/oauth/mcp/start` only, which has checked the owner and the request.
+   */
+  readonly startMcpSignIn: (input: McpSignInStartInput) => Effect.Effect<McpSignInStartAnswer>;
+  /** Continue or Cancel of the issuer interstitial; the `state` the start put in the page is its one-time field. */
+  readonly confirmMcpSignIn: (
+    input: McpSignInConfirmInput,
+  ) => Effect.Effect<McpSignInConfirmAnswer>;
+  /**
+   * What the public callback received: checks the pending row of the `state`, its path, `error` and `iss`, exchanges the
+   * code and writes the sign-in. For the main Worker's callback only, which has checked the shape of what it passes. The
+   * answer carries the Environments that use the sign-in and the Sign-in requests it resolved; the hosts take the raised
+   * `signInsRevision` at their next pull.
+   */
+  readonly completeMcpSignIn: (
+    input: McpSignInCompleteInput,
+  ) => Effect.Effect<McpSignInCompleteAnswer>;
 };
 
 /** How long a legacy object taken to be wiped is left to its taker before another may take it. */
@@ -1027,6 +1061,32 @@ export const RegistryLive = Registry.make(
 
         // The MCP sign-ins': a malformed key makes token requests answer `unavailable` and leaves the rows unopened.
         const mcpVault = yield* cachedVault(MCP_OAUTH_PURPOSE);
+
+        // What a start and a callback read: every OAuth request goes through `guardedFetch`, and an entry's `${NAME}` client
+        // secret is read from the Secrets and Variables of the Environment the sign-in started in (Global's for `all`).
+        const signInFlow: FlowDeps = {
+          store,
+          signIns: mcpSignIns,
+          vault: mcpVault,
+          fetch: guardedOAuthFetch(),
+          sources: (environment, resolvesSecrets) =>
+            Effect.gen(function* () {
+              const global = environment === MCP_SIGN_IN_GLOBAL;
+
+              const kept = resolvesSecrets
+                ? yield* usedSecrets(store, vault, global ? GLOBAL_SCOPE : environment)
+                : [];
+
+              return {
+                secrets: Record.fromEntries(
+                  Arr.map(kept, ({ name, value }) => [name, value] as const),
+                ),
+                variables: global
+                  ? globalSettingsOf(store).variables
+                  : (environmentSettingsOf(store, environment)?.settings.variables ?? {}),
+              };
+            }),
+        };
 
         /** The Secrets `environment` uses, opened, for the Session DOs and the Builds: a vault that fails says why. */
         const opened = (environment: string) =>
@@ -1763,6 +1823,18 @@ export const RegistryLive = Registry.make(
               Effect.map((now) => reportMcpAuth({ store, signIns: mcpSignIns }, report, now)),
             ),
           signInsRevision: () => Effect.sync(() => mcpSignIns.revision()),
+          startMcpSignIn: (input) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) => startMcpSignIn(signInFlow, input, now)),
+            ),
+          confirmMcpSignIn: (input) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) => confirmMcpSignIn(signInFlow, input, now)),
+            ),
+          completeMcpSignIn: (input) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) => completeMcpSignIn(signInFlow, input, now)),
+            ),
         } satisfies RegistryMethods;
       }),
     ),

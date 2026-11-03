@@ -3,7 +3,9 @@
 //
 // The bypass application (`bypass-access.ts`) lets two paths through Access, and Access lets through more than the two it
 // names (sub-paths, any capitalisation, doubled slashes: #403). So the Worker decides which forms are the public paths
-// and refuses every other form under their prefixes itself.
+// and refuses every other form under their prefixes itself. The two exact paths are served here, without the guard and never
+// reading identity (`mcp/sign-in-http.ts`); `/oauth/mcp/start` is not public, so it goes on to the guard like every other path.
+// @effect-diagnostics missingPipeableSignature:off -- `guardedRoutes` is what `worker.ts` calls with the guard and the handlers; it is not piped.
 
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -17,6 +19,9 @@ export const CLIENT_DOCUMENT_PATH = "/oauth/mcp/client.json";
 
 /** The OAuth callback's path: public on every deployed stage, with an optional 12-character issuer hash below it. */
 export const CALLBACK_PATH = "/oauth/mcp/callback";
+
+/** The start's path: behind Access, so it is no sign-in route here and goes on to the guard. */
+export const START_PATH = "/oauth/mcp/start";
 
 /** What a path under the two public prefixes is. */
 export type SignInRoute =
@@ -109,25 +114,48 @@ const notFound = HttpServerResponse.text("Not Found", {
   headers: { "cache-control": "no-store" },
 });
 
+/** Whether the request is for the start exactly (`/oauth/mcp/start`, as it was sent): the Worker serves it behind the guard. */
+export const isStartRequest = (request: HttpServerRequest.HttpServerRequest): boolean =>
+  rawPathOf(request.url) === START_PATH;
+
+/** What serves the two exact public paths: the client document, and the callback at its path (with its hash, if any). */
+export type SignInHandlers<E, R> = {
+  readonly clientDocument: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>;
+  readonly callback: (path: string) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>;
+};
+
 /**
  * Puts the sign-in paths ahead of `guarded`, the Worker's guarded routes (the Access guard, the SPA fallback, the
- * assets): a request for a path under the two public prefixes never reaches them. Every form of those paths is a 404
- * until the sign-in slice (#450) serves the two exact ones here, without the guard and never reading identity.
+ * assets): a request for a path under the two public prefixes never reaches them. The two exact paths are served by
+ * `handlers`, without the guard and never reading identity; every other form of them is a 404, as the router decides
+ * (`signInRoute`).
  */
-export const serveSignInPaths = <E, R>(
-  guarded: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
-): Effect.Effect<
-  HttpServerResponse.HttpServerResponse,
-  E,
-  R | HttpServerRequest.HttpServerRequest
-> =>
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
+export const serveSignInPaths =
+  <HE, HR>(handlers: SignInHandlers<HE, HR>) =>
+  <E, R>(
+    guarded: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  ): Effect.Effect<
+    HttpServerResponse.HttpServerResponse,
+    E | HE,
+    R | HR | HttpServerRequest.HttpServerRequest
+  > =>
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const route = signInRoute(rawPathOf(request.url));
 
-    if (signInRoute(rawPathOf(request.url)) === undefined) return yield* guarded;
+      if (route === undefined) return yield* guarded;
 
-    return notFound;
-  });
+      switch (route.kind) {
+        case "client-document":
+          return yield* handlers.clientDocument;
+        case "callback":
+          return yield* handlers.callback(
+            route.hash === undefined ? CALLBACK_PATH : `${CALLBACK_PATH}/${route.hash}`,
+          );
+        case "refused":
+          return notFound;
+      }
+    });
 
 /**
  * What the main Worker wraps its routes in: the sign-in paths first, then the Access guard (`guardAccess`) for every
@@ -135,4 +163,5 @@ export const serveSignInPaths = <E, R>(
  * and never a route behind it. `worker.ts` builds its `fetch` with this, and the test of the composition is what keeps
  * the two from being swapped.
  */
-export const guardedRoutes = (guard: AccessGuard) => flow(guardAccess(guard), serveSignInPaths);
+export const guardedRoutes = <HE, HR>(guard: AccessGuard, handlers: SignInHandlers<HE, HR>) =>
+  flow(guardAccess(guard), serveSignInPaths(handlers));
