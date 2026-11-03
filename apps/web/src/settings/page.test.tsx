@@ -11,7 +11,7 @@ import {
   DEFAULT_SETTINGS,
   overridesFrom,
 } from "@cloudpid/config";
-import { McpServersList } from "@cloudpid/protocol";
+import { McpServersList, McpSignInsListing } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -402,6 +402,11 @@ describe("every section", () => {
         }),
       getGlobalContainerSettings: () =>
         Effect.succeed({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {}, overriddenIn: {} }),
+      mcpSignIns: () =>
+        Effect.succeed({
+          ...McpSignInsListing.make({ revision: 0, signIns: [], lapsedStarts: [] }),
+          stage: { local: false, documentEnabled: true },
+        }),
       getSettingsOverrides: ({ environment }) =>
         Effect.succeed({
           environment,

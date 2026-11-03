@@ -2,6 +2,7 @@
 // the client name of the client document and of DCR. Pure, so the Registry's start and the Settings page's form say the
 // same name.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values.
+import * as Arr from "effect/Array";
 
 /** The longest `client_name` (`oauth.clientName`: 1–100 characters). */
 const MAX_CLIENT_NAME_LENGTH = 100;
@@ -26,5 +27,5 @@ export const mcpClientNameFor = (stage: McpStageNaming, configured?: string): st
   const base = Array.from(configured ?? "cloudpid");
   const room = Math.max(0, MAX_CLIENT_NAME_LENGTH - Array.from(suffix).length);
 
-  return `${base.slice(0, room).join("")}${suffix}`;
+  return `${Arr.join(Arr.take(base, room), "")}${suffix}`;
 };

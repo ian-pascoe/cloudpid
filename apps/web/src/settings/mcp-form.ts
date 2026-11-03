@@ -5,8 +5,9 @@
 // wrong with it before it is saved. The form and its raw-JSON tab are one value: `entryOfFields` and `fieldsOfEntry` go
 // between them. A save is checked as the Registry checks it (`decodeMcpServerValue`), so a refusal there is rare.
 //
-// As built: the form keeps the keys it has no field for (`oauth`, `type`) as they were, and the JSON tab edits them. The
-// Sign-in (OAuth) disclosure's fields and controls are #469's; `kept` is its seam.
+// As built: the form keeps the keys it has no field for (`type`, and the `oauth` keys cloudpid ignores) as they were, and the
+// JSON tab edits them. The Sign-in (OAuth) disclosure's fields are `McpOauthFields` (docs/architecture/mcp-sign-in.md → The
+// `oauth` fields); the disclosure itself is `mcp-sign-in-form.tsx`.
 
 import {
   decodeMcpServerValue,
@@ -25,6 +26,7 @@ import {
 } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
@@ -52,6 +54,149 @@ export interface McpToolRow {
   readonly exposure: McpExposure;
 }
 
+/** The `oauth` fields the form has an input for, in the order an entry writes them. */
+export const MCP_OAUTH_TEXT_KEYS = [
+  "clientId",
+  "clientSecret",
+  "privateKey",
+  "keyId",
+  "scope",
+  "clientName",
+] as const;
+
+/** The `oauth` fields that pin the authorization server. */
+export const MCP_OAUTH_PIN_KEYS = ["authServerMetadataUrl", "issuer"] as const;
+
+export type McpOauthTextKey =
+  | (typeof MCP_OAUTH_TEXT_KEYS)[number]
+  | (typeof MCP_OAUTH_PIN_KEYS)[number];
+
+/** How a client registers (`oauth.clientRegistration`). */
+export const MCP_CLIENT_REGISTRATIONS = ["auto", "cimd", "dcr"] as const;
+
+export type McpClientRegistration = (typeof MCP_CLIENT_REGISTRATIONS)[number];
+
+/** How the server is signed in to (`oauth.grantType`). */
+export const MCP_GRANT_TYPES = ["authorization_code", "client_credentials"] as const;
+
+export type McpGrantType = (typeof MCP_GRANT_TYPES)[number];
+
+/**
+ * The "Sign-in (OAuth)" fields (→ The `oauth` fields), as typed. `clientSecret` and `privateKey` are `${NAME}` references:
+ * the page never holds a value of a Secret. `kept` is the keys of `oauth` the form has no field for (the ignored
+ * `callbackPort` and `callbackUrl`, and a value an older entry holds that is not one the form can show), as they were.
+ */
+export interface McpOauthFields {
+  readonly clientId: string;
+  readonly clientSecret: string;
+  readonly privateKey: string;
+  readonly keyId: string;
+  readonly scope: string;
+  readonly clientName: string;
+  readonly authServerMetadataUrl: string;
+  readonly issuer: string;
+  readonly clientRegistration: McpClientRegistration;
+  readonly grantType: McpGrantType;
+  readonly kept: Schema.JsonObject;
+}
+
+/** No `oauth` fields: a server that signs in with no settings. */
+export const EMPTY_MCP_OAUTH: McpOauthFields = {
+  clientId: "",
+  clientSecret: "",
+  privateKey: "",
+  keyId: "",
+  scope: "",
+  clientName: "",
+  authServerMetadataUrl: "",
+  issuer: "",
+  clientRegistration: "auto",
+  grantType: "authorization_code",
+  kept: {},
+};
+
+const isRegistration = (value: Schema.Json | undefined): value is McpClientRegistration =>
+  Arr.some(MCP_CLIENT_REGISTRATIONS, (known) => known === value);
+
+const isGrantType = (value: Schema.Json | undefined): value is McpGrantType =>
+  Arr.some(MCP_GRANT_TYPES, (known) => known === value);
+
+/** The fields of the `oauth` object `written`: every string it holds, and the rest kept as it was. */
+export const oauthFieldsOf = (written: Schema.Json | undefined): McpOauthFields => {
+  if (written === undefined || !isJsonObject(written)) return EMPTY_MCP_OAUTH;
+
+  const text = (key: McpOauthTextKey): string => {
+    const value = written[key];
+
+    return Predicate.isString(value) ? value : "";
+  };
+
+  const registration = written["clientRegistration"];
+  const grant = written["grantType"];
+
+  return {
+    clientId: text("clientId"),
+    clientSecret: text("clientSecret"),
+    privateKey: text("privateKey"),
+    keyId: text("keyId"),
+    scope: text("scope"),
+    clientName: text("clientName"),
+    authServerMetadataUrl: text("authServerMetadataUrl"),
+    issuer: text("issuer"),
+    clientRegistration: isRegistration(registration) ? registration : "auto",
+    grantType: isGrantType(grant) ? grant : "authorization_code",
+    kept: Record.filter(written, (value, key) => {
+      const known = Arr.contains(MCP_OAUTH_TEXT_KEYS, key) || Arr.contains(MCP_OAUTH_PIN_KEYS, key);
+
+      if (known) return !Predicate.isString(value);
+
+      if (key === "clientRegistration") return !isRegistration(value);
+
+      if (key === "grantType") return !isGrantType(value);
+
+      return true;
+    }),
+  };
+};
+
+/**
+ * The `oauth` object the fields make, as written: a key only where it holds something (no default: `auto` and
+ * `authorization_code` are left out), in the order of the spec, then `kept`. A field the grant type does not use is left out,
+ * so one typed and then hidden is not saved: `privateKey` and `keyId` are for client credentials, `clientName` and
+ * `clientRegistration` for an authorization code.
+ */
+export const oauthOfFields = (oauth: McpOauthFields): Schema.JsonObject => {
+  const grant = oauth.grantType === "client_credentials";
+  const written: Record<string, Schema.Json> = {};
+
+  const put = (key: McpOauthTextKey) => {
+    if (oauth[key] !== "") written[key] = oauth[key];
+  };
+
+  put("clientId");
+  put("clientSecret");
+
+  if (grant) {
+    put("privateKey");
+    put("keyId");
+  }
+
+  put("scope");
+
+  if (!grant) put("clientName");
+
+  if (!grant && oauth.clientRegistration !== "auto") {
+    written["clientRegistration"] = oauth.clientRegistration;
+  }
+
+  put("authServerMetadataUrl");
+  put("issuer");
+
+  if (grant) written["grantType"] = oauth.grantType;
+
+  return Record.union(written, oauth.kept, (_, kept) => kept);
+};
+
 /** The form's fields. */
 export interface McpFields {
   readonly name: string;
@@ -69,7 +214,9 @@ export interface McpFields {
   readonly exposure: McpExposure;
   readonly sampling: McpSampling;
   readonly toolExposure: ReadonlyArray<McpToolRow>;
-  /** The keys of the entry the form has no field for (`oauth`, `type`), kept as they were. */
+  /** The "Sign-in (OAuth)" fields of an HTTP server. */
+  readonly oauth: McpOauthFields;
+  /** The keys of the entry the form has no field for (`type`), kept as they were. */
   readonly kept: Schema.JsonObject;
 }
 
@@ -89,6 +236,7 @@ export const emptyMcpFields = (kind: "stdio" | "http" = "http"): McpFields => ({
   exposure: "codemode",
   sampling: "ask",
   toolExposure: [],
+  oauth: EMPTY_MCP_OAUTH,
   kept: {},
 });
 
@@ -111,6 +259,7 @@ const FORM_KEYS: ReadonlyArray<string> = [
   "exposure",
   "sampling",
   "toolExposure",
+  "oauth",
 ];
 
 const codemodeOf = (exposure: McpExposure | "codemode-deferred"): McpExposure =>
@@ -145,6 +294,7 @@ export const fieldsOfEntry = (name: string, written: Schema.JsonObject): McpFiel
       pattern,
       exposure: codemodeOf(exposure),
     })),
+    oauth: oauthFieldsOf(written["oauth"]),
     kept: Record.filter(written, (_, key) => !Arr.contains(FORM_KEYS, key)),
   };
 };
@@ -209,6 +359,11 @@ export const entryOfFields = (fields: McpFields): Schema.JsonObject => {
   if (fields.sampling !== "ask") entry["sampling"] = fields.sampling;
 
   if (!Record.isEmptyRecord(toolExposure)) entry["toolExposure"] = toolExposure;
+
+  const oauth = oauthOfFields(fields.oauth);
+
+  // An HTTP server's sign-in; a stdio server has none (the entry would be refused).
+  if (!stdio && !Record.isEmptyRecord(oauth)) entry["oauth"] = oauth;
 
   return entry;
 };

@@ -36,6 +36,7 @@ import {
   type McpServersView,
   type McpServerView,
   type OverridingEnvironment,
+  type McpServerState,
   readMcpServerState,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -607,6 +608,8 @@ export const mcpScopeView = (input: McpScopeInput): McpScopeView => {
 
 /** A server's status chip: what the Registry's `mcpServers` says of its connection. */
 export interface McpStatusChip {
+  /** The state the host reports (`readMcpServerState`). */
+  readonly state: McpServerState;
   readonly label: string;
   /** Whether the owner should look at it: a failure, a sign-in, a refusal. */
   readonly problem: boolean;
@@ -614,33 +617,35 @@ export interface McpStatusChip {
 
 /** The chip of server `view`: the words the transcript card uses (`Connected · 12 tools`, `Needs sign-in`, `Failed: …`). */
 export const mcpStatusChip = (view: McpServerView): McpStatusChip => {
+  const state = readMcpServerState(view.state);
   const problem = mcpStateIsProblem(view.state);
 
-  switch (readMcpServerState(view.state)) {
-    case "connected":
-      return {
-        label: `Connected · ${view.counts.tools} ${view.counts.tools === 1 ? "tool" : "tools"}`,
-        problem,
-      };
-    case "connecting":
-      return { label: "Connecting", problem };
-    case "sign_in":
-      return { label: "Needs sign-in", problem };
-    case "rejected":
-      return { label: "Sign-in rejected", problem };
-    case "unavailable":
-      return { label: "Unavailable", problem };
-    case "failed":
-      return { label: view.error === undefined ? "Failed" : `Failed: ${view.error}`, problem };
-    case "skipped":
-      return { label: "Skipped", problem };
-    case "disabled":
-      return { label: "Off", problem };
-    case "not_discovered":
-      return { label: "Not checked", problem };
-    case "unknown":
-      return { label: "Unknown state", problem };
-  }
+  const label = ((): string => {
+    switch (state) {
+      case "connected":
+        return `Connected · ${view.counts.tools} ${view.counts.tools === 1 ? "tool" : "tools"}`;
+      case "connecting":
+        return "Connecting";
+      case "sign_in":
+        return "Needs sign-in";
+      case "rejected":
+        return "Sign-in rejected";
+      case "unavailable":
+        return "Unavailable";
+      case "failed":
+        return view.error === undefined ? "Failed" : `Failed: ${view.error}`;
+      case "skipped":
+        return "Skipped";
+      case "disabled":
+        return "Off";
+      case "not_discovered":
+        return "Not checked";
+      case "unknown":
+        return "Unknown state";
+    }
+  })();
+
+  return { state, label, problem };
 };
 
 /** What the page shows of the `mcpServers` answer: a chip per server by name, and a line when there is no list. */

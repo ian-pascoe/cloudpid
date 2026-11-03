@@ -109,6 +109,8 @@ export const McpSignedOut = Schema.TaggedStruct("SignedOut", {
   /** The server's normalized name, and the sign-ins revision the delete raised the counter to (what the hosts are told). */
   server: Schema.String,
   revision: Schema.Finite,
+  /** The authorization server's host, which the revocation was asked of; null when none was recorded. */
+  issuerHost: Schema.NullOr(Schema.String),
   revocation: McpRevocationView,
   /** The Environments that used it, whose hosts closed the server's sessions and ended its watches. */
   environments: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),

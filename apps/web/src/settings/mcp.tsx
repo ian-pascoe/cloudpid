@@ -12,7 +12,11 @@
 // read, its error and what is wrong with it, with Reload); a Repo's servers are rows of the list, read-only (view as JSON),
 // with the switch and select writing this environment's adjustment, and _Copy to this environment_ / _Copy to Global_.
 //
-// As built, left to their tickets: the Sign-in (OAuth) disclosure and a row's sign-in state (#469: `SIGN_IN_SEAM` of the form, and the row's meta line); and "Changed
+// An HTTP server's row also says its MCP sign-in (docs/architecture/mcp-sign-in.md → Settings): a state chip, the last
+// problem, Sign in, Sign in again and Sign out, and the refused-document-client hint (`mcp-sign-in-parts.tsx`); at Global,
+// the Sign-ins list follows the servers (`#sign-ins`). The form's Sign-in (OAuth) disclosure is `mcp-sign-in-form.tsx`.
+//
+// As built, left to their tickets: "Changed
 // by the agent · 5 min ago" on a row (the `settings_mcp_*` tools, #484, are what make the records it reads: the row's
 // meta line is where it goes).
 
@@ -54,6 +58,15 @@ import {
   repoDirectoryOf,
 } from "./mcp-model.ts";
 import { MessageList } from "./mcp-parts.tsx";
+import { type McpSignInLine, mcpSignInLine, type McpSignInsState } from "./mcp-sign-in-model.ts";
+import {
+  SignInChip,
+  SignInControls,
+  SignInNotes,
+  SignInsList,
+  SignOutDialog,
+} from "./mcp-sign-in-parts.tsx";
+import { mcpSignInsStateAtom } from "./mcp-sign-in-state.ts";
 import {
   changeMcpAtom,
   type McpReferencesState,
@@ -123,6 +136,10 @@ const StatusChip = ({ chip }: { chip: McpStatusChip }) => (
   </span>
 );
 
+/** Whether the host's chip says what the sign-in's chip does: the server waits for a sign-in, or was refused its token. */
+const isSignInState = (chip: McpStatusChip): boolean =>
+  chip.state === "sign_in" || chip.state === "rejected";
+
 const MARKED: ReadonlyArray<readonly [McpAdjustmentKey, string]> = [
   ["enabled", "Enabled"],
   ["exposure", "Exposure"],
@@ -172,6 +189,7 @@ const McpRowView = ({
   scope,
   row,
   chip,
+  signIn,
   references,
   busy,
   onChange,
@@ -179,6 +197,8 @@ const McpRowView = ({
   scope: string;
   row: McpRow;
   chip: McpStatusChip | undefined;
+  /** What the row says of its MCP sign-in; null for a server that has none. */
+  signIn: McpSignInLine | null;
   references: McpReferencesState;
   busy: boolean;
   onChange: (change: McpChange) => void;
@@ -220,9 +240,13 @@ const McpRowView = ({
         <span className="font-mono text-sm font-medium break-all">{row.name}</span>
         <Badge>{row.server.type === "stdio" ? "stdio" : "HTTP"}</Badge>
         <Badge>{sourceBadgeOf(row, atGlobal)}</Badge>
-        {chip !== undefined && <StatusChip chip={chip} />}
+        {signIn !== null && <SignInChip line={signIn} />}
+        {chip !== undefined && !(signIn !== null && isSignInState(chip)) && (
+          <StatusChip chip={chip} />
+        )}
       </div>
       <p className="font-mono text-xs break-all text-muted-foreground">{targetOf(row)}</p>
+      {signIn !== null && <SignInNotes id={noteId(`mcp-row-sign-in-${row.name}`)} line={signIn} />}
       {problems.length > 0 ? (
         <MessageList
           tone="problem"
@@ -303,6 +327,7 @@ const McpRowView = ({
             Tool exposure…
           </Button>
         )}
+        {signIn !== null && <SignInControls scope={scope} name={row.name} line={signIn} />}
         <span className="flex items-center gap-1 sm:ml-auto">
           {own ? (
             <>
@@ -717,6 +742,7 @@ const OpenPanel = ({
 const McpLoaded = ({ scope, view }: { scope: string; view: McpScopeView }) => {
   const atGlobal = scope === GLOBAL_SCOPE;
   const statuses = useAtomValue(mcpStatusesAtom(scope));
+  const signIns: McpSignInsState = useAtomValue(mcpSignInsStateAtom);
   const references = useAtomValue(mcpReferenceNamesAtom(scope));
   const [, setPanel] = useAtom(mcpPanelAtom(scope));
   const [removing, setRemoving] = useAtom(mcpRemoveAtom(scope));
@@ -766,6 +792,7 @@ const McpLoaded = ({ scope, view }: { scope: string; view: McpScopeView }) => {
                 scope={scope}
                 row={row}
                 chip={statuses.chips[row.name]}
+                signIn={mcpSignInLine(row, signIns)}
                 references={references}
                 busy={busy}
                 onChange={change}
@@ -780,6 +807,7 @@ const McpLoaded = ({ scope, view }: { scope: string; view: McpScopeView }) => {
         )}
         <DialogProblem problem={settledFailureOf(changed)} />
       </Group>
+      {atGlobal && <SignInsList />}
       {view.problems.length > 0 && (
         <Group title="Problems">
           <ul className="flex flex-col divide-y">
@@ -796,6 +824,7 @@ const McpLoaded = ({ scope, view }: { scope: string; view: McpScopeView }) => {
           </ul>
         </Group>
       )}
+      <SignOutDialog scope={scope} />
       <Dialog
         open={removing !== null}
         onClose={() => {

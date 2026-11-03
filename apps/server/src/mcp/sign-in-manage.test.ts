@@ -94,6 +94,7 @@ describe("mcpSignInManage", () => {
     const out = McpSignedOut.make({
       server: "sentry",
       revision: 7,
+      issuerHost: "auth.example.com",
       revocation: { status: "revoked" },
       environments: [{ id: "env_1", name: "One" }],
     });

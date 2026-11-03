@@ -301,7 +301,7 @@ const reload = (environment: string | undefined, input: McpApply) =>
  * once, never waking a Container; after a `signed_out` their Legacy sessions are dropped and nothing is asked. A server
  * that is not in the set is left out of the answer. The revision is kept only when it follows the held one directly: a
  * gap means a change no push carried, which the next pull heals (`pull`). Who sends which change: `signed_in` (and so
- * `replaced`) by the callback today; `signed_out` by #459 and `rebound` by #469, through the same carry.
+ * `replaced`) by the callback (a rebind happens only inside a completed callback, so nothing sends `rebound` apart from it); `signed_out` by a sign-out in Settings, through the same carry.
  */
 const takeSignIns = (
   environment: string | undefined,

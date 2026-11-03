@@ -347,6 +347,7 @@ export const signOutMcpSignIn = (
     return McpSignedOut.make({
       server: row.key.name,
       revision: deps.signIns.revision(),
+      issuerHost: row.issuer === null ? null : hostOf(row.issuer),
       revocation: revoked.view,
       environments,
     });

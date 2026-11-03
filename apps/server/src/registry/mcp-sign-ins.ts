@@ -24,8 +24,8 @@
 //   - `mcp-sign-in-registry.ts`: `get`, `touch`, `noteChallenge`, `update`, `dropTokens` and `resolveWaiters`.
 // What has no caller yet, for the slices that follow (the tables and their bounds are #442's):
 //   - #454 (refresh and step-up): `replaceTokens`, through `Refresh`;
-//   - #469 (Settings, sign-out): `list`, `listPending` and `delete` (`mcp-sign-in-manage.ts`), and `dropUnnamedBindings` once no
-//     server set names a binding;
+//   - Settings and sign-out (`mcp-sign-in-manage.ts`): `list`, `listPending` and `delete`;
+//   - `dropUnnamedBindings`, once no server set names a binding;
 //   - #470 (Sign-in requests): the waiters (`addWaiter`, `waiters`, `removeWaiter`);
 //   - no caller: `getPending` and `deletePending` (the callback takes the row with `takePending`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off cryptoRandomUUID:off

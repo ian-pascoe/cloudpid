@@ -380,6 +380,7 @@ describe("Sign out", () => {
       expect(answer).toMatchObject({
         _tag: "SignedOut",
         server: "sentry",
+        issuerHost: "auth.example.com",
         revocation: { status: "revoked" },
         environments: [{ id: DEFAULT_ENVIRONMENT }],
       });
