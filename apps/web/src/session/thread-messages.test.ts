@@ -505,6 +505,20 @@ describe("the thread messages of a view", () => {
     });
     expect(changed({ unchanged: ["model"], agentChanges: [] })).not.toHaveProperty("artifact");
 
+    // An MCP call puts the questions its server asked on its card: the names of the fields answered, no value.
+    const asked = {
+      server: "docs",
+      action: "decline",
+      by: "cloudpid",
+      reason: "it asked for a credential ('key')",
+      fields: [],
+    };
+
+    expect(changed({ server: "docs", elicitation: [asked] })).toMatchObject({
+      artifact: { elicitations: [asked] },
+    });
+    expect(changed({ server: "docs", elicitation: [] })).not.toHaveProperty("artifact");
+
     // A change the owner approved first says so on its card; a declined call changed nothing.
     expect(
       changed({

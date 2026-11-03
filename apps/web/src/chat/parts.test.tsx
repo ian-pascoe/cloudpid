@@ -12,7 +12,10 @@ import { ToolCallCard } from "./parts.tsx";
 const CALL: NestedCall = { id: "1", name: "read", args: { path: "a.ts" }, status: "ok" };
 
 /** A settled `codemode` card whose artifact is `artifact`. */
-const render = (artifact: { nested: NestedCall[]; omittedCalls?: OmittedCalls }) => {
+const render = (
+  artifact: { nested: NestedCall[]; omittedCalls?: OmittedCalls } | { elicitations: unknown[] },
+  toolName = "codemode",
+) => {
   const registry = AtomRegistry.make();
 
   const markup = renderToStaticMarkup(
@@ -21,7 +24,7 @@ const render = (artifact: { nested: NestedCall[]; omittedCalls?: OmittedCalls })
         <ToolCallCard
           type="tool-call"
           toolCallId="t1"
-          toolName="codemode"
+          toolName={toolName}
           args={{}}
           argsText="{}"
           result="done"
@@ -78,5 +81,41 @@ describe("ToolCallCard's omitted calls", () => {
 
     expect(markup).toContain(">Calls<");
     expect(markup).not.toContain("more call");
+  });
+});
+
+describe("ToolCallCard's MCP questions", () => {
+  it("says what became of each question its server asked, and why when cloudpid ended one", () => {
+    const text = render(
+      {
+        elicitations: [
+          { server: "docs", action: "accept", by: "owner", fields: ["name", "count"] },
+          { server: "docs", action: "decline", by: "owner", fields: [] },
+          {
+            server: "docs",
+            action: "decline",
+            by: "cloudpid",
+            fields: [],
+            reason:
+              "it asked for a credential ('API key'), which MCP servers must not ask for in a form",
+          },
+          {
+            server: "docs",
+            action: "cancel",
+            by: "cloudpid",
+            fields: [],
+            reason: "the owner did not answer in time",
+          },
+        ],
+      },
+      "mcp__docs__ask",
+    ).replaceAll(/<[^>]*>/g, "");
+
+    expect(text).toContain("You answered docs&#x27;s form (name, count)");
+    expect(text).toContain("You declined docs&#x27;s form");
+    expect(text).toContain(
+      "cloudpid declined docs&#x27;s form: it asked for a credential (&#x27;API key&#x27;)",
+    );
+    expect(text).toContain("cloudpid cancelled docs&#x27;s form: the owner did not answer in time");
   });
 });

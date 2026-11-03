@@ -30,10 +30,11 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
-import { mayBeDirect } from "./mcp/exposure.ts";
+import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
 import {
   emptyMcpExtension,
   McpBuildServer,
@@ -45,6 +46,20 @@ import {
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 
 export { mayBeDirect } from "./mcp/exposure.ts";
+
+export {
+  createMcpQuestions,
+  MCP_QUESTION_RECORDS,
+  MCP_QUESTION_RENOTIFY_MS,
+  McpQuestions,
+  McpQuestionsError,
+  type McpQuestionAsk,
+  type McpQuestionOutcome,
+  type McpQuestionRecord,
+  type McpQuestionsOptions,
+  type McpQuestionsService,
+  type McpQuestionStorage,
+} from "./mcp/questions.ts";
 
 export {
   emptyMcpExtension,
@@ -225,71 +240,101 @@ export const makeMcpTools = (
           ),
     );
 
+  /** What a request start reads: it keeps the newest inventory it can, and may leave the tools as they are. */
+  const readInventory = Effect.fn("mcp.tools.read_inventory")(function* (
+    input: McpRequestStartInput,
+  ) {
+    // No servers and no Resource watch: the host is never woken, and a set that emptied drops its tools.
+    if (input.servers === 0) return keep(++taken, undefined);
+
+    // The Workspace did not answer: no host call before it has.
+    if (!(yield* input.ready)) return;
+
+    const known = latest?.version;
+    const wanted = known === undefined ? yield* waitFor(input.offered) : [];
+    const { conversation } = input.caller;
+    const opening = store.window(conversation) !== input.window;
+
+    const start: Mutable<McpRequestStart> = { caller: input.caller };
+
+    if (opening) start.windowOpened = true;
+
+    if (known !== undefined) start.known = known;
+
+    if (wanted.length > 0) {
+      start.waitFor = wanted;
+      start.waitMs = MCP_WAIT_MS;
+    }
+
+    const started = yield* client.requestStart(start);
+
+    // A host that failed keeps the tools built: a request start never fails for it.
+    if (Predicate.isTagged(started, "HostFailed")) return;
+
+    if (opening) store.openWindow(conversation, input.window);
+
+    const features = Arr.filter(MCP_TOOL_FEATURES, (each) => started.features.includes(each));
+
+    if (features.length < MCP_TOOL_FEATURES.length) return keep(++taken, undefined);
+
+    const origin: Mutable<McpInventory["origin"]> = {};
+
+    if (input.caller.session !== "") origin.session = input.caller.session;
+
+    if (input.caller.workspace !== "") origin.workspace = input.caller.workspace;
+
+    const unchanged =
+      latest !== undefined &&
+      started.version === latest.version &&
+      Arr.join(latest.features, "\n") === Arr.join(features, "\n") &&
+      latest.origin.session === origin.session &&
+      latest.origin.workspace === origin.workspace;
+
+    // What the tools are built from is current as of this answer: a read sent before it never lands over it.
+    if (unchanged) return keep(++taken, latest);
+
+    const read = ++taken;
+    const inventory = yield* client.servers({ parts: ["tools", "instructions"] });
+
+    if (Predicate.isTagged(inventory, "HostFailed")) return;
+
+    const next = projected({
+      version: inventory.version,
+      features,
+      servers: inventory.servers,
+      origin,
+    });
+
+    // An answer the build cannot read keeps the tools built, as a failed read does.
+    if (Option.isSome(next)) keep(read, next.value);
+  });
+
+  /** A server of `before` the tools no longer reach in `after`: switched off, hidden or removed. */
+  const unreachable = (before: McpInventory | undefined, after: McpInventory | undefined) =>
+    Arr.filterMap(before?.servers ?? [], (server) => {
+      if (!isReachable(server)) return Result.failVoid;
+
+      const now = Arr.findFirst(after?.servers ?? [], (each) => each.name === server.name);
+
+      return Option.isSome(now) && isReachable(now.value)
+        ? Result.failVoid
+        : Result.succeed(server.name);
+    });
+
   const requestStart: McpToolsService["requestStart"] = Effect.fn("mcp.tools.request_start")(
     function* (input: McpRequestStartInput) {
-      // No servers and no Resource watch: the host is never woken, and a set that emptied drops its tools.
-      if (input.servers === 0) return keep(++taken, undefined);
+      const before = latest;
 
-      // The Workspace did not answer: no host call before it has.
-      if (!(yield* input.ready)) return;
+      yield* readInventory(input);
 
-      const known = latest?.version;
-      const wanted = known === undefined ? yield* waitFor(input.offered) : [];
-      const { conversation } = input.caller;
-      const opening = store.window(conversation) !== input.window;
+      // A question a server waits on for a call is withdrawn when the server is switched off, hidden or removed.
+      const { questions } = options;
 
-      const start: Mutable<McpRequestStart> = { caller: input.caller };
+      if (questions === undefined) return;
 
-      if (opening) start.windowOpened = true;
-
-      if (known !== undefined) start.known = known;
-
-      if (wanted.length > 0) {
-        start.waitFor = wanted;
-        start.waitMs = MCP_WAIT_MS;
+      for (const name of unreachable(before, latest)) {
+        yield* questions.withdrawServer(name, `${name} was switched off, hidden or removed`);
       }
-
-      const started = yield* client.requestStart(start);
-
-      // A host that failed keeps the tools built: a request start never fails for it.
-      if (Predicate.isTagged(started, "HostFailed")) return;
-
-      if (opening) store.openWindow(conversation, input.window);
-
-      const features = Arr.filter(MCP_TOOL_FEATURES, (each) => started.features.includes(each));
-
-      if (features.length < MCP_TOOL_FEATURES.length) return keep(++taken, undefined);
-
-      const origin: Mutable<McpInventory["origin"]> = {};
-
-      if (input.caller.session !== "") origin.session = input.caller.session;
-
-      if (input.caller.workspace !== "") origin.workspace = input.caller.workspace;
-
-      const unchanged =
-        latest !== undefined &&
-        started.version === latest.version &&
-        Arr.join(latest.features, "\n") === Arr.join(features, "\n") &&
-        latest.origin.session === origin.session &&
-        latest.origin.workspace === origin.workspace;
-
-      // What the tools are built from is current as of this answer: a read sent before it never lands over it.
-      if (unchanged) return keep(++taken, latest);
-
-      const read = ++taken;
-      const inventory = yield* client.servers({ parts: ["tools", "instructions"] });
-
-      if (Predicate.isTagged(inventory, "HostFailed")) return;
-
-      const next = projected({
-        version: inventory.version,
-        features,
-        servers: inventory.servers,
-        origin,
-      });
-
-      // An answer the build cannot read keeps the tools built, as a failed read does.
-      if (Option.isSome(next)) keep(read, next.value);
     },
   );
 

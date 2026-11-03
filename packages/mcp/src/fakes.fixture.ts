@@ -131,6 +131,34 @@ export const ROOTS_TOOL = {
   inputSchema: { type: "object" as const },
 };
 
+/**
+ * The fakes' tool that asks the client a form (`elicitation/create`) during the call, and answers with what it got: the
+ * `action` and `content` as JSON text, or, when the client refused the request, `isError` with the error's message. A
+ * Modern request cannot ask this way, so it answers that it could not.
+ */
+export const ASK_TOOL = {
+  name: "ask",
+  description: "Ask the client a form, then answer with what it said.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      message: { type: "string" },
+      requestedSchema: { type: "object" },
+      standalone: { type: "boolean" },
+      giveUpMs: { type: "number" },
+    },
+  },
+};
+
+const AskArguments = Schema.Struct({
+  message: Schema.String,
+  requestedSchema: Schema.optionalKey(Schema.Json),
+  /** Ask on the server's standalone stream (the GET stream), as `server.elicitInput` does, not on the call's own. */
+  standalone: Schema.optionalKey(Schema.Boolean),
+  /** Stop waiting for the answer after this many milliseconds: the server cancels its own request. */
+  giveUpMs: Schema.optionalKey(Schema.Int),
+});
+
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
 export interface FakeOptions {
   /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
@@ -142,6 +170,8 @@ export interface FakeOptions {
   readonly extensions?: Readonly<Record<string, Readonly<Record<string, never>>>> | undefined;
   /** The names of the calls whose request was cancelled while they ran. */
   readonly cancelled?: Array<string>;
+  /** What the client answered the `ask` tool's questions with (`{ action, content? }`), or the error it refused with. */
+  readonly asked?: Array<Json>;
   /** Further tools listed last, which answer as `echo` does unless something in front of the server answers first. */
   readonly moreTools?: ReadonlyArray<Tool>;
   /**
@@ -175,7 +205,7 @@ const untilAborted = (signal: AbortSignal, aborted: () => void) =>
 
 /**
  * An SDK server answering `tools/list` a page at a time and `tools/call` for its tools: `echo` and `shout`, and
- * `big`, `hang`, `typed` and `region`, listed only with `listMore`, and `progress`, listed only in `moreTools`.
+ * `big`, `hang`, `typed` and `region`, listed only with `listMore`, and `progress` and `ask`, listed only in `moreTools`.
  */
 const fakeMcp = (
   sends?: (server: Server) => Promise<void>,
@@ -265,6 +295,40 @@ const fakeMcp = (
         }
 
         return { content: [{ type: "text", text: JSON.stringify(await server.listRoots()) }] };
+      }
+
+      case "ask": {
+        const { message, requestedSchema, standalone, giveUpMs } = Schema.decodeUnknownSync(
+          AskArguments,
+        )(request.params.arguments);
+
+        try {
+          // SAFETY: the test gives a form's schema, which the SDK's own check reads.
+          const params = {
+            message,
+            requestedSchema: (requestedSchema ?? { type: "object", properties: {} }) as never,
+          };
+
+          // `ctx.mcpReq.elicitInput` sends on the standalone stream too; `send` is related to this call's request.
+          const answer =
+            standalone === true
+              ? await server.elicitInput(params)
+              : await ctx.mcpReq.send(
+                  { method: "elicitation/create", params },
+                  giveUpMs === undefined ? undefined : { signal: AbortSignal.timeout(giveUpMs) },
+                );
+
+          // SAFETY: an elicitation result is JSON.
+          options.asked?.push({ ...answer } as Json);
+
+          return { content: [{ type: "text", text: JSON.stringify(answer) }] };
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "failed";
+
+          options.asked?.push({ error: text });
+
+          return { isError: true, content: [{ type: "text", text }] };
+        }
       }
 
       case "region": {

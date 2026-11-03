@@ -15,6 +15,8 @@ import {
   HostLost,
   makeMcpTools,
   type McpHostClientService,
+  type McpQuestionsService,
+  type McpToolOptions,
   type McpToolsService,
   type McpToolsStore,
 } from "@cloudpid/extensions/mcp";
@@ -34,6 +36,7 @@ import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import type { Mutable } from "effect/Types";
 import type { SessionHostMcp } from "./host.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
@@ -155,6 +158,8 @@ export type SessionMcpOptions = {
   readonly ready: (workspace: string) => Effect.Effect<void, Cause.UnknownError>;
   /** `codemode` with `namespaces`, to install over the one installed. */
   readonly codemode: (namespaces: ReadonlyArray<CodemodeNamespace>) => Extension;
+  /** The Session's MCP questions: with them, a Legacy server's elicitation form is shown to the owner. */
+  readonly questions?: McpQuestionsService;
 };
 
 /** The Session host's MCP tools (`SessionHostOptions.mcp`), with one `McpTools` for the Session's Environment. */
@@ -184,12 +189,16 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
   const toolsOf = (environment: string) => {
     if (held?.environment === environment) return held.tools;
 
+    const toolOptions: Mutable<McpToolOptions> = {
+      ready: (workspace) => Effect.runPromise(readied(workspace)),
+    };
+
+    if (options.questions !== undefined) toolOptions.questions = options.questions;
+
     const tools = makeMcpTools(
       options.host(environment),
       kvMcpToolsStore(options.kv, environment),
-      {
-        ready: (workspace) => Effect.runPromise(readied(workspace)),
-      },
+      toolOptions,
     );
 
     held = { environment, tools };

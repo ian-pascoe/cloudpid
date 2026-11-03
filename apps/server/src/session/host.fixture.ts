@@ -120,6 +120,7 @@ import { isWithdrawn } from "./errors.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
+import { sessionMcpQuestions } from "./mcp-questions.ts";
 import {
   instructionsSettings,
   reloadSessionExtensions,
@@ -645,6 +646,22 @@ export class TestSession extends DurableObject {
     return this.ctx.id.name?.startsWith("tool-search-") === true || this.#hasMcpTools();
   }
 
+  /** The Session's MCP questions, made once: the MCP tools ask through its service, the runtime provides its layer. */
+  #questions: ReturnType<typeof sessionMcpQuestions> | undefined;
+
+  #mcpQuestions(): ReturnType<typeof sessionMcpQuestions> {
+    this.#questions ??= sessionMcpQuestions({
+      storage: this.ctx.storage.kv,
+      sockets: this.ctx,
+      notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
+      credentials: [],
+      // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
+      waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
+    });
+
+    return this.#questions;
+  }
+
   /** Whether this Session has MCP tools (the tests that look at them name it so). */
   #hasMcpTools(): boolean {
     return this.ctx.id.name?.startsWith("mcp-") === true;
@@ -663,6 +680,7 @@ export class TestSession extends DurableObject {
     const hosts = this.env.MCP_HOSTS;
 
     return sessionMcp({
+      questions: this.#mcpQuestions().service,
       session: this.ctx.id.name,
       host: (environment) =>
         mcpHostClient(() => promisedMcpHost(hosts.getByName(mcpHostName(environment)))),
@@ -985,6 +1003,7 @@ export class TestSession extends DurableObject {
               notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
             }),
           ),
+          Layer.provideMerge(this.#mcpQuestions().layer),
           Layer.provideMerge(
             sessionSecretsLayer({
               encryptionKey: SECRETS_KEY,

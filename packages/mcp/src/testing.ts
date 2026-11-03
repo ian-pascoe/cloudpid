@@ -4,6 +4,7 @@
  * auxiliary Worker. It loads the SDK, so only tests import it.
  */
 export {
+  ASK_TOOL,
   BIG_TOOL,
   ECHO_TOOL,
   type FakeOptions,

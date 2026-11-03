@@ -1,0 +1,275 @@
+import type { ConversationId, ElicitationForm, McpElicitationRequest } from "@cloudpid/protocol";
+import { describe, expect, it } from "@effect/vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { McpElicitationCard } from "./mcp-elicitation-card.tsx";
+import {
+  countdown,
+  enteredOf,
+  initialValues,
+  ownValue,
+  refusalOf,
+  sourceLabel,
+  timeZoneName,
+  toRfc3339,
+} from "./mcp-elicitation-form.ts";
+
+const FORM: ElicitationForm = {
+  fields: [
+    { kind: "text", name: "name", title: "Your name", required: true, default: "Ada" },
+    { kind: "email", name: "mail", required: false },
+    { kind: "url", name: "site", required: false },
+    { kind: "date", name: "born", required: false },
+    { kind: "date_time", name: "at", required: false },
+    { kind: "integer", name: "count", required: false, min: 1, max: 9 },
+    { kind: "number", name: "ratio", required: false },
+    { kind: "boolean", name: "agree", required: false, default: true },
+    {
+      kind: "choice",
+      name: "size",
+      required: true,
+      options: [
+        { value: "s", title: "Small" },
+        { value: "l", title: "Large" },
+      ],
+    },
+    {
+      kind: "choice",
+      name: "colour",
+      required: false,
+      options: Array.from({ length: 6 }, (_, i) => ({ value: `c${i}`, title: `Colour ${i}` })),
+    },
+    {
+      kind: "multi_choice",
+      name: "tags",
+      required: false,
+      options: [
+        { value: "a", title: "A" },
+        { value: "b", title: "B" },
+      ],
+      default: ["a"],
+    },
+    { kind: "text", name: "bio", required: false, maxLength: 500 },
+  ],
+};
+
+const request = (
+  form: ElicitationForm,
+  more: Partial<McpElicitationRequest> = {},
+): McpElicitationRequest => ({
+  id: "call-1:7",
+  callId: "call-1",
+  // SAFETY: a number is what the Session sends for a conversation ID.
+  conversationId: 1 as ConversationId,
+  server: "github",
+  tool: "mcp__github__create_issue",
+  message: "Tell me about the issue",
+  form,
+  notes: [],
+  deadline: 10 * 60 * 1000 + 1000,
+  ...more,
+});
+
+const render = (req: McpElicitationRequest, disabled = false, agent?: string) =>
+  renderToStaticMarkup(
+    <McpElicitationCard
+      request={req}
+      disabled={disabled}
+      agent={agent}
+      now={1000}
+      onAnswer={() => Promise.resolve(null)}
+    />,
+  );
+
+describe("McpElicitationCard", () => {
+  it("names the server, shows the message as plain text, and the standing footer", () => {
+    const markup = render(request(FORM, { message: "<b>bold</b> **x**" }));
+
+    expect(markup).toContain("github asks for your input");
+    expect(markup).toContain("&lt;b&gt;bold&lt;/b&gt; **x**");
+    expect(markup).not.toContain("<b>bold</b>");
+    expect(markup).toContain(
+      "Only github gets what you enter, and its reply to the agent may repeat it. Never enter a password or key here.",
+    );
+    expect(markup).toContain("github&#x27;s call ends in 10:00");
+  });
+
+  it("draws a widget per kind, prefills defaults and marks required fields", () => {
+    const markup = render(request(FORM));
+
+    expect(markup).toContain('type="text"');
+    expect(markup).toContain('value="Ada"');
+    expect(markup).toContain('type="email"');
+    expect(markup).toContain('type="url"');
+    expect(markup).toContain('type="date"');
+    expect(markup).toContain('type="datetime-local"');
+    expect(markup).toContain('type="number"');
+    expect(markup).toContain('min="1"');
+    expect(markup).toContain('max="9"');
+    expect(markup).toMatch(/<input[^>]*type="checkbox"[^>]*checked/);
+    // Two options: radios. Six: a select. A multi choice: a checkbox group with its default checked.
+    expect(markup).toContain('type="radio"');
+    expect(markup).toContain("<select");
+    expect(markup).toContain("Colour 5");
+    expect(markup).toContain('role="group"');
+    // A long text is a textarea.
+    expect(markup).toContain("<textarea");
+    expect(markup.match(/text-destructive">\*/g)?.length).toBe(2);
+  });
+
+  it("says which agent asked, and where the server's definition is", () => {
+    expect(render(request(FORM))).toContain("· the agent");
+    expect(render(request(FORM), false, "reviewer (checks)")).toContain(
+      "· subagent reviewer (checks)",
+    );
+    expect(render(request(FORM, { source: { kind: "global" } }))).toContain(">Global<");
+    expect(render(request(FORM, { source: { kind: "environment" } }))).toContain(
+      ">This environment<",
+    );
+    expect(
+      render(request(FORM, { source: { kind: "repo", slug: "ian-pascoe/cloudpid" } })),
+    ).toContain(">from ian-pascoe/cloudpid<");
+    expect(render(request(FORM))).not.toContain("rounded border px-1");
+  });
+
+  it("names the time zone a date and time is read in", () => {
+    expect(render(request(FORM))).toContain(`In your time zone, ${timeZoneName()}`);
+    expect(
+      render(request({ fields: [{ kind: "text", name: "a", required: false }] })),
+    ).not.toContain("time zone");
+  });
+
+  it("tells assistive technology what is required, and names each group", () => {
+    const markup = render(request(FORM));
+
+    // The text field is required; the optional email is not.
+    expect(markup).toMatch(
+      /<input[^>]*aria-required="true"[^>]*value="Ada"|<input[^>]*value="Ada"[^>]*aria-required="true"/,
+    );
+    expect(markup).toMatch(
+      /role="radiogroup"[^>]*aria-required="true"|aria-required="true"[^>]*role="radiogroup"/,
+    );
+
+    // A group is named by its title, which is no `label` for an input that is not there.
+    const groups = markup.match(/<div role="(?:radio)?group"[^>]*aria-labelledby="([^"]+)"/g) ?? [];
+
+    expect(groups).toHaveLength(2);
+
+    for (const group of groups) {
+      const [, labelled = ""] = /aria-labelledby="([^"]+)"/.exec(group) ?? [];
+
+      expect(markup).toContain(`<span id="${labelled}"`);
+      expect(markup).not.toContain(`<label id="${labelled}"`);
+    }
+  });
+
+  it("describes a field by its note and zone, and survives a field named constructor", () => {
+    const form: ElicitationForm = {
+      fields: [
+        { kind: "text", name: "constructor", description: "Who", required: true },
+        { kind: "text", name: "__proto__", required: false },
+      ],
+    };
+
+    const markup = render(request(form));
+
+    expect(markup).toContain("Who");
+    expect(markup).toMatch(/aria-describedby="[^"]*-f0-description"/);
+    expect(markup).not.toContain('role="alert"');
+    expect(ownValue({}, "constructor")).toBeUndefined();
+  });
+
+  it("starts with Submit off while a required field is empty, and on once the form is valid", () => {
+    const needs = render(request(FORM));
+
+    expect(needs).toMatch(
+      /<button[^>]*disabled=""[^>]*type="submit"|<button[^>]*type="submit"[^>]*disabled=""/,
+    );
+
+    const simple: ElicitationForm = {
+      fields: [{ kind: "text", name: "name", required: true, default: "Ada" }],
+    };
+
+    expect(render(request(simple))).not.toMatch(/type="submit"[^>]*disabled/);
+  });
+
+  it("offers Accept and Decline for a form with no fields, and Cancel that closes quietly", () => {
+    const markup = render(request({ fields: [] }));
+
+    expect(markup).toContain(">Accept<");
+    expect(markup).toContain(">Decline<");
+    expect(markup).toContain(">Cancel<");
+    expect(markup).toContain("Closes without answering; github may ask again");
+    expect(markup).not.toContain(">Submit<");
+  });
+
+  it("is off and reads Reconnecting… while the Session is not live", () => {
+    const markup = render(request({ fields: [] }), true);
+
+    expect(markup).toContain("Reconnecting…");
+    expect(markup).not.toContain("call ends in");
+    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("a form's values", () => {
+  it("start from the defaults and are entered as JSON types", () => {
+    expect(enteredOf(FORM, initialValues(FORM))).toMatchObject({
+      name: "Ada",
+      agree: true,
+      tags: ["a"],
+      count: "",
+    });
+    expect(
+      enteredOf(FORM, { ...initialValues(FORM), count: "3", ratio: "2.5", size: "s" }),
+    ).toMatchObject({ count: 3, ratio: 2.5, size: "s" });
+  });
+
+  it("send a date and time as RFC 3339 with the zone's offset", () => {
+    expect(toRfc3339("2025-03-04T05:06", 120)).toBe("2025-03-04T05:06:00+02:00");
+    expect(toRfc3339("2025-03-04T05:06", -330)).toBe("2025-03-04T05:06:00-05:30");
+    expect(toRfc3339("2025-03-04T05:06", 0)).toBe("2025-03-04T05:06:00+00:00");
+    expect(toRfc3339("", 0)).toBe("");
+  });
+
+  it("count down to the deadline as m:ss", () => {
+    expect(countdown(10 * 60 * 1000, 0)).toBe("10:00");
+    expect(countdown(552_000, 0)).toBe("9:12");
+    expect(countdown(1000, 5000)).toBe("0:00");
+  });
+});
+
+describe("a refused answer", () => {
+  const form: ElicitationForm = {
+    fields: [
+      { kind: "text", name: "name", required: true },
+      { kind: "text", name: "a: b", required: false },
+    ],
+  };
+
+  it("is marked on the field the Session names", () => {
+    expect(refusalOf(form, "name: matches one of your Secrets")).toEqual({
+      field: "name",
+      text: "matches one of your Secrets",
+    });
+    expect(refusalOf(form, "name: is required")).toEqual({ field: "name", text: "is required" });
+  });
+
+  it("takes the longest field name, and a message that names none as the card's", () => {
+    expect(refusalOf(form, "a: b: is too long")).toEqual({ field: "a: b", text: "is too long" });
+    expect(refusalOf(form, "This request ended")).toEqual({ text: "This request ended" });
+    expect(refusalOf(form, "The answer does not fit the form")).toEqual({
+      text: "The answer does not fit the form",
+    });
+  });
+});
+
+describe("where a server is defined", () => {
+  it("is Global, This environment, or the Repo's name; nothing for a kind not known", () => {
+    expect(sourceLabel({ kind: "global" })).toBe("Global");
+    expect(sourceLabel({ kind: "environment" })).toBe("This environment");
+    expect(sourceLabel({ kind: "repo", slug: "a/b" })).toBe("from a/b");
+    expect(sourceLabel({ kind: "repo" })).toBeUndefined();
+    expect(sourceLabel({ kind: "future" })).toBeUndefined();
+    expect(sourceLabel(undefined)).toBeUndefined();
+  });
+});

@@ -2,6 +2,7 @@
 
 import { EMPTY_VIEW, SESSION_DELETED_CLOSE_CODE } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -518,6 +519,118 @@ describe("a Session connection", () => {
         yield* latest().drop();
 
         expect(state().approvalRequests).toEqual([]);
+      }),
+    );
+  });
+
+  describe("MCP elicitation requests", () => {
+    const asked = {
+      id: "call-1:1",
+      callId: "call-1",
+      conversationId: 1,
+      server: "docs",
+      tool: "mcp__docs__ask",
+      message: "Who?",
+      form: { fields: [{ kind: "text", name: "name", required: true }] },
+      notes: [],
+      deadline: 600_000,
+    };
+
+    it.effect("keeps the cards of a closed socket until the next one says which still wait", () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+
+        yield* watching(latest());
+        yield* latest().say({ type: "mcp_elicitation_requests", requests: [asked] });
+        yield* latest().drop();
+
+        expect(state().status).toBe("reconnecting");
+        expect(state().mcpElicitationRequests).toEqual([asked]);
+
+        // The next socket says none wait any more (the question ended while the owner was away).
+        yield* advance(60_000);
+        yield* watching(latest());
+        yield* latest().say({ type: "mcp_elicitation_requests", requests: [] });
+
+        expect(state().mcpElicitationRequests).toEqual([]);
+      }),
+    );
+
+    it.effect("sends an Accept with its values, and a Decline with none", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const accept = yield* Effect.forkChild(
+          client.answerMcpElicitation("call-1:1", "accept", { name: "Ada" }),
+        );
+
+        yield* settle;
+
+        const sent = latest().commands().at(-1);
+
+        expect(sent).toEqual({
+          type: "mcp_elicitation_answer",
+          id: expect.any(String),
+          request: "call-1:1",
+          action: "accept",
+          content: { name: "Ada" },
+        });
+        yield* latest().say({ type: "result", id: sent?.id, result: null });
+        expect(Exit.isSuccess(yield* Fiber.await(accept))).toBe(true);
+
+        const decline = yield* Effect.forkChild(
+          client.answerMcpElicitation("call-1:1", "decline", { name: "ignored" }),
+        );
+
+        yield* settle;
+        expect(latest().commands().at(-1)).toEqual({
+          type: "mcp_elicitation_answer",
+          id: expect.any(String),
+          request: "call-1:1",
+          action: "decline",
+        });
+        yield* Fiber.interrupt(decline);
+      }),
+    );
+
+    it.effect("fails with the Session's refusal, so the card can show it", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const answer = yield* Effect.forkChild(
+          client.answerMcpElicitation("call-1:1", "accept", { name: "hunter2" }),
+        );
+
+        yield* settle;
+        yield* latest().say({
+          type: "error",
+          id: latest().commands().at(-1)?.id,
+          message: "name: matches one of your Secrets",
+        });
+
+        const exit = yield* Fiber.await(answer);
+
+        expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
+          message: "name: matches one of your Secrets",
+        });
+      }),
+    );
+
+    it.effect("fails an answer that was sent as the connection dropped", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const answer = yield* Effect.forkChild(client.answerMcpElicitation("call-1:1", "cancel"));
+
+        yield* settle;
+        yield* latest().drop();
+        expect(Exit.isFailure(yield* Fiber.await(answer))).toBe(true);
       }),
     );
   });

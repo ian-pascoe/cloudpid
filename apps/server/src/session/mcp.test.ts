@@ -3,8 +3,10 @@
 // @effect-diagnostics asyncFunction:off globalDate:off strictEffectProvide:off missedPipeableOpportunity:off -- plain fixtures.
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
+import { McpQuestions } from "@cloudpid/extensions/mcp";
 import { Secrets } from "@cloudpid/extensions/secrets";
-import type { SessionVia } from "@cloudpid/protocol";
+import type { McpElicitationRequest, SessionVia } from "@cloudpid/protocol";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { describe, expect, it } from "vitest";
@@ -32,7 +34,7 @@ const fake = <S>(parts: Partial<S>): S =>
   parts as S;
 
 /** A Session whose host answers `state`, and counts the notices and aborts it is told. */
-const open = (first: FollowState) => {
+const open = (first: FollowState, asked: ReadonlyArray<McpElicitationRequest> = []) => {
   let state = first;
   const notes = new Array<string>();
   const aborts = new Array<boolean>();
@@ -52,6 +54,8 @@ const open = (first: FollowState) => {
     redact: (value) => value,
   });
 
+  const questions = fake<McpQuestions["Service"]>({ pending: Effect.succeed(asked) });
+
   const layer = sessionMcpLayer({
     session: "s1",
     kv: { get: () => undefined, put: () => undefined },
@@ -61,6 +65,7 @@ const open = (first: FollowState) => {
       Layer.mergeAll(
         Layer.succeed(SessionHost, host),
         Layer.succeed(Secrets, secrets),
+        Layer.succeed(McpQuestions, questions),
         Layer.succeed(Approvals, fake<Approvals["Service"]>({ pending: Effect.succeed([]) })),
         Layer.succeed(
           BrowserHandoffs,
@@ -133,5 +138,41 @@ describe("waitForChange over an import", () => {
       ok: true,
       value: { status: "idle", ended_by: "import_ended" },
     });
+  });
+});
+
+describe("waiting requests", () => {
+  it("lists an MCP server's question by its server's name only, never what it asks", async () => {
+    const asking: McpElicitationRequest = {
+      id: "call-9:1",
+      callId: "call-9",
+      // SAFETY: a fixture's conversation number.
+      conversationId: 2 as ConversationId,
+      server: "Docs-Site",
+      tool: "mcp__docs_site__search",
+      message: "Please enter the password hunter2",
+      form: { fields: [{ kind: "text", name: "name", required: true }] },
+      notes: [],
+      deadline: 600_000,
+    };
+
+    const { mcp } = open(follow({ agents: { "2": "reviewer" } }), [asking]);
+    const status = await mcp((service) => service.status());
+
+    expect(status).toMatchObject({
+      ok: true,
+      value: {
+        waiting: [
+          {
+            kind: "elicitation",
+            request_id: "call-9:1",
+            agent_id: "reviewer",
+            summary: "Docs-Site needs your input",
+            url: "/sessions/s1?request=call-9:1",
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(status)).not.toContain("hunter2");
   });
 });
