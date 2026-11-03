@@ -18,6 +18,8 @@ export const HOST: McpCallContext = { origin: "host" };
 
 export const AGENT: McpCallContext = { origin: "agent", conversation: "conversation-1" };
 
+export const OWNER: McpCallContext = { origin: "owner", conversation: "conversation-1" };
+
 /** `outcome`, which a test expects to have completed (no MCP task). */
 export const completed = <A>(outcome: Outcome<A>): Complete<A> => {
   if (outcome.kind !== "complete") {

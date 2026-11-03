@@ -40,6 +40,7 @@ const target = (
     | "logging"
     | "apps"
     | "resources"
+    | "prompts"
     | "unauthorized"
     | "forbidden",
   key: string,
@@ -262,6 +263,46 @@ describe("a resource list page request", () => {
     expect(again.kind === "complete" && again.sha256).toBe(
       first.kind === "complete" && first.sha256,
     );
+  });
+});
+
+describe("a prompts/get request", () => {
+  it("gets a prompt with its arguments and returns the server's result, scrubbed of the token it was sent", async () => {
+    const server = { ...target("prompts", "get-prompt"), redact: ["sk-echoed-secret-0123456789"] };
+
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        server,
+        {},
+        { op: "prompts/get", name: "review", arguments: { pr: "123" }, ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      kind: "complete",
+      result: {
+        kind: "inline",
+        value: {
+          description: "Review a PR",
+          messages: [{ role: "user", content: { type: "text", text: "Review 123 [REDACTED]" } }],
+        },
+      },
+    });
+    expect((await seen(server)).methods).toContain("prompts/get");
+  });
+
+  it("fails as the server's error for a prompt it does not have", async () => {
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        target("prompts", "get-missing"),
+        {},
+        { op: "prompts/get", name: "none", arguments: {}, ctx: AGENT },
+        patient(),
+      ),
+    );
+
+    expect(result.kind === "failed" && Predicate.isTagged(result.error, "ServerError")).toBe(true);
   });
 });
 

@@ -9,6 +9,7 @@
 // hash, and a flip back brings the old version back.
 // @effect-diagnostics missingPipeableSignature:off -- pure functions over plain values, not combinators.
 import { sha256Hex, sortedJson } from "@cloudpid/config";
+import { boundedText, MAX_MCP_PROMPT_ARGUMENTS, MAX_MCP_PROMPT_NAME } from "@cloudpid/protocol";
 import {
   isJsonObject,
   JsonObject,
@@ -22,6 +23,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
@@ -43,6 +45,13 @@ export const MAX_INSTRUCTIONS_BYTES = 16 * 1024;
 export const MAX_PROMPTS = 100;
 
 export const MAX_PROMPT_BYTES = 64 * 1024;
+
+/** A prompt's `title` is cut at 120 characters, its `description` at 1,000 and an argument's at 500. */
+export const MAX_PROMPT_TITLE = 120;
+
+export const MAX_PROMPT_DESCRIPTION = 1000;
+
+export const MAX_PROMPT_ARGUMENT_DESCRIPTION = 500;
 
 /** How long a list stays fresh: a Modern server's `ttlMs`, at least a minute and at most 24 h, else 10 min. */
 export const DEFAULT_TTL_MS = 10 * MINUTE_MS;
@@ -106,6 +115,80 @@ const withDescriptionCut = (tool: McpToolDefinition): McpToolDefinition =>
     ? { ...tool, description: tool.description.slice(0, MAX_DESCRIPTION) }
     : tool;
 
+const decodeArguments = Schema.decodeUnknownOption(Schema.Array(Schema.Json));
+
+/** `value` as text cut to `max` characters with control characters stripped, or nothing when it is no text. */
+const textOf = (value: Schema.Json | undefined, max: number): string | undefined =>
+  Predicate.isString(value) ? boundedText(value, max) : undefined;
+
+/** `entries` with the keys whose value is `undefined` left out. */
+const defined = (entries: Readonly<Record<string, Schema.Json | undefined>>): JsonObject => {
+  const kept: Record<string, Schema.Json> = {};
+
+  for (const [key, value] of Record.toEntries(entries)) {
+    if (value !== undefined) kept[key] = value;
+  }
+
+  return kept;
+};
+
+/**
+ * A listed prompt as the inventory keeps it, or why it is not offered (`docs/architecture/mcp-in-a-session.md` → The `/`
+ * menu and the catalog): a prompt with no name or one over 128 characters, more than 16 arguments, or an argument with an
+ * empty or duplicate name is left out. Its `title` is cut at 120 characters, its `description` at 1,000 and an
+ * argument's at 500, with control characters stripped; `icons`, `_meta` and any key a menu does not use are dropped.
+ */
+export const vetPrompt = (prompt: JsonObject): Result.Result<JsonObject, string> => {
+  const { name } = prompt;
+
+  if (!Predicate.isString(name) || name === "") return Result.fail("it has no name");
+
+  if (Array.from(name).length > MAX_MCP_PROMPT_NAME) {
+    return Result.fail(`its name is over ${String(MAX_MCP_PROMPT_NAME)} characters`);
+  }
+
+  const declared = Option.getOrElse(decodeArguments(prompt["arguments"]), () => []);
+
+  if (declared.length > MAX_MCP_PROMPT_ARGUMENTS) {
+    return Result.fail(`it has more than ${String(MAX_MCP_PROMPT_ARGUMENTS)} arguments`);
+  }
+
+  const seen = new Set<string>();
+  const kept: Array<JsonObject> = [];
+
+  for (const each of declared) {
+    const argument = isJsonObject(each) ? each : undefined;
+    const argumentName = argument?.["name"];
+
+    if (!Predicate.isString(argumentName) || argumentName === "") {
+      return Result.fail("an argument has no name");
+    }
+
+    if (seen.has(argumentName)) {
+      return Result.fail(`its argument ${argumentName} is declared twice`);
+    }
+
+    seen.add(argumentName);
+    kept.push(
+      defined({
+        name: argumentName,
+        title: textOf(argument?.["title"], MAX_PROMPT_TITLE),
+        description: textOf(argument?.["description"], MAX_PROMPT_ARGUMENT_DESCRIPTION),
+        required: argument?.["required"] === true ? true : undefined,
+      }),
+    );
+  }
+
+  return Result.succeed(
+    defined({
+      name,
+      title: textOf(prompt["title"], MAX_PROMPT_TITLE),
+      description: textOf(prompt["description"], MAX_PROMPT_DESCRIPTION),
+      arguments: kept.length === 0 ? undefined : kept,
+    }),
+  );
+};
+
 /** Whether `tool` declares the experimental `execution.taskSupport: "required"`. */
 const requiresTasks = (tool: McpToolDefinition): boolean => {
   const { execution } = tool;
@@ -168,7 +251,22 @@ export const inventoryRows = (discovered: McpEngineDiscovered, now: number): Inv
   const refusedNames = new Set(Arr.map(refused, (each) => each.tool));
   const offered = Arr.filter(named, (tool) => !refusedNames.has(tool.name));
   const tools = takeWithinBounds(offered, MAX_TOOLS, MAX_TOOL_BYTES);
-  const prompts = takeWithinBounds(discovered.prompts, MAX_PROMPTS, MAX_PROMPT_BYTES);
+  const vetted = Arr.map(discovered.prompts, (prompt) => ({ prompt, vetted: vetPrompt(prompt) }));
+
+  const unoffered = Arr.filterMap(vetted, ({ prompt, vetted: result }) =>
+    Result.isFailure(result)
+      ? Result.succeed({
+          prompt: textOf(prompt["name"], MAX_MCP_PROMPT_NAME) ?? "prompt",
+          problem: `not offered: ${result.failure}`,
+        })
+      : Result.failVoid,
+  );
+
+  const prompts = takeWithinBounds(
+    Arr.filterMap(vetted, ({ vetted: result }) => result),
+    MAX_PROMPTS,
+    MAX_PROMPT_BYTES,
+  );
 
   const instructions =
     discovered.instructions === undefined
@@ -179,6 +277,7 @@ export const inventoryRows = (discovered: McpEngineDiscovered, now: number): Inv
     ...Arr.map(refused, ({ tool, problem }) => ({ tool, problem: `not offered: ${problem}` })),
     ...Arr.map(discovered.problems, ({ tool, problem }) => ({ tool, problem })),
     ...Arr.map(discovered.promptProblems ?? [], ({ prompt, problem }) => ({ prompt, problem })),
+    ...unoffered,
     ...(tools.dropped > 0
       ? [
           {

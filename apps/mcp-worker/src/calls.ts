@@ -466,6 +466,7 @@ type ResourceRead = McpEngineRequest & { readonly op: "resources/read" };
 type ResourcePage = McpEngineRequest & {
   readonly op: "resources/list_page" | "resources/templates/list_page";
 };
+type PromptGet = McpEngineRequest & { readonly op: "prompts/get" };
 
 /** The server's tools, listed again after a `-32020`, and their schema problems. */
 interface Refreshed {
@@ -692,11 +693,34 @@ const runResourcePage = Effect.fnUntraced(function* (
   } satisfies Completed;
 });
 
+/** Runs a `prompts/get`: the server's result as it is, its strings scrubbed of the call's tokens on the way out. */
+const runPrompt = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: PromptGet,
+  env: CallEnvironment,
+) {
+  const {
+    value,
+    kind: _kind,
+    ...meta
+  } = yield* connection.getPrompt(req.name, req.arguments, req.ctx);
+
+  return {
+    kind: "complete",
+    ...meta,
+    result: yield* toEngineValue(value, call, env),
+  } satisfies Completed;
+});
+
 /** Walks a list to its end; a `tools/list` also brings its tools' schema problems. */
 const runList = Effect.fnUntraced(function* (
   connection: McpConnection,
   call: CallContext,
-  req: Exclude<McpEngineRequest, ToolCall | TaskOp | ResourceRead | ResourcePage>,
+  req: Exclude<
+    McpEngineRequest,
+    ToolCall | TaskOp | ResourceRead | ResourcePage | PromptGet
+  >,
   env: CallEnvironment,
   validators: ValidatorsApi,
 ) {
@@ -742,7 +766,7 @@ const runList = Effect.fnUntraced(function* (
 
 /**
  * Runs one request: a `tools/call`, a `tasks/*` request on the MCP task wire, a `resources/read`, one page of a resource
- * list, or a list walked to its end. An `op` this engine does not know is `Unsupported`.
+ * list, a `prompts/get`, or a list walked to its end. An `op` this engine does not know is `Unsupported`.
  */
 export const request = Effect.fn("mcp.engine.request")(function* (
   target: McpEngineTargetEncoded,
@@ -780,6 +804,8 @@ export const request = Effect.fn("mcp.engine.request")(function* (
       if (isTaskRequest(req)) return runTaskOp(connection, context, req, env, validators);
 
       if (req.op === "resources/read") return runRead(connection, context, req, env);
+
+      if (req.op === "prompts/get") return runPrompt(connection, context, req, env);
 
       return req.op === "resources/list_page" || req.op === "resources/templates/list_page"
         ? runResourcePage(connection, context, req, env)
