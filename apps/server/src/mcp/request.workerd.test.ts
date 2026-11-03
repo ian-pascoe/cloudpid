@@ -13,6 +13,7 @@ import type {
   McpSetEntry,
 } from "@cloudpid/mcp/types";
 import { env } from "cloudflare:workers";
+import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
@@ -220,10 +221,44 @@ describe("a request", () => {
 
     await host.release(urlOf("docs"));
 
-    expect(await host.request(call("docs", "search"), {})).toMatchObject({
+    // A cut between the host and the engine says so, and never carries the cause to the Session.
+    const lost = await host.request(call("docs", "search"), {});
+
+    expect(lost).toMatchObject({
       _tag: "CallFailed",
-      error: { _tag: "Cut", mayHaveRun: true },
+      error: { _tag: "Cut", mayHaveRun: true, lost: "engine" },
     });
+    expect(JSON.stringify(lost)).not.toContain("went away");
+  });
+
+  it("returns a 16 MiB result as the engine's stream, unread, and the Session reads every byte", async () => {
+    const host = await discovered(["search"], entry("docs"));
+    const bytes = 16 * 1024 * 1024;
+
+    await host.scriptRequest(urlOf("docs"), [
+      { result: completed("streamed"), streamBytes: bytes },
+      { result: completed("streamed"), streamBytes: bytes },
+    ]);
+
+    // In the host's own object, before the answer crosses RPC: the stream is neither locked nor pulled.
+    expect(await host.requestStreamed(call("docs", "search"))).toEqual({
+      tag: "Completed",
+      stream: { locked: false, bytes },
+    });
+    expect(await host.streamPulls()).toBe(0);
+
+    const answer = await host.request(call("docs", "search"), {});
+
+    expect(answer).toMatchObject({ _tag: "Completed", result: { kind: "stream", bytes } });
+
+    if (!Predicate.isTagged(answer, "Completed") || answer.result.kind !== "stream") return;
+
+    let read = 0;
+
+    for await (const chunk of answer.result.body) read += chunk.byteLength;
+
+    expect(read).toBe(bytes);
+    expect(await host.streamPulls()).toBeGreaterThan(0);
   });
 
   it("counts a wait for a free slot toward the timeout, and never sends a call still waiting when it passes", async () => {

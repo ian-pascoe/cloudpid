@@ -27,8 +27,11 @@ export type FakeMcpServer = {
   readonly name: string;
   readonly tools: ReadonlyArray<{
     readonly name: string;
+    readonly title?: string;
     readonly description?: string;
     readonly inputSchema?: JsonObject;
+    readonly outputSchema?: JsonObject;
+    readonly annotations?: JsonObject;
     readonly _meta?: JsonObject;
   }>;
   readonly exposure?: string;

@@ -22,6 +22,7 @@ import {
   type EntryRecord,
   type Extension,
   Harness,
+  type HarnessOptions,
   MemoryStorage,
   ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
@@ -199,6 +200,8 @@ export const openSubagentHarness = async (
   extensions: readonly Extension[] = [],
   /** The Session's Subagent Workspaces; without them `workspace: "new"` is refused. */
   workspaces?: SubagentWorkspaceHost,
+  /** The environment each conversation's tools get; none by default. */
+  env?: HarnessOptions["env"],
 ) => {
   const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-small" }] });
   const models = createModels();
@@ -246,7 +249,12 @@ export const openSubagentHarness = async (
   for (const extension of extensions) registry.install(extension);
 
   const storage = new MemoryStorage();
-  const harness = await Harness.open(storage, { models, registry }, context);
+
+  const harness = await Harness.open(
+    storage,
+    env === undefined ? { models, registry } : { models, registry, env },
+    context,
+  );
 
   const root = await harness.root(context, {
     agent: { model: { provider: "faux", modelId: "faux-1" } },

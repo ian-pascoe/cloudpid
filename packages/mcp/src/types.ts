@@ -118,10 +118,16 @@ export class Unreachable extends Schema.TaggedError<
   status: Schema.optionalKey(Schema.Int),
 }) {}
 
-/** The request's stream ended before its answer arrived; a `tools/call` may or may not have run. */
+/**
+ * The request's stream ended before its answer arrived; a `tools/call` may or may not have run. `lost` says where it
+ * was lost when that was not the server's stream: `"engine"`, the host's RPC to the engine broke, which a Session shows
+ * as `details.cut: "engine_lost"` (`docs/architecture/mcp-in-a-session.md` → Calls and results). Optional and read as
+ * any string, so an edge that does not know it, or a value it does not know, still reads the cut.
+ */
 export class Cut extends Schema.TaggedError<Cut, { readonly brand: unique symbol }>()("Cut", {
   message: Schema.String,
   mayHaveRun: Schema.Boolean,
+  lost: Schema.optionalKey(Schema.String),
 }) {}
 
 /** The answer was over its byte limit and was dropped, never truncated. */

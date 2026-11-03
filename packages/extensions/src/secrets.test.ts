@@ -253,6 +253,51 @@ describe("secrets", () => {
     expect(saved).toEqual([ref("MISSING"), ref("API_KEY")]);
   });
 
+  it("blocks an MCP tool's call that references a Secret, held or not, and points to the server's headers and env", async () => {
+    const sent: string[] = [];
+
+    const session = await openSecretsHarness([
+      defineExtension({
+        name: "mcp",
+        tools: [
+          defineTool({
+            name: "mcp__docs__search",
+            description: "Search the docs",
+            parameters: Type.Object({ query: Type.String() }),
+            execute: async ({ query }) => {
+              sent.push(query);
+
+              return { output: [{ type: "text", text: "found" }] };
+            },
+          }),
+        ],
+      }),
+    ]);
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt("Go", call("mcp__docs__search", { query: ref("API_KEY") }));
+
+    const held = await session.lastResult();
+
+    expect(held?.isError).toBe(true);
+    expect(held?.text).toContain(`${ref("API_KEY")} cannot be sent to an MCP server`);
+    expect(held?.text).toContain("`headers` or `env`");
+    expect(held?.text).toContain("${NAME}");
+    expect(held?.text).not.toContain("backslash");
+
+    await session.prompt("Go", call("mcp__docs__search", { query: ref("MISSING") }));
+
+    expect((await session.lastResult())?.text).toContain(
+      `${ref("MISSING")} cannot be sent to an MCP server`,
+    );
+
+    // An escaped reference names no Secret, so it is text the server gets as written.
+    await session.prompt("Go", call("mcp__docs__search", { query: `\\${ref("API_KEY")}` }));
+
+    expect(sent).toEqual([`\\${ref("API_KEY")}`]);
+    expect(await session.transcript()).not.toContain(VALUE);
+  });
+
   it("writes an escaped reference as literal text", async () => {
     const session = await openSecretsHarness();
 

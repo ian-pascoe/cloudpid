@@ -12,7 +12,10 @@
 // placeholders, injects the environment variables into its commands, and redacts its streamed output inside
 // `execute`, where nothing it sees is stored. Tools whose arguments become conversation content (code mode scripts,
 // subagent tasks, notes, handoffs) are not wrapped: their references stay references, and the calls they lead to
-// resolve their own.
+// resolve their own. Nor do the `mcp__` tools resolve any (`docs/architecture/mcp-in-a-session.md` → Calls and
+// results): a server is somewhere the Secret must not go through the model's arguments, so the hook blocks a call
+// that references one and points to the server's `headers` or `env`, where `${NAME}` is resolved by the host.
+import { isMcpToolName } from "@cloudpid/config";
 import { defineEffectTool, effectHook, effectSection } from "@cloudpid/effect-durable";
 import { SecretKeep } from "@cloudpid/protocol";
 import type { JsonValue as DetailsJson } from "@earendil-works/chord";
@@ -93,6 +96,17 @@ const escapeHint = (written: ReadonlyArray<WrittenReference>): string => {
 /** References as the call wrote them, listed for a block reason. */
 const writtenText = (written: ReadonlyArray<WrittenReference>): string =>
   written.map((reference) => reference.text).join(", ");
+
+/**
+ * Why an `mcp__` call cannot run when its arguments reference a Secret: they never resolve one, held or not, since a
+ * server is not somewhere a Secret goes through the model's arguments. The Secret reaches a server through the
+ * server's `headers` or `env`, as `${NAME}`.
+ */
+const mcpReferenceBlock = (references: WrittenReferences): string => {
+  const written = [...references.values()].flat();
+
+  return `The call did not run. ${writtenText(written)} cannot be sent to an MCP server: a Secret Reference in an MCP tool's arguments is never resolved. Put the Secret in the server's \`headers\` or \`env\` in Settings as \${NAME}, which the server's connection resolves, and call the tool without it.`;
+};
 
 /** The system prompt's guidance, built from its parts so no source spells a reference. */
 export const SECRET_GUIDELINES = [
@@ -606,6 +620,8 @@ export const secretsExtension = (
           const references = secretReferencesByName(call.arguments);
 
           if (references.size === 0) return undefined;
+
+          if (isMcpToolName(call.name)) return { block: mcpReferenceBlock(references) };
 
           const resolved = yield* resolveAll(secrets, references);
 

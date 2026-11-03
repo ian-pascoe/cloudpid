@@ -10,6 +10,10 @@
 // progress notice (progress resets the engine's timeout too); past that, or when the RPC breaks, the call reads as
 // `host_lost`, which may have run (`docs/architecture/mcp.md` → Deploys). The host answers within the timeout, a wait
 // for a free slot counted in, plus the connects the call makes, which the slack covers.
+//
+// Every tool is `replay: "safe"` with the `mcp.sent` memo, written before the request leaves (`docs/architecture/
+// mcp-server-requests.md` → The waiting-question record): a rerun after a restart that finds it settles the call as
+// interrupted and never sends it again.
 import {
   type McpExposure,
   mcpServerNamespace,
@@ -23,12 +27,20 @@ import {
   type McpHostRequest,
   type McpHostRequestHooks,
 } from "@cloudpid/mcp/types";
+import type { Context } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { defineExtension, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  type Extension,
+  type ToolExecutionApi,
+  type ToolRegistration,
+  type ToolTaskInput,
+} from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
@@ -36,11 +48,17 @@ import type { McpHostClientService } from "./client.ts";
 import { exposureKeys, flagsOf, reachesModel } from "./exposure.ts";
 import {
   failedWith,
-  failureMessage,
+  failureResult,
   hostLostResult,
+  interruptedResult,
   type McpDetails,
+  metaWithinBound,
   resultFor,
+  streamFailure,
 } from "./result.ts";
+import { scriptSchemaOf } from "./schema.ts";
+import { refusingSpill, spillTo } from "./spill.ts";
+import { readStreamed } from "./stream.ts";
 
 export const extensionName = "mcp";
 
@@ -81,6 +99,8 @@ const ToolDeclaration = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   description: Schema.optionalKey(Schema.String),
   inputSchema: Schema.optionalKey(Schema.Json),
+  outputSchema: Schema.optionalKey(Schema.Json),
+  annotations: Schema.optionalKey(Schema.Json),
   _meta: Schema.optionalKey(Schema.Json),
 });
 
@@ -97,6 +117,50 @@ const parametersOf = (tool: ToolDeclaration): TSchema => {
     isJsonObject(schema) && schema["type"] === "object" ? schema : { type: "object" }
   ) as TSchema;
 };
+
+/** The hints of a tool's annotations that are booleans; the rest of an annotation is not read. */
+const HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const;
+
+/**
+ * What every call of `tool` of `server` starts its `details` from: the tool's `title` (its own, else its annotations'),
+ * the hints of its annotations, and its `_meta` (`docs/architecture/mcp-in-a-session.md` → Calls and results).
+ */
+const baseDetails = (server: string, tool: ToolDeclaration): McpDetails => {
+  const { annotations } = tool;
+  const hints = isJsonObject(annotations) ? annotations : {};
+
+  const title = tool.title ?? (Predicate.isString(hints["title"]) ? hints["title"] : undefined);
+
+  const given = Arr.flatMap(HINTS, (hint) => {
+    const value = hints[hint];
+
+    return Predicate.isBoolean(value) ? [[hint, value] as const] : [];
+  });
+
+  const base: Mutable<McpDetails> = { server, tool: tool.name };
+
+  if (title !== undefined) base.title = title;
+
+  if (given.length > 0) base.hints = Record.fromEntries(given);
+
+  const meta = metaWithinBound(tool._meta);
+
+  if (meta !== undefined) base.meta = meta;
+
+  return base;
+};
+
+/** Whether the call is a script's (`codemode`): a nested call of the task `api` runs. */
+const isNested = async (api: ToolExecutionApi, context: Context): Promise<boolean> => {
+  const task = await api.getTask(api.taskId, context).catch(() => undefined);
+  // SAFETY: a tool call's task is a `pi.tool` task, whose input is a `ToolTaskInput`.
+  const input = task?.input as ToolTaskInput | undefined;
+
+  return input?.kind === "nested";
+};
+
+/** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
+const SENT = "mcp.sent";
 
 /** How long the Session waits for a call to `server`'s tools since its start or its last progress, in ms. */
 const waitOf = (server: McpBuildServer, slackMs: number): number => {
@@ -174,24 +238,31 @@ const toolFor = (
   exposure: Exclude<McpExposure, "hidden">,
   options: McpToolOptions,
 ): ToolRegistration => {
-  const base: Mutable<McpDetails> = { server: server.name, tool: tool.name };
-
-  if (tool.title !== undefined) base.title = tool.title;
-
+  const base = baseDetails(server.name, tool);
   const wait = waitOf(server, options.slackMs ?? MCP_CALL_SLACK_MS);
 
   return {
     name,
     description: tool.description ?? "",
     parameters: parametersOf(tool),
+    structuredOutputSchema: scriptSchemaOf(
+      isJsonObject(tool.outputSchema) ? tool.outputSchema : undefined,
+    ),
+    replay: "safe",
     ...flagsOf(exposure),
     execute: async (args, api, context) => {
+      // A rerun after a restart: the request was sent once, so the call may have run, and is never sent again.
+      if ((await api.memo<boolean>(SENT, context)) !== undefined)
+        return interruptedResult(name, base);
+
       const lost = deadline(wait);
       const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
 
       const hooks: McpHostRequestHooks = {
         // Stop, or the Session giving up on the host: either way the host cancels the call.
         untilAborted: () => abortedBy([...stopped, lost.signal]),
+        // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
+        // output text, and gone from the settled call's `details`.
         onProgress: (progress) => {
           lost.reset();
 
@@ -208,6 +279,9 @@ const toolFor = (
         { callId: api.callId, conversation: String(api.conversationId) },
       );
 
+      // Durable before the request leaves, so a restart finds the call sent.
+      await api.memo(SENT, true, context);
+
       const result = await Promise.race([
         Effect.runPromise(client.request(request, hooks)),
         abortedBy([lost.signal]).then(() => undefined),
@@ -217,21 +291,31 @@ const toolFor = (
         return hostLostResult(base);
       }
 
-      if (!Predicate.isTagged(result, "Completed")) {
-        return failedWith(failureMessage(result), base);
-      }
+      if (!Predicate.isTagged(result, "Completed")) return failureResult(result, base);
+
+      const nested = await isNested(api, context);
+      const spill = nested ? refusingSpill : spillTo(api.env, context);
 
       if (result.result.kind === "stream") {
-        // A result over 1 MiB comes as a stream, which the Session reads with #458; it is not read here.
-        void result.result.body.cancel().catch(() => undefined);
-
-        return failedWith(
-          "The tool's result is over 1 MiB, which this build does not read yet",
-          base,
+        // Over 1 MiB: the engine's bytes, which the host returned unread, are read here.
+        const streamed = await readStreamed(
+          result.result.body,
+          result.result.bytes,
+          context.abortSignal,
         );
+
+        if (streamed.kind === "aborted") return failedWith("The call was stopped", base);
+
+        if (streamed.kind !== "value") return streamFailure(streamed.kind, base);
+
+        return resultFor(streamed.value, result.structuredOutput, { details: base, spill, nested });
       }
 
-      return resultFor(result.result.value, base);
+      return resultFor(result.result.value, result.structuredOutput, {
+        details: base,
+        spill,
+        nested,
+      });
     },
   };
 };
