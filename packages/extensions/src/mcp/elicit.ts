@@ -40,6 +40,8 @@ import type { Mutable } from "effect/Types";
 import type { McpElicitationDetail } from "./details.ts";
 import {
   MCP_ELICITATION_CAP_REASON,
+  MCP_QUESTION_UNRECORDED_REASON,
+  MCP_RUN_STOPPED_REASON,
   type McpQuestionAsk,
   type McpQuestionOutcome,
   type McpQuestionsService,
@@ -90,9 +92,6 @@ const unsupported = (reason: string): typeof McpInputAnswer.Encoded => ({
   message: `unsupported elicitation form: ${reason}`,
   code: -32602,
 });
-
-/** Why a question the Session's storage could not take (a replaced Session) is cancelled. */
-const UNRECORDED = "cloudpid could not record the question";
 
 /** What the server is told of a request past the call's cap. */
 const CANCELLED: typeof McpInputAnswer.Encoded = { kind: "answered", result: { action: "cancel" } };
@@ -225,7 +224,12 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
       if (kept === "deferred") return { kind: "defer" };
 
-      note("cancel", "cloudpid", [], kept === "capped" ? MCP_ELICITATION_CAP_REASON : UNRECORDED);
+      note(
+        "cancel",
+        "cloudpid",
+        [],
+        kept === "capped" ? MCP_ELICITATION_CAP_REASON : MCP_QUESTION_UNRECORDED_REASON,
+      );
 
       return CANCELLED;
     }
@@ -238,7 +242,11 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     )
       .catch(
         // Stop interrupted the wait (the question is withdrawn): nobody answers, the server may ask again.
-        (): McpQuestionOutcome => ({ action: "cancel", by: "cloudpid", reason: "Run stopped" }),
+        (): McpQuestionOutcome => ({
+          action: "cancel",
+          by: "cloudpid",
+          reason: MCP_RUN_STOPPED_REASON,
+        }),
       )
       .finally(() => Effect.runPromise(call.resume));
 

@@ -438,7 +438,7 @@ export const McpElicitationCard = ({
           <span className="text-xs text-muted-foreground">
             {disabled
               ? "Reconnecting…"
-              : request.deadline === undefined
+              : request.waits === "owner"
                 ? `${request.server} waits for your answer`
                 : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
           </span>

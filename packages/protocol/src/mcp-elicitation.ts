@@ -113,7 +113,8 @@ export type McpElicitationSource = typeof McpElicitationSource.Type;
 
 /**
  * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is the
- * moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's clock.
+ * moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's clock;
+ * a question with `waits: "owner"` has none, and its `deadline` is only for a client from before `waits` (a far one).
  */
 export const McpElicitationRequest = Schema.Struct({
   /** What the answer names: unique within the Session. */
@@ -133,8 +134,12 @@ export const McpElicitationRequest = Schema.Struct({
   form: ElicitationForm,
   /** What the Session ignored or changed in the server's schema, one line each. */
   notes: Schema.Array(Schema.String),
-  /** Absent for a Modern server's question, which waits with no deadline (it is answered in the call's resume). */
-  deadline: Schema.optionalKey(Schema.Finite),
+  deadline: Schema.Finite,
+  /**
+   * `"owner"` for a Modern server's question, which waits for the owner with no deadline (it is answered in the call's
+   * resume): the card says so, and ignores `deadline`.
+   */
+  waits: Schema.optionalKey(Schema.Literal("owner")),
 });
 
 export type McpElicitationRequest = typeof McpElicitationRequest.Type;

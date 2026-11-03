@@ -94,8 +94,8 @@ describe("McpElicitationCard", () => {
   });
 
   it("shows no countdown for a Modern server's question, which waits for the owner with no deadline", () => {
-    const { deadline: _deadline, ...modern } = request(FORM);
-    const markup = render(modern);
+    // Its `deadline` is far off, for a client from before `waits`: the card ignores it.
+    const markup = render({ ...request(FORM), waits: "owner" });
 
     expect(markup).toContain("github waits for your answer");
     expect(markup).not.toContain("call ends in");

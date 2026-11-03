@@ -362,9 +362,14 @@ describe("a Modern MCP server's form in a Session", () => {
 
     const [request] = owner.requests();
 
-    // No countdown: the call waits as long as the owner takes.
-    expect(request).toMatchObject({ server: "docs", tool: "mcp__docs__ask", message: "Who?" });
-    expect(request).not.toHaveProperty("deadline");
+    // No countdown: the call waits as long as the owner takes. The far `deadline` is for a client from before `waits`.
+    expect(request).toMatchObject({
+      server: "docs",
+      tool: "mcp__docs__ask",
+      message: "Who?",
+      waits: "owner",
+    });
+    expect(request?.deadline).toBeGreaterThan(Date.now() + 24 * 60 * 60 * 1000);
 
     owner.send({
       type: "mcp_elicitation_answer",

@@ -11,6 +11,7 @@ import {
   McpHostInputRequired,
   type McpInputAnswer,
 } from "@cloudpid/mcp/types";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
@@ -19,6 +20,8 @@ import { open } from "./mcp.fixture.ts";
 import { type FakeMcpAnswer, fakeMcpHost } from "./mcp.testing.ts";
 import {
   createMcpQuestions,
+  MCP_DEFERRED_DEADLINE_MS,
+  type McpQuestionAsk,
   type McpQuestionStorage,
   type McpQuestionVault,
 } from "./mcp/questions.ts";
@@ -174,15 +177,19 @@ describe("a Modern server's form", () => {
     expect(sent()[0]?.ctx.answers).toMatchObject({ elicitation: true, defer: true });
     expect(seen).toEqual([{ kind: "defer" }]);
 
-    // The card has no deadline: it waits as long as the call does.
+    // The card waits for the owner as long as the call does; its far `deadline` is for a client from before `waits`.
     const [request] = await Effect.runPromise(questions.pending);
 
-    expect(request).toMatchObject({ server: "Docs-Site", message: "Who are you?" });
-    expect(request).not.toHaveProperty("deadline");
+    expect(request).toMatchObject({ server: "Docs-Site", message: "Who are you?", waits: "owner" });
+    expect(request?.deadline).toBeGreaterThan(Date.now() + MCP_DEFERRED_DEADLINE_MS - 60_000);
     expect(told).toEqual(["Docs-Site"]);
     // The round is stored with its `ResumeState`, and no resume left yet.
     expect(memory.keys()).toEqual(
-      expect.arrayContaining(["mcp-question:deferred", expect.stringMatching(/^mcp-question:d:/)]),
+      expect.arrayContaining([
+        "mcp-question:deferred",
+        expect.stringMatching(/^mcp-question:d:/),
+        expect.stringMatching(/^mcp-question:q:/),
+      ]),
     );
     expect(resumes).toEqual([]);
 
@@ -229,7 +236,7 @@ describe("a Modern server's form", () => {
 
     // Never a value in the clear, and nothing left of the round once it was resumed.
     expect(memory.dump()).not.toContain(SENTINEL);
-    expect(memory.keys().filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
     expect(await Effect.runPromise(questions.records)).toEqual([
       expect.objectContaining({ action: "accept", by: "owner", fields: ["name"] }),
     ]);
@@ -323,7 +330,7 @@ describe("a Modern server's form", () => {
 
     expect(resumes).toEqual([]);
     expect(await Effect.runPromise(questions.pending)).toEqual([]);
-    expect(memory.keys().filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
     expect(await Effect.runPromise(questions.records)).toEqual([
       expect.objectContaining({ action: "cancel", by: "cloudpid", reason: "Run stopped" }),
     ]);
@@ -377,6 +384,7 @@ describe("a Modern server's form", () => {
     const [request] = await Effect.runPromise(questions.pending);
 
     expect(request?.deadline).toBeGreaterThan(0);
+    expect(request).not.toHaveProperty("waits");
     await Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" }));
     await submitted.wait(context);
 
@@ -411,7 +419,7 @@ describe("a Modern server's form", () => {
     await Effect.runPromise(later.dropAbandoned);
 
     expect(await Effect.runPromise(later.pending)).toEqual([]);
-    expect(memory.keys().filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
     expect(await Effect.runPromise(later.records)).toEqual([
       expect.objectContaining({
         action: "cancel",
@@ -422,5 +430,139 @@ describe("a Modern server's form", () => {
 
     await session.root.abort(context);
     await submitted.wait(context);
+  });
+});
+
+describe("a deferred round in the Session's storage", () => {
+  const ASK: McpQuestionAsk = {
+    key: "7",
+    callId: "call-9",
+    conversationId: ROOT_CONVERSATION_ID,
+    server: "Docs-Site",
+    tool: "mcp__docs_site__search",
+    message: "Who are you?",
+    form: { fields: [{ kind: "text", name: "name", required: true }] },
+    notes: [],
+  };
+
+  const ROUND = {
+    callId: ASK.callId,
+    round: 1,
+    conn: "conn-docs",
+    tool: "search",
+    resume: STATE,
+    asked: [],
+  };
+
+  const service = async (memory = memoryStorage()) => {
+    const told: string[] = [];
+    const vault = await testVault();
+
+    const questions = createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      notify: ({ server }) =>
+        Effect.sync(() => {
+          told.push(server);
+        }),
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      vault,
+    });
+
+    return { questions, told, memory };
+  };
+
+  it("shows its cards and tells the owner only once shown, after the call marks the round", async () => {
+    const { questions, told } = await service();
+
+    expect(await Effect.runPromise(questions.defer(ASK))).toBe("deferred");
+    await Effect.runPromise(questions.commitRound(ROUND));
+
+    // Stored, not shown: a rerun that finds no `mcp.wait.1` settles the call, and no card was ever seen.
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(told).toEqual([]);
+
+    await Effect.runPromise(questions.showRound(ASK.callId));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([
+      expect.objectContaining({ callId: ASK.callId, waits: "owner" }),
+    ]);
+    // Told once, however often it is shown (the push is in the background).
+    await until(async () => told.length > 0);
+    expect(told).toEqual(["Docs-Site"]);
+  });
+
+  it("keeps each question under a key of its own, and the call's record holds no form or answer", async () => {
+    const { questions, memory } = await service();
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.defer({ ...ASK, key: "8", message: "And your team?" }));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    const [first] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(
+      questions.answer(first?.id ?? "", { action: "accept", content: { name: SENTINEL } }),
+    );
+
+    expect(memory.keys().filter((key) => key.startsWith("mcp-question:q:"))).toEqual([
+      "mcp-question:q:call-9:1",
+      "mcp-question:q:call-9:2",
+    ]);
+
+    const record = JSON.stringify(memory.storage.get("mcp-question:d:call-9"));
+
+    expect(record).not.toContain("Who are you?");
+    expect(record).not.toContain("ciphertext");
+    expect(JSON.stringify(memory.storage.get("mcp-question:q:call-9:1"))).toContain("ciphertext");
+  });
+
+  it("reads a question stored without a kind as an elicitation", async () => {
+    const { questions, memory } = await service();
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    const key = "mcp-question:q:call-9:1";
+    const stored = memory.storage.get<{ readonly kind?: string }>(key) ?? {};
+
+    expect(stored).toMatchObject({ kind: "elicitation" });
+
+    const { kind: _kind, ...unkinded } = stored;
+
+    memory.storage.put(key, unkinded);
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([
+      expect.objectContaining({ id: "call-9:1" }),
+    ]);
+    expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toMatchObject({
+      round: 1,
+    });
+    await Effect.runPromise(questions.answer("call-9:1", { action: "decline" }));
+    expect(await Effect.runPromise(questions.awaitRound(ASK.callId))).toEqual([
+      { key: "7", outcome: { action: "decline", by: "owner" }, fields: [] },
+    ]);
+  });
+
+  it("neither shows nor waits again for a round with a Sampling request, which this build cannot answer", async () => {
+    const { questions, memory } = await service();
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    const key = "mcp-question:q:call-9:1";
+
+    memory.storage.put(key, { ...memory.storage.get<object>(key), kind: "sampling" });
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toBeUndefined();
+    await expect(
+      Effect.runPromise(questions.answer("call-9:1", { action: "decline" })),
+    ).rejects.toThrow("This request ended");
   });
 });

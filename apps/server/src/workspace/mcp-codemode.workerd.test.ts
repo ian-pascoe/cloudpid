@@ -92,8 +92,7 @@ describe("a script's MCP call whose server asks a question", () => {
 
     const [before] = await pending(stub);
 
-    expect(before).toMatchObject({ server: "docs", tool: "mcp__docs__ask" });
-    expect(before).not.toHaveProperty("deadline");
+    expect(before).toMatchObject({ server: "docs", tool: "mcp__docs__ask", waits: "owner" });
     expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
 
     await evict(stub);

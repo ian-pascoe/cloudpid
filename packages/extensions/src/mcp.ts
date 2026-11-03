@@ -100,6 +100,8 @@ export {
 
 export {
   createMcpQuestions,
+  MCP_CALL_ENDED_REASON,
+  MCP_DEFERRED_DEADLINE_MS,
   MCP_QUESTION_RECORDS,
   MCP_QUESTION_RENOTIFY_MS,
   McpQuestions,

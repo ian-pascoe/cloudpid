@@ -23,7 +23,6 @@ import {
   type McpHostRequestContext,
   type McpHostRequestHooks,
   type McpHostResourceRequest,
-  type McpTaskInputResponses,
   type PausableDeadline,
   pausableDeadline,
 } from "@cloudpid/mcp/types";
@@ -37,14 +36,13 @@ import type {
 } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { agentOf, conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
 import type { McpAppRecorder } from "./apps.ts";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails, McpElicitationDetail } from "./details.ts";
-import { elicitingHooks, mutableContent, withElicitation } from "./elicit.ts";
+import { elicitingHooks, withElicitation } from "./elicit.ts";
 import type { Subject } from "./ended.ts";
 import {
   failedWith,
@@ -54,6 +52,7 @@ import {
   streamFailure,
 } from "./result.ts";
 import type { McpDeferredRound, McpQuestionsService } from "./questions.ts";
+import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
 import type { McpBuildServer } from "./tools.ts";
@@ -130,12 +129,6 @@ const DEFERRING_ANSWERS: McpAnswers = { ...ELICITATION_ANSWERS, defer: true };
 
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
-
-/** The marker written once round `round`'s questions are stored: a rerun that finds it waits for them again. */
-const waitMarker = (round: number) => `mcp.wait.${round}`;
-
-/** The marker written before round `round`'s resume leaves: a rerun that finds it never sends the resume again. */
-const resumedMarker = (round: number) => `mcp.resumed.${round}`;
 
 /** How long the Session waits for a request to `server` since its start or its last progress, in ms. */
 const waitOf = (server: McpBuildServer, slackMs: number): number => {
@@ -258,25 +251,6 @@ const remembers = (subject: Subject): boolean => subject === "tool";
 /** Who a call is for: a model's may spill, a script's gets its value whole (`codemode`). */
 export type Caller = "model" | "script";
 
-/**
- * The round a rerun of the call finds waiting: stored, its questions marked stored (`mcp.wait.<r>`) and its resume not
- * yet on its way (`mcp.resumed.<r>`). Anything else is a call that may have run.
- */
-const waitingRound = async (
-  api: ToolExecutionApi,
-  context: Context,
-  questions: McpQuestionsService,
-): Promise<McpDeferredRound | undefined> => {
-  const round = await Effect.runPromise(questions.deferredRound(api.callId));
-
-  if (round === undefined) return undefined;
-
-  const waited = await api.memo<boolean>(waitMarker(round.round), context);
-  const resumed = await api.memo<boolean>(resumedMarker(round.round), context);
-
-  return waited !== undefined && resumed === undefined ? round : undefined;
-};
-
 /** What a successful request makes of its value, for the `caller` it is for. */
 export type OnValue<A> = (
   value: Schema.Json,
@@ -316,15 +290,15 @@ export const send = async <A>(
   const deferring =
     remember && exchange.defers === true && questions !== undefined && questions.defers;
 
+  const rounds: Rounds | undefined =
+    deferring && questions !== undefined ? { questions, api, context } : undefined;
+
   let waiting: McpDeferredRound | undefined;
 
   if (remember && (await api.memo<boolean>(SENT, context)) !== undefined) {
     // A rerun after a restart: a round of questions stored and not yet resumed waits again. Anything else was sent
     // once, so the call may have run, and is never sent again.
-    waiting =
-      deferring && questions !== undefined
-        ? await waitingRound(api, context, questions)
-        : undefined;
+    waiting = rounds === undefined ? undefined : await waitingRound(rounds);
 
     if (waiting === undefined) {
       if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
@@ -422,67 +396,49 @@ export const send = async <A>(
       : result;
   };
 
-  /**
-   * The resume of `round` once the owner has answered every question in it: the request to send, or the result that
-   * says why not (Stop, or the round withdrawn). The answers are noted in `details`, never a value.
-   */
-  const resumeOf = async (
-    round: McpDeferredRound,
-  ): Promise<{ readonly next: McpHostRequest } | Sent<A>> => {
-    if (questions === undefined) return failed(interruptedResult(tool, base));
-
-    const answered = await Effect.runPromise(
-      questions.awaitRound(api.callId),
-      context.abortSignal === undefined ? undefined : { signal: context.abortSignal },
-    ).catch(() => "stopped" as const);
-
-    if (answered === "stopped") return failed(failedWith(`The ${noun} was stopped`, base));
-
-    if (answered === undefined) {
+  /** What the host's last answer comes to: the value `onValue` makes of it, or the result that says why not. */
+  const settled = async (
+    result: Exclude<Awaited<ReturnType<typeof once>>, undefined>,
+  ): Promise<Sent<A>> => {
+    if (!Predicate.isTagged(result, "Completed")) {
       return failed(
-        failedWith(
-          `${server.name}'s questions ended before they were answered; the ${noun} was not sent again`,
-          base,
-        ),
+        failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),
       );
     }
 
-    const answers: Mutable<McpTaskInputResponses> = {};
+    // A script's call gets its value whole and no spill.
+    const caller: Caller = (await isNested(api, context)) ? "script" : "model";
 
-    for (const { key, outcome, fields } of answered) {
-      const detail: Mutable<McpElicitationDetail> = {
-        server: server.name,
-        mode: "form",
-        action: outcome.action,
-        by: outcome.by,
-        fields: [...fields],
-      };
+    const done = async (value: Schema.Json): Promise<Sent<A>> => ({
+      ok: true,
+      value: await onValue(value, result, caller),
+      asked: [],
+    });
 
-      if (outcome.action !== "accept" && outcome.reason !== undefined) {
-        detail.reason = outcome.reason;
-      }
+    if (result.result.kind !== "stream") return done(result.result.value);
 
-      asking?.asked.push(detail);
-      answers[key] =
-        outcome.action === "accept"
-          ? { action: "accept", content: mutableContent(outcome.content) }
-          : { action: outcome.action };
-    }
-
-    // Durable before the resume leaves, so a restart never sends it again; the sealed answers go once it is.
-    await api.memo(resumedMarker(round.round), true, context);
-    await Effect.runPromise(questions.endRound(api.callId));
-
-    return {
-      next: {
-        op: "resume",
-        server: server.name,
-        params: { tool: round.tool, conn: round.conn, resume: round.resume, answers },
-        ctx: request.ctx,
-      },
+    const limits: Mutable<StreamLimits> = {
+      signal: context.abortSignal,
+      idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
     };
+
+    if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+
+    // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
+    // model or the script gets before the decode slot is given up.
+    return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
+      if (streamed.kind === "aborted") return failed(failedWith(`The ${noun} was stopped`, base));
+
+      return streamed.kind === "value"
+        ? done(streamed.value)
+        : failed(streamFailure(streamed.kind, base, subject));
+    });
   };
 
+  /**
+   * The call's rounds: the request, and while its server's questions are kept for later, each round stored, waited for
+   * and resumed, until the host answers anything else. A rerun starts from the round it found waiting.
+   */
   const finished = async (): Promise<Sent<A>> => {
     let round = waiting;
 
@@ -491,77 +447,52 @@ export const send = async <A>(
 
     while (true) {
       if (next === undefined) {
-        if (round === undefined) return failed(interruptedResult(tool, base));
+        if (rounds === undefined || round === undefined)
+          return failed(interruptedResult(tool, base));
 
-        const resumed = await resumeOf(round);
+        const resumed = await resumeOf(rounds, round, {
+          server: server.name,
+          ctx: request.ctx,
+          asked: asking?.asked,
+        });
 
-        if (!("next" in resumed)) return resumed;
+        if (resumed.kind === "stopped") return failed(failedWith(`The ${noun} was stopped`, base));
 
-        next = resumed.next;
+        if (resumed.kind === "withdrawn") {
+          return failed(
+            failedWith(
+              `${server.name}'s questions ended before they were answered; the ${noun} was not sent again`,
+              base,
+            ),
+          );
+        }
+
+        next = resumed.request;
       }
 
       const result = await once(next);
 
       if (result === undefined) return failed(hostLostResult(base, subject));
 
+      if (!Predicate.isTagged(result, "InputRequired") || rounds === undefined) {
+        return settled(result);
+      }
+
       // The server asked questions the call keeps: the round is stored whole, then marked, and the call waits.
-      if (Predicate.isTagged(result, "InputRequired") && deferring && questions !== undefined) {
-        const number = (round?.round ?? 0) + 1;
-
-        round = {
-          callId: api.callId,
-          round: number,
-          conn: result.conn,
-          tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
-          resume: result.resume,
-          asked: [...(asking?.asked ?? [])],
-        };
-
-        const stored = await Effect.runPromise(questions.commitRound(round).pipe(Effect.result));
-
-        // Nothing can record the round (a replaced Session): the call is dropped, and the instance after this one
-        // settles it as one that may have run.
-        if (Result.isFailure(stored)) return failed(interruptedResult(tool, base));
-
-        await api.memo(waitMarker(number), true, context);
-        next = undefined;
-
-        continue;
-      }
-
-      if (!Predicate.isTagged(result, "Completed")) {
-        return failed(
-          failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),
-        );
-      }
-
-      // A script's call gets its value whole and no spill.
-      const caller: Caller = (await isNested(api, context)) ? "script" : "model";
-
-      const done = async (value: Schema.Json): Promise<Sent<A>> => ({
-        ok: true,
-        value: await onValue(value, result, caller),
-        asked: [],
-      });
-
-      if (result.result.kind !== "stream") return done(result.result.value);
-
-      const limits: Mutable<StreamLimits> = {
-        signal: context.abortSignal,
-        idleMs: options.streamIdleMs ?? MCP_STREAM_IDLE_MS,
+      round = {
+        callId: api.callId,
+        round: (round?.round ?? 0) + 1,
+        conn: result.conn,
+        tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
+        resume: result.resume,
+        asked: [...(asking?.asked ?? [])],
       };
 
-      if (options.streamWaitMs !== undefined) limits.waitMs = options.streamWaitMs;
+      // Nothing can record the round (a replaced Session): the call is dropped, and the instance after this one settles
+      // it as one that may have run.
+      if (!(await storeRound(rounds, round))) return failed(interruptedResult(tool, base));
 
-      // Over 1 MiB: the engine's bytes, which the host returned unread, are read here, and the result is cut to what the
-      // model or the script gets before the decode slot is given up.
-      return readStreamed(result.result.body, result.result.bytes, limits, async (streamed) => {
-        if (streamed.kind === "aborted") return failed(failedWith(`The ${noun} was stopped`, base));
-
-        return streamed.kind === "value"
-          ? done(streamed.value)
-          : failed(streamFailure(streamed.kind, base, subject));
-      });
+      next = undefined;
     }
   };
 
