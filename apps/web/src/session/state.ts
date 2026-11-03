@@ -8,6 +8,7 @@ import {
   type BrowserHandoffRequest,
   type LastRun,
   type McpElicitationRequest,
+  type McpSignInRequest,
   type OwnerTabDriver,
   type OwnerTabListing,
   type ClientMessage,
@@ -138,6 +139,8 @@ export interface SessionState {
   readonly approvalRequests: readonly ApprovalRequest[];
   /** MCP servers' questions waiting for the owner, each shown as a card, oldest first; typed values live in the card. */
   readonly mcpElicitationRequests: readonly McpElicitationRequest[];
+  /** The Sign-in requests waiting for the owner: an agent asked them to sign in to an MCP server. */
+  readonly mcpSignInRequests: readonly McpSignInRequest[];
   /** The Session's draft Annotations, oldest first, as of the last `annotations` message; every client has the same. */
   readonly annotations: readonly Annotation[];
   /** The Session's Viewed boxes on pull request files, as of the last `viewed` message; every client has the same. */
@@ -194,6 +197,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   secretLifetimeMinutes: 15,
   approvalRequests: [],
   mcpElicitationRequests: [],
+  mcpSignInRequests: [],
   annotations: [],
   viewed: [],
   browserHandoffRequests: null,

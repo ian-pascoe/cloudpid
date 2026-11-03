@@ -279,6 +279,31 @@ export const mcpSignInStartHref = (input: {
   return `/oauth/mcp/start?${query.toString()}`;
 };
 
+/**
+ * The link a Sign-in request's card opens, in a new tab (`docs/architecture/mcp-sign-in.md` → Sign-in requests): the start
+ * link of the request's server in its Environment, naming the Session and the request, so the callback tells the Session
+ * which request the sign-in answered, and Back returns to the Session's page.
+ */
+export const mcpSignInRequestHref = (input: {
+  readonly environment: string;
+  readonly server: string;
+  readonly session: string;
+  readonly request: string;
+  readonly stepUp: boolean;
+  readonly returnPath: string;
+}): string => {
+  const query = new URLSearchParams({ environment: input.environment, server: input.server });
+
+  query.set("session", input.session);
+  query.set("request", input.request);
+
+  if (input.stepUp) query.set("step_up", "1");
+
+  query.set("return", input.returnPath);
+
+  return `/oauth/mcp/start?${query.toString()}`;
+};
+
 /** The path of the callback under `origin` (→ The client document and the callback outside Access). */
 export const mcpRedirectUri = (origin: string): string => `${origin}/oauth/mcp/callback`;
 

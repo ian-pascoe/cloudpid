@@ -300,6 +300,15 @@ export interface SessionClient {
     content?: ElicitationContent,
   ) => Effect.Effect<void, SessionCommandError>;
   /**
+   * Decline Sign-in request `request` (`docs/architecture/mcp-sign-in.md` → Sign-in requests): the agent is told the owner
+   * declined, with `reason` when the owner gave one. The Session's next `mcp_sign_in_requests` closes the card; a request
+   * that is gone fails with the Session's message. The sign-in itself is the card's link, not a command.
+   */
+  readonly declineMcpSignIn: (
+    request: string,
+    reason?: string,
+  ) => Effect.Effect<void, SessionCommandError>;
+  /**
    * Abort the root conversation's work and withdraw its queued input, or a subagent's when `conversationId` names
    * it. With `subagents`, the agents below it stop too; otherwise they keep working.
    */
@@ -666,6 +675,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "secretLifetimeMinutes"
         | "approvalRequests"
         | "mcpElicitationRequests"
+        | "mcpSignInRequests"
         | "annotations"
         | "viewed"
         | "browserHandoffRequests"
@@ -1001,6 +1011,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "mcp_elicitation_requests":
         update({ mcpElicitationRequests: message.requests });
+
+        return;
+      case "mcp_sign_in_requests":
+        update({ mcpSignInRequests: message.requests });
 
         return;
       case "annotations":
@@ -1644,6 +1658,23 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
             { type: "mcp_elicitation_answer", id, request: asked, action };
 
           if (action === "accept" && content !== undefined) answer.content = content;
+
+          return answer;
+        },
+        () => Option.some(undefined),
+        true,
+      ),
+    declineMcpSignIn: (asked, reason) =>
+      request(
+        (id) => {
+          const answer: Types.Mutable<Extract<ClientMessage, { type: "mcp_sign_in_answer" }>> = {
+            type: "mcp_sign_in_answer",
+            id,
+            request: asked,
+            action: "decline",
+          };
+
+          if (reason !== undefined && reason.trim() !== "") answer.reason = reason.trim();
 
           return answer;
         },

@@ -16,6 +16,7 @@ import {
   mcpSignInApplies,
   mcpSignInLine,
   mcpSignInNames,
+  mcpSignInRequestHref,
   mcpSignInStartHref,
   type McpSignInsState,
   refusedDocumentHint,
@@ -373,5 +374,35 @@ describe("the redirect URI and client name", () => {
       redirectUri: null,
       clientName: null,
     });
+  });
+});
+
+describe("a Sign-in request's link", () => {
+  it("names the Session and the request, and comes back to the Session", () => {
+    expect(
+      mcpSignInRequestHref({
+        environment: "work",
+        server: "sentry",
+        session: "s1",
+        request: "signin-2",
+        stepUp: false,
+        returnPath: "/sessions/s1",
+      }),
+    ).toBe(
+      "/oauth/mcp/start?environment=work&server=sentry&session=s1&request=signin-2&return=%2Fsessions%2Fs1",
+    );
+  });
+
+  it("asks for a step-up", () => {
+    expect(
+      mcpSignInRequestHref({
+        environment: "work",
+        server: "sentry",
+        session: "s1",
+        request: "signin-2",
+        stepUp: true,
+        returnPath: "/sessions/s1",
+      }),
+    ).toContain("&step_up=1&return=");
   });
 });

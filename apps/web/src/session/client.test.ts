@@ -635,6 +635,72 @@ describe("a Session connection", () => {
     );
   });
 
+  describe("MCP sign-in requests", () => {
+    const asked = {
+      id: "signin-1",
+      conversationId: 1,
+      server: "sentry",
+      environment: "env_1",
+      urlHost: "mcp.sentry.dev",
+      reason: "I need the issues",
+      why: "required",
+      scopes: [],
+      askedAt: 1,
+    };
+
+    it.effect("keeps the cards of a closed socket until the next one says which still wait", () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+
+        yield* watching(latest());
+        yield* latest().say({ type: "mcp_sign_in_requests", requests: [asked] });
+        yield* latest().drop();
+
+        expect(state().mcpSignInRequests).toEqual([asked]);
+
+        // The next socket says none wait any more (a sign-in finished while the owner was away).
+        yield* advance(60_000);
+        yield* watching(latest());
+        yield* latest().say({ type: "mcp_sign_in_requests", requests: [] });
+
+        expect(state().mcpSignInRequests).toEqual([]);
+      }),
+    );
+
+    it.effect("sends a decline with the owner's reason, trimmed, or with none", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const withReason = yield* Effect.forkChild(
+          client.declineMcpSignIn("signin-1", "  not this one "),
+        );
+
+        yield* settle;
+        expect(latest().commands().at(-1)).toEqual({
+          type: "mcp_sign_in_answer",
+          id: expect.any(String),
+          request: "signin-1",
+          action: "decline",
+          reason: "not this one",
+        });
+        yield* Fiber.interrupt(withReason);
+
+        const without = yield* Effect.forkChild(client.declineMcpSignIn("signin-1", " "));
+
+        yield* settle;
+        expect(latest().commands().at(-1)).toEqual({
+          type: "mcp_sign_in_answer",
+          id: expect.any(String),
+          request: "signin-1",
+          action: "decline",
+        });
+        yield* Fiber.interrupt(without);
+      }),
+    );
+  });
+
   describe("draft Annotations", () => {
     const draft = {
       id: "d1",
