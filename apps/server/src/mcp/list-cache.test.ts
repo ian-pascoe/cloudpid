@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   jsonBytes,
   LIST_CACHE_ENTRY_BYTES,
+  LIST_CACHE_HOST_BYTES,
+  LIST_CACHE_ISOLATE_BYTES,
   LIST_CACHE_MAX_TTL_MS,
-  LIST_CACHE_TOTAL_BYTES,
+  makeIsolateBudget,
   makeListCache,
   McpListCache,
 } from "./list-cache.ts";
@@ -61,11 +63,11 @@ describe("the list cache", () => {
     expect(jsonBytes(weighing(10))).toBe(JSON.stringify(weighing(10)).length);
   });
 
-  it("holds 8 MiB in all, dropping the least recently used first", () => {
-    const cache = makeListCache();
-    const piece = weighing(3 * MiB);
+  it("holds 4 MiB a host, dropping the least recently used first", () => {
+    const cache = makeListCache(undefined, makeIsolateBudget());
+    const piece = weighing(1.5 * MiB);
 
-    expect(LIST_CACHE_TOTAL_BYTES).toBe(8 * MiB);
+    expect(LIST_CACHE_HOST_BYTES).toBe(4 * MiB);
 
     cache.put("a", DOCS, "e", piece, 1000, 0);
     cache.put("b", DOCS, "e", piece, 1000, 0);
@@ -78,7 +80,7 @@ describe("the list cache", () => {
     expect(cache.get("b", "e", 1)).toBeUndefined();
     expect(cache.get("a", "e", 1)).toEqual(piece);
     expect(cache.get("c", "e", 1)).toEqual(piece);
-    expect(cache.size().bytes).toBeLessThanOrEqual(8 * MiB);
+    expect(cache.size().bytes).toBeLessThanOrEqual(4 * MiB);
   });
 
   it("replaces an entry under the same key, counting its bytes once", () => {
@@ -124,6 +126,79 @@ describe("the list cache", () => {
 
     expect(cache.get("a", "e", 1)).toBeUndefined();
     expect(cache.get("b", "e", 1)).toEqual({});
+  });
+});
+
+describe("the isolate's budget", () => {
+  const piece = weighing(3 * MiB);
+
+  it("is 8 MiB, charged by every host's cache in the isolate, the least recently used of all dropped first", () => {
+    const isolate = makeIsolateBudget();
+    const [first, second, third] = [1, 2, 3].map(() => makeListCache(undefined, isolate));
+
+    expect(LIST_CACHE_ISOLATE_BYTES).toBe(8 * MiB);
+
+    first?.put("a", DOCS, "e", piece, 1000, 0);
+    second?.put("b", DOCS, "e", piece, 1000, 0);
+
+    // `a` is used, so `b` is the oldest of all, though it is the only entry of its own cache.
+    expect(first?.get("a", "e", 1)).toEqual(piece);
+
+    third?.put("c", DOCS, "e", piece, 1000, 0);
+
+    expect(second?.get("b", "e", 1)).toBeUndefined();
+    expect(first?.get("a", "e", 1)).toEqual(piece);
+    expect(third?.get("c", "e", 1)).toEqual(piece);
+    expect(isolate.bytes()).toBeLessThanOrEqual(8 * MiB);
+    expect(isolate.bytes()).toBe(
+      (first?.size().bytes ?? 0) + (second?.size().bytes ?? 0) + (third?.size().bytes ?? 0),
+    );
+  });
+
+  it("is never passed by many hosts each within their own 4 MiB", () => {
+    const isolate = makeIsolateBudget();
+    const caches = Array.from({ length: 10 }, () => makeListCache(undefined, isolate));
+
+    for (const [index, cache] of caches.entries()) {
+      cache.put(`k${index}`, DOCS, "e", weighing(3.5 * MiB), 1000, 0);
+
+      expect(isolate.bytes()).toBeLessThanOrEqual(8 * MiB);
+    }
+  });
+
+  it("is given back when a cache is disposed, and when an entry is dropped", () => {
+    const isolate = makeIsolateBudget();
+    const cache = makeListCache(undefined, isolate);
+
+    cache.put("a", { conn: "c1" }, "e", piece, 1000, 0);
+    cache.put("b", { conn: "c2" }, "e", piece, 1000, 0);
+    cache.dropServer({ conn: "c1" });
+
+    expect(isolate.bytes()).toBe(cache.size().bytes);
+
+    cache.dispose();
+
+    expect(isolate.bytes()).toBe(0);
+    expect(cache.size().entries).toBe(0);
+  });
+
+  it("is shared by the host's own layers: two built apart are two caches charging one budget", async () => {
+    const sizes = await Effect.runPromise(
+      Effect.gen(function* () {
+        const one = yield* McpListCache;
+
+        return yield* Effect.gen(function* () {
+          const two = yield* McpListCache;
+
+          one.put("a", DOCS, "e", weighing(3.9 * MiB), 1000, 0);
+          two.put("b", DOCS, "e", weighing(3.9 * MiB), 1000, 0);
+
+          return [one.size().entries, two.size().entries] as const;
+        }).pipe(Effect.provide(McpListCache.layer));
+      }).pipe(Effect.provide(McpListCache.layer)),
+    );
+
+    expect(sizes).toEqual([1, 1]);
   });
 });
 
