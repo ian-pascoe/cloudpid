@@ -59,7 +59,7 @@ export const environmentMcpSet = (
 export type ResolvedServersStore = DocumentStore & Pick<RegistryStore, "getSettingsOverrides">;
 
 /** The servers of `environment`'s set as `resolveMcpServerSet` resolves them, or null when it is not registered. */
-export const environmentResolvedServers = (
+const environmentResolvedServers = (
   store: ResolvedServersStore,
   environment: string,
 ): ReadonlyArray<McpResolvedServer> | null => {

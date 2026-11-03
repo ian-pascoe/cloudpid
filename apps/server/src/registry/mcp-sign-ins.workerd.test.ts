@@ -740,6 +740,86 @@ describe("reportMcpAuth", () => {
       });
     }));
 
+  it("serves a step-up's rejected token without a refresh, as a rejected sign-in's, and refreshes one that was not", () =>
+    fresh(async ({ setGlobal, signInWith, report, ask }) => {
+      setGlobal({ sentry: SENTRY });
+      await signInWith("sentry");
+      report("step_up", "sentry", { scope: "write" });
+
+      const refreshes: Array<string> = [];
+
+      const refresh: Refresh = (_row, _tokens, trigger) => {
+        refreshes.push(trigger);
+
+        return Effect.succeed({ status: "refresh_failing", reason: "try again shortly" });
+      };
+
+      // The step-up's token was not refused by the server: a refusal asks for a refresh.
+      expect(await ask({ server: "sentry", stale: ACCESS }, { refresh })).toMatchObject({
+        status: "refresh_failing",
+      });
+      expect(refreshes).toEqual(["401"]);
+
+      report("rejected", "sentry", { error: "invalid_token", errorDescription: "refused" });
+
+      // It was: the token is still served, with the note, and nothing is refreshed.
+      expect(await ask({ server: "sentry", stale: ACCESS }, { refresh })).toMatchObject({
+        status: "ok",
+        token: ACCESS,
+        note: { status: "step_up", reason: "refused", scope: "read write" },
+      });
+      expect(refreshes).toEqual(["401"]);
+    }));
+
+  it("keeps a pending step-up through a refresh of the tokens, so the next challenge for the same set counts nothing", () =>
+    fresh(async ({ setGlobal, keyOf, signInWith, signIns, report }) => {
+      setGlobal({ sentry: SENTRY });
+      await signInWith("sentry");
+
+      const { hash } = keyOf("sentry");
+
+      report("step_up", "sentry", { scope: "write" });
+      report("rejected", "sentry", { error: "invalid_token", errorDescription: "refused" });
+
+      expect(
+        signIns.replaceTokens(hash, { sealed: OPAQUE, expiresAt: null, scope: "read" }, NOW),
+      ).toBe(true);
+      expect(signIns.get(hash)).toMatchObject({
+        status: "step_up",
+        lastError: null,
+        wantedScope: "read write",
+        stepUpCount: 0,
+      });
+
+      report("step_up", "sentry", { scope: "write" });
+      expect(signIns.get(hash)).toMatchObject({ status: "step_up", stepUpCount: 0 });
+
+      // Without a pending step-up a refresh still clears the status.
+      signIns.update(hash, { status: "refresh_failing" }, NOW);
+      signIns.replaceTokens(hash, { sealed: OPAQUE, expiresAt: null, scope: "read" }, NOW);
+      expect(signIns.get(hash)).toMatchObject({ status: "ok" });
+    }));
+
+  it("starts the count again when a challenge during a pending step-up asks for another scope set", () =>
+    fresh(async ({ setGlobal, keyOf, signInWith, signIns, report }) => {
+      setGlobal({ sentry: SENTRY });
+      await signInWith("sentry");
+
+      const row = () => signIns.get(keyOf("sentry").hash);
+
+      report("step_up", "sentry", { scope: "write" });
+      await signInWith("sentry", { scope: "read write", wantedScope: "read write" });
+      report("step_up", "sentry", { scope: "write" });
+      expect(row()).toMatchObject({ status: "step_up", stepUpCount: 1 });
+
+      // The same set again while pending: still 1. Another set: the count starts again.
+      report("step_up", "sentry", { scope: "write" });
+      expect(row()).toMatchObject({ stepUpCount: 1 });
+
+      report("step_up", "sentry", { scope: "delete" });
+      expect(row()).toMatchObject({ stepUpCount: 0, wantedScope: "read write delete" });
+    }));
+
   it("keeps the tokens of a server that refused them, with the error", () =>
     fresh(async ({ setGlobal, keyOf, signInWith, signIns, report }) => {
       setGlobal({ sentry: SENTRY });

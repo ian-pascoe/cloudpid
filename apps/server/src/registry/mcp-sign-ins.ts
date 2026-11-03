@@ -6,7 +6,7 @@
 // Bounds (→ Bounds), held here so every writer meets them:
 //   - sign-ins 200: at the limit the least recently used row without tokens is evicted, else the new one is refused;
 //   - registrations 100 and bindings 200: an unreferenced row is evicted, else the new one is refused;
-//   - pending rows 20, the oldest dropped (and a row is dropped when it expires, 10 min);
+//   - pending rows 20, the oldest dropped; a row older than 10 min is treated as absent and swept at the next put;
 //   - waiters 100, then refused; each expires after 30 days;
 //   - recorded metadata and discovery each ≤64 KiB. A token is held to 16 KiB where it is sealed.
 //
@@ -452,7 +452,11 @@ export type McpSignIns = {
   ) => McpStoreRefusal | { readonly status: "noted" };
   /** Change the status or the notes of a sign-in; false when there is none. The revision stays. */
   readonly update: (keyHash: string, update: SignInUpdate, now: number) => boolean;
-  /** Replace the tokens of a refreshed sign-in, keeping its grant, and clear its error. False when there is none. */
+  /**
+   * Replace the tokens of a refreshed sign-in, keeping its grant, and clear its error and its status, but for a pending
+   * `step_up`, which a refresh does not answer (so the next challenge for the same scope set is not counted). False when
+   * there is none.
+   */
   readonly replaceTokens: (
     keyHash: string,
     tokens: {
@@ -727,8 +731,8 @@ export const openMcpSignIns = (
         if (getRow(keyHash) === undefined) return false;
 
         sql.exec(
-          `UPDATE mcp_sign_ins SET sealed = ?, expires_at = ?, scope = ?, status = 'ok', last_error = NULL,
-             last_error_at = NULL, refreshed_at = ? WHERE key_hash = ?`,
+          `UPDATE mcp_sign_ins SET sealed = ?, expires_at = ?, scope = ?, status = CASE status WHEN 'step_up' THEN 'step_up' ELSE 'ok' END,
+             last_error = NULL, last_error_at = NULL, refreshed_at = ? WHERE key_hash = ?`,
           JSON.stringify(tokens.sealed),
           tokens.expiresAt,
           tokens.scope,
