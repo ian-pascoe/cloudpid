@@ -51,6 +51,10 @@ const BRANCH_PAGE = 500;
 /** Where `/tree` goes: a point of the Session tree, with a summary of the branch left or none. */
 export type NavigateRequest = TreePoint & { readonly summary?: BranchSummaryRequest };
 
+/** Why the Session tree does not move while a message is in line to be placed on its active branch. */
+export const NAVIGATE_WHILE_PREPARING =
+  "The Session tree cannot be navigated while a message is being prepared: wait for it to be sent.";
+
 /** What the Session tree's moves take from the Session host. */
 export type BranchesOptions = {
   readonly harness: PiHarness;
@@ -65,7 +69,7 @@ export type BranchesOptions = {
   readonly pendingCompactions: () => Readonly<Record<string, string>>;
   /** Why the Session cannot move now (it is still being filled as a Fork or Clone), if it cannot. */
   readonly refusal: () => string | undefined;
-  /** Whether a message is being prepared for `conversation`: the tree does not move until it is placed. */
+  /** Whether a message is in line for `conversation`, being prepared or placed: the tree does not move until it is placed. */
   readonly preparing: (conversation: ConversationId) => boolean;
   /** Runs `effect` in turn with the owner's messages, so none lands on a branch being left. */
   readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
@@ -116,25 +120,17 @@ export const sessionBranches = (options: BranchesOptions) => {
 
   /** Fail with why the active branch cannot be left now, if it cannot. */
   const refuseWhileBusy = (conversation: Conversation) =>
-    (options.preparing(conversation.id)
-      ? Effect.fail(
-          refuse(
-            "The Session tree cannot be navigated while a message is being prepared: wait for it to be sent.",
-          ),
-        )
-      : Effect.void
-    ).pipe(
-      Effect.andThen(busyReason(conversation)),
-      Effect.flatMap((reason) =>
-        reason === undefined
-          ? Effect.void
-          : Effect.fail(
-              refuse(
-                `The Session tree cannot be navigated while ${reason}: stop it or wait for it to end.`,
-              ),
-            ),
-      ),
-    );
+    Effect.gen(function* () {
+      if (options.preparing(conversation.id)) return yield* refuse(NAVIGATE_WHILE_PREPARING);
+
+      const reason = yield* busyReason(conversation);
+
+      if (reason !== undefined) {
+        return yield* refuse(
+          `The Session tree cannot be navigated while ${reason}: stop it or wait for it to end.`,
+        );
+      }
+    });
 
   /** Every entry of `conversation`'s own after `after` (none: from its start), oldest first. */
   const entriesAfter = (conversation: Conversation, after: EntryId | undefined) =>

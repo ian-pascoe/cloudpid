@@ -36,6 +36,7 @@ import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
+import type { NavigateRequest } from "./branches.ts";
 import {
   askedConversations,
   type FakeWorkspace,
@@ -161,10 +162,39 @@ export class TestSubagentSession extends DurableObject {
     });
   }
 
+  /** While set, the root's next model request (a branch summary's) starts and then waits for `finishSummary`. */
+  #summary: { started: PromiseWithResolvers<void>; finish: PromiseWithResolvers<void> } | undefined;
+
+  #summaryFinish: PromiseWithResolvers<void> | undefined;
+
+  /** Hold the next branch summary's model request until `finishSummary`. Resolves once that request has started. */
+  holdSummary(): Promise<void> {
+    const held = { started: Promise.withResolvers<void>(), finish: Promise.withResolvers<void>() };
+
+    this.#summary = held;
+    this.#summaryFinish = held.finish;
+
+    return held.started.promise;
+  }
+
+  /** Let the held branch summary's model request answer. */
+  finishSummary(): void {
+    this.#summaryFinish?.resolve();
+  }
+
   #respond(
     messages: readonly Message[],
     signal: AbortSignal | undefined,
   ): AssistantMessage | Promise<AssistantMessage> {
+    const held = this.#summary;
+
+    if (held !== undefined) {
+      this.#summary = undefined;
+      held.started.resolve();
+
+      return held.finish.promise.then(() => fauxAssistantMessage("## Goal\nSummary"));
+    }
+
     const agent = askedBy(messages);
     const last = messages.findLast((message) => message.role !== "system");
     const said = last === undefined ? "" : text(last.content);
@@ -388,6 +418,45 @@ export class TestSubagentSession extends DurableObject {
     return gate === undefined
       ? {}
       : { attachPages: Effect.promise(() => gate.promise).pipe(Effect.as([])) };
+  }
+
+  /** Navigate to just before the Session's first message, with a summary of the branch left when asked: the branch entered, or why it could not. */
+  navigateToStart(
+    summary: boolean,
+  ): Promise<{ readonly active: ConversationId } | { readonly failure: string }> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) =>
+        Effect.gen(function* () {
+          const tree = yield* host.tree;
+          const first = tree.nodes.find((node) => node.role === "user");
+
+          if (first === undefined) return yield* Effect.die("The Session has no message");
+
+          const request: Types.Mutable<NavigateRequest> = { entryId: first.id, position: "before" };
+
+          if (summary) request.summary = {};
+
+          const went = yield* host.navigate(request);
+
+          return { active: went.conversationId };
+        }).pipe(Effect.catch((error) => Effect.succeed({ failure: error.message }))),
+      ),
+    );
+  }
+
+  /** The active Session branch's conversation. */
+  activeBranch(): Promise<ConversationId> {
+    return this.#runtime.runPromise(Effect.flatMap(SessionHost, (host) => host.activeBranch));
+  }
+
+  /** Make Session branch `conversationId` active, as the chevrons do: nothing, or why it could not. */
+  switchTo(conversationId: ConversationId): Promise<string | undefined> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.switchBranch(conversationId)).pipe(
+        Effect.as(undefined),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      ),
+    );
   }
 
   /** Navigate the Session tree to a point that does not exist: the refusal while a message is prepared, or why it could not. */

@@ -338,16 +338,16 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
   - A resent `requestId` finds the first submission.
   - A task-shaped answer is a `ProtocolViolation` ([MCP tasks](https://github.com/ian-pascoe/cloudpid/issues/389) D10.3).
 - **Prepare, then place:** admission splits in two.
-  - **Prepare** runs outside the Session lock, in a queue per conversation: template expansion, Attached page and Attached resource reads, and the prompt get.
-  - **Place** runs briefly under `inArrivalOrder`, in each queue's order: the `requestId` check, `guard` and `admitDraft`.
+  - **Prepare** runs outside the Session lock, in a line per conversation: template expansion, Attached page and Attached resource reads, and the prompt get.
+  - **Place** runs briefly under `inArrivalOrder`, in each line's order: the `requestId` check, `guard` and `admitDraft`.
   - Messages keep their order within each conversation.
-  - **The queue** is per conversation and in memory (`apps/server/src/session/admission.ts`): a message takes its place when it arrives, prepares when those before it have been placed, and is placed in the same turn, so each conversation's messages are placed in the order they arrived and a slow one holds back only the ones behind it. A message interrupted while it waits still waits its turn.
-  - **Pinned:** when its turn comes, a message's conversation is fixed under `inArrivalOrder`, which waits out a `navigate` or `switchBranch` that is running. Until it is placed, those two are refused on that conversation's branch ("The Session tree cannot be navigated while a message is being prepared"). The refusal is the `error` message's text, as the others are, so an older client shows it as it does them. A message still waiting its turn does not count.
+  - **The line** is per conversation and in memory (`apps/server/src/session/admission.ts`). A message finds its conversation and joins that conversation's line under `inArrivalOrder`, so one sent while `navigate` or `switchBranch` runs is for the branch it moves to, and is in line before any sent after it. It prepares when those before it have been placed, and is placed in the same turn, so each conversation's messages are placed in the order they arrived and a slow one holds back only the ones behind it. A message interrupted while it waits still waits its turn.
+  - **The tree stays put:** from joining the line until it is placed, `navigate` and `switchBranch` are refused on that conversation's branch ("The Session tree cannot be navigated while a message is being prepared"). The refusal is the `error` message's text, as the others are, so an older client shows it as it does them.
   - Abort, Stop, commands, Fork/Clone, lookups and other conversations go ahead.
 - **Steers and queued follow-ups** are prepared at submit, so a follow-up carries what the server returned when it was sent. The lane row reads "Getting <title> from <server>…", then shows the chip label and the typed text.
 - **Server questions during a get** are answered live in both eras, never deferred, since the prepare stage is in memory; D6.4's first-build refusal is lifted ([Sampling](https://github.com/ian-pascoe/cloudpid/issues/387) D1.2, D12.2; [Elicitation](https://github.com/ian-pascoe/cloudpid/issues/388) D1.2, D18.1). The cards and their bounds are in [_Questions_](mcp-server-requests.md#questions).
   - **The card** waits above the composer, named in the lane row, for at most 5 min, with no Notification. The 30 s get bound pauses meanwhile.
-  - **The queue:** while it waits, the conversation's prepare queue is held, but Stop, abort, commands, Fork/Clone and other conversations go ahead.
+  - **The line:** while it waits, the conversation's line is held, but Stop, abort, commands, Fork/Clone and other conversations go ahead.
   - **Endings:** an Elicitation request whose 5 min run out gets `cancel` and the get goes on; a Modern Sampling refusal fails the send with `MCP_PROMPT_FAILED`, Retry offered.
   - **Summaries** are kept in `mcpPrompt.sampling` and `mcpPrompt.elicitation`.
 

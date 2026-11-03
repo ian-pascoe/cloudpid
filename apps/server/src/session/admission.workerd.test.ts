@@ -1,12 +1,13 @@
 // Admitting a message in two steps against real Durable Object storage (docs/architecture/mcp-in-a-session.md → Getting a
 // prompt at send): a message is prepared (here, its attached pages are read, held until the test lets them end) outside the
-// Session's lock, in a queue per conversation, then placed. A slow preparation holds back neither Stop nor another
+// Session's lock, in a line per conversation, then placed. A slow preparation holds back neither Stop nor another
 // conversation, messages keep their order within each conversation, and the Session tree stays put while one is prepared.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectRecord:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { NAVIGATE_WHILE_PREPARING } from "./branches.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -81,7 +82,8 @@ describe("admitting a message", () => {
 
       // Another conversation is admitted meanwhile.
       await instance.submitTo(child, "c1");
-      // Stop and a read of the Session go ahead.
+      // Stop and a read of the Session go ahead. Neither ever took the lock, so this does not show the split: the other
+      // conversation's message above does, which waited on the lock before.
       await instance.abort();
       await instance.stopEverything();
       await instance.idle();
@@ -155,10 +157,80 @@ describe("admitting a message", () => {
       },
     );
 
-    expect(during).toBe(
-      "The Session tree cannot be navigated while a message is being prepared: wait for it to be sent.",
-    );
+    expect(during).toBe(NAVIGATE_WHILE_PREPARING);
     // Once it is placed the refusal is another's: the Run it started is under way, or the point is not in the tree.
     expect(after).not.toContain("is being prepared");
+  });
+
+  it("refuses to switch Session branch while a message is being prepared", async () => {
+    const { stub } = await withChild();
+
+    const [root, during, after] = await runInDurableObject(
+      stub,
+      async (instance: TestSubagentSession) => {
+        const root = await instance.activeBranch();
+
+        // A second branch to switch to: the Session's first message branched before.
+        const went = await instance.navigateToStart(false);
+
+        if ("failure" in went) throw new Error(went.failure);
+
+        instance.holdPreparing("a1");
+
+        const slow = instance.submit("a1");
+
+        await sleep(50);
+
+        const during = await instance.switchTo(root);
+
+        instance.finishPreparing("a1");
+        await slow;
+
+        return [root, during, await instance.activeBranch()] as const;
+      },
+    );
+
+    expect(during).toBe(NAVIGATE_WHILE_PREPARING);
+    // The refusal left the new branch active, where the message was placed.
+    expect(after).not.toBe(root);
+  });
+
+  it("places messages in the order they arrived when the first arrives while the Session tree moves", async () => {
+    const { stub } = await withChild();
+
+    const branch = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      const summarizing = instance.holdSummary();
+      const moving = instance.navigateToStart(true);
+
+      // The move holds the lock while its summary is made; the first message is sent meanwhile, and the second after.
+      await summarizing;
+      instance.holdPreparing("a1");
+
+      const first = instance.submit("a1");
+
+      await sleep(50);
+      instance.finishSummary();
+
+      const went = await moving;
+
+      if ("failure" in went) throw new Error(went.failure);
+
+      const second = instance.submit("a2");
+
+      await sleep(50);
+      // The first is for the branch the Session moved to, and the second is behind it: neither is placed yet.
+      expect(await sent(instance, went.active)).toEqual([]);
+
+      instance.finishPreparing("a1");
+      await Promise.all([first, second]);
+
+      return went.active;
+    });
+
+    await eventually(stub, (instance) => instance.idle());
+
+    expect(
+      await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, branch)),
+    ).toEqual(["a1", "a2"]);
   });
 });
