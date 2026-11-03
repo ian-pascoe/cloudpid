@@ -649,7 +649,27 @@ export const sessionSocketsLayer = (
               .switchBranch(message.conversationId)
               .pipe(Effect.andThen(announceBranch(message.conversationId)), Effect.as(null));
           case "submit": {
-            const { type: _type, id: _id, pages: refs, annotations: ids, ...typed } = message;
+            const {
+              type: _type,
+              id: _id,
+              pages: refs,
+              annotations: ids,
+              mcpPrompt: picked,
+              ...typed
+            } = message;
+
+            // An MCP prompt is got when the message is admitted; the Secrets held are redacted from what it sends and
+            // keeps. A Review's summary is its own message, which a prompt does not join.
+            if (picked !== undefined && ids !== undefined) {
+              return Effect.fail(
+                SessionError.make({
+                  operation: "submit",
+                  message: "An MCP prompt cannot go with a Review",
+                  code: "MCP_PROMPT_FAILED",
+                  server: picked.server,
+                }),
+              );
+            }
 
             // The pages are read from the browser in the message's prepare step (outside the Session's lock, in its
             // conversation's line, and not again for a resent request), cleaned and then redacted of held Secrets before they are cut, stored, escaped or sent to
@@ -663,8 +683,21 @@ export const sessionSocketsLayer = (
               ),
             );
 
-            const prompt =
+            const withPages =
               refs === undefined || refs.length === 0 ? typed : { ...typed, attachPages };
+
+            const prompt =
+              picked === undefined
+                ? withPages
+                : {
+                    ...withPages,
+                    mcpPrompt: {
+                      ref: picked,
+                      redact: secrets.refresh.pipe(
+                        Effect.as(<A>(value: A): A => secrets.redact(value)),
+                      ),
+                    },
+                  };
 
             // With drafts, it is a Review: its summary is what was typed.
             return (
@@ -888,10 +921,17 @@ export const sessionSocketsLayer = (
 
           const error = Exit.findErrorOption(exit);
 
-          const failure: ErrorMessage = {
+          const failure: Types.Mutable<ErrorMessage> = {
             type: "error",
             message: Option.isSome(error) ? error.value.message : "Internal error",
           };
+
+          // A refusal of a send that names an MCP prompt carries its code, for the composer to act on.
+          if (Option.isSome(error) && Predicate.isTagged(error.value, "SessionError")) {
+            if (error.value.code !== undefined) failure.code = error.value.code;
+
+            if (error.value.server !== undefined) failure.server = error.value.server;
+          }
 
           yield* Effect.logWarning(`Session command ${message.type} failed`, exit.cause);
           yield* send(socket, message.id === undefined ? failure : { ...failure, id: message.id });

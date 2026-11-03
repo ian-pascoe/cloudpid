@@ -6,9 +6,19 @@
 // installed, and a Workspace that does not answer keeps the host uncalled.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
+// The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.
+/* oxlint-disable anti-slop-effect/no-manual-tagged-construction */
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { legacyStatefulServer, PROGRESS_TOOL } from "@cloudpid/mcp/testing";
+import {
+  type ClientMessage,
+  HEARTBEAT,
+  ServerMessageJson,
+  type ServerMessage,
+} from "@cloudpid/protocol";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type { McpApplySet, McpEngineDiscoverResult } from "@cloudpid/mcp/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineScript } from "../mcp/host.fixture.ts";
@@ -66,13 +76,14 @@ const scripted = async (
     readonly hold?: boolean;
     readonly exposure?: string;
     readonly offered?: ReadonlyArray<string>;
+    readonly found?: EngineScript;
   } = {},
 ) => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
 
   await host.script({ hash: SET.hash, signInsRevision: 0 });
-  await host.scriptEngine(DOCS, [{ ...FOUND, hold: options.hold === true }]);
+  await host.scriptEngine(DOCS, [{ ...(options.found ?? FOUND), hold: options.hold === true }]);
   const { exposure } = options;
 
   await host.apply(
@@ -457,5 +468,393 @@ describe("an MCP tool in a Session", () => {
     ]);
     // The second start marked no Workspace, so called no host.
     expect(await runInDurableObject(stub, (instance: TestSession) => instance.mcpReady())).toBe(1);
+  });
+});
+
+/** A discovery of `docs` that found the prompt `review`, which takes the required argument `pr` and the optional `focus`. */
+const FOUND_WITH_PROMPT: EngineScript = {
+  ...FOUND,
+  // SAFETY: a discovered answer, encoded as the engine sends it.
+  result: {
+    ...FOUND.result,
+    capabilities: { tools: {}, prompts: {} },
+    prompts: [
+      {
+        name: "review",
+        title: "Review PR",
+        description: "Review a pull request",
+        arguments: [{ name: "pr", required: true }, { name: "focus" }],
+      },
+    ],
+  } as typeof McpEngineDiscoverResult.Encoded,
+};
+
+/** The server's answer to a `prompts/get`: its result, as the engine returns it. */
+const gotPrompt = (messages: ReadonlyArray<unknown>) => ({
+  op: "prompts/get",
+  result: {
+    kind: "complete" as const,
+    // SAFETY: a GetPromptResult, which the engine passes as JSON.
+    result: { kind: "inline" as const, value: { description: "A review", messages } as never },
+    cacheable: false,
+    fetchedAt: Date.now(),
+    state: {},
+  },
+});
+
+const REVIEW = { server: "docs", name: "review" } as const;
+
+/** A Session whose first turn made the host discover `docs`, so its catalog lists the prompt. */
+const discovered = async () => {
+  const made = await scripted({ found: FOUND_WITH_PROMPT });
+
+  await runInDurableObject(made.stub, async (instance: TestSession) => {
+    instance.script(["ready"]);
+    await instance.prompt({ requestId: "first", text: "hi" });
+  });
+
+  return made;
+};
+
+/** How many owner messages the root conversation holds. */
+const ownerMessages = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, async (instance: TestSession) =>
+    (await instance.rootEntries()).filter(
+      (entry) => entry.kind === "pi.user" || entry.kind === "cloudpid.user",
+    ),
+  );
+
+describe("an MCP prompt in a Session", () => {
+  it("is offered by the catalog from the host's inventory alone", async () => {
+    const { stub } = await discovered();
+
+    const catalog = await runInDurableObject(stub, (instance: TestSession) => instance.catalog());
+
+    expect(catalog.prompts).toEqual([
+      {
+        command: "/mcp__docs__review",
+        server: "docs",
+        source: "owner",
+        name: "review",
+        title: "Review PR",
+        description: "Review a pull request",
+        arguments: [
+          { name: "pr", required: true },
+          { name: "focus", required: false },
+        ],
+        completions: false,
+      },
+    ]);
+    expect(catalog.mcpServers).toBeUndefined();
+  });
+
+  it("is got once as its message is admitted, and is the first part of the owner's message, ahead of what they typed", async () => {
+    const { host, stub } = await discovered();
+
+    await host.scriptRequest(DOCS, [
+      gotPrompt([
+        { role: "user", content: { type: "text", text: "Review PR 7 carefully." } },
+        { role: "assistant", content: { type: "text", text: "Understood." } },
+      ]),
+    ]);
+
+    const sent = await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["reviewed"]);
+
+      return instance.submitMcpPrompt({
+        requestId: "pick-1",
+        text: "focus on tests",
+        ref: { ...REVIEW, arguments: { pr: "7", focus: "", gone: "dropped" } },
+      });
+    });
+
+    expect(sent).toHaveProperty("submission");
+    await idle(stub);
+
+    // The get went to the engine once, as the owner's, with the declared arguments only and the empty optional one left out.
+    const requests = (await host.engineRequests()).filter(
+      (each) => each.request.op === "prompts/get",
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.request).toMatchObject({
+      name: "review",
+      arguments: { pr: "7" },
+      ctx: { origin: "owner" },
+    });
+
+    const [, picked] = await ownerMessages(stub);
+
+    // The block comes first, then what the owner typed.
+    expect(picked?.text).toMatch(/^<mcp_prompt server="docs" name="review" title="Review PR">/);
+    expect(picked?.text).toContain("Review PR 7 carefully.");
+    expect(picked?.text).toContain('<prompt_message role="assistant">');
+    expect(picked?.text.indexOf("Review PR 7 carefully.")).toBeLessThan(
+      picked?.text.indexOf("focus on tests") ?? -1,
+    );
+    expect(picked?.data).toMatchObject({
+      display: "focus on tests",
+      skills: [],
+      mcpPrompt: {
+        server: "docs",
+        command: "/mcp__docs__review",
+        name: "review",
+        title: "Review PR",
+        arguments: { pr: "7" },
+        description: "A review",
+        parts: [
+          { role: "user", type: "text" },
+          { role: "assistant", type: "text" },
+        ],
+        resources: [],
+      },
+    });
+  });
+
+  it("keeps the order block, prompt images, typed text, then the pages and the owner's own images", async () => {
+    const { host, stub } = await discovered();
+
+    await host.scriptRequest(DOCS, [
+      gotPrompt([
+        { role: "user", content: { type: "text", text: "Look at this." } },
+        { role: "user", content: { type: "image", data: "UFJPTVBU", mimeType: "image/png" } },
+      ]),
+    ]);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["seen"]);
+      await instance.submitMcpPrompt({
+        requestId: "order",
+        text: "",
+        ref: { ...REVIEW, arguments: { pr: "7" } },
+        input: [
+          { type: "text", text: "my words" },
+          { type: "image", data: "T1dORVI=", mimeType: "image/png" },
+        ],
+        pages: [{ ownerTabId: "tab-1", url: "https://example.com/", title: "Example" }],
+      });
+    });
+
+    await idle(stub);
+
+    const kinds = await runInDurableObject(stub, async (instance: TestSession) =>
+      instance.lastUserContent(),
+    );
+
+    expect(kinds).toEqual([
+      expect.stringMatching(/^text:<mcp_prompt /),
+      "image:UFJPTVBU",
+      "text:my words",
+      expect.stringMatching(/^text:<attached_pages|^text:<page/),
+      "image:T1dORVI=",
+    ]);
+  });
+
+  it("is refused with a code when the server fails the get, placing nothing, and the same send goes through once it answers", async () => {
+    const { host, stub } = await discovered();
+
+    await host.scriptRequest(DOCS, [
+      {
+        op: "prompts/get",
+        result: {
+          kind: "failed",
+          error: { _tag: "ServerError", message: "pr 7 is closed", code: -32602 },
+          state: {},
+        },
+      },
+    ]);
+
+    const first = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.submitMcpPrompt({
+        requestId: "pick-2",
+        text: "go",
+        ref: { ...REVIEW, arguments: { pr: "7" } },
+      }),
+    );
+
+    expect(first).toEqual({
+      failure: { message: "pr 7 is closed", code: "MCP_PROMPT_ARGUMENTS", server: "docs" },
+    });
+    // Nothing was placed: only the first turn's owner message is there, and no Run started.
+    expect(await ownerMessages(stub)).toHaveLength(1);
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true);
+
+    // The composer is intact: the same pick, sent again under the same requestId, is got anew and placed.
+    await host.scriptRequest(DOCS, [
+      gotPrompt([{ role: "user", content: { type: "text", text: "Review PR 7." } }]),
+    ]);
+
+    const again = await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["reviewed"]);
+
+      return instance.submitMcpPrompt({
+        requestId: "pick-2",
+        text: "go",
+        ref: { ...REVIEW, arguments: { pr: "7" } },
+      });
+    });
+
+    expect(again).toHaveProperty("submission");
+    await idle(stub);
+    expect(await ownerMessages(stub)).toHaveLength(2);
+  });
+
+  it("is refused with the code of how the get failed: a sign-in, a result too large, a server's error or a timeout", async () => {
+    const { host, stub } = await discovered();
+
+    const failures = [
+      { _tag: "SignInRequired", message: "401", rejected: false },
+      { _tag: "TooLarge", message: "too big", limit: 16 },
+      { _tag: "ServerError", message: "internal", code: -32603 },
+      { _tag: "TimedOut", message: "slow" },
+    ] as const;
+
+    await host.scriptRequest(
+      DOCS,
+      failures.map((error) => ({
+        op: "prompts/get",
+        result: { kind: "failed" as const, error, state: {} },
+      })),
+    );
+
+    const codes = await runInDurableObject(stub, async (instance: TestSession) => {
+      const seen: Array<string | undefined> = [];
+
+      for (const [index] of failures.entries()) {
+        const sent = await instance.submitMcpPrompt({
+          requestId: `fail-${index}`,
+          text: "go",
+          ref: { ...REVIEW, arguments: { pr: "7" } },
+        });
+
+        seen.push("failure" in sent ? sent.failure.code : undefined);
+      }
+
+      return seen;
+    });
+
+    expect(codes).toEqual([
+      "MCP_SIGN_IN_REQUIRED",
+      "MCP_PROMPT_TOO_LARGE",
+      "MCP_PROMPT_FAILED",
+      "MCP_PROMPT_FAILED",
+    ]);
+    expect(await ownerMessages(stub)).toHaveLength(1);
+  });
+
+  it("is refused with a code for a missing required argument or a prompt not offered, without asking the server", async () => {
+    const { host, stub } = await discovered();
+
+    const [missing, unknown] = await runInDurableObject(stub, async (instance: TestSession) => [
+      await instance.submitMcpPrompt({ requestId: "a", text: "go", ref: { ...REVIEW } }),
+      await instance.submitMcpPrompt({
+        requestId: "b",
+        text: "go",
+        ref: { server: "docs", name: "nope" },
+      }),
+    ]);
+
+    expect(missing).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_ARGUMENTS",
+        message: "The argument pr is required",
+        server: "docs",
+      },
+    });
+    expect(unknown).toMatchObject({ failure: { code: "MCP_PROMPT_FAILED", server: "docs" } });
+    expect(
+      (await host.engineRequests()).filter((each) => each.request.op === "prompts/get"),
+    ).toEqual([]);
+    expect(await ownerMessages(stub)).toHaveLength(1);
+  });
+
+  it("is sent over the socket as `submit.mcpPrompt`, and a refusal carries its code and server", async () => {
+    const { host, stub } = await discovered();
+
+    await host.scriptRequest(DOCS, [
+      gotPrompt([{ role: "user", content: { type: "text", text: "Review PR 7." } }]),
+    ]);
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["reviewed"]));
+
+    const response = await stub.fetch("http://session/socket", {
+      headers: { Upgrade: "websocket" },
+    });
+
+    const socket = response.webSocket;
+
+    if (socket === null) throw new Error(`No socket: ${response.status}`);
+    socket.accept();
+
+    const received: ServerMessage[] = [];
+    const decode = Schema.decodeUnknownEffect(ServerMessageJson);
+
+    socket.addEventListener("message", (event) => {
+      if (event.data !== HEARTBEAT.response) received.push(Effect.runSync(decode(event.data)));
+    });
+
+    const send = (message: ClientMessage) => socket.send(JSON.stringify(message));
+
+    const answer = (id: string) =>
+      settles(async () => {
+        const found = received.find((message) => "id" in message && message.id === id);
+
+        if (found === undefined) throw new Error(`No answer to ${id}`);
+
+        return found;
+      });
+
+    send({ type: "submit", id: "bad", input: "go", requestId: "bad", mcpPrompt: { ...REVIEW } });
+    expect(await answer("bad")).toMatchObject({
+      type: "error",
+      code: "MCP_PROMPT_ARGUMENTS",
+      server: "docs",
+      message: "The argument pr is required",
+    });
+
+    send({
+      type: "submit",
+      id: "ok",
+      input: "go",
+      requestId: "ok",
+      mcpPrompt: { ...REVIEW, arguments: { pr: "7" } },
+    });
+    expect(await answer("ok")).toMatchObject({ type: "result" });
+    await idle(stub);
+
+    const [, picked] = await ownerMessages(stub);
+
+    expect(picked?.text).toContain("Review PR 7.");
+
+    send({
+      type: "submit",
+      id: "review",
+      input: "go",
+      requestId: "review",
+      mcpPrompt: { ...REVIEW, arguments: { pr: "7" } },
+      annotations: ["a1"],
+    });
+    expect(await answer("review")).toMatchObject({
+      type: "error",
+      code: "MCP_PROMPT_FAILED",
+      server: "docs",
+    });
+  });
+
+  it("is not run from a typed `/mcp__…`: that is refused, and nothing is placed", async () => {
+    const { host, stub } = await discovered();
+
+    const refused = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.submitFailure({ requestId: "typed", text: "/mcp__docs__review pr=7" }),
+    );
+
+    expect(refused).toEqual({
+      message: "An MCP prompt is picked from the / menu; it cannot be typed",
+      code: "MCP_PROMPT_FAILED",
+      server: undefined,
+    });
+    expect(await ownerMessages(stub)).toHaveLength(1);
+    expect(
+      (await host.engineRequests()).filter((each) => each.request.op === "prompts/get"),
+    ).toEqual([]);
   });
 });

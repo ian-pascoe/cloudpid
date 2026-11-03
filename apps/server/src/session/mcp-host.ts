@@ -13,9 +13,12 @@
 //   reinstall of `mcp`, `codemode` with the servers as its namespaces, and `tool-search`, together; and the notices that
 //   the `mcp_servers` listing changed (`@cloudpid/extensions/mcp`: `bind` gives `McpTools` the Session's Harness to write
 //   them to, `notify` is a conversation's check at its request start).
+// @effect-diagnostics asyncFunction:off newPromise:off -- the host's request hooks and the decode slot are Promise-based.
 import {
   HostLost,
   makeMcpTools,
+  MCP_STREAM_SLOT_WAIT_MS,
+  readStreamed,
   type McpHostClientService,
   type McpNotices,
   type McpQuestionsService,
@@ -28,6 +31,8 @@ import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
 import {
   HostFailed,
   type McpApplyResult,
+  type McpErrorWire,
+  type McpHostPromptGet,
   type McpHostRequestResult,
   type McpRequestStartResult,
   type McpServersResult,
@@ -42,8 +47,18 @@ import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Match from "effect/Match";
+import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import type { SessionHostMcp, SessionHostMcpBuild } from "./host.ts";
+import { SessionError } from "./errors.ts";
+import type {
+  SessionHostMcp,
+  SessionHostMcpBuild,
+  SessionHostMcpPromptGet,
+  SessionHostMcpPrompts,
+} from "./host.ts";
+import { type PromptCatalog, promptCatalog } from "./mcp-prompt-catalog.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
 /** What each of `McpHostClient`'s methods is answered on the wire, before the shared readers. */
@@ -157,6 +172,76 @@ export const kvMcpToolsStore = (kv: McpToolsKv, environment: string): McpToolsSt
     },
   };
 };
+
+/** How long the Session waits for the host's answer to a prompt get: the host's own 30 s bound, and its slack. */
+const PROMPT_GET_WAIT_MS = 40_000;
+
+/** The longest an arguments refusal's message is, in characters. */
+const PROMPT_ARGUMENTS_MESSAGE = 300;
+
+/** How long a streamed prompt result may go without a byte. */
+const PROMPT_STREAM_IDLE_MS = 30_000;
+
+const NO_PROMPTS: PromptCatalog = { prompts: [], mcpServers: [] };
+
+/** A refusal of a prompt get, before it is a `SessionError`. */
+type PromptGetRefusal = {
+  readonly code:
+    | "MCP_PROMPT_ARGUMENTS"
+    | "MCP_SIGN_IN_REQUIRED"
+    | "MCP_PROMPT_TOO_LARGE"
+    | "MCP_PROMPT_FAILED";
+  readonly message: string;
+  readonly server?: string;
+};
+
+const refusalOf = (
+  code: PromptGetRefusal["code"],
+  message: string,
+  server?: string,
+): PromptGetRefusal => (server === undefined ? { code, message } : { code, message, server });
+
+/** The failure a `CallFailed`'s error is. */
+const callFailure = (error: McpErrorWire, server: string): PromptGetRefusal =>
+  Match.value(error).pipe(
+    Match.tag("SignInRequired", () =>
+      refusalOf("MCP_SIGN_IN_REQUIRED", `Sign in to ${server} to use its prompts`, server),
+    ),
+    Match.tag("TooLarge", () =>
+      refusalOf("MCP_PROMPT_TOO_LARGE", `${server}'s prompt is too large`),
+    ),
+    // The spec's invalid-params code: a missing or wrong argument, or a prompt the server does not know.
+    Match.tag("ServerError", "NotFound", ({ code, message }) =>
+      code === -32602
+        ? refusalOf("MCP_PROMPT_ARGUMENTS", message.slice(0, PROMPT_ARGUMENTS_MESSAGE))
+        : refusalOf("MCP_PROMPT_FAILED", message),
+    ),
+    Match.orElse(({ message }) => refusalOf("MCP_PROMPT_FAILED", message)),
+  );
+
+/** The failure the host's answer to a prompt get is, or undefined when it completed. */
+const failureOf = (
+  result: McpHostRequestResult | HostLost,
+  server: string,
+): PromptGetRefusal | undefined =>
+  Match.value(result).pipe(
+    Match.tag("Completed", () => undefined),
+    Match.tag("CallFailed", ({ error }) => callFailure(error, server)),
+    Match.tag("UnknownServer", "NotAllowed", "HostFailed", "HostLost", ({ message }) =>
+      refusalOf("MCP_PROMPT_FAILED", message),
+    ),
+    Match.orElse(() =>
+      refusalOf("MCP_PROMPT_FAILED", `${server} answered a prompt get with something else`),
+    ),
+  );
+
+/** A promise that resolves when `signal` aborts, and never without it. */
+const abortedBy = (signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve();
+
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
 
 export type SessionMcpOptions = {
   /** The Session's name, its ID in the Registry; undefined when unknown, and then it has no MCP tools. */
@@ -315,5 +400,153 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
     return environment === null ? Effect.void : toolsOf(environment).notify(conversationId);
   };
 
-  return { start, reinstall, bind, notify };
+  /** The composer's MCP prompts, from the inventory the host keeps: no server is read, no Container started. */
+  const catalog = (values: SessionSettingsValues): Effect.Effect<PromptCatalog> => {
+    const { environment, servers } = values.mcp;
+
+    if (environment === null || servers === 0) return Effect.succeed(NO_PROMPTS);
+
+    return options
+      .host(environment)
+      .servers({ parts: ["prompts"] })
+      .pipe(
+        Effect.map((answer) =>
+          Predicate.isTagged(answer, "HostFailed") ? NO_PROMPTS : promptCatalog(answer.servers),
+        ),
+      );
+  };
+
+  /** Get a prompt of the Session's host, in the conversation's Workspace, and run `use` over the result. */
+  const getPrompt = <A>(
+    values: SessionSettingsValues,
+    call: SessionHostMcpPromptGet,
+    use: (result: Schema.Json) => Promise<A>,
+  ): Effect.Effect<A, SessionError> => {
+    const { environment } = values.mcp;
+
+    // Every refusal names the server, as the composer's form says which one it is about.
+    const refused = (refusal: PromptGetRefusal) =>
+      SessionError.make({ operation: "submit", ...refusal, server: refusal.server ?? call.server });
+
+    if (environment === null || options.session === undefined) {
+      return Effect.fail(
+        refused(
+          refusalOf("MCP_PROMPT_FAILED", "The Session has no MCP servers to get a prompt from"),
+        ),
+      );
+    }
+
+    const { session } = options;
+
+    // An HTTP server is reached from the Session's Workspace, a stdio server runs in the conversation's own.
+    const workspaceOf =
+      call.workspace === undefined
+        ? options.workspace.pipe(
+            Effect.catchCause(() => Effect.succeed(null)),
+            Effect.map((found) => found ?? undefined),
+          )
+        : Effect.succeed(call.workspace);
+
+    return workspaceOf.pipe(
+      Effect.flatMap((workspace) => {
+        const ctx: Mutable<McpHostPromptGet["ctx"]> = {
+          origin: "owner",
+          session,
+          conversation: String(call.conversationId),
+        };
+
+        if (workspace !== undefined) ctx.workspace = workspace;
+
+        const request: McpHostPromptGet = {
+          op: "prompts/get",
+          server: call.server,
+          params: { name: call.name, arguments: { ...call.arguments } },
+          ctx,
+        };
+
+        return Effect.tryPromise({
+          // The signal aborts when the send is withdrawn (Stop): the host then cancels the get.
+          try: (signal) => getFrom(options.host(environment), request, signal, use),
+          catch: (cause) =>
+            refused(
+              refusalOf(
+                "MCP_PROMPT_FAILED",
+                cause instanceof Error ? cause.message : "The prompt could not be read",
+              ),
+            ),
+        });
+      }),
+      Effect.timeoutOrElse({
+        duration: PROMPT_GET_WAIT_MS,
+        orElse: () =>
+          Effect.fail(
+            refused(refusalOf("MCP_PROMPT_FAILED", `${call.server} did not answer in time`)),
+          ),
+      }),
+      Effect.flatMap((got) =>
+        got.ok ? Effect.succeed(got.value) : Effect.fail(refused(got.refusal)),
+      ),
+    );
+  };
+
+  const prompts: SessionHostMcpPrompts = { session: options.session, catalog, get: getPrompt };
+
+  return { start, reinstall, bind, notify, prompts };
+};
+
+/** What a prompt get came to: the result `use` made, or why it is refused. */
+type Got<A> =
+  | { readonly ok: true; readonly value: A }
+  | { readonly ok: false; readonly refusal: PromptGetRefusal };
+
+/** Ask `client` for `request`, read the result (a large one under the decode slot) and run `use` over it. */
+const getFrom = async <A>(
+  client: McpHostClientService,
+  request: McpHostPromptGet,
+  signal: AbortSignal,
+  use: (result: Schema.Json) => Promise<A>,
+): Promise<Got<A>> => {
+  const result = await Effect.runPromise(
+    client.request(request, { untilAborted: () => abortedBy(signal) }),
+  );
+
+  const failed = failureOf(result, request.server);
+
+  if (failed !== undefined) return { ok: false, refusal: failed };
+
+  // `failureOf` leaves only a completed answer.
+  if (!Predicate.isTagged(result, "Completed")) {
+    return {
+      ok: false,
+      refusal: refusalOf("MCP_PROMPT_FAILED", "The host did not complete the get"),
+    };
+  }
+
+  if (result.result.kind === "inline") return { ok: true, value: await use(result.result.value) };
+
+  return readStreamed(
+    result.result.body,
+    result.result.bytes,
+    { signal, idleMs: PROMPT_STREAM_IDLE_MS, waitMs: MCP_STREAM_SLOT_WAIT_MS },
+    async (streamed): Promise<Got<A>> => {
+      if (streamed.kind === "value") return { ok: true, value: await use(streamed.value) };
+
+      if (streamed.kind === "too_large") {
+        return {
+          ok: false,
+          refusal: refusalOf("MCP_PROMPT_TOO_LARGE", `${request.server}'s prompt is too large`),
+        };
+      }
+
+      return {
+        ok: false,
+        refusal: refusalOf(
+          "MCP_PROMPT_FAILED",
+          streamed.kind === "aborted"
+            ? "The prompt was stopped"
+            : "The server's prompt could not be read",
+        ),
+      };
+    },
+  );
 };

@@ -38,6 +38,29 @@ export const MCP_PROMPT_INLINE_TEXT_BYTES = 128 * 1024;
 /** The URIs a prompt's resource references keep, in characters. */
 const MAX_URI = 2048;
 
+/** The extension a file of each MIME type the Session knows is kept under; any other is `.bin`. */
+const FILE_EXTENSIONS: Readonly<Record<string, string>> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "audio/wav": ".wav",
+  "audio/mpeg": ".mp3",
+  "audio/ogg": ".ogg",
+  "audio/mp4": ".m4a",
+  "text/plain": ".txt",
+  "text/markdown": ".md",
+  "application/json": ".json",
+  "application/pdf": ".pdf",
+};
+
+/** The name a prompt's `file` is kept under in the Session's uploads directory, made unique by `id`. */
+export const promptFileName = (
+  file: { readonly kind: string; readonly mimeType: string | undefined },
+  id: string,
+): string =>
+  `mcp-${file.kind}-${id}${Option.getOrElse(Record.get(FILE_EXTENSIONS, (file.mimeType ?? "").toLowerCase()), () => ".bin")}`;
+
 /** Why a prompt result cannot be made a message. */
 export type PromptRefusal = {
   readonly code: "MCP_PROMPT_FAILED" | "MCP_PROMPT_TOO_LARGE";
