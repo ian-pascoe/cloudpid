@@ -476,7 +476,9 @@ describe("a call", () => {
     await session.settle();
 
     const named = host.calls.flatMap((each) =>
-      each.method === "request" ? [[each.input.params.arguments, each.input.ctx.workspace]] : [],
+      each.method === "request" && each.input.op === "tools/call"
+        ? [[each.input.params.arguments, each.input.ctx.workspace]]
+        : [],
     );
 
     expect(named).toEqual([[{ query: "in the child" }, "ws:00000001"]]);
@@ -515,7 +517,9 @@ describe("a call", () => {
     await session.settle();
 
     const named = host.calls.flatMap((each) =>
-      each.method === "request" ? [[each.input.params.arguments, each.input.ctx.workspace]] : [],
+      each.method === "request" && each.input.op === "tools/call"
+        ? [[each.input.params.arguments, each.input.ctx.workspace]]
+        : [],
     );
 
     expect(named).toEqual([[{ query: "in the child" }, "ws:w1"]]);

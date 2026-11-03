@@ -25,7 +25,10 @@ const STREAM_CHUNK = 64 * 1024;
 
 /** What a request completes with: a `tools/call` result, or a list's items. */
 export type Answer =
-  | Effect.Success<ReturnType<McpConnection["callTool"]>>["value"]
+  | Extract<
+      Effect.Success<ReturnType<McpConnection["callTool"]>>,
+      { readonly kind: "complete" }
+    >["value"]
   | ReadonlyArray<ListItems[ListKind]>;
 
 /** A server's answer the engine cannot read: the server is not speaking MCP. */

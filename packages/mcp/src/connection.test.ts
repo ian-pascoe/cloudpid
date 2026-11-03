@@ -23,7 +23,7 @@ import {
 import { type McpProgress, ServerError, Unsupported } from "./types.ts";
 import { connect, SUPPORTED_PROTOCOL_VERSIONS } from "./index.ts";
 import type { McpCallContext } from "./types.ts";
-import { HOST, AGENT, run, testDeps, TARGET, failedWith } from "./core.fixture.ts";
+import { HOST, AGENT, completed, run, testDeps, TARGET, failedWith } from "./core.fixture.ts";
 
 /** `echo`, declared with an outputSchema its answers never meet. */
 const COUNTING_TOOL = {
@@ -65,7 +65,7 @@ describe.each(servers)("against a %s server", (_name, makeServer, era, streams) 
     expect(connectedEra).toBe(era);
     expect(tools.kind).toBe("complete");
     expect(tools.value.map((tool) => tool.name)).toEqual(["echo", "shout"]);
-    expect(called.value.content).toEqual([{ type: "text", text: "HI" }]);
+    expect(completed(called).value.content).toEqual([{ type: "text", text: "HI" }]);
     expect(rpcMethods(server).filter((method) => method === "tools/list")).toHaveLength(2);
   });
 
@@ -93,7 +93,7 @@ describe.each(servers)("against a %s server", (_name, makeServer, era, streams) 
       }),
     );
 
-    expect(called.value.content).toEqual([{ type: "text", text: "done" }]);
+    expect(completed(called).value.content).toEqual([{ type: "text", text: "done" }]);
     // A server that answers with plain JSON has no stream to send progress on.
     expect(seen).toEqual(
       streams
@@ -126,7 +126,7 @@ describe.each(servers)("against a %s server", (_name, makeServer, era, streams) 
     );
 
     expect(called.kind).toBe("complete");
-    expect(called.value.content).toEqual([{ type: "text", text: "hi" }]);
+    expect(completed(called).value.content).toEqual([{ type: "text", text: "hi" }]);
   });
 });
 
@@ -205,7 +205,7 @@ describe("structuredContent", () => {
       }),
     );
 
-    expect(called.value.structuredContent).toEqual({ count: "many" });
+    expect(completed(called).value.structuredContent).toEqual({ count: "many" });
   });
 });
 

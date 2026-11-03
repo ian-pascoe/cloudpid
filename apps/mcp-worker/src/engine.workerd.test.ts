@@ -271,7 +271,7 @@ describe("request", () => {
         server,
         {},
         // SAFETY: a newer host's op, which this engine does not know.
-        { op: "tasks/get", ctx: AGENT } as never,
+        { op: "tasks/list", ctx: AGENT } as never,
         patient(),
       ),
     );
@@ -388,7 +388,7 @@ describe("a header the server rejects (-32020)", () => {
       error: { code: -32020 },
       problems: [UNCOMPILABLE_PROBLEM],
     });
-    expect(called.tools?.map((tool) => tool.name)).toContain("stubborn");
+    expect("tools" in called ? called.tools?.map((tool) => tool.name) : []).toContain("stubborn");
     expect((await seen(server)).methods.filter((method) => method === "tools/call")).toHaveLength(
       2,
     );

@@ -6,7 +6,16 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { AGENT, HOST, recordingClock, run, TARGET, testDeps, failedWith } from "./core.fixture.ts";
+import {
+  AGENT,
+  HOST,
+  completed,
+  recordingClock,
+  run,
+  TARGET,
+  testDeps,
+  failedWith,
+} from "./core.fixture.ts";
 import {
   ECHO_TOOL,
   type FakeServer,
@@ -58,7 +67,7 @@ const attempt = (server: FakeServer, clock = recordingClock().clock) =>
       const called = yield* connection
         .callTool({ tool: ECHO_TOOL, arguments: { text: "hi" } }, AGENT)
         .pipe(
-          Effect.map((result) => ({ content: result.value.content })),
+          Effect.map((result) => ({ content: completed(result).value.content })),
           Effect.catch((error) => Effect.succeed({ failed: error })),
         );
 

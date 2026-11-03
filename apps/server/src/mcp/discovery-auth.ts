@@ -361,7 +361,8 @@ const afterAnswer = (
     }
 
     const working =
-      (result.kind === "discovered" || result.kind === "complete") &&
+      // Any answer that is not a failure: a discovery, a result, a task or its state.
+      result.kind !== "failed" &&
       (previous === "sign_in" || previous === "rejected" || note?.status === "rejected");
 
     if (working) yield* reportAuth(subject, "working");
@@ -386,6 +387,12 @@ export type RequestAccess =
       readonly answered: (
         result: McpEngineRequestResult,
       ) => Effect.Effect<void, never, McpRegistryPort>;
+      /**
+       * The MCP sign-in id of the token the request was last given (`mcpAccessToken`'s `signIn`: new with each completed
+       * sign-in or step-up, the same through refreshes), which a `tasks/*` result carries; undefined for a server with
+       * no sign-in, one whose entry sets its own `Authorization`, or when the last answer gave no token.
+       */
+      readonly signIn?: () => string | undefined;
     };
 
 /**
@@ -422,6 +429,7 @@ export const requestAccess = (environment: string, view: ServerView, target: Mcp
           last = seen;
         }),
         answered: () => Effect.void,
+        signIn: () => (last.kind === "token" ? last.signIn : undefined),
         refusal: (result) => {
           const refused = refusalOfClientGrant(result);
 
@@ -461,6 +469,7 @@ export const requestAccess = (environment: string, view: ServerView, target: Mcp
     return {
       kind: "open",
       auth,
+      signIn: () => (last.kind === "token" ? last.signIn : undefined),
       answered: (result) => {
         const note = last.kind === "token" ? last.note : undefined;
 

@@ -7,7 +7,7 @@
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { AGENT, HOST, memoryStore, run, TARGET, testDeps } from "./core.fixture.ts";
+import { AGENT, HOST, completed, memoryStore, run, TARGET, testDeps } from "./core.fixture.ts";
 import {
   ECHO_TOOL,
   type FakeServer,
@@ -39,7 +39,7 @@ const listAndCall = (deps: McpDeps) =>
       return {
         era: connection.era,
         tools: tools.value.map((tool) => tool.name),
-        called: called.value.content,
+        called: completed(called).value.content,
         capabilities: connection.capabilities,
         instructions: connection.instructions,
       };

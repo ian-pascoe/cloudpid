@@ -31,6 +31,7 @@ import type * as Types from "effect/Types";
 import { VERDICT_KEY, type Verdicts } from "./tap.ts";
 import {
   Cut,
+  MCP_TASKS_EXTENSION,
   type McpAuthChallenge,
   McpError,
   NotFound,
@@ -112,6 +113,13 @@ export interface FailedRequest {
   /** The parameters of the last 401's `WWW-Authenticate`, when it had any (`authChallenge`). */
   readonly challenge?: McpAuthChallenge | undefined;
   readonly verdicts: Verdicts;
+  /**
+   * The server's configured name, for the one message that names it: a `-32021` that asks for the tasks extension, which
+   * the request did not declare.
+   */
+  readonly serverName?: string | undefined;
+  /** Whether the request declared the tasks extension (`ctx.allowTask` on a Modern server that advertises it). */
+  readonly tasksDeclared?: boolean | undefined;
 }
 
 /** A failure as the core acts on it: the `McpError`, and the HTTP status or JSON-RPC code behind it. */
@@ -186,7 +194,54 @@ const fromStatus = (status: number, message: string, request: FailedRequest): Mc
   return ServerError.make({ message: `The server answered HTTP ${status}: ${message}`, status });
 };
 
-const fromCode = (code: number, message: string): McpError => {
+/** `-32021` (`MissingRequiredClientCapability`): the capabilities the server says the request needed. */
+const MISSING_CAPABILITY = -32021;
+
+const RequiredCapabilities = Schema.Struct({
+  requiredCapabilities: Schema.Struct({
+    extensions: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  }),
+});
+
+const decodeRequiredCapabilities = Schema.decodeUnknownOption(RequiredCapabilities);
+
+type RequiredCapabilities = typeof RequiredCapabilities.Type;
+
+/**
+ * What a server that needs the request run as an MCP task says to one that did not declare the extension: `-32021` naming
+ * `io.modelcontextprotocol/tasks`. cloudpid declares it only where it can wait for a task (`ctx.allowTask`, under the
+ * caps), so this is the message for the call that could not be offered it (`docs/architecture/mcp-server-requests.md` →
+ * MCP tasks, Declaration).
+ */
+const taskNeeded = (
+  message: string,
+  required: Option.Option<RequiredCapabilities>,
+  request: FailedRequest,
+): McpError | undefined =>
+  request.tasksDeclared !== true &&
+  Option.exists(
+    required,
+    ({ requiredCapabilities }) =>
+      requiredCapabilities.extensions?.[MCP_TASKS_EXTENSION] !== undefined,
+  )
+    ? ServerError.make({
+        message: `${request.serverName ?? "The server"} needs to run this as an MCP task, which cloudpid couldn't offer here: ${message}`,
+        code: MISSING_CAPABILITY,
+      })
+    : undefined;
+
+const fromCode = (
+  code: number,
+  message: string,
+  required?: Option.Option<RequiredCapabilities>,
+  request?: FailedRequest,
+): McpError => {
+  if (code === MISSING_CAPABILITY && required !== undefined && request !== undefined) {
+    const needed = taskNeeded(message, required, request);
+
+    if (needed !== undefined) return needed;
+  }
+
   if (code === -32002 || code === -32602) {
     return NotFound.make({ message, code });
   }
@@ -253,7 +308,10 @@ const fromCause = (cause: unknown, request: FailedRequest): Failure | undefined 
 
     return Option.match(verdict, {
       onSome: (error) => ({ error }),
-      onNone: () => ({ error: fromCode(cause.code, cause.message), code: cause.code }),
+      onNone: () => ({
+        error: fromCode(cause.code, cause.message, decodeRequiredCapabilities(cause.data), request),
+        code: cause.code,
+      }),
     });
   }
 

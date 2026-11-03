@@ -75,6 +75,9 @@ const POLICIES = new Map<string, Policy>([
   ["resources/read", LARGE_READ],
   ["prompts/get", LARGE_READ],
   ["tasks/get", LARGE_READ],
+  // An update or a cancel changes the task, so it is neither retried here nor free of doubt when its stream is cut.
+  ["tasks/update", { ...OTHER, mayHaveRun: true }],
+  ["tasks/cancel", { ...OTHER, mayHaveRun: true }],
 ]);
 
 const MAX_RETRY_AFTER_MS = 10_000;

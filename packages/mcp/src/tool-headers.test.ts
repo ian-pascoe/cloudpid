@@ -4,6 +4,7 @@
  */
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { xMcpHeaders } from "./tool-headers.ts";
 import { xMcpHeaderProblems } from "./types.ts";
 
 const objectWith = (properties: Schema.Json): Schema.Json => ({ type: "object", properties });
@@ -77,5 +78,36 @@ describe("xMcpHeaderProblems", () => {
         ),
       ),
     ).toHaveLength(2);
+  });
+});
+
+describe("xMcpHeaders", () => {
+  const schema = objectWith({
+    region: { type: "string", "x-mcp-header": "Region" },
+    nested: {
+      type: "object",
+      properties: { count: { type: "integer", "x-mcp-header": "Count" } },
+    },
+    dry: { type: "boolean", "x-mcp-header": "Dry-Run" },
+    note: { type: "string" },
+  });
+
+  it("mirrors each declared argument in an Mcp-Param header, leaving the others out", () => {
+    expect(
+      xMcpHeaders(schema, { region: "eu", nested: { count: 3 }, dry: false, note: "x" }),
+    ).toEqual({ "Mcp-Param-Region": "eu", "Mcp-Param-Count": "3", "Mcp-Param-Dry-Run": "false" });
+  });
+
+  it("omits an argument that is absent, null, or not a string, boolean or safe integer", () => {
+    expect(xMcpHeaders(schema, { region: null, nested: { count: 1.5 } })).toEqual({});
+    expect(xMcpHeaders(schema, {})).toEqual({});
+  });
+
+  it("wraps a value that is not plain printable ASCII, empty or padded in base64", () => {
+    expect(xMcpHeaders(schema, { region: "é" })).toEqual({ "Mcp-Param-Region": "=?base64?w6k=?=" });
+    expect(xMcpHeaders(schema, { region: "" })).toEqual({ "Mcp-Param-Region": "=?base64??=" });
+    expect(xMcpHeaders(schema, { region: " eu" })).toEqual({
+      "Mcp-Param-Region": "=?base64?IGV1?=",
+    });
   });
 });

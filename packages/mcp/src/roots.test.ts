@@ -13,7 +13,7 @@ import {
   modernServer,
   ROOTS_TOOL,
 } from "./fakes.fixture.ts";
-import { AGENT, run, TARGET, testDeps } from "./core.fixture.ts";
+import { AGENT, completed, run, TARGET, testDeps } from "./core.fixture.ts";
 import { connect } from "./index.ts";
 import type { McpRoot } from "./types.ts";
 
@@ -61,8 +61,8 @@ describe("Roots", () => {
         const server = make();
         const outcome = await rootsOf(server, ROOTS);
 
-        expect(JSON.stringify(outcome.value.content)).toContain("file:///workspace/app");
-        expect(JSON.stringify(outcome.value.content)).toContain("ian/lib");
+        expect(JSON.stringify(completed(outcome).value.content)).toContain("file:///workspace/app");
+        expect(JSON.stringify(completed(outcome).value.content)).toContain("ian/lib");
         expect(declared(server)).toMatchObject({ roots: {} });
         // SAFETY: asserted just above to hold `roots`.
         expect((declared(server) as { roots: object }).roots).not.toHaveProperty("listChanged");

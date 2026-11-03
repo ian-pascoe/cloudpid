@@ -7,6 +7,7 @@
  */
 export {
   type CallToolParams,
+  type Complete,
   connect,
   type ListItems,
   type ListKind,
@@ -15,8 +16,11 @@ export {
   type McpDeps,
   type McpLog,
   type McpTarget,
+  type McpTasks,
   type Outcome,
   type RowStore,
+  type TaskStarted,
+  type TaskState,
 } from "./connection.ts";
 
 export {

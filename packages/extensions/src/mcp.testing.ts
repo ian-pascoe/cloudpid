@@ -5,6 +5,7 @@
 // function the test gives, with the call's hooks.
 import {
   HostFailed,
+  HostUnsupported,
   type JsonObject,
   MCP_HOST_FEATURES,
   McpHostCompleted,
@@ -62,19 +63,21 @@ export type FakeMcpAnswer = (
 
 const echo: FakeMcpAnswer = (input) =>
   Promise.resolve(
-    McpHostCompleted.make({
-      result: {
-        kind: "inline",
-        value: {
-          content: [
-            {
-              type: "text",
-              text: `${input.params.name} ${JSON.stringify(input.params.arguments ?? {})}`,
+    input.op !== "tools/call"
+      ? HostUnsupported.make({ message: "The fake answers tool calls only", op: input.op })
+      : McpHostCompleted.make({
+          result: {
+            kind: "inline",
+            value: {
+              content: [
+                {
+                  type: "text",
+                  text: `${input.params.name} ${JSON.stringify(input.params.arguments ?? {})}`,
+                },
+              ],
             },
-          ],
-        },
-      },
-    }),
+          },
+        }),
   );
 
 /** An inventory of `servers` as `servers` answers it, with the parts asked for. */

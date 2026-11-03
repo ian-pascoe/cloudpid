@@ -150,8 +150,10 @@ describe("a request", () => {
   it("refuses what it cannot send, without reaching the engine", async () => {
     const host = await discovered(["search"], entry("docs"), entry("off", { enabled: false }));
 
-    // SAFETY: an `op` a later build sends, as it crosses the edge to this host.
-    const later = { ...call("docs", "search"), op: "resources/read" as "tools/call" };
+    // An `op` a later build sends, as it crosses the edge to this host (parsed, so it is not typed as ours).
+    const later: typeof McpHostRequest.Encoded = JSON.parse(
+      JSON.stringify({ ...call("docs", "search"), op: "resources/read" }),
+    );
 
     expect(await tagOf(host, later)).toBe("HostUnsupported");
     expect(await tagOf(host, call("nowhere", "search"))).toBe("UnknownServer");
@@ -285,6 +287,179 @@ describe("a request", () => {
 
     await host.release(urlOf("slow"));
     await Promise.all(holding);
+  });
+});
+
+/** A task the server started, as the engine reports it. */
+const CREATED = {
+  taskId: "task-1",
+  status: "working",
+  createdAt: "2026-01-01T00:00:00Z",
+  lastUpdatedAt: "2026-01-01T00:00:00Z",
+  ttlMs: 60_000,
+} as const;
+
+const started = (): typeof McpEngineRequestResult.Encoded => ({
+  kind: "task",
+  task: CREATED,
+  state: {},
+});
+
+/** A `tasks/*` request of the task `started` made, on the server's current `conn`. */
+const taskOp = (
+  op: "tasks/get" | "tasks/update" | "tasks/cancel",
+  server: string,
+  conn = `conn-${server}`,
+  ctx: typeof McpHostRequest.Encoded.ctx = call(server, "search").ctx,
+): typeof McpHostRequest.Encoded => {
+  const params = { taskId: "task-1", tool: "search", conn };
+
+  // SAFETY: each `op` with the params it takes, encoded.
+  return (
+    op === "tasks/update"
+      ? { op, server, params: { ...params, inputResponses: {} }, ctx }
+      : { op, server, params, ctx }
+  ) as typeof McpHostRequest.Encoded;
+};
+
+const withCtx = (
+  input: typeof McpHostRequest.Encoded,
+  ctx: Partial<typeof McpHostRequest.Encoded.ctx>,
+): typeof McpHostRequest.Encoded => ({ ...input, ctx: { ...input.ctx, ...ctx } });
+
+describe("an MCP task", () => {
+  it("is offered to a call from the agent or an app, to an HTTP server, and to no other caller", async () => {
+    const host = await discovered(["search"], entry("docs"));
+
+    await host.scriptRequest(
+      urlOf("docs"),
+      Array.from({ length: 4 }, () => ({ result: completed("done") })),
+    );
+
+    const withTask = { allowTask: true };
+
+    await host.request(withCtx(call("docs", "search"), withTask), {});
+    await host.request(withCtx(call("docs", "search"), { ...withTask, origin: "app" }), {});
+    await host.request(withCtx(call("docs", "search"), { ...withTask, origin: "owner" }), {});
+    await host.request(withCtx(call("docs", "search"), { ...withTask, origin: "host" }), {});
+
+    expect((await host.engineRequests()).map((sent) => sent.request.ctx)).toEqual([
+      expect.objectContaining({ origin: "agent", allowTask: true }),
+      expect.objectContaining({ origin: "app", allowTask: true }),
+      { origin: "owner", conversation: "1", workspace: "ws:w-1" },
+      { origin: "host", conversation: "1", workspace: "ws:w-1" },
+    ]);
+
+    await host.scriptRequest(urlOf("docs"), [{ result: completed("done") }]);
+    await host.request(call("docs", "search"), {});
+    expect((await host.engineRequests()).at(-1)?.request.ctx).not.toHaveProperty("allowTask");
+  });
+
+  it("answers a started task with the server's conn and identity and the sign-in the call was made with", async () => {
+    const host = await signedIn([granted(TOKEN)]);
+
+    await host.scriptRequest(urlOf("sentry"), [{ result: started(), auth: [false] }]);
+
+    expect(
+      await host.request(withCtx(call("sentry", "search"), { allowTask: true }), {}),
+    ).toMatchObject({
+      _tag: "Task",
+      task: { taskId: "task-1", status: "working" },
+      conn: "conn-sentry",
+      identity: "identity-sentry",
+      signIn: "grant-1",
+    });
+  });
+
+  it("fails a call that was not offered a task when the engine answers one", async () => {
+    const host = await discovered(["search"], entry("docs"));
+
+    await host.scriptRequest(urlOf("docs"), [{ result: started() }, { result: started() }]);
+
+    for (const origin of ["agent", "owner"] as const) {
+      expect(await host.request(withCtx(call("docs", "search"), { origin }), {})).toMatchObject({
+        _tag: "CallFailed",
+        error: { _tag: "ProtocolViolation" },
+      });
+    }
+  });
+
+  it("reads a task with tasks/get, its result with the tool's checks, and takes an update and a cancel", async () => {
+    const host = await signedIn([granted(TOKEN)]);
+
+    await host.scriptRequest(urlOf("sentry"), [
+      {
+        result: {
+          kind: "task_state",
+          task: { ...CREATED, status: "completed" },
+          result: { kind: "inline", value: { content: [{ type: "text", text: "report" }] } },
+          fetchedAt: Date.now(),
+          state: {},
+        },
+        auth: [false],
+      },
+      { result: { kind: "task_ack", state: {} }, auth: [false] },
+      { result: { kind: "task_ack", state: {} }, auth: [false] },
+    ]);
+
+    expect(await host.request(taskOp("tasks/get", "sentry"), {})).toMatchObject({
+      _tag: "TaskState",
+      task: { status: "completed" },
+      result: { kind: "inline" },
+      signIn: "grant-1",
+    });
+    expect(await host.request(taskOp("tasks/update", "sentry"), {})).toMatchObject({
+      _tag: "TaskAck",
+      signIn: "grant-1",
+    });
+    expect(await tagOf(host, taskOp("tasks/cancel", "sentry"))).toBe("TaskAck");
+
+    const sent = await host.engineRequests();
+
+    expect(sent.map((each) => each.request.op)).toEqual([
+      "tasks/get",
+      "tasks/update",
+      "tasks/cancel",
+    ]);
+    expect(sent[0]?.request).toMatchObject({
+      taskId: "task-1",
+      tool: { name: "search" },
+      ctx: { allowTask: true },
+    });
+  });
+
+  it("answers ServerChanged, sending nothing, when the server's conn is not the one the task started on", async () => {
+    const host = await discovered(["search"], entry("docs"));
+
+    expect(await host.request(taskOp("tasks/get", "docs", "conn-old"), {})).toEqual({
+      _tag: "ServerChanged",
+      message: expect.stringContaining("changed"),
+      conn: "conn-docs",
+      identity: "identity-docs",
+    });
+    expect(await host.engineRequests()).toEqual([]);
+  });
+
+  it("lets a switched-off server's task be cancelled, and read or updated no more", async () => {
+    const host = await discovered(["search"], entry("off", { enabled: false }));
+
+    await host.scriptRequest(urlOf("off"), [{ result: { kind: "task_ack", state: {} } }]);
+
+    expect(await tagOf(host, taskOp("tasks/get", "off"))).toBe("NotAllowed");
+    expect(await tagOf(host, taskOp("tasks/update", "off"))).toBe("NotAllowed");
+    expect(await tagOf(host, taskOp("tasks/cancel", "off"))).toBe("TaskAck");
+  });
+
+  it("refuses a malformed task request, and an unknown server's", async () => {
+    const host = await discovered(["search"], entry("docs"));
+
+    // A `tasks/get` with no `taskId`, as it crosses the edge.
+    const bare: typeof McpHostRequest.Encoded = JSON.parse(
+      JSON.stringify({ ...taskOp("tasks/get", "docs"), params: {} }),
+    );
+
+    expect(await tagOf(host, bare)).toBe("NotAllowed");
+    expect(await tagOf(host, taskOp("tasks/get", "nowhere"))).toBe("UnknownServer");
   });
 });
 
