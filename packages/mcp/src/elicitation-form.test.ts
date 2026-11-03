@@ -271,6 +271,10 @@ describe("the credential rule", () => {
     expect(declines(name)).toBe(name);
   });
 
+  it("declines a field whose title splits a credential word with zero-width characters", () => {
+    expect(declines("field1", { type: "string", title: "pass\u200Bword" })).toBe("password");
+  });
+
   it("declines a field by its title, shown", () => {
     expect(declines("field1", { type: "string", title: "Your API key" })).toBe("Your API key");
   });
@@ -320,7 +324,16 @@ describe("the credential rule", () => {
 
 describe("names the server chooses", () => {
   it("refuses a field name that is empty, has control characters, is long or has extra spaces", () => {
-    for (const name of ["", "a\u0007b", "a\u202Eb", "a  b", " a", "x".repeat(121)]) {
+    for (const name of [
+      "",
+      "a\u0007b",
+      "a\u202Eb",
+      "pass\u200Bword",
+      "a\uFEFFb",
+      "a  b",
+      " a",
+      "x".repeat(121),
+    ]) {
       expect(reasonOf(objectOf({ [name]: { type: "string" } }))).toContain("a field has a name");
     }
   });
@@ -329,6 +342,8 @@ describe("names the server chooses", () => {
     expect(messageIsCut("x".repeat(ELICITATION_BOUNDS.message))).toBe(false);
     expect(messageIsCut("x".repeat(ELICITATION_BOUNDS.message + 1))).toBe(true);
     expect(plainMessage("x".repeat(5000))).toHaveLength(ELICITATION_BOUNDS.message);
+    // The note and the cut agree: what plain text drops is not counted.
+    expect(messageIsCut(`${"x".repeat(ELICITATION_BOUNDS.message)}\u200B\u202E `)).toBe(false);
   });
 
   it("quotes a name it names in a reason without a quote, a tag or a backslash in it", () => {

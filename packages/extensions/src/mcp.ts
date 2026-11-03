@@ -333,7 +333,7 @@ export const makeMcpTools = (
       if (questions === undefined) return;
 
       for (const name of unreachable(before, latest)) {
-        yield* questions.withdrawServer(name, `${name} was switched off or removed`);
+        yield* questions.withdrawServer(name, `${name} was switched off, hidden or removed`);
       }
     },
   );

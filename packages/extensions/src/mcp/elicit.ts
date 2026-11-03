@@ -19,7 +19,6 @@ import {
   plainLine,
   plainMessage,
   quote,
-  safeName,
 } from "@cloudpid/mcp/types";
 import type { ElicitationContent, ElicitationForm, McpElicitationSource } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
@@ -72,6 +71,8 @@ export type Eliciting = {
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
   readonly onInputEnded: (key: string) => Promise<void>;
+  /** Resolves once every question the call asked has been answered and noted, however it ended. */
+  readonly idle: () => Promise<void>;
   /** What happened to each question, in order; read when the call ends. */
   readonly asked: Array<McpElicitationDetail>;
 };
@@ -157,7 +158,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     });
   };
 
-  const onInput: Eliciting["onInput"] = async (request) => {
+  const answering = new Set<Promise<unknown>>();
+
+  const answerInput: Eliciting["onInput"] = async (request) => {
     if (request.kind !== "elicitation") return unsupported("only forms are taken");
 
     const params = decodeElicitParams(request.params);
@@ -171,7 +174,7 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     const { message, mode, requestedSchema } = params.value;
 
     if (mode !== undefined && mode !== "form") {
-      const reason = `${safeName(mode, 20)} mode is not supported`;
+      const reason = `${quote(mode)} mode is not supported`;
       const capped = await endUnseen(message, "decline", reason);
 
       return capped ? CANCELLED : unsupported(reason);
@@ -232,8 +235,18 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     return { kind: "answered", result: { action: outcome.action } };
   };
 
+  const onInput: Eliciting["onInput"] = (request) => {
+    const running = answerInput(request);
+
+    answering.add(running);
+    void running.finally(() => answering.delete(running)).catch(() => undefined);
+
+    return running;
+  };
+
   return {
     onInput,
+    idle: () => Promise.allSettled(answering).then(() => undefined),
     onInputEnded: (key) =>
       Effect.runPromise(
         call.questions.withdraw(call.callId, key, `${call.server} stopped waiting`),

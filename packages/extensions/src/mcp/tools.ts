@@ -384,9 +384,16 @@ const toolFor = (
       };
 
       try {
-        return withElicitation(await finished(), asking?.asked ?? []);
+        const result = await finished();
+
+        // The call is over: a question it still waits on is withdrawn first, so `details` tells of it too.
+        if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
+
+        await asking?.idle();
+
+        return withElicitation(result, asking?.asked ?? []);
       } finally {
-        // The call is over, however it ended: a question it still waits on is withdrawn.
+        // However it ended, nothing is left waiting (a second settle is a no-op).
         if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
       }
     },

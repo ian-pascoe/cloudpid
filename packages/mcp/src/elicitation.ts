@@ -108,10 +108,10 @@ export const ELICITATION_BOUNDS = {
 // Plain text
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** C0 and C1 control characters, and the bidirectional marks and overrides, which server text never keeps. */
+/** C0 and C1 control characters, the bidirectional marks and overrides, and zero-width characters, which server text never keeps. */
 /* oxlint-disable no-control-regex -- the point: control characters are dropped. */
 const UNSAFE_CHARS =
-  /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+  /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\uFEFF]/g;
 /* oxlint-enable no-control-regex */
 
 /** `text` cut to `max` characters, with an ellipsis. */
@@ -134,12 +134,15 @@ export const safeName = (text: string, max = 60): string =>
 export const quote = (text: string): string => `'${safeName(text)}'`;
 
 /** Whether a server's message is longer than the owner is shown (`plainMessage` cuts it, and a note says so). */
-export const messageIsCut = (text: string): boolean =>
-  text.replace(UNSAFE_CHARS, "").trim().length > ELICITATION_BOUNDS.message;
+export const messageIsCut = (text: string): boolean => plainMessage(text) !== plainWhole(text);
+
+/** A server's message whole: no control, bidi-override or zero-width characters (newlines kept). */
+const plainWhole = (text: string): string =>
+  text.replace(UNSAFE_CHARS, "").replace(/\r\n?/g, "\n").trim();
 
 /** A server's message, which may span lines: no control or bidi-override characters (newlines kept), cut to 4,000. */
 export const plainMessage = (text: string): string =>
-  cut(text.replace(UNSAFE_CHARS, "").replace(/\r\n?/g, "\n").trim(), ELICITATION_BOUNDS.message);
+  cut(plainWhole(text), ELICITATION_BOUNDS.message);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The credential rule
@@ -561,7 +564,7 @@ const readField = (
   return refuse(
     type === undefined
       ? `${quote(name)} has no type`
-      : `${quote(name)} has a type that is not supported (${Predicate.isString(type) ? safeName(type, 20) : "not a name"})`,
+      : `${quote(name)} has a type that is not supported (${Predicate.isString(type) ? quote(type) : "not a name"})`,
   );
 };
 

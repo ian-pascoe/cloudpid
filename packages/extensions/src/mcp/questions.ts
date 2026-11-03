@@ -315,10 +315,11 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       if (held === undefined) return false;
 
+      // Gone at once: an answer that comes while the clock is read finds nothing to take.
+      waiting.delete(id);
+
       const now = yield* Clock.currentTimeMillis;
       const { request, entry } = held;
-
-      waiting.delete(id);
 
       const state = callOf(request.callId);
 

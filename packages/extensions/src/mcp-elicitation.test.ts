@@ -419,6 +419,38 @@ describe("a Legacy server's elicitation", () => {
     expect((await detailsOf(session))[0]).not.toHaveProperty("cut");
   });
 
+  it("tells in `details` of a question still waiting when the server returns", async () => {
+    const { host, tools, questions, session: opening } = setup();
+
+    host.answer(async (_input, hooks) => {
+      void hooks.onInput?.(ask(NAME_FORM)).catch(() => undefined);
+      await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+      return DONE;
+    });
+
+    const session = await opening;
+
+    await session.start(tools);
+    await session.prompt("go");
+
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        elicitation: [
+          {
+            server: "Docs-Site",
+            mode: "form",
+            action: "cancel",
+            by: "cloudpid",
+            reason: "the server's call ended",
+            fields: [],
+          },
+        ],
+      }),
+    ]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+  });
+
   it("is withdrawn when Stop aborts the call", async () => {
     const { host, tools, questions, session: opening } = setup();
     let ended = false;
