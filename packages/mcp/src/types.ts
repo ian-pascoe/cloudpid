@@ -15,6 +15,8 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 export * from "./host.ts";
 
+export { xMcpHeaderProblems } from "./tool-headers.ts";
+
 /** Where a call comes from (The MCP core #394 D7, `McpCallContext`). */
 export const McpCallOrigin = Schema.Literals(["agent", "owner", "app", "host"]);
 

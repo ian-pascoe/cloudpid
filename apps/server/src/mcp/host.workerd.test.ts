@@ -2,7 +2,7 @@
 // Durable Object SQLite and a scripted Registry (`docs/architecture/mcp-connections.md` → The host object, Storage,
 // RPC; `mcp-configuration.md` → From the Registry to the host).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off strictEffectProvide:off -- each test runs the host as an entry point.
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import {
@@ -19,9 +19,10 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import { apply } from "./host.ts";
-import type { TestMcpHost } from "./host.fixture.ts";
-import { McpHostStore, openMcpHostStore } from "./store.ts";
+import { hostServicesOver, type TestMcpHost } from "./host.fixture.ts";
+import { openMcpHostStore } from "./store.ts";
 
 declare global {
   namespace Cloudflare {
@@ -255,7 +256,7 @@ describe("apply({ kind: 'set' })", () => {
       gate.trip();
 
       const result = await Effect.runPromise(
-        apply(setOf("h2", 2, "other")).pipe(Effect.provideService(McpHostStore, store)),
+        apply(setOf("h2", 2, "other")).pipe(Effect.provide(hostServicesOver(store))),
       );
 
       expect(failed(result)).toBe(true);
@@ -346,7 +347,7 @@ describe("apply({ kind: 'destroy' })", () => {
       gate.trip();
 
       const result = await Effect.runPromise(
-        apply(destroyAt(2)).pipe(Effect.provideService(McpHostStore, store)),
+        apply(destroyAt(2)).pipe(Effect.provide(hostServicesOver(store))),
       );
 
       expect(failed(result)).toBe(true);
@@ -358,13 +359,19 @@ describe("apply({ kind: 'destroy' })", () => {
   });
 });
 
-describe("requestStart", () => {
-  it("lists the features the host supports and holds the set's hash as its version", async () => {
-    const host = hostOf("a");
+/** The names of the servers `requestStart` reports, `windowOpened` or not. */
+const serversAfter = async (
+  host: ReturnType<typeof hostOf>,
+  windowOpened: boolean,
+): Promise<ReadonlyArray<string>> =>
+  Record.keys((await host.requestStart({ caller: CALLER, windowOpened })).servers);
 
-    expect(await host.requestStart({ caller: CALLER })).toEqual({
-      version: "",
-      promptsVersion: "",
+describe("requestStart", () => {
+  it("lists the features the host supports and reports the servers of the set it holds", async () => {
+    const host = hostOf("a");
+    const empty = await host.requestStart({ caller: CALLER });
+
+    expect(empty).toMatchObject({
       features: MCP_HOST_FEATURES,
       servers: {},
       watches: { changed: [], ended: [] },
@@ -372,7 +379,10 @@ describe("requestStart", () => {
 
     await host.apply(setOf("h1", 1, "linear"));
 
-    expect((await host.requestStart({ caller: CALLER })).version).toBe("h1");
+    const held = await host.requestStart({ caller: CALLER });
+
+    expect(Record.keys(held.servers)).toEqual(["linear"]);
+    expect(held.version).not.toBe(empty.version);
   });
 
   it("does not ask the Registry for the set unless a Context Window opened", async () => {
@@ -396,7 +406,7 @@ describe("requestStart", () => {
 
     const started = await host.requestStart({ caller: CALLER, windowOpened: true });
 
-    expect(started.version).toBe("h1");
+    expect(Record.keys(started.servers)).toEqual(["linear", "docs"]);
     expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["linear", "docs"]);
 
     const [asked] = await host.asked();
@@ -422,7 +432,7 @@ describe("requestStart", () => {
     await host.apply(setOf("h1", 1, "linear"));
     await host.script({ hash: "h2", signInsRevision: 0, revision: 2, set: [entry("docs")] });
 
-    expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h2");
+    expect(await serversAfter(host, true)).toEqual(["docs"]);
     expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["docs"]);
   });
 
@@ -441,7 +451,7 @@ describe("requestStart", () => {
     await host.apply(setOf("h7", 7, "linear"));
     await host.script({ hash: "h6", signInsRevision: 0, revision: 6, set: [entry("docs")] });
 
-    expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h7");
+    expect(await serversAfter(host, true)).toEqual(["linear"]);
     expect((await host.readSet())?.servers.map(({ name }) => name)).toEqual(["linear"]);
   });
 
@@ -478,19 +488,19 @@ describe("requestStart", () => {
     await host.apply(setOf("h1", 1, "linear"));
     await host.script(null);
 
-    expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h1");
+    expect(await serversAfter(host, true)).toEqual(["linear"]);
     expect((await host.readSet())?.hash).toBe("h1");
 
     await host.script({ hash: "h2", signInsRevision: 0, revision: 2, set: [entry("docs")] });
 
-    expect((await host.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("h2");
+    expect(await serversAfter(host, true)).toEqual(["docs"]);
   });
 
   it("pulls nothing for a host that no Environment names, and refuses a set", async () => {
     // A host not addressed as `mcp:<environment>` has none to ask the Registry about.
     const stray = env.MCP_HOSTS.getByName("stray");
 
-    expect((await stray.requestStart({ caller: CALLER, windowOpened: true })).version).toBe("");
+    expect((await stray.requestStart({ caller: CALLER, windowOpened: true })).servers).toEqual({});
     expect(await stray.asked()).toEqual([]);
     expect(failed(await stray.apply(setOf("h1", 1, "linear")))).toBe(true);
     expect(await stray.readSet()).toBeNull();

@@ -33,15 +33,6 @@
     {
       "reason": "The core has no `input_required` or `resume` yet (the questions slice)",
       "entries": ["sep-2322-client-request-state"]
-    },
-    {
-      "reason": "The core lists through `client.request`, which keeps tools the SDK's `listTools` would leave out, and `client.ts` calls every tool it lists, so these entries cannot go stale by themselves: when `xMcpHeaderProblems` lands (discovery, #449), `client.ts` must filter the listed tools through it, and these entries are removed in that same change",
-      "entries": [
-        "http-invalid-tool-headers:sep-2243-x-mcp-header-not-empty",
-        "http-invalid-tool-headers:sep-2243-x-mcp-header-primitive-only",
-        "http-invalid-tool-headers:sep-2243-x-mcp-header-unique",
-        "http-invalid-tool-headers:sep-2243-x-mcp-header-charset"
-      ]
     }
   ],
   "2025-11-25": [

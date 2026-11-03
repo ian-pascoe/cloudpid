@@ -1,7 +1,9 @@
-// What `McpHost`'s methods do (`docs/architecture/mcp-connections.md` → The host object, RPC): take the Environment's MCP
-// server set, and pull it from the Registry when a Context Window opens. Over `McpHostStore` and `McpRegistryPort`,
-// so a workerd test drives them over real SQLite storage and a scripted Registry; the Durable Object (`McpHost.ts`)
-// only gives them the object's own.
+// What `McpHost`'s methods do (`docs/architecture/mcp-connections.md` → The host object, RPC, Discovery and the MCP
+// inventory): take the Environment's MCP server set, pull it from the Registry when a Context Window opens, discover
+// its servers and answer the MCP inventory. Over `McpHostStore`, `McpRegistryPort`, `McpEngineClient` and the
+// discoveries in flight, kept in one long-lived `ManagedRuntime` per object, so a workerd test drives them over real
+// SQLite storage, a scripted Registry and a scripted engine; the Durable Object (`McpHost.ts`) only gives them the
+// object's own.
 //
 // Every edge only gains (`docs/architecture/mcp.md` → Deploys): an operation this build does not know fails as
 // `HostUnsupported`, and a failure is a value, never a thrown error.
@@ -10,44 +12,76 @@ import {
   HostFailed,
   HostUnsupported,
   MCP_HOST_FEATURES,
+  MCP_MAX_WAIT_MS,
   McpApplied,
   type McpApply,
-  type McpApplyResult,
   McpApplyDestroy,
+  McpApplyReload,
+  type McpApplyResult,
   McpApplySet,
   McpDestroyed,
+  McpReloaded,
   type McpRequestStart,
   type McpRequestStartAnswer,
-  type McpServerSetAnswer,
+  type McpServerInventory,
+  type McpServersAnswer,
+  type McpServersRequest,
   McpStale,
 } from "@cloudpid/mcp/types";
-import * as Context from "effect/Context";
+import * as Arr from "effect/Array";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import type * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import type { Mutable } from "effect/Types";
+import {
+  awaitDiscoveries,
+  interrupt,
+  McpDiscovery,
+  type McpDiscoveryServices,
+  refreshVersions,
+  reviveStale,
+  type ServerView,
+  startDue,
+  type Trigger,
+  versionsOf,
+  viewServers,
+} from "./discovery.ts";
+import { McpEngineClient, type McpEngineClientService } from "./engine.ts";
+import { serverHashes } from "./inventory.ts";
+import { McpRegistryPort, type McpRegistryPortService } from "./registry-port.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 
-/** The Registry could not be asked for the set (an RPC failure, or an answer this build cannot read). */
-export class McpRegistryUnavailable extends Schema.TaggedError<
+export {
+  McpRegistryPort,
+  type McpRegistryPortService,
   McpRegistryUnavailable,
-  { readonly brand: unique symbol }
->()("McpRegistryUnavailable", { message: Schema.String }) {}
+} from "./registry-port.ts";
 
-export type McpRegistryPortService = {
-  /**
-   * The Environment's current set unless the host holds it (`heldHash`; undefined: it holds none, which is the empty
-   * set), which runs the Registry's look at the Repos' `.pi/mcp.json` when it is due.
-   */
-  readonly serverSet: (input: {
-    readonly environment: string;
-    readonly heldHash: string | undefined;
-  }) => Effect.Effect<McpServerSetAnswer, McpRegistryUnavailable>;
-};
+/** What the host's methods run over: its storage, the Registry, the engine and the discoveries in flight. */
+export type McpHostServices = McpDiscoveryServices;
 
-/** The Registry, as the host sees it: the Registry DO, or a fake. */
-export class McpRegistryPort extends Context.Service<McpRegistryPort, McpRegistryPortService>()(
-  "@cloudpid/server/mcp/host/McpRegistryPort",
-) {}
+/**
+ * The host's services over `store`, `registry` and `engine`, with a fresh set of discoveries; `references` sets the
+ * runtime's own `Clock` and `Tracer` (the object's `Telemetry`, a test's clock).
+ */
+export const mcpHostLayer = (deps: {
+  readonly store: McpHostStoreService;
+  readonly registry: McpRegistryPortService;
+  readonly engine: McpEngineClientService;
+  readonly references?: Layer.Layer<never>;
+}): Layer.Layer<McpHostServices> =>
+  Layer.mergeAll(
+    Layer.succeed(McpHostStore, deps.store),
+    Layer.succeed(McpRegistryPort, deps.registry),
+    Layer.succeed(McpEngineClient, deps.engine),
+    McpDiscovery.layer,
+    deps.references ?? Layer.empty,
+  );
 
 const KindOnly = Schema.Struct({ kind: Schema.String });
 
@@ -56,6 +90,8 @@ const decodeKind = Schema.decodeUnknownOption(KindOnly);
 const decodeSet = Schema.decodeUnknownOption(McpApplySet);
 
 const decodeDestroy = Schema.decodeUnknownOption(McpApplyDestroy);
+
+const decodeReload = Schema.decodeUnknownOption(McpApplyReload);
 
 const applied = (set: McpApplySet, changed: boolean): McpApplied =>
   McpApplied.make({ hash: set.hash, changed });
@@ -93,10 +129,50 @@ const applySet = (set: McpApplySet): Effect.Effect<McpApplied | McpStale, never,
   });
 
 /**
- * Wipe the storage, keeping the revision of the deletion (or the held set's when it is later) as the floor of what may
- * fill it again. A wipe the storage refuses is `HostFailed`: the Registry still has it to send.
+ * What a changed set does to the discoveries (`docs/architecture/mcp-connections.md` → Set changes, per name): a `conn`
+ * that left (its server changed or was removed) has its discovery aborted and its era and Legacy session rows dropped,
+ * and its inventory kept for a revert; a new `conn` is discovered at once if a Session used the host in the last 24
+ * h (else at its first demand), a kept inventory served meanwhile; a `failed` one is retried, at most once a minute.
+ * A change outside `conn` only moves the versions. Without an Environment, only the storage is settled.
  */
-const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostStore> =>
+const settleSet = (environment: string | undefined, before: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const store = yield* McpHostStore;
+    const views = yield* viewServers;
+    const conns = Arr.map(views, (view) => view.server.conn);
+    const now = yield* Clock.currentTimeMillis;
+
+    yield* interrupt(Arr.difference(before, conns));
+    store.settle(conns, now);
+
+    if (environment !== undefined) yield* startDue(environment, views, "set");
+
+    yield* refreshVersions;
+  });
+
+/** The `conn`s of the held set. */
+const heldConns = Effect.map(viewServers, (views) => Arr.map(views, (view) => view.server.conn));
+
+/** Take `set` (`applySet`), and settle the discoveries when it changed the set. */
+const takeSet = (environment: string | undefined, set: McpApplySet) =>
+  Effect.gen(function* () {
+    const before = yield* heldConns;
+    const result = yield* applySet(set);
+
+    if (Predicate.isTagged(result, "Applied") && result.changed) {
+      yield* settleSet(environment, before);
+    }
+
+    return result;
+  });
+
+/**
+ * Wipe the storage, keeping the revision of the deletion (or the held set's when it is later) as the floor of what may
+ * fill it again, after aborting every discovery in flight (the engine aborts their server requests). The best-effort
+ * Legacy `DELETE` and the closing of streams come with `control` and listens, which the engine does not offer yet. A
+ * wipe the storage refuses is `HostFailed`: the Registry still has it to send.
+ */
+const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostServices> =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const wanted = decodeDestroy(input);
@@ -111,6 +187,7 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
       store.wipedAt() ?? 0,
     );
 
+    yield* interrupt();
     yield* Effect.tryPromise(() => store.destroy(revision));
 
     return McpDestroyed.make({});
@@ -121,11 +198,47 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
   );
 
 /**
- * `apply`: the pushes and teardown. `set` keeps the Environment's set and `destroy` wipes the storage; any other
- * `kind` fails as `HostUnsupported`, never as a decode error, so a newer caller's operation is refused loudly, and a
- * `set` that is malformed as `HostFailed`.
+ * `reload` (`settings_mcp_reload`, `mcpReconnect`): drop the eras and Legacy sessions of the named servers (all when
+ * none is named), then rediscover the HTTP ones at once, whatever their state. A name not in the set is left out of
+ * the answer.
  */
-export const apply = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostStore> =>
+const reload = (environment: string | undefined, input: McpApply) =>
+  Effect.gen(function* () {
+    const store = yield* McpHostStore;
+    const wanted = decodeReload(input);
+
+    if (Option.isNone(wanted)) {
+      return HostFailed.make({ message: "The reload is malformed" });
+    }
+
+    const names = wanted.value.servers;
+
+    const views = Arr.filter(
+      yield* viewServers,
+      (view) => names === undefined || names.includes(view.server.name),
+    );
+
+    store.dropPrior(Arr.map(views, (view) => view.server.conn));
+
+    if (environment !== undefined) yield* startDue(environment, views, "reload");
+
+    return McpReloaded.make({ servers: Arr.map(views, (view) => view.server.name) });
+  }).pipe(
+    Effect.catchCause(() =>
+      Effect.succeed(HostFailed.make({ message: "The servers were not reloaded" })),
+    ),
+  );
+
+/**
+ * `apply`: the pushes and teardown. `set` keeps the Environment's set, `reload` rediscovers its servers and `destroy`
+ * wipes the storage; any other `kind` fails as `HostUnsupported`, never as a decode error, so a newer caller's
+ * operation is refused loudly, and a `set` that is malformed as `HostFailed`. `environment` names the Registry to ask
+ * for `${NAME}` values; without one, nothing is discovered.
+ */
+export const apply = (
+  input: McpApply,
+  environment?: string,
+): Effect.Effect<McpApplyResult, never, McpHostServices> =>
   Effect.gen(function* () {
     const kind = decodeKind(input);
 
@@ -135,6 +248,10 @@ export const apply = (input: McpApply): Effect.Effect<McpApplyResult, never, Mcp
 
     if (kind.value.kind === "destroy") {
       return yield* destroy(input);
+    }
+
+    if (kind.value.kind === "reload") {
+      return yield* reload(environment, input);
     }
 
     if (kind.value.kind !== "set") {
@@ -150,7 +267,7 @@ export const apply = (input: McpApply): Effect.Effect<McpApplyResult, never, Mcp
       return HostFailed.make({ message: "The MCP server set is malformed" });
     }
 
-    return yield* applySet(set.value).pipe(
+    return yield* takeSet(environment, set.value).pipe(
       Effect.catchCause(() => Effect.succeed(HostFailed.make({ message: "The set was not kept" }))),
     );
   });
@@ -159,7 +276,7 @@ export const apply = (input: McpApply): Effect.Effect<McpApplyResult, never, Mcp
  * Ask the Registry for the set and keep it when it differs from the one held, so a push that was lost heals. A Registry
  * that cannot answer leaves the held set as it is: the next Context Window asks again. Logs no more than that it failed.
  */
-const pull = (environment: string): Effect.Effect<void, never, McpHostStore | McpRegistryPort> =>
+const pull = (environment: string): Effect.Effect<void, never, McpHostServices> =>
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const registry = yield* McpRegistryPort;
@@ -172,7 +289,7 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostStore | Mc
     const held = store.held();
 
     if (answer.set !== undefined) {
-      yield* applySet({
+      yield* takeSet(environment, {
         kind: "set",
         hash: answer.hash,
         revision,
@@ -180,45 +297,194 @@ const pull = (environment: string): Effect.Effect<void, never, McpHostStore | Mc
       });
     } else if (held === undefined) {
       // The Registry noted the empty set as handed under this revision, which a push of an older set must not undo.
-      yield* applySet({ kind: "set", hash: answer.hash, revision, entries: [] });
+      yield* takeSet(environment, { kind: "set", hash: answer.hash, revision, entries: [] });
     } else if (held.hash === answer.hash) {
       // The Registry noted the set the host holds as handed under this revision: so does the host.
       yield* Effect.sync(() => {
         if (revision > held.revision) store.setRevision(revision);
       });
     }
+
+    yield* Effect.sync(() => store.setMeta({ signInsRevision: answer.signInsRevision }));
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning(`Environment ${environment}'s MCP server set was not pulled`, cause),
     ),
+    Effect.withSpan("mcp.registry"),
   );
 
+/** The longest wait asked for, at most 10 s. */
+const waitOf = (waitMs: number | undefined, fallback: number) =>
+  Math.max(0, Math.min(waitMs ?? fallback, MCP_MAX_WAIT_MS));
+
 /**
- * `requestStart`: marks the conversation active and says what the Session needs to build its tools. A Context Window's
- * first request (`windowOpened`) pulls the set first. The inventory is discovered later, so the answer has no servers
- * yet, and its `version` is the held set's hash, which changes with any change to the set (a placeholder until the
- * inventory's own version, #449); the features are those the host lists, the ones a Session may use. The Registry is
- * asked only here and never at the host's start: a host that no Session wakes holds the set it was last pushed, and
- * `windowOpened` heals what a lost push left.
+ * The demand-driven part of a read: `connecting` statuses that died with their instance go back, and the servers due
+ * a discovery start it.
+ */
+const onDemand = (environment: string | undefined, trigger: Trigger) =>
+  Effect.gen(function* () {
+    yield* reviveStale;
+
+    if (environment !== undefined) yield* startDue(environment, yield* viewServers, trigger);
+  });
+
+/** The servers' reports and the versions, after recomputing and keeping them. */
+const answerOf = Effect.gen(function* () {
+  const store = yield* McpHostStore;
+  const views = yield* viewServers;
+  const versions = versionsOf(views);
+
+  store.setMeta(versions);
+
+  return { views, versions };
+});
+
+/**
+ * `requestStart`: marks the host used and says what the Session needs to build its tools. A Context Window's first
+ * request (`windowOpened`) pulls the set first. Servers due a discovery start it (an HTTP server never asked, a TTL
+ * passed, a backoff over); a caller with no `known` version (a Session's first request) waits up to `waitMs` (at most
+ * 10 s) for the servers it names in `waitFor` that have no inventory yet, each wait ending once its discovery ends,
+ * whatever it ends in. The answer is the inventory's content-hash versions, the features the host lists, and per
+ * server its hashes and state. The Registry is asked only here and never at the host's start: a host that no Session
+ * wakes holds the set it was last pushed, and `windowOpened` heals what a lost push left.
  */
 export const requestStart = (
   environment: string | undefined,
   request: McpRequestStart,
-): Effect.Effect<McpRequestStartAnswer, never, McpHostStore | McpRegistryPort> =>
+): Effect.Effect<McpRequestStartAnswer, never, McpHostServices> =>
   Effect.gen(function* () {
     // A host that no Environment names has none to ask the Registry about.
     if (request.windowOpened === true && environment !== undefined) yield* pull(environment);
 
     const store = yield* McpHostStore;
 
+    store.setMeta({ lastUsedAt: yield* Clock.currentTimeMillis });
+
+    yield* onDemand(environment, "demand");
+
+    const waitFor = request.waitFor ?? [];
+
+    if (request.known === undefined && waitFor.length > 0) {
+      const waited = Arr.filter(
+        yield* viewServers,
+        (view) => waitFor.includes(view.server.name) && Option.isNone(view.inventory),
+      );
+
+      yield* awaitDiscoveries(
+        Arr.map(waited, (view) => view.server.conn),
+        waitOf(request.waitMs, MCP_MAX_WAIT_MS),
+      );
+    }
+
+    const { views, versions } = yield* answerOf;
+
     return {
-      version: store.held()?.hash ?? "",
-      promptsVersion: "",
+      ...versions,
       features: MCP_HOST_FEATURES,
-      servers: {},
+      servers: Record.fromEntries(
+        Arr.map(views, (view) => [view.server.name, { ...hashesOf(view), state: view.state }]),
+      ),
       watches: { changed: [], ended: [] },
     };
+  }).pipe(
+    Effect.catchCause(() =>
+      Effect.succeed({
+        version: "",
+        promptsVersion: "",
+        features: MCP_HOST_FEATURES,
+        servers: {},
+        watches: { changed: [], ended: [] },
+      }),
+    ),
+    Effect.withSpan("mcp.request_start"),
+  );
+
+const hashesOf = (view: ServerView) =>
+  serverHashes({
+    name: view.server.name,
+    entryHash: view.server.entryHash,
+    state: view.state,
+    inventory: view.inventory,
   });
+
+/** One server as `servers` answers it, with the `parts` asked for. */
+const inventoryOf = (view: ServerView, parts: ReadonlyArray<string>): McpServerInventory => {
+  const inventory = Option.getOrUndefined(view.inventory);
+  const meta = inventory?.meta;
+
+  const answer: Mutable<McpServerInventory> = {
+    name: view.server.name,
+    source: view.server.source,
+    server: view.server.server,
+    conn: view.server.conn,
+    state: view.state,
+    ...hashesOf(view),
+    counts: { tools: inventory?.tools.length ?? 0, prompts: inventory?.prompts.length ?? 0 },
+    resources: meta !== undefined && "resources" in meta.capabilities,
+    problems: meta?.problems ?? [],
+  };
+
+  if (view.status?.error !== undefined) answer.error = view.status.error;
+
+  if (meta !== undefined) {
+    answer.protocolVersion = meta.protocolVersion;
+    answer.discoveredAt = meta.discoveredAt;
+
+    if (meta.discoveredIn !== undefined) answer.discoveredIn = meta.discoveredIn;
+  }
+
+  if (inventory !== undefined && parts.includes("tools")) answer.tools = inventory.tools;
+
+  if (inventory !== undefined && parts.includes("prompts")) answer.prompts = inventory.prompts;
+
+  if (meta?.instructions !== undefined && parts.includes("instructions")) {
+    answer.instructions = meta.instructions;
+  }
+
+  if (view.status !== undefined && parts.includes("status")) {
+    const { since, failures, nextRetryAt, lastOkAt } = view.status;
+    const status: Mutable<NonNullable<McpServerInventory["status"]>> = { since, failures };
+
+    if (nextRetryAt !== undefined) status.nextRetryAt = nextRetryAt;
+
+    if (lastOkAt !== undefined) status.lastOkAt = lastOkAt;
+
+    answer.status = status;
+  }
+
+  return answer;
+};
+
+/**
+ * `servers`: the inventory per server, with the parts asked for. HTTP servers due a discovery start it, and it waits up
+ * to `waitMs` (at most 10 s, none by default) for those being discovered. It never starts a Container: stdio servers
+ * are not discovered here.
+ */
+export const servers = (
+  environment: string | undefined,
+  request: McpServersRequest,
+): Effect.Effect<McpServersAnswer, never, McpHostServices> =>
+  Effect.gen(function* () {
+    yield* onDemand(environment, "demand");
+
+    const named = (view: ServerView) =>
+      request.names === undefined || request.names.includes(view.server.name);
+
+    yield* awaitDiscoveries(
+      Arr.map(Arr.filter(yield* viewServers, named), (view) => view.server.conn),
+      waitOf(request.waitMs, 0),
+    );
+
+    const { views, versions } = yield* answerOf;
+
+    return {
+      ...versions,
+      servers: Arr.map(Arr.filter(views, named), (view) => inventoryOf(view, request.parts)),
+    };
+  }).pipe(
+    Effect.catchCause(() => Effect.succeed({ version: "", promptsVersion: "", servers: [] })),
+    Effect.withSpan("mcp.servers"),
+  );
 
 /** What the host object answers over RPC. */
 export type McpHostMethods = {
@@ -227,30 +493,30 @@ export type McpHostMethods = {
    * Registry for the MCP server set.
    */
   readonly requestStart: (request: McpRequestStart) => Effect.Effect<McpRequestStartAnswer>;
+  /** The MCP inventory per server, for the `mcp` extension's reads, `settings_mcp_*`, the composer and Settings. */
+  readonly servers: (request: McpServersRequest) => Effect.Effect<McpServersAnswer>;
   /** The pushes: the Environment's MCP server set. An operation this host does not know is `HostUnsupported`. */
   readonly apply: (input: McpApply) => Effect.Effect<McpApplyResult>;
 };
 
 /**
- * The methods of the host of `environment` over `store` and `registry`: one set of services, provided to each. A host
- * whose name is no `mcp:<environment>` has no Environment, and refuses with a failure.
+ * The methods of the host of `environment` over `runtime`, the object's one long-lived runtime: each runs with its
+ * services, and the discoveries it starts stay in its scope after the call returns. A host whose name is no
+ * `mcp:<environment>` has no Environment, and refuses with a failure.
  */
 export const mcpHostMethods = (
   environment: string | undefined,
-  store: McpHostStoreService,
-  registry: McpRegistryPortService,
+  runtime: ManagedRuntime.ManagedRuntime<McpHostServices, never>,
 ): McpHostMethods => {
-  const provided = <A>(effect: Effect.Effect<A, never, McpHostStore | McpRegistryPort>) =>
-    effect.pipe(
-      Effect.provideService(McpHostStore, store),
-      Effect.provideService(McpRegistryPort, registry),
-    );
+  const provided = <A>(effect: Effect.Effect<A, never, McpHostServices>): Effect.Effect<A> =>
+    Effect.flatMap(runtime.contextEffect, (context) => Effect.provideContext(effect, context));
 
   return {
     requestStart: (request) => provided(requestStart(environment, request)),
+    servers: (request) => provided(servers(environment, request)),
     apply: (input) =>
       environment === undefined
         ? Effect.succeed(HostFailed.make({ message: "The MCP host's name is unknown" }))
-        : provided(apply(input)),
+        : provided(apply(input, environment)),
   };
 };

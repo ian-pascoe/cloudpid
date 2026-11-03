@@ -25,7 +25,7 @@ import {
   type McpDeps,
   type RowStore,
 } from "../src/index.ts";
-import type { McpCallContext, McpError } from "../src/types.ts";
+import { type McpCallContext, type McpError, xMcpHeaderProblems } from "../src/types.ts";
 
 /** What every call here is made for: the owner's host, which has no conversation. */
 const HOST_CALL: McpCallContext = { origin: "host" };
@@ -90,10 +90,21 @@ const toolCallsOf = (context: string | undefined) =>
     Option.getOrElse(() => []),
   );
 
+/**
+ * The server's tools, less those whose `x-mcp-header` declarations break SEP-2243's rules, which a Modern client
+ * leaves out, as `McpHost`'s discovery does (`xMcpHeaderProblems`). A Legacy server's tools are kept as listed.
+ */
 const listTools = (connection: McpConnection) =>
-  connection
-    .list("tools", HOST_CALL)
-    .pipe(Effect.map((outcome): ReadonlyArray<ListItems["tools"]> => outcome.value));
+  connection.list("tools", HOST_CALL).pipe(
+    Effect.map((outcome): ReadonlyArray<ListItems["tools"]> =>
+      connection.era === "modern"
+        ? outcome.value.filter(
+            // SAFETY: a listed tool's `inputSchema` is a JSON object.
+            (tool) => xMcpHeaderProblems(tool.inputSchema as Schema.Json).length === 0,
+          )
+        : outcome.value,
+    ),
+  );
 
 /** The tool `name` of `tools`, or the scenario's failure that the server does not list it. */
 const toolNamed = (tools: ReadonlyArray<ListItems["tools"]>, name: string) => {
@@ -157,7 +168,8 @@ const SCENARIOS = new Map<string, Scenario>([
       }),
   ],
 
-  // The mock lists one valid tool among invalid ones, which the SDK's `listTools` leaves out; call what is left.
+  // The mock lists one valid tool among invalid ones, which `listTools` leaves out (`xMcpHeaderProblems`); call what is
+  // left.
   [
     "http-invalid-tool-headers",
     (connection) =>
