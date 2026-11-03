@@ -17,13 +17,20 @@
 //   an older host means no MCP tools, never a failure. The build is pure, so building over unchanged tools gives
 //   byte-identical declarations.
 //
+// **The `mcp_servers` section and its notices** (`./mcp/servers.ts`, `./mcp/notices.ts`): every build carries the section,
+// which reads the newest listing once per Context Window (frozen, so the prompt never changes within it), and each later
+// request of any conversation, a subagent's included, asks whether the conversation was shown the listing as it is now; if
+// not, one notice tells it (once per change per conversation). `notify` asks the same for a conversation whose request
+// start just ran, so its notice comes before its message. A conversation asked about is remembered as up to date until the
+// listing changes or its section is shown again, so an unchanged listing costs a request nothing.
+//
 // What an install was built from is kept (`McpToolsStore`), only what the build reads (`McpBuildServer`), so an object
 // that starts again installs the very same tools before anything resumes, without asking the host: a resumed Run, a
 // resumed call and the next request see the declarations the Context Window was shown. The store also keeps each
 // conversation's last opened Context Window, so `windowOpened` is sent once per window across restarts.
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
 import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
-import type { Extension } from "@earendil-works/pi-durable";
+import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -35,13 +42,9 @@ import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
-import {
-  emptyMcpExtension,
-  McpBuildServer,
-  mcpExtension,
-  mcpNamespaces,
-  type McpToolOptions,
-} from "./mcp/tools.ts";
+import { type McpNotices } from "./mcp/notices.ts";
+import { EMPTY_LISTING, type McpListing, mcpListing, mcpServersSectionOf } from "./mcp/servers.ts";
+import { McpBuildServer, mcpExtension, mcpNamespaces, type McpToolOptions } from "./mcp/tools.ts";
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 
@@ -62,7 +65,17 @@ export {
 } from "./mcp/questions.ts";
 
 export {
+  EMPTY_LISTING,
   emptyMcpExtension,
+  type McpListing,
+  mcpListing,
+  mcpServersNotice,
+  mcpServersSection,
+} from "./mcp/servers.ts";
+
+export { type McpNotices, McpServersDoc, mcpNotices } from "./mcp/notices.ts";
+
+export {
   extensionName,
   MCP_CALL_SLACK_MS,
   type McpBuild,
@@ -176,6 +189,15 @@ export type McpToolsService = {
    * otherwise. Run under the Session's install lock, with the settings in force.
    */
   readonly reinstall: (offered: ReadonlyArray<string>) => Option.Option<McpReinstall>;
+  /** The newest listing of the `mcp_servers` section, as of the last reinstall. */
+  readonly listing: () => McpListing;
+  /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
+  readonly bindNotices: (notices: McpNotices) => void;
+  /**
+   * Tell `conversation` of the listing as it is if its section was shown another (a request start's check, outside any
+   * lock: it never fails, and a failure is logged and tried again by the conversation's next request).
+   */
+  readonly notify: (conversation: ConversationId) => Effect.Effect<void>;
 };
 
 /** The key of a Session with no MCP tools: no servers, or a host that offers none. */
@@ -217,6 +239,43 @@ export const makeMcpTools = (
 
   /** The key of what is installed; nothing is before the first `reinstall`. */
   let installed: string | undefined;
+
+  /** The newest listing: what the section shows when it is read, and what a notice tells. */
+  let current: McpListing = EMPTY_LISTING;
+
+  let notices: McpNotices | undefined;
+
+  /** The hash of the listing each conversation is known to have been shown, until it changes or the section shows anew. */
+  const known = new Map<ConversationId, string>();
+
+  /** Ask whether `conversation` was shown `current`, writing its notice if not; `shown` is its request's section, if any. */
+  const check = (conversation: ConversationId, shown: string | undefined) => {
+    const listing = current;
+
+    if (notices === undefined || known.get(conversation) === listing.hash) return Effect.void;
+
+    const { check: ask } = notices;
+
+    return Effect.tryPromise(() => ask({ conversation, listing, shown })).pipe(
+      Effect.map((seen) => {
+        if (seen) known.set(conversation, listing.hash);
+      }),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("The MCP servers notice could not be written", cause),
+      ),
+    );
+  };
+
+  /** The section, shared by every build: it reads the newest listing, and hears of each request that finds it shown. */
+  const section = mcpServersSectionOf({
+    listing: () => current,
+    shownAnew: (conversation) => {
+      known.delete(conversation);
+    },
+    stillShown: (conversation, shown) => check(conversation, shown),
+  });
+
+  const sectionOptions: McpToolOptions = { ...options, sections: [section] };
 
   /** Keep `next`, read as number `read`, unless a later read was kept. */
   const keep = (read: number, next: McpInventory | undefined) => {
@@ -357,17 +416,36 @@ export const makeMcpTools = (
       saved = text;
     }
 
+    current = mcpListing(latest?.servers ?? [], offered);
+
+    // The extension keeps its section when the servers go: a conversation shown a listing is told none is left.
     return Option.some(
       latest === undefined
-        ? { mcp: emptyMcpExtension, namespaces: [] }
+        ? {
+            mcp: mcpExtension({ servers: [], offered }, client, {}, sectionOptions),
+            namespaces: [],
+          }
         : {
-            mcp: mcpExtension({ servers: latest.servers, offered }, client, latest.origin, options),
+            mcp: mcpExtension(
+              { servers: latest.servers, offered },
+              client,
+              latest.origin,
+              sectionOptions,
+            ),
             namespaces: mcpNamespaces(latest.servers),
           },
     );
   };
 
-  return { requestStart, reinstall };
+  return {
+    requestStart,
+    reinstall,
+    listing: () => current,
+    bindNotices: (next) => {
+      notices = next;
+    },
+    notify: (conversation) => check(conversation, undefined),
+  };
 };
 
 /** The Session's MCP tools, for its runtime. */

@@ -341,6 +341,79 @@ describe("an MCP tool in a Session", () => {
     ]);
   });
 
+  it("tells the conversation of a set change with exactly one notice, and never changes the section it was shown", async () => {
+    const { environment, host, stub } = await scripted({ exposure: "codemode" });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["First answer.", "Second answer.", "Third answer."]);
+      await instance.prompt({ requestId: "one", text: "First" });
+    });
+
+    // A second server joins the set: its line is not in the section the conversation was shown.
+    await host.apply({
+      ...SET,
+      hash: "h2",
+      revision: 2,
+      entries: [
+        ...SET.entries.map((entry) => ({
+          ...entry,
+          server: { ...entry.server, exposure: "codemode" },
+        })),
+        {
+          name: "search",
+          source: { kind: "global" },
+          server: {
+            type: "http",
+            url: "https://search.example/mcp",
+            headers: {},
+            exposure: "deferred",
+          },
+          hash: "hash-search",
+          conn: "conn-search",
+          identity: "identity-search",
+        },
+      ],
+    });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      await instance.prompt({ requestId: "two", text: "Second" });
+      await instance.prompt({ requestId: "three", text: "Third" });
+    });
+
+    const notices = async (target: DurableObjectStub<TestSession>) =>
+      (await runInDurableObject(target, (instance: TestSession) => instance.rootEntries())).filter(
+        (entry) => entry.kind === "cloudpid.mcp-servers",
+      );
+
+    const systems = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.requestSection("mcp_servers"),
+    );
+
+    expect(await notices(stub)).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({ notice: "MCP servers changed" }),
+        text: expect.stringContaining("- mcp__search (connecting)"),
+      }),
+    ]);
+    // The section the provider got is the one it was first shown, in every request.
+    expect(systems[0]).toContain("- mcp__docs (codemode)");
+    expect(systems[0]).not.toContain("mcp__search");
+    expect(systems[1]).toBe(systems[0]);
+    expect(systems[2]).toBe(systems[0]);
+
+    // The object starts again: the conversation's document is what keeps it from being told twice.
+    await abortAllDurableObjects();
+
+    const after = env.SESSIONS.getByName(`mcp-${environment}`);
+
+    await runInDurableObject(after, async (instance: TestSession) => {
+      instance.script(["Fourth answer."]);
+      await instance.prompt({ requestId: "four", text: "Fourth" });
+    });
+
+    expect(await notices(after)).toHaveLength(1);
+  });
+
   it("keeps the tools it built when its Workspace cannot be looked up", async () => {
     const { stub } = await scripted();
 

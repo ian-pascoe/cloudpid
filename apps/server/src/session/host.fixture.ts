@@ -1873,6 +1873,25 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /** The text each request's transcript left in effect for system prompt section `key`, oldest first. */
+  requestSection(key: string): ReadonlyArray<string | undefined> {
+    return (this.ctx.storage.kv.get<string[]>("request-messages") ?? []).map((messages) => {
+      let shown: string | undefined;
+
+      // SAFETY: the messages as the fixture's model stored them, JSON of pi-ai messages.
+      for (const message of JSON.parse(messages) as ReadonlyArray<{
+        readonly role: string;
+        readonly sections?: Readonly<Record<string, string | null>>;
+      }>) {
+        const text = message.role === "system" ? message.sections?.[key] : undefined;
+
+        if (text !== undefined) shown = text === null ? undefined : text;
+      }
+
+      return shown;
+    });
+  }
+
   /** How many times the Session marked its Workspace used before an MCP host call. */
   mcpReady(): number {
     return this.ctx.storage.kv.get<number>("mcp-ready") ?? 0;

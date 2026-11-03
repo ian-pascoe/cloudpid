@@ -296,6 +296,53 @@ describe("a request start", () => {
   });
 });
 
+describe("a server as a codemode namespace", () => {
+  it("is named mcp__<server> with the entry's description and the server's instructions, and answers to its - and _ spellings but not the bare name", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const tools = makeMcpTools(host.client);
+
+    const session = await open((request) =>
+      request.text === "describe"
+        ? call([
+            "codemode",
+            {
+              code: `console.log(JSON.stringify([
+                await describeNamespace("mcp__docs_site"),
+                await describeNamespace("mcp__docs-site"),
+                (await describeNamespace("docs_site")) ?? null,
+              ]))`,
+            },
+          ])
+        : answer("ok"),
+    );
+
+    // `codemode` is deferred unless offered, as in a Session.
+    await session.start(tools, startOf(1, { offered: ["codemode"] }));
+    await session.prompt("describe");
+
+    const [result] = await session.texts("toolResult");
+    // SAFETY: what the script above printed, JSON.
+    const found = JSON.parse(/\[.*\]/s.exec(result ?? "")?.[0] ?? "[]") as ReadonlyArray<unknown>;
+
+    expect(found[0]).toMatchObject({
+      name: "mcp__docs_site",
+      description: "The product docs",
+      instructions: "Search before fetching.",
+    });
+    expect(found[1]).toEqual(found[0]);
+    expect(found[2]).toBeNull();
+  });
+
+  it("has none for a server that is not discovered yet", async () => {
+    const host = fakeMcpHost([{ ...DOCS, state: "connecting" }]);
+    const tools = makeMcpTools(host.client);
+
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+
+    expect(Option.getOrThrow(tools.reinstall([])).namespaces).toEqual([]);
+  });
+});
+
 describe("a reinstall over unchanged tools", () => {
   it("changes nothing the provider gets: the same tool declarations and no new system prompt section", async () => {
     const host = fakeMcpHost([DOCS, { ...ISSUES, timeout: 30 }]);

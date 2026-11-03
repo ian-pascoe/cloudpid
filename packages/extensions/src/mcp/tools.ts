@@ -35,6 +35,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   type Extension,
+  type PromptSection,
   type ToolExecutionApi,
   type ToolExecutionResult,
   type ToolRegistration,
@@ -85,6 +86,7 @@ export const MCP_STREAM_IDLE_MS = 30_000;
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
  * build reads (`timeout`, `description` and the Exposure keys), so what a Session keeps of a build never holds the
  * entry's URL, headers, `env` or OAuth, where a literal credential may be. Decoding an inventory's server drops the rest.
+ * `resources` is whether the server offers resources, which the `mcp_servers` section marks (`./servers.ts`).
  */
 export const McpBuildServer = Schema.Struct({
   name: Schema.String,
@@ -104,6 +106,7 @@ export const McpBuildServer = Schema.Struct({
   }),
   tools: Schema.Record(Schema.String, Schema.Json).pipe(Schema.Array, Schema.optionalKey),
   instructions: Schema.optionalKey(Schema.String),
+  resources: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpBuildServer = typeof McpBuildServer.Type;
@@ -122,6 +125,12 @@ const ToolDeclaration = Schema.Struct({
 type ToolDeclaration = typeof ToolDeclaration.Type;
 
 const decodeTool = Schema.decodeUnknownOption(ToolDeclaration);
+
+/** The tools of `server`'s inventory that this build can read, in the server's order. */
+export const listedTools = (
+  server: Pick<McpBuildServer, "tools">,
+): ReadonlyArray<ToolDeclaration> =>
+  Arr.filterMap(server.tools ?? [], (tool) => Result.fromOption(decodeTool(tool), () => undefined));
 
 /** A tool's `inputSchema` as its parameters: an object schema, or a loose object for anything else. */
 const parametersOf = (tool: ToolDeclaration): TSchema => {
@@ -182,6 +191,8 @@ export type McpToolOptions = {
    * without them, every question a server asks is cancelled.
    */
   readonly questions?: McpQuestionsService;
+  /** The extension's system prompt sections: the `mcp_servers` section (`./servers.ts`). */
+  readonly sections?: ReadonlyArray<PromptSection>;
 };
 
 /** A promise that resolves when any of `signals` aborts, and never without one. */
@@ -418,9 +429,7 @@ export const mcpExtension = (
   options: McpToolOptions = {},
 ): Extension => {
   const tools = Arr.flatMap(build.servers, (server) => {
-    const listed = Arr.filterMap(server.tools ?? [], (tool) =>
-      Result.fromOption(decodeTool(tool), () => undefined),
-    );
+    const listed = listedTools(server);
 
     if (server.state === "disabled" || listed.length === 0) return [];
 
@@ -447,7 +456,11 @@ export const mcpExtension = (
     });
   });
 
-  return defineExtension({ name: extensionName, tools });
+  return defineExtension({
+    name: extensionName,
+    tools,
+    sections: options.sections ?? [],
+  });
 };
 
 /**
@@ -475,6 +488,3 @@ export const mcpNamespaces = (
 
     return Result.succeed(namespace);
   });
-
-/** The `mcp` extension with no tools: before the first build, and for a Session whose host offers none. */
-export const emptyMcpExtension: Extension = defineExtension({ name: extensionName, tools: [] });

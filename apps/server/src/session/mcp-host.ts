@@ -10,11 +10,14 @@
 //   Window, so `windowOpened` is sent once per window across evictions.
 // - **`sessionMcp`** is the Session host's `mcp` option (`SessionHostMcp`): `McpTools` for the Session's Environment, its
 //   request start (the Workspace looked up and marked used first; either failing keeps the tools built), and its
-//   reinstall of `mcp`, `codemode` with the servers as its namespaces, and `tool-search`, together.
+//   reinstall of `mcp`, `codemode` with the servers as its namespaces, and `tool-search`, together; and the notices that
+//   the `mcp_servers` listing changed (`@cloudpid/extensions/mcp`: `bind` gives `McpTools` the Session's Harness to write
+//   them to, `notify` is a conversation's check at its request start).
 import {
   HostLost,
   makeMcpTools,
   type McpHostClientService,
+  type McpNotices,
   type McpQuestionsService,
   type McpToolOptions,
   type McpToolsService,
@@ -166,6 +169,9 @@ export type SessionMcpOptions = {
 export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> => {
   let held: { readonly environment: string; readonly tools: McpToolsService } | undefined;
 
+  /** Where the notices are written, once the host's Harness is open. */
+  let notices: McpNotices | undefined;
+
   /**
    * The Workspace marked used before any host call, tried twice: false when it never answered, and the request start
    * then calls nothing (`docs/architecture/mcp-in-a-session.md` → Request start), nor a call to a stdio server.
@@ -200,6 +206,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
       kvMcpToolsStore(options.kv, environment),
       toolOptions,
     );
+
+    if (notices !== undefined) tools.bindNotices(notices);
 
     held = { environment, tools };
 
@@ -275,5 +283,16 @@ export const sessionMcp = (options: SessionMcpOptions): SessionHostMcp<never> =>
     return [mcp, codemode, reloadToolSearch(others, values.toolSearch)];
   };
 
-  return { start, reinstall };
+  const bind = (next: McpNotices) => {
+    notices = next;
+    held?.tools.bindNotices(next);
+  };
+
+  const notify = (conversationId: ConversationId, values: SessionSettingsValues) => {
+    const { environment } = values.mcp;
+
+    return environment === null ? Effect.void : toolsOf(environment).notify(conversationId);
+  };
+
+  return { start, reinstall, bind, notify };
 };

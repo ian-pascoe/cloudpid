@@ -19,6 +19,7 @@ import {
 } from "@cloudpid/extensions/subagents";
 import { clearTodoList, TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
 import { MAX_ROLLOVER_FOCUS, ownerRollover } from "@cloudpid/extensions/context";
+import { type McpNotices, mcpNotices } from "@cloudpid/extensions/mcp";
 import {
   discoverPrompts,
   isPromptSource,
@@ -292,6 +293,19 @@ export type SessionHostMcp<R> = {
     installed: readonly Extension[],
     values: SessionSettingsValues,
   ) => readonly Extension[];
+  /**
+   * Where the `mcp_servers` notices are written (`docs/architecture/mcp-in-a-session.md` → The prompt cache and the
+   * `mcp_servers` section): the Session's open Harness. Called once, before anything resumes.
+   */
+  readonly bind: (notices: McpNotices) => void;
+  /**
+   * Tell conversation `conversationId` that the `mcp_servers` listing changed, if its section was shown another one: run
+   * after a request start's install, before its message is placed. Never fails.
+   */
+  readonly notify: (
+    conversationId: ConversationId,
+    values: SessionSettingsValues,
+  ) => Effect.Effect<void, never, R>;
 };
 
 export type SessionHostOptions<R = never> = {
@@ -823,6 +837,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       : installOver(options.mcp.reinstall(installed, settings.current())),
   );
 
+  // The `mcp_servers` notices go to this Harness, before anything resumes or renders a section.
+  options.mcp?.bind(mcpNotices(harness.harness));
+
   // What the MCP tools were last built from, before anything resumes: a resumed Run or call finds the tools, and the
   // declarations, that its Context Window was shown.
   yield* reinstallMcp;
@@ -896,6 +913,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                 ),
               ),
               Effect.andThen(reinstallMcp.pipe(installing, Effect.uninterruptible)),
+              // The conversation is told of a change to the listing its section was shown before its message is placed.
+              Effect.andThen(
+                Effect.provideContext(mcp.notify(conversationId, settings.current()), services),
+              ),
             ),
       ),
     );
