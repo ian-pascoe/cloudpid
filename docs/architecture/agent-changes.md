@@ -41,7 +41,7 @@ The `settings` extension (`@cloudpid/extensions/settings`) gives the agent the S
 
 ## MCP server changes
 
-The `settings_mcp` extension (`@cloudpid/extensions/settings-mcp`) gives the agent ten root-only, deferred tools over the MCP servers of either Scope: `settings_mcp_list`, `_get`, `_add`, `_update`, `_remove`, `_enable`, `_disable`, `_exposure_set`, `_tool_exposure_set` and `_reload`. They are recorded as `mcp.servers.<name>` or `mcp.servers.<name>.enabled|exposure|toolExposure` and reverted as other Settings changes are. No tool writes a Repo's `.pi/mcp.json`. The tools, their Scopes and their Approval are in [_The agent's changes_](mcp-configuration.md#the-agents-changes).
+The `settings_mcp` extension (`@cloudpid/extensions/settings-mcp`) gives the agent ten root-only, deferred tools over the MCP servers of either Scope: `settings_mcp_list`, `_get`, `_add`, `_update`, `_remove`, `_enable`, `_disable`, `_exposure_set`, `_tool_exposure_set` and `_reload`. They are recorded as `mcp.servers.<name>` or `mcp.servers.<name>.enabled|exposure|toolExposure` and reverted as other Settings changes are. `settings_reset` takes the three key fields at an Environment (it is the way back to what Global says). The ordinary ones, narrowing a server (`settings_mcp_disable`, a narrower Exposure, a `hidden` tool key), are applied at once and a widening one is refused until the Approval of #491 asks. No tool writes a Repo's `.pi/mcp.json`. The tools, their Scopes and their Approval are in [_The agent's changes_](mcp-configuration.md#the-agents-changes).
 
 ## Approval
 

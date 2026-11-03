@@ -29,7 +29,14 @@ import type { McpHostClientService } from "./mcp/client.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { runSized } from "./program.fixture.ts";
 import { storedBytes } from "./stored-bytes.ts";
-import { GLOBAL_SETTINGS_SCOPE, SettingsAccessError } from "./settings.ts";
+import { AgentChangeLog, DeployCredentials } from "./environment.ts";
+import { Secrets, type SecretsService } from "./secrets/store.ts";
+import {
+  GLOBAL_SETTINGS_SCOPE,
+  SettingsAccess,
+  SettingsAccessError,
+  SettingsReload,
+} from "./settings.ts";
 import {
   MAX_GET_INSTRUCTIONS_BYTES,
   SETTINGS_MCP_READ_TOOLS,
@@ -206,6 +213,7 @@ const fakeAccess = (
 
       return own;
     }),
+    check: () => Effect.die("The read tools check no change"),
     reload: (environment) =>
       Effect.suspend(() => {
         events.push(`reload ${environment}`);
@@ -246,6 +254,17 @@ const NO_HOST: McpHostClientService = {
   request: () => Effect.die("a host that was not meant to be asked"),
 };
 
+/** Secrets that redact nothing: the read tools keep none. */
+const secretsOf = (): SecretsService => {
+  const used: Pick<SecretsService, "refresh" | "redact"> = {
+    refresh: Effect.void,
+    redact: (value) => value,
+  };
+
+  // SAFETY: the tools use only `refresh` and `redact`.
+  return used as SecretsService;
+};
+
 /** The tools over `access`, every Environment's host being `host`, or the one `host` gives for the Environment. */
 const toolsOver = async (
   access: SettingsMcpAccessService,
@@ -257,6 +276,16 @@ const toolsOver = async (
         ...access,
         host: Predicate.isFunction(host) ? host : () => host,
       }),
+      // The read tools change no setting.
+      Effect.provideService(SettingsAccess, {
+        get: () => Effect.die("No Settings"),
+        own: Effect.die("No Settings"),
+        change: () => Effect.die("No Settings"),
+      }),
+      Effect.provideService(SettingsReload, { apply: Effect.die("No Settings") }),
+      Effect.provideService(AgentChangeLog, { record: () => Effect.die("No Settings") }),
+      Effect.provideService(DeployCredentials, { values: [] }),
+      Effect.provideService(Secrets, secretsOf()),
     ),
   );
 

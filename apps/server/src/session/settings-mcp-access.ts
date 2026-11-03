@@ -17,7 +17,12 @@ import { noEnvironment } from "./settings-access.ts";
 /** What the Session's MCP read and pushes use of the Registry. */
 export type SettingsMcpRegistry = Pick<
   RegistryMethods,
-  "mcpSettingsView" | "mcpSettingsReload" | "mcpPending" | "mcpPushed" | "sessionSettings"
+  | "mcpSettingsView"
+  | "mcpSettingsReload"
+  | "mcpChangeCheck"
+  | "mcpPending"
+  | "mcpPushed"
+  | "sessionSettings"
 >;
 
 export type SessionSettingsMcpAccessOptions = {
@@ -51,6 +56,19 @@ export const sessionSettingsMcpAccess = ({
       : Effect.suspend(() => registry.sessionSettings({ session })).pipe(
           Effect.map(({ environment }) => environment),
         ),
+  check: ({ scope, name, changes }) =>
+    Effect.suspend(() =>
+      registry.mcpChangeCheck({
+        environment: scope === GLOBAL_SETTINGS_SCOPE ? undefined : scope,
+        name,
+        changes,
+      }),
+    ).pipe(
+      Effect.filterOrFail(
+        (check) => check !== null,
+        () => noEnvironment(scope),
+      ),
+    ),
   reload: (environment) =>
     Effect.suspend(() => registry.mcpSettingsReload({ environment })).pipe(
       Effect.filterOrFail(

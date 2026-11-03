@@ -171,6 +171,37 @@ const spendLimit = (args: Args): Option.Option<string> =>
       ? Option.some("no limit")
       : Option.none();
 
+/** An MCP server a `settings_mcp_*` call names, at the Scope it names: `linear at Global`, `linear in <id>`. */
+const mcpServer = (args: Args): Option.Option<string> =>
+  Option.map(text(args, "name"), (name) =>
+    Option.match(text(args, "scope"), {
+      onNone: () => name,
+      onSome: (scope) => (scope === "*" ? `${name} at Global` : `${name} in ${scope}`),
+    }),
+  );
+
+/** What a `settings_mcp_exposure_set` call sets: the server at its Scope and the exposure. */
+const mcpExposure = (args: Args): Option.Option<string> =>
+  Option.map(mcpServer(args), (server) =>
+    Option.match(text(args, "exposure"), {
+      onNone: () => server,
+      onSome: (exposure) => `${server}: ${exposure}`,
+    }),
+  );
+
+/** What a `settings_mcp_tool_exposure_set` call sets: the server's tool (key) at its Scope and the exposure, none for a removal. */
+const mcpToolExposure = (args: Args): Option.Option<string> =>
+  Option.map(mcpServer(args), (server) => {
+    const tool = Option.getOrElse(text(args, "tool"), () => "a tool");
+    const exposure = text(args, "exposure");
+
+    return Option.match(exposure, {
+      onNone: () =>
+        args.exposure === null ? `${server} · ${tool}: removed` : `${server} · ${tool}`,
+      onSome: (value) => `${server} · ${tool}: ${value}`,
+    });
+  });
+
 /** What a `settings_subagent_depth_set` call asks to set: the levels of subagents below the root. */
 const subagentDepth = (args: Args): Option.Option<string> =>
   Predicate.isNumber(args.depth) ? Option.some(`depth ${args.depth}`) : Option.none();
@@ -272,6 +303,12 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "environment_toolchains_set":
       case "environment_ignore_set":
         return inEnvironment(args, firstLine(args, "reason"));
+      case "settings_mcp_disable":
+        return mcpServer(args);
+      case "settings_mcp_exposure_set":
+        return mcpExposure(args);
+      case "settings_mcp_tool_exposure_set":
+        return mcpToolExposure(args);
       case "settings_model_set":
         return defaultAgent(args);
       case "settings_role_set":

@@ -27,6 +27,7 @@ import type {
   PushSubscription,
   SessionOrigin,
   SessionsQuery,
+  SettingsMcpChangeCheck,
   SettingsMcpReload,
   SettingsMcpView,
   SkillChangeFiles,
@@ -69,6 +70,7 @@ import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { buildMovedRepos, MCP_FIRST_LOOK_WAIT, mcpRepoFileViews } from "./mcp-repo-files.ts";
 import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
+import { type McpFieldChange, mcpChangeCheck } from "./mcp-change-check.ts";
 import { mcpReloadReport, mcpReloadSnapshot, mcpSettingsView } from "./mcp-settings-view.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
@@ -913,6 +915,17 @@ export type RegistryMethods = {
     readonly environment?: string | undefined;
     readonly name?: string | undefined;
   }) => Effect.Effect<SettingsMcpView | null>;
+  /**
+   * What a change of server `name`'s keys (`changes`, `settings_mcp_*`'s fields) would do to each Environment's set, by the
+   * pure resolvers before and after: whether the entry in force changes there, and what it makes reachable that was not
+   * (`docs/architecture/mcp-configuration.md` → Approval, The check). At Global every Environment whose set has the server;
+   * with `environment`, only that one. Writes nothing. Null when no Environment has the id. For the Session DO only.
+   */
+  readonly mcpChangeCheck: (input: {
+    readonly environment?: string | undefined;
+    readonly name: string;
+    readonly changes: ReadonlyArray<McpFieldChange>;
+  }) => Effect.Effect<SettingsMcpChangeCheck | null>;
   /**
    * The agent's `settings_mcp_reload`: look at each of `environment`'s Repos' `.pi/mcp.json` again, under the throttle the
    * scheduled looks share (`agent`: a Repo looked at in the last 30 s is `recent`), keeping the last good copy of a Repo that
@@ -1944,6 +1957,8 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => mcpSettingsView(store, mcpSignIns, { environment, name }, now)),
             ),
+          mcpChangeCheck: ({ environment, name, changes: wanted }) =>
+            Effect.sync(() => mcpChangeCheck(store, { environment, name, changes: wanted })),
           mcpSettingsReload: ({ environment }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;

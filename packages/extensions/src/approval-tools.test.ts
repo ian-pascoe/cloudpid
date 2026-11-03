@@ -24,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
+import { SettingsMcpAccess } from "./settings-mcp-access.ts";
 import {
   ApprovalTools,
   type EnvironmentFootprint,
@@ -267,6 +268,21 @@ const setUp = async ({
   const extension = await Effect.runPromise(
     ApprovalTools.pipe(
       Effect.provideService(Approvals, approvals),
+      // An MCP server's reset is the `settings_mcp` tests' (`settings-mcp-changes.test.ts`).
+      Effect.provideService(SettingsMcpAccess, {
+        view: () => Effect.die("No MCP servers"),
+        own: Effect.die("No MCP servers"),
+        check: () => Effect.die("No MCP servers"),
+        reload: () => Effect.die("No MCP servers"),
+        pushes: () => Effect.die("No MCP servers"),
+        pushed: () => Effect.die("No MCP servers"),
+        host: () => ({
+          requestStart: () => Effect.die("No MCP host"),
+          servers: () => Effect.die("No MCP host"),
+          apply: () => Effect.die("No MCP host"),
+          request: () => Effect.die("No MCP host"),
+        }),
+      }),
       Effect.provideService(Environments, {
         ...unusedLifecycle,
         ...unusedSecretMarks,

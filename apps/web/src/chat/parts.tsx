@@ -22,6 +22,7 @@ import { disclosureOpenAtom } from "../session-layout-state.ts";
 import { useShownLayoutKey, useThreadConversation } from "./conversation.ts";
 import { ChangeDiff } from "../change-diff.tsx";
 import { changeTitleText, fieldValueText } from "../environments.ts";
+import { inheritedNote } from "../mcp-change.ts";
 import { changeDiff } from "../line-diff.ts";
 import { decodeCardDiff, diffTotals } from "../call-diff.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
@@ -335,6 +336,13 @@ const NestedCalls = ({
   );
 };
 
+/** `label`, with the note that its value was inherited from Global when it was. */
+const labelWithNote = (label: string, field: string, inherited: boolean | undefined): string => {
+  const note = inheritedNote(field, inherited);
+
+  return note === null ? label : `${label} · ${note}`;
+};
+
 /**
  * The Agent change a call made: the Environment (or the Settings) and field, and its value before and after, in full; a script's or the
  * Toolchains' as a diff.
@@ -350,11 +358,34 @@ const Change = ({ change }: { change: ShownChange }) => {
       </div>
       {diff === undefined ? (
         <>
-          <Output label="Before" text={fieldValueText(change.field, change.before)} />
-          <Output label="After" text={fieldValueText(change.field, change.after)} />
+          <Output
+            label={labelWithNote("Before", change.field, change.beforeInherited)}
+            text={fieldValueText(change.field, change.before)}
+          />
+          <Output
+            label={labelWithNote("After", change.field, change.afterInherited)}
+            text={fieldValueText(change.field, change.after)}
+          />
         </>
       ) : (
         <div className="mt-1">
+          {Arr.map(
+            Arr.getSomes([
+              Option.map(
+                Option.fromNullishOr(inheritedNote(change.field, change.beforeInherited)),
+                (note) => `Before: ${note}`,
+              ),
+              Option.map(
+                Option.fromNullishOr(inheritedNote(change.field, change.afterInherited)),
+                (note) => `After: ${note}`,
+              ),
+            ]),
+            (note) => (
+              <div key={note} className="text-xs text-muted-foreground">
+                {note}
+              </div>
+            ),
+          )}
           <ChangeDiff rows={diff} />
         </div>
       )}

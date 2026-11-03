@@ -12,6 +12,7 @@ import {
   type Settings,
 } from "@cloudpid/config";
 import {
+  type AgentChange,
   type EnvironmentRecord,
   type EnvironmentSecretRecord,
   McpNoEnvironment,
@@ -32,6 +33,7 @@ import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import type * as Schema from "effect/Schema";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  agentChangesAtom,
   environmentSecretsAtom,
   environmentSettingsAtom,
   environmentsAtom,
@@ -43,7 +45,7 @@ import {
   registryWith,
   settled,
 } from "../registry.testing.ts";
-import { settingsAtom, settingsOverridesAtom } from "../settings.ts";
+import { settingsAtom, settingsChangesAtom, settingsOverridesAtom } from "../settings.ts";
 import { McpSection } from "./mcp.tsx";
 import { mcpSignInsAtom } from "./mcp-sign-in-state.ts";
 import { emptyMcpFields, mcpCopyForm, newMcpForm, toolsDraftOf } from "./mcp-form.ts";
@@ -136,6 +138,8 @@ interface Held {
   readonly repoFiles?: ReadonlyArray<McpRepoFileView>;
   /** The Environment's own Variables. */
   readonly variables?: Readonly<Record<string, string>>;
+  /** The agent's changes the Registry lists, at Work and (as the Settings') at Global. */
+  readonly changes?: ReadonlyArray<AgentChange>;
 }
 
 /** The Registry's handlers: Global's servers and Work's Overrides, with the fixtures above. */
@@ -144,6 +148,8 @@ const handlersFor = (held: Held = {}): Partial<RegistryHandlers> => {
 
   return {
     listSessions: () => Effect.succeed([]),
+    listAgentChanges: () => Effect.succeed(held.changes ?? []),
+    listSettingsChanges: () => Effect.succeed(held.changes ?? []),
     listEnvironments: () =>
       Effect.succeed([
         held.repoFiles === undefined
@@ -259,8 +265,9 @@ const render = (
         environmentSecretsAtom,
         mcpSignInsAtom,
         ...(scope === "*"
-          ? [globalSettingsAtom]
+          ? [globalSettingsAtom, settingsChangesAtom]
           : [
+              agentChangesAtom(scope),
               settingsOverridesAtom(scope),
               environmentSettingsAtom(scope),
               mcpServersAtom(scope),
@@ -386,6 +393,70 @@ describe("the MCP servers section at Global", () => {
         "Global: is not used and is forgotten by the next save: exposure: Expected one of codemode",
       );
       expect(textOf(rowOf(markup, "linear"))).not.toContain("Issues and projects");
+    }),
+  );
+});
+
+/** An agent's change to an MCP server, as the Registry lists it. */
+const agentChange = (id: number, field: string, more: Partial<AgentChange> = {}): AgentChange => ({
+  id,
+  scope: "work",
+  at: Date.now() - 5 * 60_000,
+  actor: "agent",
+  session: "s-1",
+  conversation: 1,
+  tool: "settings_mcp_disable",
+  reason: "It was noisy",
+  field,
+  before: true,
+  after: false,
+  reverts: null,
+  revertedBy: null,
+  ...more,
+});
+
+describe("the mark of a server the agent changed", () => {
+  it.effect("says Changed by the agent on its row, linking to the change", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: { changes: [agentChange(7, "mcp.servers.linear.enabled")] },
+      });
+
+      expect(textOf(rowOf(markup, "linear"))).toContain("Changed by the agent · 5 minutes ago");
+      expect(rowOf(markup, "linear")).toContain(
+        'href="/settings/work/agent-changes#agent-change-7"',
+      );
+      expect(textOf(rowOf(markup, "files"))).not.toContain("Changed by the agent");
+    }),
+  );
+
+  it.effect("marks a Global row from the Settings' changes", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("*", {
+        held: {
+          changes: [
+            agentChange(3, "mcp.servers.files.exposure", {
+              scope: "*",
+              before: null,
+              after: "hidden",
+            }),
+          ],
+        },
+      });
+
+      expect(textOf(rowOf(markup, "files"))).toContain("Changed by the agent · 5 minutes ago");
+      expect(rowOf(markup, "files")).toContain('href="/settings/all/agent-changes#agent-change-3"');
+      expect(textOf(rowOf(markup, "linear"))).not.toContain("Changed by the agent");
+    }),
+  );
+
+  it.effect("is gone once the owner reverted the change", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: { changes: [agentChange(7, "mcp.servers.linear.enabled", { revertedBy: 8 })] },
+      });
+
+      expect(textOf(markup)).not.toContain("Changed by the agent");
     }),
   );
 });

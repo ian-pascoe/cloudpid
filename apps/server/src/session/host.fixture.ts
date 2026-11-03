@@ -38,6 +38,7 @@ import { Approvals } from "@cloudpid/extensions/approvals";
 import { Instructions, InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/extensions/settings";
+import { SettingsMcpAccess } from "@cloudpid/extensions/settings-mcp";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
 import type {
@@ -613,6 +614,21 @@ export class TestSession extends DurableObject {
               ),
               Effect.provideService(Environments, testEnvironments(kv)),
               Effect.provideService(EnvironmentRemoval, unusedRemoval),
+              // These tests change no MCP server.
+              Effect.provideService(SettingsMcpAccess, {
+                view: () => Effect.die("No MCP servers"),
+                own: Effect.die("No MCP servers"),
+                check: () => Effect.die("No MCP servers"),
+                reload: () => Effect.die("No MCP servers"),
+                pushes: () => Effect.die("No MCP servers"),
+                pushed: () => Effect.die("No MCP servers"),
+                host: () => ({
+                  requestStart: () => Effect.die("No MCP host"),
+                  servers: () => Effect.die("No MCP host"),
+                  apply: () => Effect.die("No MCP host"),
+                  request: () => Effect.die("No MCP host"),
+                }),
+              }),
               Effect.provideService(DeployCredentials, { values: [] }),
             ),
           ]

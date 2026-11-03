@@ -13,6 +13,7 @@ import {
   INSTRUCTIONS_ROOT,
   type OverrideFieldChange,
   overrideFieldPath,
+  overrideInherited,
   overrideValue,
   overridesWithFields,
   resetsOverride,
@@ -312,7 +313,7 @@ export const changeSettingsOverrides = (
         : Result.succeed({
             ...change,
             before: settingsFieldValue(known.settings, change.field),
-            beforeInherited: Option.isNone(before),
+            beforeInherited: overrideInherited(known.overrides, change.field),
           });
     });
 
@@ -355,7 +356,7 @@ export const changeSettingsOverrides = (
         reverts: null,
         approved: author.approved,
         beforeInherited,
-        afterInherited: Option.isNone(overrideValue(saved.success.overrides, field)),
+        afterInherited: overrideInherited(saved.success.overrides, field),
       }),
     );
 
@@ -485,7 +486,7 @@ export const revertSettingsOverrideChange = (
   if (known === null) return { status: "missing" };
 
   const value = settingsFieldValue(known.settings, change.field);
-  const inherited = Option.isNone(overrideValue(known.overrides, change.field));
+  const inherited = overrideInherited(known.overrides, change.field);
 
   if (
     inherited !== (change.afterInherited ?? false) ||
@@ -525,7 +526,7 @@ export const revertSettingsOverrideChange = (
     after: settingsFieldValue(saved.success.settings, change.field),
     reverts: change.id,
     beforeInherited: inherited,
-    afterInherited: Option.isNone(overrideValue(saved.success.overrides, change.field)),
+    afterInherited: overrideInherited(saved.success.overrides, change.field),
   });
 
   return { status: "reverted", change: recorded, state: saved.success };

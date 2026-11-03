@@ -47,8 +47,10 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import type { Mutable } from "effect/Types";
 import { environmentSettingsOf, readGlobal } from "./global.ts";
 import type { McpSetStore } from "./mcp-registry.ts";
+import { mcpDefinedIn } from "./mcp-change-check.ts";
 import { mcpRepoFileViews, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { hostOf } from "./mcp-sign-in-flow.ts";
 import { signInTargetOf, signInUseOf } from "./mcp-sign-in-registry.ts";
@@ -434,7 +436,7 @@ export const mcpSettingsView = (
 
   const found = asked === undefined ? undefined : Arr.head(shown);
 
-  return {
+  const view: Mutable<SettingsMcpView> = {
     scope: global ? GLOBAL_SCOPE_ID : environment,
     name: global ? GLOBAL_NAME : (store.getEnvironment(environment)?.name ?? environment),
     servers: Arr.map(shown, serverOf),
@@ -446,6 +448,13 @@ export const mcpSettingsView = (
     offered,
     warnings,
   };
+
+  // A name Global has no entry of may be defined in an Environment (its own entry, or a Repo's): which ones.
+  if (global && asked !== undefined && shown.length === 0) {
+    view.definedIn = mcpDefinedIn(store, asked);
+  }
+
+  return view;
 };
 
 /** What a reload compares before and after the look: the servers in force, the problems and the Repos' files. */
