@@ -82,6 +82,8 @@
         "@alchemy.run/cloudflare-runtime": "2.0.0-beta.84",
         "@cloudflare/vitest-plugin": "^1.4.8",
         "@cloudpid/config": "workspace:*",
+        "@cloudpid/protocol": "workspace:*",
+        "@earendil-works/pi-mcp": "1.4.0",
         "rolldown": "1.2.13",
       },
     },
@@ -239,6 +241,7 @@
       "name": "@cloudpid/mcp",
       "version": "0.0.0",
       "dependencies": {
+        "@cloudpid/protocol": "workspace:*",
         "@earendil-works/pi-mcp": "1.4.0",
         "@modelcontextprotocol/client": "2.4.0",
         "@modelcontextprotocol/core": "2.4.0",

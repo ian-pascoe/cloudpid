@@ -195,8 +195,9 @@ jobs:
           done
           echo "Turbo cache: $before → $(du -sh "$TURBO_CACHE_DIR" | cut -f1), $(wc -l <<<"$hashes") tasks kept"
 
-  # The official MCP conformance suite against the core's scenario client (`packages/mcp/conformance`; `docs/architecture/
-  # mcp.md` → Testing and tracing → Conformance), once per mode: the spec version picks the scenarios the runner starts.
+  # The official MCP conformance suite against the core's scenario client and cloudpid's own MCP endpoint
+  # (`packages/mcp/conformance`; `docs/architecture/mcp.md` → Testing and tracing → Conformance), once per mode: the spec
+  # version picks the scenarios the runner starts, client then server.
   # A failure outside `baseline.json` fails the job, and so does a baseline entry that now passes, so the baseline only
   # shrinks. The runner is pinned to the SDK's own CI version (`packages/mcp/package.json`), so it runs the same
   # scenarios the SDK passes. A run takes seconds: the setup (install) is the cost.

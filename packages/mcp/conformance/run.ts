@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
- * Runs the official conformance suite against `client.ts` in one mode (a spec version), against `baseline.json`
- * (`docs/architecture/mcp.md` → Testing and tracing → Conformance; The MCP core #394 D25).
+ * Runs the official conformance suite in one mode (a spec version), against `baseline.json`: the `client` scenarios
+ * against `client.ts` (the core's scenario client), then the `server` scenarios against `server.ts` (cloudpid's own MCP
+ * endpoint, `serveMcp` over `node:http`) (`docs/architecture/mcp.md` → Testing and tracing → Conformance;
+ * `docs/architecture/mcp-endpoint.md` → Telemetry and testing; The MCP core #394 D25).
  *
  *   bun --cwd packages/mcp run conformance <2026-07-28 | 2025-11-25 | 2025-06-18 | 2025-03-26>
  *
  * The runner's own baseline is a file of scenario names, which fails the run on a failure outside it (a regression)
  * and on a scenario in it that now passes (stale: remove the entry), so the baseline only shrinks. Its entries are
  * keyed by scenario name alone, and one scenario can pass at one version and fail at another, so `baseline.json` has
- * a section per mode, its entries grouped by the reason they fail, and this writes the runner's file for the mode.
+ * a section per mode, each with its `client` and `server` entries grouped by the reason they fail, and this writes the
+ * runner's file for the mode. The run fails when either side does.
  */
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off schemaSync:off -- a Node script that spawns the runner: plain functions over values.
-import { spawnSync } from "node:child_process";
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off schemaSync:off newPromise:off asyncFunction:off -- a Node script that spawns the runner: plain functions over values.
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +32,10 @@ const Group = Schema.Struct({
   entries: Schema.NonEmptyArray(Schema.String),
 });
 
-const Section = Schema.Array(Group);
+const Groups = Schema.Array(Group);
+
+/** What fails in a mode: the scenario client's, and the endpoint's. */
+const Section = Schema.Struct({ client: Groups, server: Groups });
 
 /** `baseline.json`: a section for every mode, and no other. */
 const Baseline = Schema.Record(Mode, Section);
@@ -43,13 +49,39 @@ const isMode = Schema.is(Mode);
 /** `baseline.json` as read, or why it is not a baseline. */
 export const parseBaseline = (text: string): Baseline => decodeBaseline(JSON.parse(text));
 
-/** The file the runner reads for `mode`: its client entries, as the JSON subset of YAML. */
+/** The file the runner reads for `mode`: its client and server entries, as the JSON subset of YAML. */
 export const runnerBaseline = (baseline: Baseline, mode: Mode) =>
-  JSON.stringify({ client: baseline[mode].flatMap((group) => group.entries) });
+  JSON.stringify({
+    client: baseline[mode].client.flatMap((group) => group.entries),
+    server: baseline[mode].server.flatMap((group) => group.entries),
+  });
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-const main = () => {
+/** Starts `server.ts`, and its URL once it listens. */
+const startServer = () =>
+  new Promise<{ readonly url: string; readonly stop: () => void }>((resolve, reject) => {
+    const child = spawn(process.execPath, [join(here, "server.ts")], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+
+    let seen = "";
+
+    child.on("error", reject);
+    child.on("exit", (code) => reject(new Error(`server.ts exited (${code}) before it listened`)));
+    child.stdout.on("data", (chunk: Buffer) => {
+      seen += chunk.toString();
+
+      const found = /listening (\S+)/.exec(seen);
+
+      if (found?.[1] !== undefined) {
+        child.removeAllListeners("exit");
+        resolve({ url: found[1], stop: () => void child.kill() });
+      }
+    });
+  });
+
+const main = async () => {
   const mode = process.argv[2];
 
   if (!isMode(mode)) {
@@ -80,28 +112,41 @@ const main = () => {
     "index.js",
   );
 
-  const run = spawnSync(
+  const common = ["--suite", "all", "--spec-version", mode, "--expected-failures", file];
+
+  console.log(`\n=== client scenarios (${mode}) ===`);
+
+  const client = spawnSync(
     process.execPath,
     [
       runner,
       "client",
       "--command",
       `${process.execPath} ${join(here, "client.ts")}`,
-      "--suite",
-      "all",
-      "--spec-version",
-      mode,
-      "--expected-failures",
-      file,
+      ...common,
       "--output-dir",
-      out,
+      join(out, "client"),
     ],
     { stdio: "inherit" },
   );
 
-  return run.status ?? 1;
+  console.log(`\n=== server scenarios (${mode}) ===`);
+
+  const server = await startServer();
+
+  try {
+    const run = spawnSync(
+      process.execPath,
+      [runner, "server", "--url", server.url, ...common, "--output-dir", join(out, "server")],
+      { stdio: "inherit" },
+    );
+
+    return (client.status ?? 1) === 0 && (run.status ?? 1) === 0 ? 0 : 1;
+  } finally {
+    server.stop();
+  }
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.exitCode = main();
+  process.exitCode = await main();
 }

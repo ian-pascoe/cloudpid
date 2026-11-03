@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./oauth": "./src/oauth.ts",
     "./types": "./src/types.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./server": "./src/server/index.ts"
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs",
@@ -16,6 +17,7 @@
     "conformance": "node conformance/run.ts"
   },
   "dependencies": {
+    "@cloudpid/protocol": "workspace:*",
     "@earendil-works/pi-mcp": "1.4.0",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/core": "2.4.0",

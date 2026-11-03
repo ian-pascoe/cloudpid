@@ -9,6 +9,7 @@ import {
   localAgentTokenName,
   mcpAccessProps,
   mcpApplicationProps,
+  mcpCallsNamespace,
   appHost,
 } from "./mcp-access.ts";
 
@@ -146,5 +147,25 @@ describe("the stack's MCP endpoint props", () => {
     expect(result.vars).toEqual({});
     expect(serviceToken).not.toHaveBeenCalled();
     expect(declared).not.toHaveBeenCalled();
+  });
+});
+
+describe("the MCP_CALLS namespace", () => {
+  it("is a stable positive integer per stage, apart from every other stage's", () => {
+    const ids = [
+      mcpCallsNamespace("prod"),
+      mcpCallsNamespace("pr-438"),
+      mcpCallsNamespace("pr-439"),
+      mcpCallsNamespace("dev_Ian"),
+    ];
+
+    expect(new Set(ids).size).toBe(ids.length);
+
+    for (const id of ids) {
+      expect(Number.isSafeInteger(id)).toBe(true);
+      expect(id).toBeGreaterThan(1_000_000);
+    }
+
+    expect(mcpCallsNamespace("prod")).toBe(mcpCallsNamespace("prod"));
   });
 });

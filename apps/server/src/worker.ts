@@ -3,7 +3,14 @@ import { BROWSER_HOST_BINDING, Browsers } from "@cloudpid/browser";
 import { WebConfigLive } from "@cloudpid/extensions/web";
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
-import { MCP_ENGINE_BINDING, MCP_ENGINE_ENTRYPOINT, McpWorker } from "@cloudpid/mcp-worker";
+import {
+  MCP_ENGINE_BINDING,
+  MCP_ENGINE_ENTRYPOINT,
+  MCP_SERVER_BINDING,
+  MCP_SERVER_ENTRYPOINT,
+  type McpServerBinding,
+  McpWorker,
+} from "@cloudpid/mcp-worker";
 import * as Alchemy from "alchemy";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Namespace from "alchemy/Namespace";
@@ -40,7 +47,7 @@ import {
   spareUpkeep,
 } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
-import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { attachmentRoute, isMcpRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { GitHubAppConfig, GitHubAppConfigLive } from "./github/config.ts";
 import { serveAttachment } from "./serve-attachment.ts";
 import { FileListings, fileListingsLayer } from "./session/file-search.ts";
@@ -58,7 +65,14 @@ import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
 import { Workspaces } from "./workspace/resource.ts";
-import { LOCAL_AGENT_TOKEN_ID, mcpAccessProps } from "./mcp-access.ts";
+import {
+  LOCAL_AGENT_TOKEN_ID,
+  MCP_CALLS_BINDING,
+  mcpAccessProps,
+  mcpCallsNamespace,
+} from "./mcp-access.ts";
+import { MCP_CALLS_LIMIT, MCP_CALLS_PERIOD_S } from "./mcp/api.ts";
+import { type RateLimiter, serveMcpRoute } from "./mcp/endpoint.ts";
 
 /**
  * The web app (`apps/web`), built at deploy time and served as static assets by this Worker. The Worker runs first
@@ -144,17 +158,19 @@ const browserBinding = Effect.gen(function* () {
 });
 
 /**
- * `McpWorker`'s `McpEngine` entrypoint, bound for `McpHost`, which runs the MCP SDK through it (ADR-0038;
- * `docs/architecture/mcp-connections.md` → The engine). It is bound through the Worker's Output, not a literal name, so
- * `McpWorker` deploys first. Only the deploy declares it: the bundle reads the binding from `env`.
+ * `McpWorker`'s two entrypoints, bound through the Worker's Output, not a literal name, so `McpWorker` deploys first: its
+ * `McpEngine`, for `McpHost`, which runs the MCP SDK through it (ADR-0038; `docs/architecture/mcp-connections.md` → The
+ * engine), and its `McpServer`, which serves `/mcp` (`docs/architecture/mcp-endpoint.md` → The handler). Only the deploy
+ * declares them: the bundle reads the bindings from `env`.
  */
-const mcpEngineBinding = Effect.gen(function* () {
+const mcpBindings = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
 
   const mcpWorker = yield* McpWorker;
 
   return {
     [MCP_ENGINE_BINDING]: Cloudflare.WorkerEntrypoint(mcpWorker, MCP_ENGINE_ENTRYPOINT),
+    [MCP_SERVER_BINDING]: Cloudflare.WorkerEntrypoint(mcpWorker, MCP_SERVER_ENTRYPOINT),
   };
 });
 
@@ -230,9 +246,16 @@ const props = Effect.gen(function* () {
       ...(yield* workspaceBinding),
       ...(yield* sandboxBinding),
       ...(yield* browserBinding),
-      ...(yield* mcpEngineBinding),
+      ...(yield* mcpBindings),
       // The Images binding the Session DOs' `read` prepares images with; `alchemy dev` emulates it with sharp.
       [IMAGES_BINDING]: Cloudflare.Images.Images(IMAGES_BINDING),
+      // The MCP endpoint's rate limit (120 calls per 60 s per identity; docs/architecture/mcp-endpoint.md → Limits and errors).
+      [MCP_CALLS_BINDING]: Cloudflare.RateLimit(MCP_CALLS_BINDING, {
+        namespaceId: mcpCallsNamespace(stage),
+        simple: { limit: MCP_CALLS_LIMIT, period: MCP_CALLS_PERIOD_S },
+      }),
+      // The deployed version, which `describe()` reports as the MCP endpoint's `serverInfo.version`.
+      CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
       ...mcpAccess.vars,
     },
   };
@@ -331,10 +354,25 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // SAFETY: the Worker's assets are bound as `ASSETS` (the Fetcher of the asset layer), as the deploy declares them.
     const assets = worker.ASSETS as AssetLayer;
 
+    // `/mcp`, after the guard (docs/architecture/mcp-endpoint.md → The handler). SAFETY: the deploy binds `McpWorker`'s
+    // `McpServer` entrypoint as `MCP_SERVER` (`mcpBindings`) and the rate limit as `MCP_CALLS`, which `alchemy dev` may lack.
+    const mcpRoute = serveMcpRoute({
+      registries,
+      sessions,
+      server: worker[MCP_SERVER_BINDING] as McpServerBinding,
+      calls: worker[MCP_CALLS_BINDING] as RateLimiter | undefined,
+      // SAFETY: the deploy binds the version metadata as `CF_VERSION_METADATA` (an `{ id }`); `alchemy dev` may lack it.
+      version: (worker["CF_VERSION_METADATA"] as { readonly id?: string } | undefined)?.id,
+    });
+
     return {
       fetch: guard(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
+
+          // The MCP endpoint's own audience and its two kinds of caller are the guard's (`isMcpRoute`); this is its route.
+          if (isMcpRoute(request)) return yield* mcpRoute;
+
           const sessionId = sessionSocketId(request);
 
           if (sessionId !== undefined)

@@ -17,6 +17,17 @@ const ASSETS_PREFIX = "/assets/";
 const pathOf = (request: HttpServerRequest.HttpServerRequest) =>
   new URL(request.url, "http://localhost").pathname;
 
+/** The MCP endpoint's path (`docs/architecture/mcp-endpoint.md` → The handler): exactly this, every method. */
+export const MCP_ROUTE = "/mcp";
+
+/**
+ * Whether `request` is for the MCP endpoint: its path, normalised as the router reads every path, is exactly `/mcp`. The
+ * guard asks the same, so the audience it checks and the route that serves can never disagree; any other form (`/mcp/`,
+ * `/MCP`, a sub-path) is a main route, where the endpoint's audience and the service token are refused.
+ */
+export const isMcpRoute = (request: HttpServerRequest.HttpServerRequest): boolean =>
+  pathOf(request) === MCP_ROUTE;
+
 /**
  * The Session whose socket `request` opens, if it is a `GET /sessions/:sessionId/socket` (`sessionSocketPath`). The
  * Session DO answers the upgrade. Only Session IDs as the Registry makes them (UUIDs) are routed.

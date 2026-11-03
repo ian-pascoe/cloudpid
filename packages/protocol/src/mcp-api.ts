@@ -78,8 +78,14 @@ export const PI_SESSION_FORMAT = "pi-session-jsonl";
 const open = <S extends Schema.Top>(literals: S, fallback: S["Type"]) =>
   literals.pipe(Schema.catchDecoding(() => Effect.succeedSome(fallback)));
 
-/** How the caller got in: an Access OAuth grant (the owner), or the Local agent's service token. */
-export const McpAuth = open(Schema.Literals(["oauth", "service_token", "unknown"]), "unknown");
+/**
+ * How the caller got in: an Access OAuth grant (the owner), the Local agent's service token, or `local` (a stage under
+ * `alchemy dev`, which has no Access: the loopback rule). A member this version does not know reads as `unknown`.
+ */
+export const McpAuth = open(
+  Schema.Literals(["oauth", "service_token", "local", "unknown"]),
+  "unknown",
+);
 
 export type McpAuth = typeof McpAuth.Type;
 
@@ -217,6 +223,12 @@ export const apiFailure = (
 /** A successful result. */
 export const apiOk = <T>(value: T): ApiResult<T> => ({ ok: true, value });
 
+/**
+ * A Session's id as the Registry makes it: a lowercase UUID (`sessionSocketPath`'s too). The endpoint takes no other
+ * form (an upper-case one would name no object), so `McpServer` and the main Worker agree on what a Session id is.
+ */
+export const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** What `describe()` says the deployed `Server` supports; `McpServer` gates its tools on it. */
 export const ApiDescription = Schema.Struct({
   operations: Schema.Array(Schema.String),
@@ -226,6 +238,11 @@ export const ApiDescription = Schema.Struct({
     maxImportBytes: Schema.Finite,
     maxWaitMs: Schema.Finite,
   }),
+  /**
+   * `Server`'s deploy id, which `McpServer` serves as `serverInfo.version`; an older `Server` sends none, and `McpServer`
+   * uses its own version id then (`docs/architecture/mcp-endpoint.md` → The handler).
+   */
+  version: Schema.optionalKey(Schema.String),
 });
 
 export type ApiDescription = typeof ApiDescription.Type;
@@ -608,7 +625,7 @@ export const McpSessionSummary = Schema.Struct({
 
 export type McpSessionSummary = typeof McpSessionSummary.Type;
 
-/** `sessions_list`'s arguments, as `McpApi.sessions` takes them (the environment is an id by then). */
+/** `sessions_list`'s arguments, as `McpApi.sessions` takes them (the environment is an id or an exact name; `sessions` resolves it). */
 export const SessionsQuery = Schema.Struct({
   environment: Schema.optionalKey(Schema.String),
   status: Schema.optionalKey(Schema.Literals(["running", "idle"])),
@@ -720,6 +737,12 @@ export interface McpApi {
       readonly via: Via;
     },
   ): Promise<ApiResult<StopResult>>;
-  /** Present when the caller is over its rate; `McpServer` answers `rate_limited` with it. */
+  /**
+   * Present when the caller is over its rate; `McpServer` answers `rate_limited` with it. A getter of the `RpcTarget`,
+   * read once per `tools/call` (and counted then): over RPC it is awaited, so an older `Server` that has none reads as
+   * not limited.
+   */
   limited?: { readonly retryAfterS: number };
+  /** How the caller got in, for the call's span; read over RPC like `limited`, and `unknown` when absent. */
+  auth?: McpAuth;
 }

@@ -126,3 +126,21 @@ export const mcpAccessProps = <
       },
     };
   });
+
+/** The name `MCP_CALLS` is bound under: the rate limit of the MCP endpoint's calls (`mcp-endpoint.md` → Limits and errors). */
+export const MCP_CALLS_BINDING = "MCP_CALLS";
+
+/**
+ * The `MCP_CALLS` namespace id of `stage`: a positive integer the runtime counts a key in. Counters are per namespace and
+ * Workers of one account may share one, so a preview stage must not count in `prod`'s: each stage's is a hash of its name
+ * (FNV-1a), moved above the small numbers a hand-written namespace would use.
+ */
+export const mcpCallsNamespace = (stage: string): number => {
+  let hash = 0x811c9dc5;
+
+  for (const char of stage) {
+    hash = Math.imul(hash ^ (char.codePointAt(0) ?? 0), 0x01000193) >>> 0;
+  }
+
+  return 1_000_000 + (hash % 2_000_000_000);
+};
