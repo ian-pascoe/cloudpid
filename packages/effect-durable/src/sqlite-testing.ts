@@ -78,9 +78,11 @@ export const refusingStorage = <S extends object>(storage: S): RefusingStorage<S
           };
         }
 
+        // The SQL database and the synchronous key-value store are objects a caller keeps hold of (`const { kv } =
+        // ctx.storage`), so their members refuse when called, whenever the object was read.
         // oxlint-disable-next-line anti-slop/no-runtime-typeof -- see above
-        if (key === "sql" && typeof value === "object" && value !== null) {
-          return guard(value, "sql.");
+        if ((key === "sql" || key === "kv") && typeof value === "object" && value !== null) {
+          return guard(value, `${key}.`);
         }
 
         if (tripped) throw refusal(name);

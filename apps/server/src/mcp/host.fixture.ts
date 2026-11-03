@@ -24,14 +24,17 @@ import {
   type McpEngineRequestResult,
   type McpEngineTargetEncoded,
   type McpRequestStart,
+  type McpRequestStartResult,
   type McpRequestStartAnswer,
   type McpServerSetAnswer,
   type McpServerLogRequest,
   type McpServerLogResult,
   type McpServersAnswer,
   type McpServersRequest,
+  type McpServersResult,
   type McpServerValuesAnswer,
 } from "@cloudpid/mcp/types";
+import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import { DurableObject } from "cloudflare:workers";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -177,8 +180,56 @@ export const hostServicesOver = (store: McpHostStoreService) =>
     }),
   });
 
+/** `store` whose members throw while `refused(member)`. */
+const guardMembers = (
+  store: McpHostStoreService,
+  refused: (member: string) => boolean,
+): McpHostStoreService =>
+  new Proxy(store, {
+    get: (target, key: string) => {
+      // oxlint-disable-next-line anti-slop/no-reflect-get -- a proxy trap reads a member of a plain object
+      const member: unknown = Reflect.get(target, key);
+
+      if (!Predicate.isFunction(member)) return member;
+
+      return (...args: ReadonlyArray<unknown>) => {
+        if (refused(key)) throw new Error(`The storage refused ${key}`);
+
+        return member(...args);
+      };
+    },
+  });
+
+/** The store's members that write: what `refuseWrites` with none named makes throw. */
+const STORE_WRITES: ReadonlySet<string> = new Set([
+  "replaceSet",
+  "setRevision",
+  "setMeta",
+  "putStatus",
+  "putInventory",
+  "expireInventory",
+  "applyEngineState",
+  "dropPrior",
+  "dropSessions",
+  "putLogs",
+  "putApp",
+  "touchApp",
+  "destroy",
+  "pruneOutsideSet",
+]);
+
 export class TestMcpHost extends DurableObject {
-  readonly #store = openMcpHostStore(this.ctx.storage);
+  /** The object's storage, as the host's store sees it: it refuses everything once `replace()` ran. */
+  readonly #gate = refusingStorage(this.ctx.storage);
+
+  /** Set by `refuse` and `refuseWrites`: the store's members that throw, `"writes"` for every one that writes. */
+  #refused: ReadonlySet<string> = new Set();
+
+  readonly #store: McpHostStoreService = guardMembers(
+    openMcpHostStore(this.#gate.storage),
+    (member) =>
+      this.#refused.has(member) || (this.#refused.has("writes") && STORE_WRITES.has(member)),
+  );
 
   readonly #asked: Array<PullAsked> = [];
 
@@ -517,6 +568,16 @@ export class TestMcpHost extends DurableObject {
     return answered(await Effect.runPromise(this.#methods.requestStart(request)));
   }
 
+  /** `requestStart` as the host answers it, whatever it answers (a failure is a value). */
+  startResult(request: McpRequestStart): Promise<McpRequestStartResult> {
+    return Effect.runPromise(this.#methods.requestStart(request));
+  }
+
+  /** `servers` as the host answers it, whatever it answers (a failure is a value). */
+  serversResult(request: McpServersRequest): Promise<McpServersResult> {
+    return Effect.runPromise(this.#methods.servers(request));
+  }
+
   /** `serverLog` as the host answers it, whatever it answers. */
   serverLog(request: McpServerLogRequest): Promise<McpServerLogResult> {
     return Effect.runPromise(this.#methods.serverLog(request));
@@ -572,14 +633,58 @@ export class TestMcpHost extends DurableObject {
     return this.#pulls;
   }
 
-  /** The set as the store holds it. */
+  /**
+   * A code update reaches this instance (`docs/development/workers.md` → Deploys and Durable Object code updates): from now
+   * on every storage operation its host runs fails, while the calls in flight, their hooks and their results carry on.
+   * The test reads what is stored through a new instance (`readSet`, `prior`, the `SELECT`s below).
+   */
+  replace(): void {
+    this.#gate.trip();
+  }
+
+  /**
+   * Make the `members` of the host's store (reads or writes: `statuses`, `putInventory`) throw, as a storage that fails
+   * one operation does; with none named, every write, while its reads still answer.
+   */
+  refuse(members: ReadonlyArray<string> = []): void {
+    this.#refused = new Set(members.length === 0 ? ["writes"] : members);
+  }
+
+  /** The store works again. */
+  accept(): void {
+    this.#refused = new Set();
+  }
+
+  /** A new instance's store over the same storage: what the host that replaced this one finds. */
+  #afterwards(): McpHostStoreService {
+    return openMcpHostStore(this.ctx.storage);
+  }
+
+  /** The set as a new instance's store holds it. */
   readSet(): StoredSet | null {
-    return this.#store.readSet();
+    return this.#afterwards().readSet();
   }
 
   /** The era and Legacy session rows of `conn`, an HTTP server's or a stdio server's in `workspace`. */
   prior(conn: string, workspace?: string): McpEnginePriorEncoded {
-    return this.#store.prior(conn, workspace);
+    return this.#afterwards().prior(conn, workspace);
+  }
+
+  /** The statuses a new instance's store holds, by `conn`: their state and failure count. */
+  statuses(): Readonly<Record<string, { readonly state: string; readonly failures: number }>> {
+    return Record.map(
+      Record.fromEntries([...this.#afterwards().statuses()]),
+      ({ state, failures }) => ({ state, failures }),
+    );
+  }
+
+  /** Write `conn`'s era row as text, as another build of the host did: the row the engine gets as `prior`. */
+  seedEra(conn: string, json: string): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO mcp_eras (conn, json) VALUES (?, ?) ON CONFLICT (conn) DO UPDATE SET json = excluded.json",
+      conn,
+      json,
+    );
   }
 
   /** The session rows of `conn`: its Workspaces' (`''` for an HTTP server's), and the spawn id each was last heard on. */

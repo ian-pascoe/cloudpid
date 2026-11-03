@@ -51,6 +51,7 @@ import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import {
   awaitDiscoveries,
+  halt,
   interrupt,
   restartable,
   McpDiscovery,
@@ -218,7 +219,7 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
     return McpDestroyed.make({});
   }).pipe(
     Effect.catchCause(() =>
-      Effect.succeed(HostFailed.make({ message: "The storage was not wiped" })),
+      Effect.as(halt, HostFailed.make({ message: "The storage was not wiped" })),
     ),
   );
 
@@ -291,7 +292,7 @@ const reload = (environment: string | undefined, input: McpApply) =>
     return McpReloaded.make({ servers: Arr.map(views, (view) => view.server.name) });
   }).pipe(
     Effect.catchCause(() =>
-      Effect.succeed(HostFailed.make({ message: "The servers were not reloaded" })),
+      Effect.as(halt, HostFailed.make({ message: "The servers were not reloaded" })),
     ),
   );
 
@@ -354,7 +355,7 @@ const takeSignIns = (
     return McpSignInsTaken.make({ servers: Arr.map(views, (view) => view.server.name) });
   }).pipe(
     Effect.catchCause(() =>
-      Effect.succeed(HostFailed.make({ message: "The sign-in change was not taken" })),
+      Effect.as(halt, HostFailed.make({ message: "The sign-in change was not taken" })),
     ),
   );
 
@@ -403,7 +404,9 @@ export const apply = (
     }
 
     return yield* takeSet(environment, set.value).pipe(
-      Effect.catchCause(() => Effect.succeed(HostFailed.make({ message: "The set was not kept" }))),
+      Effect.catchCause(() =>
+        Effect.as(halt, HostFailed.make({ message: "The set was not kept" })),
+      ),
     );
   }).pipe(Effect.withSpan("mcp.apply"));
 
@@ -550,11 +553,14 @@ export const requestStart = (
       watches: { changed: [], ended: [] },
     };
   }).pipe(
-    Effect.catchCause(() => Effect.succeed(unreadable)),
+    Effect.catchCause(() => Effect.as(halt, unreadable)),
     Effect.withSpan("mcp.request_start"),
   );
 
-/** A failure to read what the host holds: loud, never an empty inventory that reads as no servers. */
+/**
+ * A failure to read what the host holds: loud, never an empty inventory that reads as no servers. The read that failed
+ * also stops background work (`halt`): the instance was replaced (`mcp-connections.md` → Deploys).
+ */
 const unreadable = HostFailed.make({ message: "The MCP host could not read its storage" });
 
 /** `view`'s `toolsHash` and `promptsHash`. */
@@ -644,7 +650,7 @@ export const servers = (
       servers: Arr.map(Arr.filter(views, named), (view) => toServerInventory(view, request.parts)),
     };
   }).pipe(
-    Effect.catchCause(() => Effect.succeed(unreadable)),
+    Effect.catchCause(() => Effect.as(halt, unreadable)),
     Effect.withSpan("mcp.servers"),
   );
 
@@ -667,7 +673,7 @@ export const serverLog = (
 
     return McpServerLog.make({ entries: store.logs(found.value.server.conn) });
   }).pipe(
-    Effect.catchCause(() => Effect.succeed(unreadable)),
+    Effect.catchCause(() => Effect.as(halt, unreadable)),
     Effect.withSpan("mcp.server_log"),
   );
 

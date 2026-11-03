@@ -70,6 +70,19 @@ describe("refusingStorage", () => {
     await expect(put("a", 1)).rejects.toThrow("put");
   });
 
+  it("refuses the synchronous key-value store a caller kept hold of before the trip", () => {
+    const real = fakeStorage();
+    const gate = refusingStorage(real);
+    const { kv } = gate.storage;
+
+    kv.set("kept", 1);
+    gate.trip();
+
+    expect(() => kv.get("kept")).toThrow("kv.get");
+    expect(() => kv.set("late", 2)).toThrow("kv.set");
+    expect(real.kv.has("late")).toBe(false);
+  });
+
   it("refuses a call a transaction started before the trip, and leaves the real storage as it was", async () => {
     const real = fakeStorage();
     const gate = refusingStorage(real);

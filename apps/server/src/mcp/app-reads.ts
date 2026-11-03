@@ -44,7 +44,7 @@ import { isJsonObject } from "@cloudpid/mcp/types";
 import type { PriorRows } from "./store.ts";
 import { appContentOf, jsonOf, listedUiMetaOf, pageOf } from "./app-html.ts";
 import { type AppPage } from "./app-store.ts";
-import { type McpDiscoveryServices, attemptOrHalt } from "./discovery.ts";
+import { type McpDiscoveryServices, attemptOrHalt, isHalted } from "./discovery.ts";
 import {
   abortOf,
   callContextOf,
@@ -429,13 +429,16 @@ export const startMountRead = (
 /**
  * A call's read of `read`'s page: the one in flight if there is one, else a new one, none when the page's last read
  * failed for this inventory `version` less than a minute ago. The caller's abort cancels a read it started, until
- * `stopWatching`; with no `hooks`, nothing does.
+ * `stopWatching`; with no `hooks`, nothing does. None once a storage operation has failed (background work stopped).
  */
 export const startCallRead = (
   read: AppRead,
   hooks: McpHostRequestHooks | undefined,
 ): Effect.Effect<Option.Option<StartedRead>, never, AppReadServices> =>
   Effect.gen(function* () {
+    // A storage operation failed: this instance was replaced, and a read it started could not keep its page.
+    if (yield* isHalted) return Option.none();
+
     const reads = yield* McpAppReads;
     const key = keyOf(read);
     const held = reads.failures.get(key);

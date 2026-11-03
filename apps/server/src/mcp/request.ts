@@ -75,8 +75,9 @@ import {
   sendToEngine,
   serverOf,
 } from "./engine-round.ts";
+import { halt, writeOrHalt } from "./discovery.ts";
 import { versionsOf } from "./server-state.ts";
-import { McpHostStore } from "./store.ts";
+import { McpHostStore, type McpHostStoreService } from "./store.ts";
 
 const OpOnly = Schema.Struct({ op: Schema.String });
 
@@ -107,6 +108,23 @@ const taskHash = (taskId: string) =>
       ),
     ),
   );
+
+/**
+ * The page kept under `hash`, marked mounted: the read is the answer, and the mark is upkeep, so a write the storage
+ * refuses (a replaced instance) halts background work and never costs the page (`mcp-connections.md` → Deploys).
+ */
+const mountedPage = (store: McpHostStoreService, hash: string) =>
+  Effect.gen(function* () {
+    const page = store.readApp(hash);
+
+    if (page !== undefined) {
+      const now = yield* Clock.currentTimeMillis;
+
+      yield* writeOrHalt(() => store.touchApp(hash, now));
+    }
+
+    return page;
+  });
 
 /** The hash an App tool's call answers: the page kept for this inventory, or the one a read already in flight has kept. */
 const keptHash = (started: Option.Option<StartedRead>) =>
@@ -293,8 +311,7 @@ const appHtml = (
         return UnknownServer.make({ message: `No MCP server ${name} in this Environment` });
       }
 
-      const now = yield* Clock.currentTimeMillis;
-      const page = store.appHtml(params.hash, now);
+      const page = yield* mountedPage(store, params.hash);
 
       return page === undefined
         ? NoAppHtml.make({ message: "The host holds no App HTML under that hash" })
@@ -360,8 +377,7 @@ const appHtml = (
 
     if (outcome.kind === "unkept") return McpHostAppHtml.make(outcome.page);
 
-    const now = yield* Clock.currentTimeMillis;
-    const page = store.appHtml(outcome.hash, now);
+    const page = yield* mountedPage(store, outcome.hash);
 
     return page === undefined
       ? NoAppHtml.make({ message: "The App's HTML was evicted as it was read" })
@@ -396,8 +412,9 @@ export const request = (
       ? yield* appHtml(environment, input, hooks)
       : yield* toolCall(environment, op, input, hooks);
   }).pipe(
+    // A storage operation that fails stops background work too: the instance was replaced.
     Effect.catchCause(() =>
-      Effect.succeed(HostFailed.make({ message: "The MCP host could not read its storage" })),
+      Effect.as(halt, HostFailed.make({ message: "The MCP host could not read its storage" })),
     ),
     Effect.withSpan("mcp.request", { attributes: { op } }),
   );
